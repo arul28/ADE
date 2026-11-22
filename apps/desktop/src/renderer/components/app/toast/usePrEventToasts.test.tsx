@@ -7,7 +7,7 @@ import type { NavigateFunction } from "react-router-dom";
 import type { PrEventPayload } from "../../../../shared/types";
 
 import { ToastStack } from "./ToastStack";
-import { dismissToast, getToasts, READABLE_TOAST_DURATION_MS, showToast } from "./toastStore";
+import { dismissToast, getToasts, showToast } from "./toastStore";
 import {
   buildAutoLinkedPrToast,
   buildPrNotificationToast,
@@ -69,32 +69,17 @@ afterEach(() => {
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
+/** The machine the PR event came from: its actions go back there. */
+const PR_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 describe("PR notification toast", () => {
-  it("maps the event onto the shared card: tone, badge, number, chips, 18s", () => {
-    const toast = buildPrNotificationToast(
-      notification(),
-      { id: "lane-1", name: "Lane One", color: "var(--color-accent)" },
-      vi.fn() as unknown as NavigateFunction,
-    );
-    expect(toast.tone).toBe("error");
-    expect(toast.badge).toBe("Checks failing");
-    expect(toast.eyebrow).toBe("#42");
-    expect(toast.title).toBe("Speed up the build");
-    expect(toast.message).toBe("2 checks failed.");
-    expect(toast.chips?.map((chip) => chip.label)).toEqual(["Lane One", "feature -> main", "acme/app"]);
-    expect(toast.chips?.[0]?.color).toBe("var(--color-accent)");
-    expect(toast.actions?.map((action) => action.label)).toEqual(["Open in ADE", "Open on GitHub"]);
-    expect(toast.durationMs).toBe(READABLE_TOAST_DURATION_MS);
-    // The same PR + kind refreshes one card instead of stacking a twin.
-    expect(buildPrNotificationToast(notification(), null, vi.fn() as unknown as NavigateFunction).id).toBe(toast.id);
-  });
 
   it("Open in ADE navigates to the PR's checks and closes; Open on GitHub closes only on success", async () => {
     const navigateMock = vi.fn();
     const navigate = navigateMock as unknown as NavigateFunction;
     render(<ToastStack />);
     act(() => {
-      showToast(buildPrNotificationToast(notification(), null, navigate));
+      showToast(buildPrNotificationToast(notification(), null, navigate, PR_PIN));
     });
 
     let rejectOpen: (error: Error) => void = () => {};
@@ -103,7 +88,7 @@ describe("PR notification toast", () => {
     });
     openInGitHub.mockReturnValueOnce(failedOpen);
     fireEvent.click(screen.getByRole("button", { name: "Open on GitHub" }));
-    await waitFor(() => expect(openInGitHub).toHaveBeenCalledWith("pr-1"));
+    await waitFor(() => expect(openInGitHub).toHaveBeenCalledWith("pr-1", PR_PIN));
     await act(async () => {
       rejectOpen(new Error("offline"));
       await expect(failedOpen).rejects.toThrow("offline");
@@ -129,7 +114,7 @@ describe("auto-linked PR toast", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     render(<ToastStack />);
     act(() => {
-      showToast(buildAutoLinkedPrToast(autoLinked(), null));
+      showToast(buildAutoLinkedPrToast(autoLinked(), null, PR_PIN));
     });
     expect(screen.getByText("Auto-linked PR #9")).toBeTruthy();
     expect(screen.getByText("Lane One")).toBeTruthy();
@@ -137,7 +122,7 @@ describe("auto-linked PR toast", () => {
     let reject: (error: Error) => void = () => {};
     deletePr.mockReturnValueOnce(new Promise((_resolve, rej) => { reject = rej; }));
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    expect(deletePr).toHaveBeenCalledWith({ prId: "pr-9", closeOnGitHub: false, archiveLane: false });
+    expect(deletePr).toHaveBeenCalledWith({ prId: "pr-9", closeOnGitHub: false, archiveLane: false }, PR_PIN);
     expect((screen.getByRole("button", { name: "Undo" }) as HTMLButtonElement).disabled).toBe(true);
 
     await act(async () => {

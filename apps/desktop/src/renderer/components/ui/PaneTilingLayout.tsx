@@ -18,6 +18,7 @@ import {
   type PaneSplit,
   type DropEdge
 } from "./paneTreeOps";
+import { clientLayoutScope, readClientLayout, writeClientLayout } from "./clientLayoutStore";
 
 /* Re-export types for backward compat */
 export type { PaneLeaf, PaneSplit, PaneLayoutEntry } from "./paneTreeOps";
@@ -207,6 +208,14 @@ export function PaneTilingLayout({
   onLeafDraggedOut?: (paneId: string) => void;
 }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  // The repository of the surface that owns this layout (its own store), so a
+  // delayed save stays with it after another tab comes to the front.
+  const layoutBinding = useAppStore((state) => state.projectBinding);
+  const layoutBindingRef = useRef(layoutBinding);
+  layoutBindingRef.current = layoutBinding;
+  // The read follows the layout's repository scope, which can change for the
+  // same binding key once a local folder's origin is known.
+  const layoutScope = clientLayoutScope(layoutBinding);
   const { layout, loaded, saveLayout } = useDockLayout(layoutId, {});
 
   /* ---- Mutable tree state (Phase D) ---- */
@@ -228,7 +237,7 @@ export function PaneTilingLayout({
     }
     setLiveTree(next);
     if (resetLayout) saveLayout({});
-    window.ade.tilingTree.set(layoutId, next).catch(() => {});
+    writeClientLayout("tiling", layoutId, next, layoutBindingRef.current);
   }, [layoutId, saveLayout]);
 
   // Load persisted tree on mount
@@ -236,8 +245,7 @@ export function PaneTilingLayout({
     let cancelled = false;
     setTreeLoaded(false);
     setLiveTree(tree);
-    window.ade.tilingTree
-      .get(layoutId)
+    void readClientLayout("tiling", layoutId, layoutBindingRef.current)
       .then((saved) => {
         if (cancelled) return;
         if (saved && typeof saved === "object" && (saved as PaneSplit).type === "split") {
@@ -257,7 +265,7 @@ export function PaneTilingLayout({
         }
       });
     return () => { cancelled = true; };
-  }, [layoutId, expectedPaneIds, tree]);
+  }, [layoutScope, layoutId, expectedPaneIds, tree]);
 
   // Re-sync if prop tree changes shape (e.g., panes added/removed)
   useEffect(() => {
@@ -273,8 +281,9 @@ export function PaneTilingLayout({
       setLiveTree(next);
       saveLayout({});
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      const owner = layoutBindingRef.current;
       saveTimerRef.current = setTimeout(() => {
-        window.ade.tilingTree.set(layoutId, next).catch(() => {});
+        writeClientLayout("tiling", layoutId, next, owner);
       }, 300);
     },
     [layoutId, saveLayout]

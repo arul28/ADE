@@ -26,7 +26,7 @@
  * the local list.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { remoteProjectBindingKey } from "../../shared/projectIdentity";
 import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import type {
@@ -43,6 +43,9 @@ import type {
 } from "../../shared/types";
 import { buildOptimisticChatSessionSummary, isChatToolType } from "../lib/sessions";
 import {
+  checkoutSlotId,
+  machineIdForBinding,
+  machineIdOfSlot,
   THIS_MACHINE_ID,
   THIS_MACHINE_NAME,
 } from "../../shared/machineIdentity";
@@ -56,6 +59,7 @@ import {
   cachedGitRemoteIdentity,
   deriveLaneMachineOptions,
   originUrlForBinding,
+  otherMatchedCheckouts,
   rememberProjectOriginSummaries,
   type LaneMachineOption,
 } from "../components/lanes/laneMachines";
@@ -75,14 +79,36 @@ import {
 } from "./appStore";
 import { chatLaunchBindingKey, noteChatLaunchSourceRead } from "./chatLaunchStore";
 import { isAdeAvailable } from "../lib/adeAvailability";
+import { isWebClientMode } from "../lib/webClientMode";
 import { subscribeAdeCloudAccess } from "./cloudAccess";
-import { isSavedChatsMachineId } from "./cloudSavedChats";
+import { claimSessionsLiveFirst, machineIsCloudResting, rowShowsConnected } from "./cloudRestingRows";
+import { sessionTurnLive } from "../../shared/sessionStatusPresentation";
+import { useStableBinding } from "./laneMachineRouting";
+import { cloudConnectionMachineKey, isCloudConnectionTarget, isSavedChatsMachineId } from "./cloudSavedChats";
+import { isAdeCloudBinding } from "../../shared/adeCloud/binding";
+import { cloudMachineResting } from "../../shared/adeCloud";
+import { cloudBoxForMachine } from "../components/remoteTargets/cloudMachineModel";
+import { readWebAccountMachineKeys } from "./webAccountMachineKeys";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
+import { adeCloudLaneComputersNow, isAdeCloudLaneComputerMachine, machineLabelForMachine, subscribeAdeCloudLaneComputers, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 
 /** Coalescing window for burst-y event sources (lane lifecycle, session churn). */
 const REFRESH_COALESCE_MS = 400;
 /** A machine that stops answering must never stall the sidebar. */
 const MACHINE_READ_TIMEOUT_MS = 8_000;
+/**
+ * The same read on a slow link (`shared/slowLinkMode.ts`): as long as the main
+ * process gives a read before it tries again (25 s). A 300 KB list takes 3.3 s
+ * on a quiet 700 ms satellite link, but more while a picture or a paste shares
+ * it, and an answer that comes at 9 s is worth the wait: giving up threw away
+ * what the link had already carried and counted a failure toward the notice.
+ */
+const SLOW_LINK_MACHINE_READ_TIMEOUT_MS = 25_000;
+
+function machineReadTimeoutMs(targetId: string): number {
+  const connection = runtime.connections.find((candidate) => candidate.target.id === targetId);
+  return connection?.slowLink?.active === true ? SLOW_LINK_MACHINE_READ_TIMEOUT_MS : MACHINE_READ_TIMEOUT_MS;
+}
 /**
  * Failed reads in a row before Work says a machine's chats could not load. The
  * first read after a reconnect often times out while that machine is still
@@ -128,7 +154,7 @@ const OFFLINE_DIVERGENCE_MAX_AGE_MS = 60_000;
  * alone is allowed ten seconds and candidates are tried in sequence, so this
  * floor sits above a full dial cycle.
  */
-const UNREACHABLE_FLOOR_MS = 45_000;
+const UNREACHABLE_FLOOR_MS = 40_000;
 /**
  * Backstop for a machine that never completes a reconnect attempt at all — a
  * dial wedged past its own timeout, or a target whose autoconnect sweep never
@@ -201,6 +227,34 @@ export function resolveThisMachineBindingForOrigin(
   };
 }
 
+/**
+ * This computer's checkouts of the repository, other than `exceptRootPath`.
+ * Lane worktrees and folders that are gone are not checkouts.
+ */
+export function resolveThisMachineCheckoutsForOrigin(
+  projects: readonly RecentProjectSummary[],
+  originUrl: string | null | undefined,
+  exceptRootPath: string | null,
+): Array<Extract<OpenProjectBinding, { kind: "local" }>> {
+  const originIdentity = normalizeGitRemoteIdentity(originUrl);
+  if (!originIdentity) return [];
+  return projects
+    .filter((candidate) =>
+      candidate.kind !== "remote"
+      && candidate.exists !== false
+      && !candidate.worktreeOf
+      && candidate.rootPath !== exceptRootPath
+      && normalizeGitRemoteIdentity(candidate.gitOriginUrl) === originIdentity)
+    .map((candidate) => ({
+      kind: "local" as const,
+      key: `local:${candidate.rootPath}`,
+      rootPath: candidate.rootPath,
+      displayName: candidate.displayName,
+      gitOriginUrl: candidate.gitOriginUrl ?? null,
+    }))
+    .sort((a, b) => a.rootPath.localeCompare(b.rootPath));
+}
+
 // ── Derived rows ────────────────────────────────────────────────────────────
 
 export type CrossMachineLaneRow = {
@@ -209,6 +263,21 @@ export type CrossMachineLaneRow = {
   /** Absolute machine name; safe to show verbatim. */
   machineName: string;
   online: boolean;
+  /**
+   * The machine is an ADE Cloud computer that is asleep (or stopped) and still
+   * exists: not connected, but its chats are saved copies a send wakes it for.
+   * It looks like a connected machine (`rowShowsConnected`); `online` stays
+   * false for the guards. A deleted computer's saved chats never set it.
+   */
+  cloudResting?: boolean;
+  /**
+   * The machine was an ADE Cloud computer that has been deleted: its lane and
+   * saved chats stay listed and look like an asleep computer's
+   * (`rowShowsConnected`), with one "Computer deleted" mark. A send in one of
+   * its chats makes a new computer through the account's queue; nothing is
+   * ever sent to the machine. `online` stays false.
+   */
+  computerGone?: boolean;
   isThisMachine: boolean;
   /** True for the tab-bound machine whose lanes already render in the primary list. */
   isActiveBinding: boolean;
@@ -543,6 +612,16 @@ export function useForeignSessionLaneId(
 }
 
 /**
+ * Whether a call with this pin goes to the copy the tab is bound to: no pin, or
+ * a pin that names the tab's copy. UI branches that mean "the tab's machine"
+ * read this, never a null pin.
+ */
+export function usePinTargetsTab(pin: { key: string } | null | undefined): boolean {
+  const key = pin?.key ?? null;
+  return useAppStore((state) => key == null || key === state.projectBinding?.key);
+}
+
+/**
  * The ONLY lane list a pinned lane id may be resolved against: the pinned
  * machine's own, from the live union, the retained Work slices during a
  * same-repo refill, or its warm cache.
@@ -565,11 +644,14 @@ export function useLanesForPin(
   pin: OpenProjectBinding | null | undefined,
 ): LaneSummary[] | null {
   const entry = useMachineEntryForBinding(pin);
+  // A pin that names the tab's own copy reads the tab's live lane list.
+  const tabLanes = useAppStore((state) =>
+    (pin && pin.key === state.projectBinding?.key ? state.lanes : null));
   const cached = useAppStore((state) =>
     (pin ? state.laneCacheByProject[laneCacheKeyForPin(pin)] ?? null : null));
   return useMemo(
-    () => (!pin ? null : entry?.lanes ?? cached?.lanes ?? EMPTY_LANES),
-    [cached, entry, pin],
+    () => (!pin ? null : tabLanes ?? entry?.lanes ?? cached?.lanes ?? EMPTY_LANES),
+    [cached, entry, pin, tabLanes],
   );
 }
 
@@ -764,6 +846,8 @@ export function buildCrossMachineLaneRows(input: {
    * would render one row and open another. Omit it to get the raw shape.
    */
   localSessionIds?: ReadonlySet<string>;
+  /** The ADE Cloud lane index the caller follows; decides which offline machines are only asleep. */
+  cloudLaneComputers?: readonly AdeCloudLaneComputer[];
 }): CrossMachineLaneRow[] {
   const rows: CrossMachineLaneRow[] = [];
   const activeBinding = input.activeBinding ?? null;
@@ -803,37 +887,56 @@ export function buildCrossMachineLaneRows(input: {
   // list, the headerless/shape rules, and the quiet-expansion check. A lane
   // left with no sessions is dropped downstream by the rule that already drops
   // a filtered-out one.
-  const claimed = new Set(input.localSessionIds ?? []);
-  for (const entry of Object.values(input.machines)) {
-    // The active binding is already represented by `localLanes`. The sync
-    // cache may also contain that remote machine, so drop its stale/duplicate
-    // slice instead of rendering the same lane twice.
-    if (entry.machineId === activeMachineId) continue;
-    // Only lanes this machine actually reports become rows below, so a session
-    // naming a lane it does not have renders nothing here. Claiming it anyway
-    // would block the machine that DOES have that lane from rendering it, and
-    // the session would vanish from the sidebar entirely — worse than the
-    // duplicate this dedupe exists to remove.
-    const entryLaneIds = new Set(entry.lanes.map((lane) => lane.id));
-    const sessionsByLaneId = new Map<string, TerminalSessionSummary[]>();
-    for (const session of entry.sessions) {
-      const laneId = session.laneId;
-      if (!laneId || !entryLaneIds.has(laneId)) continue;
-      if (claimed.has(session.id)) continue;
-      claimed.add(session.id);
-      const list = sessionsByLaneId.get(laneId);
-      if (list) list.push(session);
-      else sessionsByLaneId.set(laneId, [session]);
+  // The active binding is already represented by `localLanes`. The sync
+  // cache may also contain that remote machine, so drop its stale/duplicate
+  // slice instead of rendering the same lane twice.
+  const entries = Object.values(input.machines).filter((entry) => entry.machineId !== activeMachineId);
+  // Only lanes this machine actually reports become rows below, so a session
+  // naming a lane it does not have renders nothing here. Claiming it anyway
+  // would block the machine that DOES have that lane from rendering it, and
+  // the session would vanish from the sidebar entirely — worse than the
+  // duplicate this dedupe exists to remove. A machine that reports the chat
+  // itself owns it over a saved copy (`claimSessionsLiveFirst`).
+  const laneIdsByMachineId = new Map(entries.map((entry) => [entry.machineId, new Set(entry.lanes.map((lane) => lane.id))]));
+  const sessionsByMachineId = new Map<string, Map<string, TerminalSessionSummary[]>>();
+  for (const { entry, session } of claimSessionsLiveFirst(entries, {
+    claimed: input.localSessionIds ?? [],
+    laneFilter: (owner, laneId) => laneIdsByMachineId.get(owner.machineId)?.has(laneId) === true,
+  })) {
+    const laneId = session.laneId!;
+    let sessionsByLaneId = sessionsByMachineId.get(entry.machineId);
+    if (!sessionsByLaneId) {
+      sessionsByLaneId = new Map();
+      sessionsByMachineId.set(entry.machineId, sessionsByLaneId);
     }
+    const list = sessionsByLaneId.get(laneId);
+    if (list) list.push(session);
+    else sessionsByLaneId.set(laneId, [session]);
+  }
+  // A tab bound to ADE Cloud has no own computer online: an own computer that
+  // is offline lists nothing there. Its lanes come back when it connects.
+  const onAdeCloud = isAdeCloudBinding(activeBinding);
+  for (const entry of entries) {
+    const cloudResting = machineIsCloudResting(entry, input.cloudLaneComputers);
+    if (
+      onAdeCloud
+      && !entry.online
+      && !cloudResting
+      && !isSavedChatsMachineId(entry.machineId)
+      && !isCloudConnectionTarget(entry.machineId)
+    ) continue;
+    const sessionsByLaneId = sessionsByMachineId.get(entry.machineId);
     for (const lane of entry.lanes) {
       rows.push({
         lane,
         machineId: entry.machineId,
         machineName: entry.machineName,
         online: entry.online,
-        isThisMachine: entry.machineId === THIS_MACHINE_ID,
+        ...(cloudResting ? { cloudResting: true } : {}),
+        ...(entry.computerGone === true ? { computerGone: true } : {}),
+        isThisMachine: machineIdOfSlot(entry.machineId) === THIS_MACHINE_ID,
         isActiveBinding: false,
-        sessions: sessionsByLaneId.get(lane.id) ?? [],
+        sessions: sessionsByLaneId?.get(lane.id) ?? [],
         targetId: entry.targetId,
         projectId: entry.projectId,
         binding: entry.binding ?? null,
@@ -865,7 +968,8 @@ export function orderCrossMachineRows(
   return rows
     .map((row) => ({ row, input: crossMachineLaneOrderInput(row) }))
     .sort((left, right) => {
-      if (left.row.online !== right.row.online) return left.row.online ? -1 : 1;
+      const leftShown = rowShowsConnected(left.row);
+      if (leftShown !== rowShowsConnected(right.row)) return leftShown ? -1 : 1;
       const modeDelta = compareWorkLanes(left.input, right.input, mode, manualIndex);
       if (modeDelta !== 0) return modeDelta;
       return crossMachineLaneId(left.row).localeCompare(crossMachineLaneId(right.row));
@@ -893,6 +997,8 @@ export function isMachineMarkerShown(marker: CrossMachineLaneMarker): boolean {
  */
 export function resolveCrossMachineLaneMarkers(
   rows: readonly CrossMachineLaneRow[],
+  /** The lane index's computers, to name ADE Cloud computers "ADE Cloud" (the hook passes its subscribed list). */
+  cloudLaneComputers: readonly AdeCloudLaneComputer[] = adeCloudLaneComputersNow(),
 ): Map<string, CrossMachineLaneMarker> {
   const foreign = rows.filter((row) => !row.isThisMachine);
   if (foreign.length === 0) return EMPTY_MARKERS;
@@ -920,8 +1026,14 @@ export function resolveCrossMachineLaneMarkers(
       : `${row.machineId}:${row.lane.id}`;
     markers.set(markerKey, {
       machineId: row.machineId,
-      machineName: row.machineName,
-      online: row.online,
+      // An ADE Cloud computer reads "ADE Cloud"; its own name stays in the title for support.
+      machineName: machineLabelForMachine({
+        hostname: row.binding?.kind === "remote" ? row.binding.hostname ?? null : null,
+        machineKey: row.machineId,
+        name: row.machineName,
+      }, cloudLaneComputers),
+      // A sleeping (or deleted) cloud computer is not marked offline: a send wakes it, or makes a new one.
+      online: rowShowsConnected(row),
       // Always the resting form. Offline is expressed by `online: false`, which
       // dims the glyph and the whole row — a shape change on top of that would
       // be a second signal for one fact.
@@ -1094,12 +1206,26 @@ export type CrossMachineLaneScope = {
   repoDisplayName: string | null;
   /** Verified local origin URL; null means this repo has no usable origin. */
   repoOriginUrl: string | null;
+  /**
+   * The account project id of the tab's checkout, when its machine reports
+   * one. A machine joins when its project row has the same id OR the same
+   * origin. Null keeps the origin join alone.
+   */
+  repoAccountProjectId?: string | null;
   /** Target id the tab is bound to; null when the tab is on this computer. */
   boundTargetId: string | null;
   /** Project id on the bound machine, when the tab is bound to a remote one. */
   boundProjectId: string | null;
   /** Verified local checkout of the same repo, while the tab is remote-bound. */
   thisMachineBinding?: Extract<OpenProjectBinding, { kind: "local" }> | null;
+  /**
+   * This computer's other checkouts of the repository: beside the tab's own
+   * folder when the tab is local, beside `thisMachineBinding` when it is not.
+   * Each one is read into its own slice.
+   */
+  thisMachineOtherBindings?: readonly Extract<OpenProjectBinding, { kind: "local" }>[];
+  /** The tab's copy: its change feeds are subscribed on this address. Null: no feed. */
+  tabBinding?: OpenProjectBinding | null;
 };
 
 type SyncRuntime = {
@@ -1146,6 +1272,8 @@ type SyncRuntime = {
   legacySessionPageMachineIds: Set<string>;
   /** `connectionsReadSignature` of the last snapshot that forced a read. */
   connectionsReadSignature: string | null;
+  /** The change feeds of the tab's copy, and the address they follow. */
+  tabFeed: { key: string; dispose: () => void } | null;
 };
 
 /**
@@ -1172,6 +1300,7 @@ const runtime: SyncRuntime = {
     scopeKey: null,
     repoDisplayName: null,
     repoOriginUrl: null,
+    repoAccountProjectId: null,
     boundTargetId: null,
     boundProjectId: null,
     thisMachineBinding: null,
@@ -1194,6 +1323,7 @@ const runtime: SyncRuntime = {
   unresolvedLaneIdsByMachineId: new Map(),
   legacySessionPageMachineIds: new Set(),
   connectionsReadSignature: null,
+  tabFeed: null,
 };
 
 /**
@@ -1205,14 +1335,21 @@ function isDocumentVisible(): boolean {
   return typeof document === "undefined" || document.visibilityState !== "hidden";
 }
 
+function bindingKeysOf(bindings: readonly OpenProjectBinding[] | null | undefined): string {
+  return (bindings ?? []).map((binding) => binding.key).join("\n");
+}
+
 function sameScope(a: CrossMachineLaneScope, b: CrossMachineLaneScope): boolean {
   return (
     a.scopeKey === b.scopeKey
     && a.repoDisplayName === b.repoDisplayName
     && a.repoOriginUrl === b.repoOriginUrl
+    && (a.repoAccountProjectId ?? null) === (b.repoAccountProjectId ?? null)
     && a.boundTargetId === b.boundTargetId
     && a.boundProjectId === b.boundProjectId
     && a.thisMachineBinding?.key === b.thisMachineBinding?.key
+    && bindingKeysOf(a.thisMachineOtherBindings) === bindingKeysOf(b.thisMachineOtherBindings)
+    && (a.tabBinding?.key ?? null) === (b.tabBinding?.key ?? null)
   );
 }
 
@@ -1377,6 +1514,9 @@ function resolveBoundRepoOriginUrl(scope: CrossMachineLaneScope): string | null 
 
 /** Eligibility truth as of the newest snapshot this runtime has seen. */
 function isMachineEligibleNow(machineId: string): boolean {
+  if (machineIdOfSlot(machineId) !== machineId) {
+    return resolveOtherCheckoutTargets().some((target) => target.slotId === machineId);
+  }
   return resolveEligibleMachines().some((option) => option.id === machineId);
 }
 
@@ -1495,22 +1635,42 @@ async function readMachine(
   depth: LaneReadDepth,
 ): Promise<void> {
   const store = rootAppStoreApi.getState();
-  const rawCallAction = window.ade?.remoteRuntime?.callAction;
-  if (!isAdeAvailable(rawCallAction)) return;
+  // The pinned reads route by the binding on every client: the desktop
+  // preload sends them through the same remote-runtime IPC (and its
+  // conditional-read cache) as any other pinned call, and ADE Web's federated
+  // proxy sends them to that machine's own adapter. A raw `callAction` would
+  // exist only on the desktop, and the union would read nothing on the web.
+  const listLanes = window.ade?.lanes?.list;
+  const listSessions = window.ade?.sessions?.list;
+  const listPrs = window.ade?.prs?.listAll;
+  if (!isAdeAvailable(listLanes) || !isAdeAvailable(listSessions)) {
+    reportMissingMachineReadBridge(machineId, machineName, targetId, projectId, generation);
+    return;
+  }
   if (machineCallsInFlight.has(machineId)) return;
-  const callAction: typeof rawCallAction = (...args) => trackMachineCall(machineId, rawCallAction(...args));
+  const readTimeoutMs = machineReadTimeoutMs(targetId);
+  const track = <T,>(promise: Promise<T>): Promise<T> => trackMachineCall(machineId, promise);
   const readLanes = (includeStatus: boolean) =>
     withTimeout(
-      callAction(targetId, projectId, {
-        domain: "lane",
-        action: "list",
-        args: { includeArchived: false, includeStatus },
-      }),
-      MACHINE_READ_TIMEOUT_MS,
+      track(listLanes({ includeArchived: false, includeStatus }, binding)),
+      readTimeoutMs,
       `lane.list on ${machineName}`,
     );
   const decodeLanes = (result: unknown, includeStatus: boolean): LaneSummary[] => {
-    const lanes = decodeForeignLanes(result);
+    // An ADE Cloud lane computer exists for its one lane: its main checkout is
+    // only the clone the lane came from, so the lists leave it out.
+    // A computer reached through the relay has the relay's host name, so its
+    // account key decides as well. The lane lists decide again when they are
+    // built (`listedLanesOfMachine`): this read can come before the index knows
+    // the computer.
+    const connection = runtime.connections.find((candidate) => candidate.target.id === targetId);
+    const cloudLaneComputer = isAdeCloudLaneComputerMachine({
+      hostname: binding.hostname,
+      machineKey: connection ? cloudKeyOfConnection(connection) : null,
+      targetId,
+    });
+    const decoded = decodeForeignLanes(result);
+    const lanes = cloudLaneComputer ? decoded.filter((lane) => lane.laneType !== "primary") : decoded;
     return includeStatus ? lanes : withPreservedLaneStatus(machineId, lanes);
   };
   // PRs ride the lane cadence, not the chat cadence. A PR is only ever rendered
@@ -1523,13 +1683,14 @@ async function readMachine(
   // tab's machine from every target this function is called with, so the rows
   // read here are always a machine `useLanePrsByLaneId` cannot answer itself.
   const readPrs = async (): Promise<PrSummary[] | null> => {
+    if (!isAdeAvailable(listPrs)) return null;
     try {
       const response = await withTimeout(
-        callAction(targetId, projectId, { domain: "pr", action: "listAll", args: {} }),
-        MACHINE_READ_TIMEOUT_MS,
+        track(listPrs(binding)),
+        readTimeoutMs,
         `pr.listAll on ${machineName}`,
       );
-      return decodeForeignPrs(response.result);
+      return decodeForeignPrs(response);
     } catch {
       return null;
     }
@@ -1543,12 +1704,8 @@ async function readMachine(
     const [laneResult, sessionResult, duePrs] = await Promise.all([
       lanesDue ? readLanes(statusDue) : null,
       withTimeout(
-        callAction(targetId, projectId, {
-          domain: "session",
-          action: "list",
-          args: foreignSessionListArgs(machineId),
-        }),
-        MACHINE_READ_TIMEOUT_MS,
+        track(listSessions(foreignSessionListArgs(machineId), binding)),
+        readTimeoutMs,
         `session.list on ${machineName}`,
       ),
       lanesDue ? readPrs() : null,
@@ -1556,17 +1713,17 @@ async function readMachine(
     // Cancellation: a scope change or a newer snapshot bumped the generation
     // while this read was in flight, so its answer is about a different world.
     if (generation !== runtime.generation) return;
-    const sessions = decodeForeignSessions(sessionResult.result);
+    const sessions = decodeForeignSessions(sessionResult);
     noteForeignSessionPage(machineId, sessions);
     // A chat is rendered under its lane, so a chat launched on a lane this
     // machine has never reported would be invisible until the slow lane cadence
     // came round. Seeing one is the signal to pay for the lane read now.
     const lanes = await resolveLaneCadence(
       machineId,
-      laneResult ? decodeLanes(laneResult.result, statusDue) : null,
+      laneResult ? decodeLanes(laneResult, statusDue) : null,
       sessions,
       generation,
-      async () => decodeLanes((await readLanes(false)).result, false),
+      async () => decodeLanes(await readLanes(false), false),
       statusDue,
     );
     if (generation !== runtime.generation) return;
@@ -1620,6 +1777,32 @@ async function readMachine(
   }
 }
 
+/**
+ * A client whose `window.ade` lacks the pinned list reads cannot read another
+ * machine at all. That used to return silently, and the union stayed empty
+ * with no trace (ADE Web before it routed pinned reads). Now the machine
+ * carries the error, Work shows it, and Sentry hears of it on the signal budget.
+ */
+function reportMissingMachineReadBridge(
+  machineId: string,
+  machineName: string,
+  targetId: string,
+  projectId: string,
+  generation: number,
+): void {
+  if (generation !== runtime.generation) return;
+  const message = "This window cannot read other machines' lanes.";
+  rootAppStoreApi.getState().mergeCrossMachineLanes({
+    machineId,
+    machineName,
+    targetId,
+    projectId,
+    ...(isMachineEligibleNow(machineId) ? { online: true } : {}),
+    error: message,
+  });
+  forwardSignalToSentry("work.machine_read_bridge_missing", { error: message });
+}
+
 /** Sends a machine's read failure to Sentry once, when Work starts showing it. */
 function reportPersistentMachineReadFailure(machineId: string, message: string): void {
   const entry = rootAppStoreApi.getState().crossMachineLanesByMachineId[machineId];
@@ -1636,6 +1819,7 @@ async function readThisMachine(
   binding: Extract<OpenProjectBinding, { kind: "local" }>,
   generation: number,
   depth: LaneReadDepth,
+  slotId: string = THIS_MACHINE_ID,
 ): Promise<void> {
   const store = rootAppStoreApi.getState();
   const readLanes = async (includeStatus: boolean) => {
@@ -1647,7 +1831,7 @@ async function readThisMachine(
       MACHINE_READ_TIMEOUT_MS,
       "lane.list on This computer",
     );
-    return includeStatus ? lanes : withPreservedLaneStatus(THIS_MACHINE_ID, lanes);
+    return includeStatus ? lanes : withPreservedLaneStatus(slotId, lanes);
   };
   // See `readMachine`: PRs ride the lane cadence for the same reasons, and the
   // read is best-effort — a machine that fails only this read must still
@@ -1668,13 +1852,13 @@ async function readThisMachine(
   };
   try {
     const readStartedAtMs = Date.now();
-    const statusDue = shouldReadLaneStatus(THIS_MACHINE_ID, depth);
-    const lanesDue = statusDue || shouldReadLanes(THIS_MACHINE_ID);
+    const statusDue = shouldReadLaneStatus(slotId, depth);
+    const lanesDue = statusDue || shouldReadLanes(slotId);
     const [laneResult, sessions, duePrs] = await Promise.all([
       lanesDue ? readLanes(statusDue) : null,
       withTimeout(
         window.ade.sessions.list(
-          foreignSessionListArgs(THIS_MACHINE_ID),
+          foreignSessionListArgs(slotId),
           binding,
         ),
         MACHINE_READ_TIMEOUT_MS,
@@ -1683,9 +1867,9 @@ async function readThisMachine(
       lanesDue ? readPrs() : null,
     ]);
     if (generation !== runtime.generation) return;
-    noteForeignSessionPage(THIS_MACHINE_ID, sessions);
+    noteForeignSessionPage(slotId, sessions);
     const lanes = await resolveLaneCadence(
-      THIS_MACHINE_ID,
+      slotId,
       laneResult,
       sessions,
       generation,
@@ -1698,7 +1882,7 @@ async function readThisMachine(
     const prs = duePrs ?? (lanes && !lanesDue ? await readPrs() : null);
     if (generation !== runtime.generation) return;
     store.mergeCrossMachineLanes({
-      machineId: THIS_MACHINE_ID,
+      machineId: slotId,
       machineName: THIS_MACHINE_NAME,
       targetId: null,
       projectId: null,
@@ -1714,7 +1898,7 @@ async function readThisMachine(
     if (generation !== runtime.generation) return;
     const message = error instanceof Error ? error.message : String(error);
     store.mergeCrossMachineLanes({
-      machineId: THIS_MACHINE_ID,
+      machineId: slotId,
       machineName: THIS_MACHINE_NAME,
       targetId: null,
       projectId: null,
@@ -1722,17 +1906,43 @@ async function readThisMachine(
       online: true,
       error: message,
     });
-    reportPersistentMachineReadFailure(THIS_MACHINE_ID, message);
+    reportPersistentMachineReadFailure(slotId, message);
+  }
+}
+
+/**
+ * The desktop reads a computer's project list when it connects, and then only
+ * when something asks. A repository added there later (also one removed and
+ * added again) never reached the union, so its chats stayed missing. Each
+ * refresh re-reads, at most every 30 s, the list of a connected computer that
+ * does not host this repository. ADE Web needs none of this: each computer
+ * pushes its catalog to the tab when it changes.
+ */
+const PROJECT_LIST_REREAD_MS = 30_000;
+const projectListReadAtMs = new Map<string, number>();
+
+function rereadProjectListsWithoutRepo(): void {
+  if (isWebClientMode()) return;
+  const listProjects = window.ade?.remoteRuntime?.listProjects;
+  if (!isAdeAvailable(listProjects)) return;
+  const nowMs = Date.now();
+  for (const option of resolveMachineOptions()) {
+    if (option.repoMatch !== "missing" || !option.targetId || option.id === THIS_MACHINE_ID) continue;
+    if (nowMs - (projectListReadAtMs.get(option.targetId) ?? 0) < PROJECT_LIST_REREAD_MS) continue;
+    projectListReadAtMs.set(option.targetId, nowMs);
+    // The read updates the connection snapshot, which re-runs the union.
+    void listProjects(option.targetId).catch(() => {});
   }
 }
 
 async function runRefresh(): Promise<void> {
+  rereadProjectListsWithoutRepo();
   const generation = ++runtime.generation;
   const depth = runtime.pendingLaneReadDepth;
   runtime.pendingLaneReadDepth = "identity";
   const scope = runtime.scope;
   const store = rootAppStoreApi.getState();
-  const targets = resolveEligibleMachines();
+  const targets = resolveReadTargets();
   store.applyCrossMachineLaneScope(
     scope.scopeKey,
     resolveRefillIntendedMachineIds(targets, true),
@@ -1745,27 +1955,25 @@ async function runRefresh(): Promise<void> {
     .fill(null)
     .map(async () => {
       for (;;) {
-        const option = targets[cursor++];
-        if (!option) return;
+        const target = targets[cursor++];
+        if (!target) return;
         if (generation !== runtime.generation) return;
+        const { option, checkout } = target;
         await readMachine(
-          option.id,
+          target.slotId,
           option.name,
           option.targetId as string,
-          option.project?.projectId as string,
+          checkout.projectId,
           {
             kind: "remote",
-            key: remoteProjectBindingKey(
-              option.targetId as string,
-              option.project?.projectId as string,
-            ),
+            key: remoteProjectBindingKey(option.targetId as string, checkout.projectId),
             targetId: option.targetId as string,
             runtimeName: option.name,
             transport: option.transport ?? "ssh",
             ...(option.hostname ? { hostname: option.hostname } : {}),
-            projectId: option.project?.projectId as string,
-            rootPath: option.project?.rootPath as string,
-            displayName: option.project?.displayName as string,
+            projectId: checkout.projectId,
+            rootPath: checkout.rootPath,
+            displayName: checkout.displayName,
           },
           generation,
           depth,
@@ -1777,7 +1985,78 @@ async function runRefresh(): Promise<void> {
     ...(scope.boundTargetId && scope.thisMachineBinding
       ? [readThisMachine(scope.thisMachineBinding, generation, depth)]
       : []),
+    ...thisMachineOtherCheckouts().map(({ slotId, binding }) =>
+      readThisMachine(binding, generation, depth, slotId)),
   ]);
+}
+
+/** One checkout to read for the union: a machine's first checkout, or another one under its own slot. */
+type UnionReadTarget = {
+  slotId: string;
+  option: LaneMachineOption;
+  checkout: { projectId: string; rootPath: string; displayName: string };
+};
+
+function resolveReadTargets(): UnionReadTarget[] {
+  const targets: UnionReadTarget[] = resolveEligibleMachines().map((option) => ({
+    slotId: option.id,
+    option,
+    checkout: {
+      projectId: option.project?.projectId as string,
+      rootPath: option.project?.rootPath as string,
+      displayName: option.project?.displayName as string,
+    },
+  }));
+  return [...targets, ...resolveOtherCheckoutTargets()];
+}
+
+/**
+ * The other checkouts of this repository on each connected computer, the
+ * tab's own computer included: every checkout of the project lists its rows.
+ * ADE Cloud computers are left out; each holds one checkout of a project, and
+ * their saved chats are keyed on the computer.
+ */
+function resolveOtherCheckoutTargets(): UnionReadTarget[] {
+  const scope = runtime.scope;
+  const repoIdentity = cachedGitRemoteIdentity(scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(scope));
+  const repoAccountProjectId = scope.repoAccountProjectId?.trim() || null;
+  if (!repoIdentity && !repoAccountProjectId) return [];
+  const targets: UnionReadTarget[] = [];
+  for (const option of resolveMachineOptions()) {
+    if (option.id === THIS_MACHINE_ID || !option.targetId) continue;
+    if (!option.isBound && !isEligibleMachineOption(option)) continue;
+    if (isCloudConnectionTarget(option.targetId) || asleepOnItsConnection(option.id)) continue;
+    const connection = runtime.connections.find((candidate) => candidate.target.id === option.targetId);
+    const keepProjectId = option.isBound ? scope.boundProjectId : option.project?.projectId ?? null;
+    for (const checkout of otherMatchedCheckouts(connection?.projects ?? [], repoIdentity, repoAccountProjectId, keepProjectId)) {
+      targets.push({ slotId: checkoutSlotId(option.id, checkout.projectId), option, checkout });
+    }
+  }
+  return targets;
+}
+
+/** This computer's other checkouts of the repository, each under its own slot. */
+function thisMachineOtherCheckouts(): Array<{ slotId: string; binding: Extract<OpenProjectBinding, { kind: "local" }> }> {
+  return (runtime.scope.thisMachineOtherBindings ?? []).map((binding) => ({
+    slotId: checkoutSlotId(THIS_MACHINE_ID, binding.rootPath),
+    binding,
+  }));
+}
+
+/**
+ * The union slice id for a call-routing binding: the slice that reads that
+ * checkout, or the machine id when no slice does. A second checkout on a
+ * machine has a slice id of its own, so joins on the union (lane keys, a
+ * chat's lane, a lane link) go through this, not `machineIdForBinding`.
+ */
+export function unionSlotIdForBinding(binding: OpenProjectBinding | null | undefined): string {
+  const machineId = machineIdForBinding(binding);
+  if (!binding) return machineId;
+  const live = rootAppStoreApi.getState().crossMachineLanesByMachineId ?? {};
+  for (const entry of Object.values(live)) {
+    if (entry.binding?.key === binding.key) return entry.machineId;
+  }
+  return retainedEntryForPin(binding)?.machineId ?? machineId;
 }
 
 /**
@@ -1872,6 +2151,7 @@ function resolveMachineOptions(): LaneMachineOption[] {
     connections: runtime.connections,
     boundTargetId: scope.boundTargetId,
     repoOriginUrl: scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(scope),
+    repoAccountProjectId: scope.repoAccountProjectId ?? null,
     repoDisplayName: scope.repoDisplayName,
   });
 }
@@ -1889,8 +2169,9 @@ function isEligibleMachineOption(option: LaneMachineOption): boolean {
 
 function resolveEligibleMachines(): LaneMachineOption[] {
   const eligible: LaneMachineOption[] = [];
-  for (const machine of resolveMachineConnectivity().values()) {
-    if (machine.eligible && machine.option) eligible.push(machine.option);
+  for (const [machineId, machine] of resolveMachineConnectivity()) {
+    // Not read while asleep: a late read would mark its rows live again.
+    if (machine.eligible && machine.option && !asleepOnItsConnection(machineId)) eligible.push(machine.option);
   }
   return eligible;
 }
@@ -1904,7 +2185,7 @@ function resolveEligibleMachines(): LaneMachineOption[] {
  * remains distinguishable from a removed machine throughout the refill.
  */
 function resolveRefillIntendedMachineIds(
-  targets: readonly LaneMachineOption[],
+  targets: readonly UnionReadTarget[],
   preserveExisting: boolean,
 ): string[] {
   const store = rootAppStoreApi.getState();
@@ -1917,10 +2198,11 @@ function resolveRefillIntendedMachineIds(
       intended.add(machineId);
     }
   }
-  for (const target of targets) intended.add(target.id);
+  for (const target of targets) intended.add(target.slotId);
   if (runtime.scope.boundTargetId && runtime.scope.thisMachineBinding) {
     intended.add(THIS_MACHINE_ID);
   }
+  for (const { slotId } of thisMachineOtherCheckouts()) intended.add(slotId);
   return Array.from(intended).sort();
 }
 
@@ -1934,6 +2216,10 @@ type MachineConnectivity = {
   /** Present only for connected machines: the match needs their project list. */
   option: LaneMachineOption | null;
   eligible: boolean;
+  /** The person disconnected it: its rows leave at once, with no floor. */
+  userDisconnected: boolean;
+  /** Shown connected during a reconnect window: when it really dropped. */
+  reconnectingSinceMs: number | null;
 };
 
 function resolveMachineConnectivity(): Map<string, MachineConnectivity> {
@@ -1943,6 +2229,8 @@ function resolveMachineConnectivity(): Map<string, MachineConnectivity> {
       state: connection.state,
       option: null,
       eligible: false,
+      userDisconnected: connection.reconnectBlocked === "disconnected",
+      reconnectingSinceMs: typeof connection.reconnectingSinceMs === "number" ? connection.reconnectingSinceMs : null,
     });
   }
   // `deriveLaneMachineOptions` only returns connected machines, so anything it
@@ -1959,6 +2247,8 @@ function resolveMachineConnectivity(): Map<string, MachineConnectivity> {
       state: "connected",
       option,
       eligible: isEligibleMachineOption(option),
+      userDisconnected: false,
+      reconnectingSinceMs: null,
     });
   }
   return byMachineId;
@@ -2000,6 +2290,9 @@ function applyReachability(): void {
   const forgotten: string[] = [];
   let soonestDeadlineMs: number | null = null;
   const noteDeadline = (deadlineMs: number) => {
+    // A deadline already passed has nothing left to wait for; scheduling it
+    // would re-run this pass at once, every time.
+    if (deadlineMs <= nowMs) return;
     if (soonestDeadlineMs == null || deadlineMs < soonestDeadlineMs) {
       soonestDeadlineMs = deadlineMs;
     }
@@ -2007,34 +2300,94 @@ function applyReachability(): void {
 
   for (const [machineId, machine] of connectivity) {
     if (!machine.eligible) continue;
+    if (machine.reconnectingSinceMs != null) {
+      // An ADE Cloud computer the account says went to sleep has no blip to
+      // wait out: its rows dim now, and its saved chats show.
+      if (restingCloud.machineIds.has(machineId)) continue;
+      // Shown connected while it reconnects, but it dropped then: the floor
+      // runs from the drop, so every client hides it at the same moment.
+      // A record older than this reconnect is from an earlier drop: the floor
+      // (and the asleep check, which reads it) runs from this one.
+      const known = runtime.dropsByMachineId.get(machineId);
+      const drop = known && known.droppedAtMs >= machine.reconnectingSinceMs
+        ? known
+        : { droppedAtMs: machine.reconnectingSinceMs, sawAttempt: true, attemptFailed: false };
+      runtime.dropsByMachineId.set(machineId, drop);
+      const dimAtMs = drop.droppedAtMs + UNREACHABLE_FLOOR_MS;
+      if (nowMs < dimAtMs) {
+        reachable.push(machineId);
+        noteDeadline(dimAtMs);
+      }
+      continue;
+    }
+    // The account says it went to sleep while its connection still reads
+    // connected (a relay can hold the connection open for a while): its rows
+    // dim now. A new connection (it was woken) clears the mark.
+    if (asleepOnItsConnection(machineId)) continue;
     runtime.dropsByMachineId.delete(machineId);
+    restingCloud.machineIds.delete(machineId);
     reachable.push(machineId);
   }
+  // A computer's other checkouts follow its verdict; this computer's are always live.
+  const otherSlotIds = new Set<string>();
+  const reachableMachineIds = new Set(reachable);
+  for (const { slotId } of resolveOtherCheckoutTargets()) {
+    otherSlotIds.add(slotId);
+    // The tab's own computer is never one of the union's machines, so it is
+    // not in `reachable`; its other checkouts are listed only while it is connected.
+    const slotMachineId = machineIdOfSlot(slotId);
+    if (reachableMachineIds.has(slotMachineId) || slotMachineId === runtime.scope.boundTargetId) {
+      runtime.dropsByMachineId.delete(slotId);
+      reachable.push(slotId);
+    }
+  }
+  const localSlotIds = new Set(thisMachineOtherCheckouts().map(({ slotId }) => slotId));
+  for (const slotId of localSlotIds) reachable.push(slotId);
   const scopedMachineIds = new Set([
     ...Object.keys(store.crossMachineLanesByMachineId),
     ...(store.crossMachineLaneIntendedMachineIds ?? []),
   ]);
   for (const machineId of scopedMachineIds) {
     const entry = store.crossMachineLanesByMachineId[machineId] ?? null;
+    const slotMachineId = machineIdOfSlot(machineId);
     // This computer is not a connection target and is always reachable; holding a
-    // drop record for it would leak a map entry nothing can ever clear.
-    if (machineId === THIS_MACHINE_ID) continue;
+    // drop record for it would leak a map entry nothing can ever clear. Another
+    // checkout of it leaves when the tab's scope no longer names it.
+    if (slotMachineId === THIS_MACHINE_ID) {
+      if (machineId !== THIS_MACHINE_ID && !localSlotIds.has(machineId)) forgotten.push(machineId);
+      continue;
+    }
     // A deleted computer's saved chats belong to no connection; the list read owns it.
     if (isSavedChatsMachineId(machineId)) continue;
-    const machine = connectivity.get(machineId);
-    if (machine?.eligible) continue;
+    // Another checkout on a computer: read while it is listed, verdict from its computer.
+    if (otherSlotIds.has(machineId)) continue;
+    const machine = connectivity.get(slotMachineId);
+    if (slotMachineId === machineId && machine?.eligible) continue;
 
     if (!machine) {
       forgotten.push(machineId);
       continue;
     }
+    if (slotMachineId !== machineId && machine.state === "connected") {
+      // Connected, and its project list no longer names this checkout: it was
+      // removed there. An empty list after a reconnect proves nothing yet.
+      const projects = runtime.connections.find((candidate) => candidate.target.id === slotMachineId)?.projects ?? [];
+      if (projects.length > 0 && !projects.some((project) => checkoutSlotId(slotMachineId, project.projectId) === machineId)) {
+        forgotten.push(machineId);
+        continue;
+      }
+    }
     // Only an origin can prove a repository absent. `repoMatchFor` will say
     // "missing" off a folder-name mismatch alone, and the scope's origin URL is
     // re-resolved from the bound machine — so it can be transiently null while
     // that machine blips. Deleting rows on that evidence is not recoverable.
+    // Nor can an empty project list: a computer that just woke or reconnected
+    // reads connected before its list arrives, and forgetting it then closed
+    // its open chat.
     if (
       machine.state === "connected"
       && machine.option?.repoMatch === "missing"
+      && (runtime.connections.find((candidate) => candidate.target.id === slotMachineId)?.projects?.length ?? 0) > 0
       && (runtime.scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(runtime.scope))
     ) {
       forgotten.push(machineId);
@@ -2054,20 +2407,26 @@ function applyReachability(): void {
     else if (drop.sawAttempt) drop.attemptFailed = true;
     runtime.dropsByMachineId.set(machineId, drop);
 
-    // `idle` means the target is not dialing and will not start on its own, and
-    // `connected` means it answers but cannot be read for this repository — in
-    // both cases there is no attempt left to wait for.
-    const answered = drop.attemptFailed
-      || machine.state === "idle"
-      || machine.state === "connected";
-    const dimAtMs = drop.droppedAtMs
-      + (answered ? UNREACHABLE_FLOOR_MS : UNREACHABLE_CEILING_MS);
-    // A machine that is already dimmed stays dimmed until it is eligible again,
-    // whatever the deadline says — the verdict is the store's, not this tick's.
-    if (entry?.online !== false && nowMs < dimAtMs) {
-      if (entry) reachable.push(machineId);
-      noteDeadline(dimAtMs);
-      continue;
+    // The person's own Disconnect is not a blip to wait out: its rows leave
+    // now, with no floor, and only the retention below still applies. Nor is
+    // an ADE Cloud computer the account says went to sleep.
+    if (!machine.userDisconnected && !restingCloud.machineIds.has(machineId)) {
+      // `idle` means the target is not dialing and will not start on its own,
+      // and `connected` means it answers but cannot be read for this
+      // repository — in both cases there is no attempt left to wait for.
+      const answered = drop.attemptFailed
+        || machine.state === "idle"
+        || machine.state === "connected";
+      const dimAtMs = drop.droppedAtMs
+        + (answered ? UNREACHABLE_FLOOR_MS : UNREACHABLE_CEILING_MS);
+      // A machine that is already dimmed stays dimmed until it is eligible
+      // again, whatever the deadline says — the verdict is the store's, not
+      // this tick's.
+      if (entry?.online !== false && nowMs < dimAtMs) {
+        if (entry) reachable.push(machineId);
+        noteDeadline(dimAtMs);
+        continue;
+      }
     }
     // Saved chats stay readable however long the computer has been away.
     if (nowMs - drop.droppedAtMs >= OFFLINE_RETENTION_MS && !entry?.sessions.some((session) => session.cloudSavedCopy)) {
@@ -2086,7 +2445,14 @@ function applyReachability(): void {
     }
     store.dropCrossMachineLanes(forgotten);
   }
+  const reachableIds = new Set(reachable);
+  const dimmed = Object.entries(store.crossMachineLanesByMachineId).some(([machineId, entry]) =>
+    entry.online && machineIdOfSlot(machineId) !== THIS_MACHINE_ID && !reachableIds.has(machineId) && !forgotten.includes(machineId));
   store.setCrossMachineMachinesOnline(reachable);
+  // A machine whose rows just dimmed may be an ADE Cloud computer that fell
+  // asleep: its saved chats take over its rows now, not at the next snapshot
+  // (ADE Web's relay can keep the connection up, so none may come).
+  if (dimmed && connectionSnapshotSeen) scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
 
   if (runtime.graceTimer) {
     clearTimeout(runtime.graceTimer);
@@ -2103,12 +2469,348 @@ function applyReachability(): void {
   }
 }
 
+/**
+ * ADE Cloud computers whose connection dropped and that the account lists as
+ * asleep or stopped. A turn that ran there stopped with the computer, so the
+ * rows take the saved state at once instead of after `UNREACHABLE_FLOOR_MS`.
+ */
+const restingCloud: {
+  /**
+   * Machine id → null when it rests with its connection dropped, or the
+   * connection's `connectedAt` when the account named it asleep while that
+   * connection still read connected.
+   */
+  machineIds: Map<string, string | null>;
+  probeTimer: ReturnType<typeof setTimeout> | null;
+  probing: boolean;
+  turnWatchTimer: ReturnType<typeof setTimeout> | null;
+  turnWatchReading: boolean;
+  /** The resting computers the watch reads for alone, and since when, for its back-off. */
+  restWatch: { ids: string; sinceMs: number; gapMs: number } | null;
+} = { machineIds: new Map(), probeTimer: null, probing: false, turnWatchTimer: null, turnWatchReading: false, restWatch: null };
+/** How soon a dropped ADE Cloud computer is asked about again, while its floor runs. */
+const RESTING_CLOUD_PROBE_GAP_MS = 8_000;
+/** How often the account is asked about an ADE Cloud computer while a turn runs there, or while it rests. */
+const CLOUD_TURN_WATCH_MS = 4_000;
+/**
+ * A computer that only rests is read every `CLOUD_TURN_WATCH_MS` for this long
+ * (a wake from another device shows within seconds), then less often, the gap
+ * doubling up to `CLOUD_REST_WATCH_MAX_MS`: a cloud chat left open on an asleep
+ * computer must not read the account every 4 s for hours.
+ */
+const CLOUD_REST_WATCH_FAST_MS = 60_000;
+const CLOUD_REST_WATCH_MAX_MS = 30_000;
+
+/** The wait before the next read of the account's cloud computers. */
+function nextCloudWatchGapMs(nowMs: number): number {
+  if (cloudConnectionsWithLiveTurns().length > 0) {
+    restingCloud.restWatch = null;
+    return CLOUD_TURN_WATCH_MS;
+  }
+  const ids = restingDroppedCloudConnections().map((connection) => connection.target.id).sort().join("\n");
+  const watch = restingCloud.restWatch;
+  if (!watch || watch.ids !== ids) {
+    restingCloud.restWatch = { ids, sinceMs: nowMs, gapMs: CLOUD_TURN_WATCH_MS };
+    return CLOUD_TURN_WATCH_MS;
+  }
+  if (nowMs - watch.sinceMs < CLOUD_REST_WATCH_FAST_MS) return CLOUD_TURN_WATCH_MS;
+  watch.gapMs = Math.min(watch.gapMs * 2, CLOUD_REST_WATCH_MAX_MS);
+  return watch.gapMs;
+}
+
+/**
+ * Views on screen that show an ADE Cloud computer's work: a Work list with a
+ * cloud row, an open chat on a cloud computer. The account is asked about a
+ * cloud computer every few seconds only while one shows.
+ */
+let cloudViewsOnScreen = 0;
+
+/**
+ * False under a page that stays mounted while another page is in front (the
+ * Work and Lanes pages): its cloud rows and chats are not on screen then.
+ */
+export const CloudViewsShownContext = createContext(true);
+
+/** While `active` and its page is in front, this view shows an ADE Cloud computer's work (see `cloudViewsOnScreen`). */
+export function useCloudViewOnScreen(active: boolean): void {
+  const shown = useContext(CloudViewsShownContext);
+  const onScreen = active && shown;
+  useEffect(() => {
+    if (!onScreen) return undefined;
+    cloudViewsOnScreen += 1;
+    syncCloudTurnWatch();
+    return () => {
+      cloudViewsOnScreen -= 1;
+      syncCloudTurnWatch();
+    };
+  }, [onScreen]);
+}
+
+/** Connects asked for by the resting watch, by connection target: one at a time per computer. */
+const backgroundWakeConnects = new Set<string>();
+
+/** First wait after a failed connect to a computer woken elsewhere; it doubles up to the cap. */
+const WOKEN_CONNECT_RETRY_MIN_MS = 8_000;
+const WOKEN_CONNECT_RETRY_MAX_MS = 5 * 60_000;
+
+/**
+ * Failed connects to a computer the account says runs, by connection target.
+ * Its brain may not answer yet (or at all): the next try waits longer each
+ * time, instead of a dial at every 4 s read.
+ */
+const wokenConnectRetries = new Map<string, { failures: number; nextAtMs: number }>();
+
+/** The connection's `connectedAt`, as the mark of one connection. */
+function connectedAtOf(machineId: string): string {
+  const connection = runtime.connections.find((candidate) => candidate.target.id === machineId);
+  return String(connection?.connectedAt ?? "");
+}
+
+/**
+ * Whether the account named this ADE Cloud computer asleep while its current
+ * connection still reads connected. A new connection (it was woken) ends it.
+ */
+function asleepOnItsConnection(machineId: string): boolean {
+  const mark = restingCloud.machineIds.get(machineId);
+  return mark != null && mark === connectedAtOf(machineId);
+}
+
+/** The account key of the ADE Cloud computer behind a connection, or null. */
+function cloudKeyOfConnection(connection: RemoteRuntimeConnectionStatus): string | null {
+  return cloudConnectionMachineKey(connection.target.id)
+    ?? connection.target.pairedMachine?.machineKey
+    ?? readWebAccountMachineKeys().get(connection.target.id)
+    ?? null;
+}
+
+/**
+ * ADE Cloud connections that dropped inside their floor and are not known to
+ * rest. Only a drop this page recorded counts: a computer it never read has no
+ * rows to dim, and asking about it would repeat for as long as it stays down.
+ * A connection that ADE Web still shows connected while it dials again
+ * (`reconnectingSinceMs`) dropped too: the account is asked at once, not after
+ * that half-minute hold, so its chat says "asleep" within seconds.
+ */
+function droppedCloudConnections(nowMs: number): RemoteRuntimeConnectionStatus[] {
+  return runtime.connections.filter((connection) => {
+    const machineId = connection.target.id;
+    const held = connection.state === "connected" && typeof connection.reconnectingSinceMs === "number";
+    if ((connection.state === "connected" && !held) || restingCloud.machineIds.has(machineId)) return false;
+    if (!isCloudConnectionTarget(machineId)) return false;
+    const drop = runtime.dropsByMachineId.get(machineId);
+    return drop != null && nowMs - drop.droppedAtMs < UNREACHABLE_FLOOR_MS;
+  });
+}
+
+/**
+ * Connected ADE Cloud connections the account named asleep. A relay can keep
+ * such a connection up through the sleep and the wake, so the account is asked
+ * again until it says the computer woke.
+ */
+function asleepConnectedCloudConnections(): RemoteRuntimeConnectionStatus[] {
+  return runtime.connections.filter((connection) =>
+    connection.state === "connected" && asleepOnItsConnection(connection.target.id));
+}
+
+/** Whether a cloud read that began in `lifecycle` may still apply or try again. */
+function cloudReadsWanted(lifecycle: number): boolean {
+  return lifecycle === runtime.lifecycle && runtime.refCount > 0 && isDocumentVisible();
+}
+
+/**
+ * Asks the account whether a dropped ADE Cloud computer went to sleep: one read
+ * of the account's computers, again every few seconds while the floor runs (the
+ * provider can name the box asleep a little after its brain stopped). The same
+ * read tells when a computer named asleep on a live connection woke again.
+ */
+function probeRestingCloudComputers(): void {
+  if (restingCloud.probing || restingCloud.probeTimer) return;
+  const lifecycle = runtime.lifecycle;
+  const listMachines = window.ade?.cloud?.listMachines;
+  if (!cloudReadsWanted(lifecycle) || !isAdeAvailable(listMachines)) return;
+  if (droppedCloudConnections(Date.now()).length === 0 && asleepConnectedCloudConnections().length === 0) return;
+  restingCloud.probing = true;
+  void listMachines().then(
+    (result) => {
+      if (result?.state !== "ok" || lifecycle !== runtime.lifecycle) return;
+      let changed = false;
+      for (const connection of droppedCloudConnections(Date.now())) {
+        const box = cloudBoxForMachine(result.machines, {
+          machineKey: cloudKeyOfConnection(connection),
+          hostname: connection.target.hostname,
+        });
+        if (!box || !cloudMachineResting(box.state)) continue;
+        restingCloud.machineIds.set(connection.target.id, null);
+        changed = true;
+      }
+      for (const connection of asleepConnectedCloudConnections()) {
+        const box = cloudBoxForMachine(result.machines, {
+          machineKey: cloudKeyOfConnection(connection),
+          hostname: connection.target.hostname,
+        });
+        if (!box || cloudMachineResting(box.state)) continue;
+        restingCloud.machineIds.delete(connection.target.id);
+        changed = true;
+      }
+      if (changed) {
+        applyReachability();
+        scheduleRefresh("status");
+        // A computer that now rests is watched for a wake from another device.
+        syncCloudTurnWatch();
+      }
+    },
+    () => undefined,
+  ).finally(() => {
+    restingCloud.probing = false;
+    // The last reader left or the window hid: the next attach or show asks again.
+    if (!cloudReadsWanted(lifecycle)) return;
+    if (droppedCloudConnections(Date.now()).length === 0 && asleepConnectedCloudConnections().length === 0) return;
+    restingCloud.probeTimer = setTimeout(() => {
+      restingCloud.probeTimer = null;
+      probeRestingCloudComputers();
+    }, RESTING_CLOUD_PROBE_GAP_MS);
+  });
+}
+
+/**
+ * Connected ADE Cloud computers with a turn running there. A relay can hold
+ * the connection open for half a minute after the computer went to sleep, and
+ * all that time the turn would read as running.
+ */
+function cloudConnectionsWithLiveTurns(): RemoteRuntimeConnectionStatus[] {
+  const slices = rootAppStoreApi.getState().crossMachineLanesByMachineId;
+  return runtime.connections.filter((connection) => {
+    const machineId = connection.target.id;
+    if (connection.state !== "connected" || restingCloud.machineIds.has(machineId)) return false;
+    if (!isCloudConnectionTarget(machineId)) return false;
+    return slices[machineId]?.sessions.some((session) => sessionTurnLive(session)) === true;
+  });
+}
+
+/**
+ * Dropped ADE Cloud computers known to rest. Another device (or the phone)
+ * can wake one at any time, and this window learns of it only from the
+ * account: the saved connection redials a resting computer every few minutes.
+ */
+function restingDroppedCloudConnections(): RemoteRuntimeConnectionStatus[] {
+  return runtime.connections.filter((connection) =>
+    connection.state !== "connected"
+    && restingCloud.machineIds.get(connection.target.id) === null
+    && isCloudConnectionTarget(connection.target.id));
+}
+
+/**
+ * While a cloud row or chat shows, asks the account every few seconds about
+ * the ADE Cloud computers that matter: one with a turn running (did it go to
+ * sleep, so the turn stops reading as running within seconds), and one that
+ * rests (did another device wake it, so this window connects within seconds).
+ * Only while the window is visible; one read of the account's computers each time.
+ */
+function syncCloudTurnWatch(): void {
+  const watching = runtime.refCount > 0
+    && cloudViewsOnScreen > 0
+    && isDocumentVisible()
+    && (cloudConnectionsWithLiveTurns().length > 0 || restingDroppedCloudConnections().length > 0);
+  if (!watching) {
+    if (restingCloud.turnWatchTimer) {
+      clearTimeout(restingCloud.turnWatchTimer);
+      restingCloud.turnWatchTimer = null;
+    }
+    restingCloud.restWatch = null;
+    return;
+  }
+  if (restingCloud.turnWatchTimer || restingCloud.turnWatchReading) return;
+  restingCloud.turnWatchTimer = setTimeout(readCloudTurnComputers, nextCloudWatchGapMs(Date.now()));
+}
+
+function readCloudTurnComputers(): void {
+  restingCloud.turnWatchTimer = null;
+  const listMachines = window.ade?.cloud?.listMachines;
+  const watched = cloudConnectionsWithLiveTurns();
+  const resting = restingDroppedCloudConnections();
+  if (!isAdeAvailable(listMachines) || (watched.length === 0 && resting.length === 0) || !isDocumentVisible() || cloudViewsOnScreen === 0) return;
+  restingCloud.turnWatchReading = true;
+  const lifecycle = runtime.lifecycle;
+  // A read that began before a connection did may describe the computer
+  // before it woke: each connection keeps the mark it had when the read began.
+  const marks = new Map(watched.map((connection) => [connection.target.id, connectedAtOf(connection.target.id)]));
+  void listMachines().then(
+    (result) => {
+      if (result?.state !== "ok" || lifecycle !== runtime.lifecycle) return;
+      let changed = false;
+      for (const connection of cloudConnectionsWithLiveTurns()) {
+        const mark = marks.get(connection.target.id);
+        if (mark == null || mark !== connectedAtOf(connection.target.id)) continue;
+        const box = cloudBoxForMachine(result.machines, {
+          machineKey: cloudKeyOfConnection(connection),
+          hostname: connection.target.hostname,
+        });
+        if (!box || !cloudMachineResting(box.state)) continue;
+        restingCloud.machineIds.set(connection.target.id, mark);
+        changed = true;
+      }
+      if (changed) applyReachability();
+      // Woken elsewhere: connect now, in the background (a background connect
+      // never wakes a computer). The rows and the chat read the computer as
+      // asleep until that connection lands; it ends the rest (`applySnapshot`).
+      // The page may have hidden, or its cloud views left, while the read ran.
+      if (!isDocumentVisible() || cloudViewsOnScreen === 0) return;
+      for (const connection of restingDroppedCloudConnections()) {
+        const machineKey = cloudKeyOfConnection(connection);
+        const box = cloudBoxForMachine(result.machines, { machineKey, hostname: connection.target.hostname });
+        if (!machineKey || !box || box.state !== "running") continue;
+        connectWokenCloudComputer(connection.target.id, machineKey);
+      }
+    },
+    () => undefined,
+  ).finally(() => {
+    restingCloud.turnWatchReading = false;
+    syncCloudTurnWatch();
+    // A computer just named asleep is asked about again until it wakes.
+    probeRestingCloudComputers();
+  });
+}
+
+function connectWokenCloudComputer(targetId: string, machineKey: string): void {
+  const connect = window.ade?.machines?.connect;
+  if (!isAdeAvailable(connect) || backgroundWakeConnects.has(targetId)) return;
+  const retry = wokenConnectRetries.get(targetId);
+  if (retry && Date.now() < retry.nextAtMs) return;
+  backgroundWakeConnects.add(targetId);
+  const failed = () => {
+    const failures = (wokenConnectRetries.get(targetId)?.failures ?? 0) + 1;
+    const waitMs = Math.min(WOKEN_CONNECT_RETRY_MIN_MS * 2 ** (failures - 1), WOKEN_CONNECT_RETRY_MAX_MS);
+    wokenConnectRetries.set(targetId, { failures, nextAtMs: Date.now() + waitMs });
+  };
+  void connect(machineKey, { background: true })
+    .then((result) => {
+      if (result?.ok) wokenConnectRetries.delete(targetId);
+      else failed();
+    })
+    .catch((error: unknown) => {
+      failed();
+      console.warn("[cloud] connecting a computer woken elsewhere failed", error);
+    })
+    .finally(() => backgroundWakeConnects.delete(targetId));
+}
+
 /** Forgets every per-machine record. Used by teardown and by scope changes. */
 function resetMachineTracking(): void {
   if (runtime.graceTimer) {
     clearTimeout(runtime.graceTimer);
     runtime.graceTimer = null;
   }
+  if (restingCloud.probeTimer) {
+    clearTimeout(restingCloud.probeTimer);
+    restingCloud.probeTimer = null;
+  }
+  if (restingCloud.turnWatchTimer) {
+    clearTimeout(restingCloud.turnWatchTimer);
+    restingCloud.turnWatchTimer = null;
+  }
+  restingCloud.restWatch = null;
+  restingCloud.machineIds.clear();
+  wokenConnectRetries.clear();
   runtime.dropsByMachineId.clear();
   runtime.laneReadAtMsByMachineId.clear();
   runtime.laneStatusReadAtMsByMachineId.clear();
@@ -2152,12 +2854,22 @@ let connectionSnapshotSeen = false;
 function applySnapshot(snapshot: RemoteRuntimeConnectionSnapshot): void {
   runtime.connections = Array.isArray(snapshot?.connections) ? snapshot.connections : [];
   connectionSnapshotSeen = true;
+  // A computer named asleep on a live connection that then dropped rests as a
+  // dropped one: its next connection is a wake, whatever its `connectedAt`.
+  for (const connection of runtime.connections) {
+    if (connection.state === "connected") continue;
+    if (restingCloud.machineIds.get(connection.target.id) != null) restingCloud.machineIds.set(connection.target.id, null);
+  }
   // A machine that drops may come back on another build (an upgrade restarts
   // its brain), so its page is asked for in full again on the next read.
   for (const connection of runtime.connections) {
     if (connection.state !== "connected") runtime.legacySessionPageMachineIds.delete(connection.target.id);
   }
   applyReachability();
+  // A dropped ADE Cloud computer may have gone to sleep: then nothing runs
+  // there, and its rows should not wait out the floor.
+  probeRestingCloudComputers();
+  syncCloudTurnWatch();
   // A machine going to sleep is when its saved chats start to matter.
   scheduleCloudSavedChatsRefresh(savedChatsContext);
   // A machine that just appeared has no rows at all, so its first read has to be
@@ -2179,25 +2891,30 @@ function attach(): void {
   runtime.disposers.push(subscribeAdeCloudAccess(() => {
     if (connectionSnapshotSeen) scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
   }));
-  // These events cover the active binding. Other machines are covered by the
-  // shared bounded refresh below because preload exposes no per-target push
-  // subscription.
-  //
-  // Both are change feeds, so both request `identity` depth. On the web
-  // transport a lifecycle event is synthesized from a coarse table invalidation,
-  // and reading status here would write the rows that produce the next
-  // invalidation — the loop this depth split exists to cut. The scheduler also
-  // keeps these events from restarting the foreign poll on every shell tick.
-  const unsubscribeSessions = window.ade?.sessions?.onChanged?.(() => scheduleRefresh());
-  if (unsubscribeSessions) runtime.disposers.push(unsubscribeSessions);
-  const unsubscribeLanes = window.ade?.lanes?.onLifecycleEvent?.(() => scheduleRefresh());
-  if (unsubscribeLanes) runtime.disposers.push(unsubscribeLanes);
+  // A lane computer with no saved chat gets its row from the lane index. The
+  // index can arrive after the first read, so its change reads again (forced:
+  // that first read is usually inside the 30 s wait). It changes rarely.
+  runtime.disposers.push(subscribeAdeCloudLaneComputers(() => {
+    if (connectionSnapshotSeen) scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
+  }));
+  retargetTabFeed();
   // The refresh loop stops itself while the window is hidden, so coming back is
   // the only thing that can restart it. Returning to the surface is also when a
   // stale status badge is about to be looked at, so this read pays for status.
+  // A turn that starts or ends on an ADE Cloud computer starts or stops the
+  // watch for its sleep. Only the slices' identity is compared on each change.
+  let lastSlices = rootAppStoreApi.getState().crossMachineLanesByMachineId;
+  runtime.disposers.push(rootAppStoreApi.subscribe((state) => {
+    if (state.crossMachineLanesByMachineId === lastSlices) return;
+    lastSlices = state.crossMachineLanesByMachineId;
+    syncCloudTurnWatch();
+  }));
   if (typeof document !== "undefined") {
     const onVisibilityChange = () => {
-      if (isDocumentVisible()) scheduleRefresh("status");
+      syncCloudTurnWatch();
+      if (!isDocumentVisible()) return;
+      probeRestingCloudComputers();
+      scheduleRefresh("status");
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     runtime.disposers.push(() => {
@@ -2232,8 +2949,46 @@ function attach(): void {
   // lane/session rows remain stale indefinitely.
 }
 
+/**
+ * Follows the change feeds of the tab's copy (`scope.tabBinding`). Other
+ * machines are covered by the shared bounded refresh, because each of them
+ * would cost a relay pump of its own.
+ *
+ * Both are change feeds, so both request `identity` depth. On the web
+ * transport a lifecycle event is synthesized from a coarse table invalidation,
+ * and reading status here would write the rows that produce the next
+ * invalidation — the loop this depth split exists to cut. The scheduler also
+ * keeps these events from restarting the foreign poll on every shell tick.
+ */
+function retargetTabFeed(): void {
+  const pin = runtime.refCount > 0 ? runtime.scope.tabBinding ?? null : null;
+  if (runtime.tabFeed && runtime.tabFeed.key === pin?.key) return;
+  runtime.tabFeed?.dispose();
+  runtime.tabFeed = null;
+  if (!pin) return;
+  const disposers: Array<() => void> = [];
+  const unsubscribeSessions = window.ade?.sessions?.onChanged?.(() => scheduleRefresh(), pin);
+  if (unsubscribeSessions) disposers.push(unsubscribeSessions);
+  const unsubscribeLanes = window.ade?.lanes?.onLifecycleEvent?.(() => scheduleRefresh(), pin);
+  if (unsubscribeLanes) disposers.push(unsubscribeLanes);
+  runtime.tabFeed = {
+    key: pin.key,
+    dispose: () => {
+      for (const dispose of disposers) {
+        try {
+          dispose();
+        } catch {
+          // A subscription that already tore itself down is not an error here.
+        }
+      }
+    },
+  };
+}
+
 function detach(): void {
   connectionSnapshotSeen = false;
+  runtime.tabFeed?.dispose();
+  runtime.tabFeed = null;
   runtime.generation += 1;
   runtime.lifecycle += 1;
   machineCallsInFlight = new Map();
@@ -2274,6 +3029,12 @@ function detach(): void {
  * No-op when nothing is subscribed: a refresh outside a live scope would read
  * against an empty scope and publish rows nobody asked for.
  */
+/** Reads the account's saved chats again now, past the 30 s wait: a delete just changed them. */
+export function requestCloudSavedChatsRead(): void {
+  if (runtime.refCount === 0 || !connectionSnapshotSeen) return;
+  scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
+}
+
 export function requestCrossMachineLanesForMachine(machineId: string): void {
   const trimmed = machineId.trim();
   if (!trimmed || runtime.refCount === 0) return;
@@ -2365,12 +3126,13 @@ export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => v
     runtime.scope = scope;
     rootAppStoreApi.getState().applyCrossMachineLaneScope(
       scope.scopeKey,
-      resolveRefillIntendedMachineIds(resolveEligibleMachines(), preserveExistingIntent),
+      resolveRefillIntendedMachineIds(resolveReadTargets(), preserveExistingIntent),
     );
   }
   runtime.scope = scope;
   runtime.refCount += 1;
   if (runtime.refCount === 1) attach();
+  else if (scopeChanged) retargetTabFeed();
   if (scopeChanged || runtime.refCount === 1) {
     scheduleRefresh("status");
     // Before a first connection snapshot every saved computer would look deleted.
@@ -2389,10 +3151,12 @@ export function resetCrossMachineLaneSyncForTest(): void {
   runtime.connections = [];
   pendingForeignOptimisticSessionsByBinding.clear();
   retainedSlots.clear();
+  projectListReadAtMs.clear();
   runtime.scope = {
     scopeKey: null,
     repoDisplayName: null,
     repoOriginUrl: null,
+    repoAccountProjectId: null,
     boundTargetId: null,
     boundProjectId: null,
     thisMachineBinding: null,
@@ -2411,13 +3175,20 @@ export function resetCrossMachineLaneSyncForTest(): void {
  */
 export function useCrossMachineLaneSync(active = true): void {
   const projectBinding = useAppStore((state) => state.projectBinding);
+  const tabBinding = useStableBinding(projectBinding);
+  // Read by the identity effect below, which restarts only on the binding's ids.
+  const tabBindingRef = useRef(tabBinding);
+  tabBindingRef.current = tabBinding;
   const scopeKey = useAppStore((state) => selectActiveProjectStateKey(state));
   const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
   const projectDisplayName = useAppStore((state) => state.project?.displayName ?? null);
   const [localRepoIdentity, setLocalRepoIdentity] = useState<{
     scopeKey: string | null;
     originUrl: string | null;
+    /** The bound remote checkout's account project id. Local recents do not carry one yet. */
+    accountProjectId?: string | null;
     thisMachineBinding: Extract<OpenProjectBinding, { kind: "local" }> | null;
+    thisMachineOtherBindings?: readonly Extract<OpenProjectBinding, { kind: "local" }>[];
   } | null>(null);
 
   const repoDisplayName = projectBinding?.displayName ?? projectDisplayName;
@@ -2429,6 +3200,12 @@ export function useCrossMachineLaneSync(active = true): void {
   const thisMachineBinding = localRepoIdentity?.scopeKey === scopeKey
     ? localRepoIdentity.thisMachineBinding
     : null;
+  const repoAccountProjectId = localRepoIdentity?.scopeKey === scopeKey
+    ? localRepoIdentity.accountProjectId ?? null
+    : null;
+  const thisMachineOtherBindings = localRepoIdentity?.scopeKey === scopeKey
+    ? localRepoIdentity.thisMachineOtherBindings
+    : undefined;
 
   useEffect(() => {
     if (!projectRoot) return;
@@ -2451,15 +3228,34 @@ export function useCrossMachineLaneSync(active = true): void {
     // write would tear down and restart the whole union on every connection tick.
     const commitIdentity = (identity: {
       originUrl: string | null;
+      accountProjectId?: string | null;
       thisMachineBinding: Extract<OpenProjectBinding, { kind: "local" }> | null;
+      thisMachineOtherBindings?: readonly Extract<OpenProjectBinding, { kind: "local" }>[];
     }) => {
       setLocalRepoIdentity((current) =>
         current
         && current.scopeKey === scopeKey
         && current.originUrl === identity.originUrl
+        && (current.accountProjectId ?? null) === (identity.accountProjectId ?? null)
         && current.thisMachineBinding?.key === identity.thisMachineBinding?.key
+        && bindingKeysOf(current.thisMachineOtherBindings) === bindingKeysOf(identity.thisMachineOtherBindings)
           ? current
           : { scopeKey, ...identity });
+    };
+    // Every local checkout of the repository: the first is the one a remote
+    // tab reads as this computer, the rest get slices of their own.
+    const localCheckouts = (
+      projects: readonly RecentProjectSummary[],
+      originUrl: string | null | undefined,
+      exceptRootPath: string | null,
+    ) => {
+      const checkouts = resolveThisMachineCheckoutsForOrigin(projects, originUrl, exceptRootPath);
+      if (exceptRootPath) return { thisMachineBinding: null, thisMachineOtherBindings: checkouts };
+      const first = resolveThisMachineBindingForOrigin(projects, originUrl);
+      return {
+        thisMachineBinding: first,
+        thisMachineOtherBindings: checkouts.filter((checkout) => checkout.key !== first?.key),
+      };
     };
     const applySnapshotIdentity = (
       snapshot: RemoteRuntimeConnectionSnapshot | null,
@@ -2467,7 +3263,10 @@ export function useCrossMachineLaneSync(active = true): void {
     ) => {
       if (!boundTargetId || !boundProjectId) {
         const project = projects.find((candidate) => candidate.rootPath === projectRoot);
-        commitIdentity({ originUrl: project?.gitOriginUrl ?? null, thisMachineBinding: null });
+        commitIdentity({
+          originUrl: project?.gitOriginUrl ?? null,
+          ...localCheckouts(projects, project?.gitOriginUrl, projectRoot),
+        });
         return;
       }
       if (snapshot == null || snapshot.updatedAt < latestAppliedSnapshotUpdatedAt) return;
@@ -2499,13 +3298,29 @@ export function useCrossMachineLaneSync(active = true): void {
       // dropping This Mac's chats on every reconnect blip. A connected target
       // that no longer lists the project has genuinely dropped it, and the same
       // module treats that as removable in `applyReachability`; clear then.
-      if (!boundProject && connection?.state !== "connected") return;
+      if (!boundProject && connection?.state !== "connected") {
+        // The bound machine is offline or still dialing, so it names no
+        // origin. The tab still knows its repository (the origin on the
+        // binding, or the one the recents and account copies remembered):
+        // seed the identity from it, so this computer's copy and other
+        // machines' copies stay listed while the tab's own copy is offline.
+        const knownOrigin = originUrlForBinding(tabBindingRef.current);
+        if (!knownOrigin) return;
+        setLocalRepoIdentity((current) =>
+          current && current.scopeKey === scopeKey && current.originUrl
+            ? current
+            : {
+              scopeKey,
+              originUrl: knownOrigin,
+              accountProjectId: null,
+              ...localCheckouts(projects, knownOrigin, null),
+            });
+        return;
+      }
       commitIdentity({
         originUrl: boundProject?.gitOriginUrl ?? null,
-        thisMachineBinding: resolveThisMachineBindingForOrigin(
-          projects,
-          boundProject?.gitOriginUrl,
-        ),
+        accountProjectId: boundProject?.accountProjectId ?? null,
+        ...localCheckouts(projects, boundProject?.gitOriginUrl, null),
       });
     };
     // Recents are stable for the life of this effect — opening a local project
@@ -2565,12 +3380,15 @@ export function useCrossMachineLaneSync(active = true): void {
         scopeKey,
         repoDisplayName,
         repoOriginUrl,
+        repoAccountProjectId,
         boundTargetId,
         boundProjectId,
         thisMachineBinding,
+        thisMachineOtherBindings,
+        tabBinding,
       });
     },
-    [active, boundProjectId, boundTargetId, repoDisplayName, repoOriginUrl, scopeKey, thisMachineBinding],
+    [active, boundProjectId, boundTargetId, repoAccountProjectId, repoDisplayName, repoOriginUrl, scopeKey, tabBinding, thisMachineBinding, thisMachineOtherBindings],
   );
 }
 
@@ -2614,6 +3432,8 @@ export function useCrossMachineLaneUnion(
   const localLanes = useAppStore((state) => state.lanes);
   const projectBinding = useAppStore((state) => state.projectBinding);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  // Marker names follow the lane index: a freed lane computer stops being named at once.
+  const { computers: cloudLaneComputers } = useAdeCloudLaneComputers();
   useCrossMachineLaneSync(active);
 
   const rows = useMemo(
@@ -2622,8 +3442,9 @@ export function useCrossMachineLaneUnion(
       machines,
       activeBinding: projectBinding,
       localSessionIds,
+      cloudLaneComputers,
     }),
-    [localLanes, localSessionIds, machines, projectBinding],
+    [cloudLaneComputers, localLanes, localSessionIds, machines, projectBinding],
   );
   return useMemo(() => {
     // Two different questions, and conflating them is what hid every badge when
@@ -2653,7 +3474,7 @@ export function useCrossMachineLaneUnion(
     }
     return {
       foreignRows,
-      markersByLaneId: resolveCrossMachineLaneMarkers(rows),
+      markersByLaneId: resolveCrossMachineLaneMarkers(rows, cloudLaneComputers),
     };
-  }, [rows, workLaneOrder, workLaneSortMode]);
+  }, [cloudLaneComputers, rows, workLaneOrder, workLaneSortMode]);
 }

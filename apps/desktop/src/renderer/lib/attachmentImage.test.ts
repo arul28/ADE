@@ -85,17 +85,16 @@ describe("readAttachmentImageDataUrl", () => {
 
   // Successful reads are cached per owner and path for the life of the
   // renderer, so each case reads paths no other case has read.
-  it("treats no pin as the window's machine: local falls back, remote does not", async () => {
-    runtimeRead.mockRejectedValue(new Error("Image path must be inside the project."));
+  it("with no pin, reads only a file this computer owns, and never asks a runtime", async () => {
     useAppStore.setState({ projectBinding: localPin });
     await expect(readAttachmentImageDataUrl("/no-pin-local.png", null))
       .resolves.toEqual({ dataUrl: "data:image/png;base64,LOCAL" });
-    expect(runtimeRead).toHaveBeenCalledWith("/no-pin-local.png", undefined);
 
     localRead.mockClear();
     useAppStore.setState({ projectBinding: remotePin });
-    await expect(readAttachmentImageDataUrl("/no-pin-remote.png", null)).rejects.toThrow("must be inside the project");
+    await expect(readAttachmentImageDataUrl("/no-pin-remote.png", null)).rejects.toThrow(/No image reader/);
     expect(localRead).not.toHaveBeenCalled();
+    expect(runtimeRead).not.toHaveBeenCalled();
   });
 
   it("uses this computer's reader when no runtime reader exists, but only for a path it owns", async () => {

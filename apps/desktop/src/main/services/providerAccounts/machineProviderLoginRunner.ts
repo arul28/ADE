@@ -1,5 +1,6 @@
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { recheckSignedOutLogins } from "../usage/usageTrackingService";
+import { noteProviderLoginChanged } from "../ai/providerLoginChanged";
 import { createProviderLoginRunner, type ProviderLoginRunner } from "./providerLoginRunner";
 
 let runner: ProviderLoginRunner | null = null;
@@ -20,7 +21,11 @@ export function getMachineProviderLoginRunner(): ProviderLoginRunner {
       // the config home's identity, which is what `signedIn` is built from.
       await recheckSignedOutLogins({ provider: instance.provider, instanceId: instance.id }).catch(() => []);
       await store.refreshAccounts(instance.provider);
-      return store.get(instance.id);
+      const verified = store.get(instance.id);
+      // A new login may be another account: every cached answer about this
+      // provider's sign-in is stale now.
+      if (verified?.signedIn) noteProviderLoginChanged(instance.provider);
+      return verified;
     },
   });
   // A sign-in still open when the process ends would leave its CLI running.

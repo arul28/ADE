@@ -501,6 +501,44 @@ describe("fileService", () => {
     }
   });
 
+  // A lane-sharing guest's read (`refuseIgnored`): never a file git ignores,
+  // nothing under `.ade/`, and no link that resolves to either.
+  it.each<[string, string, boolean]>([
+    ["a tracked file", "src/index.ts", true],
+    ["a gitignored secret", ".env", false],
+    ["a file in a gitignored folder", "secrets/key.pem", false],
+    ["a file under .ade", ".ade/notes/project.md", false],
+    // Windows makes links only with Developer Mode or admin rights.
+    ...(process.platform === "win32" ? [] : [["a link to a gitignored secret", "src/env-link", false] as [string, string, boolean]]),
+  ])("refuses a guest read of %s unless git tracks it", async (_label, relPath, readable) => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-guest-"));
+    execFileSync("git", ["init"], { cwd: rootPath, stdio: "ignore" });
+    const service = createFileService({ laneService: createLaneServiceStub(rootPath) });
+    try {
+      fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+      fs.mkdirSync(path.join(rootPath, "secrets"), { recursive: true });
+      fs.mkdirSync(path.join(rootPath, ".ade", "notes"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, ".gitignore"), ".env\nsecrets/\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, ".env"), "TOKEN=1\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "secrets", "key.pem"), "KEY\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, ".ade", "notes", "project.md"), "notes\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "src", "index.ts"), "export {};\n", "utf8");
+      if (relPath === "src/env-link") fs.symlinkSync(path.join(rootPath, ".env"), path.join(rootPath, "src", "env-link"));
+      // Each read starts only when the one before it is awaited: a rejection never waits unhandled.
+      const read = () => service.readFile({ workspaceId: "workspace-1", path: relPath, refuseIgnored: true });
+      const range = () => service.readFileRange({ workspaceId: "workspace-1", path: relPath, offset: 0, refuseIgnored: true });
+      if (readable) {
+        await expect(read()).resolves.toMatchObject({ content: "export {};\n" });
+        await expect(range()).resolves.toBeTruthy();
+      } else {
+        await expect(read()).rejects.toThrow("not shared");
+        await expect(range()).rejects.toThrow("not shared");
+      }
+    } finally {
+      removeTestTree(rootPath);
+    }
+  });
+
   it("keeps useful dotfiles searchable while skipping volatile ADE runtime paths", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-volatile-"));
     const { execSync } = await import("node:child_process");

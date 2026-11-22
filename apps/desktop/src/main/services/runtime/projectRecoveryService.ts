@@ -150,6 +150,11 @@ export type ProjectRecoveryServiceDeps = {
    * registry has lost its record that the database existed.
    */
   openProjectDataProblem?: (projectRoot: string) => ProjectDataProblem | null;
+  /**
+   * Whether the project's folder is still a Git repository (a `.git` in it or
+   * above it). Not set: the diagnosis does not ask.
+   */
+  isGitRepository?: (projectRoot: string) => boolean;
   /** Closes this window's open copy of the project, so a fresh start reopens it clean. */
   closeProject?: (projectRoot: string) => Promise<void>;
 };
@@ -640,8 +645,9 @@ export class ProjectRecoveryService {
     const openDataStatus = this.deps.openProjectDataProblem?.(normalizedRoot) ?? null;
     // No automatic diagnostics report here: a folder the person moved or
     // deleted is their action, not a fault in ADE.
-    if (openDataStatus === "missing" || isLocalProjectDataMissing(normalizedRoot)) {
-      const projectFolderMissing = !fs.existsSync(normalizedRoot);
+    const projectFolderGone = !fs.existsSync(normalizedRoot);
+    if (openDataStatus === "missing" || projectFolderGone || isLocalProjectDataMissing(normalizedRoot)) {
+      const projectFolderMissing = projectFolderGone;
       const trashed = projectFolderMissing
         ? null
         : findTrashedProjectData(normalizedRoot, readLocalProjectDatabaseIdentity(normalizedRoot));
@@ -669,6 +675,16 @@ export class ProjectRecoveryService {
         code: "db_path_changed",
         ...diagnosisCopy("data_replaced"),
         technicalDetail: `projectData=${path.join(normalizedRoot, ".ade", "ade.db")} replaced while open`,
+      };
+    }
+    // ADE's data is there but the repository is not: its `.git` folder was
+    // moved or deleted. Nothing here can repair that.
+    if (this.deps.isGitRepository && !this.deps.isGitRepository(normalizedRoot)) {
+      return {
+        state: "not_git_repository",
+        code: "project_not_git_repository",
+        ...diagnosisCopy("not_git_repository"),
+        technicalDetail: `gitDir=${path.join(normalizedRoot, ".git")} missing`,
       };
     }
     const dbPath = path.join(normalizedRoot, ".ade", "ade.db");

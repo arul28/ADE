@@ -19,7 +19,7 @@ import {
   codexSubagentConfigTomlLines,
   type HarnessSubagentLaunch,
 } from "../../../shared/harnessSubagentLaunch";
-import type { ApiCredentialSummary } from "../../../shared/types/apiCredentials";
+import { DEFAULT_API_CREDENTIAL_ID, type ApiCredentialSummary } from "../../../shared/types/apiCredentials";
 import {
   adeUpstreamId,
   removeCliProxyApiUpstreams,
@@ -125,6 +125,30 @@ export function pruneStaleRouteConfigHomes(
       continue;
     }
     removePrivateTree(target, options);
+  }
+}
+
+/**
+ * Mark a route home as in use now. The prune above runs before every route
+ * launch, so a resume (or an Import) of a session in a home idle for 30 days
+ * would otherwise delete the very session it is about to open.
+ */
+export function touchRouteConfigHome(
+  adeHome: string,
+  routeHomeId: string,
+  logger?: HarnessCleanupLogger | null,
+): void {
+  if (!isSafeIdentifier(routeHomeId)) return;
+  const now = new Date();
+  try {
+    fs.utimesSync(routeConfigHome(adeHome, routeHomeId), now, now);
+  } catch (error) {
+    // A home that is gone has nothing left to keep.
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
+    logger?.warn("harness_preset.route_home_touch_failed", {
+      routeHomeId,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -300,6 +324,9 @@ export function removeCredentialLaunchHome(
   removePrivateTree(legacyCredentialConfigHome(adeHome, normalizedProvider, normalizedCredentialId), cleanup);
   removePrivateTree(legacyFlatCredentialConfigHome(adeHome, normalizedProvider, normalizedCredentialId), cleanup);
   forgetRouteSecretsForSource(`${normalizedProvider}:${normalizedCredentialId}`, adeHome, cleanup);
+  // An OpenCode source falls back to the provider's default key (`harnessRouteLaunch.ts`)
+  // and keeps that copy under the provider alone. The next launch reads its login again.
+  if (normalizedCredentialId === DEFAULT_API_CREDENTIAL_ID) forgetRouteSecretsForSource(normalizedProvider, adeHome, cleanup);
 
   const presets = (readPresets ?? readHarnessPresetsFromMachine)(adeHome);
   if (!presets) return;

@@ -136,65 +136,27 @@ extension EnvironmentValues {
   @Entry var hubHeaderMenuAdd: (() -> Void)? = nil
 }
 
-/// The width of the empty band the status bar leaves on the leading side of
-/// a tall top inset, or nil where there is none. The Duo's outer display,
-/// upright, draws its clock and status in a block at the top trailing corner
-/// (reported as an occlusion) under a top inset deep enough for a header row,
-/// and leaves the rest of that band empty. Every other iPhone's top occlusion
-/// is the Dynamic Island, centred, with no row's height beside it.
-///
-/// A call, a timer, a recording or navigation adds a pill to the block's
-/// leading side, so the band can be much narrower than usual. The header has
-/// tiers down to `hubStatusBandMinimumWidth` (`HubHeaderRow`); only a band
-/// narrower than that puts the header on a row of its own.
-func hubStatusBandLeadingWidth(_ proxy: GeometryProxy) -> CGFloat? {
-  guard !proxy.isLandscapeIgnoringKeyboard, proxy.safeAreaInsets.top >= 64 else { return nil }
-  #if compiler(>=6.4)
-  guard #available(iOS 27.1, *) else { return nil }
-  let width = proxy.size.width
-  // Its bottom is not checked: with the ringer silenced the phone stacks a
-  // bell over the clock, and the block can reach below the inset. The header
-  // only needs the band to its leading side.
-  let top = proxy.reservedRegions(kind: .occlusion).filter { region in
-    region.isActive && region.frame.minY < 0
-  }
-  // A block that reaches the trailing corner, not an island in the middle.
-  guard top.contains(where: { $0.frame.maxX > width * 0.75 }) else { return nil }
-  // Every pill of the block, the leading one included, ends the band.
-  guard var leading = top.map(\.frame.minX).filter({ $0 > width * 0.25 }).min() else { return nil }
-  #if DEBUG
-  // `-adeHubStatusBand <points>` stands in for a call or timer pill, which a
-  // simulator cannot show: it narrows the band to that width.
-  if let forced = hubDebugStatusBandWidth { leading = min(leading, forced) }
-  #endif
-  guard leading >= hubStatusBandMinimumWidth else { return nil }
-  return leading
-  #else
-  return nil
-  #endif
-}
-
-#if DEBUG
-private let hubDebugStatusBandWidth: CGFloat? = {
-  let arguments = ProcessInfo.processInfo.arguments
-  guard let index = arguments.firstIndex(of: "-adeHubStatusBand"),
-        arguments.index(after: index) < arguments.endIndex,
-        let value = Double(arguments[arguments.index(after: index)])
-  else { return nil }
-  return CGFloat(value)
-}()
-#endif
-
-/// The narrowest band beside the clock that the header's tightest tier fits
-/// in. That tier is about 153 points wide: three 34-point icons, the machines
-/// glyph with its spinner, and the capsule's padding. The band's header gives
-/// 24 points to its margins (`HubPhoneLayout.header`).
-let hubStatusBandMinimumWidth: CGFloat = 180
-
 @MainActor
 private func hubKeyWindowScene() -> UIWindowScene? {
   let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
   return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+}
+
+extension View {
+  /// Sets `up` while the software keyboard covers the bottom of the screen:
+  /// the view's bottom safe area then runs far past what the window keeps
+  /// there (a home indicator, or the outer display's camera held sideways).
+  /// A hardware keyboard's short bar does not count. Read from the layout, so
+  /// a keyboard that a popover or a pose change hid never leaves it set.
+  func hubReadsSoftwareKeyboard(_ up: Binding<Bool>) -> some View {
+    onGeometryChange(for: Bool.self) { proxy in
+      let windowInset = hubKeyWindowScene()?.windows.first?.safeAreaInsets.bottom ?? 0
+      return proxy.safeAreaInsets.bottom > max(100, windowInset + 60)
+    } action: { value in
+      guard value != up.wrappedValue else { return }
+      withAnimation(.easeOut(duration: 0.2)) { up.wrappedValue = value }
+    }
+  }
 }
 
 private struct HubComposerScreenBottom: ViewModifier {
@@ -374,16 +336,22 @@ func hubConnectionStatus(
   // the machine it is about.
   let liveCount = (health.transport == .connected ? 1 : 0)
     + machineFleet.machines.filter { $0.state == .live }.count
+  // Signed in with no computer of the person's own (the account's list is
+  // loaded): chats run on ADE Cloud, so there is nothing to be offline.
+  let cloudOnly = health.transport == .disconnected
+    && account.identity != nil
+    && account.machinesState == .loaded
+    && !syncService.accountHasOwnComputer(account.machines)
   let label = health.transport == .connected && liveCount > 1
-    ? "\(liveCount) machines"
-    : machineName ?? transportWord
+    ? "\(liveCount) computers"
+    : cloudOnly ? "ADE Cloud" : machineName ?? transportWord
   let switching = syncService.isProjectSwitching
     ? syncService.projects.first(where: { syncService.isSwitchingProject($0) })?.displayName
     : nil
   return HubConnectionStatus(
     tone: tone,
     label: label,
-    spokenState: spokenState,
+    spokenState: cloudOnly ? "no computer of your own" : spokenState,
     switchingProjectName: switching,
     machineCount: liveCount
   )
@@ -544,6 +512,9 @@ struct HubProjectPresentation: Equatable, Identifiable {
   /// and those sum to the chat count, so "6 lanes · 7 chats" printed a total
   /// beside its own breakdown.
   let metaLine: String
+  /// The meta line is an account note ("Not on a computer yet"), so the card
+  /// has no agents to count and says nothing about them.
+  let metaLineIsNote: Bool
   /// "2 need you · 3 working", or nil when the project is quiet — the same
   /// tally the card header renders, written out.
   ///
@@ -590,7 +561,8 @@ struct HubProjectPresentation: Equatable, Identifiable {
     lanes: [HubLanePresentation],
     attentionCount: Int = 0,
     runningCount: Int = 0,
-    olderChatCount: Int = 0
+    olderChatCount: Int = 0,
+    note: String? = nil
   ) {
     self.project = project
     self.olderChatCount = olderChatCount
@@ -602,7 +574,10 @@ struct HubProjectPresentation: Equatable, Identifiable {
     self.lanes = lanes
     self.attentionCount = attentionCount
     self.runningCount = runningCount
-    self.metaLine = "\(laneCount) lane\(laneCount == 1 ? "" : "s")"
+    // An account project no reachable machine shows says where it is
+    // instead of a lane count it cannot know.
+    self.metaLine = note ?? "\(laneCount) lane\(laneCount == 1 ? "" : "s")"
+    self.metaLineIsNote = note != nil
     self.statusLine = hubProjectStatusLine(
       attentionCount: attentionCount,
       runningCount: runningCount
@@ -617,11 +592,34 @@ struct HubProjectPresentation: Equatable, Identifiable {
       lanes: lanes,
       attentionCount: attentionCount,
       runningCount: runningCount
-    ) &* 31 &+ olderChatCount
+    ) &* 31 &+ olderChatCount &+ (note?.hashValue ?? 0)
   }
 
   static func == (lhs: HubProjectPresentation, rhs: HubProjectPresentation) -> Bool {
     lhs.renderSignature == rhs.renderSignature
+  }
+
+  /// The same card under another name and icon: an account project's card
+  /// shows the account's name, not the folder name of the machine that
+  /// happened to come first.
+  func showing(name: String, iconDataUrl: String?) -> HubProjectPresentation {
+    guard name != project.displayName || iconDataUrl != project.iconDataUrl else { return self }
+    var renamed = project
+    renamed.displayName = name
+    renamed.iconDataUrl = iconDataUrl
+    return HubProjectPresentation(
+      project: renamed,
+      isActive: isActive,
+      isSwitching: isSwitching,
+      isLoading: isLoading,
+      laneCount: laneCount,
+      chatCount: chatCount,
+      lanes: lanes,
+      attentionCount: attentionCount,
+      runningCount: runningCount,
+      olderChatCount: olderChatCount,
+      note: metaLineIsNote ? metaLine : nil
+    )
   }
 }
 
@@ -1126,8 +1124,9 @@ enum HubProjectGridMetrics {
 /// the machines it is on (a chip, when the user has more than one machine),
 /// its name (two lines at most), how its agents stand (the coloured per-state
 /// counts), its lane count, and the open chevron. Tapping the tile opens the
-/// project, the only way to its lanes and chats. Long-press for Open, Change
-/// icon…, Move to top, Copy path, and Remove from list.
+/// project, the only way to its lanes and chats. Long-press for Open, the
+/// project's other folders, Change icon…, Move to top, Copy path, Location,
+/// Hide on this iPhone, and Remove….
 struct HubProjectTile: View, Equatable {
   let presentation: HubProjectPresentation
   /// "Arul’s Mac Studio" or "2 machines": spoken, and the long-press menu's
@@ -1136,17 +1135,46 @@ struct HubProjectTile: View, Equatable {
   /// How many machines the project is on; the chip shows the count, which
   /// never truncates in a narrow tile. 0 hides it.
   var machineCount = 0
+  /// How many of those computers the phone can reach now, for an account
+  /// project (the chip reads "1/2", with a dot while one is). Nil: the chip
+  /// shows the count alone.
+  var machineLive: Int? = nil
+  /// The line under the name: the project's GitHub `owner/name`, never a
+  /// folder path. Nil shows none.
+  var subtitle: String? = nil
+  /// Nil while the list is not selecting; else whether this tile is ticked.
+  /// While selecting, a tap ticks (the caller's `onOpenProject`) and the
+  /// long-press menu is off.
+  var selection: Bool? = nil
   /// The project's machines can store a new icon (`projectIcon` feature).
   var canChangeIcon = false
   var canMoveToTop = true
+  /// An account project: "Location" opens where its folders are.
+  var canShowLocation = false
+  /// The card's account project. The menu actions name it, so a card whose
+  /// project changes (a merge) must redraw them.
+  var accountProjectId: String? = nil
+  /// The project's other folders the phone knows (a second folder on a
+  /// computer, or a copy on another one). The long-press menu opens each.
+  var otherFolders: [HubTileFolder] = []
   let onOpenProject: () -> Void
+  /// Opens one of `otherFolders` on its own computer.
+  var onOpenFolder: (HubTileFolder) -> Void = { _ in }
   /// A picked image, already a small PNG, for every machine the project is on.
   let onChangeIcon: (Data) -> Void
   let onMoveToTop: () -> Void
-  let onForget: () -> Void
+  /// "Hide on this iPhone": only this phone stops showing it. Nil hides the
+  /// item.
+  var onHide: (() -> Void)? = nil
+  /// "Remove…": the Remove sheet (a computer, all my computers, my
+  /// account). Nil hides the item.
+  var onRemove: (() -> Void)? = nil
+  var onLocation: () -> Void = {}
 
   @State private var iconPickerShown = false
   @State private var pickedIcon: PhotosPickerItem?
+  /// Read off the main thread on the first open (`ADEPhotoPickerFilter`).
+  @State private var iconPickerFilter: PHPickerFilter?
   @Environment(\.verticalSizeClass) private var verticalSizeClass
 
   private var isShort: Bool { verticalSizeClass == .compact }
@@ -1170,17 +1198,19 @@ struct HubProjectTile: View, Equatable {
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
               .frame(maxWidth: .infinity, alignment: .leading)
-            if machineLabel != nil, machineCount > 0 {
-              HubProjectMachineChip(count: machineCount)
-            }
+            // The computer chip sits on the bottom line here: beside the
+            // name it left a narrow tile (the tent pose) one letter.
+            if let selection { HubSelectionMark(selected: selection) }
           }
+          // Under the row, not beside the name: the chip or the selection
+          // mark would leave the subtitle a few characters.
+          subtitleText
+            .padding(.top, 4)
         } else {
           HStack(alignment: .top, spacing: 6) {
             HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 34)
             Spacer(minLength: 4)
-            if machineLabel != nil, machineCount > 0 {
-              HubProjectMachineChip(count: machineCount)
-            }
+            trailingMark
           }
           // The name right under the icon and the counts pinned to the
           // bottom: a name that wraps to two lines no longer pushes its
@@ -1189,10 +1219,12 @@ struct HubProjectTile: View, Equatable {
           Text(project.displayName)
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(2)
+            .lineLimit(subtitle == nil ? 2 : 1)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 8)
+          subtitleText
+            .padding(.top, 1)
         }
         Spacer(minLength: 0)
         // Bound to a local because `stateCounts` walks the whole lane tree.
@@ -1200,21 +1232,33 @@ struct HubProjectTile: View, Equatable {
         HStack(alignment: .lastTextBaseline, spacing: 6) {
           VStack(alignment: .leading, spacing: 3) {
             if stateCounts.isEmpty {
-              Text("No agents")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(ADEColor.textMuted)
+              if !presentation.metaLineIsNote {
+                Text("No agents")
+                  .font(.caption2.weight(.medium))
+                  .foregroundStyle(ADEColor.textMuted)
+              }
             } else {
               HubStateSummary(counts: stateCounts, fitsWidth: true)
             }
+            // An account note ("Not on a computer yet") takes the "No
+            // agents" line's room, so it wraps instead of ending in "…" in a
+            // narrow tile.
             Text(presentation.metaLine)
               .font(.system(size: 11))
               .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
+              .lineLimit(presentation.metaLineIsNote ? 2 : 1)
+              .fixedSize(horizontal: false, vertical: presentation.metaLineIsNote)
           }
+          .layoutPriority(1)
           Spacer(minLength: 4)
+          // A short tile has no room for the chip and the chevron beside the
+          // lane count; the chip takes the chevron's place (the tile itself
+          // is the button).
+          let chipOnBottomLine = isShort && selection == nil && showsMachineChip
+          if chipOnBottomLine { machineChip }
           if presentation.isSwitching {
             ProgressView().controlSize(.small)
-          } else {
+          } else if selection == nil, !chipOnBottomLine {
             ADESettingsChevron()
           }
         }
@@ -1223,8 +1267,12 @@ struct HubProjectTile: View, Equatable {
       .frame(maxWidth: .infinity, minHeight: tileHeight, maxHeight: tileHeight, alignment: .topLeading)
       .adeKitCard(padding: nil)
       .overlay {
-        // The accent marks the one selected thing: the project open on the phone.
-        if presentation.isActive {
+        // The accent marks the one selected thing: a ticked tile while the
+        // list selects, else the project open on the phone.
+        if selection == true {
+          RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous)
+            .strokeBorder(ADEColor.accent, lineWidth: 1.5)
+        } else if selection == nil, presentation.isActive {
           RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous)
             .strokeBorder(ADEColor.accent.opacity(0.45), lineWidth: 1)
         }
@@ -1234,13 +1282,52 @@ struct HubProjectTile: View, Equatable {
     }
     .buttonStyle(.plain)
     .accessibilityLabel(tileSpokenLabel)
-    .accessibilityHint("Opens the project.")
+    .accessibilityHint(selection == nil ? "Opens the project." : "Selects the project.")
+    .accessibilityAddTraits(selection == true ? .isSelected : [])
     .contextMenu {
+      if selection == nil {
+        menuItems
+      }
+    }
+    .photosPicker(
+      isPresented: Binding(
+        get: { iconPickerShown && iconPickerFilter != nil },
+        set: { iconPickerShown = $0 }
+      ),
+      selection: $pickedIcon,
+      matching: iconPickerFilter
+    )
+    .task(id: iconPickerShown) {
+      guard iconPickerShown, iconPickerFilter == nil else { return }
+      iconPickerFilter = await ADEPhotoPickerFilter.images()
+    }
+    .onChange(of: pickedIcon) { _, item in
+      guard let item else { return }
+      pickedIcon = nil
+      Task {
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let png = hubProjectIconPNG(from: data) else { return }
+        onChangeIcon(png)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var menuItems: some View {
       if let machineLabel {
         Section("On \(machineLabel)") {}
       }
       Button(action: onOpenProject) {
         Label("Open", systemImage: "arrow.up.forward.app")
+      }
+      if !otherFolders.isEmpty {
+        Section("Other folders") {
+          ForEach(otherFolders) { folder in
+            Button { onOpenFolder(folder) } label: {
+              Label(folder.label, systemImage: "folder")
+            }
+          }
+        }
       }
       if canChangeIcon {
         Button { iconPickerShown = true } label: {
@@ -1259,26 +1346,64 @@ struct HubProjectTile: View, Equatable {
           Label("Copy path", systemImage: "doc.on.doc")
         }
       }
-      Divider()
-      Button(role: .destructive, action: onForget) {
-        Label("Remove from list", systemImage: "trash")
+      if canShowLocation {
+        Button(action: onLocation) {
+          Label("Location", systemImage: "folder")
+        }
       }
+      if onHide != nil || onRemove != nil {
+        Divider()
+      }
+      if let onHide {
+        Button(action: onHide) {
+          Label("Hide on this iPhone", systemImage: "eye.slash")
+        }
+      }
+      if let onRemove {
+        Button(role: .destructive, action: onRemove) {
+          Label("Remove…", systemImage: "trash")
+        }
+      }
+  }
+
+  @ViewBuilder
+  private var subtitleText: some View {
+    if let subtitle {
+      Text(subtitle)
+        .font(.system(size: 12))
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .truncationMode(.middle)
     }
-    .photosPicker(isPresented: $iconPickerShown, selection: $pickedIcon, matching: .images)
-    .onChange(of: pickedIcon) { _, item in
-      guard let item else { return }
-      pickedIcon = nil
-      Task {
-        guard let data = try? await item.loadTransferable(type: Data.self),
-              let png = hubProjectIconPNG(from: data) else { return }
-        onChangeIcon(png)
-      }
+  }
+
+  /// Top trailing: the tick while selecting, else the computer chip.
+  @ViewBuilder
+  private var trailingMark: some View {
+    if let selection {
+      HubSelectionMark(selected: selection)
+    } else {
+      machineChip
+    }
+  }
+
+  private var showsMachineChip: Bool { machineLabel != nil && machineCount > 0 }
+
+  @ViewBuilder
+  private var machineChip: some View {
+    if showsMachineChip {
+      HubProjectMachineChip(count: machineCount, live: machineLive)
     }
   }
 
   private var tileSpokenLabel: String {
     var parts = [project.displayName]
-    if let machineLabel { parts.append("on \(machineLabel)") }
+    if let subtitle { parts.append(subtitle) }
+    // Spoken like the chip: a count, never a machine name.
+    if machineLabel != nil, machineCount > 0, !presentation.metaLineIsNote {
+      parts.append(machineCount == 1 ? "on 1 computer" : "on \(machineCount) computers")
+    }
+    if let machineLive, machineCount > 0 { parts.append("\(machineLive) of \(machineCount) online") }
     if !presentation.stateCounts.isEmpty { parts.append(hubStateSummaryLabel(presentation.stateCounts)) }
     parts.append(presentation.metaLine)
     return parts.joined(separator: ", ")
@@ -1288,23 +1413,66 @@ struct HubProjectTile: View, Equatable {
     lhs.presentation == rhs.presentation
       && lhs.machineLabel == rhs.machineLabel
       && lhs.machineCount == rhs.machineCount
+      && lhs.machineLive == rhs.machineLive
       && lhs.canChangeIcon == rhs.canChangeIcon
       && lhs.canMoveToTop == rhs.canMoveToTop
+      && lhs.canShowLocation == rhs.canShowLocation
+      && (lhs.onRemove == nil) == (rhs.onRemove == nil)
+      && (lhs.onHide == nil) == (rhs.onHide == nil)
+      && lhs.subtitle == rhs.subtitle
+      && lhs.selection == rhs.selection
+      && lhs.accountProjectId == rhs.accountProjectId
+      && lhs.otherFolders == rhs.otherFolders
   }
+}
+
+/// One more folder of a Hub tile's project, for its long-press menu.
+struct HubTileFolder: Equatable, Identifiable {
+  /// The computer's key and the folder's id there.
+  let id: String
+  /// "ade-2 on MacBook Pro".
+  let label: String
+  /// The machine whose copy this is; nil for a Hub card (`openHubProject`
+  /// finds its owner).
+  let machineKey: String?
+  /// What a tap opens: the Hub card, or that machine's own project.
+  let project: MobileProjectSummary
+}
+
+/// The last part of a folder path, with `/` or `\` separators (a Windows
+/// computer sends the second). Nil for an empty path.
+func hubFolderName(_ rootPath: String?) -> String? {
+  let parts = (rootPath ?? "").split(whereSeparator: { $0 == "/" || $0 == "\\" })
+  return parts.last.map(String.init)
 }
 
 /// How many machines a project is on, as a quiet chip: a computer glyph and
 /// the count. The names are in the long-press menu and the spoken label.
 struct HubProjectMachineChip: View {
   let count: Int
+  /// Reachable computers, for an account project: "1/2" with the reachable
+  /// count first; a green dot while at least one is reachable.
+  var live: Int? = nil
 
   var body: some View {
     HStack(spacing: 3) {
+      if let live, live > 0 {
+        Circle()
+          .fill(ADEColor.success)
+          .frame(width: 5, height: 5)
+      }
       Image(systemName: count > 1 ? "macbook.and.iphone" : "desktopcomputer")
         .font(.system(size: 10, weight: .semibold))
-      Text("\(count)")
-        .font(.caption2.weight(.semibold))
-        .monospacedDigit()
+      if let live, count > 1 || live < count {
+        (Text("\(live)").foregroundStyle(live > 0 ? ADEColor.textPrimary : ADEColor.textSecondary)
+          + Text("/\(count)").foregroundStyle(ADEColor.textMuted))
+          .font(.caption2.weight(.semibold))
+          .monospacedDigit()
+      } else {
+        Text("\(count)")
+          .font(.caption2.weight(.semibold))
+          .monospacedDigit()
+      }
     }
     .foregroundStyle(ADEColor.textSecondary)
     .padding(.horizontal, 7)
@@ -1396,13 +1564,10 @@ struct HubLaneSection: View, Equatable {
             .frame(width: 10, alignment: .center)
           WorkLaneLogoMark(color: laneTint, laneIcon: laneIcon, emoji: lane.emoji, size: 11)
             .frame(width: 13, height: 13)
-          Text(lane.name)
+          Text(lane.displayName)
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(laneTint)
             .lineLimit(1)
-          if isWorkRemoteLaneId(lane.id) {
-            WorkRemoteLaneGlyph()
-          }
           Spacer(minLength: 6)
           // The whole trailing edge, in the same glyph+count language as the
           // project header above it. It replaced a live summary followed by a
@@ -1573,7 +1738,7 @@ struct HubEmptyProjectsCard: View {
       Image(systemName: "folder.badge.plus")
         .font(.system(size: 22, weight: .regular))
         .foregroundStyle(ADEColor.textMuted)
-      Text("No projects on \(syncService.hostName ?? "this machine")")
+      Text("No projects on \(syncService.hostName ?? "this computer")")
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.textPrimary)
       Text("Add a project to start vibecoding from your phone.")
@@ -1745,12 +1910,12 @@ struct HubNoMachineState: View {
         attemptMachineName: syncService.connectAttemptTarget?.machineName,
         hostDisplayName: machineDisplayName
       )
-      return "Cannot reach \(subject ?? "machine")"
+      return "Cannot reach \(subject ?? "the computer")"
     }
     if hasSavedMachine {
-      return "Disconnected from \(machineDisplayName ?? "saved machine")"
+      return "Disconnected from \(machineDisplayName ?? "the saved computer")"
     }
-    return "No machine attached"
+    return "No computer connected"
   }
 }
 

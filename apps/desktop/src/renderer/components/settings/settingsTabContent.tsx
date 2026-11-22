@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   CaretLeft,
@@ -28,6 +28,7 @@ import { JiraMark } from "../lanes/jiraBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
 import { TerminalShellSection } from "./TerminalShellSection";
 import { AdeMcpPage } from "./AdeMcpPage";
+import { SharingSettingsPage } from "../laneShare/SharingSettingsPage";
 import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
@@ -42,11 +43,15 @@ import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 import { ResetAdeSection } from "./ResetAdeSection";
 import { DatabaseCopiesSection } from "./DatabaseCopiesSection";
 import { ProvidersSection } from "./ProvidersSection";
+import { AccountCloudProvidersPanel } from "./providers/cloud/AccountCloudProvidersPanel";
+import { WebMcpServersCard, WebSignInSharingCard } from "./WebAccountCloudCards";
+import { accountCloudLaunchesAvailable } from "../../state/accountCloudLaunches";
+import { useOwnWebComputers } from "../../state/ownComputers";
 import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPanel";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
 import { SettingsSection } from "./primitives/SettingsRows";
 import { providerDescriptor } from "./providers/descriptors";
-import { SecretsSection } from "./SecretsSection";
+import { PasswordsSection } from "./passwords/PasswordsSection";
 import { ServiceStatusSection } from "./health/HealthService";
 import { GeneralPage } from "./general/GeneralPage";
 import { MachinesPage } from "./machines/MachinesPage";
@@ -55,17 +60,23 @@ import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { LocationPage } from "./location/LocationPage";
 import {
   MachineUnavailableNotice,
+  routedPageFor,
+  machineRouteNeedsUpdate,
   machineSectionAvailable,
   type MachineSectionKind,
+  type PickableSectionKind,
   type SettingsMachinePage,
 } from "./SettingsMachinesNav";
+import type { MachineScopeLaterDomain } from "../../../shared/machineScope";
 import { WebSettingsSection } from "./WebScopePill";
 import { IntegrationsHome, type IntegrationsPageId } from "./integrations/IntegrationsHome";
 import { isIntegrationId } from "./integrations/integrationBrand";
-import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { SettingsMachineScopeProvider, useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
+import { NoProjectCopyNotice, ProjectCopyBar, ProjectCopyScopeProvider, settingsCopyScope, useProjectCopyPage } from "./ProjectCopyScope";
 import {
   SETTINGS_ENTRIES,
   SETTINGS_TAB_IDS,
+  isProjectSettingsTab,
   mcpCatalogueIdFromAnchor,
   sectionHasAvailableEntries,
   type SettingsTabId,
@@ -73,7 +84,6 @@ import {
 import { isWebClientMode } from "../../lib/webClientMode";
 import { decodeSettingsHash } from "./settingsHash";
 import { CloudMark, ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
-import { useAdeCloudEnabled } from "../../state/cloudAccess";
 
 /**
  * What each Settings tab renders: its sections as data (`TAB_SECTIONS`), the
@@ -116,6 +126,37 @@ function providerIdFromHash(hash: string): string | null {
 }
 
 /**
+ * ADE Web with no computer of the person's own connected (none, or all
+ * offline): the providers' ADE Cloud sign-ins live in Settings, read from the
+ * account. An offline computer can't answer for them.
+ */
+function useAccountProvidersInSettings(): boolean {
+  const ownOn = useOwnWebComputers().some((machine) => machine.status === "live");
+  return !ownOn && isWebClientMode() && accountCloudLaunchesAvailable();
+}
+
+/**
+ * Settings › ADE Cloud. In ADE Web with no computer of the person's own, the
+ * providers' ADE Cloud sign-ins and saved keys show here too: that person has
+ * no machine whose Providers page could hold them.
+ */
+function AdeCloudSettingsPage() {
+  const accountProviders = useAccountProvidersInSettings();
+  return (
+    <SettingsColumn wide>
+      <CloudSection />
+      {accountProviders ? <div className="mt-8"><AccountCloudProvidersPanel /></div> : null}
+      {accountProviders ? (
+        <div className="mt-8 adecd-pair">
+          <WebSignInSharingCard />
+          <WebMcpServersCard />
+        </div>
+      ) : null}
+    </SettingsColumn>
+  );
+}
+
+/**
  * Agents & Models. One provider's page is a sub-view of this tab rather than a
  * route of its own: `?provider=<id>`, with `#ai-provider-<id>` accepted so the
  * manifest entry for each provider deeplinks straight to it. While a provider
@@ -124,6 +165,7 @@ function providerIdFromHash(hash: string): string | null {
  * on the chat tab; scheduled work lives on notifications.
  */
 function AgentsTabContent() {
+  const accountProviders = useAccountProvidersInSettings();
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -131,6 +173,7 @@ function AgentsTabContent() {
   const providerId = requested && providerDescriptor(requested) ? requested : null;
   const harnessesOpen =
     searchParams.get("harnesses") === "1" || decodeSettingsHash(location.hash) === HARNESSES_ANCHOR;
+  const place = useProvidersPlace();
 
   const handleProviderChange = useCallback((next: string | null) => {
     const nextParams = new URLSearchParams(searchParams);
@@ -147,6 +190,10 @@ function AgentsTabContent() {
     );
   }, [location.pathname, navigate, searchParams]);
 
+  if (accountProviders) {
+    return <AccountCloudProvidersPanel />;
+  }
+
   if (isWebClientMode()) {
     return (
       <WebSettingsSection entryIds={["agents.accounts"]}>
@@ -158,7 +205,7 @@ function AgentsTabContent() {
   if (providerId) {
     return (
       <WebSettingsSection entryIds={[`agents.provider.${providerId}`]}>
-        <ProvidersSection forceRefreshOnMount providerParam={providerId} onProviderChange={handleProviderChange} />
+        <ProvidersSection providerParam={providerId} onProviderChange={handleProviderChange} />
       </WebSettingsSection>
     );
   }
@@ -167,17 +214,19 @@ function AgentsTabContent() {
     <ModernPage>
       <WebSettingsSection entryIds={["agents.providers"]}>
         <ProvidersSection
-          forceRefreshOnMount
           providerParam={null}
           onProviderChange={handleProviderChange}
           // `#ai-harnesses` deeplinks scroll to the Custom section of this page.
           harnessesParam={harnessesOpen}
         />
       </WebSettingsSection>
-      {/* Stored in the machine's `.ade/local.yaml` and enforced by its runtime. */}
-      <WebSettingsSection entryIds={["agents.budget"]}>
-        <BudgetCapSettings />
-      </WebSettingsSection>
+      {/* Stored in the machine's `.ade/local.yaml` and enforced by its runtime;
+          ADE Cloud is not a machine, so it has none. */}
+      {place.kind === "machine" ? (
+        <WebSettingsSection entryIds={["agents.budget"]}>
+          <BudgetCapSettings />
+        </WebSettingsSection>
+      ) : null}
     </ModernPage>
   );
 }
@@ -214,14 +263,25 @@ export function openIntegrationFromUrl(searchParams: URLSearchParams, hash: stri
  * tab, `?integration=<github|linear|jira|mcp>`; a `#hash` naming one of its
  * settings opens it too. With none open, the tab is the Integrations home.
  */
-function IntegrationsTabContent({ machine, standalone }: { machine: SettingsMachinePage | null; standalone: boolean }) {
+function IntegrationsTabContent({
+  machine,
+  standalone,
+  noCopy = false,
+}: {
+  machine: SettingsMachinePage | null;
+  standalone: boolean;
+  /** No computer with a copy of the open project is online: the integrations wait and make no call. */
+  noCopy?: boolean;
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { pin } = useSettingsMachineScope();
-  const cloudEnabled = useAdeCloudEnabled();
   const requested = openIntegrationFromUrl(searchParams, location.hash);
-  const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => section.group !== "cloud" || cloudEnabled).filter((section) => standalone
+  const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => noCopy
+    // No copy online: only the account's own pages, which call no computer.
+    ? section.machine === undefined
+    : standalone
     // No project: only the account's pages (the provider, MCP servers) can load.
     ? standaloneSection(section)
     : !machine || !section.machine || machineSectionAvailable(section.machine, machine));
@@ -241,7 +301,7 @@ function IntegrationsTabContent({ machine, standalone }: { machine: SettingsMach
       <SettingsColumn wide>
         <IntegrationsHome
           pin={pin}
-          machineOnline={!machine || machine.online}
+          machineOnline={!noCopy && (!machine || machine.online)}
           integrations={standalone ? sections.flatMap((entry) => (isIntegrationId(entry.group) ? [entry.group] : [])) : undefined}
           onOpen={open}
         />
@@ -295,6 +355,12 @@ type TabSection = {
   render: () => React.ReactNode;
   /** For pages under Machines: how the section reaches its machine. */
   machine?: MachineSectionKind;
+  /**
+   * A `machine` section's domain on the machine route when it came after the
+   * route's first version: a machine whose ADE predates it is reached through
+   * its copy of this repository, or says to update ADE there.
+   */
+  machineDomain?: MachineScopeLaterDomain;
   /**
    * A link to this section with no `?machine=` opens the tab's machine rather
    * than This computer: it is about the project tab's own connection (a banner
@@ -371,8 +437,8 @@ const TAB_GROUPS = {
   },
   cloud: {
     title: ADE_CLOUD_NAME,
-    description: "Cloud Linux machines, made and signed in from ADE.",
-    icon: <CloudMark size={15} bold />,
+    description: "Cloud computers for your lanes, made and signed in from ADE.",
+    icon: <CloudMark size={15} brand />,
     tone: "slate",
   },
   mcp: {
@@ -474,8 +540,9 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
     // Detected and stored on the machine the terminals run on; every call
-    // carries that machine's pin.
-    { entryIds: ["behaviour.terminal-shell"], render: () => <TerminalShellSection />, machine: "routed", title: "Terminal shell" },
+    // carries that machine's pin, the machine route when this window's
+    // project has no copy there.
+    { entryIds: ["behaviour.terminal-shell"], render: () => <TerminalShellSection />, machine: "machine", title: "Terminal shell" },
     // `.ade/local.yaml`, read by the link router of the window bound to that
     // checkout, so it has an effect only on the tab's own machine.
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links" },
@@ -500,7 +567,10 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   ],
   appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
   apple: [{ entryIds: "tab", render: () => <SettingsColumn wide><AppleDevicesSection /></SettingsColumn> }],
-  android: [{ entryIds: "tab", render: () => <SettingsColumn wide><AndroidDevicesSection /></SettingsColumn>, machine: "routed", title: "Android devices" }],
+  // The SDK and the machine preferences are the computer's: the machine
+  // route, so the page shows for every online computer and never waits on a
+  // project's drive.
+  android: [{ entryIds: "tab", render: () => <SettingsColumn wide><AndroidDevicesSection /></SettingsColumn>, machine: "machine", machineDomain: "android_emulator", title: "Android devices" }],
   chat: [
     {
       entryIds: "tab",
@@ -514,8 +584,8 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       machine: "local",
     },
   ],
-  // Project → Lanes, Storage & cleanup and Agents act on the machine that owns
-  // the project (its pin); every section in them reads that pin.
+  // Project → Lanes, Storage & cleanup and Agents act on the copy picked on
+  // the page (its pin); every section in them reads that pin.
   "lanes-git": [
     { entryIds: "tab", render: () => <SettingsColumn wide><LanesSettingsPage /></SettingsColumn>, machine: "routed", title: "Lanes" },
   ],
@@ -525,14 +595,14 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   "project-agents": [
     { entryIds: ["lanes-git.pr-chat-transcripts"], render: () => <PrChatTranscriptsSection />, machine: "routed", title: "PR chat transcripts" },
   ],
-  // Project → Location: where the project lives (the move runs in this
-  // computer's main process, and says so for a project on another one) and
-  // the project's checks, read through the project machine's pin.
+  // Project → Location: where the picked copy lives (the move runs in this
+  // computer's main process, and says so for a copy on another one) and
+  // the project's checks, read through the copy's pin.
   location: [
-    { entryIds: "tab", render: () => <SettingsColumn wide><LocationPage /></SettingsColumn>, machine: "bound", title: "Location" },
+    { entryIds: "tab", render: () => <SettingsColumn wide><LocationPage /></SettingsColumn>, machine: "routed", title: "Location" },
   ],
-  // Connections live in the credential store of the machine that owns the
-  // project and are read by its runtime. Every call takes that machine's pin.
+  // Connections live in the credential store of the machine of the picked
+  // copy and are read by its runtime. Every call takes that copy's pin.
   // Browser steps (device codes, OAuth pages) still open on This computer.
   //
   // The MCP servers page is the account's (settings store and vault), read
@@ -541,30 +611,52 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.github", "integrations.github-issues-top-bar"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
     { entryIds: ["integrations.linear", "integrations.linear-top-bar"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
-    // Account-wide: one workspace key in the account vault, so no machine kind and no pin.
-    { entryIds: ["integrations.ade-cloud", "integrations.ade-cloud-sign-ins", "integrations.ade-cloud-ready", "integrations.ade-cloud-spending", "integrations.ade-cloud-agent-limits"], render: () => <CloudSection />, title: ADE_CLOUD_NAME, group: "cloud" },
     { entryIds: ["mcp.servers", "mcp.found"], render: () => <McpServersSection />, title: "MCP servers", group: "mcp" },
   ],
+  // Account-wide: the plan, hours and computers are the account's, so the page
+  // asks this desktop's own main process with no pin and carries no machine kind.
+  "ade-cloud": [{ entryIds: "tab", render: () => <AdeCloudSettingsPage />, title: ADE_CLOUD_NAME }],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   // Account-wide: the on/off switch, the computers and the connections live in
   // the account (settings store and vault), so the page asks this desktop's own
   // brain with no pin and carries no machine kind. Any brain on the account
   // answers for all of them; only the Activity log is this computer's.
   "ade-mcp": [{ entryIds: "tab", render: () => <SettingsColumn wide><AdeMcpPage /></SettingsColumn> }],
-  secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
+  // Account-wide lists read through the tab's bound runtime (it asks the
+  // account directory); edits of a share go to the machine that holds it.
+  sharing: [{ entryIds: "tab", render: () => <SettingsColumn wide><SharingSettingsPage /></SettingsColumn> }],
+  // Passwords & Secrets is the account's, read on this computer: its brain
+  // answers through `passwords.call`, with or without a project open, and
+  // whichever machine the project tab is bound to.
+  passwords: [{ entryIds: "tab", render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn>, machine: "local", title: "Passwords & Secrets" }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };
 
 /**
- * Providers is routed: every runtime call, the key store, provider accounts,
- * login terminals and auth-status feeds take the machine's pin. What stays on
- * This computer (opening a config file in the OS) is disabled in place.
+ * Providers is about the computer, not the project: every runtime call, the
+ * key store, provider accounts, login terminals and auth-status feeds take the
+ * machine's pin, which is the copy of this repository on it when there is one
+ * and the machine route otherwise (`routedPageFor`). What stays on This
+ * computer (opening a config file in the OS) is disabled in place.
  */
-const AGENTS_TAB_KIND: MachineSectionKind = "routed";
+const AGENTS_TAB_KIND = "machine" satisfies PickableSectionKind;
 
-/** A section that loads with no project: this desktop's own, or the account's. */
+/**
+ * How a tab whose title names its machine reaches one, for the title's
+ * machine picker: Providers by the machine route, else its section's kind.
+ */
+export function settingsTabPickerKind(tab: SettingsTabId): PickableSectionKind {
+  if (tab === "agents") return AGENTS_TAB_KIND;
+  const kind = TAB_SECTIONS[tab]?.[0]?.machine;
+  return kind === "machine" ? kind : "routed";
+}
+
+/**
+ * A section that loads with no project: this desktop's own, the account's, or
+ * a computer's own settings (the machine route needs no project).
+ */
 function standaloneSection(section: TabSection): boolean {
-  return section.machine === undefined || section.machine === "local";
+  return section.machine === undefined || section.machine === "local" || section.machine === "machine";
 }
 
 /**
@@ -603,6 +695,87 @@ export function TabContent({
   /** Standalone Settings (no project) also drops sections with nothing to show. */
   standalone?: boolean;
 }) {
+  // A project page reads one copy of the project, picked on the page.
+  if (!standalone && isProjectSettingsTab(tab)) return <ProjectCopyTabContent tab={tab} />;
+  return <MachineTabContent tab={tab} machine={machine} standalone={standalone} />;
+}
+
+/**
+ * Settings › Project: the page names the computer whose copy it reads and
+ * offers the other online copies. Every section reads the copy's pin. With no
+ * copy online the page says so and calls nothing; Integrations still shows the
+ * account's own pages.
+ */
+function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
+  const copy = useProjectCopyPage(settingsCopyScope(tab));
+  if (!copy.page) {
+    return (
+      <>
+        <SettingsColumn wide><NoProjectCopyNotice /></SettingsColumn>
+        {tab === "integrations" ? <IntegrationsTabContent machine={null} standalone noCopy /> : null}
+      </>
+    );
+  }
+  return (
+    <ProjectCopyScopeProvider page={copy.page}>
+      {/* Not a SettingsColumn: its bottom padding would push the page down. */}
+      <div className="ade-settings-column ade-settings-column--wide ade-copy-scope-column">
+        <ProjectCopyBar copy={copy} />
+      </div>
+      <MachineTabContent tab={tab} machine={copy.page} standalone={false} />
+    </ProjectCopyScopeProvider>
+  );
+}
+
+/**
+ * A `machine` or `account` section: rendered under the machine's routed
+ * scope (`routedPageFor`), so its pin is the copy of this repository there or
+ * else the machine's own route. Keyed on that route: a machine that gains or
+ * loses its copy remounts the section on the new route instead of keeping
+ * closures and feeds bound to the old one. A machine whose brain is too old
+ * for the machine route gets the sentence that says to update it.
+ */
+function MachineRouted({
+  page,
+  domain,
+  titles,
+  children,
+}: {
+  page: SettingsMachinePage;
+  domain?: MachineScopeLaterDomain;
+  titles: string[];
+  children: React.ReactNode;
+}) {
+  const routed = useMemo(() => routedPageFor(page, domain), [domain, page]);
+  if (!routed) {
+    return (
+      <MachineUnavailableNotice
+        machine={page}
+        unavailableTitles={titles}
+        needsUpdate={machineRouteNeedsUpdate(page, domain)}
+      />
+    );
+  }
+  // Keyed on both routes: a machine that gains or loses its copy of this
+  // repository remounts the section, so nothing stays bound to the old copy.
+  const projectTarget = routed.projectTarget;
+  const projectKey = projectTarget?.kind === "pinned" ? projectTarget.binding.key : projectTarget?.kind ?? "";
+  return (
+    <SettingsMachineScopeProvider key={`${routed.pin?.key ?? routed.machineId}|${projectKey}`} scope={routed}>
+      {children}
+    </SettingsMachineScopeProvider>
+  );
+}
+
+function MachineTabContent({
+  tab,
+  machine,
+  standalone,
+}: {
+  tab: SettingsTabId;
+  machine: SettingsMachinePage | null;
+  standalone: boolean;
+}) {
   // A machine's own page lists every machine, offline ones included, and says
   // so itself.
   if (tab === "machines") return <SettingsColumn wide><MachinesPage machine={machine} /></SettingsColumn>;
@@ -617,14 +790,16 @@ export function TabContent({
   // Providers is the one tab that is not a list of sections: it routes between
   // the grid and one provider's page off `?provider=`.
   if (tab === "agents") {
-    if (machine && !machineSectionAvailable(AGENTS_TAB_KIND, machine)) {
-      return <MachineUnavailableNotice machine={machine} unavailableTitles={["Providers"]} />;
-    }
-    return (
+    const content = (
       <SettingsColumn wide>
         <AgentsTabContent />
       </SettingsColumn>
     );
+    if (!machine) return content;
+    if (!machineSectionAvailable(AGENTS_TAB_KIND, machine)) {
+      return <MachineUnavailableNotice machine={machine} unavailableTitles={["Providers"]} />;
+    }
+    return <MachineRouted page={machine} titles={["Providers"]}>{content}</MachineRouted>;
   }
   const sections = TAB_SECTIONS[tab];
   if (!sections) return null;
@@ -646,7 +821,11 @@ export function TabContent({
       entryIds,
       node: (
         <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
-          {section.render()}
+          {section.machine === "machine" && machine ? (
+            <MachineRouted page={machine} domain={section.machineDomain} titles={[section.title ?? "These settings"]}>
+              {section.render()}
+            </MachineRouted>
+          ) : section.render()}
         </WebSettingsSection>
       ),
     };

@@ -9,33 +9,27 @@
  */
 
 import {
+  CLOUD_MADE_BY_AGENT_METADATA,
   CLOUD_MADE_BY_CHAT_METADATA,
   isCloudInstanceId,
   cloudCatalogOf,
-  cloudHoursRate,
-  cloudMachineKindOf,
-  cloudMachineState,
-  cloudMachineType,
-  cloudShape,
-  cloudDiskFullMessage,
-  CLOUD_DISK_FULL_METADATA,
-  cloudShapeFor,
   cloudStatusAwake,
   type CloudAccountState,
-  type CloudMachine,
   type CloudMachineActionArgs,
-  type CloudCatalog,
   type CloudMachineActionResult,
   type CloudMachinesResult,
-  type CloudResources,
+  readCloudInviteRefusalReason,
+  type CloudInviteRedeemOutcome,
+  type CloudReferralSummary,
 } from "../../../shared/adeCloud";
-import { CLOUD_READY_METADATA, readCloudReadyMachineState } from "../../../shared/cloudReady";
+import { CLOUD_MACHINE_KEY_METADATA, cloudMachineOfInstance as toCloudMachine } from "../../../shared/cloudMachineOfInstance";
+import { cloudMachineRefusal, runCloudMachineLifecycleAction } from "../../../shared/cloudMachineActions";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider, type CloudInstance } from "./cloudProvider";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
-import { cloudSleepPolicyOf } from "./cloudSleep";
-import { wakeThroughTransition } from "./cloudReadyClaim";
+import { wakeThroughTransition } from "./cloudInstanceOps";
 import { getErrorMessage } from "../shared/utils";
 import { withDeadline } from "../shared/withTimeout";
+import { pushWorkCommand } from "../../../../../account-directory/src/cloud/computerCommands";
 
 type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
@@ -43,7 +37,17 @@ type Logger = {
 };
 
 /** The metadata key ADE writes once a box joins the account: its ADE machine key. */
-export const CLOUD_MACHINE_KEY_METADATA = "ade_machine_key";
+export { CLOUD_MACHINE_KEY_METADATA } from "../../../shared/cloudMachineOfInstance";
+
+/** The machine keys of the computers a move replaced: one copy, shared with the server's move. */
+export {
+  CLOUD_FORMER_MACHINE_KEYS_METADATA,
+  formerMachineKeysAfterMove,
+  formerMachineKeysOf,
+} from "../../../../../account-directory/src/cloud/computerCommands";
+
+/** Who a read of the account's computers was asked for, and when (`startRead`). */
+export type CloudRead = { accountId: string | null; startedAtMs: number };
 
 export type CloudMachinesDeps = {
   /** ADE Cloud for this account, or null when it has no access. */
@@ -58,51 +62,21 @@ export type CloudMachinesDeps = {
   knownClient?: () => CloudProvider | null;
   /** Removes a machine from the ADE account directory (the "Remove from ADE" half of a delete). */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
+  /** Every good read of the account's computers (the lane follower, `cloudLaneFollow.ts`). */
+  onInstancesRead?: (instances: CloudInstance[]) => void;
+  /**
+   * A good read listed other computers than the good read before it, for the
+   * same account: one was made or one is gone, perhaps from another device.
+   * `gone` are the computers the earlier read listed and this one does not,
+   * with the machine key each had joined with (null before it joined).
+   */
+  onMachinesChanged?: (change: { gone: Array<{ instanceId: string; machineKey: string | null }> }) => void;
+  /** The signed-in account, so a sign-in as someone else is never read as their computers going away. */
+  accountId?: () => string | null;
   logger?: Logger;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 };
-
-function resourcesOf(instance: CloudInstance): CloudResources | null {
-  const raw = instance.resources;
-  if (!raw || !raw.cpu || !raw.memory) return null;
-  return { cpu: raw.cpu, memoryGb: raw.memory, diskGb: raw.disk };
-}
-
-function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudMachine {
-  const resources = resourcesOf(instance);
-  const type = cloudMachineType(instance.type);
-  const shape = cloudShapeFor(resources);
-  return {
-    instanceId: instance.id,
-    name: instance.name,
-    status: instance.status,
-    state: cloudMachineState(instance.status),
-    type,
-    resources,
-    shapeId: shape?.id ?? null,
-    region: instance.region,
-    hoursRate: shape ? cloudHoursRate(cloudMachineKindOf(type), shape.id, catalog) : null,
-    pastDue: instance.pastDue,
-    failure: instance.status === "failed" ? instance.statusReason?.message ?? null : null,
-    machineKey: instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null,
-    createdAtMs: instance.created != null ? instance.created * 1000 : null,
-    ready: readyOf(instance),
-    sleep: cloudSleepPolicyOf(instance),
-    diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog),
-  };
-}
-
-/** A project's ready machine (see cloudReadyMachines.ts), or null for any other box. */
-function readyOf(instance: CloudInstance): CloudMachine["ready"] {
-  const state = readCloudReadyMachineState(instance.metadata[CLOUD_READY_METADATA.state]);
-  const project = instance.metadata[CLOUD_READY_METADATA.project];
-  if (!state || !project) return null;
-  return {
-    projectName: instance.metadata[CLOUD_READY_METADATA.projectName] || project,
-    state,
-  };
-}
 
 /** The ADE machine keys of the account's computers that still exist. */
 function liveMachineKeys(instances: readonly CloudInstance[]): Set<string> {
@@ -112,6 +86,23 @@ function liveMachineKeys(instances: readonly CloudInstance[]): Set<string> {
       .map((instance) => instance.metadata[CLOUD_MACHINE_KEY_METADATA])
       .filter((key): key is string => Boolean(key)),
   );
+}
+
+/**
+ * Of these computers (as the provider lists them), the ones an agent made,
+ * copied or moved since UTC midnight (they carry `ade_made_by_chat` or
+ * `ade_made_by_agent`).
+ */
+export function countAgentMadeToday(instances: readonly CloudInstance[], nowMs: number): number {
+  const midnight = new Date(nowMs);
+  midnight.setUTCHours(0, 0, 0, 0);
+  return instances.filter((instance) => {
+    const byAgent = instance.metadata[CLOUD_MADE_BY_CHAT_METADATA] || instance.metadata[CLOUD_MADE_BY_AGENT_METADATA];
+    if (!byAgent || instance.created == null) return false;
+    // the provider answers epoch seconds; milliseconds are accepted too.
+    const createdMs = instance.created < 1e12 ? instance.created * 1000 : instance.created;
+    return createdMs >= midnight.getTime();
+  }).length;
 }
 
 /** One read of the computers for the known keys must not hold up a connect for long. */
@@ -136,25 +127,70 @@ function emptyResult(state: CloudMachinesResult["state"], message: string | null
   };
 }
 
-/** Bounded so a frozen push can't outlast the free short wake it runs in. */
-const PUSH_ALL_WORK_TIMEOUT_MS = 3 * 60_000;
-
 /**
- * Commits and pushes every project's lanes on the computer (`ade cloud
- * push-work`). The new ADE sits on the disk (`$ADE_HOME/bin`), and ADE on the
- * computer answers a few seconds after a start.
+ * Bounded so a frozen push can't outlast the free short wake it runs in: 3
+ * minutes plus the minute the git warm-up may take.
  */
-const PUSH_ALL_WORK_COMMAND = [
-  'export PATH="$ADE_HOME/bin:$PATH"',
-  'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
-  "ade cloud push-work --json",
-].join("\n");
+const PUSH_ALL_WORK_TIMEOUT_MS = 4 * 60_000;
 
-function readPushAllTally(stdout: string): { pushed: number; failed: number; skipped: number } | null {
+/** The server's command (`pushWorkCommand`): it warms each worktree's `git status` first, since a wake drops the file cache. */
+const PUSH_ALL_WORK_COMMAND = pushWorkCommand(false);
+/**
+ * Only reads which lanes have work that isn't on GitHub (`ade cloud
+ * work-state`). Never `push-work --check`: an older ADE ignores the flag and
+ * pushes. An older ADE refuses this command, so nothing changes there.
+ */
+const PUSH_WORK_CHECK_COMMAND = pushWorkCommand(true);
+/** An ADE on the computer from before `work-state`: its CLI or brain doesn't know the command. */
+const WORK_CHECK_UNKNOWN = /unknown (cloud )?command|method not found|can't read this computer's work/i;
+const WORK_CHECK_TOO_OLD = "This computer's ADE is too old to say what isn't pushed.";
+
+/** One lane as `ade cloud push-work` left it (`CloudPushWorkLane` in the CLI). Older computers leave the list out. */
+export type CloudPushWorkLane = {
+  laneId: string;
+  laneName: string;
+  branchRef: string;
+  primary: boolean;
+  dirty: boolean;
+  ahead: number;
+  state: "clean" | "pushed" | "failed" | "unpushed";
+};
+
+export type CloudPushWorkTally = { pushed: number; failed: number; skipped: number; lanes: CloudPushWorkLane[] | null };
+
+const PUSH_WORK_LANE_STATES = new Set<CloudPushWorkLane["state"]>(["clean", "pushed", "failed", "unpushed"]);
+
+function readPushWorkLanes(raw: unknown): CloudPushWorkLane[] | null {
+  if (!Array.isArray(raw)) return null;
+  const lanes: CloudPushWorkLane[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const lane = entry as Record<string, unknown>;
+    if (typeof lane.laneId !== "string") continue;
+    const state = PUSH_WORK_LANE_STATES.has(lane.state as CloudPushWorkLane["state"]) ? lane.state as CloudPushWorkLane["state"] : "unpushed";
+    lanes.push({
+      laneId: lane.laneId,
+      laneName: typeof lane.laneName === "string" ? lane.laneName : "",
+      branchRef: typeof lane.branchRef === "string" ? lane.branchRef : "",
+      primary: lane.primary === true,
+      dirty: lane.dirty === true,
+      ahead: Number(lane.ahead) || 0,
+      state,
+    });
+  }
+  return lanes;
+}
+
+function readPushAllTally(stdout: string): CloudPushWorkTally | null {
   try {
     const parsed = JSON.parse(stdout.trim()) as { result?: Record<string, unknown> } & Record<string, unknown>;
     const tally = parsed.result ?? parsed;
-    return { pushed: Number(tally.pushed) || 0, failed: Number(tally.failed) || 0, skipped: Number(tally.skipped) || 0 };
+    return {
+      pushed: Number(tally.pushed) || 0,
+      failed: Number(tally.failed) || 0,
+      skipped: Number(tally.skipped) || 0,
+      lanes: readPushWorkLanes(tally.lanes),
+    };
   } catch {
     return null;
   }
@@ -189,10 +225,67 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   let knownKeysRead: Promise<boolean> | null = null;
   /** From the last account read that worked, so a failed read doesn't bring deleted computers' rows back. */
   let lastDeletedInstanceIds: string[] = [];
+  /** The newest account read whose deletions are stored: an older one finishing late must not replace them. */
+  let accountReadsStarted = 0;
+  let storedAccountRead = 0;
+  /**
+   * The computers the last good read listed (id to machine key), and for
+   * which account. Null before the first good read of this process: a
+   * computer deleted while the app was closed is only missing from the lists,
+   * never "gone" here.
+   */
+  let lastListed: { accountId: string; startedAtMs: number; keys: Map<string, string | null> } | null = null;
 
-  function recordRead(instances: CloudInstance[]): void {
+  function startRead(): CloudRead {
+    return { accountId: deps.accountId?.() ?? null, startedAtMs: now() };
+  }
+
+  /**
+   * Compares one good read with the one before it. `read` is the account the
+   * read was asked for and when it was asked: a read that started before the
+   * last one compared is older news (a computer made since is missing from
+   * it), so it changes nothing.
+   */
+  function noteListed(instances: readonly CloudInstance[], read: CloudRead): void {
+    const { accountId, startedAtMs } = read;
+    if (!accountId || (deps.accountId && deps.accountId() !== accountId)) {
+      // Signed out, or the account changed while this read ran: nothing to compare with.
+      lastListed = null;
+      return;
+    }
+    const sameAccount = lastListed?.accountId === accountId;
+    if (sameAccount && startedAtMs < lastListed!.startedAtMs) return;
+    const keys = new Map<string, string | null>();
+    for (const instance of instances) {
+      if (instance.status === "deleted") continue;
+      keys.set(instance.id, instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null);
+    }
+    const previous = sameAccount ? lastListed!.keys : null;
+    lastListed = { accountId, startedAtMs, keys };
+    if (!previous) return;
+    const gone = [...previous]
+      .filter(([instanceId]) => !keys.has(instanceId))
+      .map(([instanceId, machineKey]) => ({ instanceId, machineKey }));
+    const made = [...keys.keys()].some((instanceId) => !previous.has(instanceId));
+    if (!gone.length && !made) return;
+    if (gone.length) logger.info?.("cloud.machines_gone", { instanceIds: gone.map((machine) => machine.instanceId) });
+    try {
+      deps.onMachinesChanged?.({ gone });
+    } catch (error) {
+      logger.warn?.("cloud.machines_changed_listener_failed", { error: getErrorMessage(error) });
+    }
+  }
+
+  function recordRead(instances: CloudInstance[], read: CloudRead): void {
     knownMachineKeys = liveMachineKeys(instances);
     lastRead = { instances, atMs: now() };
+    try {
+      deps.onInstancesRead?.(instances);
+    } catch (error) {
+      logger.warn?.("cloud.instances_read_listener_failed", { error: getErrorMessage(error) });
+    }
+    // After the lane follower: a lane that moved is re-pointed before its old computer is forgotten.
+    noteListed(instances, read);
   }
 
   /** One bounded read of the account's computers, shared by concurrent callers. True when it worked. */
@@ -200,11 +293,12 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     if (knownKeysRead) return knownKeysRead;
     const read = (async () => {
       try {
+        const asked = startRead();
         recordRead(await withDeadline(
           client.listInstances(),
           KNOWN_KEYS_READ_TIMEOUT_MS,
           () => new Error(`ADE Cloud didn't answer in ${KNOWN_KEYS_READ_TIMEOUT_MS / 1000} s.`),
-        ));
+        ), asked);
         return true;
       } catch (error) {
         lastFailedReadAtMs = now();
@@ -225,6 +319,11 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   async function list(): Promise<CloudMachinesResult> {
     const client = await deps.client();
     if (!client) return emptyResult("not_connected", (await deps.whyNoClient?.()) ?? null);
+    const asked = startRead();
+    // The plan and hours do not depend on the list: asked together, so the
+    // list costs one server round trip, not two in a row inside its deadline.
+    const accountReadNumber = ++accountReadsStarted;
+    const accountRead = readAccount(client);
     let instances: CloudInstance[];
     try {
       instances = await client.listInstances();
@@ -233,11 +332,14 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       logger.warn?.("cloud.machines_read_failed", { error: getErrorMessage(error), refused });
       return emptyResult(refused ? "access_refused" : "unreachable", getErrorMessage(error));
     }
-    const account = await readAccount(client);
-    if (account) lastDeletedInstanceIds = account.deletedInstanceIds;
+    const account = await accountRead;
+    if (account && accountReadNumber > storedAccountRead) {
+      storedAccountRead = accountReadNumber;
+      lastDeletedInstanceIds = account.deletedInstanceIds;
+    }
     const catalog = cloudCatalogOf(account);
     const live = instances.filter((instance) => instance.status !== "deleted");
-    recordRead(instances);
+    recordRead(instances, asked);
     const machines = live.map((instance) => toCloudMachine(instance, catalog));
     return {
       state: "ok",
@@ -258,75 +360,28 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     });
   }
 
-  /** The sentence and the way out for a provider refusal of a lifecycle action. */
-  function refusal(
-    action: CloudMachineActionArgs["action"],
-    error: unknown,
-  ): CloudMachineActionResult {
-    const code = error instanceof CloudProviderError ? error.code : null;
-    if (code === "rate_limited" && action === "backup") {
-      return {
-        ok: false,
-        blocker: "rate_limited",
-        message: "ADE Cloud takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
-      };
-    }
-    if (code === "out_of_hours") {
-      return { ok: false, blocker: "out_of_hours", message: getErrorMessage(error) };
-    }
-    return { ok: false, blocker: null, message: getErrorMessage(error) };
-  }
-
   async function run(args: CloudMachineActionArgs): Promise<CloudMachineActionResult> {
     const client = await deps.client();
     if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
     const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
     if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
     const action = args.action;
-    logger.info?.("cloud.machine_action", { instanceId, action, shape: args.shape ?? null });
+    logger.info?.("cloud.machine_action", { instanceId, action, shape: args.shape ?? null, disk: args.disk ?? null });
     try {
+      const lifecycle = await runCloudMachineLifecycleAction({
+        computer: (id) => client.getInstance(id),
+        sleep: (id) => client.sleepInstance(id),
+        wake: (id, origin) => client.startInstance(id, origin ? { origin } : undefined),
+        resize: (id, resources, computerIdle, origin) => client.resizeInstance(id, resources, computerIdle || origin ? { ...(computerIdle ? { computerIdle: true } : {}), ...(origin ? { origin } : {}) } : undefined),
+        backup: (id) => client.createBackup(id),
+        update: (id) => client.updateInstance(id),
+      }, instanceId, args);
+      if (lifecycle) return lifecycle;
       switch (action) {
-        case "sleep": {
-          await client.sleepInstance(instanceId);
-          return { ok: true, blocker: null, message: "Asleep. It uses no hours until it wakes." };
-        }
-        case "wake": {
-          const status = await client.startInstance(instanceId);
-          return {
-            ok: true,
-            blocker: null,
-            message: status === "running" ? "Awake. ADE on it is starting." : "Waking. ADE Cloud is moving it to a host with room.",
-          };
-        }
-        case "resize": {
-          const shape = cloudShape(args.shape);
-          if (!shape) return { ok: false, blocker: null, message: "Pick a size." };
-          const instance = await client.getInstance(instanceId);
-          const current = resourcesOf(instance);
-          if (!current) return { ok: false, blocker: null, message: "ADE Cloud didn't say how big this computer is, so ADE can't resize it." };
-          if (current.cpu === shape.cpu && current.memoryGb === shape.memoryGb) {
-            return { ok: true, blocker: null, message: "It's already that size." };
-          }
-          const status = await client.resizeInstance(instanceId, { cpu: shape.cpu, memory: shape.memoryGb });
-          return {
-            ok: true,
-            blocker: null,
-            message: status === "running"
-              ? `Resized to ${shape.label}. ADE on it is starting again.`
-              : `Resizing to ${shape.label}. It is back in a few minutes.`,
-          };
-        }
-        case "backup": {
-          await client.createBackup(instanceId);
-          return { ok: true, blocker: null, message: "Backed up. ADE Cloud keeps this one until your next backup, plus the last seven nights." };
-        }
-        case "update": {
-          await client.updateInstance(instanceId);
-          return { ok: true, blocker: null, message: "Updating. It restarts and is back in a few minutes." };
-        }
         case "delete": {
           try {
-            await client.deleteInstance(instanceId, { who: args.who ?? null, reason: "user" });
+            const keepLane = args.keepLane ? { branchRef: args.keepLane.branchRef ?? null } : null;
+            await client.deleteInstance(instanceId, { who: args.who ?? null, reason: keepLane ? "freed" : "user", ...(keepLane ? { keepLane } : {}) });
           } catch (error) {
             // A box already gone is what a delete wants.
             if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
@@ -361,7 +416,12 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       }
     } catch (error) {
       logger.warn?.("cloud.machine_action_failed", { instanceId, action, error: getErrorMessage(error) });
-      return refusal(action, error);
+      return cloudMachineRefusal(action, {
+        message: getErrorMessage(error),
+        code: error instanceof CloudProviderError ? error.code : null,
+        reason: error instanceof CloudProviderError ? error.detail.reason : null,
+        detail: error instanceof CloudProviderError ? error.detail.computerLimit ?? null : null,
+      });
     }
   }
 
@@ -369,14 +429,32 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     list,
     run,
     /**
-     * "Push all work to GitHub": a free short wake at 0 hours, then every lane's
-     * work (committed as it stands, then pushed) over exec, so it needs no pairing.
+     * Runs `ade cloud push-work` on the computer over exec (a check reads
+     * only), for the person's own Delete or Free. It wakes a resting computer,
+     * which uses hours (at 0 hours the wake is refused). Answers its tally, or
+     * null with why when it couldn't run or answered nothing ADE can read.
      */
+    runPushWork: async (instanceId: string, options: { check: boolean }): Promise<{ tally: CloudPushWorkTally | null; error: string | null }> => {
+      const client = await deps.client();
+      if (!client) return { tally: null, error: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
+      try {
+        await wakeThroughTransition(client, instanceId, now);
+        const ran = await client.exec(instanceId, options.check ? PUSH_WORK_CHECK_COMMAND : PUSH_ALL_WORK_COMMAND, { timeoutMs: PUSH_ALL_WORK_TIMEOUT_MS });
+        const tally = ran.exitCode === 0 ? readPushAllTally(ran.stdout) : null;
+        logger.info?.("cloud.push_work_ran", { instanceId, check: options.check, exitCode: ran.exitCode, pushed: tally?.pushed, failed: tally?.failed });
+        if (tally) return { tally, error: null };
+        if (options.check && ran.exitCode !== 0 && WORK_CHECK_UNKNOWN.test(`${ran.stderr}\n${ran.stdout}`)) return { tally: null, error: WORK_CHECK_TOO_OLD };
+        return { tally: null, error: "ADE couldn't read this computer's work." };
+      } catch (error) {
+        logger.warn?.("cloud.push_work_failed", { instanceId, check: options.check, error: getErrorMessage(error) });
+        return { tally: null, error: getErrorMessage(error) };
+      }
+    },
     pushAllWork: async (instanceId: string): Promise<CloudMachineActionResult> => {
       const client = await deps.client();
       if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
       try {
-        await wakeThroughTransition(client, instanceId, now, { reason: "push_work" });
+        await wakeThroughTransition(client, instanceId, now);
         const ran = await client.exec(instanceId, PUSH_ALL_WORK_COMMAND, { timeoutMs: PUSH_ALL_WORK_TIMEOUT_MS });
         const tally = readPushAllTally(ran.stdout);
         logger.info?.("cloud.push_all_work", { instanceId, exitCode: ran.exitCode, ...(tally ?? {}) });
@@ -421,6 +499,14 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       });
       if (client) await readKnownMachineKeys(client, "startup");
     },
+    /**
+     * A good read of the account's computers made elsewhere (the sleep watch):
+     * compared with the last one, so a computer made or deleted from another
+     * device is noticed on a read ADE makes anyway (`onMachinesChanged`).
+     */
+    noteInstances: (instances: CloudInstance[], read: CloudRead): void => noteListed(instances, read),
+    /** The account and time to hand `noteInstances` with a read made elsewhere: taken just before that read. */
+    startRead: (): CloudRead => startRead(),
     /** Every computer from the last good read, when it is at most `maxAgeMs` old; else null. */
     recentInstances: (maxAgeMs: number): CloudInstance[] | null =>
       lastRead && now() - lastRead.atMs <= maxAgeMs ? lastRead.instances : null,
@@ -429,23 +515,41 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       const client = await deps.client();
       return client ? (await client.getInstance(instanceId)).metadata : null;
     },
-    /** Machines an agent made, copied or moved since UTC midnight that still exist (they carry `ade_made_by_chat`). */
+    /** Machines an agent made, copied or moved since UTC midnight that still exist (`countAgentMadeToday`). */
     agentMadeToday: async (): Promise<number> => {
       const client = await deps.client();
       if (!client) return 0;
-      const midnight = new Date(now());
-      midnight.setUTCHours(0, 0, 0, 0);
-      return (await client.listInstances()).filter((instance) => {
-        if (!instance.metadata[CLOUD_MADE_BY_CHAT_METADATA] || instance.created == null) return false;
-        // the provider answers epoch seconds; milliseconds are accepted too.
-        const createdMs = instance.created < 1e12 ? instance.created * 1000 : instance.created;
-        return createdMs >= midnight.getTime();
-      }).length;
+      return countAgentMadeToday(await client.listInstances(), now());
     },
     /** Plan and hours (a costly action from elsewhere checks them). */
     account: async (): Promise<CloudAccountState | null> => {
       const client = await deps.client();
       return client ? await client.getAccount() : null;
+    },
+    /** The account's invite link and what it earned; null without ADE Cloud here. */
+    referral: async (): Promise<CloudReferralSummary | null> => {
+      const client = await deps.client();
+      return client ? await client.readReferral() : null;
+    },
+    /**
+     * Enters someone's invite (a link or a code) for the account: the one path
+     * for the desktop's Settings and the `invite_redeem` action. A refusal
+     * (`invite_refused`) answers `{ ok: false, reason, message }`; any other
+     * failure throws. Logs whether it was taken, never the code.
+     */
+    redeemInvite: async (code: string): Promise<CloudInviteRedeemOutcome> => {
+      const client = await deps.client();
+      if (!client) throw new Error((await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet.");
+      try {
+        const result = await client.redeemInvite(code);
+        logger.info?.("cloud.invite_redeemed", { rewarded: result.rewarded });
+        return { ok: true, rewarded: result.rewarded, referral: result.referral };
+      } catch (error) {
+        const reason = error instanceof CloudProviderError && error.code === "invite_refused" ? readCloudInviteRefusalReason(error.detail.reason) : null;
+        logger.info?.("cloud.invite_refused", { reason: reason ?? "unavailable" });
+        if (!reason) throw error;
+        return { ok: false, reason, message: getErrorMessage(error) };
+      }
     },
   };
 }

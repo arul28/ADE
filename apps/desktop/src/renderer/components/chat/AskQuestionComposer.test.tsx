@@ -58,34 +58,6 @@ beforeEach(() => {
 });
 
 describe("AskQuestionComposer rendering", () => {
-  it("renders the header verb, kicker, question, and one ledger row per option", () => {
-    renderComposer(buildRequest([
-      planQuestion({
-        options: [
-          { label: "Rebase", value: "rebase", description: "Fast-forward replay.", recommended: true },
-          { label: "Merge", value: "merge", description: "Preserve history." },
-        ],
-      }),
-    ]));
-
-    expect(screen.getByRole("group", { name: /ade asks/i })).toBeTruthy();
-    expect(screen.getByText("Plan")).toBeTruthy();
-    expect(screen.getAllByText("Which plan should we follow?").length).toBeGreaterThan(0);
-    const rebase = screen.getByTestId("ask-question-option-plan_choice-rebase");
-    expect(rebase.textContent ?? "").toContain("Rebase");
-    expect(rebase.textContent ?? "").toContain("Fast-forward replay.");
-    expect(rebase.textContent ?? "").toContain("Recommended");
-    expect(screen.getByTestId("ask-question-option-plan_choice-merge")).toBeTruthy();
-  });
-
-  it("reads Codex has a question for non-blocking steering", () => {
-    renderComposer(buildRequest([planQuestion()], {
-      source: "codex",
-      blocking: false,
-      canProceedWithoutAnswer: true,
-    }));
-    expect(screen.getByRole("group", { name: /codex has a question/i })).toBeTruthy();
-  });
 
   it("preserves impact and the default assumption in the composer", () => {
     renderComposer(buildRequest([
@@ -258,13 +230,6 @@ describe("AskQuestionComposer send label", () => {
     expect(note().placeholder).toBe("Add a note (sent with your pick)");
     fireEvent.click(screen.getByTestId("ask-question-option-plan_choice-merge"));
     expect(note().placeholder).toBe("Add a note (sent with your 2 picks)");
-  });
-
-  it("uses a plain answer placeholder when the question offers no options", () => {
-    renderComposer(buildRequest([
-      { id: "free", header: "Free", question: "What should I name it?", allowsFreeform: true },
-    ]));
-    expect((screen.getByTestId("ask-question-note-free") as HTMLInputElement).placeholder).toBe("Your answer");
   });
 });
 

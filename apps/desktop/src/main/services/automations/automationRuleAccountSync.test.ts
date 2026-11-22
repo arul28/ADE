@@ -5,7 +5,7 @@ import YAML from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
 import { createProjectConfigService } from "../config/projectConfigService";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createAutomationRuleAccountStore } from "./automationRuleAccountStore";
 
 /**
@@ -84,7 +84,7 @@ async function createComputer(args: {
     getAccountUserId: () => user.id,
     getDeviceId: () => args.name,
   });
-  const db = await openKvDb(path.join(adeDir, "ade.db"), silent);
+  const db = await openFreshKvDb(path.join(adeDir, "ade.db"), silent);
   const config = createProjectConfigService({ projectRoot, adeDir, projectId: args.name, db, logger: silent });
   const store = createAutomationRuleAccountStore({
     backend: account,
@@ -211,6 +211,36 @@ describe("automation rules that follow the account", () => {
       expect(rules.added).toBeDefined();
     }
     expect(b.fileRuleIds()).toEqual([]);
+  });
+
+  it("never runs a rule homed on ADE Cloud on a computer, and never keeps one in a file where it would", async () => {
+    const relay = createRelay();
+    const a = await createComputer({ name: "mac-a", relay });
+    const b = await createComputer({ name: "mac-b", relay });
+    const cloudRule = { ...rule("nightly", "x"), execution: { kind: "agent-session", laneMode: "create", session: {} } };
+    // Before a first sync it can't be filed in the account: refused, not left in local.yaml with no home.
+    expect(() => a.config.saveAutomationRule(cloudRule as never, { home: "ade-cloud" })).toThrow(/ADE Cloud/);
+    expect(a.fileRuleIds()).toEqual([]);
+    await settleAll(a, b);
+
+    a.config.saveAutomationRule(cloudRule as never, { home: "ade-cloud" });
+    await settleAll(a, b);
+    for (const computer of [a, b]) {
+      const nightly = computer.rules().nightly;
+      expect(nightly.runsHere).toBe(false);
+      expect(nightly.home?.kind).toBe("cloud");
+      // Every brain compiles the same schedule: its zone travels with the rule.
+      expect(nightly.triggers[0]?.timezone).toBeTruthy();
+    }
+    // An older ADE reads the home row without `kind`: it still names a whole
+    // home (device, name, time) that is no computer, so it runs nowhere there.
+    const home = a.account.get(SCOPE, "automations.home.nightly") as Record<string, unknown>;
+    expect(home).toEqual(expect.objectContaining({ deviceId: "ade-cloud", name: expect.any(String), chosenAt: expect.any(String) }));
+    expect(["mac-a", "mac-b"]).not.toContain(home.deviceId);
+
+    // A rule the server can't run is refused the cloud home.
+    const watcher = { ...cloudRule, id: "watcher", triggers: [{ type: "file.change", paths: ["src/**"] }] };
+    expect(() => a.config.saveAutomationRule(watcher as never, { home: "ade-cloud" })).toThrow(/File-change/);
   });
 
   it("shows a rule a newer ADE wrote but never runs or rewrites it here", async () => {

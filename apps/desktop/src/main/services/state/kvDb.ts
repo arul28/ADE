@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType, StatementSync } from "node:sqlite";
 import { codedError, isCodedError, isErrnoLikeCode } from "../../../shared/codedError";
 import { carryExpected, expectedErrorKind, markExpected } from "../../../shared/expectedError";
+import { StorageNotAnsweringError } from "./unansweringRoots";
 import type { Logger } from "../logging/logger";
 import { isSqliteBusyOrLockedError, isSqliteIoError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
@@ -24,6 +25,7 @@ import {
 } from "./crsqlExport";
 import { stripCrrUnsupportedTableConstraints } from "./sqliteDdl";
 import { noteDbClosed, noteDbOpened, noteDbWrite } from "./dbActivity";
+import { ensureLaneShareRightsSchema, LANE_SHARE_GUEST_ITEMS_TABLE, LANE_SHARE_RIGHTS_TABLE } from "../lanes/laneShareRightsStore";
 import {
   EVENT_LOG_RETENTION_DAYS,
   INGRESS_EVENT_RETENTION_MS,
@@ -281,6 +283,13 @@ export type AdeDb = {
    * final-persistence paths instead of latency-sensitive request handling.
    */
   flushNow: () => void;
+  /**
+   * Gives back memory this connection can rebuild on its next use: the cached
+   * prepared statements, SQLite's page cache (`PRAGMA shrink_memory`) and the
+   * export helper's thread. For a brain nobody is using; nothing it drops is
+   * data.
+   */
+  releaseMemory?: () => void;
   close: () => void;
 };
 
@@ -690,8 +699,14 @@ function preparedStatement(db: DatabaseSyncType, sql: string): StatementSync {
  * travel with it (a drive that is not answering stays `storage_read_failed`
  * and an answer, not an issue); a platform code is left behind with the
  * original error.
+ *
+ * A drive that is not answering keeps its own error, unwrapped. A timer that
+ * reads the database has no catch, and the brain's uncaught handler lets only
+ * that class pass; a plain wrapper made the brain exit and take every chat
+ * and terminal with it (Mac Studio, 2026-11-12, twice in one day).
  */
 function statementError(error: unknown, sql: string): Error {
+  if (error instanceof StorageNotAnsweringError) return error;
   const statement = sql.replace(/\s+/g, " ").trim();
   const message = error instanceof Error ? error.message : String(error);
   const wrapped = new Error(`${message} [sql=${statement}]`);
@@ -1439,6 +1454,11 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // deliveries a different host made, and the host would then trust a value it
   // did not author. It exists precisely to distrust peer-authored cursors.
   "sync_peer_changeset_watermarks",
+  // Lane sharing: the rights and message counters of each share this machine
+  // serves. The host is the only authority over a guest; a replicated row
+  // would let another replica widen what a guest may do.
+  LANE_SHARE_RIGHTS_TABLE,
+  LANE_SHARE_GUEST_ITEMS_TABLE,
   // Compact local interaction ledger used by Stats. Phones and browsers read
   // its aggregation over the runtime command surface; shipping every raw click
   // as a CRR row would add sync churn without giving controllers useful data.
@@ -3501,6 +3521,10 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
   db.run("create index if not exists idx_deleted_chats_deleted_at on deleted_chats(deleted_at desc)");
+  // A deleted agent CLI terminal (Claude Code, Codex, …) rides the same list:
+  // `kind` 'cli' (null is a chat) and the terminal row it reopens as.
+  safeAddColumn(db, "alter table deleted_chats add column kind text");
+  safeAddColumn(db, "alter table deleted_chats add column cli_json text");
 
   // Test suite config and history tables.
   db.run(`
@@ -4336,6 +4360,12 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // delivers a send that names no machine, so two synced machines holding the
   // same row cannot both fire it.
   safeAddColumn(db, "alter table prompt_stashes add column armed_by_site_id text");
+  // Lane sharing: who wrote the draft, as `AdeMessageAuthor` JSON. Set only by
+  // the host; null on every older row, which reads as the host's own user. A
+  // nullable column, so an older peer defers it like the columns above.
+  safeAddColumn(db, "alter table prompt_stashes add column author_json text");
+  // Local-only (LOCAL_ONLY_CRR_EXCLUDED_TABLES): the host's own lane share rights.
+  ensureLaneShareRightsSchema(db);
   db.run("create index if not exists idx_prompt_stashes_created on prompt_stashes(created_at)");
   db.run("create index if not exists idx_prompt_stashes_scheduled on prompt_stashes(scheduled_at)");
 
@@ -5094,14 +5124,16 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       source_window text not null default ''
     )
   `);
-  // `content_digest` and `source_window` are retired: they fed a token-level
-  // comparison of two machines' recent history that `isSameTranscriptSource` no
-  // longer runs (dedupe is marker-then-roots, nothing else). The columns stay in
-  // the schema rather than being dropped — a `not null default ''` column costs
-  // an empty string per machine, while dropping one from a cr-sqlite CRR table
-  // means rewriting the table and its clocks under every peer on the account.
-  // The `add column`s are kept so a database created before either column still
-  // matches the `create table` above.
+  // `content_digest` is retired: it fed a token-level comparison of two
+  // machines' recent history that `isSameTranscriptSource` no longer runs
+  // (dedupe is marker-then-roots, nothing else). `source_window` was retired
+  // the same way and now carries the machine's per-day activity JSON
+  // (`accountUsageRollupStore.ts` says why reusing it is the safe route). The
+  // columns stay in the schema rather than being dropped — a `not null
+  // default ''` column costs an empty string per machine, while dropping one
+  // from a cr-sqlite CRR table means rewriting the table and its clocks under
+  // every peer on the account. The `add column`s are kept so a database
+  // created before either column still matches the `create table` above.
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column content_digest text not null default ''");
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column source_window text not null default ''");
 }
@@ -5893,6 +5925,19 @@ async function openKvDbOnce(
     maintenance,
     flushNow: () => {
       getRow(db, "pragma wal_checkpoint(TRUNCATE)");
+    },
+    releaseMemory: () => {
+      if (closed) return;
+      // Each statement is finalized when the garbage collector frees it.
+      statementCaches.get(db)?.clear();
+      try {
+        db.exec("PRAGMA shrink_memory");
+      } catch {
+        // Memory only: a busy or closing connection keeps its cache.
+      }
+      const helper = exportHelper;
+      exportHelper = null;
+      void helper?.retire().catch(() => undefined);
     },
     close: () => {
       if (!closed) {

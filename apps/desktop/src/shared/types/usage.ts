@@ -508,6 +508,12 @@ export type AdeUsageStats = {
     workerCostUsd?: number;
     chatSessions?: number;
     terminalSessions?: number;
+    /**
+     * Account scope only: true when the session counts leave out a machine
+     * that used a model in the range but runs an ADE too old to report them,
+     * so the numbers are a floor ("12+"), not the total.
+     */
+    sessionCountsPartial?: boolean;
     activeLanes?: number;
     lanesCreated?: number;
     lanesArchived?: number;
@@ -710,6 +716,39 @@ export type AdeUsageRollup = {
    */
   windows?: UsageWindow[];
   accounts?: UsageAccount[];
+  /**
+   * The machine's chats, shells, commits and PRs per day, one entry per
+   * project database it read. Absent means the machine's ADE predates it,
+   * so its share is unknown (not zero). Stored, unlike `windows`: it rides
+   * the meta row's retired `source_window` column, which every build since
+   * the table exists has and none reads.
+   */
+  activity?: AdeUsageRollupActivity;
+};
+
+/** One day of one project database: chats, shells, commits, PRs. */
+export type AdeUsageActivityDay = [chats: number, shells: number, commits: number, prs: number];
+
+/**
+ * A project database's counts on one machine.
+ *
+ * `id` names the database, not the machine: it is the database's oldest
+ * `projects` row id, which every replica of one synced database shares. Two
+ * machines that report the same `id` hold copies of the same sessions, so the
+ * merge takes the larger count per day instead of adding them up. `scope` is
+ * a digest of the folder this machine reads the database from; it is only the
+ * publishing machine's own bookkeeping (which entry a re-read replaces).
+ */
+export type AdeUsageActivityDatabase = {
+  id: string;
+  scope: string;
+  /** Local day key → counts. A deleted lane's counts sit on its last active day. */
+  days: Record<string, AdeUsageActivityDay>;
+};
+
+export type AdeUsageRollupActivity = {
+  version: 1;
+  dbs: AdeUsageActivityDatabase[];
 };
 
 // ---------------------------------------------------------------------------
@@ -964,6 +1003,13 @@ export type UsageAccount = {
    * "Use reset" action on; `nextExpiresAt` is when the soonest credit lapses.
    */
   resetCredits?: { availableCount: number; nextExpiresAt?: string };
+  /**
+   * The other machine that holds `resetCredits`, when this machine cannot read
+   * the login's credits itself (its login expired, or it is signed in only
+   * there). "Use reset" spends the credit on that machine, with that machine's
+   * id for the account. Absent when the credits are this machine's own.
+   */
+  resetCreditsOn?: { machineKey: string; label: string; accountId: string };
   /**
    * Why this account has no fresh numbers, when the polling host knows.
    *

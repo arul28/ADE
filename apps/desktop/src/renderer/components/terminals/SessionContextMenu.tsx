@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, type ReactNode } from "react";
 import { ContextMenuSurface } from "../ui/ContextMenu";
 import {
   Alarm,
+  Archive,
   ArrowBendUpRight,
   ArrowCounterClockwise,
   ArrowDown,
@@ -30,7 +31,9 @@ import {
   TextT,
   Trash,
   ArrowClockwise,
+  ArrowSquareOut,
 } from "@phosphor-icons/react";
+import { navigateToSpawnedChat } from "../chat/spawnNavigation";
 import type {
   AgentChatSessionMetadataField,
   AutomationRuleSummary,
@@ -41,11 +44,16 @@ import type {
   WorkBoardWaitingReason,
 } from "../../../shared/types";
 import { type WorkBoardMoveTarget } from "../../../shared/types/chat";
+import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 import { sessionStatusChangeModel, type SessionStatusOption } from "../../lib/sessionStatusChange";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { cursorOwnsSessionName, isChatToolType } from "../../lib/sessions";
 import { sessionCanonicalUiState, sessionIsMidFlight } from "../../lib/terminalAttention";
 import { useSessionMetadataGenerating } from "../../state/sessionMetadataGeneratingStore";
+import { useChatLaunchRowState } from "../../state/chatLaunchStore";
+import { cancelChatLaunch, retryChatLaunch } from "../chat/launch/chatLaunchActions";
+import { showToast } from "../app/toast/toastStore";
+import { extractError } from "../../lib/format";
 import {
   isSessionSnoozed,
   resolveSnoozePresets,
@@ -70,6 +78,8 @@ import {
   removeAutomationRules,
   setSessionSettleOverride,
   restartAgentSession,
+  archiveAgentCliSession,
+  handoffAgentCliSession,
   setChatSpawnKind,
   snoozeSessionForDuration,
   unsettleSession,
@@ -152,6 +162,12 @@ export type SessionContextMenuState = {
 
 type SessionContextMenuProps = {
   menu: SessionContextMenuState;
+  /**
+   * Title of the chat that started this one, when it is known here. The
+   * report items and the "Open" item name it; without it they say "the chat
+   * that started it".
+   */
+  parentSessionTitle?: string | null;
   onClose: () => void;
   onStopRuntime: (
     args: { ptyId: string; sessionId: string },
@@ -306,6 +322,7 @@ function SessionContextMenuPanel({
   onRemoveFromGrid,
   onManageLane,
   onOpenAutoHandoff,
+  parentSessionTitle = null,
 }: Omit<SessionContextMenuProps, "menu"> & {
   menu: NonNullable<SessionContextMenuState>;
   onManageLane: (
@@ -367,13 +384,19 @@ function SessionContextMenuPanel({
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
+  const parentName = parentSessionTitle?.trim() || "the chat that started it";
+  // An agent CLI (Claude Code, Codex, …) hands off, archives and deletes like a chat.
+  const isAgentCli = !isChat && Boolean(session.tracked) && isTrackedAgentCliToolType(session.toolType ?? null);
   const canRename = !cursorOwnsSessionName(session);
   const isPrimaryLane = laneType === "primary";
   const isRegeneratingMetadata = Boolean(useSessionMetadataGenerating(session.id));
+  const launchRow = useChatLaunchRowState(session.id);
+  const launchPending = Boolean(launchRow?.pending);
   useEffect(() => {
     // Bail before the await when there is no automations surface at all, so a
     // window without it never schedules a state write it cannot answer.
-    if (!isChat || !automationRulesReadable()) {
+    // A chat still being set up has no rules yet, and its menu has no Auto handoff row.
+    if (!isChat || launchPending || !automationRulesReadable()) {
       setScopedHandoffRules(null);
       return undefined;
     }
@@ -387,7 +410,7 @@ function SessionContextMenuPanel({
       setScopedHandoffRules(rules);
     });
     return () => { cancelled = true; };
-  }, [binding, isChat, session.id]);
+  }, [binding, isChat, launchPending, session.id]);
   const canonicalPhase = sessionCanonicalUiState(session).phase;
   const isActivelyRunning = sessionIsMidFlight(session);
   // Snooze is a visibility overlay, so it is read from the shared snooze
@@ -666,6 +689,91 @@ function SessionContextMenuPanel({
     return null;
   };
 
+  // A chat whose lane is still being set up does not exist on any machine
+  // yet: rename, status, hand off, snooze, restart and delete would all act
+  // on a chat that is not there. Its menu holds only what is safe now: the
+  // setup's own Retry and Cancel (the card's buttons), Pin, the grid, and
+  // the id. Everything else comes back when the chat starts.
+  const pinned = (pinnedSessionIds ?? []).includes(session.id);
+  const pinAndGridItems = (
+    <>
+      {onTogglePinned ? (
+        <button
+          type="button"
+          className={MENU_ITEM_CLASS}
+          onClick={() => { onTogglePinned(session); onClose(); }}
+        >
+          <MenuRowIcon icon={pinned ? PushPinSlash : PushPin} />
+          {pinned ? "Unpin" : "Pin"}
+        </button>
+      ) : null}
+      {onRemoveFromGrid && (gridSessionIds ?? []).includes(session.id) ? (
+        <button
+          type="button"
+          className={MENU_ITEM_CLASS}
+          onClick={() => { onRemoveFromGrid(session); onClose(); }}
+        >
+          <MenuRowIcon icon={SquaresFour} />
+          Remove from grid
+        </button>
+      ) : null}
+    </>
+  );
+
+  if (launchRow && launchPending) {
+    /** The card shows a failed press; the menu is gone by then, so a toast says it. */
+    const runSetupAction = (action: string, run: () => Promise<void>) => {
+      void run().catch((error: unknown) => {
+        console.warn(`[SessionContextMenu] ${action} failed`, error);
+        showToast({ id: `chat-launch-action-failed:${session.id}`, title: `${action} failed`, message: extractError(error), tone: "error" });
+      });
+      onClose();
+    };
+    return (
+      <ContextMenuSurface
+        menuRef={menuRef}
+        left={menuPosition.left}
+        top={menuPosition.top}
+        positioned={Boolean(clampedPosition)}
+        onClose={onClose}
+        className="min-w-[180px]"
+      >
+        <MenuSectionLabel>{launchRow.failed ? "Setup failed" : "Setting up the lane"}</MenuSectionLabel>
+        {launchRow.failed ? (
+          <button
+            type="button"
+            data-testid="session-menu-launch-retry"
+            className={MENU_ITEM_CLASS}
+            onClick={() => runSetupAction("Retry setup", () => retryChatLaunch(session.id))}
+          >
+            <MenuRowIcon icon={ArrowClockwise} />
+            Retry setup
+          </button>
+        ) : null}
+        <button
+          type="button"
+          data-testid="session-menu-launch-cancel"
+          className={DESTRUCTIVE_ITEM_CLASS}
+          title="Stops the setup and removes the lane it made. Your message goes back into the prompt box."
+          onClick={() => runSetupAction("Cancel setup", () => cancelChatLaunch(session.id))}
+        >
+          <MenuRowIcon icon={Prohibit} danger />
+          Cancel setup
+        </button>
+        <MenuSeparator />
+        {pinAndGridItems}
+        <button
+          type="button"
+          className={MENU_ITEM_CLASS}
+          onClick={() => { onCopySessionId(session.id); onClose(); }}
+        >
+          <MenuRowIcon icon={Hash} />
+          Copy session ID
+        </button>
+      </ContextMenuSurface>
+    );
+  }
+
   return (
     <ContextMenuSurface
       menuRef={menuRef}
@@ -718,26 +826,7 @@ function SessionContextMenuPanel({
             Set tag
           </button>
         ) : null}
-        {onTogglePinned ? (
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={() => { onTogglePinned(session); onClose(); }}
-          >
-            <MenuRowIcon icon={(pinnedSessionIds ?? []).includes(session.id) ? PushPinSlash : PushPin} />
-            {(pinnedSessionIds ?? []).includes(session.id) ? "Unpin" : "Pin"}
-          </button>
-        ) : null}
-        {onRemoveFromGrid && (gridSessionIds ?? []).includes(session.id) ? (
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={() => { onRemoveFromGrid(session); onClose(); }}
-          >
-            <MenuRowIcon icon={SquaresFour} />
-            Remove from grid
-          </button>
-        ) : null}
+        {pinAndGridItems}
         {notificationMute.available ? (
           <button
             type="button"
@@ -850,30 +939,87 @@ function SessionContextMenuPanel({
           </MenuSubmenu>
         ) : null}
 
+        {/* An agent CLI hands off into a new chat on its own model, or moves
+            to another machine as a CLI (its conversation file travels for
+            Claude Code and Codex; other agents start fresh with a brief).
+            `binding` is the row's own machine, so the move starts there. */}
+        {isAgentCli ? (
+          <MenuSubmenu
+            label="Hand off"
+            icon={<MenuRowIcon icon={ArrowBendUpRight} />}
+            className={MENU_ITEM_CLASS}
+            data-testid="session-menu-cli-handoff"
+          >
+            <button
+              type="button"
+              data-testid="session-menu-cli-fork"
+              className={MENU_ITEM_CLASS}
+              title="A new chat that carries this CLI's conversation"
+              onClick={() => { void handoffAgentCliSession(session, "fork", binding); onClose(); }}
+            >
+              <MenuRowIcon icon={GitFork} />
+              Fork into a chat
+            </button>
+            <button
+              type="button"
+              data-testid="session-menu-cli-brief"
+              className={MENU_ITEM_CLASS}
+              title="A new chat that starts from a short brief of this CLI's work"
+              onClick={() => { void handoffAgentCliSession(session, "brief", binding); onClose(); }}
+            >
+              <MenuRowIcon icon={ArrowBendUpRight} />
+              Hand off with a brief
+            </button>
+            <CrossMachineMoveSubmenu
+              session={session}
+              binding={binding}
+              busy={isActivelyRunning}
+              onClose={onClose}
+              onOpenFullSetup={() => undefined}
+              cli
+            />
+          </MenuSubmenu>
+        ) : null}
+
+        {/* A chat started by another chat either reports back to it or not.
+            The stored kinds stay `subagent` / `peer`; the menu says what they do. */}
         {isChat && session.orchestrationParentSessionId && session.spawnKind === "subagent" ? (
           <button
             type="button"
             className={MENU_ITEM_CLASS}
-            onClick={() => { void setChatSpawnKind(session, "peer", binding); onClose(); }}
+            data-testid="session-menu-stop-reports"
+            onClick={() => { void setChatSpawnKind(session, "peer", binding, parentName); onClose(); }}
           >
             <MenuRowIcon icon={ArrowDown} />
-            Demote to peer
+            <span className="min-w-0 truncate">Stop reports to {parentName}</span>
           </button>
         ) : null}
         {isChat && session.orchestrationParentSessionId && session.spawnKind === "peer" ? (
           <button
             type="button"
             className={MENU_ITEM_CLASS}
-            onClick={() => { void setChatSpawnKind(session, "subagent", binding); onClose(); }}
+            data-testid="session-menu-report-back"
+            onClick={() => { void setChatSpawnKind(session, "subagent", binding, parentName); onClose(); }}
           >
             <MenuRowIcon icon={ArrowUp} />
-            Promote to subagent
+            <span className="min-w-0 truncate">Report back to {parentName}</span>
           </button>
         ) : null}
 
         {/* ── Go to: the surfaces outside this menu that show the same session. ── */}
         <MenuSeparator />
         <MenuSectionLabel>Go to</MenuSectionLabel>
+        {session.orchestrationParentSessionId && session.parentIdentityKey !== "cto" ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            data-testid="session-menu-open-parent"
+            onClick={() => { navigateToSpawnedChat(session.orchestrationParentSessionId, null, binding); onClose(); }}
+          >
+            <MenuRowIcon icon={ArrowSquareOut} />
+            <span className="min-w-0 truncate">Open {parentName}</span>
+          </button>
+        ) : null}
         <button
           type="button"
           className={MENU_ITEM_CLASS}
@@ -950,6 +1096,18 @@ function SessionContextMenuPanel({
         {/* ── Disruptive and destructive, last and fenced off. Restarting the
             agent process sits here, not among the everyday lifecycle rows. ── */}
         {canStopRuntime || isChat || (!isRunning && !isChat) ? <MenuSeparator /> : null}
+        {isAgentCli ? (
+          <button
+            type="button"
+            data-testid="session-menu-cli-archive"
+            className={MENU_ITEM_CLASS}
+            title="Hide it from Work. At its prompt it stops and resumes later; mid-turn it finishes first."
+            onClick={() => { void archiveAgentCliSession(session, binding); onClose(); }}
+          >
+            <MenuRowIcon icon={Archive} />
+            Archive
+          </button>
+        ) : null}
         {isChat ? (
           <button
             type="button"

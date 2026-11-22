@@ -8,6 +8,7 @@ import type {
 } from "../../../shared/types";
 import type { CrossMachineMachineLanes } from "../../state/appStore";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import {
   AUTO_CREATE_LANE_OPTION_ID,
   autoCreateLaneOptionId,
@@ -19,6 +20,7 @@ import {
 import {
   canCreateLaneOnMachine,
   deriveLaneMachineOptions,
+  isAdeCloudLaneComputer,
   type LaneMachineOption,
   type LaneMachineProjectRef,
 } from "../lanes/laneMachines";
@@ -60,7 +62,9 @@ type DraftLaneInput = LaneComboboxLane & {
  * Primary in the same list.
  */
 export function isPrimaryDraftLane(lane: { laneType?: string | null; name: string }): boolean {
-  return lane.laneType === "primary" || lane.name.trim().toLowerCase() === "primary";
+  // The name answers only for a lane whose type was not read: a worktree may be named "Primary".
+  if (lane.laneType != null) return lane.laneType === "primary";
+  return lane.name.trim().toLowerCase() === "primary";
 }
 
 /** `laneType` wins over a lane merely NAMED "Primary" — matches the auto-create rule. */
@@ -109,6 +113,12 @@ type UseDraftMachineRoutingInput = {
   availableLanes?: readonly DraftLaneInput[];
   laneId: string | null;
   initialDraftMachineId: string | null;
+  /**
+   * "Start on" default for new work in this tab (`useActiveStartOn`): the
+   * machine of its first available copy. A draft with no pick of its own
+   * starts there. Null: the tab's machine.
+   */
+  startOnMachineId?: string | null;
   draftLaunchTargetIsAutoCreate: boolean;
   onDraftMachineChange?: (machineId: string | null) => void;
   onLaneChange?: (laneId: string) => void;
@@ -133,6 +143,7 @@ export function useDraftMachineRouting({
   availableLanes,
   laneId,
   initialDraftMachineId,
+  startOnMachineId = null,
   draftLaunchTargetIsAutoCreate,
   onDraftMachineChange,
   onLaneChange,
@@ -206,6 +217,8 @@ export function useDraftMachineRouting({
     };
   }, [enabled]);
 
+  // ADE Cloud computers are named by their lane, so the rows follow the index as it is read.
+  const cloudIndex = useAdeCloudLaneComputers();
   /** Every connected machine, with or without this repository. */
   const derivedMachineOptions = useMemo<LaneMachineOption[]>(() => {
     if (!enabled) return [];
@@ -240,12 +253,39 @@ export function useDraftMachineRouting({
       repoDisplayName: boundProject?.displayName ?? null,
       localProjectRoots: openProjectTabRoots,
       localProjects: knownLocalProjects,
+      cloudIndex,
     });
+    // The tab's machine is reconnecting: it stays in the list as the bound
+    // machine, marked, so a draft does not move to This computer meanwhile. A
+    // background redial publishes "connecting" with its recovery kept.
+    if (
+      boundConnection
+      && (boundConnection.state === "error" || boundConnection.state === "connecting")
+      && boundConnection.recovery === "reconnecting"
+      && !options.some((option) => option.isBound)
+    ) {
+      options.push({
+        id: boundConnection.target.id,
+        name: boundConnection.target.name,
+        targetId: boundConnection.target.id,
+        hostname: boundConnection.target.hostname ?? null,
+        transport: boundConnection.target.transport ?? "ssh",
+        version: boundConnection.version ?? null,
+        freeBytes: null,
+        activeLaneCount: null,
+        repoMatch: "matched",
+        project: boundProject,
+        isBound: true,
+        machineKey: boundConnection.target.pairedMachine?.machineKey?.trim() || boundConnection.target.id,
+        reconnecting: true,
+      });
+    }
     return [
       ...options.filter((option) => option.isBound),
       ...options.filter((option) => !option.isBound),
     ];
   }, [
+    cloudIndex,
     connectionSnapshot,
     enabled,
     knownLocalProjects,
@@ -261,6 +301,19 @@ export function useDraftMachineRouting({
     () => derivedMachineOptions.filter((option) => option.targetId != null && !canCreateLaneOnMachine(option)),
     [derivedMachineOptions],
   );
+  const machineOrder = useMemo(() => derivedMachineOptions.map((option) => option.id), [derivedMachineOptions]);
+  const connections = useMemo(
+    () => (enabled ? connectionSnapshot?.connections ?? [] : []),
+    [connectionSnapshot, enabled],
+  );
+  const machineKeyByTargetId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const connection of connections) {
+      const key = connection.target.pairedMachine?.machineKey?.trim();
+      if (key) map.set(connection.target.id, key);
+    }
+    return map;
+  }, [connections]);
   /** Saved paired machines that are not connected now (an asleep cloud machine among them). */
   const offlineMachines = useMemo(
     () => (enabled ? connectionSnapshot?.connections ?? [] : [])
@@ -301,7 +354,9 @@ export function useDraftMachineRouting({
   const boundMachineId = projectBinding?.kind === "remote"
     ? projectBinding.targetId
     : "this-mac";
-  const desiredMachineId = initialDraftMachineId?.trim() || boundMachineId;
+  // A draft with no pick of its own starts where "Start on" says.
+  const defaultMachineId = startOnMachineId?.trim() || boundMachineId;
+  const desiredMachineId = initialDraftMachineId?.trim() || defaultMachineId;
   const routingInputKey = JSON.stringify([projectBinding?.key ?? null, desiredMachineId]);
   /**
    * Whether the BOUND machine's lane list has actually been read. That list is
@@ -349,7 +404,15 @@ export function useDraftMachineRouting({
    * the lane prop lands a render after the machine, so remapping there read the
    * PREVIOUS lane and replaced the requested one with the new machine's Primary.
    */
-  const pendingLaneRemapRef = useRef<{ machineId: string; laneId: string | null } | null>(null);
+  const pendingLaneRemapRef = useRef<{ machineId: string; laneId: string | null } | null>(
+    // "Start on" moved a new draft off the tab's machine. It names no lane, and
+    // the pane's lane is the tab machine's, so re-derive it on the new machine.
+    !initialDraftMachineId?.trim() && desiredMachineId !== boundMachineId
+      ? { machineId: boundMachineId, laneId }
+      : null,
+  );
+  const laneIdRef = useRef(laneId);
+  laneIdRef.current = laneId;
   // Reconciliation tracks whether the latest project/persisted input was
   // applied. A user's machine choice inside that scope must remain ready even
   // before the parent echoes the persisted value back through props.
@@ -366,18 +429,24 @@ export function useDraftMachineRouting({
       pendingLaneRemapRef.current ??= { machineId, laneId };
     }
     setMachineId(nextMachineId);
-    onDraftMachineChange?.(nextMachineId === boundMachineId ? null : nextMachineId);
-  }, [boundMachineId, laneId, machineId, onDraftMachineChange]);
+    // The default is not saved as a pick, so the draft keeps following it.
+    onDraftMachineChange?.(nextMachineId === defaultMachineId ? null : nextMachineId);
+  }, [defaultMachineId, laneId, machineId, onDraftMachineChange]);
 
   useEffect(() => {
     // An outside machine change (not the echo of `chooseMachine`) brings its
-    // own lane, so it supersedes any remap still waiting on a catalog.
-    if (desiredMachineId !== machineIdRef.current) pendingLaneRemapRef.current = null;
+    // own lane, so it supersedes any remap still waiting on a catalog. A move
+    // by "Start on" (no machine handed in) brings no lane: remap from here.
+    if (desiredMachineId !== machineIdRef.current) {
+      pendingLaneRemapRef.current = initialDraftMachineId?.trim()
+        ? null
+        : pendingLaneRemapRef.current ?? { machineId: machineIdRef.current, laneId: laneIdRef.current };
+    }
     setMachineId((currentMachineId) =>
       currentMachineId === desiredMachineId ? currentMachineId : desiredMachineId,
     );
     setReconciledRoutingInputKey(routingInputKey);
-  }, [desiredMachineId, routingInputKey]);
+  }, [desiredMachineId, initialDraftMachineId, routingInputKey]);
 
   useEffect(() => {
     // A disabled draft has no catalog at all (`machineOptions` is empty by
@@ -389,9 +458,13 @@ export function useDraftMachineRouting({
     // is still loading. Once the catalog resolves (including a failed probe),
     // the local/bound machine is the safe fallback instead of leaving the
     // composer pinned to a machine that no longer exists in the options.
-    if (!connectionCatalogResolvedRef.current && initialDraftMachineId?.trim() === machineId) return;
+    if (
+      !connectionCatalogResolvedRef.current
+      && (initialDraftMachineId?.trim() === machineId || defaultMachineId === machineId)
+    ) return;
     chooseMachine(
-      machineOptions.find((option) => option.isBound)?.id
+      machineOptions.find((option) => option.id === defaultMachineId)?.id
+        ?? machineOptions.find((option) => option.isBound)?.id
         ?? machineOptions[0]?.id
         ?? boundMachineId,
     );
@@ -399,6 +472,7 @@ export function useDraftMachineRouting({
     boundMachineId,
     chooseMachine,
     connectionCatalogResolved,
+    defaultMachineId,
     enabled,
     initialDraftMachineId,
     machineId,
@@ -498,13 +572,35 @@ export function useDraftMachineRouting({
    * which is strictly worse than the unavailable message it was replacing.
    */
   const laneCatalogLoading = laneCatalogUnresolved && !laneCatalogHoldExpired;
+  /**
+   * The picked machine is a lane's own ADE Cloud computer (ADE Web bound to
+   * one, or the desktop sending there). Its main checkout is only the clone
+   * the lane came from, so the list leaves it out, as the lane lists do
+   * (`crossMachineLanes.ts`).
+   */
+  const machineIsCloudLaneComputer = useMemo(() => {
+    const option = derivedMachineOptions.find((candidate) => candidate.id === machineId);
+    return option ? isAdeCloudLaneComputer(option, cloudIndex.computers) : false;
+  }, [cloudIndex.computers, derivedMachineOptions, machineId]);
   const selectorLanes = useMemo<RoutedDraftLane[]>(() => {
     if (!enabled) return (availableLanes ?? lanes) as RoutedDraftLane[];
     // Strictly the picked machine's lanes. A lane id from another machine is
     // not a row here — each machine has exactly one Primary, so preserving a
     // foreign one duplicated it in the list.
-    return [AUTO_CREATE_DRAFT_LANE_OPTION, ...executionLanes];
-  }, [availableLanes, enabled, executionLanes, lanes]);
+    const shown = machineIsCloudLaneComputer
+      ? executionLanes.filter((lane) => !isPrimaryDraftLane(lane))
+      : executionLanes;
+    return [AUTO_CREATE_DRAFT_LANE_OPTION, ...shown];
+  }, [availableLanes, enabled, executionLanes, lanes, machineIsCloudLaneComputer]);
+  // On a lane's ADE Cloud computer the main checkout is not a choice: a draft
+  // aimed at it moves to the computer's lane.
+  useEffect(() => {
+    if (!enabled || !machineIsCloudLaneComputer || !laneId) return;
+    const current = executionLanes.find((lane) => lane.id === laneId);
+    if (!current || !isPrimaryDraftLane(current)) return;
+    const lane = executionLanes.find((candidate) => !isPrimaryDraftLane(candidate));
+    if (lane) onLaneChange?.(lane.id);
+  }, [enabled, executionLanes, laneId, machineIsCloudLaneComputer, onLaneChange]);
 
   /**
    * The lane catalog of a machine the union has not read yet is fetched on its
@@ -561,7 +657,10 @@ export function useDraftMachineRouting({
         ?? executionLanes.find((candidate) => candidate.id === previous.laneId)
         ?? null
       : null;
-    const nextLane = remapDraftLaneToMachine(previousLane, executionLanes);
+    // A catalog with no main checkout (a lane's ADE Cloud computer lists its own lane) takes its first lane.
+    const nextLane = remapDraftLaneToMachine(previousLane, executionLanes)
+      ?? executionLanes.find((candidate) => !isPrimaryDraftLane(candidate))
+      ?? null;
     // Nothing resolved (the catalog decoded to zero lanes): stay unresolved so
     // the remap runs again when that machine's real lane list lands. Committing
     // the remap would short-circuit this effect forever.
@@ -673,6 +772,12 @@ export function useDraftMachineRouting({
   return {
     machineOptions,
     cloneMachineOptions,
+    /** Every connected machine's id in list order, ready or not: the picker keeps a machine in its place when it changes group. */
+    machineOrder,
+    /** Account machine key by remote target id, for the connected and saved paired machines. */
+    machineKeyByTargetId,
+    /** The live connections, for a send that needs a machine's project binding. */
+    connections,
     offlineMachines,
     refreshMachineProjects,
     selectorMachines,

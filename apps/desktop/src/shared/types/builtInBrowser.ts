@@ -1,3 +1,4 @@
+import type { BuiltInBrowserSaveLoginOffer } from "./builtInBrowserLoginCapture";
 import type {
   AgentActionTraceEntry,
   AgentDomSnapshot,
@@ -194,7 +195,18 @@ export type BuiltInBrowserTab = {
    * A person navigated this tab by hand or handed it to a chat, so it is
    * theirs even if an agent opened it. Absent on an older desktop.
    */
-  keptByPerson?: boolean;
+keptByPerson?: boolean;
+  /**
+   * When ADE will close this agent tab on its own (its chat went idle or
+   * ended, and nobody kept it). Null or absent otherwise.
+   */
+  autoCloseAt?: string | null;
+  /**
+   * The tab is asleep: its page was dropped to save memory after a while
+   * unused (as Chrome discards a tab). It loads again, history included, the
+   * moment it is shown or an agent uses it. Absent on an older desktop.
+   */
+  sleeping?: boolean;
   /** When the tab was created. */
   createdAt: string;
   zoomFactor: number;
@@ -1051,6 +1063,22 @@ export type BuiltInBrowserFillArgs = BuiltInBrowserAgentActionArgs & BuiltInBrow
   value?: string | null;
 };
 
+/**
+ * Sign in to the tab's own page with a login saved in Passwords. The site is
+ * always the tab's top-frame URL, never one the caller names; the result names
+ * the site, the account and which fields were filled, never a value.
+ */
+export type BuiltInBrowserSigninArgs = BuiltInBrowserTabTargetArgs & {
+  /** A saved Passwords item. When omitted, the first login for the page is used. */
+  itemId?: string | null;
+  /** Which saved login to use when the site has more than one. */
+  username?: string | null;
+  /** `--site`: refuse unless the tab's page is on this host (checked on the tab that is filled). */
+  expectedSite?: string | null;
+  /** Only a login saved for the page's exact origin (an agent's sign-in always sets it). */
+  exactOrigin?: boolean;
+};
+
 export type BuiltInBrowserClearArgs = BuiltInBrowserAgentActionArgs & BuiltInBrowserElementTargetArgs;
 
 export type BuiltInBrowserWaitArgs = BuiltInBrowserAgentActionArgs & BuiltInBrowserElementTargetArgs & {
@@ -1077,6 +1105,25 @@ export type BuiltInBrowserAgentActionResult = {
   resolved: BuiltInBrowserElementSnapshot | null;
   /** Whether anything visibly changed between the state before the input and the post-action observation. */
   effect: ComputerUseActionEffect;
+  /**
+   * Set only on a `signin` answer: the site, the account and which fields were
+   * filled. A password value is never part of any result.
+   */
+  signin?: {
+    site: string;
+    username: string | null;
+    filled: string[];
+    /** The saved item that was filled (an id, never a value), for Activity. */
+    itemId?: string;
+    /** No saved login for this page: nothing was filled (`passwords.signin` then asks the person). */
+    needsLogin?: boolean;
+    /** The tab's page, with `needsLogin`, so the sign-in card names that exact site. */
+    pageUrl?: string;
+    /** The person chose to sign in in the tab themselves; nothing was filled. */
+    signInYourself?: boolean;
+    /** `signup`: a new password was made, saved to Passwords, and typed into the form. */
+    created?: boolean;
+  };
   /**
    * Set when the action ran but the observation after it failed. The action
    * still happened: do not run it again (a second click is a second submit).
@@ -1189,6 +1236,8 @@ export type BuiltInBrowserSelectResult = {
 
 export type BuiltInBrowserEventPayload =
   | { type: "status"; status: BuiltInBrowserStatus }
+  /** "Save to Passwords?" for a login the person just sent (null: the offer is gone). Never a value. */
+  | { type: "login-offer"; tabId: string; offer: BuiltInBrowserSaveLoginOffer | null }
   | {
       type: "open-request";
       status: BuiltInBrowserStatus;
@@ -1992,6 +2041,30 @@ export type BuiltInBrowserStartPreviewStreamArgs = BuiltInBrowserProjectScopeArg
 export type BuiltInBrowserStopPreviewStreamArgs = BuiltInBrowserProjectScopeArgs & {
   tabId?: string | null;
 };
+
+/**
+ * One browser tab as a viewer on another machine sees it: what it shows and
+ * the newest frame. Served by the desktop that hosts the tab, through the
+ * brain's `work_tools.readBrowserTabFrame`; `frame` is null until the first
+ * capture lands (the first poll starts the capture loop).
+ */
+export type BuiltInBrowserRemoteTabFrame = {
+  tabId: string;
+  url: string | null;
+  title: string | null;
+  isLoading: boolean;
+  frame: { dataUrl: string; width: number; height: number; capturedAt: string } | null;
+};
+
+/**
+ * A person's input from another machine (Take control). `x`/`y` are fractions
+ * (0–1) of the frame the viewer saw, so its picture size never matters.
+ */
+export type BuiltInBrowserRemoteInputEvent =
+  | { type: "click"; x: number; y: number }
+  | { type: "scroll"; x: number; y: number; deltaY: number }
+  | { type: "key"; key: string }
+  | { type: "text"; text: string };
 
 export type BuiltInBrowserPreviewStreamResult = {
   tabId: string;

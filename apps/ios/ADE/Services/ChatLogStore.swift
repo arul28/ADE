@@ -92,10 +92,24 @@ actor ChatLogStore {
   private var pendingBytes = 0
   private var flushTask: Task<Void, Never>?
 
+  private static var defaultDirectoryURL: URL {
+    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+      .appendingPathComponent("ADE", isDirectory: true)
+  }
+
+  /// An account left: the shared store's files go now, on the caller's
+  /// thread, so an app kill right after cannot keep that account's chats on
+  /// disk. `purgeAll()` still runs on the actor to close its connection; a
+  /// write before it goes to the deleted file and is lost with it.
+  nonisolated static func removeSharedStoreFiles() {
+    let base = defaultDirectoryURL.appendingPathComponent(fileName).path
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+      try? FileManager.default.removeItem(atPath: base + suffix)
+    }
+  }
+
   init(directoryURL: URL? = nil, perChatByteBudget: Int = 1_500_000, totalByteBudget: Int = 150_000_000) {
-    let resolved = directoryURL
-      ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("ADE", isDirectory: true)
+    let resolved = directoryURL ?? Self.defaultDirectoryURL
     self.directoryURL = resolved
     self.databaseURL = resolved.appendingPathComponent(Self.fileName)
     self.perChatByteBudget = max(1, perChatByteBudget)

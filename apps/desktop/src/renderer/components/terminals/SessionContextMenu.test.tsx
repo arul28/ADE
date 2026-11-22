@@ -96,6 +96,9 @@ function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
   };
 }
 
+/** The row's machine: Work resolves it before the menu opens. */
+const ROW_PIN: OpenProjectBinding = { kind: "local", key: "local:/project", rootPath: "/project", displayName: "project" };
+
 function renderMenu(
   session: TerminalSessionSummary,
   {
@@ -124,7 +127,7 @@ function renderMenu(
   render(
     <MemoryRouter>
       <SessionContextMenu
-        menu={{ session, binding, laneActions, laneType, x: 20, y: 20 }}
+        menu={{ session, binding: binding === undefined ? ROW_PIN : binding, laneActions, laneType, x: 20, y: 20 }}
         onClose={onClose}
         onStopRuntime={vi.fn()}
         onStopAndDelete={vi.fn()}
@@ -180,7 +183,7 @@ describe("SessionContextMenu Claude tags", () => {
     fireEvent.change(input, { target: { value: "   " } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(onSetChatTag).toHaveBeenCalledWith(session, null, null);
+    expect(onSetChatTag).toHaveBeenCalledWith(session, null, ROW_PIN);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -193,7 +196,7 @@ describe("SessionContextMenu Claude tags", () => {
     fireEvent.change(input, { target: { value: "review-ready" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(onSetChatTag).toHaveBeenCalledWith(session, "review-ready", null);
+    expect(onSetChatTag).toHaveBeenCalledWith(session, "review-ready", ROW_PIN);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -347,15 +350,6 @@ describe("SessionContextMenu lane section", () => {
     expect(selectLane).not.toHaveBeenCalled();
   });
 
-  it("puts a glanceable icon on every top-level action", () => {
-    renderMenu(makeSession());
-    for (const name of ["Rename", "Go to lane", "Delete chat"]) {
-      expect(screen.getByRole("button", { name }).querySelector("[data-menu-icon]")).toBeTruthy();
-    }
-    expect(screen.getByTestId("session-menu-change-status").querySelector("[data-menu-icon]"))
-      .toBeTruthy();
-  });
-
   it("omits the lane section for a row whose lane still has a divider", () => {
     // Not a singleton: the lane header is on screen and owns lane management,
     // so duplicating it into every row's session menu would be pure noise.
@@ -468,7 +462,7 @@ describe("SessionContextMenu grouped actions", () => {
     openSubmenuByHover(screen.getByRole("button", { name: "Copy" }));
     fireEvent.click(screen.getByRole("button", { name: "Session deep link" }));
     // The row's machine (null: this tab's own) names the link's owner.
-    expect(onCopySessionDeepLink).toHaveBeenCalledWith(session, null);
+    expect(onCopySessionDeepLink).toHaveBeenCalledWith(session, ROW_PIN);
   });
 
   it("keeps the flat menu's top-level actions on the top level", () => {
@@ -479,7 +473,7 @@ describe("SessionContextMenu grouped actions", () => {
       expect(screen.getByRole("button", { name })).toBeTruthy();
     }
     fireEvent.click(screen.getByRole("button", { name: "Go to lane" }));
-    expect(onGoToLane).toHaveBeenCalledWith(session, null);
+    expect(onGoToLane).toHaveBeenCalledWith(session, ROW_PIN);
   });
 
   it("groups manual rename and the three AI metadata choices together", () => {
@@ -500,7 +494,7 @@ describe("SessionContextMenu grouped actions", () => {
     expect(onRegenerateMetadata).toHaveBeenCalledWith(
       session,
       ["title", "laneName", "statusLine"],
-      null,
+      ROW_PIN,
     );
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -518,7 +512,7 @@ describe("SessionContextMenu grouped actions", () => {
     fireEvent.change(input, { target: { value: "A clearer title" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(onRename).toHaveBeenCalledWith(session, "A clearer title", null);
+    expect(onRename).toHaveBeenCalledWith(session, "A clearer title", ROW_PIN);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -556,7 +550,7 @@ describe("SessionContextMenu grouped actions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Generate title & status" }));
 
-    expect(onRegenerateMetadata).toHaveBeenCalledWith(session, ["title", "statusLine"], null);
+    expect(onRegenerateMetadata).toHaveBeenCalledWith(session, ["title", "statusLine"], ROW_PIN);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -604,7 +598,7 @@ describe("SessionContextMenu settle safety", () => {
 
     openStatusMenu();
     fireEvent.click(screen.getByTestId("session-menu-status-done"));
-    expect(onChangeStatus).toHaveBeenCalledWith(session, "done", null);
+    expect(onChangeStatus).toHaveBeenCalledWith(session, "done", ROW_PIN);
   });
 
   it("does not infer a provider card from a runtime marker", () => {
@@ -670,13 +664,13 @@ describe("SessionContextMenu snooze and explicit-settle lifecycle", () => {
 
     openStatusMenu();
     fireEvent.click(screen.getByRole("button", { name: "Unsettle" }));
-    await waitFor(() => expect(sessionsApi.unsettle).toHaveBeenCalledWith("chat-1"));
+    await waitFor(() => expect(sessionsApi.unsettle).toHaveBeenCalledWith("chat-1", ROW_PIN));
     expect(sessionsApi.setSettleOverride).not.toHaveBeenCalled();
 
     openStatusMenu();
     fireEvent.click(screen.getByRole("button", { name: "Keep active" }));
     await waitFor(() => {
-      expect(sessionsApi.setSettleOverride).toHaveBeenCalledWith("chat-1", "active");
+      expect(sessionsApi.setSettleOverride).toHaveBeenCalledWith("chat-1", "active", ROW_PIN);
     });
   });
 
@@ -704,7 +698,7 @@ describe("SessionContextMenu snooze and explicit-settle lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: /Wake now/ }));
 
     await waitFor(() => {
-      expect(sessionsApi.wakeSession).toHaveBeenCalledWith("chat-1", "manual");
+      expect(sessionsApi.wakeSession).toHaveBeenCalledWith("chat-1", "manual", ROW_PIN);
     });
   });
 });
@@ -725,43 +719,31 @@ describe("SessionContextMenu spawn kind", () => {
     vi.clearAllMocks();
   });
 
-  it("offers Demote to peer on a subagent child and writes spawnKind peer", async () => {
+  it.each([
+    { from: "subagent" as const, item: "session-menu-stop-reports", writes: "peer", other: "session-menu-report-back" },
+    { from: "peer" as const, item: "session-menu-report-back", writes: "subagent", other: "session-menu-stop-reports" },
+  ])("switches a $from child's reports on its parent's machine", async ({ from, item, writes, other }) => {
     const session = makeSession({
       orchestrationParentSessionId: "parent-1",
-      spawnKind: "subagent",
+      spawnKind: from,
     });
     const { onClose } = renderMenu(session);
 
-    fireEvent.click(screen.getByRole("button", { name: "Demote to peer" }));
+    expect(screen.queryByTestId(other)).toBeNull();
+    fireEvent.click(screen.getByTestId(item));
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(
-        { sessionId: "chat-1", spawnKind: "peer" },
+        { sessionId: "chat-1", spawnKind: writes },
+        ROW_PIN,
       );
     });
     expect(onClose).toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Promote to subagent" })).toBeNull();
   });
 
-  it("offers Promote to subagent on a peer child", async () => {
-    const session = makeSession({
-      orchestrationParentSessionId: "parent-1",
-      spawnKind: "peer",
-    });
-    renderMenu(session);
-
-    fireEvent.click(screen.getByRole("button", { name: "Promote to subagent" }));
-    await waitFor(() => {
-      expect(updateSession).toHaveBeenCalledWith(
-        { sessionId: "chat-1", spawnKind: "subagent" },
-      );
-    });
-    expect(screen.queryByRole("button", { name: "Demote to peer" })).toBeNull();
-  });
-
-  it("hides demote and promote on a chat with no parent", () => {
+  it("offers no report switch on a chat with no parent", () => {
     renderMenu(makeSession({ spawnKind: "subagent" }));
-    expect(screen.queryByRole("button", { name: "Demote to peer" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Promote to subagent" })).toBeNull();
+    expect(screen.queryByTestId("session-menu-stop-reports")).toBeNull();
+    expect(screen.queryByTestId("session-menu-report-back")).toBeNull();
   });
 });
 
@@ -804,7 +786,7 @@ describe("SessionContextMenu handoff submenu", () => {
     fireEvent.click(screen.getByTestId("session-menu-handoff"));
     fireEvent.click(screen.getByTestId("session-menu-handoff-local"));
 
-    expect(onOpenChatHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }), "local", null);
+    expect(onOpenChatHandoff).toHaveBeenCalledWith(expect.objectContaining({ id: "chat-1" }), "local", ROW_PIN);
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -817,14 +799,14 @@ describe("SessionContextMenu handoff submenu", () => {
     expect(await screen.findByRole("button", { name: /Quick brief to Studio/ })).toBeTruthy();
     expect(getCrossMachineHandoffOptions).toHaveBeenCalledWith(
       { sourceSessionId: "chat-1" },
-      null,
+      ROW_PIN,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Set up the move to Studio" }));
     expect(onOpenChatHandoff).toHaveBeenCalledWith(
       expect.objectContaining({ id: "chat-1" }),
       "remote",
-      null,
+      ROW_PIN,
       { machine: "machine-studio" },
     );
     expect(onClose).toHaveBeenCalled();
@@ -936,7 +918,7 @@ describe("SessionContextMenu auto handoff", () => {
 
     fireEvent.click(remove);
     await waitFor(() => {
-      expect(deleteRule).toHaveBeenCalledWith({ id: "auto-handoff-chat-1-limit" }, null);
+      expect(deleteRule).toHaveBeenCalledWith({ id: "auto-handoff-chat-1-limit" }, ROW_PIN);
     });
     expect(onClose).toHaveBeenCalled();
   });

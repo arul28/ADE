@@ -102,6 +102,11 @@ describe("settings manifest", () => {
     "storage.diagnostics": "advanced",
     "archive.items": "storage",
     "lanes-git.pr-chat-transcripts": "project-agents",
+    // ADE Cloud left Integrations for its own tab; the ids stay so old links land.
+    "integrations.ade-cloud": "ade-cloud",
+    "integrations.ade-cloud-sign-ins": "ade-cloud",
+    "integrations.ade-cloud-spending": "ade-cloud",
+    "integrations.ade-cloud-agent-limits": "ade-cloud",
   };
 
   it("namespaces every entry id under its tab, except the rows that deliberately moved", () => {
@@ -244,7 +249,7 @@ describe("settings manifest", () => {
   });
 
   it("finds settings by keyword when the label does not contain the query", () => {
-    expect(searchSettingsEntries("api key").map((e) => e.id)).toContain("secrets.secrets");
+    expect(searchSettingsEntries("api key").map((e) => e.id)).toContain("passwords.secrets");
     expect(searchSettingsEntries("uncommitted").map((e) => e.id)).toContain("lanes-git.new-lane-start");
     expect(searchSettingsEntries("do not disturb").map((e) => e.id)).toContain("notifications.focus-suppression");
     expect(searchSettingsEntries("all machines").map((e) => e.id)).toContain("activity.dock-badge");
@@ -440,7 +445,7 @@ describe("settings command palette entries", () => {
       ["font size", "setting-appearance.chat-font-size"],
       ["scrollback", "setting-appearance.terminal"],
       ["do not disturb", "setting-notifications.focus-suppression"],
-      ["api key", "setting-secrets.secrets"],
+      ["api key", "setting-passwords.secrets"],
       ["crash", "setting-general.diagnostics-sharing"],
     ];
     for (const [query, expectedId] of cases) {
@@ -490,25 +495,25 @@ describe("web machine-scoped availability", () => {
     { platform: "MacIntel", mac: true },
     { platform: "Win32", mac: false },
     { platform: "Linux x86_64", mac: false },
-  ])("keeps every setting on the desktop ($platform), except web-only cards, macOS-only ones off a Mac, and ADE Cloud off its access list", async ({ platform, mac }) => {
+  ])("keeps every setting on the desktop ($platform), except web-only cards, macOS-only ones off a Mac, and ADE Cloud after a sign-out", async ({ platform, mac }) => {
     const spy = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
     try {
       const available = new Set(availableSettingsEntries().map((entry) => entry.id));
       expect(SETTINGS_ENTRIES.some((entry) => entry.webOnly)).toBe(true);
       expect(available.has("general.project-location")).toBe(mac);
       for (const entry of SETTINGS_ENTRIES) {
-        // ADE Cloud's settings stay hidden until this account has been told yes.
-        expect(available.has(entry.id)).toBe(entry.webOnly !== true && (mac || entry.macOnly !== true) && !isAdeCloudSettingEntry(entry));
+        // ADE Cloud is a machine every signed-in account has: its settings show before the server answers.
+        expect(available.has(entry.id)).toBe(entry.webOnly !== true && (mac || entry.macOnly !== true));
       }
-      const access = { enabled: true };
+      const access: { state: string; enabled?: boolean } = { state: "signed_out" };
       (window as { ade?: unknown }).ade = { cloudAccess: { read: async () => access, onChanged: () => () => undefined } };
       const cloudSettingIds = SETTINGS_ENTRIES.filter(isAdeCloudSettingEntry).map((entry) => entry.id);
       expect(cloudSettingIds.length).toBeGreaterThan(0);
       window.dispatchEvent(new Event("focus"));
-      await vi.waitFor(() => expect(availableSettingsEntries().map((entry) => entry.id)).toEqual(expect.arrayContaining(cloudSettingIds)));
-      access.enabled = false;
-      window.dispatchEvent(new Event("focus"));
       await vi.waitFor(() => expect(availableSettingsEntries().some(isAdeCloudSettingEntry)).toBe(false));
+      Object.assign(access, { state: "on", enabled: true });
+      window.dispatchEvent(new Event("focus"));
+      await vi.waitFor(() => expect(availableSettingsEntries().map((entry) => entry.id)).toEqual(expect.arrayContaining(cloudSettingIds)));
       delete (window as { ade?: unknown }).ade;
     } finally {
       spy.mockRestore();
@@ -546,11 +551,10 @@ describe("standalone settings availability", () => {
       expect(available.some((entry) => isProjectScoped(entry.scope))).toBe(false);
       expect(available.map((entry) => entry.id)).toEqual(
         SETTINGS_ENTRIES
-          .filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope) && (isMacPlatform() || !entry.macOnly) && !isAdeCloudSettingEntry(entry))
+          .filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope) && (isMacPlatform() || !entry.macOnly))
           .map((entry) => entry.id),
       );
       expect(searchSettingsEntries("reset").map((entry) => entry.id)).toContain("general.reset");
-      expect(searchSettingsEntries("secrets").some((entry) => entry.id === "secrets.secrets")).toBe(false);
 
       // Another page's cleanup must not end this page's mode.
       clearStandaloneSettingsResolver(() => true);

@@ -158,31 +158,50 @@ async function approveFromApp(
       { status: 429, headers: { "retry-after": String(DEVICE_RATE_LIMIT_WINDOW_MS / 1000) } },
     );
   }
-  const found = await lookUpForApp(env, userCode, now);
-  if (!found.row) return appLookupRefusal(found.state);
-  if (found.state !== "pending") return json({ error: "already_used" }, { status: 409 });
+  const link = await mintDeviceApprovalLink(env, {
+    userId: callerUserId,
+    userCode,
+    origin: new URL(request.url).origin,
+  }, options);
+  if (!link.ok) return json({ error: link.error }, { status: link.status });
+  return json({ url: link.url, machine_name: link.machineName });
+}
+
+export type DeviceApprovalLink =
+  | { ok: true; url: string; machineName: string | null }
+  | { ok: false; error: "not_found" | "expired" | "already_used" | "unavailable"; status: number };
+
+/**
+ * The one-time link that signs `userId` in to a pending device sign-in's
+ * page: a Clerk sign-in ticket for that user, continuing to the sign-in's
+ * authorize URL. The app route above mints it for the bearer's user; the
+ * server launcher (`cloud/launches.ts`) for the launch's user, once the new
+ * computer proved its join code.
+ */
+export async function mintDeviceApprovalLink(
+  env: DeviceAuthorizationEnv,
+  args: { userId: string; userCode: string; origin: string },
+  options: Pick<ResolvedOptions, "fetchImpl" | "now" | "randomBytes">,
+): Promise<DeviceApprovalLink> {
+  const found = await lookUpForApp(env, args.userCode, options.now());
+  if (!found.row) return { ok: false, error: found.state, status: found.state === "expired" ? 410 : 404 };
+  if (found.state !== "pending") return { ok: false, error: "already_used", status: 409 };
 
   // Everything this worker needs is checked before a ticket exists.
   const secretKey = env.CLERK_SECRET_KEY?.trim();
   const oauth = clerkOAuthConfig(env);
-  if (!secretKey || !oauth) return json({ error: "unavailable" }, { status: 503 });
+  if (!secretKey || !oauth) return { ok: false, error: "unavailable", status: 503 };
 
   // Ticket first, claim second: a ticket that is never handed out expires on
   // its own, but a claim with no ticket would leave the code unusable in the
   // browser too.
-  const ticketUrl = await mintSignInTicketUrl(secretKey, callerUserId, options.fetchImpl);
-  if (!ticketUrl) return json({ error: "unavailable" }, { status: 502 });
+  const ticketUrl = await mintSignInTicketUrl(secretKey, args.userId, options.fetchImpl);
+  if (!ticketUrl) return { ok: false, error: "unavailable", status: 502 };
 
-  const authorizeUrl = await claimForClerkSignIn(
-    env,
-    oauth,
-    found.row.device_code,
-    new URL(request.url).origin,
-    options,
-  );
-  if (!authorizeUrl) return json({ error: "already_used" }, { status: 409 });
+  const authorizeUrl = await claimForClerkSignIn(env, oauth, found.row.device_code, args.origin, options);
+  if (!authorizeUrl) return { ok: false, error: "already_used", status: 409 };
   ticketUrl.searchParams.set("redirect_url", authorizeUrl);
-  return json({ url: ticketUrl.toString(), machine_name: found.row.machine_name });
+  return { ok: true, url: ticketUrl.toString(), machineName: found.row.machine_name };
 }
 
 /**

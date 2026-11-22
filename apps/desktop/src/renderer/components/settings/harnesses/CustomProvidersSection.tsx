@@ -30,6 +30,7 @@ import { HelpHint } from "../primitives/HelpHint";
 import { ModernSection } from "../primitives/SettingsModern";
 import "./customProviders.css";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
+import { useSettingsReadPin } from "../ProjectCopyScope";
 import { useApiCredentialsPin } from "../providers/keys/useApiCredentials";
 import { bodyLogoFamily } from "./presetFacts";
 import { CustomHero, CustomEquation } from "./CustomProviderHero";
@@ -74,6 +75,7 @@ function draftOf(preset: HarnessPreset): HarnessPresetDraft {
     source: preset.source,
     model: preset.model,
     ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
+    ...(preset.reasoningTiers?.length ? { reasoningTiers: [...preset.reasoningTiers] } : {}),
     subagentModel: preset.subagentModel,
     ...(preset.subagentEffort ? { subagentEffort: preset.subagentEffort } : {}),
     agentOverrides: preset.agentOverrides,
@@ -104,7 +106,9 @@ export function CustomProvidersSection({
     if (!error) return;
     showToast({ tone: "warning", title: "Not on your ADE account yet", message: error });
   }, []);
-  const reach = useHarnessReach({ enabled: true, pin });
+  // The accounts read names this page's machine, This computer included.
+  const readPin = useSettingsReadPin();
+  const reach = useHarnessReach({ enabled: true, pin: readPin });
   const [dialog, setDialog] = useState<DialogState>({ mode: "closed" });
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -133,6 +137,7 @@ export function CustomProvidersSection({
       name: starter.name,
       source: starter.group.source,
       model: starter.model.id,
+      ...(starter.model.reasoningTiers?.length ? { reasoningTiers: [...starter.model.reasoningTiers] } : {}),
     }).then(({ preset, accountError }) => {
       if (preset) showToast({ tone: "success", title: `Created ${presetLabel(preset)}`, message: "Pick it from any model picker." });
       warnUnconfirmedAccountWrite(accountError);
@@ -227,6 +232,7 @@ export function CustomProvidersSection({
       model: preset.model,
       source: preset.source,
       ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
+      ...(preset.reasoningTiers?.length ? { reasoningTiers: preset.reasoningTiers } : {}),
     });
     if (!line) return;
     void copyTextToClipboard(line).then((ok) =>
@@ -252,8 +258,8 @@ export function CustomProvidersSection({
     <ModernSection
       group="Connections"
       anchor="ai-harnesses"
-      title="Custom"
-      hint="Any harness on a model you already pay for — saved to your account, on every computer."
+      title="Custom providers"
+      hint="Any harness on a model you already pay for — saved to your account, on every machine."
       actions={toolbar}
     >
       {pin ? (

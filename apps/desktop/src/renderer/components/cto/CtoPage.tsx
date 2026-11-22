@@ -1,36 +1,65 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Gear, Robot, Strategy } from "@phosphor-icons/react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentChatSession,
   AgentChatSessionSummary,
   ChatSurfacePresentation,
+  CtoAvatarState,
   CtoIdentity,
-  CtoSessionLogEntry,
   CtoSnapshot,
-  CtoStartFreshSessionResult,
-  CtoThreadHealth,
 } from "../../../shared/types";
-import { CTO_THREAD_ROLLED_OVER_STATUS } from "../../../shared/types/chat";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import type { ComposerMachineChipAction } from "../chat/AgentChatComposer";
 import { useChatMachineLanes } from "../chat/ChatRuntimeScope";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 import { pinKey } from "../../state/pinKey";
-import { CtoHomeChooser } from "./CtoHomeChooser";
-import { CtoHomeProvider, useCtoHome, type CtoHomeScope } from "./useCtoHome";
-import { cn } from "../ui/cn";
-import { CtoSettingsPage, type CtoIdentityPatch } from "./CtoSettingsPage";
-import { ctoModelSupportsLiveRedirect, resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
-import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
-import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
-import { shellBodyCls } from "./shared/designTokens";
+import { useStableBinding } from "../../state/laneMachineRouting";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { Dialog } from "../ui/dialog";
 import { TechnicalDetailsFold } from "../app/errorSurfaceKit";
-import { isAdeAvailable } from "../../lib/adeAvailability";
+import { CtoHomeChooser } from "./CtoHomeChooser";
+import { ctoHomeCandidates } from "./ctoHomeMachine";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { useCtoHome, type CtoHomeState } from "./useCtoHome";
+import { CtoSettingsPage, type CtoIdentityPatch, type CtoSettingsSection } from "./CtoSettingsPage";
+import { resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
+import { CtoAvatar, deriveCtoAvatarState, useCtoAvatarState } from "./avatar/CtoAvatar";
+import { resolveCtoAvatarLook } from "./avatar/ctoAvatarLook";
+import { CtoLookProvider, rememberCtoLook } from "./ctoLook";
+import { CtoHeaderPill } from "./CtoHeaderPill";
+import { CtoSidePanel, type CtoPanelTab } from "./CtoSidePanel";
+import { CtoWelcome } from "./CtoWelcome";
+import { useCtoLiveState } from "./useCtoLiveState";
+import { useCtoActivityData } from "./useCtoActivityData";
+import {
+  CTO_PANEL_DOCK_MIN_WIDTH,
+  ctoStatusPhrase,
+  readCtoPanelOpen,
+  resolveCtoPrimaryLaneId,
+  writeCtoPanelOpen,
+} from "./ctoSessionViewState";
+import { useCtoCloudHome } from "./useCtoCloudHome";
+import { useCloudMachines } from "../remoteTargets/useCloudMachines";
+import { showToast } from "../app/toast/toastStore";
+import type { CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
+import { CtoGreeting } from "./CtoGreeting";
+import { CtoAccountCopyView } from "./CtoAccountCopyView";
+import "./ctoPage.css";
 
-const CTO_ACCENT = "#22D3EE";
-/** `CTO_ACCENT` as an "r, g, b" triplet, for the rgba() tints below. */
-const CTO_ACCENT_RGB = "34, 211, 238";
 const MAX_WAKING_RETRIES = 4;
+
+/** Says what came along when the CTO moved and its new home restored it from the account copy. */
+function announceCtoMove(adopted: CtoAdoptAccountCopyResult | null): void {
+  if (!adopted?.restored) return;
+  showToast({
+    id: "cto-home-moved",
+    tone: "success",
+    title: `Moved from ${adopted.fromName ?? "the old machine"}`,
+    message: "Notes, routines and recent chat came along.",
+    durationMs: 6_000,
+  });
+}
+/** How long the welcome stays up after a pick, so the avatar's wake-up plays. */
+const WELCOME_WAKE_MS = 1_400;
 
 // The CTO is a single project-level thread on its home machine. The cache keeps
 // it warm across tab switches so re-entry is instant. Keyed by project tab AND
@@ -49,16 +78,137 @@ function readCrossMachineCapability(snapshot: Pick<CtoSnapshot, "capabilities"> 
   return snapshot?.capabilities?.crossMachine === true;
 }
 
+/** Which whole-page view the stage shows. */
+type CtoPageStage =
+  | "bridgeMissing"
+  | "chooser"
+  | "loading"
+  | "cloudGone"
+  | "cloudAsleep"
+  | "away"
+  | "welcome"
+  | "thread"
+  | "error"
+  | "waking";
+
+/** The stage's view. Order matters: the first match wins. */
+function ctoPageStage(input: {
+  bridgeMissing: boolean;
+  showChooser: boolean;
+  homeStatus: CtoHomeState["status"];
+  /** The home is an ADE Cloud computer that can't be reached right now. */
+  awayCloud: boolean;
+  awayCloudGone: boolean;
+  showWelcome: boolean;
+  threadReady: boolean;
+  failed: boolean;
+}): CtoPageStage {
+  if (input.bridgeMissing) return "bridgeMissing";
+  if (input.showChooser) return "chooser";
+  if (input.homeStatus === "loading") return "loading";
+  if (input.homeStatus === "offline") {
+    if (!input.awayCloud) return "away";
+    return input.awayCloudGone ? "cloudGone" : "cloudAsleep";
+  }
+  if (input.showWelcome) return "welcome";
+  if (input.threadReady) return "thread";
+  return input.failed ? "error" : "waking";
+}
+
+/**
+ * The header's status word. A home on another machine that can't be reached
+ * is away, not asleep; only an ADE Cloud computer sleeps, or is gone. Null
+ * until there is a CTO to describe.
+ */
+function ctoPageStatusPhrase(input: {
+  offline: boolean;
+  awayCloud: boolean;
+  awayCloudGone: boolean;
+  identityLoaded: boolean;
+  facts: Parameters<typeof ctoStatusPhrase>[0];
+}): string | null {
+  if (input.offline && !input.awayCloud) return "Away";
+  if (input.awayCloudGone) return "Gone";
+  if (input.identityLoaded || input.offline) return ctoStatusPhrase(input.facts);
+  return null;
+}
+
+/** Width of the page's own box, for docking the panel. Container width, not the window's. */
+function useContainerWidth(): [React.RefCallback<HTMLDivElement>, number] {
+  const [width, setWidth] = useState(0);
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((node: HTMLDivElement | null) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    setWidth(node.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const next = entries[0]?.contentRect.width;
+      if (next != null) setWidth((prev) => (Math.abs(prev - next) < 1 ? prev : next));
+    });
+    observer.observe(node);
+    observerRef.current = observer;
+  }, []);
+  useLayoutEffect(() => () => observerRef.current?.disconnect(), []);
+  return [ref, width];
+}
+
 export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const ctoHome = useCtoHome(active);
-  const homeReady = ctoHome.status === "ready";
-  /** Every CTO call carries this. Null = the tab's binding is the home. */
-  const ctoPin = ctoHome.pin;
+  const cloudIndex = useAdeCloudLaneComputers();
+  /** Every CTO call carries this. Null until the home is reachable: call nothing then. */
+  // Held by its key, so a rebuilt pin for the same machine restarts nothing.
+  const ctoPin = useStableBinding(ctoHome.status === "ready" ? ctoHome.pin : null);
+  const homeReady = ctoPin != null;
+  const pinTargetsTab = usePinTargetsTab(ctoPin);
   const scopeKey = useAppStore(selectActiveProjectStateKey);
   const sessionCacheKey = `${scopeKey ?? ""}|${pinKey(ctoPin)}`;
   // The home machine's lanes, not the tab's: the CTO's primary lane is there.
   const lanes = useChatMachineLanes(ctoPin);
   const [chooserOpen, setChooserOpen] = useState(false);
+  const onCloudChosen = useCallback(({ adopted }: { adopted: CtoAdoptAccountCopyResult | null }) => {
+    setChooserOpen(false);
+    announceCtoMove(adopted);
+  }, []);
+  const cloudHome = useCtoCloudHome({
+    active,
+    origin: ctoHome.origin,
+    machines: ctoHome.machines,
+    choose: ctoHome.choose,
+    onChosen: onCloudChosen,
+  });
+  // The home's ADE Cloud computer, read only while it is away: asleep, or
+  // deleted by the idle cleanup (then a new one is made from the account copy).
+  const awayCloudInstanceId = ctoHome.status === "offline" ? ctoHome.cloudInstanceId : null;
+  const cloudMachines = useCloudMachines(active && awayCloudInstanceId != null);
+  const awayCloudMachine = awayCloudInstanceId
+    ? cloudMachines.result?.machines.find((machine) => machine.instanceId === awayCloudInstanceId) ?? null
+    : null;
+  const awayCloudGone = awayCloudInstanceId != null
+    && cloudMachines.result?.state === "ok"
+    && (!awayCloudMachine || awayCloudMachine.state === "deleting");
+  const [waking, setWaking] = useState(false);
+  const wakeCloudHome = useCallback(async () => {
+    if (!awayCloudInstanceId) return;
+    setWaking(true);
+    try {
+      // A paired computer wakes by connecting; one this app has no
+      // connection to yet is woken through ADE Cloud.
+      const target = ctoHome.home && !ctoHome.home.isThisMachine ? ctoHome.home.machineId : null;
+      if (target && window.ade?.remoteRuntime?.connect) await window.ade.remoteRuntime.connect(target);
+      else await window.ade?.cloud?.machineAction?.({ instanceId: awayCloudInstanceId, action: "wake" });
+    } catch (err) {
+      showToast({
+        id: "cto-home-wake-failed",
+        tone: "error",
+        title: "Couldn't wake the computer",
+        message: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setWaking(false);
+      cloudMachines.refresh();
+    }
+  }, [awayCloudInstanceId, cloudMachines, ctoHome.home]);
   /**
    * Whether the home machine's ADE can reach the account's other machines.
    * Null until its snapshot answers; false for a build that predates it.
@@ -74,27 +224,39 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   // clean retry budget instead of leaving the user stranded on the error.
   const [wakeAttempt, setWakeAttempt] = useState(0);
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
-  const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<CtoSettingsSection>("look");
   const [switchingModel, setSwitchingModel] = useState(false);
-  /**
-   * Whether ADE thinks this thread should be rotated, and whether it can still
-   * answer at all. Read-only: `getThreadHealth` never materializes a session,
-   * so asking is safe before the thread exists.
-   */
-  const [threadHealth, setThreadHealth] = useState<CtoThreadHealth | null>(null);
-  /** The owner said "not now". Kept per thread, so a new one asks again. */
-  const [rotationDismissedFor, setRotationDismissedFor] = useState<string | null>(null);
-  const [rotating, setRotating] = useState(false);
+  /** A model was just picked from the welcome: hold it while the avatar wakes. */
+  const [welcomeWaking, setWelcomeWaking] = useState(false);
+  const [panelOpen, setPanelOpenState] = useState(() => readCtoPanelOpen(scopeKey));
+  const [panelTab, setPanelTab] = useState<CtoPanelTab>("activity");
+  const [pageRef, pageWidth] = useContainerWidth();
 
-  const historyLoadedRef = useRef(false);
   const wakingRetriesRef = useRef(0);
 
   const { availableModelIds, loadingModels, openProviderSettings } = useCtoModelOptions(ctoPin);
 
   const primaryLaneId = useMemo(() => resolveCtoPrimaryLaneId(lanes), [lanes]);
 
-  const ctoDisplayName = ctoIdentity?.name?.trim() || "CTO";
+  // While no home answers, the account copy's saved name (`CtoAccountCopyView`).
+  const [copyName, setCopyName] = useState<string | null>(null);
+  const ctoDisplayName = ctoIdentity?.name?.trim() || copyName || "CTO";
+  const look = useMemo(() => resolveCtoAvatarLook(ctoIdentity?.avatar ?? null), [ctoIdentity?.avatar]);
+  const accent = look.color;
+
+  // The sidebar's CTO entry wears the same look, from the first frame next launch.
+  useEffect(() => {
+    if (ctoIdentity) rememberCtoLook(scopeKey, look);
+  }, [ctoIdentity, look, scopeKey]);
+
+  useEffect(() => {
+    setPanelOpenState(readCtoPanelOpen(scopeKey));
+  }, [scopeKey]);
+  const setPanelOpen = useCallback((open: boolean) => {
+    setPanelOpenState(open);
+    writeCtoPanelOpen(scopeKey, open);
+  }, [scopeKey]);
 
   const currentModelId = session?.modelId
     ?? ctoIdentity?.modelPreferences?.modelId
@@ -104,7 +266,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     ?? null;
   const currentFastMode = session?.fastMode === true;
   // Null preferences mean nobody has picked a model the CTO can actually run
-  // on. The picker takes the thread's place until one is chosen — the session
+  // on. The welcome takes the thread's place until one is chosen — the session
   // itself is untouched, so a pick resumes the same thread rather than a new one.
   const needsModelPick = Boolean(ctoIdentity) && !ctoIdentity?.modelPreferences;
   // A null identity means the snapshot has not landed yet — it is not a CTO
@@ -115,10 +277,10 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   /* ── Data loading ── */
 
   const loadSummary = useCallback(async () => {
-    if (!window.ade?.cto || !homeReady) return;
+    if (!window.ade?.cto || !ctoPin) return;
     const key = sessionCacheKey;
     try {
-      const snapshot = await window.ade.cto.getState({ recentLimit: 0 }, ctoPin);
+      const snapshot = await window.ade.cto.getState({}, ctoPin);
       if (isCurrentCto(key)) {
         setCtoIdentity(snapshot.identity);
         setHomeCrossMachine(readCrossMachineCapability(snapshot));
@@ -127,41 +289,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       // Non-fatal: keep the waking state and let the session/lane effects retry.
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- isCurrentCto reads a ref
-  }, [ctoPin, homeReady, sessionCacheKey]);
-
-  const loadHistory = useCallback(async () => {
-    if (!window.ade?.cto || !homeReady) return;
-    const key = sessionCacheKey;
-    try {
-      const snapshot = await window.ade.cto.getState({ recentLimit: 20 }, ctoPin);
-      if (!isCurrentCto(key)) return;
-      setCtoIdentity(snapshot.identity);
-      setSessionLogs(snapshot.recentSessions);
-      historyLoadedRef.current = true;
-    } catch {
-      // non-fatal
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- isCurrentCto reads a ref
-  }, [ctoPin, homeReady, sessionCacheKey]);
-
-  /**
-   * Ask whether this thread is running out of room.
-   *
-   * Same cadence as the snapshot above — on entering the tab, and again
-   * whenever the session identity changes — rather than a timer. The banner is
-   * an offer, not an alarm, so it does not need to be true to the second.
-   */
-  const loadThreadHealth = useCallback(async () => {
-    if (!isAdeAvailable(window.ade?.cto?.getThreadHealth) || !homeReady) return;
-    const key = sessionCacheKey;
-    try {
-      const health = await window.ade.cto!.getThreadHealth(ctoPin);
-      if (isCurrentCto(key)) setThreadHealth(health);
-    } catch {
-      // Non-fatal: no banner is better than an error about a banner.
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- isCurrentCto reads a ref
-  }, [ctoPin, homeReady, sessionCacheKey]);
+  }, [ctoPin, sessionCacheKey]);
 
   // A different home (or tab) is a different CTO. Drop everything read from
   // the previous one before anything reads from the new one.
@@ -170,33 +298,45 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     lastCacheKeyRef.current = sessionCacheKey;
     setSession(ctoPrimarySessions.get(sessionCacheKey) ?? null);
     setCtoIdentity(null);
-    setSessionLogs([]);
-    setThreadHealth(null);
     setHomeCrossMachine(null);
     setError(null);
-    historyLoadedRef.current = false;
+    setWelcomeWaking(false);
     wakingRetriesRef.current = 0;
   }, [sessionCacheKey]);
 
+  // Opening settings re-reads the identity: the phone, the CLI or a usage-limit
+  // move may have changed the model or account since this page loaded.
   useEffect(() => {
     if (!active) return;
     void loadSummary();
-  }, [active, loadSummary]);
+  }, [active, loadSummary, settingsOpen]);
 
+  // The CTO keeps the person's clock: routines and "now" use this zone even
+  // when it lives on a computer in another one (ADE Cloud runs on UTC). Written
+  // only when it differs, so opening the page costs nothing on a match.
+  const storedTimeZone = ctoIdentity?.timeZone ?? null;
   useEffect(() => {
-    if (!active) return;
-    void loadThreadHealth();
-  }, [active, loadThreadHealth, session?.id]);
-
-  useEffect(() => {
-    if (!active || !settingsOpen || historyLoadedRef.current) return;
-    void loadHistory();
-  }, [active, settingsOpen, loadHistory]);
+    if (!active || !identityLoaded || !ctoPin || !window.ade?.cto) return;
+    let zone: string | null = null;
+    try {
+      zone = Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+    } catch {
+      zone = null;
+    }
+    if (!zone || zone === storedTimeZone) return;
+    const key = sessionCacheKey;
+    void window.ade.cto.updateIdentity({ patch: { timeZone: zone } }, ctoPin)
+      .then((snapshot) => {
+        if (isCurrentCto(key)) setCtoIdentity(snapshot.identity);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isCurrentCto reads a ref; keyed on the pin's key
+  }, [active, identityLoaded, ctoPin?.key, storedTimeZone, sessionCacheKey]);
 
   // Ensure the persistent session. Re-runs when the primary lane hydrates (D6
   // race) so a slow lanes store shows the waking state, never an error card.
   useEffect(() => {
-    if (!active || !window.ade?.cto || !homeReady) return;
+    if (!active || !window.ade?.cto || !ctoPin) return;
     if (!identityLoaded || needsModelPick || !primaryLaneId) return;
 
     let cancelled = false;
@@ -230,50 +370,24 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [active, ctoPin, homeReady, identityLoaded, needsModelPick, primaryLaneId, sessionCacheKey, wakeAttempt]);
+  }, [active, ctoPin, identityLoaded, needsModelPick, primaryLaneId, sessionCacheKey, wakeAttempt]);
+
+  // The welcome's wake-up plays once, then the thread takes the page.
+  useEffect(() => {
+    if (!welcomeWaking) return;
+    const timer = setTimeout(() => setWelcomeWaking(false), WELCOME_WAKE_MS);
+    return () => clearTimeout(timer);
+  }, [welcomeWaking]);
 
   /* ── Callbacks ── */
 
   const refreshSession = useCallback(async () => {
-    if (!window.ade?.cto || !primaryLaneId || !homeReady) return null;
+    if (!window.ade?.cto || !primaryLaneId || !ctoPin) return null;
     const next = await window.ade.cto.ensureSession({}, ctoPin);
     ctoPrimarySessions.set(sessionCacheKey, next);
     setSession(next);
     return next;
-  }, [ctoPin, homeReady, primaryLaneId, sessionCacheKey]);
-
-  // ADE opens a fresh CTO thread by itself once the current one no longer fits
-  // its context window. Its notice is the first row of the NEW thread, so
-  // seeing it on any other session means this page is showing a retired one.
-  const followRolloverRef = useRef<() => void>(() => {});
-  followRolloverRef.current = () => {
-    const key = sessionCacheKey;
-    const ensure = window.ade?.cto?.ensureSession;
-    if (!ensure || !primaryLaneId || !homeReady) return;
-    void ensure({}, ctoPin)
-      .then((next) => {
-        // The person may have moved to another home while this was in flight.
-        if (!isCurrentCto(key)) return;
-        ctoPrimarySessions.set(key, next);
-        setSession(next);
-      })
-      .catch(() => {});
-    void loadThreadHealth();
-  };
-  const ctoPinRef = useRef(ctoPin);
-  ctoPinRef.current = ctoPin;
-  const currentSessionId = session?.id ?? null;
-  useEffect(() => {
-    const onEvent = window.ade?.agentChat?.onEvent;
-    if (!active || !homeReady || !onEvent) return;
-    return onEvent((envelope) => {
-      const event = envelope.event;
-      if (event.type !== "system_notice" || event.status !== CTO_THREAD_ROLLED_OVER_STATUS) return;
-      if (envelope.sessionId === currentSessionId) return;
-      followRolloverRef.current();
-    }, ctoPinRef.current);
-    // Keyed on the pin's key (inside sessionCacheKey), not the pin object.
-  }, [active, homeReady, sessionCacheKey, currentSessionId]);
+  }, [ctoPin, primaryLaneId, sessionCacheKey]);
 
   /**
    * Settings owns model selection for the CTO.
@@ -289,9 +403,9 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    * durable record holding what the user picked rather than what they replaced.
    */
   const handleModelChange = useCallback(async (modelId: string, reasoningEffort: string | null) => {
-    if (!window.ade?.cto || switchingModel || !homeReady) return;
+    if (!window.ade?.cto || switchingModel || !ctoPin) return false;
     const selection = resolveModelSelection(modelId, reasoningEffort);
-    if (!selection) return;
+    if (!selection) return false;
     // Fast mode is a property of the model, not of the picker: carrying a true
     // onto a model that has no fast tier asks the chat service for a mode that
     // does not exist there.
@@ -299,7 +413,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     setSwitchingModel(true);
     setError(null);
     try {
-      await window.ade.cto.updateIdentity({
+      const saved = await window.ade.cto.updateIdentity({
         patch: {
           modelPreferences: {
             provider: selection.provider,
@@ -324,40 +438,70 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       } else {
         await refreshSession();
       }
-      const snap = await window.ade.cto.getState({ recentLimit: 0 }, ctoPin);
-      setCtoIdentity(snap.identity);
+      setCtoIdentity(saved.identity);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't switch the model.");
+      return false;
     } finally {
       setSwitchingModel(false);
     }
-  }, [ctoPin, currentFastMode, homeReady, refreshSession, session, sessionCacheKey, switchingModel]);
+  }, [ctoPin, currentFastMode, refreshSession, session, sessionCacheKey, switchingModel]);
 
   /**
-   * Save the name and the standing instructions.
+   * Which account runs the main model (null: the provider's default). Saved
+   * on the identity; the next ensure moves the thread there with its history.
+   * While a turn runs the move waits for the next turn to start.
+   */
+  const handleAccountChange = useCallback(async (instanceId: string | null) => {
+    if (!window.ade?.cto || switchingModel || !ctoPin) return;
+    const current = ctoIdentity?.modelPreferences;
+    if (!current) return;
+    setSwitchingModel(true);
+    setError(null);
+    try {
+      const { instanceId: _previous, ...rest } = current;
+      const saved = await window.ade.cto.updateIdentity({
+        patch: { modelPreferences: instanceId ? { ...rest, instanceId } : { ...rest, instanceId: null } },
+      }, ctoPin);
+      await refreshSession();
+      setCtoIdentity(saved.identity);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't switch the account.");
+    } finally {
+      setSwitchingModel(false);
+    }
+  }, [ctoIdentity, ctoPin, refreshSession, switchingModel]);
+
+  /** The welcome's pick: save the model, then let the avatar wake before the thread shows. */
+  const handleWelcomePick = useCallback((modelId: string) => {
+    void handleModelChange(modelId, currentReasoningEffort).then((ok) => {
+      if (ok) setWelcomeWaking(true);
+    });
+  }, [currentReasoningEffort, handleModelChange]);
+
+  /**
+   * Save identity fields (name, look, personality, instructions, …).
    *
    * `updateIdentity` answers the whole snapshot, so the local copy is replaced
    * rather than patched — a merge here would drift from whatever the service
    * normalized on the way in.
    */
   const handleIdentityChange = useCallback(async (patch: CtoIdentityPatch) => {
-    if (!window.ade?.cto || !homeReady) return;
-    setError(null);
-    try {
-      const snapshot = await window.ade.cto.updateIdentity({ patch }, ctoPin);
-      setCtoIdentity(snapshot.identity);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't save the CTO's identity.");
-    }
-  }, [ctoPin, homeReady]);
+    if (!window.ade?.cto || !ctoPin) throw new Error("Home machine unreachable");
+    // Rejects on failure: the settings page says "Couldn't save" itself.
+    const snapshot = await window.ade.cto.updateIdentity({ patch }, ctoPin);
+    if (isCurrentCto(sessionCacheKey)) setCtoIdentity(snapshot.identity);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isCurrentCto reads a ref
+  }, [ctoPin, sessionCacheKey]);
 
   const handleFastModeChange = useCallback(async (enabled: boolean) => {
-    if (!window.ade?.cto || switchingModel || !homeReady) return;
+    if (!window.ade?.cto || switchingModel || !ctoPin) return;
     setSwitchingModel(true);
     setError(null);
     try {
       const targetSession = session ?? await refreshSession();
-      if (!targetSession) throw new Error("The CTO chat is still waking up.");
+      if (!targetSession) throw new Error("Still waking up");
       const updated = await window.ade.agentChat.updateSession({
         sessionId: targetSession.id,
         fastMode: enabled,
@@ -369,36 +513,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     } finally {
       setSwitchingModel(false);
     }
-  }, [ctoPin, homeReady, refreshSession, session, sessionCacheKey, switchingModel]);
-
-  /**
-   * Retire the thread and open a fresh one.
-   *
-   * ADE never does this on its own: every caller is a button the owner pressed.
-   * The module-level cache is dropped first, because the session it holds is
-   * the one that was just retired.
-   */
-  const handleStartFreshSession = useCallback(async (): Promise<CtoStartFreshSessionResult> => {
-    const startFresh = window.ade?.cto?.startFreshSession;
-    if (!isAdeAvailable(startFresh)) throw new Error("The CTO isn't available in this window.");
-    if (!homeReady) throw new Error("The CTO's machine isn't reachable right now.");
-    setRotating(true);
-    try {
-      const result = await startFresh(ctoPin);
-      ctoPrimarySessions.delete(sessionCacheKey);
-      setSession(null);
-      setRotationDismissedFor(null);
-      historyLoadedRef.current = false;
-      wakingRetriesRef.current = 0;
-      setError(null);
-      setWakeAttempt((n) => n + 1);
-      await loadSummary();
-      await loadThreadHealth();
-      return result;
-    } finally {
-      setRotating(false);
-    }
-  }, [ctoPin, homeReady, loadSummary, loadThreadHealth, sessionCacheKey]);
+  }, [ctoPin, refreshSession, session, sessionCacheKey, switchingModel]);
 
   const lockedSessionSummary = useMemo<AgentChatSessionSummary | null>(() => {
     if (!session) return null;
@@ -431,32 +546,81 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     mode: "standard",
     profile: "persistent_identity",
     title: ctoDisplayName,
-    subtitle: "Your persistent CTO for this project. It keeps its memory across model switches and compaction.",
-    accentColor: CTO_ACCENT,
+    subtitle: "Your project's CTO",
+    accentColor: accent,
     chips: [],
     showMcpStatus: false,
     assistantLabel: ctoDisplayName,
     messagePlaceholder: `Message ${ctoDisplayName}…`,
-  }), [ctoDisplayName]);
+  }), [accent, ctoDisplayName]);
+
+  /* ── Live state: avatar, status phrase, panel ── */
+
+  const sessionReady = Boolean(session) && Boolean(primaryLaneId);
+  const ctoSessionId = session?.id ?? null;
+  const live = useCtoLiveState(ctoSessionId, ctoPin, active);
+  const ctoAttentionWaiting = useAppStore((state) => state.ctoAttention.awaitingInput);
+  const awaitingInput = live.awaitingInput || ctoAttentionWaiting;
+  const offline = ctoHome.status === "offline";
+  const docked = pageWidth === 0 || pageWidth >= CTO_PANEL_DOCK_MIN_WIDTH;
+  const panelAvailable = sessionReady && homeReady && !settingsOpen;
+  const panelShown = panelAvailable && panelOpen;
+  const activity = useCtoActivityData({
+    ctoSessionId,
+    pin: ctoPin,
+    visible: active && sessionReady,
+    libraryOpen: panelShown && panelTab === "library",
+  });
+  const runningChildren = useMemo(() => activity.children.filter((child) => child.running).length, [activity.children]);
+
+  const baseAvatarState = welcomeWaking
+    ? "happy"
+    : deriveCtoAvatarState({
+      status: live.turnActive ? "active" : "idle",
+      awaitingInput,
+      streamingText: live.streamingText,
+      lastTurnFailed: live.lastTurnFailed,
+      offline,
+      noModel: needsModelPick,
+    });
+  const avatarState = useCtoAvatarState(baseAvatarState);
+  const statusPhrase = ctoPageStatusPhrase({
+    offline,
+    awayCloud: awayCloudInstanceId != null,
+    awayCloudGone,
+    identityLoaded,
+    facts: {
+      turnActive: live.turnActive,
+      streamingText: live.streamingText,
+      awaitingInput,
+      asleep: offline || needsModelPick,
+      runningChildren,
+    },
+  });
+
+  const greeting = useMemo(
+    () => (ctoSessionId ? <CtoGreeting look={look} name={ctoDisplayName} sessionId={ctoSessionId} /> : null),
+    [ctoDisplayName, ctoSessionId, look],
+  );
 
   /* ── Render ── */
 
   const bridgeMissing = active && typeof window !== "undefined" && !window.ade?.cto;
 
-  const sessionReady = Boolean(session) && Boolean(primaryLaneId);
-
-  /**
-   * The offer to rotate, and the one rule about it: ADE never rotates on its
-   * own. It is advice with a button, dismissible per thread, and it stays out
-   * of the way while settings is the thing on screen.
-   */
-  const showRotationPrompt = homeReady
-    && Boolean(threadHealth?.rotationAdvised)
-    && !settingsOpen
-    && rotationDismissedFor !== (threadHealth?.sessionId ?? "none");
-
-  const showChooser = ctoHome.status === "choose" || chooserOpen;
-  const otherMachineCount = ctoHome.machines.filter((machine) => !machine.isThisMachine).length;
+  // A computer being made for the CTO keeps its progress on screen until it moves in.
+  const cloudJobLive = cloudHome.job?.phase === "running" || cloudHome.job?.phase === "ready";
+  const showChooser = ctoHome.status === "choose" || chooserOpen || cloudJobLive;
+  // With a cloud home that is there, its own row is the "Current" one; a
+  // second ADE Cloud row would only find the same computer.
+  const chooserCloud = cloudHome.job || !(ctoHome.cloudInstanceId && ctoHome.home) ? cloudHome : null;
+  const otherMachineCount = useMemo(
+    () => ctoHomeCandidates(ctoHome.machines, ctoHome.home?.machineId ?? null, cloudIndex)
+      .filter((machine) => !machine.isThisMachine).length,
+    [ctoHome.home?.machineId, ctoHome.machines, cloudIndex],
+  );
+  // Settings offers "Change" when the chooser has somewhere else to go:
+  // another machine, or ADE Cloud (a free plan is sent to the upgrade there).
+  const canMoveHome = otherMachineCount > 0 || Boolean(chooserCloud?.shown);
   const homeLabel = ctoHome.homeName ?? "this machine";
   const machineChipAction = useMemo<ComposerMachineChipAction>(() => ({
     tooltip: `Runs on ${homeLabel}. Click to change.`,
@@ -466,115 +630,161 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     // This computer runs the build that is showing this page, so the hint is
     // only ever about another home machine.
     note: homeCrossMachine === false && otherMachineCount > 0 && ctoHome.home?.isThisMachine !== true
-      ? `Update ADE on ${homeLabel} to let the CTO reach your other machines.`
+      ? `Update ADE on ${homeLabel} to reach other machines.`
       : null,
     onClick: () => {
       setSettingsOpen(false);
       setChooserOpen(true);
     },
   }), [ctoHome.home?.isThisMachine, ctoHome.status, homeCrossMachine, homeLabel, otherMachineCount]);
-  const homeScope = useMemo<CtoHomeScope>(
-    () => ({ pin: ctoPin, machineName: ctoHome.homeName, ready: homeReady }),
-    [ctoHome.homeName, ctoPin, homeReady],
+  const openSettings = useCallback((section: CtoSettingsSection = "look") => {
+    setSettingsSection(section);
+    setSettingsOpen(true);
+  }, []);
+  const settingsHome = useMemo(
+    () => (canMoveHome
+      ? {
+        machineName: homeLabel,
+        onChange: () => {
+          setSettingsOpen(false);
+          setChooserOpen(true);
+        },
+      }
+      : null),
+    [canMoveHome, homeLabel],
+  );
+  const settingsVisible = settingsOpen && homeReady && !showChooser;
+  const showWelcome = !bridgeMissing && !showChooser && homeReady && (needsModelPick || welcomeWaking);
+  const stage = ctoPageStage({
+    bridgeMissing,
+    showChooser,
+    homeStatus: ctoHome.status,
+    awayCloud: awayCloudInstanceId != null,
+    awayCloudGone,
+    showWelcome,
+    threadReady: sessionReady && lockedSessionSummary != null && primaryLaneId != null,
+    failed: Boolean(error),
+  });
+
+  const panel = (sheet: boolean) => (
+    <CtoSidePanel
+      look={look}
+      name={ctoDisplayName}
+      statusPhrase={statusPhrase ?? "Idle"}
+      avatarState={avatarState}
+      ctoSessionId={ctoSessionId}
+      pin={ctoPin}
+      pinTargetsTab={pinTargetsTab}
+      lanes={lanes}
+      primaryLaneId={primaryLaneId}
+      turnActive={live.turnActive}
+      liveStep={live.step}
+      turnsFinished={live.finishedCount}
+      data={activity}
+      tab={panelTab}
+      onTabChange={setPanelTab}
+      onOpenSettings={(section) => {
+        if (sheet) setPanelOpen(false);
+        openSettings(section ?? "look");
+      }}
+      onClose={() => setPanelOpen(false)}
+      sheet={sheet}
+    />
   );
 
-  return (
-    <CtoHomeProvider scope={homeScope}>
-    <div className={cn(shellBodyCls, "relative flex-col")}>
-      {/* Header */}
-      <div className="flex shrink-0 flex-col">
-        {/* One header line with the sidebar's tab row: same height, same hairline. */}
-        <div className="ade-page-rail relative gap-3 px-3">
-          {/* The name sits in the middle of the bar, like the Work chat title. */}
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 px-24">
-            {/* The same glyph as the sidebar and as iOS, not the first character
-                of whatever the user renamed the CTO to. One mark, every surface. */}
-            <Robot size={16} weight="regular" className="shrink-0" style={{ color: CTO_ACCENT }} />
-            <span className="truncate text-[13px] font-semibold text-fg">{ctoDisplayName}</span>
-          </div>
+  // While the home is asleep, gone or away, the page reads the CTO's account
+  // copy (never the home itself, so nothing wakes). Waking or moving it is
+  // the state card's action.
+  const accountCopy = stage === "cloudAsleep" || stage === "cloudGone" || stage === "away"
+    ? <CtoAccountCopyView origin={ctoHome.origin} active={active} homeOnAdeCloud={stage !== "away"} onSavedName={setCopyName} />
+    : null;
 
-
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              disabled={!homeReady}
-              onClick={() => setSettingsOpen(true)}
-              aria-label="CTO settings"
-              className={cn(
-                "flex h-6 w-6 items-center justify-center transition-colors",
-                settingsOpen ? "text-fg" : "text-muted-fg/55 hover:text-fg",
-              )}
-            >
-              <Gear size={13} weight={settingsOpen ? "fill" : "regular"} />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {showRotationPrompt && threadHealth ? (
-        <CtoRotationPrompt
-          blocked={!threadHealth.canTakeTurn}
-          busy={rotating}
-          onStart={() => { void handleStartFreshSession().catch(() => {}); }}
-          onDismiss={() => setRotationDismissedFor(threadHealth.sessionId ?? "none")}
-        />
-      ) : null}
-
-      {settingsOpen && homeReady && !showChooser ? (
-        <CtoSettingsPage
-          active={active}
-          identity={ctoIdentity}
-          sessionLogs={sessionLogs}
-          currentModelId={currentModelId}
-          currentReasoningEffort={currentReasoningEffort}
-          currentFastMode={currentFastMode}
-          availableModelIds={availableModelIds}
-          loadingModels={loadingModels}
-          switchingModel={switchingModel}
-          onModelChange={(modelId, reasoningEffort) => void handleModelChange(modelId, reasoningEffort)}
-          onFastModeChange={(enabled) => void handleFastModeChange(enabled)}
-          onOpenProviderSettings={openProviderSettings}
-          onStartFreshSession={handleStartFreshSession}
-          onIdentityChange={(patch) => void handleIdentityChange(patch)}
-          crossMachineAvailable={homeCrossMachine === true}
-          onClose={() => setSettingsOpen(false)}
-        />
-      ) : null}
-
-      {/* Thread / waking */}
-      <div className={cn("min-h-0 flex-1 overflow-hidden", settingsOpen && homeReady && !showChooser && "hidden")}>
-        {bridgeMissing ? (
-          <WakingState title="The CTO isn't available" subtitle="Reopen ADE to reconnect." />
-        ) : showChooser ? (
+  const renderStage = (): React.ReactNode => {
+    switch (stage) {
+      case "bridgeMissing":
+        return <CtoStateCard look={look} name={ctoDisplayName} avatar="error" status="Reopen ADE to reconnect" tone="crit" />;
+      case "chooser":
+        return (
           <CtoHomeChooser
+            look={look}
+            name={ctoDisplayName}
             machines={ctoHome.machines}
-            suggested={ctoHome.suggested}
-            current={chooserOpen ? ctoHome.home : null}
-            currentName={chooserOpen ? ctoHome.homeName : null}
+            current={ctoHome.status === "choose" ? null : ctoHome.home}
+            currentName={ctoHome.status === "choose" ? null : ctoHome.homeName}
+            copyFollows={!ctoHome.localOnly}
+            cloud={chooserCloud}
             onChoose={async (machine) => {
-              await ctoHome.choose(machine);
+              announceCtoMove(await ctoHome.choose(machine));
               setChooserOpen(false);
             }}
-            onCancel={chooserOpen ? () => setChooserOpen(false) : undefined}
+            onCancel={chooserOpen && ctoHome.status !== "choose" ? () => setChooserOpen(false) : undefined}
           />
-        ) : ctoHome.status === "loading" ? (
-          <WakingState title="Opening the CTO" pulsing />
-        ) : ctoHome.status === "offline" ? (
-          <WakingState
-            title={`The CTO runs on ${ctoHome.homeName ?? "another machine"}`}
-            subtitle={`${ctoHome.offlineReason ?? "It can't be reached right now."} Its memory, team and thread are safe there, and the CTO picks up where it left off once it's back.`}
-            action={{ label: "Run it somewhere else", onClick: () => setChooserOpen(true) }}
+        );
+      case "loading":
+        return <CtoStateCard look={look} name={ctoDisplayName} avatar="thinking" status="Waking up…" />;
+      case "cloudGone":
+        return (
+          <CtoStateCard
+            look={look}
+            name={ctoDisplayName}
+            avatar="asleep"
+            status="Its ADE Cloud computer is gone"
+            statusHint="ADE Cloud deletes a computer that sits idle. A new one picks up from the copy in your account."
+            action={{
+              label: "Make a new computer",
+              onClick: () => {
+                setChooserOpen(true);
+                void cloudHome.start();
+              },
+            }}
+            secondaryAction={{ label: "Move to…", onClick: () => setChooserOpen(true) }}
+            below={accountCopy}
           />
-        ) : needsModelPick ? (
-          <ModelPickCard
+        );
+      case "cloudAsleep":
+        return (
+          <CtoStateCard
+            look={look}
+            name={ctoDisplayName}
+            avatar="asleep"
+            status={waking ? "Waking up…" : "Asleep on ADE Cloud"}
+            statusHint={`${ctoHome.homeName ?? "Its computer"} sleeps when idle. Waking it takes a moment.`}
+            action={{ label: waking ? "Waking…" : "Wake", onClick: () => void wakeCloudHome(), disabled: waking }}
+            secondaryAction={{ label: "Move to…", onClick: () => setChooserOpen(true) }}
+            below={accountCopy}
+          />
+        );
+      case "away":
+        return (
+          <CtoStateCard
+            look={look}
+            name={ctoDisplayName}
+            avatar="asleep"
+            status={`Away on ${ctoHome.homeName ?? "another machine"}`}
+            statusHint={ctoHome.localOnly
+              ? `${ctoHome.offlineReason ?? "Can't be reached right now."} Notes and chat are safe there and pick up when it's back.`
+              : `${ctoHome.offlineReason ?? "Can't be reached right now."} Move it to keep going; its notes and recent chat come along.`}
+            action={{ label: "Move to…", onClick: () => setChooserOpen(true) }}
+            below={accountCopy}
+          />
+        );
+      case "welcome":
+        return (
+          <CtoWelcome
+            look={look}
+            name={ctoDisplayName}
             availableModelIds={availableModelIds}
             loadingModels={loadingModels}
             switchingModel={switchingModel}
+            waking={welcomeWaking}
             error={error}
-            onPick={(modelId) => void handleModelChange(modelId, currentReasoningEffort)}
+            onPick={handleWelcomePick}
             onOpenProviderSettings={openProviderSettings}
           />
-        ) : sessionReady && lockedSessionSummary && primaryLaneId ? (
+        );
+      case "thread":
+        if (!lockedSessionSummary || !primaryLaneId) return null;
+        return (
           <AgentChatPane
             laneId={primaryLaneId}
             // The CTO's thread lives on its home machine; send, history and the
@@ -592,11 +802,18 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             // The chip that says where this chat runs is where the CTO's home
             // machine is changed; the header does not repeat it.
             machineChipAction={machineChipAction}
+            emptyTranscript={greeting}
           />
-        ) : error ? (
-          <WakingState
-            title="Couldn't reach the CTO"
-            subtitle="ADE tried a few times and the CTO didn't answer. Nothing was lost — your thread is still here."
+        );
+      case "error":
+        return (
+          <CtoStateCard
+            look={look}
+            name={ctoDisplayName}
+            avatar="error"
+            status="Couldn't wake up"
+            statusHint="ADE tried a few times. Nothing was lost."
+            tone="crit"
             detail={error}
             action={{
               label: "Try again",
@@ -607,218 +824,155 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
               },
             }}
           />
-        ) : (
-          <WakingState
-            title="Opening the CTO"
-            pulsing
-          />
-        )}
+        );
+      case "waking":
+        return <CtoStateCard look={look} name={ctoDisplayName} avatar="thinking" status="Waking up…" />;
+    }
+  };
+
+  return (
+    <CtoLookProvider look={look}>
+    <div
+      ref={pageRef}
+      className="ade-cto-page"
+      style={{ "--cto-accent": accent } as React.CSSProperties}
+      data-testid="cto-page"
+    >
+      <div className="ade-cto-main">
+        <CtoHeaderPill
+          look={look}
+          name={ctoDisplayName}
+          statusPhrase={statusPhrase}
+          avatarState={avatarState}
+          panelOpen={panelShown}
+          settingsOpen={settingsVisible}
+          controlsDisabled={!homeReady}
+          onTogglePanel={() => {
+            if (settingsOpen) setSettingsOpen(false);
+            setPanelOpen(!panelShown);
+          }}
+          onOpenSettings={() => {
+            if (settingsOpen) setSettingsOpen(false);
+            else openSettings("look");
+          }}
+        />
+
+        {settingsVisible ? (
+          <div className="ade-cto-settings">
+            <CtoSettingsPage
+              active={active}
+              pin={ctoPin}
+              identity={ctoIdentity}
+              sessionId={ctoSessionId}
+              currentModelId={currentModelId}
+              currentReasoningEffort={currentReasoningEffort}
+              currentFastMode={currentFastMode}
+              availableModelIds={availableModelIds}
+              loadingModels={loadingModels}
+              switchingModel={switchingModel}
+              onModelChange={(modelId, reasoningEffort) => void handleModelChange(modelId, reasoningEffort)}
+              onAccountChange={handleAccountChange}
+              onFastModeChange={(enabled) => void handleFastModeChange(enabled)}
+              onOpenProviderSettings={openProviderSettings}
+              onIdentityChange={handleIdentityChange}
+              crossMachineAvailable={homeCrossMachine === true}
+              home={settingsHome}
+              initialSection={settingsSection}
+              onBack={() => setSettingsOpen(false)}
+            />
+          </div>
+        ) : null}
+
+        {/* Thread / welcome / waking */}
+        <div className="ade-cto-stage" hidden={settingsVisible}>
+          {renderStage()}
+        </div>
       </div>
 
+      {panelShown && docked ? panel(false) : null}
+      {panelAvailable && !docked ? (
+        <Dialog
+          open={panelOpen}
+          onOpenChange={setPanelOpen}
+          placement="right"
+          width={360}
+          hideHeader
+          hideClose
+          bodyPadding={false}
+          title={`${ctoDisplayName} profile`}
+          testId="cto-side-sheet"
+        >
+          {panel(true)}
+        </Dialog>
+      ) : null}
     </div>
-    </CtoHomeProvider>
+    </CtoLookProvider>
   );
 }
 
 /**
- * The CTO's welcome screen, and the one decision first run asks for.
- *
- * There is no setup wizard: personality, work style and name are not choices
- * any more, and the only thing ADE genuinely cannot infer is which model should
- * do the thinking. So the CTO introduces itself in its own voice and the picker
- * is the reply affordance — a first turn, not a form.
+ * A whole-page state (waking, away, failed). The avatar carries it; under it
+ * the name, one status word and at most one action. The why goes in the
+ * status's tooltip, the raw error in the fold.
  */
-function ModelPickCard({
-  availableModelIds,
-  loadingModels,
-  switchingModel,
-  error,
-  onPick,
-  onOpenProviderSettings,
-}: {
-  availableModelIds: string[];
-  loadingModels: boolean;
-  switchingModel: boolean;
-  error: string | null;
-  onPick: (modelId: string) => void;
-  onOpenProviderSettings: () => void;
-}) {
-  return (
-    <div className="flex h-full items-center justify-center p-6" data-testid="cto-model-pick">
-      <div className="flex w-full max-w-[460px] flex-col">
-        <div className="flex items-center gap-2.5">
-          <div
-            className="flex h-9 w-9 items-center justify-center rounded-xl"
-            style={{
-              background: `rgba(${CTO_ACCENT_RGB}, 0.12)`,
-              border: `1px solid rgba(${CTO_ACCENT_RGB}, 0.28)`,
-            }}
-          >
-            <Strategy size={17} weight="duotone" style={{ color: CTO_ACCENT }} />
-          </div>
-          <span className="text-[13px] font-semibold text-fg">CTO</span>
-        </div>
-
-        <p className="mt-4 text-[13.5px] leading-6 text-fg/85">
-          I run point on this project. I know the lanes, the pull requests, the history and the
-          memory, and I can drive ADE for you — including explaining ADE itself when something
-          is not where you expected it.
-        </p>
-
-        <p className="mt-3 text-[12.5px] leading-5 text-muted-fg/60">
-          Pick a model that can steer live turns and I will get started. I get interrupted
-          constantly — by the chats I start, by my own wake-ups — so I can only run on a model
-          that accepts a message into a turn already underway.
-        </p>
-
-        <div className="mt-5">
-          <ModelPicker
-            value=""
-            availableModelIds={availableModelIds}
-            filter={ctoModelSupportsLiveRedirect}
-            disabled={switchingModel}
-            onChange={onPick}
-            onOpenSignIn={onOpenProviderSettings}
-          />
-        </div>
-
-        {loadingModels ? (
-          <div className="mt-3 text-[11px] text-muted-fg/40">Checking configured models…</div>
-        ) : availableModelIds.length === 0 ? (
-          <div className="mt-3 rounded-lg border border-amber-500/18 bg-amber-500/[0.06] px-3 py-2 text-[11px] leading-4 text-amber-200/90">
-            No model I can run on is configured yet. Sign in to Claude, Codex, Cursor, or OpenCode under
-            Settings → AI → Providers.
-          </div>
-        ) : switchingModel ? (
-          <div className="mt-3 text-[11px] text-muted-fg/45">Moving the thread to the new model…</div>
-        ) : null}
-
-        {error ? <TechnicalDetailsFold text={error} className="mt-4 w-full text-left" /> : null}
-      </div>
-    </div>
-  );
-}
-
-function WakingState({
-  title,
-  subtitle,
+function CtoStateCard({
+  look,
+  name,
+  avatar,
+  status,
+  statusHint,
+  tone,
   detail = null,
-  pulsing = false,
   action,
+  secondaryAction,
+  below = null,
 }: {
-  title: string;
-  subtitle?: string;
-  /** Raw failure text. Never on the main line — it goes in the fold. */
+  look: ReturnType<typeof resolveCtoAvatarLook>;
+  name: string;
+  avatar: CtoAvatarState;
+  status: string;
+  /** The longer why, as the status's tooltip. */
+  statusHint?: string;
+  tone?: "crit";
+  /** Raw failure text. Never on the main line; it goes in the fold. */
   detail?: string | null;
-  pulsing?: boolean;
   /** A failure pane with no way out is a dead end; give it one. */
-  action?: { label: string; onClick: () => void };
+  action?: { label: string; onClick: () => void; disabled?: boolean };
+  /** A quieter second way out. */
+  secondaryAction?: { label: string; onClick: () => void };
+  /** Read-only content under the card: the CTO's account copy while its home is away. */
+  below?: React.ReactNode;
 }) {
   return (
-    <div className="flex h-full items-center justify-center p-6" data-testid="cto-waking">
-      <div className="flex flex-col items-center text-center">
-        <div
-          className={cn(
-            "flex h-12 w-12 items-center justify-center rounded-2xl",
-            pulsing && "motion-safe:animate-pulse",
-          )}
-          style={{
-            background: `rgba(${CTO_ACCENT_RGB}, 0.12)`,
-            border: `1px solid rgba(${CTO_ACCENT_RGB}, 0.28)`,
-          }}
-        >
-          <Strategy size={20} weight="duotone" style={{ color: CTO_ACCENT }} />
+    <div className="ade-cto-waking" data-testid="cto-waking">
+      <div className="ade-cto-waking-inner">
+        <div className="ade-cto-welcome-avatar">
+          <div className="ade-cto-profile-halo" aria-hidden />
+          <CtoAvatar look={look} state={avatar} size={104} motion="live" title={`${name}, ${status}`} />
         </div>
-        <div className="mt-4 text-[14px] font-semibold text-fg">{title}</div>
-        {/* A failure sentence is long — `max-w-xs` broke it into four ragged
-            centred lines. */}
-        {subtitle ? (
-          <div
-            className={cn(
-              "mt-1 text-[12.5px] leading-5 text-muted-fg/50",
-              detail || action ? "max-w-[360px]" : "max-w-xs",
-            )}
-          >
-            {subtitle}
+        <div className="ade-cto-waking-title">{name}</div>
+        <p className="ade-cto-status-word" data-tone={tone} title={statusHint ?? status} role="status">
+          <span>{status}</span>
+        </p>
+        {action || secondaryAction ? (
+          <div className="flex items-center justify-center gap-2">
+            {action ? (
+              <button type="button" className="kit-btn" data-size="sm" onClick={action.onClick} disabled={action.disabled}>
+                {action.label}
+              </button>
+            ) : null}
+            {secondaryAction ? (
+              <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={secondaryAction.onClick}>
+                {secondaryAction.label}
+              </button>
+            ) : null}
           </div>
-        ) : null}
-        {action ? (
-          <button
-            type="button"
-            onClick={action.onClick}
-            className="mt-4 rounded-lg border border-fg/[0.1] px-3 py-1.5 text-[12px] font-medium text-fg/85 transition-colors hover:bg-fg/[0.05]"
-          >
-            {action.label}
-          </button>
         ) : null}
         {detail ? (
           <TechnicalDetailsFold text={detail} className="mt-4 w-full max-w-[420px] text-left" />
         ) : null}
       </div>
-    </div>
-  );
-}
-
-/**
- * "This thread is getting full, and here is the way out."
- *
- * Quiet, one line of prose, and never in the way: it does not block the
- * composer, it does not reappear once dismissed for this thread, and pressing
- * it is the only thing that retires anything.
- */
-function CtoRotationPrompt({
-  blocked,
-  busy,
-  onStart,
-  onDismiss,
-}: {
-  blocked: boolean;
-  busy: boolean;
-  onStart: () => void;
-  onDismiss: () => void;
-}) {
-  return (
-    <div
-      data-testid="cto-rotation-prompt"
-      role="status"
-      className={cn(
-        "flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2",
-        blocked
-          ? "border-amber-500/15 bg-amber-500/[0.06]"
-          : "border-fg/[0.05] bg-fg/[0.02]",
-      )}
-    >
-      <div className="min-w-0 flex-1">
-        <div className={cn("text-[12px] font-medium", blocked ? "text-amber-200/90" : "text-fg/85")}>
-          {blocked
-            ? "This conversation is over its context limit"
-            : "This conversation is getting full"}
-        </div>
-        <div className="mt-0.5 text-[11.5px] leading-[1.5] text-muted-fg/60">
-          {blocked
-            ? "The CTO can't answer until you start a fresh session. Nothing it remembers is lost, and this conversation moves to Past threads."
-            : "Starting a fresh session keeps everything the CTO remembers — this conversation moves to Past threads. ADE won't do it on its own."}
-        </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <button
-          type="button"
-          data-testid="cto-rotation-start"
-          disabled={busy}
-          onClick={onStart}
-          className="rounded-lg border border-fg/[0.1] px-2.5 py-1 text-[11.5px] font-medium text-fg/85 transition-colors hover:bg-fg/[0.05] disabled:opacity-60"
-        >
-          {busy ? "Starting…" : "Start a fresh session"}
-        </button>
-        <button
-          type="button"
-          data-testid="cto-rotation-dismiss"
-          onClick={onDismiss}
-          className="rounded-lg px-2 py-1 text-[11.5px] text-muted-fg/55 transition-colors hover:text-fg/80"
-        >
-          Not now
-        </button>
-      </div>
+      {below}
     </div>
   );
 }

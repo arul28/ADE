@@ -1,10 +1,13 @@
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { Archive, ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { Archive, ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, UsersThree, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
+import { parentChatRowId } from "../../../shared/runtimeClientNames";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
+import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
 import { LanePrBadge } from "./LanePrBadge";
 import type { SessionContextMenuLaneActions, SessionContextMenuOpenIn } from "./SessionContextMenu";
@@ -19,19 +22,26 @@ import {
 } from "../../lib/terminalAttention";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { isSavedTerminalSession } from "../../state/cloudSavedTerminals";
 import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRouting";
-import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
+import { machineIdForBinding, machineIdOfSlot } from "../../../shared/machineIdentity";
+import { useAdeCloudLaneComputers, useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
+import { workFilterMachineId } from "../../state/workFilterMachine";
+import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME } from "../../../shared/adeCloud/binding";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
+import { machineShowsConnected, rowShowsConnected } from "../../state/cloudRestingRows";
 import {
   MACHINE_READ_FAILURE_NOTICE_THRESHOLD,
   requestCrossMachineLanesForMachine,
+  useCloudViewOnScreen,
   useCrossMachineLaneUnion,
   type CrossMachineLaneMarker,
   type CrossMachineLaneRow,
 } from "../../state/crossMachineLanes";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
-import { LaneCloudMarker, LaneMachineMarker } from "./LaneMachineMarker";
+import { LaneCloudMarker } from "./LaneMachineMarker";
+import { isCloudConnectionTarget, isSavedChatsMachineId } from "../../state/cloudSavedChats";
 import { laneCloudProvider } from "../../../shared/cloudLanes";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { useLaneAppleDevices, type LaneAppleDevice } from "../apple/useLaneAppleDevices";
@@ -103,10 +113,12 @@ import {
 import { moveSessionOnBoard } from "./sessionBoardMoveUi";
 import { showToast } from "../app/toast/toastStore";
 import { Banner } from "../ui/notice";
+import { useRemoteTargetPersonFixFailure, useRemoteTargetReconnecting, useSlowLinkActive } from "../../state/projectMachines";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
+import { LaneShareGuestShelfRows, useLaneShareGuestShelfShares } from "../laneShare/guest/LaneShareGuestShelf";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { bindingChipLabel, fireBinding, getEffectiveBinding } from "../../lib/keybindings";
@@ -132,6 +144,16 @@ import {
 import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
 import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
+import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
+import { groupByMachine, useTabCopyPin } from "../../state/repositoryScope";
+import { withChatPin } from "../chat/chatMachinePin";
+import {
+  COMPUTER_DELETED_ROW_NOTE,
+  useCloudLaneRowNotes,
+  useCloudLanesWithoutComputerRows,
+  type CloudLaneRowNote,
+} from "../cloudLane/cloudLanesWithoutComputer";
+import { openDraftAndFocusWorkInput } from "../work/workShortcuts";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -571,6 +593,7 @@ function StickyGroupHeader({
   layoutDependency,
   laneStatus = null,
   laneFailed = false,
+  laneNote = null,
 }: {
   sectionId: string;
   icon: React.ReactNode;
@@ -649,6 +672,12 @@ function StickyGroupHeader({
   laneStatus?: WorkLaneFocusStatus | null;
   /** A chat in the lane failed: the collapsed dot turns red. */
   laneFailed?: boolean;
+  /**
+   * One quiet word about the lane's ADE Cloud computer for `variant="lane"`
+   * ("Computer deleted", "Deleting soon"), with its tooltip. Muted text, the
+   * same weight as the quiet counts.
+   */
+  laneNote?: { label: string; title: string } | null;
 }) {
   const namingLane = useLaneNamePending(namingLaneId);
   if (count === 0) return null;
@@ -858,6 +887,15 @@ function StickyGroupHeader({
               ) : null}
               {/* Only a collapsed lane needs the summary; an open one shows its chats. */}
               {isLane && collapsed && laneStatus ? <LaneFocusStatusDot status={laneStatus} failed={laneFailed} /> : null}
+              {isLane && laneNote ? (
+                <span
+                  className="shrink-0 whitespace-nowrap text-[10px] font-medium leading-tight text-muted-fg/55"
+                  title={laneNote.title}
+                  data-testid="work-lane-note"
+                >
+                  {laneNote.label}
+                </span>
+              ) : null}
               {machineMarker}
               {prBadge}
               {headerAction}
@@ -973,6 +1011,40 @@ function StickyGroupHeader({
  * (`useLanePrsByLaneId` moved to ./useLanePrs so the Work session hook can
  * answer the "Has PR" chip filter from the same PR data that badge renders.)
  */
+
+/** The selected rows that live on one machine, and how to reach it. */
+type SettleMachineGroup = {
+  /** The machine the rows live on; the tab's own copy has a pin too. */
+  pin: OpenProjectBinding;
+  machineName: string;
+  ids: string[];
+};
+
+/** The machine a settle toast names: this computer, or the other one by name. */
+function settleMachineName(pin: OpenProjectBinding): string {
+  return pin.kind === "remote" ? pin.runtimeName || "another computer" : "this computer";
+}
+
+/** One error toast naming every machine a bulk settle (or its undo) did not reach. */
+function reportSettleFailures(
+  action: string,
+  groups: SettleMachineGroup[],
+  results: PromiseSettledResult<unknown>[],
+): void {
+  const failed = groups.filter((_, index) => results[index]?.status === "rejected");
+  if (!failed.length) return;
+  const firstError = (results.find((result) => result.status === "rejected") as PromiseRejectedResult).reason;
+  console.error(`[SessionListPane] ${action} failed`, {
+    machines: failed.map((group) => group.machineName),
+    error: firstError,
+  });
+  showToast({
+    title: `${action} failed on ${failed.map((group) => group.machineName).join(", ")}`,
+    message: firstError instanceof Error ? firstError.message : String(firstError),
+    tone: "error",
+  });
+}
+
 export const SessionListPane = React.memo(function SessionListPane({
   lanes: lanesProp,
   runningFiltered,
@@ -1179,9 +1251,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   /** The list has never loaded and is still trying, so an empty list says nothing yet. */
   firstLoadRetrying?: boolean;
   /**
-   * The machine a chat runs on: `null` is the project tab's own machine. Asks
-   * which machine owns a chat whose lane is missing, so the archived-lane read
-   * goes to that machine rather than the tab's.
+   * The machine a chat runs on: the tab's copy for its own lanes, `null` when
+   * no machine is known. Asks which machine owns a chat whose lane is missing,
+   * so the archived-lane read goes to that machine rather than the tab's.
    */
   resolveSessionRuntimePin: (session: TerminalSessionSummary) => OpenProjectBinding | null;
 }) {
@@ -1245,12 +1317,58 @@ export const SessionListPane = React.memo(function SessionListPane({
   // roster on purpose: ownership is a shape question, not a visibility one, and
   // passing the visible rows would make a chip-filtered session reappear as a
   // foreign row.
-  const { foreignRows, markersByLaneId } = useCrossMachineLaneUnion(
+  const { foreignRows: unionForeignRows, markersByLaneId } = useCrossMachineLaneUnion(
     crossMachineSyncActive,
     allSessionsUnfiltered,
     workLaneSortMode,
     workLaneOrder,
   );
+  // A machine that is offline after its short reconnect window is not listed
+  // at all; it comes back with its rows when it reconnects. An ADE Cloud
+  // computer that is only asleep stays listed, and so does one that was
+  // deleted (`computerGone`): its lane and saved chats look like an asleep
+  // computer's, with one "Computer deleted" mark (`rowShowsConnected`).
+  const foreignRows = useMemo(
+    () => unionForeignRows.filter((row) => rowShowsConnected(row)),
+    [unionForeignRows],
+  );
+  // A listed ADE Cloud computer is watched for its sleep and its wake. A
+  // deleted one has neither.
+  useCloudViewOnScreen(foreignRows.some((row) => !row.computerGone && (isCloudConnectionTarget(row.machineId) || isSavedChatsMachineId(row.machineId))));
+  // The quiet marks of ADE Cloud lanes: "Computer deleted" (what happened as
+  // its tooltip) and "Deleting soon" (the day). From the stores this list
+  // already follows and the account's warning list; one read for the list,
+  // never one per row, and each map keeps its identity while its marks hold.
+  const cloudLanesWithoutComputer = useCloudLanesWithoutComputerRows();
+  const { deletedByLaneId, deletingSoonByLaneId } = useCloudLaneRowNotes(cloudLanesWithoutComputer);
+  const laneNoteOf = useCallback(
+    (row: Pick<CrossMachineLaneRow, "computerGone"> | null | undefined, laneId: string): CloudLaneRowNote | null => (
+      row?.computerGone
+        ? deletedByLaneId.get(laneId) ?? COMPUTER_DELETED_ROW_NOTE
+        : deletingSoonByLaneId.get(laneId) ?? null
+    ),
+    [deletedByLaneId, deletingSoonByLaneId],
+  );
+  // No copy of the repository online: the list reads nothing and says so.
+  const tabCopyPin = useTabCopyPin();
+  // The tab's machine dropped and ADE is dialing it again: say so, not "no computer".
+  const tabBinding = useAppStore((state) => state.projectBinding);
+  const tabReconnecting = useRemoteTargetReconnecting(tabBinding?.kind === "remote" ? tabBinding.targetId : null);
+  const reconnectingMachineName = !tabCopyPin && tabReconnecting && tabBinding?.kind === "remote"
+    ? tabBinding.runtimeName || "the machine"
+    : null;
+  // The tab's machine turned this device away (its pairing is out of date, or
+  // the account would not vouch for it): no redial fixes that, so the list
+  // says what happened and offers the step that does.
+  const tabFixFailure = useRemoteTargetPersonFixFailure(tabBinding?.kind === "remote" ? tabBinding.targetId : null);
+  const tabFix = !tabCopyPin && !reconnectingMachineName && tabFixFailure && tabBinding?.kind === "remote"
+    ? {
+      title: `Can't reach ${tabBinding.runtimeName || "the machine"}`,
+      detail: tabFixFailure.message,
+      actionLabel: tabFixFailure.failure === "pairing" ? "Pair again" : "Show machine",
+      open: () => openConnectionsPanel({ tab: "machines", machineId: tabBinding.targetId }),
+    }
+    : null;
   // Standalone callers can omit the hook's full-roster filing map, so keep the
   // foreign slice fresh here as well. The normal Work path supplies the map and
   // its own timer; this fallback timer prevents a foreign snooze from staying
@@ -1314,7 +1432,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     },
     [effectiveFilingBucketsProp, foreignFilingNowMs],
   );
-  const [settleUndo, setSettleUndo] = useState<{ ids: string[]; count: number } | null>(null);
+  const [settleUndo, setSettleUndo] = useState<{ groups: SettleMachineGroup[]; count: number } | null>(null);
   const {
     trigger: triggerLaneContextMenu,
     triggerForeign: triggerForeignLaneContextMenu,
@@ -1334,6 +1452,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   // True when the board takes this pane's own list area. With a `boardHost`
   // the board draws elsewhere and this pane keeps behaving as a list.
   const boardReplacesList = isBoard && boardHost === undefined;
+  const guestShares = useLaneShareGuestShelfShares();
   const normalizedFilterLaneId = filterLaneId.trim();
   const laneFilterActive = normalizedFilterLaneId.length > 0 && normalizedFilterLaneId !== "all";
   const chipFiltersActive = !isWorkSessionFilterEmpty(workSessionFilters);
@@ -1343,20 +1462,56 @@ export const SessionListPane = React.memo(function SessionListPane({
   // reports this repo contributes union rows. Those are the machine choices.
   const activeMachineId = machineIdForBinding(projectBinding);
   const crossMachineEntries = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  // An ADE Cloud computer reads "ADE Cloud" in the machine filter.
+  const machineLabelOf = useMachineLabelForMachine();
+  const activeMachineLabel = useMachineLabelForBinding(projectBinding);
+  // Every ADE Cloud computer is one "ADE Cloud" choice in the filter: the
+  // person has no single cloud computers to pick from.
+  const adeCloudIndex = useAdeCloudLaneComputers();
+  const filterMachineIdOf = useCallback(
+    (machineId: string, binding?: OpenProjectBinding | null): string => workFilterMachineId(machineId, binding, adeCloudIndex),
+    [adeCloudIndex],
+  );
+  const activeFilterMachineId = filterMachineIdOf(activeMachineId, projectBinding);
+  const selectedFilterMachineIds = workSessionFilters.machine;
   const machineFilterOptions = useMemo<WorkFilterMachineOption[]>(() => {
-    const others = Object.values(crossMachineEntries)
-      .filter((entry) => entry.machineId !== activeMachineId)
-      .map((entry) => ({ id: entry.machineId, name: entry.machineName, online: entry.online }))
+    // A computer with two checkouts has two slices; the filter lists the computer once.
+    const byMachine = new Map<string, WorkFilterMachineOption>();
+    for (const entry of Object.values(crossMachineEntries)) {
+      // A deleted cloud computer's lanes are ADE Cloud lanes, as an asleep one's are.
+      const machineId = entry.computerGone === true
+        ? ADE_CLOUD_MACHINE_ID
+        : filterMachineIdOf(machineIdOfSlot(entry.machineId), entry.binding);
+      if (machineId === activeFilterMachineId) continue;
+      const online = machineShowsConnected(entry);
+      const known = byMachine.get(machineId);
+      if (known) {
+        known.online ||= online;
+        continue;
+      }
+      // A sleeping cloud computer is not listed as offline: a send wakes it.
+      byMachine.set(machineId, {
+        id: machineId,
+        name: machineId === ADE_CLOUD_MACHINE_ID
+          ? ADE_CLOUD_NAME
+          : machineLabelOf({ machineId, binding: entry.binding, name: entry.machineName }),
+        online: machineId === ADE_CLOUD_MACHINE_ID ? true : online,
+      });
+    }
+    // An own computer that is offline is not a choice: its work cannot open
+    // from here. It stays while the filter still picks it, so it can be cleared.
+    const others = [...byMachine.values()]
+      .filter((option) => option.online || selectedFilterMachineIds.includes(option.id))
       .sort((a, b) => a.name.localeCompare(b.name));
     return [
       {
-        id: activeMachineId,
-        name: machineNameForBinding(projectBinding),
-        online: crossMachineEntries[activeMachineId]?.online ?? true,
+        id: activeFilterMachineId,
+        name: activeFilterMachineId === ADE_CLOUD_MACHINE_ID ? ADE_CLOUD_NAME : activeMachineLabel,
+        online: activeFilterMachineId === ADE_CLOUD_MACHINE_ID ? true : crossMachineEntries[activeMachineId]?.online ?? true,
       },
       ...others,
     ];
-  }, [activeMachineId, crossMachineEntries, projectBinding]);
+  }, [activeFilterMachineId, activeMachineId, activeMachineLabel, crossMachineEntries, filterMachineIdOf, machineLabelOf, selectedFilterMachineIds]);
   // A machine that answers the connection but refuses the chat read would
   // otherwise just contribute nothing, which reads as "no chats there". Only
   // when it has nothing retained to show: a blip on a machine whose chats are
@@ -1374,7 +1529,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         && entry.error
         && entry.sessions.length === 0
         && (entry.failedReads ?? 0) >= MACHINE_READ_FAILURE_NOTICE_THRESHOLD
-        ? [{ machineId: entry.machineId, machineName: entry.machineName, error: entry.error }]
+        ? [{ machineId: entry.machineId, machineName: entry.machineName, targetId: entry.targetId, error: entry.error }]
         : []),
     [activeMachineId, crossMachineEntries, crossMachineSyncActive],
   );
@@ -1391,7 +1546,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     [dismissedMachineReadFailureIds, failingMachineReads],
   );
   const localMachineFilteredOut = workSessionFilters.machine.length > 0
-    && !workSessionFilters.machine.includes(activeMachineId);
+    && !workSessionFilters.machine.includes(activeFilterMachineId);
 
   const filteredHandoffJobs = useMemo(() => {
     const filtered = handoffJobs.filter((job) => {
@@ -1536,12 +1691,14 @@ export const SessionListPane = React.memo(function SessionListPane({
   // Counts from the UNFILTERED session list (not `allSessions`, which is already
   // search/lane-filtered) so hiding a running child by filter does not undercount
   // its visible parent's badge. No extra fetch; clears as children go terminal.
+  // "Running" is the child row's own status (its turn is under way), not an
+  // open session: a child whose row reads Done is not still running.
   const liveChildrenByParentId = useMemo(() => {
     const map = new Map<string, number>();
     for (const session of allSessionsUnfiltered) {
       const parentId = session.orchestrationParentSessionId;
       if (!parentId || parentId === session.id) continue;
-      if (session.status !== "running") continue;
+      if (sessionStatusBucket(canonicalInputFromSummary(session)) !== "running") continue;
       map.set(parentId, (map.get(parentId) ?? 0) + 1);
     }
     return map;
@@ -1583,17 +1740,57 @@ export const SessionListPane = React.memo(function SessionListPane({
   const selectedDeletableCount = selectedSessions.filter(canBulkDeleteSession).length;
   // Bulk settle targets at-rest rows only — actively working sessions are not
   // "done" merely because they lack a settled marker.
+  // Which machine each selected row lives on, for the bulk settle: the tab's
+  // own roster takes the unpinned route (pin null); another machine's row goes
+  // to that machine through its `foreignRow.binding`. A foreign row with no
+  // binding cannot be reached at all, so it is left out of the settle.
+  const foreignRowBySessionId = useMemo(() => {
+    const map = new Map<string, CrossMachineLaneRow>();
+    for (const row of foreignRows) {
+      for (const session of row.sessions) map.set(session.id, row);
+    }
+    return map;
+  }, [foreignRows]);
+  // The same parent-title lookup for another machine's rows: a child names
+  // its parent from that machine's own chats, in any of its lanes.
+  const foreignSessionTitleByMachine = useMemo(() => {
+    const byMachine = new Map<string, Map<string, string>>();
+    for (const row of foreignRows) {
+      let titles = byMachine.get(row.machineId);
+      if (!titles) {
+        titles = new Map<string, string>();
+        byMachine.set(row.machineId, titles);
+      }
+      for (const session of row.sessions) titles.set(session.id, primarySessionLabel(session));
+    }
+    return byMachine;
+  }, [foreignRows]);
+  // The parent's name for a child row: from the child's own machine, or, for a
+  // parent on another computer (`remote:<device>:<chat>`), from whichever
+  // machine lists that chat.
+  const parentTitleFor = useCallback((parentId: string | null | undefined, machineId: string | null): string | null => {
+    const id = parentChatRowId(parentId);
+    if (!id) return null;
+    const own = machineId ? foreignSessionTitleByMachine.get(machineId)?.get(id) : sessionTitleById.get(id);
+    if (own || id === parentId?.trim()) return own ?? null;
+    const local = sessionTitleById.get(id);
+    if (local) return local;
+    for (const titles of foreignSessionTitleByMachine.values()) {
+      const title = titles.get(id);
+      if (title) return title;
+    }
+    return null;
+  }, [foreignSessionTitleByMachine, sessionTitleById]);
   const selectedSettleableSessions = useMemo(() => {
-    // Bulk settle still goes through the unpinned `sessions.settleMany`, which
-    // only reaches the bound machine — so it stays scoped to the active
-    // roster's rows. Delete is the action that now carries per-row pins.
+    // Bulk settle stays scoped to the host roster's rows; each machine's
+    // share goes to that machine (see `settleSessions`).
     const localIds = new Set(allSessions.map((session) => session.id));
     return selectedSessions.filter((session) =>
-      localIds.has(session.id)
+      (localIds.has(session.id) || foreignRowBySessionId.get(session.id)?.binding != null)
       && !session.settledAt
       && sessionStatusBucket(canonicalInputFromSummary(session)) !== "running"
       && !sessionNeedsYou(canonicalInputFromSummary(session)));
-  }, [allSessions, selectedSessions]);
+  }, [allSessions, foreignRowBySessionId, selectedSessions]);
   const quietlyAwaitingSessions = useMemo(
     () => awaitingInputFiltered.filter(
       (session) => !sessionNeedsYou(canonicalInputFromSummary(session)),
@@ -1601,26 +1798,53 @@ export const SessionListPane = React.memo(function SessionListPane({
     [awaitingInputFiltered],
   );
   const selectedSettleCount = selectedSettleableSessions.length;
-  const settleSessions = useCallback(async (sessionIds: string[]) => {
-    try {
-      const newlySettled = await window.ade.sessions.settleMany(sessionIds);
-      if (newlySettled.length > 0) {
-        setSettleUndo({ ids: newlySettled, count: newlySettled.length });
+  // `settleMany` takes the ids of one machine, so the selection is split by
+  // the machine each row lives on, and every machine gets its call at once. A
+  // machine that fails does not stop the others; the toast names it. A row
+  // with no known machine is not sent.
+  // Another machine's rows come from the cross-machine union, which re-reads
+  // on its own slow cadence. Ask it for those machines now, so a settled row
+  // moves at once and not on the next poll.
+  const rereadForeignMachines = useCallback((groups: readonly SettleMachineGroup[]) => {
+    const machineIds = new Set<string>();
+    for (const group of groups) {
+      for (const id of group.ids) {
+        const machineId = foreignRowBySessionId.get(id)?.machineId;
+        if (machineId) machineIds.add(machineId);
       }
-    } catch (error) {
-      console.error("[SessionListPane] bulk settle failed", { sessionIds, error });
     }
-  }, []);
+    for (const machineId of machineIds) requestCrossMachineLanesForMachine(machineId);
+  }, [foreignRowBySessionId]);
+  const settleSessions = useCallback(async (sessions: readonly TerminalSessionSummary[]) => {
+    const { groups: byMachine, unrouted } = groupByMachine(sessions, resolveSessionRuntimePin);
+    if (unrouted.length > 0) {
+      console.warn("[SessionListPane] bulk settle skipped rows with no machine", { count: unrouted.length });
+    }
+    const groups: SettleMachineGroup[] = byMachine.map(({ pin, items }) => ({
+      pin,
+      machineName: settleMachineName(pin),
+      ids: items.map((session) => session.id),
+    }));
+    const results = await Promise.allSettled(groups.map((group) => window.ade.sessions.settleMany(group.ids, group.pin)));
+    const settledGroups: SettleMachineGroup[] = [];
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled" && result.value.length > 0) {
+        settledGroups.push({ ...groups[index]!, ids: result.value });
+      }
+    });
+    const count = settledGroups.reduce((total, group) => total + group.ids.length, 0);
+    if (count > 0) setSettleUndo({ groups: settledGroups, count });
+    rereadForeignMachines(settledGroups);
+    reportSettleFailures("Settle", groups, results);
+  }, [rereadForeignMachines, resolveSessionRuntimePin]);
   const undoSettle = useCallback(async () => {
-    const ids = settleUndo?.ids ?? [];
-    if (!ids.length) return;
+    const groups = settleUndo?.groups ?? [];
+    if (!groups.length) return;
     setSettleUndo(null);
-    try {
-      await window.ade.sessions.unsettleMany(ids);
-    } catch (error) {
-      console.error("[SessionListPane] undo settle failed", { sessionIds: ids, error });
-    }
-  }, [settleUndo]);
+    const results = await Promise.allSettled(groups.map((group) => window.ade.sessions.unsettleMany(group.ids, group.pin)));
+    rereadForeignMachines(groups);
+    reportSettleFailures("Undo settle", groups, results);
+  }, [rereadForeignMachines, settleUndo]);
   useEffect(() => {
     if (!settleUndo) return;
     const timeout = window.setTimeout(() => setSettleUndo(null), 8_000);
@@ -1796,7 +2020,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       const effectiveFilingBuckets = filingBucketsForForeignSessions(row.sessions);
       const matched = query || chipFiltersActive
         ? row.sessions.filter((session) => {
-            if (query && !`${primarySessionLabel(session)} ${row.lane.name}`.toLowerCase().includes(query)) {
+            if (query && !`${primarySessionLabel(session)} ${row.lane.name} ${laneDisplayName(row.lane)}`.toLowerCase().includes(query)) {
               return false;
             }
             return !chipFiltersActive || matchesWorkSessionFilters(session, workSessionFilters, {
@@ -1805,7 +2029,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               // remote lane instead of incorrectly treating an unknown PR as open.
               laneHasPr: () => false,
               laneIsDirty: (laneId) => laneId === row.lane.id && row.lane.status.dirty,
-              machineId: row.machineId,
+              machineId: row.computerGone ? ADE_CLOUD_MACHINE_ID : filterMachineIdOf(machineIdOfSlot(row.machineId), row.binding),
               effectiveFilingBuckets,
             });
           })
@@ -2214,9 +2438,8 @@ export const SessionListPane = React.memo(function SessionListPane({
    *      not lose its header for the second it takes the real session to land.
    * A pinned lane also keeps its header — the pin glyph lives there — and so
    * does a lane on an unreachable machine, whose folded-shut group treatment has
-   * nowhere else to live. The machine badge itself does NOT force a header: a
-   * headerless lane carries it on the card instead (see
-   * `RenderCardOptions.machineMarker`), so nothing is lost.
+   * nowhere else to live. The lane's machine does NOT force a header: rows
+   * show no machine, and each card's hover card names it.
    *
    * This covers BOTH sides of the cross-machine union. Local lanes are keyed by
    * lane id and foreign ones by `machineId:laneId`, which is how every other
@@ -2254,7 +2477,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       // no toggle and is always open — and "that machine is gone" is precisely
       // when its work should stop occupying a prime row. Same shape of exemption
       // as a pinned lane: an explicit reason to keep the header wins.
-      if (!row.online) continue;
+      if (!rowShowsConnected(row)) continue;
       // Both pin keys, for the same reason `foreignLaneShelving` checks both:
       // this pane addresses a foreign lane by its composite id while the pin
       // store only ever writes bare lane ids.
@@ -2538,20 +2761,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     onOpenLanePrs?: () => void;
     laneActions?: SessionContextMenuLaneActions | null;
     /**
-     * Set for cards rendered UNDER a lane header that already shows a machine
-     * marker. Every row in that group is on that machine by construction, so the
-     * row's own chip is the header's label repeated once per card. Never set for
-     * the singleton/headerless form: with no header above it, the chip is the
-     * only place the machine is named at all.
-     */
-    suppressMachineChip?: boolean;
-    /**
-     * The marker for a headerless lane, whose card stands in for the divider.
-     *
-     * Handed down rather than re-derived on the card. The card used to infer its
-     * machine from `runtimePin`, which is only ever set for foreign rows — so a
-     * singleton lane on the tab's own machine could never show one even when
-     * that machine was somewhere else entirely. One resolver, one answer.
+     * The lane's machine. The row shows no machine; its hover card names it.
+     * Handed down so every card in a lane resolves the machine the same way.
      */
     machineMarker?: CrossMachineLaneMarker | null;
     /** The Apple device a headerless lane holds; its card shows the mark. */
@@ -2617,9 +2828,12 @@ export const SessionListPane = React.memo(function SessionListPane({
     const laneDeleteProgress = deleteProgressByLaneId[
       foreignRow ? foreignLaneKey(foreignRow.machineId, session.laneId) : session.laneId
     ] ?? null;
-    // A saved chat on a computer that isn't connected can still be read.
+    // Work of an ADE Cloud computer that is only asleep opens normally and
+    // reads its saved copy; only an action in it wakes the computer.
+    const cloudResting = foreignRow != null && !foreignRow.online && foreignRow.cloudResting === true;
+    const laneNote = laneNoteOf(foreignRow, session.laneId);
     const savedCopyReadable = session.cloudSavedCopy === true && foreignRow != null && !foreignRow.online;
-    const disabledReason = (foreignRow && !savedCopyReadable
+    const disabledReason = (foreignRow && !savedCopyReadable && !cloudResting
       ? machineBlockedReason({ machineName: foreignRow.machineName, online: foreignRow.online, routable: foreignRow.binding != null })
       : null)
       ?? (laneDeleteProgress ? `${getLaneDeleteStatusLabel(laneDeleteProgress)} lane` : null);
@@ -2630,11 +2844,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         lane={sessionLane}
         liveChildrenCount={foreignRow ? 0 : liveChildrenByParentId.get(session.id) ?? 0}
         subagentBusy={busySubagentParentIds.has(session.id)}
-        parentSessionTitle={
-          !foreignRow && session.orchestrationParentSessionId
-            ? sessionTitleById.get(session.orchestrationParentSessionId) ?? null
-            : null
-        }
+        parentSessionTitle={parentTitleFor(session.orchestrationParentSessionId, foreignRow?.machineId ?? null)}
         isSelected={selectedSessionId === session.id}
         isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
         onSelect={(id, event) => {
@@ -2644,7 +2854,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           // from its lane by the chat pane itself, while a CLI/shell session's
           // has to be handed to the PTY surface, so it goes through the page's
           // foreign-runtime handler (which also owns the not-open-binding
-          // fallback). The machine chip on the card is untouched either way.
+          // fallback).
           // A shift-range spans what is on screen. `renderedSessionIds` holds
           // only the tab's own machine and a foreign lane knows only its own
           // rows, so a range across lanes from another machine used to collapse
@@ -2655,7 +2865,11 @@ export const SessionListPane = React.memo(function SessionListPane({
           if (!foreignRow) {
             return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds);
           }
-          if (isChatToolType(session.toolType)) {
+          // Reading never wakes: a resting cloud row opens its saved copy, and
+          // only an action in it (a send, a terminal) wakes the computer. A
+          // saved CLI or shell copy opens read-only in place like a saved
+          // chat; the PTY handler would try to attach to it.
+          if (isChatToolType(session.toolType) || isSavedTerminalSession(session)) {
             return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds, foreignRow.binding);
           }
           if (foreignRow.binding && onSelectForeignRuntimeSession) {
@@ -2696,7 +2910,9 @@ export const SessionListPane = React.memo(function SessionListPane({
         lanePrForeign={Boolean(foreignRow)}
         gridBadge={foreignRow ? null : gridBadgeFor(session.id)}
         focusMark={focusMarks?.get(session.id) ?? null}
-        runtimePin={foreignRow?.binding}
+        // The row's machine, the tab's own copy included: its snooze, delta
+        // and dev-server stop go there. Null only when the machine is unknown.
+        runtimePin={foreignRow?.binding ?? resolveSessionRuntimePin(session)}
         machineMarker={options?.machineMarker ?? (showLaneIdentity ? markersByLaneId.get(foreignRow ? foreignLaneKey(foreignRow.machineId, session.laneId) : session.laneId) : null) ?? null}
         laneAppleDevice={options?.laneAppleDevice ?? (showLaneIdentity && !foreignRow ? laneAppleDevices.get(session.laneId) : null) ?? null}
         laneAndroidDevice={options?.laneAndroidDevice ?? (showLaneIdentity && !foreignRow ? laneAndroidDevices.get(session.laneId) : null) ?? null}
@@ -2705,12 +2921,15 @@ export const SessionListPane = React.memo(function SessionListPane({
         laneCloud={options?.laneCloud ?? (showLaneIdentity ? laneCloudProvider(sessionLane) : null)}
         laneAppControl={options?.laneAppControl ?? (showLaneIdentity && !foreignRow && laneToolUse.appControl.has(session.laneId))}
         laneBrowserTabs={options?.laneBrowserTabs ?? (showLaneIdentity && !foreignRow ? laneToolUse.browserTabs.get(session.laneId) : 0) ?? 0}
-        suppressMachineChip={options?.suppressMachineChip}
+        // A card that names its lane carries the lane's quiet mark too.
+        laneNote={showLaneIdentity ? laneNote?.label ?? null : null}
+        laneNoteTitle={showLaneIdentity ? laneNote?.title ?? null : null}
         suppressStatusLabel={options?.suppressStatusLabel}
         subagentMark={options?.subagentMark ?? null}
         deltaEnabled={!foreignRow}
         githubStack={isChatToolType(session.toolType) ? sessionPr?.stack ?? null : null}
         disabledReason={disabledReason}
+        readOnly={!foreignRow && reconnectingMachineName != null}
         disabledBusy={!foreignRow}
       />
     );
@@ -2786,7 +3005,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     row: CrossMachineLaneRow,
   ): SessionContextMenuLaneActions | null => {
     const binding = row.binding;
-    if (!binding) return null;
+    // A deleted computer's lane has nothing to send its lane actions to.
+    if (!binding || row.computerGone) return null;
     return {
       laneId: row.lane.id,
       laneName: row.lane.name,
@@ -2823,6 +3043,8 @@ export const SessionListPane = React.memo(function SessionListPane({
             laneId: lane.id,
             laneName: lane.name,
             lane,
+            // The tab's copy owns this lane: Manage and Share act on it there.
+            ...(tabCopyPin ? { binding: tabCopyPin } : {}),
             onToggleWorkPin: toggleWorkLanePinned,
             workPinnedLaneIds,
             workPinLaneId: lane.id,
@@ -2915,7 +3137,9 @@ export const SessionListPane = React.memo(function SessionListPane({
       // to translate; Waiting is refused by the guard because it is derived.
       if (!isWorkBoardMoveTarget(column)) return;
       const foreignRow = boardUnion.sessionRow.get(session.id);
-      const binding = foreignRow?.binding ?? null;
+      // The row's machine, the tab's own copy included. Null only when the
+      // machine is unknown; the move then says so.
+      const binding = foreignRow?.binding ?? resolveSessionRuntimePin(session);
       // One narration for a move, shared with the row menu's Change status.
       moveSessionOnBoard({
         session,
@@ -2939,7 +3163,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         },
       });
     },
-    [boardUnion.sessionRow],
+    [boardUnion.sessionRow, resolveSessionRuntimePin],
   );
 
   const renderHandoffCards = (jobs: HandoffLaunchJob[]) => (
@@ -3174,7 +3398,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg"
             onClick={(event) => {
               event.stopPropagation();
-              void settleSessions(quietlyAwaitingSessions.map((session) => session.id));
+              void settleSessions(quietlyAwaitingSessions);
             }}
           >
             {flatLists.rows.size ? "Settle local" : "Settle all"}
@@ -3196,7 +3420,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg"
             onClick={(event) => {
               event.stopPropagation();
-              void settleSessions(endedFiltered.map((session) => session.id));
+              void settleSessions(endedFiltered);
             }}
           >
             {flatLists.rows.size ? "Settle local" : "Settle all"}
@@ -3225,7 +3449,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       message,
       tone: "error",
     });
-    void window.ade.lanes.cancelDelete({ laneId }, pin)
+    void withChatPin(pin, (chatPin) => window.ade.lanes.cancelDelete({ laneId }, chatPin))
       .then((result) => {
         if (!result.cancelled) showRefusal(result.reason ?? "The delete is past the point where it can stop.");
       })
@@ -3283,14 +3507,9 @@ export const SessionListPane = React.memo(function SessionListPane({
         })}`)}
       />
     ) : null;
-    // Never populated for a lane on the Mac you're sitting at. Note this list is
-    // the ACTIVE BINDING's lanes, which is not necessarily this machine; the
-    // marker only draws while its machine is offline (`isMachineMarkerShown`).
+    // The lane's machine, for the hover cards of its rows. No row or header
+    // draws it: the machine is named only in the hover card and the composer.
     const machineMarker = markersByLaneId.get(lane.id) ?? null;
-    // A header that marks the machine makes every row beneath it a repetition.
-    // A headerless lane has no such header, so its lone card carries the marker
-    // itself — handed down explicitly below rather than suppressed here.
-    const suppressMachineChip = Boolean(machineMarker) && !headerless;
     // A lane already filed into a quiet shelf renders its rows flat: the shelf
     // states the tier once, for everything under it.
     // The Working shelf is not quiet: its lanes keep their live cards and tails.
@@ -3305,7 +3524,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         key={lane.id}
         sectionId={lane.id}
         icon={laneIcon}
-        label={lane.name}
+        label={laneDisplayName(lane)}
         namingLaneId={lane.id}
         subLabel={branchNameFromRef(lane.branchRef)}
         variant="lane"
@@ -3316,7 +3535,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         prBadge={prBadge}
         machineMarker={laneCloudProvider(lane)
           ? <LaneCloudMarker provider={laneCloudProvider(lane)!} />
-          : machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
+          : null}
         appleDevice={laneAppleDevice || laneAndroidDevice || laneDesktop || laneAppControl || laneBrowserTabs > 0 ? (
           <>
             {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
@@ -3331,13 +3550,16 @@ export const SessionListPane = React.memo(function SessionListPane({
           </>
         ) : null}
         busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
-        onStopBusy={deleteProgress?.cancellable ? () => stopLaneDelete(lane.id, lane.name, null) : null}
+        // A lane of the tab's copy: the stop goes to that copy.
+        onStopBusy={deleteProgress?.cancellable ? () => stopLaneDelete(lane.id, lane.name, tabCopyPin) : null}
         pinned={lanePinned}
         dragProps={laneDragProps(lane.id)}
         dropIndicatorEdge={laneDrop?.laneId === lane.id ? laneDrop.edge : null}
         layoutDependency={laneOrderSignature}
         laneStatus={laneFocusByLaneId.get(lane.id)?.status ?? null}
         laneFailed={laneFocusByLaneId.get(lane.id)?.failed ?? false}
+        // A tab on an ADE Cloud lane's own computer: its lane may be due for deletion.
+        laneNote={laneNoteOf(null, lane.id)}
         quietCounts={laneQuiet && collapsed
           ? {
               snoozed: list.filter((session) =>
@@ -3403,7 +3625,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           : renderLaneSessionLists(lane.id, list, {
               quiet: laneQuiet,
               flat: inQuietShelf,
-              cardOptions: suppressMachineChip ? { suppressMachineChip: true } : undefined,
+              cardOptions: machineMarker ? { machineMarker } : undefined,
             })}
       </StickyGroupHeader>
     );
@@ -3418,11 +3640,9 @@ export const SessionListPane = React.memo(function SessionListPane({
    */
   const renderForeignLaneGroup = (entry: ForeignLaneEntry) => {
     const { row, compositeLaneId, quiet, fullQuiet, nesting, fullNesting, shelf } = entry;
-    // One resolver, one answer — including for Primary, which used to get its
-    // name spelled out here on the theory that two identically-named Primaries
-    // are otherwise indistinguishable. Under the physical-machine rule they are
-    // not: at most one Primary on screen is unbadged, and it is the one on the
-    // Mac you're sitting at.
+    // One resolver, one answer. With lanes from several computers on screen,
+    // every header not on this computer names its computer, so two Primaries
+    // read as two computers.
     const headerMarker = markersByLaneId.get(compositeLaneId) ?? null;
     // Keyed the same way the delete was started (`machineId:laneId`), never by the
     // bare lane id, which can name a lane on this machine.
@@ -3453,12 +3673,10 @@ export const SessionListPane = React.memo(function SessionListPane({
       row.lane,
       lanePrs,
     );
-    // A group WITH a header names the machine there, so its rows never repeat
-    // it. A headerless group has no such header, so its lone card takes the
-    // marker instead — the same trade `renderLaneGroup` makes.
+    // Every card of the group names the lane's machine in its hover card.
     const cardOptions: RenderCardOptions = {
       foreignRow: row,
-      suppressMachineChip: true,
+      machineMarker: headerMarker,
       nesting,
       markNesting: fullNesting,
     };
@@ -3481,7 +3699,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             <LaneIcon size={12} weight="regular" />
           </span>
         }
-        label={row.lane.name}
+        label={laneDisplayName(row.lane)}
         subLabel={branchNameFromRef(row.lane.branchRef)}
         variant="lane"
         count={row.sessions.length}
@@ -3501,7 +3719,6 @@ export const SessionListPane = React.memo(function SessionListPane({
             onOpen={(target) => openLanePr(target, { foreign: true, navigate })}
           />
         ) : null}
-        machineMarker={headerMarker ? <LaneMachineMarker marker={headerMarker} /> : null}
         laneStatus={entry.focusStatus}
         laneFailed={entry.focusFailed}
         quietCounts={laneQuiet && collapsed
@@ -3510,12 +3727,15 @@ export const SessionListPane = React.memo(function SessionListPane({
               settled: quietTop.settled.length,
             }
           : null}
-        dimmed={!row.online}
+        // A sleeping cloud computer's lane looks like any other: a send wakes it.
+        // A deleted one's too, with its one quiet mark.
+        dimmed={!rowShowsConnected(row)}
+        laneNote={laneNoteOf(row, row.lane.id)}
         onToggleCollapsed={() => {
           if (laneQuiet) toggleWorkSectionCollapsed(laneOpenMarker);
           else toggleWorkLaneCollapsed(compositeLaneId);
         }}
-        onContextMenu={row.binding
+        onContextMenu={row.binding && !row.computerGone
           ? (event) => triggerForeignLaneContextMenu(
             row.lane,
             row.binding!,
@@ -4142,9 +4362,13 @@ export const SessionListPane = React.memo(function SessionListPane({
               onClick={() => {
                 // The board and the Focus grid own the main area, so a draft
                 // opened in place has nowhere to draw. Leave them first.
-                if (isBoard) setWorkViewMode?.("list");
-                if (workFocusGrid) setWorkFocusGrid?.(false);
-                onShowDraftKind("chat");
+                // As ⌘⇧N does: the new prompt box takes the keyboard as soon as
+                // it mounts, however the button was pressed.
+                openDraftAndFocusWorkInput(() => {
+                  if (isBoard) setWorkViewMode?.("list");
+                  if (workFocusGrid) setWorkFocusGrid?.(false);
+                  onShowDraftKind("chat");
+                });
               }}
               aria-label="Start a new chat"
               data-tour="work.newSession"
@@ -4202,7 +4426,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                   type="button"
                   className={BULK_ACTION_BUTTON_CLASS}
                   onClick={() => {
-                    void settleSessions(selectedSettleableSessions.map((session) => session.id));
+                    void settleSessions(selectedSettleableSessions);
                   }}
                 >
                   Settle {selectedSettleCount}
@@ -4250,28 +4474,42 @@ export const SessionListPane = React.memo(function SessionListPane({
           from the list, and one fewer boundary before the first chat. */}
 
       {machineReadFailures.map((failure) => (
-        <div key={failure.machineId} className="mx-2 mt-1.5" data-testid="work-machine-read-failure">
-          <Banner
-            layout="inline"
-            model={{
-              id: `work-machine-read-failure:${failure.machineId}`,
-              tone: "warning",
-              icon: <Desktop size={13} weight="bold" />,
-              title: `Couldn't load chats from ${failure.machineName}`,
-              detail: "That machine is connected but didn't send its chats. ADE tries again on its own.",
-              // crossMachineLanes already logged this failure to Sentry with its count.
-              report: {
-                surface: "work_machine_read",
-                code: "machine_session_read_failed",
-                technicalDetail: failure.error,
-              },
-              dismiss: {
-                onDismiss: () => setDismissedMachineReadFailureIds((prev) => new Set(prev).add(failure.machineId)),
-              },
-            }}
-          />
-        </div>
+        <MachineReadFailureNotice
+          key={failure.machineId}
+          failure={failure}
+          onDismiss={() => setDismissedMachineReadFailureIds((prev) => new Set(prev).add(failure.machineId))}
+        />
       ))}
+
+      {/* The tab's machine dropped: its rows are what it last sent, and they
+          wait for it. Said once above the list, not on every row. */}
+      {reconnectingMachineName && hasAnySessions ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px 0" }}
+          model={{
+            id: "work-machine-reconnecting",
+            tone: "info",
+            title: `Reconnecting to ${reconnectingMachineName}…`,
+            detail: "These are the chats it last sent.",
+            dismiss: false,
+          }}
+        />
+      ) : null}
+      {tabFix && hasAnySessions ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px 0" }}
+          model={{
+            id: "work-machine-needs-fix",
+            tone: "warning",
+            title: tabFix.title,
+            detail: tabFix.detail,
+            actions: [{ label: tabFix.actionLabel, variant: "primary", onClick: tabFix.open }],
+            dismiss: false,
+          }}
+        />
+      ) : null}
 
       {/* Session list */}
       <div
@@ -4314,11 +4552,32 @@ export const SessionListPane = React.memo(function SessionListPane({
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/45 mb-2" />
             <div className="text-[12px] font-medium text-fg/70">
-              {firstLoadRetrying ? "Waiting for this machine to answer" : "No chats yet"}
+              {reconnectingMachineName
+                ? `Reconnecting to ${reconnectingMachineName}…`
+                : tabFix
+                ? tabFix.title
+                : !tabCopyPin
+                ? "No computer connected"
+                : firstLoadRetrying ? "Waiting for this machine to answer" : "No chats yet"}
             </div>
             <div className="mt-1 text-[11px] text-muted-fg/60">
-              {firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
+              {reconnectingMachineName
+                ? "Your chats show again as soon as it answers"
+                : tabFix
+                ? tabFix.detail
+                : !tabCopyPin
+                ? "Connect a computer to see this project's chats"
+                : firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
             </div>
+            {!tabCopyPin && !reconnectingMachineName ? (
+              <button
+                type="button"
+                className="mt-2.5 rounded-md px-2 py-1 text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg"
+                onClick={tabFix ? tabFix.open : () => openConnectionsPanel("machines")}
+              >
+                {tabFix ? tabFix.actionLabel : "Connect a computer"}
+              </button>
+            ) : null}
           </div>
         ) : isByTime ? (
           byTimeList
@@ -4327,6 +4586,24 @@ export const SessionListPane = React.memo(function SessionListPane({
         ) : (
           groupedByStatusList
         )}
+        {/* Lanes other accounts share with this one. Their own group, keyed by
+            grant, never mixed with this project's lanes. Absent with no share. */}
+        {!boardReplacesList && guestShares.length > 0 ? (
+          <div className={cn(SESSION_LIST_BLEED_CLASS, "px-1 pb-2")}>
+            <StickyGroupHeader
+              sectionId="lane-shelf:shared-with-me"
+              icon={<UsersThree size={12} weight="bold" aria-hidden className="shrink-0" />}
+              label="Shared with me"
+              variant="quiet-shelf"
+              heading
+              count={guestShares.length}
+              collapsed={isQuietShelfCollapsed(workCollapsedSectionIds, "lane-shelf:shared-with-me")}
+              onToggleCollapsed={() => toggleWorkSectionCollapsed(quietShelfOpenMarker("lane-shelf:shared-with-me"))}
+            >
+              <LaneShareGuestShelfRows shares={guestShares} />
+            </StickyGroupHeader>
+          </div>
+        ) : null}
       </div>
 
       {settleUndo ? (
@@ -4349,3 +4626,37 @@ export const SessionListPane = React.memo(function SessionListPane({
     </div>
   );
 });
+
+/**
+ * A machine whose chats did not load. On a slow link the likely cause is the
+ * link, not the machine, so the detail says that instead.
+ */
+function MachineReadFailureNotice({ failure, onDismiss }: {
+  failure: { machineId: string; machineName: string; targetId: string | null; error: string };
+  onDismiss: () => void;
+}) {
+  const slowLink = useSlowLinkActive(failure.targetId);
+  return (
+    <div className="mx-2 mt-1.5" data-testid="work-machine-read-failure">
+      <Banner
+        layout="inline"
+        model={{
+          id: `work-machine-read-failure:${failure.machineId}`,
+          tone: "warning",
+          icon: <Desktop size={13} weight="bold" />,
+          title: `Couldn't load chats from ${failure.machineName}`,
+          detail: slowLink
+            ? "The connection to that machine is slow or dropping. ADE tries again on its own."
+            : "That machine is connected but didn't send its chats. ADE tries again on its own.",
+          // crossMachineLanes already logged this failure to Sentry with its count.
+          report: {
+            surface: "work_machine_read",
+            code: "machine_session_read_failed",
+            technicalDetail: failure.error,
+          },
+          dismiss: { onDismiss },
+        }}
+      />
+    </div>
+  );
+}

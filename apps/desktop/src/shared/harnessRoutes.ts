@@ -662,8 +662,18 @@ export function sourceModelIdFor(source: HarnessPresetSource, model: string): st
  * pairing passes the source's own id unchanged.
  */
 export function launchModelIdFor(harness: HarnessPresetBody, source: HarnessPresetSource, model: string): string {
+  return harness === "opencode" ? catalogModelIdFor(source, model) : model.trim();
+}
+
+/**
+ * The id the catalog files a source model under, independent of the harness.
+ * OpenCode names every one of its models `opencode/<provider>/<model>`; every
+ * other source keeps the id as typed. The composer uses this for the source
+ * model's effort ladder, and the model row's label uses the same rule.
+ */
+export function catalogModelIdFor(source: HarnessPresetSource, model: string): string {
   const id = model.trim();
-  if (harness === "opencode" && source.kind === "opencode" && !id.startsWith("opencode/")) {
+  if (source.kind === "opencode" && !id.startsWith("opencode/")) {
     return encodeOpenCodeRegistryId(source.providerId, id);
   }
   return id;

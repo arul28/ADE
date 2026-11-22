@@ -19,8 +19,10 @@ import {
   waitForCondition,
   waitForEvent,
   waitForFakeTimers,
+  settleSteppingTimeouts,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 
 /**
  * Claude fixture that withholds the provider's answer to `/compact` until ADE
@@ -76,10 +78,10 @@ async function createClaudeCompactionFixture(args: {
     modelId: "anthropic/claude-sonnet-5",
   });
 
-  await service.runSessionTurn({
+  await settleSteppingTimeouts(() => service.runSessionTurn({
     sessionId: session.id,
     text: "Exercise Claude streaming text.",
-  });
+  }));
 
   return { ...harness, events, session, send };
 }
@@ -950,7 +952,7 @@ describe("createAgentChatService", () => {
         turnUsageLedger: ledger,
       });
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
-      await service.runSessionTurn({ sessionId: session.id, text: "Start background work." });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "Start background work." }));
       releaseIdle();
 
       await waitForCondition(
@@ -1378,14 +1380,14 @@ describe("createAgentChatService", () => {
         modelId: "anthropic/claude-sonnet-5",
       });
 
-      await service.runSessionTurn({ sessionId: session.id, text: "turn one" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "turn one" }));
       await vi.waitFor(() => {
         expect(claudeNoticeMessages(events))
           .toContain("Claude could not compact this conversation. Start a new chat or hand off with a shorter history.");
       }, { timeout: 5_000 });
 
-      await service.runSessionTurn({ sessionId: session.id, text: "turn two" });
-      await service.runSessionTurn({ sessionId: session.id, text: "turn three" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "turn two" }));
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "turn three" }));
 
       // The refusal described one moment, not the session: a grown conversation
       // must be compactable again.
@@ -1441,14 +1443,14 @@ describe("createAgentChatService", () => {
         modelId: "anthropic/claude-sonnet-5",
       });
 
-      await service.runSessionTurn({ sessionId: session.id, text: "first message" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "first message" }));
       await vi.waitFor(() => {
         expect(send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
           .toHaveLength(1);
       }, { timeout: 5_000 });
 
       failPermissionMode = true;
-      await service.runSessionTurn({ sessionId: session.id, text: "second message" }).catch(() => undefined);
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "second message" })).catch(() => undefined);
 
       await vi.waitFor(() => {
         expect(claudeNoticeMessages(events))
@@ -2036,7 +2038,11 @@ describe("createAgentChatService", () => {
       const textEvents = events
         .map((event) => event.event)
         .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "text" }> => event.type === "text");
-      expect(textEvents.map((event) => event.text)).toEqual(["Got it. Let me check the desktop app structure."]);
+      // The first words of a message go out as soon as they arrive and the
+      // rest coalesce (`showFirstBufferedText`), so the message can arrive in
+      // more than one event. What must hold is that it arrives once, whole,
+      // in order: the repeated assistant snapshot re-emits nothing.
+      expect(textEvents.map((event) => event.text).join("")).toBe("Got it. Let me check the desktop app structure.");
     });
 
     it("does not duplicate Claude text when the final assistant snapshot extends streamed deltas", async () => {
@@ -2629,7 +2635,7 @@ describe("createAgentChatService", () => {
         expect(fetchResults()).toEqual([]);
 
         vi.mocked(getSessionMessages).mockResolvedValue([notificationRow] as any);
-        await service.runSessionTurn({ sessionId: session.id, text: "Anything else?" });
+        await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "Anything else?" }));
 
         expect(fetchResults()).toEqual([
           expect.objectContaining({ tool: "WebFetch", result: lateResult, turnId: fetchTurnId, status: "completed" }),
@@ -2808,6 +2814,71 @@ describe("createAgentChatService", () => {
         && envelope.event.itemId === "tool-exit-plan-suppress"
         && envelope.event.status === "failed"
       )).toHaveLength(0);
+    });
+  });
+
+  describe("a login change of one Claude account", () => {
+    it("ends only that account's idle chat now and its running turn at settle; another account keeps its process", async () => {
+      // P6 §12: a Claude pass is one account; its change restarts only its own chats.
+      const accounts = getMachineProviderInstanceStore();
+      const passA = accounts.create({ provider: "claude", label: "A" }).instance;
+      const passB = accounts.create({ provider: "claude", label: "B" }).instance;
+      // One SDK session per process, in the order the chats start.
+      const processes: Array<{ close: ReturnType<typeof vi.fn> }> = [];
+      const held: Array<() => void> = [];
+      const makeProcess = () => {
+        const hold = processes.length === 1; // the second chat's next turn runs until the test lets it end
+        let streamCall = 0;
+        // A live process: its stream stays open after a result until it is closed.
+        let exit!: () => void;
+        const exited = new Promise<void>((resolve) => { exit = resolve; });
+        const sessionId = `sdk-${processes.length}`;
+        const handle = {
+          send: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn(() => exit()),
+          sessionId,
+          setPermissionMode: vi.fn().mockResolvedValue(undefined),
+          stream: vi.fn(() => (async function* () {
+            streamCall += 1;
+            if (streamCall === 1) {
+              yield { type: "system", subtype: "init", session_id: sessionId, slash_commands: [] };
+              return;
+            }
+            if (hold && streamCall === 2) await new Promise<void>((resolve) => { held.push(resolve); });
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            await exited;
+          })()),
+        };
+        processes.push(handle);
+        return handle as any;
+      };
+      vi.mocked(claudeSdkCreateSessionCompat).mockImplementation(makeProcess);
+      vi.mocked(claudeSdkResumeSessionCompat).mockImplementation(makeProcess);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const doneFor = (sessionId: string) => events.filter((envelope) => envelope.sessionId === sessionId && envelope.event.type === "done");
+      const open = (instanceId: string) => service.createSession({
+        laneId: "lane-1", provider: "claude", model: "claude-sonnet-5", modelId: "anthropic/claude-sonnet-5", instanceId,
+      });
+
+      const idleA = await open(passA.id);
+      const busyA = await open(passA.id);
+      const idleB = await open(passB.id);
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: idleA.id, text: "first" }));
+      void service.runSessionTurn({ sessionId: busyA.id, text: "hold this turn" });
+      await waitForCondition(() => held.length === 1, "the held turn to start");
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: idleB.id, text: "first" }));
+      expect(processes).toHaveLength(3);
+
+      service.restartProviderRuntimesWhenIdle("claude", { instanceIds: [passA.id] });
+
+      expect(processes[0]!.close).toHaveBeenCalled();
+      expect(processes[1]!.close).not.toHaveBeenCalled();
+      expect(processes[2]!.close).not.toHaveBeenCalled();
+      held[0]!();
+      await waitForCondition(() => doneFor(busyA.id).length === 1, "the held turn to settle");
+      await waitForCondition(() => processes[1]!.close.mock.calls.length > 0, "the settled chat's process to end");
+      expect(processes[2]!.close).not.toHaveBeenCalled();
     });
   });
 });

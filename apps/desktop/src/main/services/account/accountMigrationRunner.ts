@@ -1,5 +1,5 @@
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
-import { readGitConfigOriginUrl, readGitOriginUrl } from "../projects/recentProjectSummary";
+import { readGitConfigOriginUrl } from "../projects/recentProjectSummary";
 import { resolveCanonicalGitOrigin } from "../github/githubSshAlias";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AccountVaultBridge } from "./accountVaultBridge";
@@ -33,12 +33,9 @@ export type AccountMigrationContext = {
     hydratePatFromVault?(): Promise<void>;
     purgeAccountPat?(): void;
   } | null;
+  /** Moves the old per-project secrets into Passwords & Secrets. */
   projectSecretService?: {
-    list(): { secrets: Array<{ name: string; storage: string }> };
-    getSecretProvenance(name: string): CredentialProvenance | null | undefined;
-    get(args: { name: string }): { value: string };
-    hydrateFromVault(): Promise<void>;
-    purgeAccountCredentials?(): void;
+    migrateLegacy(): Promise<{ done: boolean }>;
   } | null;
 };
 
@@ -219,6 +216,66 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
   };
 
   /**
+   * ADE Cloud's saved keys (`integration/cloud-key-<id>`) into the one API
+   * key store (`provider_api_key`), once per machine and safe to run again on
+   * any machine: a provider row that is empty takes the key; one that holds
+   * it already is left; one with a different key (or a key someone removed
+   * there) is left as it is, and ADE Cloud's key goes beside it as
+   * `<provider>#ade-cloud`, which cloud computers read first. Nothing is
+   * removed: older cloud computers keep reading `cloud-key-<id>`. A write
+   * that loses a race to another machine's first write is not retried.
+   */
+  const migrateCloudKeysToApiStore = async (
+    isCurrent: () => boolean,
+    expectedAccountUserId: string,
+  ): Promise<AccountMigrationSourceResult> => {
+    const [{ savedKeyTokenOf }, { CLOUD_KEY_API_PROVIDER }] = await Promise.all([
+      import("../providerLogins/providerLoginSyncShared"),
+      import("../../../shared/cloudSignIns"),
+    ]);
+    const listed = await listVaultItems("all");
+    if (!listed || !isCurrent()) return { moved: 0, skipped: 0, complete: false };
+    const rows = new Map(
+      listed
+        .filter((item) => item.scope === "all" && item.kind === "provider_api_key")
+        .map((item) => [item.key, item] as const),
+    );
+    const read = async (kind: string, key: string, inline: unknown): Promise<string | null | undefined> => {
+      if (typeof inline === "string") return inline;
+      const fetched = await options.accountVaultBridge.get("all", kind, key);
+      return fetched.ok ? fetched.value : undefined;
+    };
+    let moved = 0;
+    let skipped = 0;
+    for (const item of listed) {
+      if (item.scope !== "all" || item.kind !== "integration" || item.deleted || !item.key.startsWith("cloud-key-")) continue;
+      const provider = CLOUD_KEY_API_PROVIDER[item.key.slice("cloud-key-".length)];
+      if (!provider) continue;
+      const raw = await read("integration", item.key, item.value);
+      if (raw === undefined) return { moved, skipped, complete: false };
+      const token = savedKeyTokenOf(raw);
+      if (!token) continue;
+      const own = rows.get(provider);
+      const ownValue = own && !own.deleted ? await read("provider_api_key", provider, own.value) : null;
+      if (ownValue === undefined) return { moved, skipped, complete: false };
+      const cloudKey = `${provider}#ade-cloud`;
+      const cloudRow = rows.get(cloudKey);
+      const cloudValue = cloudRow && !cloudRow.deleted ? await read("provider_api_key", cloudKey, cloudRow.value) : null;
+      if (cloudValue === undefined) return { moved, skipped, complete: false };
+      if (ownValue?.trim() === token || cloudValue?.trim() === token) {
+        skipped += 1;
+        continue;
+      }
+      // An empty provider row takes the key, never one a person removed (its tombstone stays theirs).
+      const target = !own ? provider : cloudKey;
+      const saved = await setVaultItem(isCurrent, expectedAccountUserId, "all", "provider_api_key", target, token);
+      if (!saved?.ok) return { moved, skipped, complete: false };
+      moved += 1;
+    }
+    return { moved, skipped };
+  };
+
+  /**
    * Linear connections are per project now: each project's
    * `hydrateFromVault` (run just above, for every open project) publishes its
    * own connection under the project's repo scope, and the machine that owns
@@ -231,48 +288,17 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
     return hasService ? { moved: 0, skipped: 0 } : { moved: 0, skipped: 0, complete: false };
   };
 
-  const migrateProjectSecrets = async (
-    context: AccountMigrationContext,
-    isCurrent: () => boolean,
-    expectedAccountUserId: string,
-  ): Promise<AccountMigrationSourceResult> => {
+  /**
+   * Secrets this project saved in the old per-project store, moved into
+   * Passwords & Secrets (`projectSecretService.migrateLegacy`). Safe to run
+   * again; it is a no-op once nothing old is left. Not complete while an old
+   * secret still waits (for sign-in, or for the relay to take it).
+   */
+  const migrateProjectSecrets = async (context: AccountMigrationContext): Promise<AccountMigrationSourceResult> => {
     const service = context.projectSecretService;
-    const root = context.project?.rootPath;
-    if (!root || !service) return { moved: 0, skipped: 0, complete: false };
-    const scope = accountRepoScopeKey(readGitOriginUrl(root));
-    if (!scope) return { moved: 0, skipped: 0, complete: false };
-    let moved = 0;
-    let skipped = 0;
-    const listed = await listVaultItems(scope);
-    if (!listed) return { moved, skipped, complete: false };
-    if (!isCurrent()) return { moved, skipped, complete: false };
-    const present = new Set(
-      listed
-        .filter((item) => item.scope === scope && item.kind === "project_secret")
-        .map((item) => item.key),
-    );
-    for (const secret of service.list().secrets) {
-      if (secret.storage !== "account") continue;
-      if (service.getSecretProvenance(secret.name)?.source !== "device") continue;
-      const local = service.get({ name: secret.name });
-      const existing = await options.accountVaultBridge.get(scope, "project_secret", secret.name);
-      if (!existing.ok) return { moved, skipped, complete: false };
-      if (existing.value !== null || present.has(secret.name)) {
-        skipped += 1;
-        continue;
-      }
-      const saved = await setVaultItem(
-        isCurrent,
-        expectedAccountUserId,
-        scope,
-        "project_secret",
-        secret.name,
-        local.value,
-      );
-      if (!saved?.ok) return { moved, skipped, complete: false };
-      moved += 1;
-    }
-    return { moved, skipped };
+    if (!service) return { moved: 0, skipped: 0, complete: false };
+    const { done } = await service.migrateLegacy();
+    return done ? { moved: 0, skipped: 0 } : { moved: 0, skipped: 0, complete: false };
   };
 
   /**
@@ -417,7 +443,6 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
             await context.linearCredentialService?.hydrateFromVault();
             await context.jiraCredentialService?.hydrateFromVault();
             await context.githubService?.hydratePatFromVault?.();
-            await context.projectSecretService?.hydrateFromVault();
           } catch (error) {
             complete = false;
             options.getLogger().warn?.("account.vault_hydrate_failed", {
@@ -448,6 +473,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
           sources: {
             provider_api_keys: () => migrateProviderApiKeys(isCurrent, ownerToken.userId),
             linear_credentials: () => migrateLinearRefreshToken(),
+            cloud_keys_api_store: () => migrateCloudKeysToApiStore(isCurrent, ownerToken.userId),
           },
         });
         if (machineRun.pending.length > 0 || machineRun.failed.length > 0) complete = false;
@@ -474,7 +500,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
             ...migrationOptions(),
             projectRoot,
             sources: {
-              project_secrets: () => migrateProjectSecrets(context, isCurrent, ownerToken.userId),
+              project_secrets: () => migrateProjectSecrets(context),
               repo_scope_alias: () => migrateRepoScopeAlias(context, isCurrent, ownerToken.userId, storesSynced),
             },
           });

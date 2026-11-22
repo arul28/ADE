@@ -216,7 +216,7 @@ export function activityItemPresentation(
   };
 }
 
-export function activityPhaseIsSessionDerived(
+function activityPhaseIsSessionDerived(
   phase: AttentionPhase,
 ): phase is SessionDerivedActivityPhase {
   return phase in SESSION_PHASE_BY_ATTENTION_PHASE;

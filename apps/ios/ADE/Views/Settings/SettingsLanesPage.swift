@@ -549,7 +549,7 @@ private struct SettingsLaneBranchPicker: View {
   var body: some View {
     ADESettingsPage(title: "Start from") {
       if laneId == nil {
-        ADESettingsNotice(message: "No lane on this machine can list branches yet. Open the Lanes tab and try again.")
+        ADESettingsNotice(message: "No lane in this project can list branches yet. Open the Lanes tab and try again.")
       } else if let loadError {
         ADESettingsNotice(message: loadError, actionTitle: "Try again", action: { Task { await load() } })
       } else if branches == nil {

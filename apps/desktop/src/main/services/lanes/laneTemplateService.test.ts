@@ -417,151 +417,37 @@ describe("laneTemplateService", () => {
   // ---------------------------------------------------------------
 
   describe("resolveSetupScriptConfig", () => {
-    it("returns null when template has no setupScript", () => {
-      const template = makeTemplate({ id: "tpl-no-script", name: "No Script" });
-
-      expect(resolveSetupScriptConfig(template.setupScript, "darwin")).toBeNull();
-    });
-
-    it("returns null when setupScript has empty commands and no scriptPath", () => {
-      const template = makeTemplate({
-        id: "tpl-empty-script",
-        name: "Empty Script",
-        setupScript: { commands: [] },
-      });
-
-      expect(resolveSetupScriptConfig(template.setupScript, "darwin")).toBeNull();
-    });
-
-    it("uses unixCommands on non-Windows", () => {
-      const template = makeTemplate({
-        id: "tpl-unix",
-        name: "Unix Commands",
-        setupScript: {
-          commands: ["generic-cmd"],
-          unixCommands: ["bash setup.sh"],
-          windowsCommands: ["powershell setup.ps1"],
-        },
-      });
-
-      const result = resolveSetupScriptConfig(template.setupScript, "darwin");
-
-      expect(result).not.toBeNull();
-      expect(result!.commands).toEqual(["bash setup.sh"]);
-    });
-
-    it("falls back to generic commands when no unixCommands provided", () => {
-      const template = makeTemplate({
-        id: "tpl-generic",
-        name: "Generic Commands",
-        setupScript: {
-          commands: ["npm run setup"],
-        },
-      });
-
-      const result = resolveSetupScriptConfig(template.setupScript, "darwin");
-
-      expect(result).not.toBeNull();
-      expect(result!.commands).toEqual(["npm run setup"]);
-    });
-
-    it("uses unixScriptPath on non-Windows, falls back to generic scriptPath", () => {
-      const templateWithUnix = makeTemplate({
-        id: "tpl-unix-path",
-        name: "Unix Script Path",
-        setupScript: {
-          scriptPath: "setup.sh",
-          unixScriptPath: "scripts/unix-setup.sh",
-          windowsScriptPath: "scripts/win-setup.ps1",
-        },
-      });
-
-      const resultWithUnix = resolveSetupScriptConfig(templateWithUnix.setupScript, "darwin");
-      expect(resultWithUnix).not.toBeNull();
-      expect(resultWithUnix!.scriptPath).toBe("scripts/unix-setup.sh");
-
-      const templateFallback = makeTemplate({
-        id: "tpl-fallback-path",
-        name: "Fallback Script Path",
-        setupScript: {
-          scriptPath: "setup.sh",
-        },
-      });
-
-      const resultFallback = resolveSetupScriptConfig(templateFallback.setupScript, "darwin");
-      expect(resultFallback).not.toBeNull();
-      expect(resultFallback!.scriptPath).toBe("setup.sh");
-    });
-
-    it("defaults injectPrimaryPath to false when not set", () => {
-      const template = makeTemplate({
-        id: "tpl-no-inject",
-        name: "No Inject",
-        setupScript: {
-          commands: ["echo hello"],
-        },
-      });
-
-      const result = resolveSetupScriptConfig(template.setupScript, "darwin");
-
-      expect(result).not.toBeNull();
-      expect(result!.injectPrimaryPath).toBe(false);
-    });
-
-    it("returns injectPrimaryPath true when explicitly set", () => {
-      const template = makeTemplate({
-        id: "tpl-inject",
-        name: "With Inject",
-        setupScript: {
-          commands: ["echo hello"],
-          injectPrimaryPath: true,
-        },
-      });
-
-      const result = resolveSetupScriptConfig(template.setupScript, "darwin");
-
-      expect(result).not.toBeNull();
-      expect(result!.injectPrimaryPath).toBe(true);
-    });
-
-    it("returns commands and scriptPath together", () => {
-      const template = makeTemplate({
-        id: "tpl-both",
-        name: "Both",
-        setupScript: {
-          commands: ["npm install", "npm run build"],
-          scriptPath: "scripts/post-setup.sh",
-          injectPrimaryPath: true,
-        },
-      });
-
-      const result = resolveSetupScriptConfig(template.setupScript, "darwin");
-
-      expect(result).not.toBeNull();
-      expect(result!.commands).toEqual(["npm install", "npm run build"]);
-      expect(result!.scriptPath).toBe("scripts/post-setup.sh");
-      expect(result!.injectPrimaryPath).toBe(true);
-    });
-
-    it("uses windowsCommands and windowsScriptPath on win32", () => {
-      const template = makeTemplate({
-        id: "tpl-win",
-        name: "Windows",
-        setupScript: {
-          commands: ["generic-cmd"],
-          unixCommands: ["bash setup.sh"],
-          windowsCommands: ["powershell setup.ps1"],
-          scriptPath: "setup.sh",
-          unixScriptPath: "scripts/unix-setup.sh",
-          windowsScriptPath: "scripts/win-setup.ps1",
-        },
-      });
-
-      const result = resolveSetupScriptConfig(template.setupScript, "win32");
-
-      expect(result).not.toBeNull();
-      expect(result!.commands).toEqual(["powershell setup.ps1"]);
-      expect(result!.scriptPath).toBe("scripts/win-setup.ps1");
+    // The most specific list wins: this OS's own, then macOS/Linux, then any OS.
+    // An ADE Cloud computer is Linux: shared macOS/Linux commands that call a
+    // macOS-only tool still run there, and say how to fix the template.
+    const all = {
+      commands: ["generic-cmd"],
+      unixCommands: ["bash unix.sh"],
+      macosCommands: ["bash mac.sh"],
+      linuxCommands: ["bash linux.sh"],
+      windowsCommands: ["powershell win.ps1"],
+      scriptPath: "setup.sh",
+      unixScriptPath: "scripts/unix.sh",
+      macosScriptPath: "scripts/mac.sh",
+      linuxScriptPath: "scripts/linux.sh",
+      windowsScriptPath: "scripts/win.ps1",
+    };
+    it.each<[string, LaneTemplate["setupScript"], NodeJS.Platform, ReturnType<typeof resolveSetupScriptConfig>]>([
+      ["no setup script", undefined, "darwin", null],
+      ["empty commands and no script", { commands: [] }, "darwin", null],
+      ["blank commands only", { commands: ["  ", ""] }, "linux", null],
+      ["macOS takes its own fields", all, "darwin", { commands: ["bash mac.sh"], scriptPath: "scripts/mac.sh", injectPrimaryPath: false }],
+      ["Linux takes its own fields", all, "linux", { commands: ["bash linux.sh"], scriptPath: "scripts/linux.sh", injectPrimaryPath: false }],
+      ["Windows takes its own fields", all, "win32", { commands: ["powershell win.ps1"], scriptPath: "scripts/win.ps1", injectPrimaryPath: false }],
+      ["macOS falls back to macOS/Linux", { ...all, macosCommands: undefined, macosScriptPath: undefined }, "darwin", { commands: ["bash unix.sh"], scriptPath: "scripts/unix.sh", injectPrimaryPath: false }],
+      ["another Unix skips the macOS and Linux fields", all, "freebsd", { commands: ["bash unix.sh"], scriptPath: "scripts/unix.sh", injectPrimaryPath: false }],
+      ["any OS's fields when nothing closer is set", { commands: [" npm install ", "npm run build"], scriptPath: "scripts/post-setup.sh", injectPrimaryPath: true }, "linux", { commands: ["npm install", "npm run build"], scriptPath: "scripts/post-setup.sh", injectPrimaryPath: true }],
+      ["an empty Linux list still wins over the shared one", { commands: ["generic-cmd"], linuxCommands: [] }, "linux", null],
+      ["shared macOS/Linux commands with a macOS-only tool, on Linux", { unixCommands: ["cp -c -R ../main/node_modules ."] }, "linux", { commands: ["cp -c -R ../main/node_modules ."], injectPrimaryPath: false, macosOnlyOnLinux: "cp -c" }],
+      ["the same commands on macOS", { unixCommands: ["cp -c -R ../main/node_modules ."] }, "darwin", { commands: ["cp -c -R ../main/node_modules ."], injectPrimaryPath: false }],
+      ["Linux commands of its own never carry the macOS note", { unixCommands: ["xcrun simctl list"], linuxCommands: ["npm ci"] }, "linux", { commands: ["npm ci"], injectPrimaryPath: false }],
+    ])("%s", (_label, setupScript, platform, expected) => {
+      expect(resolveSetupScriptConfig(setupScript, platform)).toEqual(expected);
     });
   });
 

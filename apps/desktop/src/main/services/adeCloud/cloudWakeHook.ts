@@ -38,6 +38,19 @@ export function cloudAsleepForUse(target: RemoteRuntimeTarget): Promise<boolean 
   return asleepCheck ? asleepCheck(target) : null;
 }
 
+type RestChanged = (targetId: string, resting: boolean) => void;
+
+let restChanged: RestChanged | null = null;
+
+export function setCloudRestChanged(next: RestChanged | null): void {
+  restChanged = next;
+}
+
+/** A cloud computer started or ended a rest. Once per change, from the remote connection service. */
+export function cloudRestChanged(targetId: string, resting: boolean): void {
+  restChanged?.(targetId, resting);
+}
+
 type UpdateBlocker = (target: RemoteRuntimeTarget) => Promise<string | null>;
 
 let updateBlocker: UpdateBlocker | null = null;

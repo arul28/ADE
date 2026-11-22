@@ -74,9 +74,20 @@ export type CodexAppServerHost = {
   clientCount(): number;
   /** True once the process has exited or failed to start. */
   isGone(): boolean;
+  /**
+   * The last {@link CODEX_STDERR_TAIL_CHARS} characters the process wrote to
+   * stderr, raw (a chat redacts it before showing it). What explains an exit
+   * the app-server itself never reported.
+   */
+  stderrTail(): string;
   /** Stops the process now; every attached chat hears the exit. */
   kill(): void;
 };
+
+/** False once the app-server exited, was killed by a signal, or closed its input. */
+export function isCodexAppServerProcessAlive(proc: ChildProcessWithoutNullStreams): boolean {
+  return proc.exitCode == null && proc.signalCode == null && proc.stdin.writable;
+}
 
 export type CodexAppServerPool = {
   /** A shared host for `key`, or a new process. `key: null` always starts a private process. */
@@ -92,6 +103,8 @@ const REPLAYED_STARTUP_MAX = 16;
 const UNCLAIMED_THREAD_LINE_TTL_MS = 10_000;
 const UNCLAIMED_THREAD_LINE_MAX = 500;
 const ORPHANED_THREAD_UNSUBSCRIBE_TIMEOUT_MS = 10_000;
+/** Enough for a panic or a config error and the lines before it. */
+const CODEX_STDERR_TAIL_CHARS = 4_000;
 
 export function createCodexAppServerPool(args: {
   /** Stops the process tree (SIGTERM, then SIGKILL); returns the escalation timer. */
@@ -252,8 +265,11 @@ export function createCodexAppServerPool(args: {
       });
     });
 
+    let stderrTail = "";
     proc.stderr.on("data", (chunk: Buffer) => {
-      const text = chunk.toString("utf8").trim();
+      const raw = chunk.toString("utf8");
+      stderrTail = `${stderrTail}${raw}`.slice(-CODEX_STDERR_TAIL_CHARS);
+      const text = raw.trim();
       if (text.length) args.onStderr(text, clients);
     });
 
@@ -396,6 +412,7 @@ export function createCodexAppServerPool(args: {
       },
       clientCount: () => clients.length,
       isGone: () => gone,
+      stderrTail: () => stderrTail,
       kill: () => {
         forgetShared();
         if (gone) return;
@@ -410,7 +427,7 @@ export function createCodexAppServerPool(args: {
     acquire: ({ key, spawn }) => {
       if (key != null) {
         const existing = shared.get(key);
-        if (existing && existing.process.exitCode == null && existing.process.stdin.writable) return existing;
+        if (existing && isCodexAppServerProcessAlive(existing.process)) return existing;
         if (existing) shared.delete(key);
       }
       const host = createHost(key, spawn());

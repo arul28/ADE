@@ -2,14 +2,20 @@ import { useCallback, useRef, useState, type ReactNode } from "react";
 import { ArrowClockwise, ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, PlugsConnected, Sun, Trash, UserMinus } from "@phosphor-icons/react";
 import {
   CLOUD_SHAPES,
+  capitalizeCloudPhrase,
   cloudCatalogOf,
   cloudHoursRate,
   cloudMachineKindOf,
   formatCloudHoursRate,
   type CloudMachine,
+  type CloudMachineActionArgs,
   type CloudMachineActionKind,
   type CloudMachineActionResult,
   type CloudShapeId,
+  cloudShape,
+  cloudShapeById,
+  cloudShapeFor,
+  cloudShapeRunsAndroid,
 } from "../../../shared/adeCloud";
 import { accountMachineDisplayName, accountMachineRemovalConfirmBody } from "../../../shared/accountDirectory";
 import { captureError } from "../../../shared/sentry/capture";
@@ -29,6 +35,8 @@ export type CloudBoxPending = CloudMachineActionKind | "remove" | "copy" | "move
 export type CloudBoxActionError = {
   message: string;
   blocker: CloudMachineActionResult["blocker"];
+  /** At the plan's computer limit: the refusal's computers, for the limit card. */
+  computerLimit?: CloudMachineActionResult["computerLimit"];
 };
 
 /** One box's context in the list: its ADE row (if it has one) and what runs on it. */
@@ -90,6 +98,36 @@ function chatsLine(count: number, name: string): string {
 }
 
 /**
+ * Asks before a sleep when chats are running on the computer: sleep freezes
+ * everything, so a turn in progress may fail. True with nothing running.
+ * Every Sleep asks this way (the machine list, a cloud lane's chat header).
+ */
+export async function confirmCloudSleep(name: string, runningChats: number): Promise<boolean> {
+  if (runningChats <= 0) return true;
+  return await confirmDialog({
+    title: `Sleep ${name}?`,
+    message: `${chatsLine(runningChats, name)} Sleep stops the turns in progress first, and they show as Stopped. Send again after it wakes. It uses no hours while asleep.`,
+    confirmLabel: "Sleep",
+  });
+}
+
+/**
+ * One box action through this desktop's main process. ADE Cloud's refusals
+ * come back as results; a throw is the IPC itself, logged and turned into a
+ * refusal. Null when this window has no route to ADE Cloud.
+ */
+export async function callCloudMachineAction(input: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> {
+  const machineAction = window.ade?.cloud?.machineAction;
+  if (!machineAction) return null;
+  try {
+    return await machineAction(input);
+  } catch (error) {
+    captureError(error, { fingerprint: ["cloud", "machine_action_ipc"], handled: true });
+    return { ok: false, blocker: null, message: extractError(error) };
+  }
+}
+
+/**
  * Sleep, wake, resize, back up, Remove from ADE and Delete computer for
  * the ADE Cloud group, with the confirmations each one needs.
  *
@@ -108,6 +146,17 @@ export function useCloudBoxActions(args: {
   const { refresh, onAccountChanged, forgetTarget } = args;
   const [pendingById, setPendingById] = useState<Record<string, CloudBoxPending>>({});
   const [errorById, setErrorById] = useState<Record<string, CloudBoxActionError>>({});
+  /** A long action's sign-in link, while its new computer waits for the person's approval. */
+  const [approvalById, setApprovalById] = useState<Record<string, string>>({});
+  const setApproval = useCallback((instanceId: string, url: string | null) => {
+    setApprovalById((current) => {
+      if ((current[instanceId] ?? null) === url) return current;
+      const next = { ...current };
+      if (url) next[instanceId] = url;
+      else delete next[instanceId];
+      return next;
+    });
+  }, []);
   const [resizing, setResizing] = useState<CloudBoxContext | null>(null);
 
   const setPending = useCallback((instanceId: string, pending: CloudBoxPending | null) => {
@@ -131,48 +180,55 @@ export function useCloudBoxActions(args: {
   const run = useCallback(async (
     ctx: CloudBoxContext,
     action: CloudMachineActionKind,
-    extra: { shape?: CloudShapeId } = {},
+    extra: { shape?: CloudShapeId; disk?: number; computerIdle?: boolean } = {},
   ): Promise<CloudMachineActionResult | null> => {
-    const machineAction = window.ade?.cloud?.machineAction;
-    if (!machineAction) return null;
+    if (!window.ade?.cloud?.machineAction) return null;
     const { instanceId } = ctx.box;
     setPending(instanceId, action);
     setError(instanceId, null);
     let result: CloudMachineActionResult | null;
     try {
-      result = await machineAction({
+      result = await callCloudMachineAction({
         instanceId,
         action,
         ...extra,
         ...(action === "delete" ? { machineKey: ctx.accountMachine?.machineKey ?? null } : {}),
       });
-    } catch (error) {
-      // the provider's refusals come back as results; a throw is the IPC itself.
-      captureError(error, { fingerprint: ["cloud", "machine_action_ipc"], handled: true });
-      result = { ok: false, blocker: null, message: extractError(error) };
     } finally {
       setPending(instanceId, null);
     }
     if (!result) return null;
     if (result.ok) {
-      showToast({ tone: "success", title: toastTitle(action, ctx.name), message: result.message, replayMask: { title: true } });
+      const title = action === "resize" && extra.disk !== undefined && extra.shape === undefined
+        ? `Growing the disk of ${ctx.name}`
+        : toastTitle(action, ctx.name);
+      showToast({ tone: "success", title, message: result.message, replayMask: { title: true } });
     } else {
-      setError(instanceId, { message: result.message, blocker: result.blocker });
+      setError(instanceId, { message: result.message, blocker: result.blocker, computerLimit: result.computerLimit ?? null });
     }
     refresh();
     return result;
   }, [refresh, setError, setPending]);
 
   const sleep = useCallback(async (ctx: CloudBoxContext) => {
-    if (ctx.work.runningChats > 0) {
-      const ok = await confirmDialog({
-        title: `Sleep ${ctx.name}?`,
-        message: `${chatsLine(ctx.work.runningChats, ctx.name)} Sleep freezes everything on it, so a turn in progress may fail and need a retry after it wakes. It uses no hours while asleep.`,
-        confirmLabel: "Sleep",
-      });
-      if (!ok) return;
-    }
+    if (!(await confirmCloudSleep(ctx.name, ctx.work.runningChats))) return;
     await run(ctx, "sleep");
+  }, [run]);
+
+  /**
+   * Grows the disk to `toGb` at the same size, once the person agrees to the
+   * restart it takes. That agreement is what `computerIdle` tells the server:
+   * without it, a grow waits for the computer to be idle. The server's answer,
+   * with its `diskRefusal` when refused; null when the person said no.
+   */
+  const growDisk = useCallback(async (ctx: CloudBoxContext, toGb: number): Promise<CloudMachineActionResult | null> => {
+    const ok = await confirmDialog({
+      title: `Grow the disk of ${ctx.name} to ${toGb} GB?`,
+      message: `${ctx.name} restarts to grow its disk, so everything running on it stops: a chat turn in progress may fail and need a retry. It is back in a few minutes. A disk can't shrink later.`,
+      confirmLabel: "Grow the disk",
+    });
+    if (!ok) return null;
+    return await run(ctx, "resize", { disk: toGb, computerIdle: true });
   }, [run]);
 
   const deleteBox = useCallback(async (ctx: CloudBoxContext) => {
@@ -266,12 +322,15 @@ export function useCloudBoxActions(args: {
   const runLong = useCallback(async (ctx: CloudBoxContext, kind: "copy" | "move" | "reconnect", start: (requestId: string) => Promise<{ started: boolean }>) => {
     const bridge = window.ade?.cloud;
     if (!bridge?.onCreateProgress) return;
-    const requestId = `${kind}-${ctx.box.instanceId}-${Date.now()}`;
+    // A UUID: a copy or move ADE's server runs takes it as its own id, so a start sent twice is one copy.
+    const requestId = crypto.randomUUID();
     const { instanceId } = ctx.box;
     setPending(instanceId, kind);
     setError(instanceId, null);
     const off = bridge.onCreateProgress((progress) => {
       if (progress.requestId !== requestId) return;
+      // The new computer's sign-in stopped on the person: the card offers Approve until it goes on.
+      setApproval(instanceId, progress.stage === "approve_elsewhere" ? progress.approvalUrl ?? null : null);
       if (progress.stage === "done") {
         off();
         setPending(instanceId, null);
@@ -291,9 +350,10 @@ export function useCloudBoxActions(args: {
     } catch (error) {
       off();
       setPending(instanceId, null);
+      setApproval(instanceId, null);
       setError(instanceId, { message: extractError(error), blocker: null });
     }
-  }, [onAccountChanged, refresh, setError, setPending]);
+  }, [onAccountChanged, refresh, setApproval, setError, setPending]);
 
   const copyBox = useCallback(async (ctx: CloudBoxContext) => {
     const copyMachine = window.ade.cloud?.copyMachine;
@@ -301,7 +361,7 @@ export function useCloudBoxActions(args: {
     const rate = ctx.box.hoursRate != null ? formatCloudHoursRate(ctx.box.hoursRate) : null;
     const ok = await confirmDialog({
       title: `Copy ${ctx.name}?`,
-      message: `ADE makes a new computer with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It uses ${rate} while awake` : ""}. A big disk takes a few minutes.`,
+      message: `ADE makes a new computer with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It ${rate} while awake` : ""}. A big disk takes a few minutes.`,
       confirmLabel: "Copy",
     });
     if (!ok) return;
@@ -311,20 +371,34 @@ export function useCloudBoxActions(args: {
   const updateBox = useCallback(async (ctx: CloudBoxContext) => {
     const ok = await confirmDialog({
       title: `Update ${ctx.name}?`,
-      message: `${ctx.name} restarts on the current ADE. Its files and repos stay; running chats, terminals and processes stop.`,
+      message: `${ctx.name} restarts on the current ADE now. Its files and repos stay; running chats, terminals and processes stop. It also updates itself when it's idle or asleep.`,
       confirmLabel: "Update",
     });
     if (ok) await run(ctx, "update");
   }, [run]);
 
-  const moveBox = useCallback(async (ctx: CloudBoxContext) => {
+  /**
+   * Move to the other kind. `shape` picks the new computer's size (the
+   * Android notice asks for Medium); without it the new one keeps this size.
+   */
+  const moveBox = useCallback(async (ctx: CloudBoxContext, shape?: CloudShapeId | null) => {
     const moveMachine = window.ade.cloud?.moveMachine;
     if (!moveMachine) return;
     const to = ctx.box.type === "vm" ? "box" : "vm";
+    // The size the new computer gets: the one asked for, else this one's
+    // (main falls back to Small the same way).
+    const target = (shape ? cloudShapeById(shape) : null)
+      ?? cloudShape(ctx.box.shapeId)
+      ?? cloudShapeFor(ctx.box.resources)
+      ?? cloudShapeById("2x4");
+    // A full computer smaller than Medium runs Docker but not Android: say so.
+    const runs = cloudShapeRunsAndroid(target.id)
+      ? "Android and Docker; it uses hours faster"
+      : "Docker; it uses hours faster. Android needs Medium or bigger: resize it after the move, or use Move in the Android pane";
     const ok = await confirmDialog({
       title: to === "vm" ? `Move ${ctx.name} to a full computer?` : `Move ${ctx.name} to a standard computer?`,
       message: to === "vm"
-        ? `ADE makes a full computer (Android and Docker; it uses hours faster), copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Running processes stop.`
+        ? `ADE makes a ${target.label} full computer (${runs}), copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Running processes stop.`
         : `ADE makes a standard computer, copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Docker images and volumes stay behind, and running processes stop.`,
       confirmLabel: "Move",
       destructive: true,
@@ -336,6 +410,7 @@ export function useCloudBoxActions(args: {
       instanceId: ctx.box.instanceId,
       machineKey: ctx.accountMachine?.machineKey ?? null,
       to,
+      ...(shape ? { shape } : {}),
     }));
   }, [runLong]);
 
@@ -432,10 +507,20 @@ export function useCloudBoxActions(args: {
   return {
     pendingById,
     errorById,
+    /** A copy's or move's sign-in link, while the new computer waits for the person (its card's Approve). */
+    approvalById,
     dismissError: (instanceId: string) => setError(instanceId, null),
+    /** Shows a failure of an action run outside this hook (a lane job) where its own failures show. */
+    reportError: (instanceId: string, message: string) => setError(instanceId, { message, blocker: null }),
     actionsFor,
     wake: (ctx: CloudBoxContext) => run(ctx, "wake"),
+    /** The person's update, with its confirm: Retry on a failed update line. */
+    update: updateBox,
     removeFromAde,
+    moveBox,
+    /** Opens the Resize dialog (rendered by `dialog`). */
+    resize: (ctx: CloudBoxContext) => setResizing(ctx),
+    growDisk,
     dialog,
   };
 }
@@ -500,7 +585,7 @@ function CloudResizeDialog({
         ) : null}
         <div role="radiogroup" aria-label="Size" className="ade-cx-cloud-shapes">
           {CLOUD_SHAPES.map((shape) => {
-            const rate = formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog));
+            const rate = capitalizeCloudPhrase(formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog)));
             const isCurrent = shape.id === current;
             return (
               <button

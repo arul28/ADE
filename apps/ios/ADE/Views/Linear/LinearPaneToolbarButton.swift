@@ -10,7 +10,8 @@ struct LinearPaneToolbarButton: View {
   private var syncService: SyncService { syncPublishes.service }
 
   var body: some View {
-    if syncService.activeProjectId != nil {
+    // With no computer, the account server reads Linear for the project.
+    if syncService.activeProjectId != nil || syncService.linearReadsThroughAccount {
       Button {
         ADEHaptics.light()
         syncService.linearPaneAttachSessionId = nil

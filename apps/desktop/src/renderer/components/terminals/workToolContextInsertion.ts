@@ -115,7 +115,7 @@ export function useWorkToolContextInsertion(args: {
     kind: WorkPtyContextInsertKind,
   ) => {
     const payload = text.trimEnd();
-    if (!payload) return;
+    if (!payload || !runtimePin) return;
     void window.ade.terminal.write({
       terminalId: target.sessionId,
       ptyId: target.ptyId,

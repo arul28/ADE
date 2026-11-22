@@ -20,12 +20,8 @@ import {
   type GitHubIssueListState,
 } from "../../../shared/githubIssueList";
 import type { GitHubIssue, GitHubIssueComment, GitHubIssueUpdate, GitHubMilestone } from "./githubService";
-import { createAppIssueGrantReader, describeIssueWriteAccess } from "./githubIssueWriteAccess";
-import {
-  parseGitHubIssueTemplate,
-  parseGitHubIssueTemplateConfig,
-  type GitHubIssueTemplateSet,
-} from "../../../shared/githubIssueTemplates";
+import { createAppInstallationGrantReader, describeIssueWriteAccess } from "../../../shared/github/githubAppGrant";
+import type { GitHubIssueTemplateSet } from "../../../shared/githubIssueTemplates";
 import type { GitHubIssueLike } from "../../../shared/laneGitHubIssue";
 import { AdeExpectedError } from "../../../shared/expectedError";
 
@@ -114,7 +110,7 @@ export function createGithubIssueOps(deps: {
   // The ADE App's issues permission on an owner, read from the user's
   // installations (one request, cached). The service's `apiRequest` uses it
   // too, to skip an App that cannot write issues.
-  const readAppIssueGrant = createAppIssueGrantReader(async (appToken) => {
+  const readAppIssueGrant = createAppInstallationGrantReader(async (appToken) => {
     const { data } = await apiRequest<unknown>({
       method: "GET",
       path: "/user/installations",
@@ -245,6 +241,9 @@ export function createGithubIssueOps(deps: {
       });
       return decodeContent(data);
     };
+    // Loaded here, at the first template read: the parser imports yaml, which
+    // would otherwise load with the main bundle before the first window.
+    const { parseGitHubIssueTemplate, parseGitHubIssueTemplateConfig } = await import("../../../shared/githubIssueTemplates");
     let blankIssuesEnabled = true;
     const templates = [];
     for (const file of files) {

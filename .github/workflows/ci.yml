@@ -16,10 +16,23 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same pull request makes the run already in flight
+# obsolete, so cancel it and free the macOS slot for the run that can still
+# change the answer. Pushes to main are never cancelled: each merge keeps its
+# own result.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # ── Stage 1: Install & cache ──────────────────────────────────────────
   install:
     runs-on: ubuntu-latest
+    # Deletes main's cache entries that its save replaces
+    # (scripts/ci/prune-cache-entries.sh).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,16 +44,18 @@ jobs:
       # that group instead of a fresh copy of everything. desktop and ade-cli
       # import each other's source, so they share one group. lookup-only
       # checks for the entry without downloading it; a miss installs below
-      # and the post step saves the new entry.
+      # and the post steps save the other groups' entries.
+      # The core group's key and paths live in one composite action, which
+      # every job that restores the group uses too. It only looks the entry
+      # up; the step after the install saves it. This job is the only one
+      # that saves the core entry. The jobs that use the core group do not
+      # wait for it: they restore the entry themselves and, on a miss, run
+      # the same install script (install-on-miss).
       - name: Check core node_modules cache
         id: cache_core
-        uses: actions/cache@v4
+        uses: ./.github/actions/restore-core-node-modules
         with:
-          lookup-only: true
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+          lookup-only: "true"
       - name: Check web node_modules cache
         id: cache_web
         uses: actions/cache@v4
@@ -49,22 +64,22 @@ jobs:
           path: |
             apps/web/node_modules
           key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
-      - name: Check webhook-relay node_modules cache
-        id: cache_webhook_relay
+      # The five Cloudflare Workers are one npm workspace (root package.json):
+      # one root lockfile, shared packages in the root node_modules, and only
+      # each Worker's own versions under apps/<worker>/node_modules.
+      - name: Check workers node_modules cache
+        id: cache_workers
         uses: actions/cache@v4
         with:
           lookup-only: true
           path: |
-            apps/webhook-relay/node_modules
-          key: nm-webhook-relay-v1-${{ runner.os }}-${{ hashFiles('apps/webhook-relay/package-lock.json') }}
-      - name: Check push-relay node_modules cache
-        id: cache_push_relay
-        uses: actions/cache@v4
-        with:
-          lookup-only: true
-          path: |
+            node_modules
+            apps/account-directory/node_modules
+            apps/password-key-service/node_modules
             apps/push-relay/node_modules
-          key: nm-push-relay-v1-${{ runner.os }}-${{ hashFiles('apps/push-relay/package-lock.json') }}
+            apps/tunnel-relay/node_modules
+            apps/webhook-relay/node_modules
+          key: nm-workers-v1-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Check sdk node_modules cache
         id: cache_sdk
         uses: actions/cache@v4
@@ -83,25 +98,20 @@ jobs:
           key: nm-chat-ui-v1-${{ runner.os }}-${{ hashFiles('packages/chat-ui/package-lock.json') }}
 
       - name: Install missing dependency groups (parallel)
-        if: steps.cache_core.outputs.cache-hit != 'true' || steps.cache_web.outputs.cache-hit != 'true' || steps.cache_webhook_relay.outputs.cache-hit != 'true' || steps.cache_push_relay.outputs.cache-hit != 'true' || steps.cache_sdk.outputs.cache-hit != 'true' || steps.cache_chat_ui.outputs.cache-hit != 'true'
+        if: steps.cache_core.outputs.cache-hit != 'true' || steps.cache_web.outputs.cache-hit != 'true' || steps.cache_workers.outputs.cache-hit != 'true' || steps.cache_sdk.outputs.cache-hit != 'true' || steps.cache_chat_ui.outputs.cache-hit != 'true'
         env:
           MISS_CORE: ${{ steps.cache_core.outputs.cache-hit != 'true' }}
           MISS_WEB: ${{ steps.cache_web.outputs.cache-hit != 'true' }}
-          MISS_WEBHOOK_RELAY: ${{ steps.cache_webhook_relay.outputs.cache-hit != 'true' }}
-          MISS_PUSH_RELAY: ${{ steps.cache_push_relay.outputs.cache-hit != 'true' }}
+          MISS_WORKERS: ${{ steps.cache_workers.outputs.cache-hit != 'true' }}
           MISS_SDK: ${{ steps.cache_sdk.outputs.cache-hit != 'true' }}
           MISS_CHAT_UI: ${{ steps.cache_chat_ui.outputs.cache-hit != 'true' }}
         run: |
           set -euo pipefail
           pids=()
-          # Electron 42+ fetches its binary on first require instead of in npm ci; fetch it
-          # here so the cached node_modules carries it, as it did on Electron 41. Without it,
-          # every brain a test starts from source downloads Electron before it can listen.
-          if [ "$MISS_CORE" = "true" ]; then (cd apps/desktop && npm ci && node scripts/ensure-electron.cjs) & pids+=($!); fi
-          if [ "$MISS_CORE" = "true" ]; then (cd apps/ade-cli && npm ci) & pids+=($!); fi
+          # The same script the core restore action runs on a miss.
+          if [ "$MISS_CORE" = "true" ]; then scripts/ci/install-core-node-modules.sh & pids+=($!); fi
           if [ "$MISS_WEB" = "true" ]; then (cd apps/web && npm ci) & pids+=($!); fi
-          if [ "$MISS_WEBHOOK_RELAY" = "true" ]; then (cd apps/webhook-relay && npm ci) & pids+=($!); fi
-          if [ "$MISS_PUSH_RELAY" = "true" ]; then (cd apps/push-relay && npm ci) & pids+=($!); fi
+          if [ "$MISS_WORKERS" = "true" ]; then npm ci & pids+=($!); fi
           if [ "$MISS_SDK" = "true" ]; then (cd packages/sdk && npm ci) & pids+=($!); fi
           if [ "$MISS_CHAT_UI" = "true" ]; then (cd packages/chat-ui && npm ci) & pids+=($!); fi
           fail=0
@@ -112,6 +122,22 @@ jobs:
             echo "::error::One or more npm ci installs failed"
             exit 1
           fi
+
+      # On main, and on a pull request whose lockfile changed again.
+      - name: Delete the node_modules entry this save replaces
+        id: prune_core
+        if: steps.cache_core.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.cache_core.outputs.key }}
+        run: scripts/ci/prune-cache-entries.sh "nm-core-v2-${RUNNER_OS}-" "$KEY"
+
+      - name: Save core node_modules cache
+        if: steps.cache_core.outputs.cache-hit != 'true' && steps.prune_core.outputs.save != 'false'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.cache_core.outputs.paths }}
+          key: ${{ steps.cache_core.outputs.key }}
 
   # ── Secret scanning (no deps needed) ───────────────────────────────────
   secret-scan:
@@ -145,115 +171,128 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ── Stage 2: Parallel checks ──────────────────────────────────────────
-  typecheck-desktop:
-    needs: install
+  # The desktop and ade-cli typechecks share one job, because both restore the
+  # same core node_modules. The desktop tsc runs in the background while the
+  # ade-cli steps run. Its own step at the end waits for it and prints its
+  # output, so a failure still names the check. Peak memory measured together:
+  # desktop tsc about 7 GB, ade-cli tsc about 2.5 GB, on a 16 GB runner.
+  #
+  # Both run tsc --incremental. The build info holds a hash of each file and
+  # the errors tsc found in it. A pull request restores the build info of the
+  # newest main commit with the same TypeScript, lockfiles and tsconfigs, so
+  # tsc checks again only the files that changed and the files they affect,
+  # and still reports the errors it recorded for the others. A push to main
+  # and a dispatch restore nothing and run the full check; a push to main
+  # then saves a fresh build info. A missing or unreadable build info makes
+  # tsc run the full check, so it can never make the check pass.
+  typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Deletes main's cache entries that its save replaces
+    # (scripts/ci/prune-cache-entries.sh).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/cache/restore@v4
+      - uses: ./.github/actions/restore-core-node-modules
         with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
-      - run: cd apps/desktop && npm run typecheck
+          install-on-miss: "true"
+      - name: Typecheck build info key
+        id: tsc_cache
+        env:
+          INPUTS_HASH: ${{ hashFiles('apps/desktop/package-lock.json', 'apps/ade-cli/package-lock.json', 'apps/desktop/tsconfig.json', 'apps/ade-cli/tsconfig.json') }}
+        run: |
+          set -euo pipefail
+          desktop_ts="$(node -p 'require("./apps/desktop/node_modules/typescript/package.json").version')"
+          cli_ts="$(node -p 'require("./apps/ade-cli/node_modules/typescript/package.json").version')"
+          echo "prefix=tsc-v1-${RUNNER_OS}-ts${desktop_ts}-${cli_ts}-${INPUTS_HASH}-" >> "$GITHUB_OUTPUT"
+          mkdir -p .tsbuildinfo
+      # Only main saves build infos (the last step), so restore-keys can only
+      # match a main commit's entry with the same inputs, the newest first.
+      - name: Restore the typecheck build info of main
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v4
+        with:
+          path: .tsbuildinfo
+          key: ${{ steps.tsc_cache.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.tsc_cache.outputs.prefix }}
+      # A background process outlives its step; the runner stops leftover
+      # processes only when the job ends. The status file appears only when
+      # tsc has exited, so the wait step below cannot read a partial result.
+      - name: "desktop: start the typecheck in the background"
         env:
           # tsc on the desktop codebase sits near Node's default ~4GB heap;
           # the lint script already needs --max-old-space-size=8192.
           NODE_OPTIONS: --max-old-space-size=8192
-
-  typecheck-ade-cli:
-    needs: install
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
-      - run: cd apps/ade-cli && npm run typecheck
+        run: |
+          (
+            if (cd apps/desktop && npm run typecheck -- --incremental --tsBuildInfoFile "$GITHUB_WORKSPACE/.tsbuildinfo/desktop.tsbuildinfo") > "$RUNNER_TEMP/typecheck-desktop.log" 2>&1; then code=0; else code=$?; fi
+            echo "$code" > "$RUNNER_TEMP/typecheck-desktop.status.tmp"
+            mv "$RUNNER_TEMP/typecheck-desktop.status.tmp" "$RUNNER_TEMP/typecheck-desktop.status"
+          ) &
+          echo "TYPECHECK_DESKTOP_PID=$!" >> "$GITHUB_ENV"
+      - name: "ade-cli: typecheck"
+        run: cd apps/ade-cli && npm run typecheck -- --incremental --tsBuildInfoFile "$GITHUB_WORKSPACE/.tsbuildinfo/ade-cli.tsbuildinfo"
       # scripts/validate-docs.test.mjs covers the docs validator that the
-      # validate-docs job runs. scripts/check-package-licenses.test.mjs covers
-      # the package-license checker that the test-sdk job runs.
+      # docs job runs. scripts/check-package-licenses.test.mjs covers
+      # the package-license checker that the packages job runs.
       # scripts/check-source-nul-bytes.test.mjs covers the NUL-byte gate.
       # scripts/release-pipeline.test.mjs covers the release tag's CI gate, the
       # cached-build attestation check, the Mach-O arch check and Apple retries.
+      # scripts/ci/test-shards.test.mjs covers the split of the test files into
+      # shards: each file runs in exactly one shard.
       # scripts/build/asciiBundleSource.test.mjs covers the bundle source map on
       # Windows chunk paths (the map Sentry symbolicates brain and main with).
+      # scripts/ci/ios-gate.test.mjs covers the iOS pass fingerprint: what
+      # changes it decides whether a pull request reuses an earlier test-ios.
       - name: Test release runtime archive, packaging, and docs-validator guards
-        run: node --test apps/ade-cli/scripts/build-runtime-npm-packages.test.mjs apps/ade-cli/scripts/install-runtime-rollback.test.mjs apps/ade-cli/scripts/native-archive-verification.test.mjs apps/ade-cli/scripts/native-deps-entry-filter.test.mjs apps/ade-cli/scripts/notarize-static-runtime.test.mjs apps/ade-cli/scripts/package-native-deps.crsqlite.test.mjs apps/ade-cli/scripts/probe-runtime-crsqlite.test.mjs apps/ade-cli/scripts/verify-runtime-package-contents.test.mjs apps/desktop/scripts/mac-runtime-archive-mode.test.mjs apps/desktop/scripts/packaged-ade-cli-resources.test.mjs apps/desktop/scripts/runtime-fetched-tool-packages.test.mjs apps/desktop/scripts/runtime-resource-targets.test.mjs apps/desktop/scripts/windows-release-contract.test.mjs scripts/build/asciiBundleSource.test.mjs scripts/channelVersion.test.mjs scripts/channelSignIdentity.test.mjs scripts/check-package-licenses.test.mjs scripts/check-source-nul-bytes.test.mjs scripts/dev-shared.test.mjs scripts/release-pipeline.test.mjs scripts/ship-poll.test.mjs scripts/validate-docs.test.mjs scripts/validate-platform-gates.test.mjs
+        if: ${{ !cancelled() }}
+        run: node --test apps/ade-cli/scripts/build-runtime-npm-packages.test.mjs apps/ade-cli/scripts/install-runtime-rollback.test.mjs apps/ade-cli/scripts/native-archive-verification.test.mjs apps/ade-cli/scripts/native-deps-entry-filter.test.mjs apps/ade-cli/scripts/notarize-static-runtime.test.mjs apps/ade-cli/scripts/package-native-deps.crsqlite.test.mjs apps/ade-cli/scripts/probe-runtime-crsqlite.test.mjs apps/ade-cli/scripts/verify-runtime-package-contents.test.mjs apps/desktop/scripts/mac-runtime-archive-mode.test.mjs apps/desktop/scripts/packaged-ade-cli-resources.test.mjs apps/desktop/scripts/runtime-fetched-tool-packages.test.mjs apps/desktop/scripts/runtime-resource-targets.test.mjs apps/desktop/scripts/windows-release-contract.test.mjs scripts/build/asciiBundleSource.test.mjs scripts/build/sharedNodeBuiltins.test.mjs scripts/ci/test-shards.test.mjs scripts/ci/ios-gate.test.mjs scripts/channelVersion.test.mjs scripts/channelSignIdentity.test.mjs scripts/check-package-licenses.test.mjs scripts/check-source-nul-bytes.test.mjs scripts/dev-shared.test.mjs scripts/release-pipeline.test.mjs scripts/ship-poll.test.mjs scripts/validate-docs.test.mjs scripts/validate-platform-gates.test.mjs
+      - name: "desktop: typecheck"
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          status="$RUNNER_TEMP/typecheck-desktop.status"
+          # An empty PID (the start step failed) ends the loop at once.
+          while [[ ! -f "$status" ]] && kill -0 "${TYPECHECK_DESKTOP_PID:-}" 2>/dev/null; do sleep 2; done
+          cat "$RUNNER_TEMP/typecheck-desktop.log" 2>/dev/null || true
+          if [[ ! -f "$status" ]]; then
+            echo "::error::The desktop typecheck stopped before it reported a result."
+            exit 1
+          fi
+          exit "$(cat "$status")"
+      # Each main commit saves its own entry, because a cache key cannot be
+      # replaced; the step before it deletes the entries it replaces, since
+      # a restore reads only the newest.
+      - name: Delete main's build info entries this save replaces
+        id: prune_tsc
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.tsc_cache.outputs.prefix }}${{ github.sha }}
+        run: scripts/ci/prune-cache-entries.sh "tsc-v1-${RUNNER_OS}-" "$KEY"
 
-  typecheck-web:
-    needs: install
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Save the typecheck build info
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.prune_tsc.outputs.save != 'false'
+        uses: actions/cache/save@v4
         with:
-          node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/web/node_modules
-          key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
-      - run: cd apps/web && npm run typecheck
-      - run: cd apps/web && npm run test:analytics
-      - run: npm run test:posthog
-
-  typecheck-webhook-relay:
-    needs: install
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/webhook-relay/node_modules
-          key: nm-webhook-relay-v1-${{ runner.os }}-${{ hashFiles('apps/webhook-relay/package-lock.json') }}
-      - run: cd apps/webhook-relay && npm run typecheck
-
-  typecheck-push-relay:
-    needs: install
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/push-relay/node_modules
-          key: nm-push-relay-v1-${{ runner.os }}-${{ hashFiles('apps/push-relay/package-lock.json') }}
-      - run: cd apps/push-relay && npm run typecheck
+          path: .tsbuildinfo
+          key: ${{ steps.tsc_cache.outputs.prefix }}${{ github.sha }}
 
   lint-desktop:
-    needs: install
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/cache/restore@v4
+      - uses: ./.github/actions/restore-core-node-modules
         with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+          install-on-miss: "true"
       - run: cd apps/desktop && npm run test:lint-tooling
       - run: cd apps/desktop && npm run lint:ci
       # The iOS scene shell and the web client's scene headers are copies of
@@ -262,8 +301,13 @@ jobs:
       # The iOS settings-chip labels are a copy of the settings manifest.
       - run: node apps/desktop/scripts/generate-ios-settings-catalog.mjs --check
 
+  # The desktop and ade-cli suites run in shards. Each vitest.config.ts sets a
+  # sequencer (scripts/ci/test-shards.mjs) that splits the files Vitest finds
+  # by the durations in the package's vitest.durations.json, so the shards
+  # take about the same time. Every shard computes the same split, so each
+  # test file runs in exactly one shard. scripts/ci/update-test-durations.mjs
+  # refreshes the durations.
   test-desktop:
-    needs: install
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -275,66 +319,150 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/cache/restore@v4
+      - uses: ./.github/actions/restore-core-node-modules
         with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+          install-on-miss: "true"
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
+  # ci-pass reads the matrix as one result, `test-ade-cli`; the checks are
+  # named `test-ade-cli (1)` and `test-ade-cli (2)`.
   test-ade-cli:
-    needs: install
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/cache/restore@v4
+      - uses: ./.github/actions/restore-core-node-modules
         with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
-      - run: cd apps/ade-cli && npm test
+          install-on-miss: "true"
+      - run: cd apps/ade-cli && npm test -- --shard=${{ matrix.shard }}/2
 
-  # The publishable packages. Typecheck and unit suites run together per
-  # package rather than as separate jobs: each is small, and a split would pay
-  # the checkout+restore cost twice for a suite that finishes in seconds.
-  # Deliberately NOT folded into the desktop shards — these have their own
-  # dependency trees and must fail with their own name.
-  test-sdk:
+  # The five Cloudflare Workers in one job, with one step per check. Every
+  # check runs even when an earlier step failed (`!cancelled()`), so one
+  # failure does not hide another, and the failed step names its check.
+  # They are one npm workspace and restore its node_modules from the install
+  # job; a miss runs the one root `npm ci` here.
+  services:
     needs: install
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/cache/restore@v4
+      - name: Restore workers node_modules cache
+        id: cache_workers
+        uses: actions/cache/restore@v4
         with:
           path: |
-            packages/sdk/node_modules
-          key: nm-sdk-v1-${{ runner.os }}-${{ hashFiles('packages/sdk/package-lock.json') }}
-      - run: cd packages/sdk && npm run typecheck
-      - run: node packages/sdk/scripts/check-wire-types.mjs
-      # Every published package must carry its own LICENSE, because the root
-      # LICENSE does not travel in an npm tarball. --require-pack checks the
-      # real tarball listing, not just the "files" field, and fails the job if
-      # npm cannot be run rather than logging that it skipped the check.
-      - name: Check published package licenses
-        run: node scripts/check-package-licenses.mjs --require-pack
-      # Hermetic only. The live fixture (test/live.integration.test.ts) needs a
-      # built runtime binary and skips itself unless ADE_SDK_LIVE_BINARY is set.
-      - run: cd packages/sdk && npm test
-      - run: cd packages/sdk && npm run build
+            node_modules
+            apps/account-directory/node_modules
+            apps/password-key-service/node_modules
+            apps/push-relay/node_modules
+            apps/tunnel-relay/node_modules
+            apps/webhook-relay/node_modules
+          key: nm-workers-v1-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install the workers workspace (no cache entry)
+        if: steps.cache_workers.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: "webhook-relay: typecheck"
+        if: ${{ !cancelled() }}
+        run: cd apps/webhook-relay && npm run typecheck
+      - name: "webhook-relay: test"
+        if: ${{ !cancelled() }}
+        run: cd apps/webhook-relay && npm test
+      - name: "push-relay: typecheck"
+        if: ${{ !cancelled() }}
+        run: cd apps/push-relay && npm run typecheck
+      - name: "push-relay: test"
+        if: ${{ !cancelled() }}
+        run: cd apps/push-relay && npm test
+      - name: "tunnel-relay: typecheck"
+        if: ${{ !cancelled() }}
+        run: cd apps/tunnel-relay && npm run typecheck
+      - name: "tunnel-relay: fake and workerd relay tests"
+        if: ${{ !cancelled() }}
+        run: cd apps/tunnel-relay && npm test
+      # The account directory is an independently deployed Worker; the build
+      # step is a Wrangler dry run.
+      - name: "account-directory: typecheck"
+        if: ${{ !cancelled() }}
+        run: cd apps/account-directory && npm run typecheck
+      - name: "account-directory: build"
+        if: ${{ !cancelled() }}
+        run: cd apps/account-directory && npm run build
+      - name: "account-directory: test"
+        if: ${{ !cancelled() }}
+        run: cd apps/account-directory && npm test
+      - name: "password-key-service: typecheck"
+        if: ${{ !cancelled() }}
+        run: cd apps/password-key-service && npm run typecheck
+      - name: "password-key-service: test"
+        if: ${{ !cancelled() }}
+        run: cd apps/password-key-service && npm test
 
-  test-chat-ui:
-    needs: install
+  # The docs and source validators. They use node: built-ins only, so this
+  # job needs no install and no node_modules, and it still runs when the
+  # install job fails. scripts/require-release-ci-pass.sh reads this job's
+  # result as the check of a release-notes-only commit. Every check runs even
+  # when an earlier step failed.
+  docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # validate-docs.mjs reads the release tags.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate docs
+        run: node scripts/validate-docs.mjs
+      # Asserts that every platform-gated test assertion has a runner in this
+      # workflow that actually executes it, and bans the vacuous
+      # `if (process.platform === ...) return;` form that reports green while
+      # asserting nothing. Pure source + workflow parsing, no dependencies.
+      - name: Platform gates
+        if: ${{ !cancelled() }}
+        run: node scripts/validate-platform-gates.mjs
+      # A literal NUL in a source file makes git, GitHub and agent read tools
+      # treat it as binary. Source must use the `\u0000` escape instead.
+      - name: Source NUL bytes
+        if: ${{ !cancelled() }}
+        run: node scripts/check-source-nul-bytes.mjs
+      # The four Workers' Sentry scrubbers and transient-failure helpers are files kept in four places.
+      - name: Worker Sentry scrubbers
+        if: ${{ !cancelled() }}
+        run: node scripts/check-worker-sentry-scrub.mjs
+      # Every PostHog event a surface sends is in docs/analytics/tracking-plan.json,
+      # every planned event is sent, and the dashboards only use sent events.
+      - name: Analytics tracking plan
+        if: ${{ !cancelled() }}
+        run: node scripts/check-analytics-tracking-plan.mjs
+
+  # The publishable packages and the web app's checks, in one job with one
+  # step per check. Every check runs even when an earlier step failed.
+  # Deliberately NOT folded into the desktop shards: these have their own
+  # dependency trees and fail with their own step name.
+  packages:
+    needs: install
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -348,122 +476,77 @@ jobs:
           path: |
             packages/chat-ui/node_modules
           key: nm-chat-ui-v1-${{ runner.os }}-${{ hashFiles('packages/chat-ui/package-lock.json') }}
-      # `@ade-dev/sdk` resolves through a `file:../sdk` symlink whose exports and
-      # types point at `packages/sdk/dist`, which is gitignored. On a fresh
-      # checkout that directory does not exist, so `tsc` cannot resolve the
-      # module and both typecheck and build fail (the unit suite survives only
-      # because every import of it is type-only). Build it first.
-      - run: cd packages/sdk && npm run build
-      - run: cd packages/chat-ui && npm run typecheck
-      - run: cd packages/chat-ui && npm test
-      - run: cd packages/chat-ui && npm run build
-
-  test-webhook-relay:
-    needs: install
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/webhook-relay/node_modules
-          key: nm-webhook-relay-v1-${{ runner.os }}-${{ hashFiles('apps/webhook-relay/package-lock.json') }}
-      - run: cd apps/webhook-relay && npm test
-
-  test-push-relay:
-    needs: install
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/push-relay/node_modules
-          key: nm-push-relay-v1-${{ runner.os }}-${{ hashFiles('apps/push-relay/package-lock.json') }}
-      - run: cd apps/push-relay && npm test
-
-  # apps/tunnel-relay has its own lockfile and is not in the shared install
-  # cache, so these jobs install it inline (self-contained, append-only).
-  typecheck-tunnel-relay:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: cd apps/tunnel-relay && npm ci
-      - run: cd apps/tunnel-relay && npm run typecheck
-
-  test-tunnel-relay:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: cd apps/tunnel-relay && npm ci
-      - name: Run fake and workerd relay tests
-        run: cd apps/tunnel-relay && npm test
-
-  # The account directory is an independently deployed Worker with its own
-  # lockfile. Keep auth/device-flow verification isolated from the shared app
-  # dependency cache, matching the tunnel relay's self-contained jobs.
-  typecheck-account-directory:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: cd apps/account-directory && npm ci
-      - run: cd apps/account-directory && npm run typecheck
-      - run: cd apps/account-directory && npm run build
-
-  test-account-directory:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: cd apps/account-directory && npm ci
-      - run: cd apps/account-directory && npm test
-
-  build:
-    needs: install
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
       - uses: actions/cache/restore@v4
         with:
           path: |
             apps/web/node_modules
           key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+      - name: "sdk: typecheck"
+        run: cd packages/sdk && npm run typecheck
+      - name: "sdk: wire types"
+        if: ${{ !cancelled() }}
+        run: node packages/sdk/scripts/check-wire-types.mjs
+      # Every published package must carry its own LICENSE, because the root
+      # LICENSE does not travel in an npm tarball. --require-pack checks the
+      # real tarball listing, not just the "files" field, and fails the job if
+      # npm cannot be run rather than logging that it skipped the check.
+      - name: Check published package licenses
+        if: ${{ !cancelled() }}
+        run: node scripts/check-package-licenses.mjs --require-pack
+      # Hermetic only. The live fixture (test/live.integration.test.ts) needs a
+      # built runtime binary and skips itself unless ADE_SDK_LIVE_BINARY is set.
+      - name: "sdk: test"
+        if: ${{ !cancelled() }}
+        run: cd packages/sdk && npm test
+      # `@ade-dev/sdk` resolves through a `file:../sdk` symlink whose exports and
+      # types point at `packages/sdk/dist`, which is gitignored. On a fresh
+      # checkout that directory does not exist, so `tsc` cannot resolve the
+      # module and both typecheck and build fail (the unit suite survives only
+      # because every import of it is type-only). This build makes it.
+      - name: "sdk: build"
+        if: ${{ !cancelled() }}
+        run: cd packages/sdk && npm run build
+      - name: "chat-ui: typecheck"
+        if: ${{ !cancelled() }}
+        run: cd packages/chat-ui && npm run typecheck
+      - name: "chat-ui: test"
+        if: ${{ !cancelled() }}
+        run: cd packages/chat-ui && npm test
+      - name: "chat-ui: build"
+        if: ${{ !cancelled() }}
+        run: cd packages/chat-ui && npm run build
+      - name: "web: typecheck"
+        if: ${{ !cancelled() }}
+        run: cd apps/web && npm run typecheck
+      - name: "web: analytics tests"
+        if: ${{ !cancelled() }}
+        run: cd apps/web && npm run test:analytics
+      - name: "web: PostHog provisioning check"
+        if: ${{ !cancelled() }}
+        run: npm run test:posthog
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/restore-core-node-modules
+        with:
+          install-on-miss: "true"
+      # This job does not wait for the install job, so a miss installs the
+      # web group here. Only the install job saves the entry.
+      - name: Restore web node_modules cache
+        id: cache_web
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/web/node_modules
+          key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+      - name: Install web node_modules (no cache entry)
+        if: steps.cache_web.outputs.cache-hit != 'true'
+        run: cd apps/web && npm ci
       - run: cd apps/desktop && npm run build
       - run: cd apps/ade-cli && npm run build
       # The desktop app ships the CLI help digest to agents. This job already
@@ -473,27 +556,86 @@ jobs:
         run: cd apps/desktop && npm run regen-cli-help -- --check
       - run: cd apps/web && npm run build
 
+  # Which targets build-runtime-binaries builds. A push to main and a
+  # dispatch (stacked PRs, release proof builds) always build all five. The
+  # one exception is a dispatch on a pins/* branch: agent-tool-pins.yml starts
+  # those for its update PRs (about ten a night), and they follow the pull
+  # request rule below (scripts/ci/changed-files.sh gives the diff). A pull
+  # request builds only linux-x64, unless it changes a file whose break can be
+  # OS- or arch-specific (the list below), or carries the `runtime-binaries`
+  # label. Ordinary TypeScript source builds the same on every target, and
+  # linux-x64 still bundles, packages and smoke-tests it. The two macOS
+  # targets held two of the account's five macOS slots on every PR.
+  #
+  # Any doubt (a failed or empty diff) builds all five. Adding the label does
+  # not start a run: the next push runs with it (a re-run replays the old
+  # event and its old labels, so push -- an empty commit works).
+  #
+  # The packaging files: the ade-cli manifest, lockfile, pnpm build allowlist
+  # and tsup config (native modules, platform packages, externals); the
+  # scripts build:static runs and the smoke test calls (build-static,
+  # package-native-deps and its entry filter, probe-runtime-crsqlite,
+  # verify-built-cli and the build-runtime-npm-packages list it imports, and
+  # desktop's packaged-ade-cli-resources.cjs); the vendored per-target
+  # cr-sqlite and native helpers; the bundle-source helper tsup imports; and
+  # this workflow.
+  runtime-binaries-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gate.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The PR merge commit and its base parent, as in ios-gate.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Pick the runtime targets
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'runtime-binaries') }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          entry() { printf '{"target":"%s","os":"%s","binary":"%s"}' "$1" "$2" "$3"; }
+          linux_x64="$(entry linux-x64 ubuntu-latest ade-linux-x64)"
+          all="$(entry darwin-arm64 macos-15 ade-darwin-arm64),$(entry darwin-x64 macos-15-intel ade-darwin-x64),$linux_x64,$(entry linux-arm64 ubuntu-24.04-arm ade-linux-arm64),$(entry win32-x64 windows-latest ade-win32-x64.exe)"
+          pick() {
+            echo "matrix={\"include\":[$1]}" >> "$GITHUB_OUTPUT"
+            echo "$2"
+          }
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            pick "$all" "Event push: building all five targets."
+            exit 0
+          elif [[ "$EVENT_NAME" == "pull_request" && "$HAS_LABEL" == "true" ]]; then
+            pick "$all" "The pull request has the runtime-binaries label: building all five targets."
+            exit 0
+          elif ! changed="$(scripts/ci/changed-files.sh)" || [[ -z "$changed" ]]; then
+            # Also every dispatch that is not on a pins/* branch.
+            pick "$all" "No diff to gate $EVENT_NAME on $REF: building all five targets."
+            exit 0
+          fi
+          packaging="$(printf '%s\n' "$changed" | grep -E '^(apps/ade-cli/(package\.json|package-lock\.json|pnpm-workspace\.yaml|tsup\.config\.ts)$|apps/ade-cli/scripts/(build-static|package-native-deps|native-deps-entry-filter|probe-runtime-crsqlite|verify-built-cli|build-runtime-npm-packages)\.mjs$|apps/desktop/scripts/packaged-ade-cli-resources\.cjs$|apps/desktop/vendor/crsqlite/|apps/desktop/resources/native/|scripts/build/|\.github/workflows/ci\.yml$)' || true)"
+          if [[ -n "$packaging" ]]; then
+            pick "$all" "Packaging files changed: building all five targets."
+            printf '%s\n' "$packaging" | sed 's/^/  /'
+            exit 0
+          fi
+          pick "$linux_x64" "No packaging files changed: building linux-x64 only. Add the runtime-binaries label to build all five."
+
   build-runtime-binaries:
+    needs: runtime-binaries-gate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: darwin-arm64
-            os: macos-15
-            binary: ade-darwin-arm64
-          - target: darwin-x64
-            os: macos-15-intel
-            binary: ade-darwin-x64
-          - target: linux-x64
-            os: ubuntu-latest
-            binary: ade-linux-x64
-          - target: linux-arm64
-            os: ubuntu-24.04-arm
-            binary: ade-linux-arm64
-          - target: win32-x64
-            os: windows-latest
-            binary: ade-win32-x64.exe
+      matrix: ${{ fromJSON(needs.runtime-binaries-gate.outputs.matrix) }}
+    # Deletes main's cache entries that its save replaces
+    # (scripts/ci/prune-cache-entries.sh).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -530,8 +672,17 @@ jobs:
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
 
-      - name: Save npm download cache
+      - name: Delete main's npm download entry this save replaces
+        id: prune_npm
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.npm_cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
+        run: scripts/ci/prune-cache-entries.sh "npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-" "$KEY"
+
+      - name: Save npm download cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.npm_cache.outputs.cache-hit != 'true' && steps.prune_npm.outputs.save != 'false'
         uses: actions/cache/save@v4
         with:
           path: ${{ steps.npm_cache_dir.outputs.dir }}
@@ -580,20 +731,26 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
+      # A push to main always builds it. A pull request and a dispatch on a
+      # pins/* branch build it only when their diff touches it; any other
+      # dispatch, or a diff that cannot be read, builds it.
       - name: Decide whether the helper changed
         id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]] || ! changed="$(scripts/ci/changed-files.sh)"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          changed=$(git diff --name-only HEAD^1 HEAD || true)
-          if printf '%s\n' "$changed" | grep -qE '^(apps/desktop/native/ADEDesktopDriverLinux/|apps/desktop/scripts/build-linux-desktop-driver\.mjs|\.github/workflows/ci\.yml)'; then
+          # A here-string, not a pipe: under pipefail, `printf | grep -q`
+          # fails with SIGPIPE when grep stops early in a long list.
+          if grep -qE '^(apps/desktop/native/ADEDesktopDriverLinux/|apps/desktop/scripts/build-linux-desktop-driver\.mjs|\.github/workflows/ci\.yml)' <<< "$changed"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No Linux desktop driver changes in this PR; skipping its build."
+            echo "No Linux desktop driver changes in this diff; skipping its build."
           fi
 
       - name: Restore cargo cache
@@ -646,11 +803,37 @@ jobs:
   # step is gone. A Windows-relevant PR adds the label; the next push runs
   # the job (a re-run replays the old event and its old labels, so push --
   # an empty commit works).
+  #
+  # The test steps run in three parallel jobs of one matrix, about 2.5 minutes
+  # of tests each (medians over 90 runs). In a row they take 7 minutes and the
+  # whole job about 9, which would hold up ci-pass and the beta behind it on
+  # every push to main. The vitest config caps Windows at 4 threads (EMFILE),
+  # so groups do not run side by side in one job. The groups follow the
+  # measured step times: ade-cli (stdio RPC daemon 71 s, service/layout/IPC
+  # 49 s, the rest under 15 s), desktop-sync (CRDT/sync/device registry 100 s,
+  # PR-origin/attention 38 s), desktop-platform (runtime connection pool
+  # 66 s, path/spawn/window/update 42 s, the rest under 15 s). Each test step
+  # runs in exactly one group. ci-pass reads the
+  # matrix as one result, `windows-foundation`; the checks are named
+  # `windows-foundation (<group>)`.
   windows-foundation:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'windows')
     runs-on: windows-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [ade-cli, desktop-sync, desktop-platform]
+    # Deletes main's cache entries that its save replaces
+    # (scripts/ci/prune-cache-entries.sh).
+    permissions:
+      contents: read
+      actions: write
     steps:
+      # Each test step below runs for one group only, so a group that no step
+      # names would pass green with no tests. scripts/validate-platform-gates.mjs
+      # (the docs job) fails when a step condition names an unlisted group or
+      # a listed group has no step.
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -663,12 +846,7 @@ jobs:
       # stores its own ~1.5 GB copy.
       - name: Restore Windows node_modules cache
         id: nm_win
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+        uses: ./.github/actions/restore-core-node-modules
 
       - name: Install ADE CLI dependencies
         if: steps.nm_win.outputs.cache-hit != 'true'
@@ -678,16 +856,25 @@ jobs:
         if: steps.nm_win.outputs.cache-hit != 'true'
         run: npm --prefix apps/desktop ci
 
+      # One group saves; the three would race to write the same key.
+      - name: Delete main's Windows node_modules entry this save replaces
+        id: prune_win
+        if: matrix.group == 'ade-cli' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nm_win.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.nm_win.outputs.key }}
+        run: scripts/ci/prune-cache-entries.sh "nm-core-v2-${RUNNER_OS}-" "$KEY"
+
       - name: Save Windows node_modules cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nm_win.outputs.cache-hit != 'true'
+        if: matrix.group == 'ade-cli' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nm_win.outputs.cache-hit != 'true' && steps.prune_win.outputs.save != 'false'
         uses: actions/cache/save@v4
         with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+          path: ${{ steps.nm_win.outputs.paths }}
+          key: ${{ steps.nm_win.outputs.key }}
 
       - name: Test Windows service, layout, and IPC contracts
+        if: matrix.group == 'ade-cli'
         run: >-
           cd apps/ade-cli && npx vitest run
           src/bootstrap.test.ts
@@ -703,6 +890,7 @@ jobs:
           src/services/sync/syncService.test.ts
 
       - name: Test intended-user named-pipe listener contracts
+        if: matrix.group == 'ade-cli'
         run: cd apps/ade-cli && npx vitest run src/services/runtime/localIpcListenOptions.test.ts
 
       # Sync-port holder identification is win32-gated: on Windows the holder
@@ -710,18 +898,21 @@ jobs:
       # silently disables stale-port reclaim instead of failing. Only a Windows
       # runner executes that gate.
       - name: Test Windows sync-port holder identification
+        if: matrix.group == 'ade-cli'
         run: cd apps/ade-cli && npx vitest run src/services/sync/sharedSyncListener.test.ts
 
       # cli.test.ts carries the win32-gated headless-RPC named-pipe case. It is
       # green only once this layer's CLI fixes compose, so the step lives here
       # rather than in the foundation layer.
       - name: Test Windows CLI contracts
+        if: matrix.group == 'ade-cli'
         run: cd apps/ade-cli && npx vitest run src/cli.test.ts src/lib/cliDelegation.test.ts src/services/runtime/adeCliShim.test.ts
 
       # Daemon supervision, restart, and version/role-compatibility. Spawns real
       # `ade serve` daemons over the platform transport, so this is the only gate
       # that exercises the always-on-brain contract on a named pipe.
       - name: Test Windows stdio RPC daemon bridge contracts
+        if: matrix.group == 'ade-cli'
         run: cd apps/ade-cli && npx vitest run src/stdioRpcDaemon.test.ts
 
       # `trustedWindowsTools` is a security control whose only substantive case
@@ -730,6 +921,7 @@ jobs:
       # both filesystem- and argument-quoting sensitive, which is exactly what
       # a Linux-hosted job cannot exercise.
       - name: Test Windows trusted-tool, credential, and deeplink guards
+        if: matrix.group == 'ade-cli'
         run: >-
           cd apps/ade-cli && npx vitest run
           src/commands/deeplinks.test.ts
@@ -745,30 +937,36 @@ jobs:
       # the uninstall cleanup -- so a syntax error or a broken staging path in
       # the installer fails CI instead of a user's machine.
       - name: Test Windows standalone installer and uninstall cleanup scripts
+        if: matrix.group == 'desktop-platform'
         run: cd apps/desktop && node --test ./scripts/windows-uninstall-cleanup.test.mjs
 
       - name: Test Windows desktop, SQLite, and capability contracts
+        if: matrix.group == 'desktop-platform'
         run: cd apps/desktop && npx vitest run src/main/packagedRuntimeSmoke.test.ts src/main/services/computerUse/localComputerUse.test.ts src/renderer/lib/platform.test.ts
 
       # These suites include host-platform and PowerShell-specific prompt
       # behavior; run them on Windows so the runtime's native platform branch
       # is part of PR validation, not only a Linux simulation.
       - name: Test Windows agent prompt platform contracts
+        if: matrix.group == 'desktop-platform'
         run: cd apps/desktop && npx vitest run src/main/services/ai/tools/macDesktopPrompt.test.ts
 
       - name: Test Windows PowerShell session-reference prompt
+        if: matrix.group == 'desktop-platform'
         run: cd apps/desktop && npx vitest run src/main/services/chat/agentChatServiceInteractionMode.test.ts -t "activity guidance"
 
       # These path-equivalence assertions skip on Linux because case-only path
       # changes are meaningful there. Run them on Windows so the worker pools'
       # case-insensitive path reuse is exercised by a native filesystem target.
       - name: Test Windows SDK worker activity path contracts
+        if: matrix.group == 'desktop-platform'
         run: cd apps/desktop && npx vitest run src/main/services/chat/cursorSdkPool.test.ts src/main/services/chat/piSdkPool.test.ts src/main/services/shared/offThreadSpawn.test.ts
 
       # The suites docs/development/windows-port-lane.md names as the Windows
       # validation set. Before this step the intersection with this job was
       # empty, so the documented gate was never actually run on Windows.
       - name: Test Windows path, spawn, window, and update contracts
+        if: matrix.group == 'desktop-platform'
         run: >-
           cd apps/desktop && npx vitest run
           src/main/services/appControl/appControlLaunchCommand.test.ts
@@ -796,6 +994,7 @@ jobs:
       # PowerShell's -EncodedCommand; only a real PowerShell proves its words
       # and exit code arrive unchanged.
       - name: Test Windows remote run-once command launch
+        if: matrix.group == 'desktop-platform'
         run: cd apps/desktop && npx vitest run src/main/services/pty/ptyService.test.ts -t "another machine runs here once"
 
       # Covers the Windows runtime startup timing and `connectSpawnedRuntime`
@@ -803,9 +1002,11 @@ jobs:
       # them over the platform transport, so on this runner it is the only gate
       # that exercises the named-pipe endpoint end to end.
       - name: Test Windows local runtime connection pool contracts
+        if: matrix.group == 'desktop-platform'
         run: cd apps/desktop && npx vitest run src/main/services/localRuntime/localRuntimeConnectionPool.test.ts
 
       - name: Test PR-origin and attention lifecycle contracts
+        if: matrix.group == 'desktop-sync'
         run: >-
           cd apps/desktop && npx vitest run
           src/main/services/prs/prChatLinkStore.test.ts
@@ -819,6 +1020,7 @@ jobs:
       # `test-desktop` loads linux-x64 and runs the CRR suites there; this
       # Windows job is the win32-x64 gate.
       - name: Test Windows CRDT, sync, and device registry contracts
+        if: matrix.group == 'desktop-sync'
         run: >-
           cd apps/desktop && npx vitest run
           src/main/services/state/kvDb.test.ts
@@ -833,84 +1035,86 @@ jobs:
   # The iOS app is otherwise the only ADE surface with zero CI coverage, and
   # three consecutive merges (#1117, #1120, #1121) each landed a Swift compile
   # break that stayed invisible until someone built locally. This job keeps the
-  # ADE scheme compiling and ADETests green on every change that can affect
-  # them.
+  # ADE scheme compiling and ADETests green on every pull request that can
+  # affect them.
   #
-  # It always RUNS (ci-pass treats "skipped" as failure, deliberately), but on
-  # pull requests and single-commit pushes to main that do not touch
-  # apps/ios/**, the shared fixtures the iOS suite reads, or this workflow it
-  # exits success immediately, so non-iOS changes pay only runner spin-up.
-  # workflow_dispatch and multi-commit pushes always execute the full build + test.
-  # The path gate runs on Ubuntu: a gated skip on the macOS job still waited
-  # minutes for a macOS runner just to exit, and it held one of the few
-  # concurrent macOS slots the other jobs need.
+  # It always RUNS (ci-pass treats "skipped" as failure, deliberately), but when
+  # ios-gate says no, it exits success at once on Ubuntu, so the run pays only
+  # an Ubuntu spin-up. scripts/ci/ios-gate.sh decides for a pull request and
+  # for a dispatch on a pins/* branch, from the diff; it says no when the diff
+  # touches neither the app, the shared fixtures the Swift tests read, nor the
+  # iOS part of CI. Any other dispatch builds.
+  # A push to main is built by ios-main.yml (see its header).
+  #
+  # A pull request also skips the build when an earlier run of the same pull
+  # request already passed it with the same iOS inputs: the iOS files and
+  # ci.yml in the merge commit (`ios-gate.sh --fingerprint`). test-ios saves a
+  # tiny `ios-pass-v1-<fingerprint>` cache entry after a pass, which only this
+  # pull request can see; a push that changes only docs or desktop code finds
+  # it and reuses the pass instead of compiling the app again for ~20 minutes.
   ios-gate:
     runs-on: ubuntu-latest
     outputs:
-      run: ${{ steps.gate.outputs.run }}
+      run: ${{ steps.decide.outputs.run }}
+      pass-key: ${{ steps.fingerprint.outputs.key }}
     steps:
       - uses: actions/checkout@v4
         with:
           # Depth 2 keeps the PR merge commit's parents available, so the
-          # gating step below can diff the merge against its base parent.
+          # gate can diff the merge against its base parent.
           fetch-depth: 2
           persist-credentials: false
 
       - name: Decide whether iOS is affected
         id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # A PR: checkout@v4 checks out the PR merge commit, so its first
-          # parent is the base and the diff is exactly what the PR changes.
-          # A push to main: a merge or squash commit, whose first parent is
-          # the main it was pushed onto, so the diff is what that PR changed.
-          # When two PRs that touch iOS merge one after the other, the second
-          # push still runs the suite, so a conflict between them is caught.
-          # Anything else (a dispatch, a push of several commits, a missing
-          # parent, a failed diff) runs the suite.
-          case "${{ github.event_name }}" in
-            pull_request) ;;
-            push)
-              if [[ "$(git rev-parse HEAD^1 2>/dev/null || true)" != "${{ github.event.before }}" ]]; then
-                echo "run=true" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              ;;
-            *)
-              echo "run=true" >> "$GITHUB_OUTPUT"
-              exit 0
-              ;;
-          esac
-          if ! changed=$(git diff --name-only HEAD^1 HEAD); then
-            echo "run=true" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping iOS: a push to main is built by ios-main.yml."
             exit 0
           fi
-          # The shared chip fixture lives under apps/desktop but the iOS suite
-          # asserts against it (WorkComposerTriggerDetectorTests.
-          # testMatchesSharedChipFixture). Without it in this gate, a
-          # desktop-only PR that adds a row skips the Swift suite and merges
-          # green, then breaks main — which is exactly the silent divergence
-          # the fixture exists to prevent. The same holds for the activity
-          # case tables under shared/attention (ActivityRowPresentationTests
-          # reads activityStateGroup/activityBoardColumn.cases.json from disk).
-          if printf '%s\n' "$changed" | grep -qE '^(apps/ios/|apps/desktop/src/shared/__fixtures__/|apps/desktop/src/shared/attention/[^/]+\.cases\.json$|\.github/workflows/ci\.yml)'; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No apps/ios or shared-fixture changes; skipping the iOS build."
-          fi
+          scripts/ci/ios-gate.sh >> "$GITHUB_OUTPUT"
 
+      - name: Fingerprint the iOS inputs
+        id: fingerprint
+        if: steps.gate.outputs.run == 'true' && github.event_name == 'pull_request'
+        run: echo "key=ios-pass-v1-$(scripts/ci/ios-gate.sh --fingerprint)" >> "$GITHUB_OUTPUT"
+
+      - name: Look for an earlier pass with the same iOS inputs
+        id: earlier-pass
+        if: steps.fingerprint.outputs.key != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: .ios-pass
+          key: ${{ steps.fingerprint.outputs.key }}
+          lookup-only: true
+
+      - name: Decide
+        id: decide
+        env:
+          AFFECTED: ${{ steps.gate.outputs.run }}
+          EARLIER_PASS: ${{ steps.earlier-pass.outputs.cache-hit }}
+        run: |
+          if [[ "$AFFECTED" == "true" && "$EARLIER_PASS" == "true" ]]; then
+            echo "Skipping iOS: an earlier run of this pull request passed test-ios with the same iOS inputs."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=$AFFECTED" >> "$GITHUB_OUTPUT"
+          fi
 
   test-ios:
     needs: ios-gate
     # Skipped iOS work still reports success here (ci-pass treats "skipped" as
     # failure), but on a cheap Ubuntu runner instead of a macOS one.
-    runs-on: ${{ needs.ios-gate.outputs.run == 'true' && 'macos-26' || 'ubuntu-latest' }}
-    timeout-minutes: 45
+    runs-on: ${{ needs.ios-gate.outputs.run == 'true' && 'xcode-27' || 'ubuntu-latest' }}
+    timeout-minutes: 60
     steps:
-      - name: No iOS changes
+      - name: iOS not affected
         if: needs.ios-gate.outputs.run != 'true'
-        run: echo "No apps/ios or shared-fixture changes; skipping the iOS build."
+        run: echo "ios-gate decided this run does not build iOS; its log says why."
 
       - uses: actions/checkout@v4
         if: needs.ios-gate.outputs.run == 'true'
@@ -919,145 +1123,22 @@ jobs:
           # authenticated git, so don't leave the token in .git/config.
           persist-credentials: false
 
-      - name: Select Xcode 26
+      # A pull request restores main's caches and saves none.
+      - name: Build and test
         if: needs.ios-gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          latest=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
-          if [[ -n "$latest" ]]; then
-            sudo xcode-select -s "$latest/Contents/Developer"
-          fi
-          xcodebuild -version
+        uses: ./.github/actions/ios-build-test
 
-      - name: Cache Swift packages
-        if: needs.ios-gate.outputs.run == 'true'
-        uses: actions/cache@v4
+      # Record the pass for this pull request's later runs (see ios-gate).
+      - name: Record the pass
+        if: needs.ios-gate.outputs.run == 'true' && needs.ios-gate.outputs.pass-key != ''
+        shell: bash
+        run: mkdir -p .ios-pass && echo "$GITHUB_SHA" > .ios-pass/sha
+      - name: Save the pass
+        if: needs.ios-gate.outputs.run == 'true' && needs.ios-gate.outputs.pass-key != ''
+        uses: actions/cache/save@v4
         with:
-          path: ~/spm-packages
-          key: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: spm-v1-
-
-      # Xcode's content-addressed compilation cache, kept between runs. It
-      # does not depend on file times, so a fresh checkout still hits it.
-      # Measured on #2100: "Build for testing" 15.4 min cold, 9.4 min warm;
-      # about 360 MB compressed. A branch reads its own last cache, then
-      # main's.
-      - name: Restore the compilation cache
-        if: needs.ios-gate.outputs.run == 'true'
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/ios-cas
-          key: ios-cas-v1-${{ github.ref_name }}-${{ github.sha }}
-          restore-keys: |
-            ios-cas-v1-${{ github.ref_name }}-
-            ios-cas-v1-main-
-
-      # The simulator cold boot took 4-8 minutes when it started after the
-      # build; booting it now overlaps the build.
-      - name: Pick and boot the simulator
-        if: needs.ios-gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          dest_id=$(xcrun simctl list devices available --json \
-            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.isAvailable and (.name | startswith("iPhone")))][0].udid')
-          if [[ -z "$dest_id" || "$dest_id" == "null" ]]; then
-            echo "::error::No available iPhone simulator on this runner image"
-            xcrun simctl list devices
-            exit 1
-          fi
-          echo "IOS_SIM_ID=$dest_id" >> "$GITHUB_ENV"
-          xcrun simctl boot "$dest_id" || true
-
-      # A concrete simulator destination builds only the arch the tests run on;
-      # 'generic/platform=iOS Simulator' also compiled x86_64.
-      - name: Build for testing
-        if: needs.ios-gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          cd apps/ios
-          xcodebuild \
-            -project ADE.xcodeproj \
-            -scheme ADE \
-            -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
-            -derivedDataPath "$RUNNER_TEMP/ios-dd" \
-            -clonedSourcePackagesDirPath ~/spm-packages \
-            -skipMacroValidation \
-            -skipPackagePluginValidation \
-            -quiet \
-            COMPILATION_CACHE_ENABLE_CACHING=YES \
-            COMPILATION_CACHE_CAS_PATH="$RUNNER_TEMP/ios-cas" \
-            build-for-testing
-
-      # The cache only grows: each build adds what changed. Past 2.5 GB, start
-      # it again rather than fill the repository's cache space.
-      - name: Cap the compilation cache
-        if: needs.ios-gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          size_kb=$(du -sk "$RUNNER_TEMP/ios-cas" 2>/dev/null | cut -f1 || echo 0)
-          echo "Compilation cache: $((size_kb / 1024)) MB"
-          if (( size_kb > 2621440 )); then
-            # An empty folder is saved in its place, so the next run builds
-            # cold once and saves a fresh cache, instead of restoring the
-            # big one again.
-            rm -rf "$RUNNER_TEMP/ios-cas"
-            mkdir -p "$RUNNER_TEMP/ios-cas"
-            echo "Over 2.5 GB; the next run starts a new cache."
-          fi
-
-      - name: Run ADETests
-        if: needs.ios-gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          cd apps/ios
-          xcrun simctl bootstatus "$IOS_SIM_ID" -b
-          xcodebuild \
-            -project ADE.xcodeproj \
-            -scheme ADE \
-            -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
-            -derivedDataPath "$RUNNER_TEMP/ios-dd" \
-            -clonedSourcePackagesDirPath ~/spm-packages \
-            -skipMacroValidation \
-            -skipPackagePluginValidation \
-            -parallel-testing-enabled NO \
-            -quiet \
-            test-without-building
-
-      - name: Upload test results on failure
-        if: failure() && needs.ios-gate.outputs.run == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-test-results
-          path: ${{ runner.temp }}/ios-dd/Logs/Test/*.xcresult
-          if-no-files-found: ignore
-          retention-days: 7
-
-  # Pure source and workflow parsing with node: built-ins only, so it needs
-  # no node_modules and starts without waiting for the install job.
-  validate-docs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: node scripts/validate-docs.mjs
-      # Asserts that every platform-gated test assertion has a runner in this
-      # workflow that actually executes it, and bans the vacuous
-      # `if (process.platform === ...) return;` form that reports green while
-      # asserting nothing. Pure source + workflow parsing, no dependencies.
-      - run: node scripts/validate-platform-gates.mjs
-      # A literal NUL in a source file makes git, GitHub and agent read tools
-      # treat it as binary. Source must use the `\u0000` escape instead.
-      - run: node scripts/check-source-nul-bytes.mjs
-      # The four Workers' Sentry scrubbers and transient-failure helpers are files kept in four places.
-      - run: node scripts/check-worker-sentry-scrub.mjs
-      # Every PostHog event a surface sends is in docs/analytics/tracking-plan.json,
-      # every planned event is sent, and the dashboards only use sent events.
-      - run: node scripts/check-analytics-tracking-plan.mjs
+          path: .ios-pass
+          key: ${{ needs.ios-gate.outputs.pass-key }}
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
   ci-pass:
@@ -1065,28 +1146,19 @@ jobs:
     needs:
       - install
       - secret-scan
-      - typecheck-desktop
-      - typecheck-ade-cli
-      - typecheck-web
-      - typecheck-webhook-relay
-      - typecheck-push-relay
-      - typecheck-tunnel-relay
-      - typecheck-account-directory
+      - typecheck
       - lint-desktop
       - test-desktop
       - test-ade-cli
-      - test-sdk
-      - test-chat-ui
-      - test-webhook-relay
-      - test-push-relay
-      - test-tunnel-relay
-      - test-account-directory
+      - services
+      - docs
+      - packages
       - build
+      - runtime-binaries-gate
       - build-runtime-binaries
       - linux-desktop-driver
       - windows-foundation
       - test-ios
-      - validate-docs
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs passed
@@ -1122,7 +1194,10 @@ jobs:
             fi
             # 'skipped' means failure too: every job in needs is unconditional,
             # so a conditional job added later cannot start passing green while
-            # dead. Installers are NOT built here -- release-core.yml builds
+            # dead. build-runtime-binaries is not an exception: its matrix
+            # always holds linux-x64, so a PR that builds one target still
+            # reports success or failure, and a broken gate skips it, which
+            # fails here. Installers are NOT built here -- release-core.yml builds
             # macOS and Windows fresh on the release tag, exactly like macOS
             # has always worked. CI's job is tests, not packaging.
             if [[ "$result" != "success" ]]; then

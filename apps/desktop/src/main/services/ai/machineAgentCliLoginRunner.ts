@@ -1,8 +1,9 @@
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { spawnLoginPty, stopLoginPty } from "../shared/cliLoginPty";
 import { pinnedLoginCliState } from "../pty/pinnedProviderCli";
-import { invalidateCliAuthStatusCache, readAgentCliSavedLogin } from "./authDetector";
+import { readAgentCliSavedLogin } from "./authDetector";
 import { createAgentCliLoginRunner, type AgentCliLoginRunner } from "./agentCliLoginRunner";
+import { noteProviderLoginChanged } from "./providerLoginChanged";
 
 let runner: AgentCliLoginRunner | null = null;
 
@@ -19,8 +20,9 @@ export function getMachineAgentCliLoginRunner(): AgentCliLoginRunner {
     spawnPty: spawnLoginPty,
     stopPty: stopLoginPty,
     readSavedLogin: readAgentCliSavedLogin,
-    // Settings reads the provider's signed-in state through detection's cache.
-    onSignedIn: () => invalidateCliAuthStatusCache(),
+    // The one "login changed" path: the CLI cache, that provider's probe
+    // verdict and runtime health, and every status payload built on them.
+    onSignedIn: (provider) => noteProviderLoginChanged(provider),
   });
   // A sign-in still open when the process ends would leave its CLI running.
   // The desktop app and the headless runtime both exit through here.

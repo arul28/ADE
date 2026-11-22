@@ -116,7 +116,7 @@ export function EditorGroup(props: EditorGroupProps) {
         type: "item",
         label: revealLabel,
         icon: <ArrowSquareOut size={13} />,
-        onClick: () => void window.ade.app.openPathInEditor?.({ rootPath: ctx.rootPath, relativePath: tab.path, target: "finder" }).catch(() => {}),
+        onClick: () => void window.ade.app.openPathInEditor?.({ rootPath: ctx.rootPath, relativePath: tab.path, target: "finder" }, ctx.pathPin).catch(() => {}),
         disabled: !ctx.canRevealInFinder,
       },
     ];
@@ -249,12 +249,13 @@ export function EditorGroup(props: EditorGroupProps) {
 
       <div className="relative min-h-0 min-w-0 flex-1">
         {activeTab && activeContext && activeInDiff && activeContext.laneId ? (
-          <DiffViewer laneId={activeContext.laneId} path={activeTab.path} theme={props.theme} />
+          <DiffViewer laneId={activeContext.laneId} path={activeTab.path} theme={props.theme} pin={props.files.pin} />
         ) : activeTab && activeContext ? (
           <ViewerHost
             workspaceId={activeContext.workspaceId}
             files={props.files}
             rootPath={activeContext.rootPath}
+            pathPin={activeContext.pathPin}
             tab={activeTab}
             theme={props.theme}
             registry={props.registry}

@@ -2,6 +2,8 @@ import { ADE_ACTION_ACCESS } from "../../../../desktop/src/shared/adeActionAcces
 import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
 import { ANDROID_SDK_PERSON_ONLY_ACTIONS } from "../../../../desktop/src/shared/types/androidEmulator";
 import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remoteMcp";
+import { CLOUD_LANE_MACHINE } from "../../../../desktop/src/shared/cloudLaneLaunch";
+import { devicesSubcommand } from "../../../../desktop/src/shared/types/deviceSources";
 
 /**
  * Which `ade` commands a remote AI app may run, by the scope of its connection.
@@ -28,18 +30,18 @@ const MAX_REMOTE_ARG_CHARS = 8_000;
 
 /** Never runnable remotely, at any scope. */
 const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
-  ["mcp", "ADE MCP is managed on the computer itself, not by a connected app."],
-  ["login", "Signing this computer in or out is done on the computer itself."],
-  ["logout", "Signing this computer in or out is done on the computer itself."],
-  ["connect", "Linking this computer to an account is done on the computer itself."],
-  ["setup", "Setup is interactive and runs on the computer itself."],
-  ["reset", "Resetting ADE is done on the computer itself."],
+  ["mcp", "ADE MCP is managed on the machine itself, not by a connected app."],
+  ["login", "Signing this machine in or out is done on the machine itself."],
+  ["logout", "Signing this machine in or out is done on the machine itself."],
+  ["connect", "Linking this machine to an account is done on the machine itself."],
+  ["setup", "Setup is interactive and runs on the machine itself."],
+  ["reset", "Resetting ADE is done on the machine itself."],
   ["brain", "Starting or stopping ADE's brain would cut this connection."],
   ["serve", "Starting or stopping ADE's brain would cut this connection."],
   ["runtime", "Running another ADE runtime is not available remotely."],
   ["rpc", "The raw RPC stream is not available remotely."],
-  ["desktop", "Opening the desktop app is done on the computer itself."],
-  ["account", "Account tokens outlive ADE MCP, so they are created on the computer itself."],
+  ["desktop", "Opening the desktop app is done on the machine itself."],
+  ["account", "Account tokens outlive ADE MCP, so they are created on the machine itself."],
 ]);
 
 /**
@@ -50,13 +52,13 @@ const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
   "action", "actions", "ade-browser", "cloud", "android", "app", "app-control", "apple", "apps", "archive", "archived", "artifact",
   "artifacts", "auth", "auto-update", "automation", "automations", "browser", "built-in-browser",
   "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "cursor", "desk", "diff", "diffs",
-  "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
-  "health", "help", "history", "init", "integration", "integrations", "ios", "ios-sim", "issue", "jira", "lane", "lanes", "linear", "link",
-  "mac-desk", "mac-desktop", "machine", "machines", "models", "new", "notify", "open", "operation",
-  "operations", "pr", "project", "projects", "proof", "provider", "providers", "proxy", "prs", "pty", "quota",
+  "code", "codes", "device", "devices", "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
+  "health", "help", "history", "imessage", "init", "integration", "integrations", "ios", "ios-sim", "issue", "jira", "lane", "lanes", "linear", "link",
+  "mac-desk", "mac-desktop", "machine", "machines", "messages", "models", "new", "notify", "open", "operation",
+  "operations", "password", "passwords", "pr", "project", "projects", "proof", "provider", "providers", "proxy", "prs", "pty", "quota",
   "quotas", "report-issue", "router", "scene", "scenes", "screen", "search", "secret", "secrets", "session",
   "sessions", "setting", "settings", "shell", "simulator", "skill", "skills", "status", "storage", "sync",
-  "term", "terminal", "test", "tests", "tools", "tools-pane", "triage", "ui", "update", "updates", "usage",
+  "term", "terminal", "test", "tests", "texts", "tools", "tools-pane", "triage", "ui", "update", "updates", "usage",
   "version", "windows-desk", "windows-desktop", "work", "work-tools", "worktools",
 ]);
 
@@ -75,16 +77,23 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["config", new Set(["find", "search", "where"])],
   ["auth", new Set(["status"])],
   // Connected or not, and as whom; never a credential.
+  // Saved logins: sites and usernames, never a value (codes and texts need full access).
+  ["passwords", new Set(["list", "ls", "status"])],
+  ["password", new Set(["list", "ls", "status"])],
   ["integrations", new Set(["status"])],
   ["integration", new Set(["status"])],
-  // cloud machines and the ready pool: names, states, prices, never the key.
+  // cloud machines: names, states, prices, never the key.
   // Nothing that spends money or deletes is reachable from here.
-  ["cloud", new Set(["ready", "status", "list", "ls", "machines", "hours", "limits"])],
+  ["cloud", new Set(["status", "list", "ls", "machines", "hours", "limits"])],
   ["machines", new Set(["list", "show"])],
+  // The devices on this computer, and a chat's choice (an app has none). `use`
+  // is refused for every scope above.
+  ["devices", true],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
-  ["lanes", new Set(["list", "show", "actions", "reclaim-preview", "defaults"])],
-  ["lane", new Set(["list", "show", "actions", "reclaim-preview", "defaults"])],
+  // `share` lists a lane's shares in its read form only (`isLaneShareListForm`).
+  ["lanes", new Set(["list", "show", "actions", "reclaim-preview", "defaults", "share"])],
+  ["lane", new Set(["list", "show", "actions", "reclaim-preview", "defaults", "share"])],
   // `ade lanes deleted list` reads Recently deleted; `restore` creates a lane.
   ["lanes deleted", new Set(["list", "ls"])],
   ["lane deleted", new Set(["list", "ls"])],
@@ -128,6 +137,9 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["providers", new Set(["actions"])],
   ["providers accounts", new Set(["list"])],
   ["router", new Set(["routes"])],
+  // Where each model can run, and the saved Custom providers: what a launch
+  // needs to name its model. `harness env` (prints a token) and `test` stay out.
+  ["harness", new Set(["routes", "list", "providers"])],
   ["models", new Set(["catalog", "sheet"])],
   ["proxy", new Set(["status"])],
   ["actions", new Set(["list"])],
@@ -191,35 +203,48 @@ export function checkRemoteAdeCommand(
       reason: `\`ade ${args[0]}\` isn't enabled for ADE MCP. Run \`ade help\` for the commands it can use.`,
     };
   }
-  // Another computer is reached through the tools' own `machine` input, which
-  // goes through that computer's token check and policy, never through the
-  // CLI's agent bridge.
-  if (args.some((word) => MACHINE_TARGET_FLAG.test(word))) {
+  const words = positionalWords(args);
+  // Another machine is reached through the tools' own `machine` input, which
+  // goes through that machine's token check and policy, never through the
+  // CLI's agent bridge: so `--machine`, and `--to` on `chat handoff|move`
+  // (another machine, as the destination), are refused. The one exception is
+  // a new ADE Cloud lane (`--machine cloud`), which reaches no existing machine.
+  const movesChat = (command === "chat" || command === "chats") && (words[0] === "handoff" || words[0] === "move");
+  const namesMachine = args.some((word) => MACHINE_TARGET_FLAG.test(word) || (movesChat && MOVE_DESTINATION_FLAG.test(word)));
+  if (namesMachine && !isCloudLaneMachineUse(command, args)) {
     return {
       ok: false,
-      reason: "Use the tool's `machine` input to run on another computer (machines_list names them), not --machine.",
+      reason: movesChat
+        ? "Moving a chat to another machine (`--to`) is not available through ADE MCP. Use the tool's `machine` input to work on another machine."
+        : "Use the tool's `machine` input to run on another machine (machines_list names them), not --machine. Only a new ADE Cloud lane takes it: exactly `--machine cloud` on `chat create`, `lanes create` or `chat launch-status`.",
     };
   }
-  const words = positionalWords(args);
+  const devicesVerdict = checkDevicesCommand(command, args);
+  if (devicesVerdict) return devicesVerdict;
   // It asks every computer of the account; ADE MCP's chat tools run it for a
   // connection and apply its own computer rules (remoteMcpProtocol.ts).
   if ((command === "chat" || command === "chats") && words[0] === "locate") {
-    return { ok: false, reason: "The chat tools find a chat's computer by themselves: pass the chat id to chat_status or chat_read." };
+    return { ok: false, reason: "The chat tools find a chat's machine by themselves: pass the chat id to chat_status or chat_read." };
+  }
+  // Git's credential helper prints this computer's GitHub token; it is for
+  // git on this computer only, never a connected app.
+  if (command === "git" && words[0] === "credential") {
+    return { ok: false, reason: "`ade git credential` is git's sign-in helper on this machine and is not available remotely." };
   }
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
   }
-  // Only ADE's server runs these, over exec on a cloud computer: one interrupts
-  // all its work, the other commits and pushes every lane.
-  if (command === "cloud" && (words[0] === "prepare-stop" || words[0] === "push-work")) {
-    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. ADE's server runs it on a computer it is about to stop or free-wake.` };
+  // Only ADE's server runs these, over exec on a cloud computer: they stop
+  // its work, push every lane, save it for rest, or send its queued messages.
+  if (command === "cloud" && SERVER_ONLY_CLOUD_COMMANDS.has(words[0] ?? "")) {
+    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. Only ADE's server runs it, on ADE Cloud.` };
   }
   // Renaming, removing or re-pairing account machines outlives revoking the
   // connection, like account tokens; reading the roster is fine.
   if (command === "machines" && !MACHINE_READ_SUBCOMMANDS.has(words[0] ?? "list")) {
     return {
       ok: false,
-      reason: `\`ade machines ${words[0]}\` is not available remotely. Changing the machines on your ADE account is done on a computer itself.`,
+      reason: `\`ade machines ${words[0]}\` is not available remotely. Change the machines on your ADE account in ADE on that machine.`,
     };
   }
   if (command === "android") {
@@ -233,6 +258,17 @@ export function checkRemoteAdeCommand(
     if (args.some((word) => word === "--restart-adb" || word.startsWith("--restart-adb="))) {
       return { ok: false, reason: `\`ade android start --restart-adb\` is not available remotely. ${ANDROID_RESTART_ADB_REASON}` };
     }
+  }
+  // Simulator.app on the person's Mac: once it runs, every lane's booted
+  // simulator gets a window (a bot once filled a screen with them). A
+  // connected app's device work stays inside ADE, headless, in ADE's stream.
+  if ((command === "apple" || command === "ios-sim" || command === "ios")
+    && args.some((word) => /^--(?:window|foreground|open-simulator)(?:=|$)/.test(word))) {
+    return {
+      ok: false,
+      reason: "Opening Simulator.app is not available through ADE MCP: the simulator runs inside ADE. "
+        + "Drop --window, --foreground and --open-simulator; `ade apple screenshot --lane <lane>` shows the screen.",
+    };
   }
   if (command === "actions") {
     const actionVerdict = checkActionsCommand(words, scope, args);
@@ -251,12 +287,83 @@ export function checkRemoteAdeCommand(
 
 const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
 /** Spellings the CLI treats as the same command. */
-const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"], ["gh", "github"]]);
+const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([
+  ["action", "actions"], ["machine", "machines"], ["device", "devices"], ["gh", "github"], ["provider", "providers"],
+]);
+/** `ade cloud` subcommands only ADE's server runs, over exec on a cloud computer. */
+const SERVER_ONLY_CLOUD_COMMANDS: ReadonlySet<string> = new Set(["prepare-stop", "unfreeze", "push-work", "work-state", "save-for-rest", "messages"]);
 /** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
+/** `chat handoff|move --to <machine>`: the machine a chat moves to. */
+const MOVE_DESTINATION_FLAG = /^--to(?:=|$)/;
+
+/**
+ * `ade devices`: the list (of this computer's devices; the app picks the
+ * computer with the tool's `machine` input) and `current`. `use` keeps a
+ * choice for a chat, and an app has no chat on the computer.
+ */
+function checkDevicesCommand(command: string, args: readonly string[]): RemoteCommandVerdict | null {
+  if (command !== "devices") return null;
+  const { sub, first } = devicesSubcommand(args.slice(1));
+  if (sub === "use") {
+    return {
+      ok: false,
+      reason: "`ade devices use` picks a device for a chat, and an ADE MCP app has no chat there. "
+        + "Pick the machine with the tool's `machine` input, then pass --lane <lane there> to the device commands.",
+    };
+  }
+  if (sub === null) {
+    return { ok: false, reason: `\`ade devices ${first}\` is not a devices command. Use ["devices","--text"] or ["devices","current"].` };
+  }
+  return null;
+}
+/**
+ * The reviewed exception to "no --machine": `--machine cloud` (with `--size`)
+ * on exactly these subcommands. It asks this computer's own brain to make a
+ * new ADE Cloud computer for a new lane (`cloud.lane_launch`) or to read that
+ * launch (`cloud.lane_launch_status`); it never reaches a computer that
+ * exists. The brain answers an ADE MCP app as an unattended agent: within the
+ * agent limits and the account's hours, never as the person
+ * (cloudAgentActions.ts). Cancelling a launch stays with the person.
+ */
+const CLOUD_LANE_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["chat", new Set(["create", "launch-status"])],
+  ["chats", new Set(["create", "launch-status"])],
+  ["lanes", new Set(["create"])],
+  ["lane", new Set(["create"])],
+]);
+/**
+ * True when every machine flag in `args` is exactly `--machine cloud` (or
+ * `--machine=cloud`) and the subcommand, right after the command word, is one
+ * of `CLOUD_LANE_SUBCOMMANDS`. Any other machine value, a list, a second
+ * machine, `--all-machines` or `--machine-project` is not this.
+ *
+ * Exact on purpose: the CLI also takes ` Cloud ` (`isCloudLaneMachineSelector`
+ * trims and lowercases), but this policy admits only the one spelling, so an
+ * unusual one from an outside app is refused rather than reasoned about.
+ */
+function isCloudLaneMachineUse(command: string, args: readonly string[]): boolean {
+  if (!CLOUD_LANE_SUBCOMMANDS.get(command)?.has(args[1] ?? "")) return false;
+  let named = false;
+  for (let index = 2; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (!MACHINE_TARGET_FLAG.test(word)) continue;
+    if (word === `--machine=${CLOUD_LANE_MACHINE}`) {
+      named = true;
+      continue;
+    }
+    if (word === "--machine" && args[index + 1] === CLOUD_LANE_MACHINE) {
+      named = true;
+      index += 1;
+      continue;
+    }
+    return false;
+  }
+  return named;
+}
 const SERVICE_SIGN_IN_REASON =
-  "Signing this computer in or out of a service (GitHub, Linear, Jira, an AI provider) outlives ADE MCP, so it is done on the computer itself.";
+  "Signing this machine in or out of a service (GitHub, Linear, Jira, an AI provider) outlives ADE MCP, so it is done on the machine itself.";
 /** `ade github` groups that manage the machine's GitHub App authorization. */
 const GITHUB_AUTH_GROUPS: ReadonlySet<string> = new Set(["app-auth", "app", "auth"]);
 /** Spellings of `ade github app-auth login` and `clear`. */
@@ -287,18 +394,62 @@ function jsonNamesRestartAdb(text: string): boolean {
   }
 }
 
+/**
+ * An argument that sets `key` to the boolean `value`: `--arg key=value` (the
+ * CLI parses true and false), `--arg=key=value`, or a JSON object or array
+ * with that entry at any depth, parsed so an escaped key cannot hide it.
+ * Keys match in any case. False positives only refuse.
+ */
+function setsActionArg(word: string, key: string, value: boolean): boolean {
+  const wanted = key.toLowerCase();
+  const plain = word.toLowerCase();
+  if (plain === `${wanted}=${value}` || plain.endsWith(`=${wanted}=${value}`)) return true;
+  return [word, ...word.split("=").slice(1).map((_, index, parts) => parts.slice(index).join("="))]
+    .some((candidate) => jsonSetsEntry(candidate, wanted, value));
+}
+
+function jsonSetsEntry(text: string, key: string, value: boolean): boolean {
+  if (!/^\s*[[{]/u.test(text)) return false;
+  try {
+    return holdsEntry(JSON.parse(text), key, value);
+  } catch {
+    // Not JSON: the CLI refuses it before anything runs.
+    return false;
+  }
+}
+
+function holdsEntry(node: unknown, key: string, value: boolean): boolean {
+  if (Array.isArray(node)) return node.some((entry) => holdsEntry(entry, key, value));
+  if (!node || typeof node !== "object") return false;
+  return Object.entries(node).some(([name, entry]) =>
+    (name.toLowerCase() === key && entry === value) || holdsEntry(entry, key, value));
+}
+
+/**
+ * The raw action doors to Simulator.app on the person's Mac, the same switch
+ * as `ade apple … --window/--foreground` (refused above): `openDevice` with
+ * `openWindow: true`, and `launch` with `keepSimulatorInBackground: false`.
+ */
+const SIMULATOR_WINDOW_ACTION_ARGS: ReadonlyMap<string, { key: string; value: boolean }> = new Map([
+  ["openDevice", { key: "openWindow", value: true }],
+  ["launch", { key: "keepSimulatorInBackground", value: false }],
+]);
+
+const SIMULATOR_WINDOW_REASON =
+  "Opening Simulator.app is not available through ADE MCP: the simulator runs inside ADE, in ADE's stream.";
+
 /** A restart of the machine's adb server cuts every other device and tool on it, so only the person decides it. */
 const ANDROID_RESTART_ADB_REASON =
-  "Only the person restarts adb: Restart adb and start in the Android pane, or `ade android start --restart-adb` in a terminal on that computer.";
+  "Only the person restarts adb: Restart adb and start in the Android pane, or `ade android start --restart-adb` in a terminal on that machine.";
 const ANDROID_SDK_REASON =
-  "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app on that computer: "
+  "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app on that machine: "
   + "the setup card in the Android tool, or Settings › Android devices. System images: the device picker's System images.";
 /**
  * Service credential actions, by domain; `true` means every action. The CLI
  * runs full access as `cto`, which these actions otherwise allow.
  */
 const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> = new Map<string, ReadonlySet<string> | true>([
-  ["github", new Set(["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"])],
+  ["github", new Set(["setToken", "clearToken", "setGhAccountSharing", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"])],
   ["linear_credentials", true],
   ["linear_oauth", true],
   ["jira", new Set(["connect", "disconnect"])],
@@ -319,10 +470,13 @@ const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> =
  * The whole `account_vault` domain, at every scope: it holds the account's
  * credentials, ADE MCP's own token hashes and its account secret.
  */
-const ACCOUNT_VAULT_REASON = "The account vault holds your ADE account's credentials, so it is used on the computer itself.";
+const ACCOUNT_VAULT_REASON = "The account vault holds your ADE account's credentials, so it is used on the machine itself.";
 
 /** Spellings of `ade providers opencode accounts remove`, which signs OpenCode out. */
 const OPENCODE_ACCOUNT_REMOVALS: ReadonlySet<string> = new Set(["remove", "rm", "delete"]);
+
+/** `ade providers sign-in`, `sign-in-code` and `sign-in-status` (cli.ts `buildRemoteSignInPlan`). */
+const REMOTE_PROVIDER_SIGN_INS: ReadonlySet<string> = new Set(["sign-in", "sign-in-code", "sign-in-status"]);
 
 /** Signing this machine in or out of a connected service. */
 function isServiceSignInCommand(command: string, words: readonly string[]): boolean {
@@ -330,6 +484,10 @@ function isServiceSignInCommand(command: string, words: readonly string[]): bool
   if (command === "jira") return words[0] === "connect" || words[0] === "disconnect";
   if (command === "integrations" || command === "integration") return words[0] === "connect";
   if (command === "providers") {
+    // A provider sign-in for another screen hands its link and code to the
+    // caller, so whoever approves it signs this computer's provider in as
+    // themselves. Only ADE's server runs these, over exec, for the person.
+    if (REMOTE_PROVIDER_SIGN_INS.has(words[0] ?? "")) return true;
     return words[0] === "opencode" && (words[1] === "accounts" || words[1] === "account")
       && OPENCODE_ACCOUNT_REMOVALS.has(words[2] ?? "");
   }
@@ -383,6 +541,13 @@ function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope, ar
   // spelling the CLI reads (`--input-json`, `--arg`, `--arg-json`, `--set`).
   if (target.domain === "android_emulator" && args.some(namesRestartAdb)) {
     return { ok: false, reason: `\`${name}\` with restartAdb is not available remotely. ${ANDROID_RESTART_ADB_REASON}` };
+  }
+  const simulatorWindow = target.domain === "ios_simulator" ? SIMULATOR_WINDOW_ACTION_ARGS.get(target.action) : undefined;
+  if (simulatorWindow && args.some((word) => setsActionArg(word, simulatorWindow.key, simulatorWindow.value))) {
+    return {
+      ok: false,
+      reason: `\`${name}\` with ${simulatorWindow.key}: ${simulatorWindow.value} is not available remotely. ${SIMULATOR_WINDOW_REASON}`,
+    };
   }
   const signIn = SERVICE_SIGN_IN_ACTIONS.get(target.domain);
   if (signIn === true || signIn?.has(target.action)) {
@@ -494,16 +659,107 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   // `lanes defaults set` changes the project's new-lane defaults. Look past
   // the global flags (`--json`, `--pretty`) the CLI strips before it parses.
   if ((command === "lanes" || command === "lane") && sub === "defaults" && args.slice(2).includes("set")) return refuse();
-  // `cloud ready` alone, `status` or `list` reads the pool; `on`, `off` and
-  // `retry` make or delete a billed machine.
-  if (command === "cloud" && sub === "ready") {
-    const verb = args.slice(2).find((word) => !word.startsWith("-"));
-    if (verb && verb !== "status" && verb !== "list") return refuse();
+  // `lanes share` lists the shares only in its read form; anything else
+  // (`--add`, `--remove`, or a flag this check does not know) is full access.
+  if ((command === "lanes" || command === "lane") && sub === "share" && !isLaneShareListForm(args.slice(2))) {
+    return refuse();
   }
+  // `cloud limits` reads what agents may do alone; a preset or a value flag
+  // (`--per-day`, `--max-shape`, `--unattended`) sets it, which is full access.
+  if (command === "cloud" && sub === "limits" && args.slice(2).some((word) => !CLOUD_LIMITS_READ_FLAGS.has(word))) return refuse();
+  // The account's lanes, chats, CLI copies, backups and jobs: only their list
+  // and read forms. Delete, free, start, keep and cancel are full access.
+  if (command === "cloud" && sub && CLOUD_ACCOUNT_READS.has(sub)) return isCloudAccountRead(sub, args.slice(2)) ? { ok: true, args } : refuse();
   // `actions run` passed checkActionsCommand's read-only test before getting here.
   if (command === "actions" && sub === "run" && words[0] === "run") return { ok: true, args };
   if (sub && allowed.has(sub)) return { ok: true, args };
   return refuse();
+}
+
+/** The only words the read form of `ade cloud limits` takes: output flags. */
+const CLOUD_LIMITS_READ_FLAGS: ReadonlySet<string> = new Set(["--text", "--json", "--pretty", "--compact"]);
+
+/** `ade cloud <noun>` reads with no wake: the verbs each noun reads with (no verb lists). */
+const CLOUD_ACCOUNT_READS: ReadonlyMap<string, ReadonlySet<string> | true> = new Map<string, ReadonlySet<string> | true>([
+  ...["lanes", "lane"].map((noun) => [noun, new Set(["list", "ls", "show", "git"])] as const),
+  ...["chats", "chat", "sessions", "session", "terminals"].map((noun) => [noun, new Set(["list", "ls", "read", "show"])] as const),
+  ...["backups", "backup", "jobs", "job"].map((noun) => [noun, new Set(["list", "ls"])] as const),
+  ["project", true],
+]);
+/** The flags of those reads that take a value, so the value never reads as the verb. */
+const CLOUD_ACCOUNT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--project", "--origin", "--machine-key", "--cursor", "--before", "--project-root"]);
+/** The flags of those reads that take no value. */
+const CLOUD_ACCOUNT_SWITCH_FLAGS: ReadonlySet<string> = new Set(["--text", "--json", "--pretty", "--compact", "--stale", "--deleted", "--kept"]);
+
+/**
+ * Whether the words after `cloud <noun>` are a read: no verb (the list) or a
+ * read verb. Every flag must be one these reads take: the CLI would eat an
+ * unknown flag's value (`--size list keep x` runs `keep`). An allow list, as
+ * for `lanes share`.
+ */
+function isCloudAccountRead(noun: string, words: readonly string[]): boolean {
+  const verbs = CLOUD_ACCOUNT_READS.get(noun);
+  if (verbs === true) return true;
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index]!;
+    if (word === "--") return false;
+    if (word.startsWith("-")) {
+      const equals = word.indexOf("=");
+      const name = equals > 0 ? word.slice(0, equals) : word;
+      if (CLOUD_ACCOUNT_VALUE_FLAGS.has(name)) {
+        if (equals < 0) index += 1;
+        continue;
+      }
+      if (CLOUD_ACCOUNT_SWITCH_FLAGS.has(name) && equals < 0) continue;
+      return false;
+    }
+    // The first word is the verb; later words are its arguments (a lane, an id).
+    if (verbs?.has(word) !== true) return false;
+    return words.slice(index + 1).every((rest) => !rest.startsWith("-") || isKnownCloudReadFlag(rest));
+  }
+  return true;
+}
+
+/** A flag `isCloudAccountRead` allows after the verb (a value flag's value is a plain word). */
+function isKnownCloudReadFlag(word: string): boolean {
+  const equals = word.indexOf("=");
+  const name = equals > 0 ? word.slice(0, equals) : word;
+  return CLOUD_ACCOUNT_VALUE_FLAGS.has(name) || (equals < 0 && CLOUD_ACCOUNT_SWITCH_FLAGS.has(name));
+}
+
+/** The flags of the read form of `ade lanes share`, and whether each takes a value. */
+const LANE_SHARE_LIST_FLAGS: ReadonlyMap<string, boolean> = new Map([
+  ["--lane", true],
+  ["--lane-id", true],
+  ["--project-root", true],
+  ["--text", false],
+  ["--json", false],
+  ["--pretty", false],
+  ["--compact", false],
+]);
+
+/**
+ * Whether the words after `lanes share` are the list form: an allow list, so
+ * a write flag, an alias, an abbreviation or a stray word all read as a write.
+ */
+function isLaneShareListForm(words: readonly string[]): boolean {
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index]!;
+    const equals = word.indexOf("=");
+    const name = equals > 0 ? word.slice(0, equals) : word;
+    const takesValue = LANE_SHARE_LIST_FLAGS.get(name);
+    if (takesValue === undefined) return false;
+    if (equals > 0) {
+      if (!takesValue) return false;
+      continue;
+    }
+    if (takesValue) {
+      const value = words[index + 1];
+      if (value === undefined || value.startsWith("-")) return false;
+      index += 1;
+    }
+  }
+  return true;
 }
 
 /** `ade search` flags that rebuild the index instead of reading it. */
@@ -519,6 +775,7 @@ function describeReadOnlyCommands(): string {
     if (allowed === true) parts.push(command);
     else parts.push(`${command} ${[...allowed].join("|")}`);
   }
+  parts.push("cloud lanes|chats|sessions [list|show|read], cloud backups|jobs [list], cloud project");
   parts.push("actions run <a read-only action>");
   readOnlyDescription = parts.join(", ");
   return readOnlyDescription;

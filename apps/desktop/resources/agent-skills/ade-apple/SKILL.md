@@ -1,6 +1,6 @@
 ---
 name: ade-apple
-description: Use this skill when you need to see an iOS app or an iOS SwiftUI view actually running on a simulator — finding or creating the lane's device, booting and streaming it, driving it by element query, screenshotting, recording, capturing proof, or rendering a SwiftUI preview — via `ade apple`.
+description: "iOS app or SwiftUI view running on a simulator via `ade apple`, on a Mac or, from any machine (Windows, Linux), the ADE Cloud iPhone: find or create the lane's device, boot and stream it, drive by element query, screenshots, recordings, proof, SwiftUI previews."
 ---
 
 # ADE Apple Development
@@ -10,9 +10,10 @@ Electron app or a web page, the **ade-computer-use** skill picks the right
 surface.
 
 Drive the lane's Apple simulator with `"$ADE_CLI_PATH" apple <command>`.
-`$ADE_CLI_PATH` is the CLI of the ADE that launched you and already targets
-its brain, so your calls and the desktop's Apple Development tool share one
-session. A bare `ade` goes through PATH and can reach a different ADE.
+`$ADE_CLI_PATH` is the CLI of the ADE that launched you, so your calls and the
+desktop's Apple Development tool share one session. A bare `ade` goes through
+PATH and can reach a different ADE. Commands below written as `ade …` mean
+`"$ADE_CLI_PATH" …` too.
 
 The pixels come from a vendored Swift helper (`ade-sim-helper`) reading the
 device framebuffer. There is no Screen Recording grant, no Simulator window to
@@ -27,8 +28,10 @@ feature that no longer exists.
   'apple'", "Domain 'apple' is unavailable", or a runtime version mismatch.
   Do not add `--socket`: `"$ADE_CLI_PATH"` already names the right one.
 - **Never open or script the Simulator app.** No `open -a Simulator`, no
-  AppleScript or System Events. ADE drives the device directly; the Simulator
-  window is not needed and adds nothing.
+  AppleScript or System Events, no `launch --foreground` or
+  `open-device --window`. ADE drives the device directly and shows it in its
+  own stream. Once Simulator.app runs, every booted simulator (every lane's)
+  gets a window on the person's screen.
 - **Never capture proof with `xcrun simctl io … screenshot` or
   `recordVideo`.** `apple screenshot` and `apple record-start` /
   `record-stop` file proof to the lane automatically. See below for why the
@@ -114,7 +117,9 @@ Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
 
 `status` is the gate and the map.
 
-- `supported: false` means the runtime is not a Mac. Stop and say so.
+- `supported: false` means this machine is not a Mac. Use a Mac's simulator
+  (`ade devices` lists `ios@<Mac>`) or the ADE Cloud iPhone (`ios@cloud`, below)
+  instead. Only with neither, stop and say so.
 - `capabilities` lists every action you may call on this device, by name. Read
   it instead of guessing verbs or reading source.
 - `device` tells you whether this lane already owns a simulator, its `origin`
@@ -137,9 +142,68 @@ claim the drawer session. Add `--open-drawer` when a human asked to watch.
 So you do **not** run `xcodebuild` by hand to put an app on a screen, and you
 do not need to know the scheme. Run `"$ADE_CLI_PATH" apple apps --text` first only
 when you must choose between several targets, then pass `--target <id>`.
+A project that has only a `project.yml` (XcodeGen) is generated before the
+build when `xcodegen` is installed there; if it is not, the error says how.
+From Windows or Linux, `ade devices use "ios@<Mac>"` (or `--machine "<Mac>"`)
+reaches a Mac's simulator; see ade-computer-use `references/other-machines.md`.
+There `screenshot --out <path>` copies the shot back to this machine.
 
 Use `--no-build` when the app is already installed and you only want it in
 front. Use `relaunch` or `terminate` for an app that is already there.
+
+## ADE Cloud iPhone (any machine)
+
+`ios@cloud` is the account's iPhone at NoMac, not a simulator on any machine,
+so Windows and Linux use it too. `ade devices` lists it only when the account
+has it; otherwise `use ios@cloud` says why: not on this account yet, or this
+machine's ADE is too old for it (then the person updates ADE; don't look for
+another cause). It spends
+iPhone minutes; a Mac of the person's (`ios@<Mac>`) spends none, so prefer one
+that is listed.
+
+```bash
+"$ADE_CLI_PATH" devices use ios@cloud   # this chat's iPhone
+"$ADE_CLI_PATH" apple status --text     # access, minutes left, capabilities
+```
+
+For one command, `ade apple … --machine cloud`. What differs:
+
+- `launch` and `test` pack this checkout as it is (uncommitted changes too,
+  git-ignored files left out), upload it, and build it with Xcode there
+  (Xcode projects only). For an app built elsewhere, install its Simulator
+  `.app` instead: `ade apple install --app <path>` (`--no-launch` installs
+  without starting it). From any machine, Expo builds one in its cloud:
+  `npx eas-cli build -p ios --profile <a profile with "ios": {"simulator": true}>`,
+  then unpack the archive it gives. React Native and Flutter
+  (`--simulator`) build one only on a Mac.
+- `screenshot` files to the proof drawer (`--no-proof` skips it); a
+  recording's MP4 link lasts 7 days.
+- Verbs with no cloud answer (iPad windows, the Duo, leases, device settings)
+  are refused with a sentence. `act` takes the same words as the screen.
+- It spends the plan's iPhone minutes while it runs, building included.
+  `ade cloud status` has them (`iphone`: left, reset day, extra minutes) and
+  every plan's (`plans`). It stops at 0 unless extra minutes are on (paid
+  plans), after 5 minutes with no input, and after 2 hours. `ade apple stop`
+  when you are done. Only the person changes the plan or extra minutes, in
+  Settings › ADE Cloud. A full-auto chat or an automation uses it only when the
+  person lets agents spend (the agent limits, as for hours).
+
+Working fast on it (measured: `snapshot` about 1 s, a step 2–3 s, a fresh
+phone 8–13 s, an app's first launch 6–10 s):
+
+- Read with `snapshot` (text, about 1 s), not `screenshot`. Take a screenshot
+  only for proof or for what text can't show.
+- Batch: one `act` takes many steps (`act 'tap "Sign In"' 'fill #email a@b.c'
+  'tap "Continue"' 'wait "Welcome" 10'`) and answers with what changed, so
+  you rarely need a `snapshot` after it.
+- A step right after a page or screen change can say the content "can't be
+  read" while it still loads. Run `snapshot` once more before falling back
+  to a screenshot; web pages in Safari read as text once loaded.
+- It stops after 5 minutes with no command or input. Don't pause between
+  steps to plan for long; if it stopped, the next command starts a fresh one
+  (its apps and their data are gone; the uploaded project stays).
+- `screenshot` prints a `cite:` line for your answer; `--out` takes a path in
+  the project or the temp folder.
 
 ## Use this lane's own device
 
@@ -222,8 +286,10 @@ free" is almost never true. Runtimes and devices in full:
 
 - `start` is the one-step bring-up: make a device when the lane has none, boot it
   if it is off, wait for the boot, then stream. Prefer it. `start --udid` works
-  only for the device this lane already holds.
-- `stop` powers the device **off**. `shutdown` only ends this chat's session
+  only for the device this lane already holds. Its answer says whether it made
+  a new simulator or attached an installed one.
+- `stop` powers the device **off** and keeps it registered as the lane's (the
+  next `start` boots it; ADE deletes a device it made with the lane). `shutdown` only ends this chat's session
   and leaves the simulator running — the two are not the same, and a verb named
   `stop` that left a booted device behind was a real bug.
 - `device-create`, `device-attach`, `device-delete`, `device-detach`, what
@@ -378,7 +444,7 @@ not a detail.
 "$ADE_CLI_PATH" apple record-start --overlays on --label "signup" --text
 "$ADE_CLI_PATH" apple record-stop --keep --text
 "$ADE_CLI_PATH" apple record-list --text
-"$ADE_CLI_PATH" apple record-delete --id <id> --text
+"$ADE_CLI_PATH" apple record-delete --id <id> --text   # the proof record-stop filed stays: ade proof rm <id>
 ```
 
 1. **Your input starts a recording; the user's never does.** Any input from

@@ -309,6 +309,8 @@ private func workModelRefsLookFastCapable(_ rawRefs: [String?]) -> Bool {
     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
     .filter { !$0.isEmpty }
   let fastRefs: Set<String> = [
+    "gpt-6.2-astra", "openai/gpt-6.2-astra",
+    "gpt-6.2-sol", "openai/gpt-6.2-sol",
     "astra", "gpt-6-astra", "openai/gpt-6-astra",
     "sol", "gpt-6-sol", "openai/gpt-6-sol",
     "luna", "gpt-6-luna", "openai/gpt-6-luna",
@@ -634,31 +636,40 @@ struct WorkComposerChipStrip: View {
   let onSelectRuntimeMode: ((String) -> Void)?
 
   var body: some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
-        if chatSummary.isAvailable {
-          let currentMode = chatSummary.runtimeMode
-          WorkComposerControlsRow(
-            provider: chatSummary.provider,
-            modelDisplayName: chatSummary.modelLabel,
-            modelBrandKey: WorkModelMentionDirectory.shared.entry(for: chatSummary.model)?.brandKey,
-            reasoningEffort: chatSummary.reasoningEffort,
-            currentMode: currentMode,
-            modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),
-            modeLabel: workRuntimeModeLabel(provider: chatSummary.provider, mode: currentMode),
-            fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
-            fastModeAllowed: chatSummary.fastModeAllowed,
-            onOpenModelPicker: onOpenModelPicker,
-            onSelectMode: onSelectRuntimeMode,
-            showsAccessControl: chatSummary.accessModeKnown
-          )
-        }
+    // Its own width when it fits, so the controls after it (the computer
+    // tag) get the free room on a wide composer; it scrolls only when narrow.
+    ViewThatFits(in: .horizontal) {
+      chips.fixedSize(horizontal: true, vertical: false)
+      ScrollView(.horizontal, showsIndicators: false) {
+        chips
       }
-      .padding(.horizontal, 2)
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
     .disabled(settingsMutationInFlight)
     .opacity(settingsMutationInFlight ? 0.72 : 1)
+  }
+
+  private var chips: some View {
+    HStack(spacing: 8) {
+      if chatSummary.isAvailable {
+        let currentMode = chatSummary.runtimeMode
+        WorkComposerControlsRow(
+          provider: chatSummary.provider,
+          modelDisplayName: chatSummary.modelLabel,
+          modelBrandKey: WorkModelMentionDirectory.shared.entry(for: chatSummary.model)?.brandKey,
+          reasoningEffort: chatSummary.reasoningEffort,
+          currentMode: currentMode,
+          modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),
+          modeLabel: workRuntimeModeLabel(provider: chatSummary.provider, mode: currentMode),
+          fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
+          fastModeAllowed: chatSummary.fastModeAllowed,
+          onOpenModelPicker: onOpenModelPicker,
+          onSelectMode: onSelectRuntimeMode,
+          showsAccessControl: chatSummary.accessModeKnown
+        )
+      }
+    }
+    .padding(.horizontal, 2)
   }
 }
 

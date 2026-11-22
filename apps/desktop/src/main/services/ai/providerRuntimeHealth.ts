@@ -2,6 +2,7 @@ import { nowIso } from "../shared/utils";
 import { addSentryBreadcrumb, captureProblem } from "../../../shared/sentry/capture";
 import { isExpectedOutcomeText } from "../../../shared/sentry/expectedFailure";
 import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
+import { classifyProviderAccountRefusal } from "../../../shared/providerAccountRefusal";
 
 export type ProviderRuntimeHealthState = "ready" | "auth-failed" | "runtime-failed";
 export type ProviderRuntimeHealthProvider =
@@ -161,11 +162,27 @@ export function reportProviderRuntimeAuthFailure(
   });
 }
 
+/**
+ * A failure of the provider's runtime. Turn paths report every failure here,
+ * so the words are read first: a refused sign-in is the person's state
+ * (`auth-failed`, as the probe reports it), and a plan or model refusal is an
+ * answer about the account, not a broken provider, so it leaves the health
+ * as it was. Only what is left is `runtime-failed`.
+ */
 export function reportProviderRuntimeFailure(
   provider: ProviderRuntimeHealthProvider,
   message: string,
   detail?: ProviderRuntimeFailureDetail,
 ): void {
+  const refusal = classifyProviderAccountRefusal(message);
+  if (refusal === "auth") {
+    reportProviderRuntimeAuthFailure(provider, message);
+    return;
+  }
+  if (refusal) {
+    forwardLogToSentry("warn", `provider.${provider}.account_refused`, { refusal, message: message.trim() || null });
+    return;
+  }
   setProviderRuntimeHealth({
     provider,
     state: "runtime-failed",

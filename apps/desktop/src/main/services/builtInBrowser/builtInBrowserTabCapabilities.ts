@@ -1373,6 +1373,10 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
    * hidden or minimised, so an ADE in the background pays nothing for a page it
    * cannot show anybody.
    */
+  /** The newest frame each watched tab produced, for viewers that poll (another machine, the phone). */
+  const latestPreviewFrames = new Map<string, { dataUrl: string; width: number; height: number; capturedAt: string }>();
+  /** Watchers on another machine: their frames are wanted even while this window is hidden. */
+  const remoteWatchedTabs = new Set<string>();
   const previewStreams = createBuiltInBrowserPreviewStreams({
     capture: async (tabId, maxWidth) => {
       const tab = tabById(tabId);
@@ -1415,6 +1419,12 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       };
     },
     emit: (frame) => {
+      latestPreviewFrames.set(frame.tabId, {
+        dataUrl: frame.dataUrl,
+        width: frame.width,
+        height: frame.height,
+        capturedAt: frame.capturedAt,
+      });
       emit({
         type: "preview-frame",
         tabId: frame.tabId,
@@ -1431,7 +1441,11 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     // Not `visible` (the panel's own bounds flag): the card wants frames from a
     // tab the panel is NOT showing. What matters is whether this ADE window is
     // on screen at all.
-    isVisible: () => {
+    isVisible: (tabId) => {
+      // Someone on another machine is watching this tab: the frames are for
+      // them, and this window being in the background says nothing about
+      // whether they can see it. Only that tab; others still pause.
+      if (remoteWatchedTabs.has(tabId)) return true;
       const hostWindow = win();
       return Boolean(
         hostWindow
@@ -1480,8 +1494,54 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     const { hadStream, ...result } = previewStreams.stop(tabId, owner);
     // Only the last one out unparks the view; a second watcher is still
     // looking, and an unpaired stop was never watching anything at all.
-    if (hadStream && result.subscribers === 0) deps.onPreviewWatchersChanged?.(tabId);
+    if (hadStream && result.subscribers === 0) {
+      latestPreviewFrames.delete(tabId);
+      deps.onPreviewWatchersChanged?.(tabId);
+    }
     return result;
+  }
+
+  /*
+    Watching from another machine (a desktop pinned here, the phone).
+
+    Those viewers cannot hold an IPC subscription, so they poll: each poll
+    renews a short lease on an ordinary preview stream (owner "remote") and
+    answers with the newest frame it produced. The stream stops on its own a
+    few seconds after the last poll, so a viewer that vanished (a closed
+    laptop, a phone that locked) costs nothing for long.
+  */
+  const REMOTE_WATCH_LEASE_MS = 6_000;
+  const remoteWatchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  function watchTabForRemote(input: { tabId: string; maxWidth?: number | null; fps?: number | null }): {
+    frame: { dataUrl: string; width: number; height: number; capturedAt: string } | null;
+  } {
+    const tabId = input.tabId;
+    const existing = remoteWatchTimers.get(tabId);
+    if (existing) clearTimeout(existing);
+    else {
+      remoteWatchedTabs.add(tabId);
+      startPreviewStream({ tabId, fps: input.fps ?? 4, maxWidth: input.maxWidth ?? 1280 }, "remote");
+    }
+    const timer = setTimeout(() => {
+      remoteWatchTimers.delete(tabId);
+      remoteWatchedTabs.delete(tabId);
+      stopPreviewStream({ tabId }, "remote");
+    }, REMOTE_WATCH_LEASE_MS);
+    (timer as { unref?: () => void }).unref?.();
+    remoteWatchTimers.set(tabId, timer);
+    return { frame: latestPreviewFrames.get(tabId) ?? null };
+  }
+  function stopRemoteWatches(): void {
+    for (const [tabId, timer] of remoteWatchTimers) {
+      clearTimeout(timer);
+      remoteWatchedTabs.delete(tabId);
+      try {
+        stopPreviewStream({ tabId }, "remote");
+      } catch {
+        // tab already gone
+      }
+    }
+    remoteWatchTimers.clear();
   }
 
   /* ── Recording ─────────────────────────────────────────────────────────── */
@@ -1874,11 +1934,18 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     paste,
     startPreviewStream,
     stopPreviewStream,
+    watchTabForRemote,
+    stopRemoteWatches,
     startRecording,
     stopRecording,
     /** Drops any preview stream watching a tab the service just closed. */
     stopPreviewStreamsForTab: (tabId: string): void => {
       previewStreams.stopTab(tabId);
+      latestPreviewFrames.delete(tabId);
+      const remoteTimer = remoteWatchTimers.get(tabId);
+      if (remoteTimer) clearTimeout(remoteTimer);
+      remoteWatchTimers.delete(tabId);
+      remoteWatchedTabs.delete(tabId);
     },
     /**
      * Drops every preview subscription one renderer holds, and reports the tabs

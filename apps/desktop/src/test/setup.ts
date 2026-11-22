@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeEach } from "vitest";
+import { afterAll, afterEach, beforeEach, vi } from "vitest";
+import { windowsScaledTimeout } from "../../vitest.timeouts";
 
 type TestTempTrackerState = {
   installed: boolean;
@@ -70,9 +71,26 @@ function installTrackedTempCleanup(): void {
 }
 
 installTrackedTempCleanup();
+
 afterAll(() => {
   cleanupTrackedTempDirs();
 });
+
+// Run as CI does, with no ADE environment of the shell that started the run.
+// An ADE agent's shell carries its identity (`ADE_CHAT_SESSION_ID`,
+// `ADE_ACTIVITY_SESSION_ID`, the brain's socket, …), and code under test reads
+// it: a brain a test spawns from that shell took the agent role, so the pool
+// refused it as incompatible and every such test failed inside an agent. A
+// test that needs one of these sets it itself; the ones this file sets follow.
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("ADE_")) delete process.env[key];
+}
+
+// Tests run on people's real computers. Code that defaults to this machine's
+// ADE home (the account stores, Passwords & Secrets) must never reach the
+// real ~/.ade from a test: every run gets a fresh home, set after the cleanup
+// above so it is the last word; a test that wants another home sets it itself.
+process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-test-home-"));
 
 const claudeConfigDir = path.join(os.tmpdir(), "ade-vitest-claude-config");
 
@@ -164,7 +182,89 @@ function ensureWritableWindowAde(): void {
   });
 }
 
+// jsdom runs every requestAnimationFrame callback from one setInterval, and
+// starts that interval only when its count of waiting frames goes from 0 to 1.
+// A test that fakes timers while a frame waits, then restores real timers,
+// drops the interval with the frame still counted: no later frame in that file
+// ever runs, and motion's frame loop (which keeps jsdom's rAF from import time
+// and waits on its one scheduled frame) stops with it. Every later animation in
+// the file then never starts or finishes. So each test starts by handing any
+// frame still waiting back to jsdom, on the clock that test runs with.
+// The handle a caller holds stays the same across that hand-back, so a later
+// cancelAnimationFrame of it still cancels the frame.
+const waitingFrames = new Map<number, { callback: FrameRequestCallback; scheduled: number }>();
+let restartFrame: ((handle: number) => void) | null = null;
+if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+  const requestFrame = window.requestAnimationFrame.bind(window);
+  const cancelFrame = window.cancelAnimationFrame.bind(window);
+  let nextHandle = 0;
+  const schedule = (handle: number, callback: FrameRequestCallback): void => {
+    const scheduled = requestFrame((now) => {
+      waitingFrames.delete(handle);
+      callback(now);
+    });
+    waitingFrames.set(handle, { callback, scheduled });
+  };
+  const request = (callback: FrameRequestCallback): number => {
+    nextHandle += 1;
+    schedule(nextHandle, callback);
+    return nextHandle;
+  };
+  const cancel = (handle: number): void => {
+    const waiting = waitingFrames.get(handle);
+    if (!waiting) return;
+    waitingFrames.delete(handle);
+    cancelFrame(waiting.scheduled);
+  };
+  restartFrame = (handle) => {
+    const waiting = waitingFrames.get(handle);
+    if (!waiting) return;
+    cancelFrame(waiting.scheduled);
+    schedule(handle, waiting.callback);
+  };
+  window.requestAnimationFrame = request;
+  window.cancelAnimationFrame = cancel;
+  globalThis.requestAnimationFrame = request;
+  globalThis.cancelAnimationFrame = cancel;
+}
+
+function restartWaitingFrames(): void {
+  if (waitingFrames.size === 0 || vi.isFakeTimers() || !restartFrame) return;
+  for (const handle of [...waitingFrames.keys()]) restartFrame(handle);
+}
+
+// vi.waitFor and vi.waitUntil give up after 1 s unless told otherwise, and
+// nearly every call here leaves that default. A chat turn that finishes in
+// ~330 ms on a quiet laptop takes ~1 s on a loaded CI shard, so those waits
+// failed at random (agentChatServiceAcpRuntime's leading-slash turns, Nov
+// 2026). A wait returns as soon as its check passes, so a longer ceiling
+// costs a passing test nothing; it only stops a slow machine reading as a
+// failure. An explicit timeout still wins.
+const DEFAULT_WAIT_TIMEOUT_MS = windowsScaledTimeout(5_000);
+type WaitOptions = number | { timeout?: number; interval?: number } | undefined;
+function withDefaultWaitTimeout(options: WaitOptions): { timeout?: number; interval?: number } {
+  if (typeof options === "number") return { timeout: options };
+  return { ...options, timeout: options?.timeout ?? DEFAULT_WAIT_TIMEOUT_MS };
+}
+{
+  const originalWaitFor = vi.waitFor.bind(vi);
+  const originalWaitUntil = vi.waitUntil.bind(vi);
+  vi.waitFor = ((callback: Parameters<typeof vi.waitFor>[0], options?: WaitOptions) =>
+    originalWaitFor(callback, withDefaultWaitTimeout(options))) as typeof vi.waitFor;
+  vi.waitUntil = ((callback: Parameters<typeof vi.waitUntil>[0], options?: WaitOptions) =>
+    originalWaitUntil(callback, withDefaultWaitTimeout(options))) as typeof vi.waitUntil;
+}
+// Testing Library's findBy* and waitFor have the same 1 s default, and a
+// lazily loaded panel behind a few IPC reads outlasts it on a loaded shard
+// (HistoryPage's deep-linked commit-detail, Nov 2026). Only DOM tests use
+// them, so node tests do not pay for the import.
+if (typeof document !== "undefined") {
+  const { configure } = await import("@testing-library/dom");
+  configure({ asyncUtilTimeout: DEFAULT_WAIT_TIMEOUT_MS });
+}
+
 beforeEach(() => {
+  restartWaitingFrames();
   ensureUsableLocalStorage();
   if (typeof window !== "undefined") {
     try {

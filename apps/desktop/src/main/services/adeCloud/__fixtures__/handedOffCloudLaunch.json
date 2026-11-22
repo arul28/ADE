@@ -1,0 +1,181 @@
+{
+  "v": 1,
+  "snapshot": {
+    "launchId": "11111111-2222-4333-8444-555555555555",
+    "kind": "chat",
+    "mode": "background",
+    "sessionId": "11111111-2222-4333-8444-555555555555",
+    "laneId": "66666666-7777-4888-9999-000000000000",
+    "laneName": "Reply Acknowledgment",
+    "laneNaming": false,
+    "branchRef": "ade/reply-acknowledgment",
+    "baseRef": "origin/main",
+    "worktreePath": "/home/node/Projects/ade/.ade/worktrees/reply-only-ok-51baf589",
+    "templateName": "ADE: npm packages (APFS clone on Mac)",
+    "title": "Reply with only: ok",
+    "prompt": {
+      "text": "Reply with only: ok",
+      "displayText": null,
+      "attachments": []
+    },
+    "modelId": "codex",
+    "chatSettings": {
+      "permissionMode": "default"
+    },
+    "phase": "running",
+    "stages": [
+      {
+        "id": "computer",
+        "status": "done",
+        "startedAt": null,
+        "endedAt": "2026-11-16T01:09:45.501Z",
+        "percent": null,
+        "detail": "Medium \u00b7 4 CPU, 8 GB. Medium: this repo's setup needed more than 4 GB before.",
+        "error": null
+      },
+      {
+        "id": "join",
+        "status": "done",
+        "startedAt": null,
+        "endedAt": "2026-11-16T01:09:45.501Z",
+        "percent": null,
+        "detail": null,
+        "error": null
+      },
+      {
+        "id": "clone",
+        "status": "done",
+        "startedAt": null,
+        "endedAt": "2026-11-16T01:09:45.501Z",
+        "percent": null,
+        "detail": "arul28/ade",
+        "error": null
+      },
+      {
+        "id": "fetch",
+        "status": "done",
+        "startedAt": "2026-11-16T01:09:46.588Z",
+        "endedAt": "2026-11-16T01:09:47.004Z",
+        "percent": null,
+        "detail": "origin/main at 648ab3c",
+        "error": null
+      },
+      {
+        "id": "checkout",
+        "status": "done",
+        "startedAt": "2026-11-16T01:09:47.007Z",
+        "endedAt": "2026-11-16T01:09:53.948Z",
+        "percent": 100,
+        "detail": "9,129 files",
+        "error": null
+      },
+      {
+        "id": "environment",
+        "status": "running",
+        "startedAt": "2026-11-16T01:14:55.249Z",
+        "endedAt": null,
+        "percent": null,
+        "detail": "ADE: npm packages (APFS clone on Mac): running again after the disk grew (restart 1)",
+        "error": null,
+        "steps": [
+          {
+            "kind": "copy-paths",
+            "label": "Copy 1 path(s)",
+            "status": "completed",
+            "durationMs": 2
+          },
+          {
+            "kind": "setup-script",
+            "label": "Run setup script (9 command(s))",
+            "status": "running"
+          }
+        ]
+      },
+      {
+        "id": "agent",
+        "status": "pending",
+        "startedAt": null,
+        "endedAt": null,
+        "percent": null,
+        "detail": null,
+        "error": null
+      }
+    ],
+    "error": null,
+    "laneCreated": true,
+    "sessionCreated": false,
+    "agentStarted": false,
+    "queuedMessages": [],
+    "originClientId": null,
+    "startedAt": "2026-11-16T01:09:46.586Z",
+    "setupStartedAt": "2026-11-16T01:08:42.686Z",
+    "endedAt": null,
+    "updatedAt": "2026-11-16T01:15:31.065Z",
+    "sequence": 2000065,
+    "cloud": {
+      "sizeId": "medium",
+      "sizeChoice": "default",
+      "projectOrigin": "github.com/arul28/ade",
+      "instanceId": "gone000001",
+      "machineKey": "machinekey0000000000000000000001",
+      "binding": {
+        "kind": "remote",
+        "key": "cloud-lane:machinekey0000000000000000000001:project_c8e7ac99df3ec4eb20bb99a8",
+        "targetId": "machinekey0000000000000000000001",
+        "runtimeName": "ADE Cloud",
+        "transport": "paired",
+        "projectId": "project_c8e7ac99df3ec4eb20bb99a8",
+        "rootPath": "/home/node/Projects/ade",
+        "displayName": "ade"
+      },
+      "handedOff": true,
+      "sizeNote": "Medium: this repo's setup needed more than 4 GB before."
+    }
+  },
+  "launch": {
+    "kind": "chat",
+    "mode": "background",
+    "launchId": "11111111-2222-4333-8444-555555555555",
+    "prompt": "Reply with only: ok",
+    "provider": "codex",
+    "modelId": "codex",
+    "chat": {
+      "create": {
+        "model": "codex",
+        "modelId": "codex",
+        "reasoningEffort": null,
+        "title": null,
+        "surface": "work",
+        "provider": "codex"
+      },
+      "message": {
+        "text": "Reply with only: ok"
+      }
+    },
+    "laneId": "66666666-7777-4888-9999-000000000000",
+    "laneName": "Reply Only Ok"
+  },
+  "project": {
+    "identity": "github.com/arul28/ade",
+    "cloneUrl": "https://github.com/arul28/ade.git",
+    "repoName": "ADE"
+  },
+  "tier": {
+    "id": "medium",
+    "label": "Medium",
+    "type": "default",
+    "cpu": 4,
+    "memoryGb": 8,
+    "multiplierMilli": 2000,
+    "diskMaxGb": 20
+  },
+  "computerName": "Reply Acknowledgment",
+  "targetId": "machinekey0000000000000000000001",
+  "via": "server",
+  "sequenceBase": 7,
+  "pendingMessageIds": [],
+  "cleanupDone": false,
+  "madeByChat": null,
+  "madeByAgent": null,
+  "branchRecorded": "ade/reply-acknowledgment"
+}

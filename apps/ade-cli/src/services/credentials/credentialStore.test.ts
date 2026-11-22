@@ -162,8 +162,10 @@ describe("EncryptedFileCredentialStore", () => {
       console.info(`credential lock wait ${heldForMs}ms: sync ${syncWaitMs}ms / ${syncTimerLagMs}ms timer lag / ${syncDelayMaxMs.toFixed(1)}ms histogram max; async ${asyncWaitMs}ms / ${asyncTimerLagMs}ms timer lag / ${asyncDelayMaxMs.toFixed(1)}ms histogram max`);
       expect(syncTimerLagMs).toBeGreaterThan(heldForMs * 0.5);
       expect(asyncWaitMs).toBeGreaterThanOrEqual(heldForMs - 10);
+      // The timer is the loop's own answer to "was it free while waiting".
+      // The histogram's max also catches unrelated pauses on a loaded runner
+      // (237 ms seen on CI), so it is logged, not asserted.
       expect(asyncTimerLagMs).toBeLessThan(heldForMs * 0.5);
-      expect(asyncDelayMaxMs).toBeLessThan(heldForMs * 0.5);
     } finally {
       delay.disable();
       try { fs.unlinkSync(lockPath); } catch { /* already released */ }
@@ -183,6 +185,26 @@ describe("EncryptedFileCredentialStore", () => {
     } finally {
       fs.unlinkSync(lockPath);
     }
+  });
+
+  it("never makes a deleted project's folder again, on a read, a delete or a write", async () => {
+    const projectRoot = path.join(tempDir, "deleted-project");
+    const store = new EncryptedFileCredentialStore({
+      secretsDir: path.join(projectRoot, ".ade", "secrets"),
+      projectRoot,
+      credentialChangePollIntervalMs: null,
+    });
+
+    expect(store.getSync("linear.token.v1")).toBeNull();
+    expect(store.getLastReadState()).toBe("missing");
+    store.deleteSync("linear.token.v1");
+    await store.delete("linear.token.v1");
+    store.onDidChange(() => undefined)();
+    expect(() => store.setSync("linear.token.v1", "lin_secret")).toThrow(/isn't there/);
+    await expect(store.set("linear.token.v1", "lin_secret")).rejects.toMatchObject({ code: "project_data_missing" });
+    expect(() => store.updateSync((values) => { values.a = "b"; })).toThrow(/isn't there/);
+
+    expect(fs.existsSync(projectRoot)).toBe(false);
   });
 
   it.runIf(process.platform === "win32")(
@@ -516,6 +538,30 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
       secretsDir: tempDir,
       keyMaterial: { read: () => null },
     }).getSync("account.session.v1")).toBe("legacy-async-windows-session");
+  });
+
+  it("keeps a settled asynchronous read and still sees another store's write", async () => {
+    const keyMaterial = { read: () => null, readAsync: async () => null };
+    const writer = new EncryptedFileCredentialStore({ secretsDir: tempDir, keyMaterial });
+    const reader = new EncryptedFileCredentialStore({ secretsDir: tempDir, keyMaterial });
+    writer.setSync("account.session.v1", "first");
+    await expect(reader.get("account.session.v1")).resolves.toBe("first");
+
+    const readFile = vi.spyOn(fs.promises, "readFile");
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      await expect(reader.get("account.session.v1")).resolves.toBe("first");
+      expect(readFile).not.toHaveBeenCalled();
+
+      writer.setSync("account.session.v1", "rotated");
+      await new Promise((resolve) => setImmediate(resolve));
+      await expect(reader.getWithReadState("account.session.v1")).resolves.toEqual({
+        value: "rotated",
+        state: "available",
+      });
+    } finally {
+      readFile.mockRestore();
+    }
   });
 
   it("uses the asynchronous key-material path for asynchronous reads", async () => {

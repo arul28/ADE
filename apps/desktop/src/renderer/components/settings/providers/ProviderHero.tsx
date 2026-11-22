@@ -152,15 +152,26 @@ export function ProviderHero({
   version,
   pin,
   modelLabel,
+  tagline = descriptor.tagline,
+  accountUsageOnly = false,
 }: {
   descriptor: ProviderDescriptor;
-  status: { state: ProviderStatusState; label: string };
+  status: { state: ProviderStatusState; label: string; account?: string | null };
   version: string | null;
   pin: OpenProjectBinding | null;
   modelLabel: (id: string) => string;
+  /** The line under the name; null shows none. The descriptor's line describes a computer's own sign-in. */
+  tagline?: string | null;
+  /**
+   * The usage panel shows only when its figures add up every computer of the
+   * account, and says so. For a place that is not one computer (ADE Cloud):
+   * one computer's figures would not be about it.
+   */
+  accountUsageOnly?: boolean;
 }) {
   const brand = providerBrand(descriptor.id);
-  const hero = useProviderUsage(descriptor.id, pin, modelLabel);
+  const read = useProviderUsage(descriptor.id, pin, modelLabel);
+  const hero = accountUsageOnly && read && !read.allMachines ? undefined : read;
   const usage = hero?.usage ?? null;
   const topTokens = usage?.models[0]?.tokens ?? 0;
 
@@ -187,12 +198,13 @@ export function ProviderHero({
         <ProviderLogo3d descriptor={descriptor} />
         <div className="ade-pv-hero-id">
           <div className="ade-pv-hero-name">{descriptor.label}</div>
-          {descriptor.tagline ? <div className="ade-pv-hero-tagline">{descriptor.tagline}</div> : null}
+          {tagline ? <div className="ade-pv-hero-tagline">{tagline}</div> : null}
           <div className="ade-pv-hero-chips">
             <span className="ade-pv-hero-chip">
               <i style={{ background: providerStatusColor(status.state) }} />
               {status.label}
             </span>
+            {status.account ? <span className="ade-pv-hero-chip">{status.account}</span> : null}
             {version ? <span className="ade-pv-hero-chip">v{version}</span> : null}
             {descriptor.preview ? <span className="ade-pv-hero-chip">Preview</span> : null}
           </div>
@@ -200,7 +212,7 @@ export function ProviderHero({
         {hero === undefined ? null : (
           <div className="ade-pv-hero-stats">
             <div className="ade-pv-hero-stats-head">
-              <span>{hero.allMachines ? "All machines" : "One machine"}</span>
+              <span>{accountUsageOnly ? "Chats on all your computers" : hero.allMachines ? "All machines" : "One machine"}</span>
               <span>30 days</span>
             </div>
             {usage ? (
@@ -236,7 +248,11 @@ export function ProviderHero({
                 ) : null}
               </>
             ) : (
-              <div className="ade-pv-hero-empty">No chats ran on {descriptor.label} on your machines in the last 30 days.</div>
+              <div className="ade-pv-hero-empty">
+                {accountUsageOnly
+                  ? `No chats ran on ${descriptor.label} on any of your computers in the last 30 days.`
+                  : `No chats ran on ${descriptor.label} on your machines in the last 30 days.`}
+              </div>
             )}
           </div>
         )}

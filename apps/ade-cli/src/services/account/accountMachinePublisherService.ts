@@ -1,4 +1,5 @@
 import { isPresetSourceAvailableLocally } from "../../../../desktop/src/main/services/chat/harnessRouteCatalog";
+import { ACCOUNT_PROJECTS_CURSOR_FIELD } from "../../../../account-directory/src/accountProjects/contract";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -24,6 +25,7 @@ import {
 import type { MachinePowerSource } from "../power/machinePowerMonitor";
 import { borrowSharedMachinePowerSource } from "../power/sharedMachinePowerMonitor";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
+import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "../sync/syncBindHost";
 import {
   normalizeAppPackageChannel,
   packageChannelNameSuffix,
@@ -69,7 +71,15 @@ import { createEpisodeAnalytics } from "./episodeAnalytics";
 import { readAccountHardwareId } from "./hardwareAnchor";
 
 export const ACCOUNT_MACHINE_HEARTBEAT_MS = 60_000;
-export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
+/**
+ * How often the publisher looks for a relay publish state change that came
+ * with no event. Relay route changes push a republish at once
+ * (`onPublicationStateChanged`), so this mainly finds network changes (LAN
+ * address, port, tailnet). The network interfaces are cached for 5 s, so a
+ * faster poll mostly read the same cached answer; at 5 s other machines see a
+ * network change at most about 3 s later than before.
+ */
+export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 5_000;
 // Keep outage recovery comfortably inside the directory's 150-second online
 // window while bounding sustained failures at a 20-second request cadence.
 export const ACCOUNT_MACHINE_RETRY_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 20_000] as const;
@@ -442,15 +452,22 @@ function readHttpReasonBounded(response: Response): Promise<string | null> {
  * where the owner cannot tell a retired key from a live one, which is how a
  * working MacBook came to be deleted by hand.
  */
-async function readSupersededMachineKeysBounded(response: Response): Promise<string[]> {
-  const keys = await boundedBodyRead(response, async (bounded) => {
+function supersededMachineKeysOf(answer: Record<string, unknown> | null): string[] {
+  const raw = answer?.supersededMachineKeys;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
+}
+
+/**
+ * The accepted heartbeat's JSON answer, read once from a clone (the caller
+ * still drains the original). Null for an empty or unreadable body: an older
+ * directory sends none.
+ */
+async function readRegisterAnswerBounded(response: Response): Promise<Record<string, unknown> | null> {
+  return boundedBodyRead(response, async (bounded) => {
     const body: unknown = await bounded.clone().json();
-    if (!body || typeof body !== "object") return null;
-    const raw = (body as Record<string, unknown>).supersededMachineKeys;
-    if (!Array.isArray(raw)) return null;
-    return raw.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
+    return body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null;
   });
-  return keys ?? [];
 }
 
 function failureLegForState(
@@ -687,9 +704,15 @@ export function buildAccountMachineRegistration(args: {
   for (const candidate of connectInfo.addressCandidates) {
     const host = candidate.host.trim();
     if (!host) continue;
+    // LAN reaches the wildcard bind directly, so it is usable whenever the
+    // listener is bound. Gating it on the loopback check (as this once did)
+    // let any program holding 127.0.0.1:<port> hide a working LAN route.
     if (
       candidate.kind === "lan"
-      && args.snapshot.routeHealth.listener.loopbackAdeValidated
+      && args.snapshot.routeHealth.listener.listenerBound
+      // A loopback-only bind (ADE_SYNC_BIND_HOST=127.0.0.1) serves no LAN
+      // peer; Bonjour withholds LAN for it too (publishLanDiscovery).
+      && !SYNC_HOST_BIND_LOOPBACK_ONLY
     ) {
       add({ kind: "lan", host, port: connectInfo.port });
       continue;
@@ -703,7 +726,6 @@ export function buildAccountMachineRegistration(args: {
     }
     if (
       candidate.kind === "relay"
-      && args.snapshot.routeHealth.listener.loopbackAdeValidated
       && args.snapshot.routeHealth.relay.relayControlConnected
       && args.snapshot.routeHealth.relay.relayBridgeValidated
       && Boolean(args.snapshot.routeHealth.relay.relayEndToEndVerifiedAt)
@@ -777,6 +799,24 @@ export function relayPublishStateSignature(
   });
 }
 
+/** What `onPublished` receives after an accepted heartbeat. */
+export type AccountMachinePublishedEvent = {
+  baseUrl: string;
+  /** The token the accepted request carried (the refreshed one after a 401). */
+  accessToken: string;
+  machineKey: string;
+  /** The signed-in account as the publisher saw it, or null when unreadable. */
+  accountOwnerId: string | null;
+  /** `accountProjectsCursor` from the answer, or null. */
+  accountProjectsCursor: number | null;
+};
+
+/** The account project list's cursor in a heartbeat answer; null when absent or malformed. */
+function accountProjectsCursorOf(answer: Record<string, unknown> | null): number | null {
+  const raw = answer?.[ACCOUNT_PROJECTS_CURSOR_FIELD];
+  return typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 0 ? raw : null;
+}
+
 export function createAccountMachinePublisherService(options: {
   /**
    * `null` means there is no usable token (`token_unreadable`). A throw that
@@ -805,6 +845,15 @@ export function createAccountMachinePublisherService(options: {
    * and test publishers stay unaffected; absent means "do not reconcile".
    */
   confirmSupersededMachineKeys?: (keys: readonly unknown[]) => string[];
+  /**
+   * Called after each heartbeat the directory accepted, with the token that
+   * request carried and the account project list's cursor from the answer
+   * (null from a directory that predates it). Fire and forget: it must not
+   * throw into the heartbeat, and the heartbeat does not wait for it. The
+   * account project sync (`accountProjectSync.ts`) reads the list only when
+   * that cursor changed, so it needs no timer of its own.
+   */
+  onPublished?: (input: AccountMachinePublishedEvent) => void;
   /**
    * The per-account hardware anchor for the signed-in owner, or null when this
    * host has none. Called with the account id because the value is salted with
@@ -870,6 +919,11 @@ export function createAccountMachinePublisherService(options: {
   let disposed = false;
   let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   let relayStatePollTimer: ReturnType<typeof setTimeout> | null = null;
+  // The install's name comes from the environment and the home folder, which
+  // do not change while the process runs; the relay state poll needs it on
+  // every look.
+  let adeInstall: ReturnType<typeof describeAdeInstall> | null = null;
+  const readAdeInstall = (): ReturnType<typeof describeAdeInstall> => (adeInstall ??= describeAdeInstall());
   const activeControllers = new Set<AbortController>();
   let inFlight: Promise<void> | null = null;
   let triggeredPublishPending = false;
@@ -1388,7 +1442,7 @@ export function createAccountMachinePublisherService(options: {
       packageChannel: process.env.ADE_PACKAGE_CHANNEL,
       publicKeyRawBase64,
       powerPublication: readPowerPublication(),
-      install: describeAdeInstall(),
+      install: readAdeInstall(),
     });
     if (!observedRegistration) {
       outcome("machine_key_unavailable", {
@@ -1593,6 +1647,7 @@ export function createAccountMachinePublisherService(options: {
 
     try {
       let response = await sendRegistration(accessToken, registration, baseUrl);
+      let sentToken = accessToken;
       let firstUnauthorizedReason: string | null = null;
       if (response.status === 401) {
         firstUnauthorizedReason = await readHttpReasonBounded(response);
@@ -1624,6 +1679,7 @@ export function createAccountMachinePublisherService(options: {
         if (disposed) return;
         if (refreshedToken) {
           response = await sendRegistration(refreshedToken, registration, baseUrl);
+          sentToken = refreshedToken;
         }
       }
       if (!response.ok) {
@@ -1676,12 +1732,16 @@ export function createAccountMachinePublisherService(options: {
         warnOnce("http_error", "http", legDurations, { status: response.status });
         return;
       }
-      // Read before draining. A directory that reports retired keys is telling
-      // this machine its rotation landed cleanly; nothing has to act on it, but
-      // an unexplained rotation is exactly what nobody could explain last time.
+      // Read before draining, once for every reader below.
+      const answer = options.confirmSupersededMachineKeys || options.onPublished
+        ? await readRegisterAnswerBounded(response)
+        : null;
+      // A directory that reports retired keys is telling this machine its
+      // rotation landed cleanly; nothing has to act on it, but an unexplained
+      // rotation is exactly what nobody could explain last time.
       if (options.confirmSupersededMachineKeys) {
         try {
-          const superseded = await readSupersededMachineKeysBounded(response);
+          const superseded = supersededMachineKeysOf(answer);
           const confirmed = superseded.length > 0
             ? options.confirmSupersededMachineKeys(superseded)
             : [];
@@ -1692,8 +1752,23 @@ export function createAccountMachinePublisherService(options: {
             });
           }
         } catch {
-          // An older directory sends no body at all; never fail a good publish
-          // over bookkeeping.
+          // Never fail a good publish over bookkeeping.
+        }
+      }
+      if (options.onPublished) {
+        try {
+          options.onPublished({
+            baseUrl,
+            accessToken: sentToken,
+            machineKey,
+            accountOwnerId,
+            accountProjectsCursor: accountProjectsCursorOf(answer),
+          });
+        } catch (error) {
+          // The account project sync is decoration on the heartbeat.
+          options.logger?.warn("account.on_published_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
       await response.body?.cancel().catch(() => {});
@@ -1902,7 +1977,7 @@ export function createAccountMachinePublisherService(options: {
       snapshot,
       packageChannel: process.env.ADE_PACKAGE_CHANNEL,
       publicKeyRawBase64,
-      install: describeAdeInstall(),
+      install: readAdeInstall(),
     });
     if (!registration) return;
 
@@ -1919,7 +1994,7 @@ export function createAccountMachinePublisherService(options: {
     if (!started || disposed || relayStatePollTimer) return;
     relayStatePollTimer = setTimeout(() => {
       relayStatePollTimer = null;
-      // The 2-second observation window also debounces/coalesces rapid tunnel
+      // The observation window also debounces/coalesces rapid tunnel
       // readiness changes without coupling this publisher to the tunnel client.
       void inspectRelayPublishState().finally(scheduleRelayStatePoll);
     }, relayStatePollMs);
@@ -2111,6 +2186,8 @@ export function createBrainAccountMachinePublisherService(options: {
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
   /** See the same option on `createAccountMachinePublisherService`. */
   onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"] }) => void;
+  /** See the same option on `createAccountMachinePublisherService`. */
+  onPublished?: (input: AccountMachinePublishedEvent) => void;
   /** Best-effort provider/preset counts for the 60-second directory beat. */
   getInventorySummary?: () => Promise<MachineInventorySummary | null>;
   /** See the same option on `createAccountMachinePublisherService`. */
@@ -2171,6 +2248,7 @@ export function createBrainAccountMachinePublisherService(options: {
     // device sign-in earned in this brain reaches the publish that needs it.
     consumePairingGrant: () => accountAuthService.consumePairingGrant(),
     confirmSupersededMachineKeys: options.confirmSupersededMachineKeys,
+    ...(options.onPublished ? { onPublished: options.onPublished } : {}),
     // The only identity input that does not come out of `secretsDir`, which is
     // the entire point: everything else in this composition is destroyed by the
     // `~/.ade` wipe this anchor exists to survive. Cached for the process, so

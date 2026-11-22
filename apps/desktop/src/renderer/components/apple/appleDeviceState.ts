@@ -9,7 +9,7 @@ import type {
   IosSimulatorStatus,
 } from "../../../shared/types/iosSimulator";
 import { commandFor } from "./appleInspectGeometry";
-import { createDeviceViewModeStore, DEVICE_DEFAULT_VIEW_MODE, type DeviceViewMode } from "../device/deviceViewMode";
+import { createDeviceViewModeStore, type DeviceViewMode } from "../device/deviceViewMode";
 
 /**
  * The Apple pane's one state value.
@@ -299,8 +299,6 @@ export function appleRecordingProofArtifactId(
 export type AppleViewMode = DeviceViewMode;
 
 export const APPLE_VIEW_MODE_STORAGE_KEY = "ade.apple.viewMode.v1";
-
-export const APPLE_DEFAULT_VIEW_MODE: AppleViewMode = DEVICE_DEFAULT_VIEW_MODE;
 
 const appleViewModeStore = createDeviceViewModeStore(APPLE_VIEW_MODE_STORAGE_KEY);
 export const readAppleViewMode = appleViewModeStore.read;

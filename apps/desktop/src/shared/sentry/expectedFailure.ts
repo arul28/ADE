@@ -15,12 +15,13 @@ import {
   ACTION_NOT_EXPOSED_CODE,
   isUnsupportedAdeActionError,
   parseCodedErrorMessage,
+  PROJECT_FOLDER_TOO_SLOW_CODE,
 } from "../codedError";
 import { expectedErrorKind } from "../expectedError";
 import { GITHUB_AUTOLINKS_REFUSED } from "../githubAutolinks";
 import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../pendingInputAnswers";
 import { SIMCTL_MISSING } from "../xcodeToolchain";
-import { PROJECT_SECRET_NAME_RULE } from "../projectSecretRequest";
+import { SECRET_NAME_RULE } from "../types/passwords";
 import { LINEAR_NOT_CONNECTED_MESSAGE } from "../types/automations";
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -68,7 +69,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /\bfatal: not a git repository\b/,
   /\bgit_untrusted_folder:/,
   /Refusing to register the user home directory or filesystem root/,
-  /This chat already started — delete its lane/,
+  /This (chat|CLI session) already started\. Delete its lane|This lane is already set up\. Delete it/,
   // A screenshot or image attachment cleaned up while a chat still shows it.
   /\bPath does not exist: .+\.(png|jpe?g|gif|webp)$/i,
   // Answers to an agent driving a browser or a desktop: it fixes its call and retries.
@@ -118,6 +119,9 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // The machine itself is out of processes or disk.
   /\bspawn \S+ EAGAIN\b/,
   /\bENOSPC: no space left on device\b/,
+  // A project folder this user may not write to (marked where thrown; the
+  // text is for a desktop that reads an older brain's reply).
+  /\bADE can't write to this folder: /,
   // A chat waiting on the user: a recovery choice, a pending question, a turn still running.
   /This chat requires an explicit continuity recovery action before another turn can be sent/,
   new RegExp(`^${escapeRegExp(PENDING_INPUT_SEND_BLOCKED_MESSAGE)}`),
@@ -150,7 +154,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /^ADE's account service did not answer in time\.$/,
   // Added from Sentry traffic, 2026-11-02.
   // Answers to a caller (often an agent) that fixes its input and retries.
-  new RegExp(`^${escapeRegExp(PROJECT_SECRET_NAME_RULE)}$`),
+  new RegExp(`^${escapeRegExp(SECRET_NAME_RULE)}$`),
   /^(?:Path|Attachment source) is not a file\.$/,
   /^This Codex chat does not have a thread to rewind yet\.$/,
   /^This message is no longer queued\.$/,
@@ -161,7 +165,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // The network between this machine and GitHub, the account vault or an SSH host.
   /^GitHub API (?:request|response body) timed out\. Check network access on this machine\.$/,
   /^Couldn't read this PR's Actions runs from GitHub: Can't reach GitHub\b/,
-  /ADE couldn't reach your ADE account's vault from this computer/,
+  /ADE couldn't reach your ADE account's vault from this (?:computer|machine)/,
   /^Nothing is accepting SSH connections at \S+\. /,
   // A peer (phone, web) holding a project id from another machine.
   /^This project is not on this ADE machine\b/,
@@ -176,6 +180,43 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // Added from Sentry traffic, 2026-11-09. Cursor refusing a Cloud Agent on a
   // plan that has none ("upgrade to Pro"): the account's state, shown to the user.
   /\[plan_required\]/,
+  // Added from Sentry and PostHog traffic, 2026-11-13. Marked where thrown now;
+  // the text stays for older brains on paired machines, whose errors arrive
+  // without the mark.
+  // A lane whose folder was deleted or moved (the current wording of the
+  // "Lane worktree is missing" answer above).
+  /^Lane '[^']+' worktree is unavailable at '.+'\. Restore or recreate the lane\b/,
+  // A Windows sign-in the person did not finish, or whose session dropped.
+  /\bWINDOWS_DESKTOP_SIGN_IN_FAILED: Windows sign-in did not complete\./,
+  // This computer cannot open an SSH connection to a git host (port 22
+  // blocked, no network): the network, not ADE.
+  /^ssh: connect to host \S+ port \d+: /,
+  // A paired machine that wants this device paired again.
+  /says this device's pairing is out of date — pair it again\.$/,
+  // A branch already checked out in another worktree: git refuses, and the
+  // person picks another branch or closes that worktree.
+  /\bfatal: '.+' is already (?:used|checked out) by worktree at /,
+  // Refusals the person or agent acts on, from the throw sites marked in this
+  // pass: ADE Cloud not on this account, a cloud launch that can't run there,
+  // a protected branch.
+  /^ADE Cloud isn't available on this account yet\.$/,
+  /^ADE Cloud sets up GitHub repositories only, and this project has no GitHub origin\.$/,
+  /^Refusing to clean up protected branch "/,
+  /^A move to .+ may have landed\. Retry it, or open .+ to check, or dismiss it\.$/,
+  // Added from Sentry traffic, 2026-11-17. Marked where thrown now; the text
+  // stays for older brains. A lane deleted while a view still asks about it,
+  // a branch switch with uncommitted files, a pasted pairing code that is not one.
+  /^Lane \S+ was not found\.$/,
+  /^This lane has uncommitted changes\. Commit or stash them before switching branches\.$/,
+  /^Invalid ADE pairing link or code\.$/,
+  // A project folder that stopped answering (StorageNotAnsweringError), when
+  // only its text arrives, as in a provider's turn failure.
+  /\bon this computer right now: it is not answering\./,
+  // A clone over SSH with no key GitHub accepts: the person sets up a key or uses HTTPS.
+  /\bPermission denied \(publickey\)/,
+  // Added from PostHog traffic, 2026-11-17. Kimi on a Windows computer with no
+  // Git for Windows: the answer tells the person what to install.
+  /^Kimi needs Git for Windows: /,
 ];
 
 /**
@@ -268,8 +309,20 @@ const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set([
   "storage_read_failed",
   "storage_io_failed",
   "db_busy",
+  // A project whose folder is too slow to open; the brain reports the refusal once.
+  PROJECT_FOLDER_TOO_SLOW_CODE,
   // A chat refusing a send or restart while its turn runs; the caller waits or stops it.
   "turn_in_flight",
+  // A clone or create into a folder that already exists; the renderer offers
+  // to open it or pick another folder (projectCopies.ts).
+  "target_exists",
+  // Another ADE brain on this computer runs the chat; the message names it.
+  "chat_runtime_owned_elsewhere",
+  // A machine with no ADE account signed in (lane sharing, account reads).
+  "signed_out",
+  // A GitHub read with no GitHub sign-in on this machine (no `gh` login, no
+  // PAT); the repository picker tells the user to sign in.
+  "github_not_connected",
 ]);
 
 /**

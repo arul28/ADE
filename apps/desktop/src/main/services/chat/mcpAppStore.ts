@@ -99,18 +99,36 @@ export function createMcpAppStore(args: {
       })
       .filter((entry): entry is { filePath: string; mtimeMs: number } => entry !== null)
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    for (const stale of records.slice(MCP_APP_LIMITS.maxAppsPerChat)) fs.rmSync(stale.filePath, { force: true });
-    const named = new Set<string>();
-    for (const kept of records.slice(0, MCP_APP_LIMITS.maxAppsPerChat)) {
+    const remove = (file: string): boolean => {
       try {
-        const docHash = (JSON.parse(fs.readFileSync(kept.filePath, "utf8")) as StoredRecord).docHash;
+        fs.rmSync(file, { force: true });
+        return true;
+      } catch (error) {
+        // Keep pruning the rest, but report so a persistent failure (a locked
+        // file) that defeats the cap stays visible.
+        report("agent_chat.mcp_app_store_prune_failed", error, { sessionId, file });
+        return false;
+      }
+    };
+    const named = new Set<string>();
+    const addDocument = (filePath: string): void => {
+      try {
+        const docHash = (JSON.parse(fs.readFileSync(filePath, "utf8")) as StoredRecord).docHash;
         if (typeof docHash === "string") named.add(`doc-${docHash}.html`);
       } catch {
         // An unreadable record names nothing.
       }
+    };
+    for (const kept of records.slice(0, MCP_APP_LIMITS.maxAppsPerChat)) addDocument(kept.filePath);
+    for (const stale of records.slice(MCP_APP_LIMITS.maxAppsPerChat)) {
+      // A record that survives deletion still names its page: deleting the page
+      // would leave that record pointing at nothing.
+      if (!remove(stale.filePath)) addDocument(stale.filePath);
     }
     for (const name of names) {
-      if (name.startsWith("doc-") && name.endsWith(".html") && !named.has(name)) fs.rmSync(path.join(dir, name), { force: true });
+      if (name.startsWith("doc-") && name.endsWith(".html") && !named.has(name)) {
+        remove(path.join(dir, name));
+      }
     }
   };
 

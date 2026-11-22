@@ -11,6 +11,7 @@ import { showToast } from "../app/toast/toastStore";
 import type { LaneTabPrTag } from "./lanePageModel";
 import { requestLaneRebaseNeedsRescan, type LaneRebaseLine } from "./laneRebaseNeeds";
 import { laneBranchLabel } from "./sidebar/laneSidebarModel";
+import { cacheScopeKey, cacheScopePin } from "../../lib/tabBindingKey";
 
 /**
  * The conflict check a catch-up waits for: `git merge-tree` against the base,
@@ -92,6 +93,8 @@ export async function readLaneCatchUpConflict(
   pin: OpenProjectBinding | null,
 ): Promise<LaneCatchUpConflict> {
   try {
+    // No machine to ask: the check cannot run.
+    if (!pin) return { state: "failed" };
     const need = await window.ade.rebase.getNeed(laneId, pin);
     // No need means nothing to catch up with now: nothing to conflict.
     if (!need) return { state: "done", predicted: false, files: [] };
@@ -172,7 +175,7 @@ const listeners = new Set<() => void>();
 
 /** One key per lane per machine: lane ids are only unique on their machine. */
 export function laneCatchUpKey(laneId: string, pin: OpenProjectBinding | null): string {
-  return `${pin?.key ?? "tab"}::${laneId}`;
+  return `${cacheScopeKey(pin) ?? "tab"}::${laneId}`;
 }
 
 function emit(): void {
@@ -232,13 +235,14 @@ export function useLaneCatchUpFailureHost(key: string | null): LaneCatchUpFailur
 export function useLaneCatchUpAskAgent(pin: OpenProjectBinding | null) {
   const handOff = useLaneChatHandoff(pin, { startDraftInLane: true });
   return useCallback(async (laneId: string, prompt: string, knownChats?: AgentChatSessionSummary[] | null) => {
-    const chats = knownChats ?? await window.ade.agentChat
+    // No machine online: a new chat draft still works; no list is read.
+    const chats = knownChats ?? (!pin ? [] : await window.ade.agentChat
       .list({ laneId, includeArchived: false }, pin)
       .catch((error) => {
         // A new chat in the lane still works; the newest one just isn't reused.
         console.warn("lane_catch_up.chat_list_failed", error);
         return [] as AgentChatSessionSummary[];
-      });
+      }));
     const chat = newestLaneWorkChat(chats);
     handOff({ laneId, sessionId: chat?.sessionId ?? null, prompt });
   }, [handOff, pin]);
@@ -253,7 +257,7 @@ const mergeUnsupportedHosts = new Set<string>();
  * does not hide Merge in on another tab's own machine.
  */
 function catchUpHostKey(pin: OpenProjectBinding | null): string {
-  return pin?.key ?? `tab:${useAppStore.getState().projectBinding?.key ?? "local"}`;
+  return cacheScopePin(pin)?.key ?? `tab:${useAppStore.getState().projectBinding?.key ?? "local"}`;
 }
 
 /**
@@ -293,6 +297,8 @@ export async function runLaneCatchUpDirect(args: {
   if (readLaneCatchUp(key).busy) return null;
   patchLaneCatchUp(key, { busy: action, failure: null });
   try {
+    // No machine with the lane is online: nothing to run the catch-up on.
+    if (!pin) throw new Error("No computer with this lane is online.");
     let upToDate: boolean;
     if (action === "rebase") {
       const start = await window.ade.lanes.rebaseStart({ laneId, pushMode: "none", actor: "user" }, pin);
@@ -343,7 +349,9 @@ export async function runLaneCatchUpDirect(args: {
     return { ok: false, failure };
   } finally {
     try {
-      if (pin) requestCrossMachineLanesForMachine(args.machineId ?? machineIdForBinding(pin));
+      // A pin that names the tab's own copy refreshes the tab's lanes.
+      const foreignPin = cacheScopePin(pin);
+      if (foreignPin) requestCrossMachineLanesForMachine(args.machineId ?? machineIdForBinding(foreignPin));
       else {
         await args.refreshLanes();
         requestLaneRebaseNeedsRescan();

@@ -142,45 +142,7 @@ Ground rules used to compile this list:
 
 Review risks before picking these up — several touch fragile boundaries (main.ts startup ordering, preload IPC surface). Run full test suite after any change.
 
-## Applied
-
-Items applied in this pass (2026-04-14):
-
-- **#2 — Pause renderer watchdog when tab hidden**. `apps/desktop/src/renderer/main.tsx` now runs the 1 s event-loop-stall watchdog only while `document.visibilityState === "visible"`; start/stop helpers + `visibilitychange` listener (with `beforeunload` teardown).
-- **#10 — Combine warmup timers**. `apps/desktop/src/renderer/state/appStore.ts` collapsed `warmLaneStatusTimer` + `warmProviderModeTimer` into a single `warmupTimer` that fires both `refreshLanes` and `refreshProviderMode` after `Math.max(1200, 1800)` ms.
-- **#13 — Hoist inline config objects**. `AppShell.tsx` was already module-scoped for `EMPTY_TERMINAL_ATTENTION` (no change needed).
-- **#19 — Atomic UserPreferences store**. `appStore.ts` now persists `theme` / `terminalPreferences` / `smartTooltipsEnabled` into one key (`ade.userPreferences.v1`) with a single `setItem` per change. Legacy keys (`ade.theme`, `ade.smartTooltips`, `ade.terminalPreferences.v1`) are still read as a one-time migration fallback; every setter now snapshots prev state via `set((prev) => { ... })` and writes the unified JSON.
-- **#20 — Compact JSON for machine files**. `apps/desktop/src/preload/preload.ts` was re-audited; it currently has no `JSON.stringify(x, null, 2)` call sites — no-op for this pass.
-
-Verification: `cd apps/desktop && npx tsc --noEmit -p .` passed. All 8 vitest shards passed (0 failed test files, all previously-drifted tests fixed in Part A).
-
----
-
 ## Heavy-load pass (2026-10-05)
-
-Trigger: with many chats running across projects, chats stopped showing status and needed a nudge, and switching chats and tabs was slow. Method: read the installed brain's logs, then reproduce each cost on a lane dev build (own socket, `--no-sync`) and measure it with deterministic counts over the DevTools protocol (React commits, style recalcs, script and task time, V8 CPU profiles of the brain), before and after each change. All numbers are from macOS on the same machine.
-
-### Root cause of the frozen chats
-
-The installed brain died with `FATAL ERROR: JavaScript heap out of memory` (10:06 on 2026-10-05, and on 2026-10-03). Its heap went 356 → 822 → 1,538 MB in fifteen minutes, then to 2.9 GB of live strings in its last 40 seconds. A brain death drops every chat's live status at once.
-
-The heap filled with App Control screencast frames. A session pushes a 80–350 KB base64 JPEG at the page's repaint rate whether or not anything watches. The local desktop subscribed to every frame, and the brain's local RPC socket queued writes with no limit, so a client that read slower than ~16 MB/s grew the brain's heap until V8 aborted. Agents driving dev apps with App Control in other lanes were enough to set it off.
-
-### Applied
-
-| Change | Where | Measured |
-|---|---|---|
-| A local RPC client more than 64 MiB behind is dropped (it reconnects from its cursor); a droppable notification (a frame) is skipped for a client more than 1 MiB behind | `apps/ade-cli/src/cli.ts`, `jsonrpc.ts`, `multiProjectRpcServer.ts` | Stalled client: brain RSS 431 → 1,611 MB in 60 s before; flat ~400 MB after |
-| Screencast frames reach live listeners but are never kept in the replay buffer (they evicted every chat event within a second, so reconnects read as gaps) | `apps/ade-cli/src/eventBuffer.ts`, `bootstrap.ts` | Gap detection now tracks the newest lost id, not contiguous ids |
-| A screencast streams only while something shows or records it: desktop windows declare the lanes they paint (`holdFrames`), sync viewers and recordings count, an older client that never declares keeps today's always-on behaviour | `appControlLaneController.ts`, `appControlService.ts`, `appControlSyncStream.ts`, `appControlFrameSubscriptions.ts`, `localRuntimeConnectionPool.ts` | Nobody watching, 30 s: brain CPU 9 s → 2.5 s, controlled app 29.5 s → 7.7 s |
-| Frames reach only the window that paints that lane | `runtimeBridge.ts`, `main.ts`, `preload.ts` | Renderer receives no frames for unwatched lanes |
-| Frame dimensions read from the JPEG header, not a full base64 decode | `services/shared/imageDimensions.ts` | Brain CPU while streaming to a viewer −12% |
-| Cross-machine lane sync loop broken: every successful remote call re-stamped `lastAttemptedAt` and broadcast a connection snapshot, and each snapshot forced a git-status read of every other machine, itself a call | `remoteConnectionService.ts`, `crossMachineLanes.ts`, `appStore.ts` | Idle renderer, chat open, 5 s: React commits 107 → 26, style recalcs 1,170 → 27, main-thread task 1,415 → 64 ms; ~6 forced status reads/s of every other machine → none |
-| Login-shell PATH and npm prefix reads memoized for 60 s (a synchronous `zsh -lc` spawn per agent env build blocked the brain's event loop) | `cliExecutableResolver.ts` | Brain, 6 streaming chats, 20 s: busy 12.8 s → 2.9 s (with the next two rows) |
-| Search indexer reads the PR list once per pass, not once per PR (quadratic in PRs) | `searchService.ts` | |
-| Turn diff summaries read only untracked files the turn touched, and count lines natively | `turnDiffSummary.ts` | |
-| Project config served from a stat-keyed cache; each `get()` re-parsed YAML and rewrote `test_suites` in a write transaction, once per session row in a chat list | `projectConfigService.ts` | |
-| Transcript rows stay memoized while typing (two list callbacks closed over the draft) | `AgentChatPane.tsx` | Per keystroke: script 7.2 → 4.3 ms, task 13.7 → 9.6 ms, ~16 row re-renders → 0 |
 
 ### Backlog, measured but not applied
 
@@ -193,46 +155,9 @@ The heap filled with App Control screencast frames. A session pushes a 80–350 
 - A framer-motion transition leaves `filter: blur(0px)` on the chat surface wrapper.
 - An upstream `get_github_repositories` call hits its 30-per-hour limit on dev app launches.
 
-### Machine hygiene seen during the pass (not ADE code)
-
-- Three brains ran on the shared `~/.ade` (installed plus two lane dev brains). A dev window also re-spawns its dev brain after the launcher stops it, so stop the whole process group.
-- An orphaned `python3 -` heredoc from another lane's agent spun at 100% of a core for 11.5 hours.
-- A desktop `tsc --noEmit` from another agent held 4.7 GB and 1.7 cores; several agents typechecking at once saturates the machine.
-
----
-
 ## Windows pass (2026-10-05)
 
 Trigger: ADE on Windows felt slow everywhere, and no performance pass had been run there. Method: attach the inspector to the installed brain on the Windows PC (`process._debugProcess`), take 10-minute CPU profiles and attribute busy time to the nearest ADE frame, then reproduce each cost in isolation (the real `runGit`, the real credential store, the real resolver) or on a lane dev build (own named pipe, `--no-sync`) and measure before and after. Renderer costs were measured by OS-level process CPU with no debugger attached, and by Chromium traces for the per-frame breakdown. The PC: Windows 11, 240 Hz display at 110% scaling, an 80-entry `PATH`.
-
-### What the installed brain was doing
-
-Its log recorded 1,643 `brain.event_loop_near_miss` warnings, 20-50 a day on busy days, median 3.6-5.9 s, worst 15 s, almost all during background work. Over a 10-minute profile, 61 s of JavaScript ran, in 156 blocks of 100 ms or more:
-
-| Busy time | Where | Why it is a Windows cost |
-|---|---|---|
-| 20.3 s | `spawn` under `runGitOnce` | libuv runs `CreateProcess` on the calling thread |
-| ~13 s | credential `getSync`: lock file create/write/delete, `sleepSync`, decrypt | file create/delete passes through Defender |
-| 6.3 s | `os.networkInterfaces()` in `readLocalNetworkMetadata` | synchronous adapter enumeration, ~3 calls a second |
-| 4.7 s | CLI discovery: `stat` per PATHEXT name x 2 casings x every dir | 80-entry PATH, 29,536 stats per pass |
-| 2.6 s | `git remote get-url origin`, `where.exe`, `gh auth token` | a spawn per poll |
-
-### Applied
-
-| Change | Where | Measured |
-|---|---|---|
-| Git spawns run on a worker thread; tree kill runs `taskkill` to completion in the worker before killing the leader | `services/shared/offThreadSpawn.ts`, `services/git/git.ts` | Real `runGit`, 256 calls: worst event-loop gap 146-1,179 ms -> 15-16 ms; wall and main CPU at parity |
-| A settled credential read is reused while one `stat` shows the file unchanged; expires with the 5 s quarantine probe | `ade-cli/.../credentials/credentialStore.ts` | 300 `getSync`: 323 ms -> 3.2 ms |
-| Network interface list reused for 5 s | `ade-cli/.../sync/deviceRegistryService.ts` | ~6 s per 10 min -> ~0 |
-| CLI discovery lists each directory once (10 s), no `where.exe` | `services/ai/cliExecutableResolver.ts`, `authDetector.ts` | 14 lookups: 450 ms / 29,536 stats -> 37 ms cold, 5 ms warm / 6 stats |
-| Origin URL from the repo git cache | `ade-cli/src/headlessLinearServices.ts` | 43 spawns per 5 min -> one per 5 min |
-| `gh auth token` and `tailscale status` off the event loop | same files, `execFileOffThread` | 83-121 ms blocks -> none |
-| Project open: the Droid fork probe, the sync port check and the Codex quota probe start off the event loop (the spawner can keep stdin open for request/reply children); the iOS helper path resolves on first use; the relay check waits a tick | `externalSessionsService.ts`, `syncListenerPortInspect.ts`, `usageTrackingService.ts`, `offThreadSpawn.ts`, `iosSimulatorService.ts`, `pushPublisherService.ts` | Cold project open on a copy of a real project, worst event-loop block (`brain-db-steps` F2b, 5 pairs against main): 999.5 ms (1,091.9) -> 217.2 ms (305.7) |
-| Every spinner turns in 30 steps a second | `renderer/index.css` (`--animate-spin`) and the custom spin keyframes | One 16px spinner, renderer + GPU: ~58% of a core -> idle noise; per 2 s main-thread task 436 -> 145 ms, layerize 214 -> 25 ms |
-
-Whole-brain check, dev brain near idle, same 5-minute window: busy 5,267 -> 2,791 ms, blocks >= 50 ms 17 -> 8, worst 784 -> 346 ms.
-
-Why spinners: Electron does not composite CSS rotations (keyframes, the `rotate` property and the Web Animations API alike, in ADE's document or a bare iframe, with or without DevTools attached). Each display frame re-runs paint and layerize for the whole window and the GPU composites it, so the cost scales with the refresh rate. Opacity animations are composited and stay cheap; the pulses were already quantized with `steps()` for a related GPU cost.
 
 ### Backlog, measured but not applied
 
@@ -252,82 +177,6 @@ window and a Chromium trace over CDP (`scripts/perf-animation-lab`), never with
 process CPU -- on this 32-core machine with other agents building, the same
 strategy sampled 11.0% then 5.0% of a core and the ordering inverted between
 runs, while the trace repeats to within 2%.
-
-### Applied
-
-| Change | Where | Measured |
-|---|---|---|
-| An unfiltered catalog parse is memoized per machine scope, keyed on the catalog object's identity and a new registry generation; a `filter`ed caller (the open picker, harness reach) keeps the uncached path | `ModelPicker/modelCatalog.ts`, `shared/modelRegistry.ts` | `descriptorsFromAgentChatModelCatalog` on this machine's real 83-model catalog: 0.448 -> 0.002 ms a call |
-| `getModelById` caches the descriptors its parse-and-construct tail builds for dynamic ids (`pi:...`, OpenCode refs, `ollama/...`, `cursor/...`, `droid/...`), dropped on a registry-generation change | `shared/modelRegistry.ts` | 110 mixed ids: 0.112 -> 0.019 ms |
-| Model-label and lane-name sorts go through one shared `Intl.Collator` | `shared/formatting.ts` and its five hot callers | 110-label sort: 1.40 -> 0.023 ms; `handoffAvailableModelIds` 0.967 -> 0.046 ms a call |
-| Claude Code's daemon is discovered on Windows too: `\.\pipe\cc-daemon-<nonce>-control`, nonce from `<config dir>/daemon/pipe.key` | `chat/agentChatService.ts` | Endpoint, line protocol and fail-closed paths verified against a stand-in pipe server; the one live consumer could previously only answer `unknown` |
-
-### Claude background-job reattach on Windows
-
-The backlog said each Claude follow-up respawns the CLI on Windows because
-Claude Code ships no `control.sock` there. Both halves needed correcting.
-
-- **Claude Code does have a Windows daemon.** Its own bundle resolves the
-  control endpoint as `\.\pipe\cc-daemon-<nonce>-control` on Windows and
-  `<tmp>/cc-daemon-<uid>/<hash>/control.sock` elsewhere, with the nonce in
-  `<config dir>/daemon/pipe.key` validated as 16 hex characters. It even reports
-  `sockDir: \.\pipe\cc-daemon-*` in its own diagnostics. ADE implemented the
-  POSIX half only, so `resolveClaudeDaemonControlSocket` could never return an
-  endpoint on Windows.
-- **The respawn the backlog described was unreachable anyway.**
-  `_runClaudeBackgroundTurn` — the whole `claude --bg` turn path, including
-  `dispatchClaudeBackgroundPrompt` and its reply-into-a-live-job branch — has no
-  callers. No Claude chat turn goes through it, so no turn was paying a respawn
-  for want of a socket. Left in place; deleting a path this size is the owner's
-  call, not a perf pass's.
-- **What was actually broken is settle teardown.**
-  `hasLiveClaudeBackgroundJob` deliberately answers `unknown` rather than `gone`
-  when it cannot reach a daemon, so a settle does not mistake a running job for
-  a finished one. On Windows it could only ever answer `unknown`, so a session
-  carrying a recorded `claudeBackgroundJobShort` spent the confirmation budget
-  and reported residue that did not exist — the exact failure the comment above
-  it was written to prevent. Narrow today, because only the dead path and
-  restored records set that field.
-- **Not verified:** an exchange with a live Claude daemon. `claude --bg` refuses
-  to start from a non-TTY until the workspace trust prompt is accepted, and
-  faking that means writing the user's Claude config. The endpoint construction,
-  the `proto: 1` line protocol over a Windows named pipe, and both fail-closed
-  paths (missing key, malformed key) are verified against a stand-in pipe server
-  on this host.
-
-### Chat switch, measured end to end
-
-The per-call numbers above are isolated. Driven through the real UI on a
-production renderer, the catalog memo is worth about 4 ms of script per warm
-switch — real and repeatable, but a fraction of the switch, because the catalog
-work is only part of what a pane mount does.
-
-Harness, which is the part worth keeping: `vite build` of the renderer served by
-`vite preview`, loaded in a plain Electron window with **no preload**, so the
-renderer's own `browserMock` supplies `window.ade`. No brain, no account, no
-project database, no `ade` CLI. The mock normally serves `{ groups: [] }`, which
-short-circuits `descriptorsFromAgentChatModelCatalog` and would measure the memo
-as exactly zero, so it was temporarily given a catalog the size of this machine's
-real one (83 models, two thirds dynamic ids). Switches are driven by clicking the
-two mock chat rows and read from `Performance.getMetrics` deltas over a 1.5 s
-settle window.
-
-| | warm median task | warm median script |
-|---|---|---|
-| before, 12 switches | 38.2 ms | 26.8 ms |
-| before, 20 switches | 38.6 ms | 28.0 ms |
-| after, 12 switches | 33.9 ms | 22.6 ms |
-| after, 20 switches | 37.4 ms | 23.6 ms |
-
-Script time — the metric the change actually targets — falls consistently from
-26.8-28.0 ms to 22.6-23.6 ms, about 15%. Total task time overlaps between runs
-(30-67 ms either way) and is not a signal on its own; style and layout do not
-move, as expected. Kept on that basis.
-
-Two limits on the number: the mock has two short chats, so the transcript share
-of a switch is small and the catalog share correspondingly larger than in a real
-long chat; and the dynamic ids in the harness catalog are synthetic. A real Work
-tab with dozens of chats mounts more of this per switch, not less.
 
 ### Closed by measurement, not by code
 
@@ -389,54 +238,3 @@ tab with dozens of chats mounts more of this per switch, not less.
 
 
 ---
-
-## Project open: the WAL conversion was the lock (2026-10-16)
-
-The "one brain per project database" rule above still holds for *writes*, but a
-second process is not the whole story: opening a project has its own exclusive
-lock, and it was being taken the one way the rule above says not to take one —
-with a single synchronous wait that stopped the event loop for all of it.
-
-Two Sentry issues (`ADE-DESKTOP-2D`, `ADE-DESKTOP-2B`; one Windows user, one
-project on a WSL share, 1.2.104) both report `ERR_SQLITE_ERROR: database is
-locked` on a project open, and both carry the same stack:
-
-```
-at db2.exec
-at openRawDatabase          <- the PRAGMA block
-at openKvDb
-at initRuntimeBackedProjectContext
-at async switchProjectFromDialog
-```
-
-`PRAGMA journal_mode = WAL` is the only statement in that block that takes a
-lock, and it takes an **EXCLUSIVE** one; an ordinary write needs only the write
-lock. Two `DatabaseSync` connections, the peer holding one open read transaction
-on a database not yet in WAL, reproduce it exactly:
-
-| peer state | conversion | result |
-|---|---|---|
-| no transaction, connection open | 0 ms | `wal` |
-| open read transaction, 3,000 ms `busy_timeout` | 3,125 ms | `database is locked` (errcode 5) |
-| open write transaction | 0 ms | `database is locked` |
-
-So the 5,000 ms wait was the `busy_timeout`, spent inside one synchronous native
-call, and the project open then failed with it. Nothing in the desktop is a
-misconfiguration: `initRuntimeBackedProjectContext` runs `ensureProject` and
-then opens the *same* file itself, `apps/ade-cli` imports this same `kvDb`, and
-the brain and the desktop main process each write `runtime_processes` on a
-5-second timer. Two openers on one database is the design.
-
-Both issues are the same defect. 2B's channel is `ade.project.openRepo` and 2D's
-is `ade.project.switchToPath` — two entry points to the same open, for the same
-user and the same WSL project, 90 seconds apart. Neither is a local-disk case.
-
-Applied: the conversion moved out of `openRawDatabase` into an awaited step that
-skips a database already in WAL (the steady state, since the mode lives in the
-file), and otherwise retries with a 150 ms per-attempt `busy_timeout` and a
-macrotask between attempts, up to an 8 s budget. The event loop is never stopped
-for more than one attempt, and the peer gets the turns it needs to finish — the
-one blocked call was also what sustained the stall. Giving up after the budget
-leaves the database in its current mode rather than failing the open; that is a
-last resort, because without WAL a peer's read transaction blocks every write
-(measured: 5,314 ms, then `database is locked`).

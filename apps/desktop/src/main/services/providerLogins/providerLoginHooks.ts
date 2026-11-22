@@ -1,0 +1,227 @@
+/**
+ * The few seams between the sign-in sync (one per brain process) and the
+ * services of each project runtime. Kept in a module whose only runtime
+ * import is the SDK-free Sentry capture, so the chat service reads the gate without loading the sync
+ * service, and a process with no sync (the desktop main, a dev brain) pays
+ * one null check.
+ *
+ * P6 (the Claude pass) builds on these seams: a check before a Claude turn
+ * (`providerLoginGate.register`), a hook on each pass (`onProviderLoginPass`),
+ * a part of the status (`registerProviderLoginStatusPart`), and a restart
+ * limited to some accounts (`restartProviderRuntimesWhenIdle` with
+ * `instanceIds`).
+ *
+ * A failure in one seam never stops the caller; it goes to Sentry (handled)
+ * with the seam's name, so a broken gate or hook does not hide.
+ */
+
+import { captureError } from "../../../shared/sentry/capture";
+import type {
+  ProviderLoginGateOptions,
+  ProviderLoginGateOutcome,
+  ProviderLoginProvider,
+  ProviderLoginStatusParts,
+} from "../../../shared/types/providerLogins";
+
+type Gate = (provider: string) => Promise<void>;
+/** The sync's own gate: what it found, for a caller that shows the person why a turn waits or fails. */
+type BaseGate = (provider: string, options?: ProviderLoginGateOptions) => Promise<ProviderLoginGateOutcome | void>;
+
+let gate: BaseGate | null = null;
+
+/** A seam's failure: reported, never thrown. No value of the sign-in goes in, only names. */
+function reportSeamFailure(seam: string, error: unknown, provider?: string | null): void {
+  captureError(error, {
+    level: "warning",
+    handled: true,
+    tags: { area: "provider_logins", seam, ...(provider ? { provider } : {}) },
+    fingerprint: ["provider-login-seam", seam],
+  });
+}
+/** Checks before a turn for a provider the carry table does not handle (P6: Claude). */
+const beforeTurnChecks = new Map<string, Set<Gate>>();
+
+/** The sync installs the gate on a cloud computer only; everywhere else it stays null. */
+export function installProviderLoginGate(next: BaseGate | null): void {
+  gate = next;
+}
+
+/**
+ * Add a check that runs before each turn and each CLI start of `provider`,
+ * after the sign-in sync's own gate, and only where that gate is installed (a
+ * cloud computer with the sync on). The check owns its time limit; a
+ * rejection is swallowed, so a check can never stop a turn. Returns the call
+ * that removes it. Also reachable as `providerLoginGate.register`.
+ */
+export function registerProviderLoginGate(provider: string, beforeTurn: Gate): () => void {
+  const id = provider.trim().toLowerCase();
+  let checks = beforeTurnChecks.get(id);
+  if (!checks) {
+    checks = new Set();
+    beforeTurnChecks.set(id, checks);
+  }
+  checks.add(beforeTurn);
+  return () => {
+    const current = beforeTurnChecks.get(id);
+    current?.delete(beforeTurn);
+    if (current && !current.size) beforeTurnChecks.delete(id);
+  };
+}
+
+async function runGate(
+  provider: string,
+  base: BaseGate,
+  extra: Set<Gate> | undefined,
+  options: ProviderLoginGateOptions | undefined,
+): Promise<ProviderLoginGateOutcome | null> {
+  // The turn goes ahead either way; a failed gate is reported, so it does not read as "nothing to do".
+  const outcome = await base(provider, options).catch((error: unknown) => {
+    reportSeamFailure("gate", error, provider);
+    return undefined;
+  });
+  for (const check of [...(extra ?? [])]) {
+    await check(provider).catch((error: unknown) => reportSeamFailure("before_turn_check", error, provider));
+  }
+  return outcome ?? null;
+}
+
+/**
+ * Before a provider starts or resumes a turn, or a CLI session starts: a
+ * promise when a gate or a registered check applies, else null, so the caller
+ * does not even await. It never throws. The promise holds the sync's outcome
+ * (`owner_off` names the computer that did not renew in time); a caller may
+ * ignore it, and the turn goes ahead either way. `options.onWait` hears the
+ * line to show while the turn waits for a fresh sign-in.
+ */
+export const providerLoginGate = Object.assign(
+  (provider: string, options?: ProviderLoginGateOptions): Promise<ProviderLoginGateOutcome | null> | null => {
+    // No installed gate (every computer but a cloud computer with the sync on): nothing runs, not even a registered check.
+    if (!gate) return null;
+    return runGate(provider, gate, beforeTurnChecks.get(provider.trim().toLowerCase()), options);
+  },
+  { register: registerProviderLoginGate },
+);
+
+export type ProviderLoginRestartOptions = {
+  /**
+   * Only the chats whose resolved provider account id is in this list (Claude
+   * and Codex accounts). Pooled processes, which belong to no account, are
+   * left alone. Without it, every chat of the provider and its pooled
+   * processes.
+   */
+  instanceIds?: readonly string[];
+  /**
+   * ADE Cloud's pick for this provider changed (not a renewal of the same
+   * sign-in): each open chat of the provider says "Switched to <to.label>."
+   * one time (step 3d). `key`: a vault key name or `"key"`, never a token.
+   */
+  switched?: {
+    from: { key: string | null; label: string } | null;
+    to: { key: string; label: string };
+  };
+};
+
+export type ProviderLoginRuntimeHooks = {
+  /** End the provider's idle processes now and busy ones after their turn (`agentChatService`). */
+  restartProviderRuntimesWhenIdle(provider: string, options?: ProviderLoginRestartOptions): void;
+  /** Tell this runtime's clients the sign-ins changed (`provider_logins_changed`). */
+  notifyChanged(): void;
+};
+
+const runtimes = new Set<ProviderLoginRuntimeHooks>();
+
+/** Each project runtime of the brain registers once; the returned call unregisters it. */
+export function registerProviderLoginRuntime(hooks: ProviderLoginRuntimeHooks): () => void {
+  runtimes.add(hooks);
+  return () => {
+    runtimes.delete(hooks);
+  };
+}
+
+export function restartProviderRuntimesWhenIdle(provider: string, options?: ProviderLoginRestartOptions): void {
+  for (const hooks of [...runtimes]) {
+    try {
+      hooks.restartProviderRuntimesWhenIdle(provider, options);
+    } catch (error) {
+      // One runtime's failure must not keep the others on the old login.
+      reportSeamFailure("restart_when_idle", error, provider);
+    }
+  }
+}
+
+export function notifyProviderLoginsChanged(): void {
+  for (const hooks of [...runtimes]) {
+    try {
+      hooks.notifyChanged();
+    } catch (error) {
+      // A client that misses one event reads the status again on its next open.
+      reportSeamFailure("notify_changed", error);
+    }
+  }
+}
+
+// ── each pass of the process-wide sync ──────────────────────────────────
+
+export type ProviderLoginPassInfo = {
+  accountUserId: string;
+  cloudComputer: boolean;
+  /** The providers this pass looked at, or null for all. */
+  providers: ProviderLoginProvider[] | null;
+  /** "all_off" when the off switch for all is on: nothing was captured (apply still ran on cloud). */
+  captureOff: "all_off" | null;
+};
+
+type PassListener = (info: ProviderLoginPassInfo) => void | Promise<void>;
+const passListeners = new Set<PassListener>();
+
+/**
+ * Hear the end of each pass of the brain's sign-in sync. A pass runs only
+ * for a signed-in account with ADE Cloud (no ADE Cloud, no tick, no pass
+ * here): on each vault tick (30 s) that reads "ready", when ADE Cloud access
+ * starts, on a person's write, and in the gate before a turn. The listener
+ * is not awaited, and its failure is its own.
+ */
+export function onProviderLoginPass(listener: PassListener): () => void {
+  passListeners.add(listener);
+  return () => {
+    passListeners.delete(listener);
+  };
+}
+
+export function notifyProviderLoginPass(info: ProviderLoginPassInfo): void {
+  for (const listener of [...passListeners]) {
+    try {
+      void Promise.resolve(listener(info)).catch((error: unknown) => reportSeamFailure("pass_listener", error));
+    } catch (error) {
+      // A listener's failure never stops the pass or the other listeners.
+      reportSeamFailure("pass_listener", error);
+    }
+  }
+}
+
+// ── parts of the status that other packages add (P6: `claudePasses`) ────
+
+type StatusPart = (args: { provider: ProviderLoginProvider | null }) => ProviderLoginStatusParts | Promise<ProviderLoginStatusParts>;
+const statusParts = new Set<StatusPart>();
+
+/** Add fields to every `provider_logins.status` answer. Returns the call that removes it. */
+export function registerProviderLoginStatusPart(part: StatusPart): () => void {
+  statusParts.add(part);
+  return () => {
+    statusParts.delete(part);
+  };
+}
+
+/** The fields every registered part adds. A part that fails adds nothing. */
+export async function readProviderLoginStatusParts(provider: ProviderLoginProvider | null): Promise<ProviderLoginStatusParts> {
+  let merged: ProviderLoginStatusParts = {};
+  for (const part of [...statusParts]) {
+    try {
+      merged = { ...merged, ...(await part({ provider })) };
+    } catch (error) {
+      // The rest of the status still answers.
+      reportSeamFailure("status_part", error, provider);
+    }
+  }
+  return merged;
+}

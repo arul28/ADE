@@ -26,6 +26,20 @@ import { stableCacheKey } from "../infra/cacheKey";
 import { createCoalescingReadCache } from "../infra/coalescingReadCache";
 import { createProjectState } from "../infra/projectState";
 import { isAdeAvailable, isAdeUnavailableError } from "../../../lib/adeAvailability";
+
+/** The bound project on the paired machine: the one place this adapter can route a call. */
+const TEST_PIN = {
+  kind: "remote",
+  key: "remote:env-1:project-1",
+  targetId: "env-1",
+  runtimeName: "Mac Studio",
+  projectId: "project-1",
+  rootPath: "/repo",
+  displayName: "repo",
+} as const;
+/** The same machine's second project, after a project handoff. */
+const TEST_PIN_2 = { ...TEST_PIN, key: "remote:env-1:project-2", projectId: "project-2" } as const;
+
 import { FILE_DELETE_TIMEOUT_MS } from "../../../../shared/removeTreeTimeouts";
 import { connectSentry, type SentryApi } from "../../../../shared/sentry/capture";
 
@@ -98,7 +112,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.cto!.getAttention()).resolves.toEqual({
+    await expect(adapter.ade.cto!.getAttention(TEST_PIN)).resolves.toEqual({
       status: "awaiting-input",
       awaitingInput: true,
       since: "2026-08-01T12:00:00.000Z",
@@ -165,17 +179,17 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.cto!.getLinearAgentOverview()).resolves.toEqual(overview);
-    await expect(adapter.ade.cto!.startLinearAgentInstall()).resolves.toEqual({ sessionId: "install-1" });
-    await expect(adapter.ade.cto!.getLinearAgentInstallSession("install-1")).resolves.toEqual({ status: "pending" });
-    await expect(adapter.ade.cto!.registerLinearAgentMember({ replace: true })).resolves.toEqual(overview);
-    await expect(adapter.ade.cto!.unregisterLinearAgentMember()).resolves.toEqual(overview);
-    await expect(adapter.ade.cto!.updateLinearAgentSettings({ fallbackMode: "runner", runner: "self" })).resolves.toEqual(overview);
-    await expect(adapter.ade.cto!.uninstallLinearAgent()).resolves.toEqual(overview);
-    await expect(adapter.ade.cto!.getLinearInbox({ first: 20, includeRead: true })).resolves.toEqual(notifications);
-    await expect(adapter.ade.cto!.markLinearNotification({ notificationId: "notification-1", action: "archive" })).resolves.toBeUndefined();
-    await expect(adapter.ade.cto!.getLinearIssueRelationsIssue("issue-1")).resolves.toMatchObject({ identifier: "ADE-123" });
-    await expect(adapter.ade.cto!.cancelLinearIssue("issue-1")).resolves.toEqual({ canceled: true, issue: null });
+    await expect(adapter.ade.cto!.getLinearAgentOverview(TEST_PIN)).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.startLinearAgentInstall(TEST_PIN)).resolves.toEqual({ sessionId: "install-1" });
+    await expect(adapter.ade.cto!.getLinearAgentInstallSession("install-1", TEST_PIN)).resolves.toEqual({ status: "pending" });
+    await expect(adapter.ade.cto!.registerLinearAgentMember({ replace: true }, TEST_PIN)).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.unregisterLinearAgentMember(TEST_PIN)).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.updateLinearAgentSettings({ fallbackMode: "runner", runner: "self" }, TEST_PIN)).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.uninstallLinearAgent(TEST_PIN)).resolves.toEqual(overview);
+    await expect(adapter.ade.cto!.getLinearInbox({ first: 20, includeRead: true }, TEST_PIN)).resolves.toEqual(notifications);
+    await expect(adapter.ade.cto!.markLinearNotification({ notificationId: "notification-1", action: "archive" }, TEST_PIN)).resolves.toBeUndefined();
+    await expect(adapter.ade.cto!.getLinearIssueRelationsIssue("issue-1", TEST_PIN)).resolves.toMatchObject({ identifier: "ADE-123" });
+    await expect(adapter.ade.cto!.cancelLinearIssue("issue-1", TEST_PIN)).resolves.toEqual({ canceled: true, issue: null });
 
     expect(fake.commandCalls.map(({ action }) => action)).toEqual(actions);
     expect(fake.commandCalls.find(({ action }) => action === "linear_agent.updateSettings")?.args).toEqual({
@@ -296,6 +310,7 @@ describe("createAdeWebAdapter", () => {
     expect(Object.keys(adapter.ade.account).sort()).toEqual([
       "cancelDeviceLogin",
       "cancelLogin",
+      "deleteAccount",
       "getLocalMachineIdentity",
       "listMachines",
       "onPairMachineProgress",
@@ -1254,22 +1269,22 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-1" }]);
-    await expect(adapter.ade.sessions.list()).resolves.toEqual([{
+    await expect(adapter.ade.lanes.list(undefined, TEST_PIN)).resolves.toEqual([{ id: "lane-1" }]);
+    await expect(adapter.ade.sessions.list(undefined, TEST_PIN)).resolves.toEqual([{
       id: "session-1",
       ptyId: "pty-1",
       activityStatus,
     }]);
-    await expect(adapter.ade.prs.listAll()).resolves.toEqual([{ id: "pr-1" }]);
-    await expect(adapter.ade.diff.getChanges({ laneId: "lane-1" } as never)).resolves.toEqual({
+    await expect(adapter.ade.prs.listAll(TEST_PIN)).resolves.toEqual([{ id: "pr-1" }]);
+    await expect(adapter.ade.diff.getChanges({ laneId: "lane-1" } as never, TEST_PIN)).resolves.toEqual({
       files: [{ path: "a.ts" }],
     });
-    await expect(adapter.ade.agentChat.getEventHistory({ sessionId: "chat-1" })).resolves.toMatchObject({
+    await expect(adapter.ade.agentChat.getEventHistory({ sessionId: "chat-1" }, TEST_PIN)).resolves.toMatchObject({
       sessionId: "chat-1",
       sessionFound: true,
     });
-    await adapter.ade.files.delete({ workspaceId: "workspace", path: "old.txt" });
-    await expect(adapter.ade.lanes.listDeleteProgress()).resolves.toEqual([]);
+    await adapter.ade.files.delete({ workspaceId: "workspace", path: "old.txt" }, TEST_PIN);
+    await expect(adapter.ade.lanes.listDeleteProgress(TEST_PIN)).resolves.toEqual([]);
 
     expect(fake.commandCalls.map((call) => [call.action, call.opts.projectId])).toEqual([
       ["lanes.list", "project-1"],
@@ -1293,7 +1308,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.automations.list()).rejects.toThrow("automations.list");
+    await expect(adapter.ade.automations.list(TEST_PIN)).rejects.toThrow("automations.list");
     expect(fake.commandCalls.filter((call) => call.action === "automations.list")).toHaveLength(0);
 
     fake.descriptors = descriptors(["automations.list"]);
@@ -1301,7 +1316,7 @@ describe("createAdeWebAdapter", () => {
       "automations.list",
       Object.assign(new Error("host unavailable"), { code: "host_unavailable" }),
     );
-    await expect(adapter.ade.automations.list()).rejects.toThrow("host unavailable");
+    await expect(adapter.ade.automations.list(TEST_PIN)).rejects.toThrow("host unavailable");
     expect(fake.commandCalls.filter((call) => call.action === "automations.list")).toHaveLength(1);
 
     adapter.dispose();
@@ -1317,17 +1332,17 @@ describe("createAdeWebAdapter", () => {
     );
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
-    await adapter.ade.sessions.list();
-    void adapter.ade.sessions.snoozeSession("terminal-1", new Date(Date.now() + 60 * 60 * 1000).toISOString());
+    await adapter.ade.sessions.list(undefined, TEST_PIN);
+    void adapter.ade.sessions.snoozeSession("terminal-1", new Date(Date.now() + 60 * 60 * 1000).toISOString(), TEST_PIN);
     await flushMicrotasks();
 
     // The plain read answers from the mirror, and the patch is still on it.
-    const pending = await adapter.ade.sessions.list();
+    const pending = await adapter.ade.sessions.list(undefined, TEST_PIN);
     expect(pending[0]!.snoozedUntil).toBeTruthy();
 
     // The host now lists a different terminal. Only the authoritative read sees it.
     fake.commandResults.set("work.listSessions", [{ id: "terminal-2", ptyId: "pty-2" }]);
-    await expect(adapter.ade.sessions.list(undefined, undefined, { authoritative: true })).resolves.toEqual([
+    await expect(adapter.ade.sessions.list(undefined, TEST_PIN, { authoritative: true })).resolves.toEqual([
       expect.objectContaining({ id: "terminal-2" }),
     ]);
 
@@ -1354,7 +1369,7 @@ describe("createAdeWebAdapter", () => {
     adapter.bindProject(project, "project-1");
 
     await expect(
-      adapter.ade.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2", "lane-1", " "] }),
+      adapter.ade.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2", "lane-1", " "] }, TEST_PIN),
     ).resolves.toEqual(statuses);
     expect(fake.commandCalls.map((call) => call.action)).toEqual(["git.getSyncStatuses"]);
     expect(fake.commandCalls[0].args).toEqual({ laneIds: ["lane-1", "lane-2"] });
@@ -1378,7 +1393,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2"] })).resolves.toEqual({
+    await expect(adapter.ade.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2"] }, TEST_PIN)).resolves.toEqual({
       "lane-1": status,
       "lane-2": status,
     });
@@ -1399,7 +1414,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.git.getSyncStatuses({ laneIds: [" ", ""] })).resolves.toEqual({});
+    await expect(adapter.ade.git.getSyncStatuses({ laneIds: [" ", ""] }, TEST_PIN)).resolves.toEqual({});
     expect(fake.commandCalls).toEqual([]);
 
     adapter.dispose();
@@ -1441,9 +1456,9 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
     const lifecycleEvents: unknown[] = [];
-    adapter.ade.lanes.onLifecycleEvent((event) => lifecycleEvents.push(event));
+    adapter.ade.lanes.onLifecycleEvent((event) => lifecycleEvents.push(event), TEST_PIN);
 
-    await expect(adapter.ade.lanes.unarchive({ laneId: lane.id })).resolves.toEqual({
+    await expect(adapter.ade.lanes.unarchive({ laneId: lane.id }, TEST_PIN)).resolves.toEqual({
       lane,
       worktreeRecreated: true,
     });
@@ -1470,9 +1485,9 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
     const lifecycleEvents: unknown[] = [];
-    adapter.ade.lanes.onLifecycleEvent((event) => lifecycleEvents.push(event));
+    adapter.ade.lanes.onLifecycleEvent((event) => lifecycleEvents.push(event), TEST_PIN);
 
-    await adapter.ade.lanes.unarchive({ laneId: lane.id });
+    await adapter.ade.lanes.unarchive({ laneId: lane.id }, TEST_PIN);
 
     expect(lifecycleEvents).toEqual([{
       type: "lane-unarchived",
@@ -1500,7 +1515,7 @@ describe("createAdeWebAdapter", () => {
     await expect(adapter.ade.agentChat.getEventHistory({
       sessionId: "chat-long-running",
       maxEvents: 20_000,
-    })).resolves.toMatchObject({
+    }, TEST_PIN)).resolves.toMatchObject({
       sessionId: "chat-long-running",
       truncated: true,
       tailStartOffset: 4096,
@@ -1530,7 +1545,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.agentChat.getEventHistory({ sessionId: "chat-1" })).resolves.toEqual({
+    await expect(adapter.ade.agentChat.getEventHistory({ sessionId: "chat-1" }, TEST_PIN)).resolves.toEqual({
       sessionId: "chat-1",
       events: [],
       truncated: false,
@@ -1548,7 +1563,7 @@ describe("createAdeWebAdapter", () => {
     await expect(adapter.ade.agentChat.getEventHistoryPage({
       sessionId: "chat-long-running",
       beforeOffset: 4096,
-    })).rejects.toThrow("Chat history action 'chat.getChatEventHistoryPage' is unavailable");
+    }, TEST_PIN)).rejects.toThrow("Chat history action 'chat.getChatEventHistoryPage' is unavailable");
 
     adapter.dispose();
   });
@@ -1569,7 +1584,7 @@ describe("createAdeWebAdapter", () => {
       sessionId: "chat-long-running",
       beforeOffset: 4096,
       maxBytes: 2_000_000,
-    });
+    }, TEST_PIN);
 
     expect(fake.commandCalls.at(-1)).toMatchObject({
       action: "chat.getChatEventHistoryPage",
@@ -1598,7 +1613,7 @@ describe("createAdeWebAdapter", () => {
     await adapter.ade.agentChat.getEventHistoryPage({
       sessionId: "chat-long-running",
       beforeOffset: 4096,
-    });
+    }, TEST_PIN);
 
     const call = fake.commandCalls.at(-1);
     expect(call?.action).toBe("agentChat.getEventHistoryPage");
@@ -1619,12 +1634,12 @@ describe("createAdeWebAdapter", () => {
     adapter.bindProject(project, "project-1");
 
     for (let index = 1; index <= 8; index += 1) {
-      await adapter.ade.agentChat.getEventHistory({ sessionId: `chat-${index}` });
+      await adapter.ade.agentChat.getEventHistory({ sessionId: `chat-${index}` }, TEST_PIN);
     }
     // Reusing chat-1 makes it the most recent entry without opening another
     // wire subscription, so chat-2 is the oldest when chat-9 is selected.
-    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-1" });
-    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-9" });
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-1" }, TEST_PIN);
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-9" }, TEST_PIN);
 
     expect(fake.chatSubscribeCalls.map((call) => call.sessionId)).toEqual([
       "chat-1",
@@ -1659,12 +1674,12 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
     const received: SyncChatEventPayload[] = [];
-    adapter.ade.agentChat.onEvent((event) => received.push(event as SyncChatEventPayload));
+    adapter.ade.agentChat.onEvent((event) => received.push(event as SyncChatEventPayload), TEST_PIN);
 
-    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-visible-oldest" });
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-visible-oldest" }, TEST_PIN);
     for (let index = 1; index <= 8; index += 1) {
       fake.commandResults.set("chat.getSummary", { sessionId: `chat-background-${index}` });
-      await adapter.ade.agentChat.getSummary({ sessionId: `chat-background-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-background-${index}` }, TEST_PIN);
     }
 
     expect(fake.chatUnsubscribeCalls).toEqual(["chat-background-1"]);
@@ -1693,17 +1708,17 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-selection-old" });
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-selection-old" }, TEST_PIN);
     for (let index = 1; index <= 7; index += 1) {
       fake.commandResults.set("chat.getSummary", { sessionId: `chat-selection-background-${index}` });
-      await adapter.ade.agentChat.getSummary({ sessionId: `chat-selection-background-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-selection-background-${index}` }, TEST_PIN);
     }
-    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-selection-new" });
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-selection-new" }, TEST_PIN);
 
     expect(fake.chatUnsubscribeCalls).toEqual(["chat-selection-old"]);
 
     fake.commandResults.set("chat.getSummary", { sessionId: "chat-selection-background-8" });
-    await adapter.ade.agentChat.getSummary({ sessionId: "chat-selection-background-8" });
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-selection-background-8" }, TEST_PIN);
     expect(fake.chatUnsubscribeCalls).toEqual([
       "chat-selection-old",
       "chat-selection-background-1",
@@ -1718,10 +1733,10 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-one-visible" });
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-one-visible" }, TEST_PIN);
     for (let index = 1; index <= 7; index += 1) {
       fake.commandResults.set("chat.getSummary", { sessionId: `chat-project-one-${index}` });
-      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-one-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-one-${index}` }, TEST_PIN);
     }
 
     const projectTwo = { ...project, rootPath: "/repo-2", displayName: "Repo Two" };
@@ -1737,10 +1752,10 @@ describe("createAdeWebAdapter", () => {
       "chat-project-one-7",
     ]));
 
-    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-two-visible" });
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-two-visible" }, TEST_PIN_2);
     for (let index = 1; index <= 8; index += 1) {
       fake.commandResults.set("chat.getSummary", { sessionId: `chat-project-two-${index}` });
-      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-two-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-two-${index}` }, TEST_PIN_2);
     }
 
     expect(fake.chatUnsubscribeCalls).toContain("chat-project-two-1");
@@ -1770,13 +1785,13 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await adapter.ade.agentChat.list({ laneId: "lane-1" });
+    await adapter.ade.agentChat.list({ laneId: "lane-1" }, TEST_PIN);
     expect(fake.chatSubscribeCalls).toEqual([]);
 
-    await adapter.ade.agentChat.getSummary({ sessionId: "chat-selected" });
-    await adapter.ade.agentChat.create({} as never);
-    await adapter.ade.agentChat.launch({} as never);
-    await adapter.ade.agentChat.send({ sessionId: "chat-sent", text: "Continue" });
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-selected" }, TEST_PIN);
+    await adapter.ade.agentChat.create({} as never, TEST_PIN);
+    await adapter.ade.agentChat.launch({} as never, TEST_PIN);
+    await adapter.ade.agentChat.send({ sessionId: "chat-sent", text: "Continue" }, TEST_PIN);
 
     expect(fake.chatSubscribeCalls.map((call) => call.sessionId)).toEqual([
       "chat-selected",
@@ -1812,7 +1827,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
     const lifecycleEvents: unknown[] = [];
-    adapter.ade.lanes.onLifecycleEvent((event) => lifecycleEvents.push(event));
+    adapter.ade.lanes.onLifecycleEvent((event) => lifecycleEvents.push(event), TEST_PIN);
 
     for (let index = 0; index < 8; index += 1) {
       fake.emitTables(["lanes"]);
@@ -1828,11 +1843,11 @@ describe("createAdeWebAdapter", () => {
     fake.commandResults.set("chat.getSummary", { sessionId: "chat-restarted" });
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
-    await adapter.ade.agentChat.getSummary({ sessionId: "chat-restarted" });
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-restarted" }, TEST_PIN);
     fake.commandResults.set("chat.getSummary", { sessionId: "chat-unrelated" });
-    await adapter.ade.agentChat.getSummary({ sessionId: "chat-unrelated" });
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-unrelated" }, TEST_PIN);
     const received: SyncChatEventPayload[] = [];
-    adapter.ade.agentChat.onEvent((event) => received.push(event as SyncChatEventPayload));
+    adapter.ade.agentChat.onEvent((event) => received.push(event as SyncChatEventPayload), TEST_PIN);
 
     const initialSnapshotEvent = transcriptChatEvent("chat-restarted", 1, "snapshot-source");
     fake.emitChatSnapshot("chat-restarted", {
@@ -1874,17 +1889,17 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-before-reconnect" }]);
+    await expect(adapter.ade.lanes.list(undefined, TEST_PIN)).resolves.toEqual([{ id: "lane-before-reconnect" }]);
     await vi.advanceTimersByTimeAsync(3_001);
     fake.commandErrors.set(
       "lanes.list",
       Object.assign(new Error("host unavailable"), { code: "host_unavailable" }),
     );
-    await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-before-reconnect" }]);
+    await expect(adapter.ade.lanes.list(undefined, TEST_PIN)).resolves.toEqual([{ id: "lane-before-reconnect" }]);
 
     fake.commandErrors.delete("lanes.list");
     fake.commandResults.set("lanes.list", [{ id: "lane-after-reconnect" }]);
-    await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-after-reconnect" }]);
+    await expect(adapter.ade.lanes.list(undefined, TEST_PIN)).resolves.toEqual([{ id: "lane-after-reconnect" }]);
     expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toHaveLength(3);
 
     adapter.dispose();
@@ -1902,7 +1917,7 @@ describe("createAdeWebAdapter", () => {
     await expect(adapter.ade.agentChat.send({
       sessionId: "chat-1",
       text: "keep this draft",
-    })).rejects.toMatchObject({ code: "connection_lost_outcome_unknown" });
+    }, TEST_PIN)).rejects.toMatchObject({ code: "connection_lost_outcome_unknown" });
     expect(fake.commandCalls.map((call) => call.action)).toEqual(["chat.send"]);
     expect(fake.chatSubscribeCalls).toEqual([]);
 
@@ -1930,7 +1945,7 @@ describe("createAdeWebAdapter", () => {
     await expect(adapter.ade.agentChat.interrupt({
       sessionId: "chat-1",
       mode: "stop_and_clear",
-    })).resolves.toEqual({
+    }, TEST_PIN)).resolves.toEqual({
       mode: "stop_and_clear",
       cancelledQueuedCount: 2,
       recoveryId: "recovery-1",
@@ -1939,7 +1954,7 @@ describe("createAdeWebAdapter", () => {
     await expect(adapter.ade.agentChat.restoreCancelledQueue({
       sessionId: "chat-1",
       recoveryId: "recovery-1",
-    })).resolves.toEqual({
+    }, TEST_PIN)).resolves.toEqual({
       restored: true,
       restoredCount: 2,
     });
@@ -1995,16 +2010,16 @@ describe("createAdeWebAdapter", () => {
       sessionId: "chat-1",
       cron: "*/20 * * * *",
       prompt: "Check CI",
-    })).resolves.toEqual({ item: scheduledItem });
-    await expect(adapter.ade.agentChat.listScheduledWork({ sessionId: "chat-1" })).resolves.toEqual([scheduledItem]);
+    }, TEST_PIN)).resolves.toEqual({ item: scheduledItem });
+    await expect(adapter.ade.agentChat.listScheduledWork({ sessionId: "chat-1" }, TEST_PIN)).resolves.toEqual([scheduledItem]);
     await expect(adapter.ade.agentChat.cancelScheduledWork({
       sessionId: "chat-1",
       scheduleId: scheduledItem.id,
-    })).resolves.toMatchObject({ schedule: { status: "cancelled" } });
+    }, TEST_PIN)).resolves.toMatchObject({ schedule: { status: "cancelled" } });
     await expect(adapter.ade.agentChat.setScheduledWorkPaused({
       sessionId: "chat-1",
       paused: true,
-    })).resolves.toEqual({ sessionId: "chat-1", paused: true, nextWakeAt: null });
+    }, TEST_PIN)).resolves.toEqual({ sessionId: "chat-1", paused: true, nextWakeAt: null });
 
     expect(fake.commandCalls.map((call) => call.action)).toEqual([
       "chat.createScheduledWork",
@@ -2026,11 +2041,11 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.chatLaunch.start({ kind: "chat", mode: "foreground", launchId: "launch-1", prompt: "Fix it" }))
+    await expect(adapter.ade.chatLaunch.start({ kind: "chat", mode: "foreground", launchId: "launch-1", prompt: "Fix it" }, TEST_PIN))
       .resolves.toEqual(launch);
-    await expect(adapter.ade.chatLaunch.list()).resolves.toEqual([launch]);
-    await expect(adapter.ade.chatLaunch.queueMessage({ launchId: "launch-1", text: "Also this" })).resolves.toEqual(launch);
-    await expect(adapter.ade.chatLaunch.cancel({ launchId: "launch-1" })).resolves.toMatchObject({ phase: "cancelled" });
+    await expect(adapter.ade.chatLaunch.list(TEST_PIN)).resolves.toEqual([launch]);
+    await expect(adapter.ade.chatLaunch.queueMessage({ launchId: "launch-1", text: "Also this" }, TEST_PIN)).resolves.toEqual(launch);
+    await expect(adapter.ade.chatLaunch.cancel({ launchId: "launch-1" }, TEST_PIN)).resolves.toMatchObject({ phase: "cancelled" });
     expect(fake.commandCalls.map((call) => call.action)).toEqual([
       "chat.startLaunch",
       "chat.listLaunches",
@@ -2038,7 +2053,7 @@ describe("createAdeWebAdapter", () => {
       "chat.cancelLaunch",
     ]);
     // A host without the action rejects the write instead of faking a launch.
-    await expect(adapter.ade.chatLaunch.retry({ launchId: "launch-1" })).rejects.toThrow(/chat\.retryLaunch/);
+    await expect(adapter.ade.chatLaunch.retry({ launchId: "launch-1" }, TEST_PIN)).rejects.toThrow(/chat\.retryLaunch/);
     adapter.dispose();
   });
 
@@ -2049,7 +2064,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.agentChat.resumeUsageLimitNow({ sessionId: "chat-1" }))
+    await expect(adapter.ade.agentChat.resumeUsageLimitNow({ sessionId: "chat-1" }, TEST_PIN))
       .resolves.toEqual({ ok: true, turnId: "turn-9" });
     expect(fake.commandCalls.map(({ action, args }) => ({ action, args }))).toEqual([
       { action: "chat.resumeUsageLimitNow", args: { sessionId: "chat-1" } },
@@ -2065,7 +2080,7 @@ describe("createAdeWebAdapter", () => {
 
     // It must reject rather than resolve a fake success: a pill that says a
     // resume is coming when nothing was sent is the failure that matters.
-    await expect(adapter.ade.agentChat.resumeUsageLimitNow({ sessionId: "chat-1" }))
+    await expect(adapter.ade.agentChat.resumeUsageLimitNow({ sessionId: "chat-1" }, TEST_PIN))
       .rejects.toThrow(/'chat.resumeUsageLimitNow' is unavailable/);
 
     adapter.dispose();
@@ -2091,15 +2106,15 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.agentChat.drafts.list()).resolves.toEqual([stashedPrompt]);
+    await expect(adapter.ade.agentChat.drafts.list(TEST_PIN)).resolves.toEqual([stashedPrompt]);
     await expect(adapter.ade.agentChat.drafts.create({
       text: stashedPrompt.text,
       provider: stashedPrompt.provider,
       modelId: stashedPrompt.modelId,
-    })).resolves.toEqual(stashedPrompt);
+    }, TEST_PIN)).resolves.toEqual(stashedPrompt);
     await expect(adapter.ade.agentChat.drafts.delete({
       id: stashedPrompt.id,
-    })).resolves.toBe(true);
+    }, TEST_PIN)).resolves.toBe(true);
 
     expect(fake.commandCalls.map(({ action, args }) => ({ action, args }))).toEqual([
       { action: "chat.listDrafts", args: {} },
@@ -2119,14 +2134,14 @@ describe("createAdeWebAdapter", () => {
   it("treats an unavailable or malformed drafts list as empty", async () => {
     const adapterWithoutAction = createAdeWebAdapter(fake.asClient());
     adapterWithoutAction.bindProject(project, "project-1");
-    await expect(adapterWithoutAction.ade.agentChat.drafts.list()).resolves.toEqual([]);
+    await expect(adapterWithoutAction.ade.agentChat.drafts.list(TEST_PIN)).resolves.toEqual([]);
     adapterWithoutAction.dispose();
 
     fake.descriptors = descriptors(["chat.listDrafts"]);
     fake.commandResults.set("chat.listDrafts", null);
     const adapterWithMalformedResult = createAdeWebAdapter(fake.asClient());
     adapterWithMalformedResult.bindProject(project, "project-1");
-    await expect(adapterWithMalformedResult.ade.agentChat.drafts.list()).resolves.toEqual([]);
+    await expect(adapterWithMalformedResult.ade.agentChat.drafts.list(TEST_PIN)).resolves.toEqual([]);
     adapterWithMalformedResult.dispose();
   });
 
@@ -2303,7 +2318,7 @@ describe("createAdeWebAdapter", () => {
       return { feedback, hooks };
     }
 
-    function stubBrowser(open: (url: string) => { opener: unknown } | null) {
+    function stubBrowser() {
       const stored = new Map<string, string>();
       vi.stubGlobal("window", {
         localStorage: {
@@ -2311,7 +2326,6 @@ describe("createAdeWebAdapter", () => {
           setItem: (key: string, value: string) => stored.set(key, value),
         },
         location: { pathname: "/work" },
-        open: vi.fn(open),
       });
       vi.stubGlobal("navigator", {
         userAgent: "Safari",
@@ -2331,7 +2345,7 @@ describe("createAdeWebAdapter", () => {
         args: expect.objectContaining({
           event: "ade_feature_used",
           surface: "web",
-          properties: { feature: "connections", action: "issue_report", outcome },
+          properties: { feature: "issue_report", action: "issue_report", outcome },
         }),
       });
     }
@@ -2349,13 +2363,16 @@ describe("createAdeWebAdapter", () => {
       ["the transport failed (an ad blocker, no network)", {}, false],
       ["Sentry refused the note", { statusCode: 429 }, false],
     ])("gives a reference only once %s", async (_case, answer, delivered) => {
-      stubBrowser(() => null);
+      stubBrowser();
       const sentry = webSentry(answer);
       const adapter = createAdeWebAdapter(fake.asClient());
 
-      const sendManual = diagnosticsOf(adapter).sendManual;
-      if (!sendManual) throw new Error("sendManual is missing while Sentry runs");
-      const result = await sendManual(CRASH);
+      const diagnostics = diagnosticsOf(adapter);
+      const prepared = await diagnostics.prepareReport?.(CRASH);
+      if (!prepared?.ok) throw new Error("prepareReport failed while Sentry runs");
+      const sendReport = diagnostics.sendReport;
+      if (!sendReport) throw new Error("sendReport is missing while Sentry runs");
+      const result = await sendReport(prepared.id);
 
       expect(result.ok).toBe(delivered);
       // The note opens beside the crash the screen showed, not the newest event.
@@ -2369,26 +2386,18 @@ describe("createAdeWebAdapter", () => {
       await vi.waitFor(() => expect(fake.commandCalls).toContainEqual(recordedOutcome(delivered ? "success" : "failed")));
     });
 
-    it("opens the GitHub issue with no path or email in its public title, and says when the tab was blocked", async () => {
-      stubBrowser(() => null);
-      const adapter = createAdeWebAdapter(fake.asClient());
+    it("sends nothing while the report is only prepared, and a discarded report cannot be sent", async () => {
+      stubBrowser();
+      const sentry = webSentry({ statusCode: 200 });
+      const diagnostics = diagnosticsOf(createAdeWebAdapter(fake.asClient()));
 
-      const blocked = await diagnosticsOf(adapter).openIssue(CRASH);
-      const title = new URL(blocked.issueUrl).searchParams.get("title") ?? "";
-      expect(title).toMatch(/^Web: /);
-      expect(title).not.toMatch(/\/Users\/arul|arul@example\.com/);
-      expect(blocked.report).not.toMatch(/\/Users\/arul|arul@example\.com/);
-      expect(blocked.copied).toBe(true);
-      expect(blocked.opened).toBe(false);
-      await vi.waitFor(() => expect(fake.commandCalls).toContainEqual(recordedOutcome("failed")));
+      const prepared = await diagnostics.prepareReport?.(CRASH);
+      if (!prepared?.ok) throw new Error("prepareReport failed while Sentry runs");
+      expect(sentry.feedback).toHaveLength(0);
 
-      const tab = { opener: {} as unknown };
-      stubBrowser(() => tab);
-      const opened = await diagnosticsOf(createAdeWebAdapter(fake.asClient())).openIssue(CRASH);
-      expect(opened.opened).toBe(true);
-      // The issue page cannot reach back into the client.
-      expect(tab.opener).toBeNull();
-      await vi.waitFor(() => expect(fake.commandCalls).toContainEqual(recordedOutcome("opened")));
+      await diagnostics.discardReport?.(prepared.id);
+      await expect(diagnostics.sendReport?.(prepared.id)).resolves.toEqual({ ok: false, reason: "expired" });
+      expect(sentry.feedback).toHaveLength(0);
     });
   });
 
@@ -2511,8 +2520,8 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.lanes.listSnapshots({ includeStatus: true })).resolves.toEqual([laneSnapshot]);
-    await expect(adapter.ade.prs.refresh({ prIds: ["pr-1"] })).resolves.toEqual([pr]);
+    await expect(adapter.ade.lanes.listSnapshots({ includeStatus: true }, TEST_PIN)).resolves.toEqual([laneSnapshot]);
+    await expect(adapter.ade.prs.refresh({ prIds: ["pr-1"] }, TEST_PIN)).resolves.toEqual([pr]);
 
     expect(fake.commandCalls.map((call) => [call.action, call.args])).toEqual([
       ["lanes.refreshSnapshots", { includeStatus: true }],
@@ -2531,8 +2540,8 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.prs.syncLanePr("lane-1")).resolves.toEqual(pr);
-    await expect(adapter.ade.prs.reconcileNow()).resolves.toBeUndefined();
+    await expect(adapter.ade.prs.syncLanePr("lane-1", TEST_PIN)).resolves.toEqual(pr);
+    await expect(adapter.ade.prs.reconcileNow(TEST_PIN)).resolves.toBeUndefined();
 
     // Single positional laneId marshals to a named `{ laneId }` record (matching
     // the `prs.getForLane` host handler); reconcile carries `{ force: true }`.
@@ -2562,10 +2571,10 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.files.listWorkspaces()).resolves.toEqual(workspaces);
-    await expect(adapter.ade.files.listTree({ workspaceId: "ws-1" } as never)).resolves.toEqual(tree);
+    await expect(adapter.ade.files.listWorkspaces(undefined, TEST_PIN)).resolves.toEqual(workspaces);
+    await expect(adapter.ade.files.listTree({ workspaceId: "ws-1" } as never, TEST_PIN)).resolves.toEqual(tree);
     // A host that has no data for the action still yields the typed fallback.
-    await expect(adapter.ade.files.searchText({ workspaceId: "ws-1", query: "x" } as never)).resolves.toEqual([]);
+    await expect(adapter.ade.files.searchText({ workspaceId: "ws-1", query: "x" } as never, TEST_PIN)).resolves.toEqual([]);
 
     adapter.dispose();
   });
@@ -2599,10 +2608,10 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
     adapter.bindProject(boundProject, "project-2");
 
-    await expect(adapter.ade.files.listWorkspaces()).resolves.toEqual(workspaces);
+    await expect(adapter.ade.files.listWorkspaces(undefined, TEST_PIN_2)).resolves.toEqual(workspaces);
     await expect(Promise.all([
-      adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never),
-      adapter.ade.files.listTree({ depth: 1, workspaceId: "primary" } as never),
+      adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never, TEST_PIN_2),
+      adapter.ade.files.listTree({ depth: 1, workspaceId: "primary" } as never, TEST_PIN_2),
     ])).resolves.toEqual([tree, tree]);
 
     expect(fake.fileCalls).toEqual([
@@ -2611,17 +2620,17 @@ describe("createAdeWebAdapter", () => {
     ]);
 
     const fileEvents: Array<{ workspaceId: string }> = [];
-    adapter.ade.files.onChange((event) => fileEvents.push(event));
+    adapter.ade.files.onChange((event) => fileEvents.push(event), TEST_PIN_2);
     fake.emitTables(["files"]);
     await vi.advanceTimersByTimeAsync(260);
     expect(fileEvents).toEqual([expect.objectContaining({ workspaceId: "primary" })]);
-    await adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never);
+    await adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never, TEST_PIN_2);
     expect(fake.fileCalls.filter((call) => call.action === "listTree")).toHaveLength(2);
 
     fake.fileErrors.set("listWorkspaces", new Error("wrong project scope"));
     fake.emitTables(["files"]);
     await vi.advanceTimersByTimeAsync(260);
-    await expect(adapter.ade.files.listWorkspaces()).rejects.toThrow("wrong project scope");
+    await expect(adapter.ade.files.listWorkspaces(undefined, TEST_PIN_2)).rejects.toThrow("wrong project scope");
 
     adapter.dispose();
   });
@@ -2635,7 +2644,7 @@ describe("createAdeWebAdapter", () => {
     // file: callers cache the "" and paint a blank editor over a healthy file,
     // and a save from that state writes the blank back.
     await expect(
-      adapter.ade.files.readFile({ workspaceId: "primary", path: "src/app.ts" } as never),
+      adapter.ade.files.readFile({ workspaceId: "primary", path: "src/app.ts" } as never, TEST_PIN),
     ).rejects.toThrow("relay dropped the request");
 
     adapter.dispose();
@@ -2661,16 +2670,16 @@ describe("createAdeWebAdapter", () => {
     const fileEvents: unknown[] = [];
     const rebaseEvents: unknown[] = [];
     adapter.ade.app.onProjectChanged((next) => projects.push(next));
-    adapter.ade.lanes.onLifecycleEvent((event) => laneEvents.push(event));
-    adapter.ade.sessions.onChanged((event) => sessionEvents.push(event));
-    adapter.ade.files.onChange((event) => fileEvents.push(event));
-    adapter.ade.rebase.onEvent((event) => rebaseEvents.push(event));
+    adapter.ade.lanes.onLifecycleEvent((event) => laneEvents.push(event), TEST_PIN);
+    adapter.ade.sessions.onChanged((event) => sessionEvents.push(event), TEST_PIN);
+    adapter.ade.files.onChange((event) => fileEvents.push(event), TEST_PIN);
+    adapter.ade.rebase.onEvent((event) => rebaseEvents.push(event), TEST_PIN);
 
-    await adapter.ade.lanes.list();
+    await adapter.ade.lanes.list(undefined, TEST_PIN);
     fake.commandResults.set("lanes.list", [{ id: "lane-new" }]);
     adapter.replaceProject(projectTwo, "project-2");
     await expect(adapter.ade.app.getProject()).resolves.toEqual(projectTwo);
-    await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-new" }]);
+    await expect(adapter.ade.lanes.list(undefined, TEST_PIN_2)).resolves.toEqual([{ id: "lane-new" }]);
 
     expect(projects).toEqual([projectTwo]);
     expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toEqual([
@@ -2750,15 +2759,15 @@ describe("createAdeWebAdapter", () => {
     adapter.bindProject(project, "project-1");
 
     const [list, lanePr, conflicts, statusA, statusB, checks, github, lanesA, lanesB] = await Promise.all([
-      adapter.ade.prs.listAll(),
-      adapter.ade.prs.getForLane("lane-1"),
-      adapter.ade.prs.listWithConflicts({ includeConflictAnalysis: false }),
-      adapter.ade.prs.getStatus("pr-1"),
-      adapter.ade.prs.getStatus("pr-1"),
-      adapter.ade.prs.getChecks("pr-1"),
-      adapter.ade.prs.getGitHubSnapshot(),
-      adapter.ade.lanes.list({ includeStatus: false }),
-      adapter.ade.lanes.list({ includeStatus: false }),
+      adapter.ade.prs.listAll(TEST_PIN),
+      adapter.ade.prs.getForLane("lane-1", TEST_PIN),
+      adapter.ade.prs.listWithConflicts({ includeConflictAnalysis: false }, TEST_PIN),
+      adapter.ade.prs.getStatus("pr-1", TEST_PIN),
+      adapter.ade.prs.getStatus("pr-1", TEST_PIN),
+      adapter.ade.prs.getChecks("pr-1", TEST_PIN),
+      adapter.ade.prs.getGitHubSnapshot(undefined, TEST_PIN),
+      adapter.ade.lanes.list({ includeStatus: false }, TEST_PIN),
+      adapter.ade.lanes.list({ includeStatus: false }, TEST_PIN),
     ]);
 
     expect(list).toEqual([pr]);
@@ -2781,7 +2790,7 @@ describe("createAdeWebAdapter", () => {
     fake.emitTables(["pull_requests", "pull_request_snapshots", "github_pr_projections"]);
     fake.emitTables(["pull_requests"]);
     await vi.advanceTimersByTimeAsync(260);
-    await adapter.ade.prs.listAll();
+    await adapter.ade.prs.listAll(TEST_PIN);
 
     expect(fake.commandCalls.filter((call) => call.action === "prs.list")).toHaveLength(2);
     expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toHaveLength(1);
@@ -2802,7 +2811,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.prs.getDetailBundle("pr-1")).resolves.toEqual(detail);
+    await expect(adapter.ade.prs.getDetailBundle("pr-1", TEST_PIN)).resolves.toEqual(detail);
 
     expect(fake.commandCalls).toEqual([
       expect.objectContaining({
@@ -2835,7 +2844,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.prs.getDetailBundle("pr-1")).resolves.toEqual(detail);
+    await expect(adapter.ade.prs.getDetailBundle("pr-1", TEST_PIN)).resolves.toEqual(detail);
     expect(fake.commandCalls.map((call) => call.action).sort()).toEqual([
       "prs.getChecks",
       "prs.getComments",
@@ -2860,14 +2869,14 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.prs.listGitHubStacks()).resolves.toEqual([stack]);
+    await expect(adapter.ade.prs.listGitHubStacks(undefined, TEST_PIN)).resolves.toEqual([stack]);
     await expect(adapter.ade.prs.addGitHubStackPullRequests({
       stackNumber: 18,
       pullRequests: [43],
-    })).resolves.toEqual(stack);
+    }, TEST_PIN)).resolves.toEqual(stack);
     await expect(adapter.ade.prs.unstackGitHubStack({
       stackNumber: 18,
-    })).resolves.toBeNull();
+    }, TEST_PIN)).resolves.toBeNull();
 
     expect(fake.commandCalls.map((call) => call.action)).toEqual([
       "prs.listGithubStacks",
@@ -2899,8 +2908,8 @@ describe("createAdeWebAdapter", () => {
 
     const laneEvents: unknown[] = [];
     const sessionEvents: unknown[] = [];
-    adapter.ade.lanes.onLifecycleEvent((event) => laneEvents.push(event));
-    adapter.ade.sessions.onChanged((event) => sessionEvents.push(event));
+    adapter.ade.lanes.onLifecycleEvent((event) => laneEvents.push(event), TEST_PIN);
+    adapter.ade.sessions.onChanged((event) => sessionEvents.push(event), TEST_PIN);
 
     fake.emitTables(["lanes"]);
     await vi.advanceTimersByTimeAsync(260);
@@ -2911,7 +2920,7 @@ describe("createAdeWebAdapter", () => {
     expect(sessionEvents).toHaveLength(0);
 
     const chatEvents: unknown[] = [];
-    const offChat = adapter.ade.agentChat.onEvent((event) => chatEvents.push(event));
+    const offChat = adapter.ade.agentChat.onEvent((event) => chatEvents.push(event), TEST_PIN);
     fake.emitChat({
       sessionId: "chat-1",
       timestamp: "2026-07-07T00:00:00.000Z",
@@ -2926,10 +2935,10 @@ describe("createAdeWebAdapter", () => {
     });
     expect(chatEvents).toHaveLength(1);
 
-    await adapter.ade.sessions.list();
-    await adapter.ade.pty.setDataSubscriptions({ ptyIds: ["pty-1"] });
+    await adapter.ade.sessions.list(undefined, TEST_PIN);
+    await adapter.ade.pty.setDataSubscriptions({ ptyIds: ["pty-1"] }, TEST_PIN);
     const ptyData: unknown[] = [];
-    const offData = adapter.ade.pty.onData((event) => ptyData.push(event));
+    const offData = adapter.ade.pty.onData((event) => ptyData.push(event), TEST_PIN);
     fake.emitTerminalData("session-1", {
       sessionId: "session-1",
       ptyId: "pty-1",
@@ -2969,7 +2978,7 @@ describe("createAdeWebAdapter", () => {
     } as const;
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
-    const unsupported = /cross-machine web routing is not implemented/;
+    const unsupported = /to another machine.s connection; it was not run/;
 
     await expect(adapter.ade.pty.create({
       laneId: "lane-1",
@@ -3049,7 +3058,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.prs.reconcileNow(pin)).rejects.toThrow(/cross-machine web routing is not implemented/);
+    await expect(adapter.ade.prs.reconcileNow(pin)).rejects.toThrow(/to another machine.s connection; it was not run/);
     expect(fake.commandCalls).toHaveLength(0);
 
     adapter.dispose();
@@ -3063,9 +3072,9 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.agentChat.getEventHistoryPage(args)).resolves.toMatchObject({ sessionId: args.sessionId });
+    await expect(adapter.ade.agentChat.getEventHistoryPage(args, TEST_PIN)).resolves.toMatchObject({ sessionId: args.sessionId });
     fake.commandErrors.set(action, Object.assign(new Error("host unavailable"), { code: "host_unavailable" }));
-    await expect(adapter.ade.agentChat.getEventHistoryPage(args)).rejects.toThrow("host unavailable");
+    await expect(adapter.ade.agentChat.getEventHistoryPage(args, TEST_PIN)).rejects.toThrow("host unavailable");
     expect(fake.commandCalls.filter((call) => call.action === action)).toHaveLength(2);
 
     adapter.dispose();
@@ -3129,14 +3138,14 @@ describe("createAdeWebAdapter", () => {
       cols: 80,
       rows: 24,
       runtimeCliLaunch: { provider: "claude", permissionMode: "full-auto", instanceId: "acct-work" },
-    });
+    }, TEST_PIN);
     await adapter.ade.pty.create({
       laneId: "lane-1",
       toolType: "shell",
       title: "Shell",
       cols: 80,
       rows: 24,
-    });
+    }, TEST_PIN);
 
     expect(fake.commandCalls.map((call) => (call.args as { instanceId?: string | null }).instanceId))
       .toEqual(["acct-work", null]);
@@ -3160,7 +3169,7 @@ describe("createAdeWebAdapter", () => {
       rows: 28,
       command: "bash",
       args: ["-c", script],
-    });
+    }, TEST_PIN);
 
     expect(created).toMatchObject({ sessionId: "run-1", ptyId: "pty-run-1" });
     expect(fake.commandCalls.map((call) => call.action)).toEqual(["work.runShellBlock"]);
@@ -3181,7 +3190,7 @@ describe("createAdeWebAdapter", () => {
       rows: 32,
       command: "devin",
       args: ["--resume", "s-1"],
-    });
+    }, TEST_PIN);
     expect(fake.commandCalls.map((call) => call.action)).toEqual(["work.runShellBlock", "work.startCliSession"]);
 
     // A machine on an older ADE: never fall back to typing the command into a shell.
@@ -3195,7 +3204,7 @@ describe("createAdeWebAdapter", () => {
       rows: 28,
       command: "bash",
       args: ["-c", "ls"],
-    })).rejects.toThrow(/Update ADE/);
+    }, TEST_PIN)).rejects.toThrow(/Update ADE/);
     expect(fake.commandCalls).toHaveLength(2);
 
     adapter.dispose();
@@ -3223,7 +3232,7 @@ describe("createAdeWebAdapter", () => {
       title: "Pinned shell",
       cols: 80,
       rows: 24,
-    }, otherProjectPin)).rejects.toThrow(/cross-machine web routing is not implemented/);
+    }, otherProjectPin)).rejects.toThrow(/to another machine.s connection; it was not run/);
     expect(fake.commandCalls).toHaveLength(0);
 
     adapter.dispose();
@@ -3242,10 +3251,10 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await adapter.ade.sessions.list();
+    await adapter.ade.sessions.list(undefined, TEST_PIN);
     const ptyData: unknown[] = [];
-    const offData = adapter.ade.pty.onData((event) => ptyData.push(event));
-    await adapter.ade.pty.setDataSubscriptions({ ptyIds: ["pty-1"] });
+    const offData = adapter.ade.pty.onData((event) => ptyData.push(event), TEST_PIN);
+    await adapter.ade.pty.setDataSubscriptions({ ptyIds: ["pty-1"] }, TEST_PIN);
 
     expect(fake.terminalSubscribeCalls).toEqual([{ sessionId: "session-1", opts: { maxBytes: 2_000_000 } }]);
     fake.emitTerminalSnapshot("session-1", {
@@ -3288,14 +3297,14 @@ describe("createAdeWebAdapter", () => {
       offset: 21,
     });
 
-    await expect(adapter.ade.terminal.preview({ terminalId: "session-1", maxBytes: 4096 })).resolves.toMatchObject({
+    await expect(adapter.ade.terminal.preview({ terminalId: "session-1", maxBytes: 4096 }, TEST_PIN)).resolves.toMatchObject({
       terminalId: "session-1",
       transcript: "scrollback\n",
       source: "transcript",
     });
     expect(ptyData).toHaveLength(2);
 
-    await expect(adapter.ade.sessions.readTranscriptTail({ sessionId: "session-1", maxBytes: 4096, raw: true })).resolves.toBe("scrollback\n");
+    await expect(adapter.ade.sessions.readTranscriptTail({ sessionId: "session-1", maxBytes: 4096, raw: true }, TEST_PIN)).resolves.toBe("scrollback\n");
     expect(fake.terminalSubscribeCalls).toHaveLength(1);
     expect(fake.terminalUnsubscribeCalls).toEqual([]);
     expect(fake.terminalHistoryCalls).toEqual([
@@ -3311,11 +3320,11 @@ describe("createAdeWebAdapter", () => {
       sessionId: "session-1",
       maxBytes: 4096,
       raw: true,
-    })).rejects.toMatchObject({ code: "not_connected" });
+    }, TEST_PIN)).rejects.toMatchObject({ code: "not_connected" });
     await expect(adapter.ade.terminal.read({
       terminalId: "session-1",
       since: 11,
-    })).rejects.toMatchObject({ code: "not_connected" });
+    }, TEST_PIN)).rejects.toMatchObject({ code: "not_connected" });
 
     fake.emitTerminalData("session-1", {
       sessionId: "session-1",
@@ -3403,8 +3412,8 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await adapter.ade.sessions.list();
-    await adapter.ade.pty.write({ ptyId: "pty-1", data: "echo ok\n" });
+    await adapter.ade.sessions.list(undefined, TEST_PIN);
+    await adapter.ade.pty.write({ ptyId: "pty-1", data: "echo ok\n" }, TEST_PIN);
 
     expect(fake.terminalInputs).toEqual([{ sessionId: "session-1", data: "echo ok\n" }]);
     adapter.dispose();
@@ -3533,16 +3542,16 @@ describe("createAdeWebAdapter", () => {
     await expect(adapter.ade.lanes.resolveBranchDrift({
       laneId: "lane-1",
       resolution: "switch-back",
-    })).rejects.toThrow(/unavailable/i);
+    }, TEST_PIN)).rejects.toThrow(/unavailable/i);
     // No remote command switches a branch: "Switch back" must fail, not read
     // a null fallback as a switch that happened.
     await expect(adapter.ade.lanes.switchBranch({
       laneId: "lane-1",
       branchName: "ade/lane",
       mode: "existing",
-    })).rejects.toThrow(/not available/i);
+    }, TEST_PIN)).rejects.toThrow(/not available/i);
     // Reads still degrade to their typed fallback.
-    await expect(adapter.ade.lanes.getBranchDrift({ laneId: "lane-1" })).resolves.toBeNull();
+    await expect(adapter.ade.lanes.getBranchDrift({ laneId: "lane-1" }, TEST_PIN)).resolves.toBeNull();
 
     adapter.dispose();
   });
@@ -3620,7 +3629,7 @@ describe("createAdeWebAdapter", () => {
     adapter.bindProject(project, "project-1");
     const stop = surface === "fleet"
       ? adapter.ade.ai.onCursorCloudFleetEvent(() => undefined)
-      : adapter.ade.appControl.onEvent(() => undefined);
+      : adapter.ade.appControl.onEvent(() => undefined, TEST_PIN);
     const reads = () => fake.commandCalls.filter((call) => call.action === action).length;
     // Fleet reads immediately, App Control starts at its base delay.
     await vi.advanceTimersByTimeAsync(0);
@@ -3634,7 +3643,7 @@ describe("createAdeWebAdapter", () => {
       expect(reads()).toBe(before + 1);
     }
     if (surface === "app-control") {
-      await adapter.ade.appControl.getStatus({ laneId: "lane" });
+      await adapter.ade.appControl.getStatus({ laneId: "lane" }, TEST_PIN);
       const before = reads();
       await vi.advanceTimersByTimeAsync(baseMs);
       expect(reads()).toBe(before + 1);
@@ -3746,16 +3755,16 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    const before = await adapter.ade.sessions.list();
+    const before = await adapter.ade.sessions.list(undefined, TEST_PIN);
     expect(isSessionSnoozed(before[0]!)).toBe(false);
 
     const untilIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-    await expect(adapter.ade.sessions.snoozeSession("session-1", untilIso)).resolves.toBe(true);
+    await expect(adapter.ade.sessions.snoozeSession("session-1", untilIso, TEST_PIN)).resolves.toBe(true);
 
     // The host row is deliberately still un-snoozed here: the optimistic patch
     // is the only reason the row reads as snoozed, which is what puts it in the
     // shared "Snoozed" group without waiting for the changeset pump.
-    const optimistic = await adapter.ade.sessions.list();
+    const optimistic = await adapter.ade.sessions.list(undefined, TEST_PIN);
     expect(optimistic[0]!.snoozedUntil).toBe(untilIso);
     expect(optimistic[0]!.snoozedAt).toEqual(expect.any(String));
     expect(isSessionSnoozed(optimistic[0]!)).toBe(true);
@@ -3769,10 +3778,10 @@ describe("createAdeWebAdapter", () => {
     fake.commandResults.set("session.snoozeSession", true);
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
-    await adapter.ade.sessions.list();
+    await adapter.ade.sessions.list(undefined, TEST_PIN);
 
     const hostUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-    await adapter.ade.sessions.snoozeSession("session-1", hostUntil);
+    await adapter.ade.sessions.snoozeSession("session-1", hostUntil, TEST_PIN);
 
     // The machine echoes back the deadline we sent but stamps its OWN
     // `snoozed_at`. That instant is reconciled by presence, so the host's row
@@ -3781,9 +3790,9 @@ describe("createAdeWebAdapter", () => {
       { id: "session-1", ptyId: "pty-1", snoozedUntil: hostUntil, snoozedAt: "2026-07-20T00:00:00.000Z" },
     ]);
 
-    await adapter.ade.sessions.list();
+    await adapter.ade.sessions.list(undefined, TEST_PIN);
     await flushMicrotasks();
-    const reconciled = await adapter.ade.sessions.list();
+    const reconciled = await adapter.ade.sessions.list(undefined, TEST_PIN);
 
     expect(reconciled[0]!.snoozedUntil).toBe(hostUntil);
     expect(reconciled[0]!.snoozedAt).toBe("2026-07-20T00:00:00.000Z");
@@ -3797,19 +3806,19 @@ describe("createAdeWebAdapter", () => {
     fake.commandErrors.set("session.snoozeSession", new Error("session is gone"));
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
-    await adapter.ade.sessions.list();
+    await adapter.ade.sessions.list(undefined, TEST_PIN);
 
     const changes: unknown[] = [];
-    adapter.ade.sessions.onChanged((event) => changes.push(event));
+    adapter.ade.sessions.onChanged((event) => changes.push(event), TEST_PIN);
 
     await expect(
-      adapter.ade.sessions.snoozeSession("session-1", new Date(Date.now() + 60 * 60 * 1000).toISOString()),
+      adapter.ade.sessions.snoozeSession("session-1", new Date(Date.now() + 60 * 60 * 1000).toISOString(), TEST_PIN),
     ).rejects.toThrow("session is gone");
 
     // Painted, then rolled back — both need a notification or the row would sit
     // showing a snooze the machine never took.
     expect(changes).toHaveLength(2);
-    const after = await adapter.ade.sessions.list();
+    const after = await adapter.ade.sessions.list(undefined, TEST_PIN);
     expect(after[0]!.snoozedUntil ?? null).toBeNull();
     expect(isSessionSnoozed(after[0]!)).toBe(false);
 
@@ -3823,11 +3832,11 @@ describe("createAdeWebAdapter", () => {
     fake.commandResults.set("session.wakeSession", false);
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
-    await adapter.ade.sessions.list();
+    await adapter.ade.sessions.list(undefined, TEST_PIN);
 
-    await expect(adapter.ade.sessions.wakeSession("session-1", "manual")).resolves.toBe(false);
+    await expect(adapter.ade.sessions.wakeSession("session-1", "manual", TEST_PIN)).resolves.toBe(false);
 
-    const after = await adapter.ade.sessions.list();
+    const after = await adapter.ade.sessions.list(undefined, TEST_PIN);
     expect(after[0]!.wokeAt ?? null).toBeNull();
     expect(after[0]!.wokeReason ?? null).toBeNull();
 
@@ -3848,18 +3857,18 @@ describe("createAdeWebAdapter", () => {
     fake.commandResults.set("session.clearWokeMarker", { ok: true, sessionId: "session-1" });
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
-    await adapter.ade.sessions.list();
+    await adapter.ade.sessions.list(undefined, TEST_PIN);
 
-    await expect(adapter.ade.sessions.snoozeSession("session-1", untilIso)).resolves.toBe(true);
+    await expect(adapter.ade.sessions.snoozeSession("session-1", untilIso, TEST_PIN)).resolves.toBe(true);
     // Applied, so the optimistic patch has to survive until the host row lands.
-    const optimistic = await adapter.ade.sessions.list();
+    const optimistic = await adapter.ade.sessions.list(undefined, TEST_PIN);
     expect(optimistic[0]!.snoozedUntil).toBe(untilIso);
     expect(isSessionSnoozed(optimistic[0]!)).toBe(true);
 
-    await expect(adapter.ade.sessions.setSettleOverride("session-1", "active")).resolves.toBe(true);
-    await expect(adapter.ade.sessions.clearWokeMarker("session-1")).resolves.toBe(true);
+    await expect(adapter.ade.sessions.setSettleOverride("session-1", "active", TEST_PIN)).resolves.toBe(true);
+    await expect(adapter.ade.sessions.clearWokeMarker("session-1", TEST_PIN)).resolves.toBe(true);
     // `ok: false` still means no-op, exactly like a bare `false`.
-    await expect(adapter.ade.sessions.wakeSession("session-1", "manual")).resolves.toBe(false);
+    await expect(adapter.ade.sessions.wakeSession("session-1", "manual", TEST_PIN)).resolves.toBe(false);
 
     adapter.dispose();
   });
@@ -3871,9 +3880,9 @@ describe("createAdeWebAdapter", () => {
     adapter.bindProject(project, "project-1");
     fake.connectionState = "reconnecting";
 
-    await expect(adapter.ade.sessions.snoozeSession("session-1", new Date().toISOString()))
+    await expect(adapter.ade.sessions.snoozeSession("session-1", new Date().toISOString(), TEST_PIN))
       .rejects.toThrow(SESSION_LIFECYCLE_DISCONNECTED_MESSAGE);
-    await expect(adapter.ade.sessions.settle("session-1")).rejects.toThrow(SESSION_LIFECYCLE_DISCONNECTED_MESSAGE);
+    await expect(adapter.ade.sessions.settle("session-1", undefined, TEST_PIN)).rejects.toThrow(SESSION_LIFECYCLE_DISCONNECTED_MESSAGE);
     expect(fake.commandCalls.filter((call) => call.action.startsWith("session."))).toEqual([]);
 
     adapter.dispose();
@@ -3888,7 +3897,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.sessions.snoozeSession("session-1", new Date().toISOString()))
+    await expect(adapter.ade.sessions.snoozeSession("session-1", new Date().toISOString(), TEST_PIN))
       .rejects.toThrow(SESSION_LIFECYCLE_UNSUPPORTED_MESSAGE);
     expect(fake.commandCalls.filter((call) => call.action.startsWith("session."))).toEqual([]);
 

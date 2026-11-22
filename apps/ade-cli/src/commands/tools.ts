@@ -8,6 +8,7 @@ import {
   resolveMachineToolsRoot,
   tryResolveTool,
 } from "../services/tools";
+import { resolveToolsRootLayout } from "../services/tools/paths";
 import { selectDemandedAgentTools } from "../../../desktop/src/main/services/tools/agentToolDemand";
 
 export class ToolsUsageError extends Error {}
@@ -33,6 +34,8 @@ export type ToolsCommandDeps = {
 type ToolStatusRow = {
   tool: string;
   installed: boolean;
+  /** The install's folder: which root it came from (a baked copy, the system cache, home). */
+  dir: string | null;
   packageName: string | null;
   version: string | null;
   entryPath: string | null;
@@ -77,6 +80,7 @@ function statusRow(tool: string, resolved: ToolResolution | null): ToolStatusRow
   return {
     tool,
     installed: resolved != null,
+    dir: resolved?.dir ?? null,
     packageName: resolved?.packageName ?? null,
     version: resolved?.version ?? null,
     entryPath: resolved?.entryPath ?? null,
@@ -107,12 +111,16 @@ export async function runToolsCommand(
   const sub = positionals[0] ?? "status";
   const textProgress = deps.textProgress === true;
   const toolsRoot = resolveMachineToolsRoot(env);
+  const layout = resolveToolsRootLayout(env);
 
   if (sub === "status") {
     const tools = pinned.map((tool) => statusRow(tool, resolve(tool, { env })));
     return {
       ok: true,
       action: "tools-status",
+      // Where installs go (a system cache first, when the machine has one) and
+      // the read-only copies a machine image ships.
+      layout,
       toolsRoot,
       // The generic --text renderer truncates nested objects, so the per-tool
       // detail below is unreadable there. This line carries the same facts in a

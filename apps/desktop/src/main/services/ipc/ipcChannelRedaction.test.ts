@@ -60,28 +60,17 @@ describe("ipc channel redaction", () => {
     }
   });
 
-  // A project secret's value is the secret. `value`, a whole `.env` file's
-  // `content`, and a list of name/value pairs are all too ordinary a shape for
-  // the generic field-name guard to catch, so the map is the only gate.
-  it("redacts project secret values on every channel that carries one", () => {
-    const [set] = redactIpcArgsForChannel(IPC.projectSecretsSet, [
-      { name: "STRIPE_KEY", value: "sk_live_not_a_real_secret" },
-    ]) as Array<Record<string, unknown>>;
-    expect(set.value).toBe("[redacted]");
-    expect(set.name).toBe("STRIPE_KEY");
-
-    const [preview] = redactIpcArgsForChannel(IPC.projectSecretsPreviewEnvImport, [
-      { fileName: ".env.local", content: "STRIPE_KEY=sk_live_not_a_real_secret" },
-    ]) as Array<Record<string, unknown>>;
-    expect(preview.content).toBe("[redacted]");
-    expect(preview.fileName).toBe(".env.local");
-
-    const [imported] = redactIpcArgsForChannel(IPC.projectSecretsImportEnv, [
-      { secrets: [{ name: "STRIPE_KEY", value: "sk_live_not_a_real_secret" }] },
-    ]) as Array<Record<string, unknown>>;
-    expect(imported.secrets).toBe("[redacted]");
-
-    for (const redacted of [set, preview, imported]) {
+  // A saved secret's value, or a `.env` import's entries, travel inside
+  // `passwords.call`'s `args` under ordinary words (`value`, `entries`) the
+  // generic field-name guard would not catch, so the map is the only gate.
+  it("redacts what a Passwords & Secrets call carries", () => {
+    const calls = [
+      { action: "saveSecret", args: { name: "STRIPE_KEY", value: "sk_live_not_a_real_secret", projectScope: null } },
+      { action: "importSecrets", args: { projectScope: null, entries: [{ name: "STRIPE_KEY", value: "sk_live_not_a_real_secret" }] } },
+    ];
+    for (const call of calls) {
+      const [redacted] = redactIpcArgsForChannel(IPC.passwordsCall, [call]) as Array<Record<string, unknown>>;
+      expect(redacted.action).toBe(call.action);
       expect(JSON.stringify(redacted)).not.toContain("sk_live_not_a_real_secret");
     }
   });

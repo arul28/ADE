@@ -198,6 +198,10 @@ describe("ProjectRegistry", () => {
       catalogVisibility: "recent",
       registrationSource: "desktop",
     });
+    // An automatic registration (an `ade` command in the folder) keeps how
+    // an opened project got its place; the account project sync reads it.
+    expect(registry.add(projectRoot, { catalogVisibility: "system", registrationSource: "runtime-auto" }))
+      .toMatchObject({ catalogVisibility: "recent", registrationSource: "desktop" });
     registry.setCatalogVisibilityByRootPath(projectRoot, "system", "desktop");
 
     const automatic = registry.add(projectRoot, {
@@ -391,7 +395,8 @@ describe("ProjectRegistry", () => {
     const homeDir = makeTempRoot("ade-project-registry-touch-");
     const projectRoot = path.join(homeDir, "ADE");
     const registryDir = path.join(homeDir, ".ade-runtime");
-    fs.mkdirSync(projectRoot, { recursive: true });
+    // A checkout: the origin read starts git only inside one.
+    fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
     const registry = new ProjectRegistry({
       adeDir: registryDir,
       projectsPath: path.join(registryDir, "projects.json"),
@@ -419,7 +424,8 @@ describe("ProjectRegistry", () => {
     const homeDir = makeTempRoot("ade-project-registry-readd-");
     const projectRoot = path.join(homeDir, "ADE");
     const registryDir = path.join(homeDir, ".ade-runtime");
-    fs.mkdirSync(projectRoot, { recursive: true });
+    // A checkout: the origin read starts git only inside one.
+    fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
     const registry = new ProjectRegistry({
       adeDir: registryDir,
       projectsPath: path.join(registryDir, "projects.json"),
@@ -443,8 +449,42 @@ describe("ProjectRegistry", () => {
     expect(updated.gitOriginUrl).toBe("git@github.com:arul28/ADE.git");
   });
 
-  it("backfills git origin on re-add when the existing record is missing it", () => {
+  it("backfills git origin on re-add once the checkout's git config changes", () => {
     const homeDir = makeTempRoot("ade-project-registry-readd-null-");
+    const projectRoot = path.join(homeDir, "ADE");
+    const registryDir = path.join(homeDir, ".ade-runtime");
+    // A checkout: the origin read starts git only inside one.
+    fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
+    const registry = new ProjectRegistry({
+      adeDir: registryDir,
+      projectsPath: path.join(registryDir, "projects.json"),
+      secretsDir: path.join(registryDir, "secrets"),
+      sockDir: path.join(registryDir, "sock"),
+      socketPath: path.join(registryDir, "sock", "ade.sock"),
+      desktopBridgeSocketPath: path.join(registryDir, "sock", "desktop-bridge.sock"),
+      binDir: path.join(registryDir, "bin"),
+      runtimeDir: path.join(registryDir, "runtime"),
+    });
+    registry.add(projectRoot);
+    // git's answer stands until a config file it reads changes; this one gains
+    // a config (no origin in it, so git is asked again).
+    fs.writeFileSync(path.join(projectRoot, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n");
+    spawnSyncMock.mockClear();
+    spawnSyncMock.mockReturnValueOnce({
+      status: 0,
+      stdout: "git@github.com:arul28/ADE.git\n",
+    });
+
+    const updated = registry.add(projectRoot);
+
+    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+    expect(updated.gitOriginUrl).toBe("git@github.com:arul28/ADE.git");
+  });
+
+  it("lists the origin of a project that was saved without one, from the config file alone", () => {
+    // Other machines learn which repository a project is from this list, so a
+    // record saved before the origin existed must not answer "none" forever.
+    const homeDir = makeTempRoot("ade-project-registry-list-origin-");
     const projectRoot = path.join(homeDir, "ADE");
     const registryDir = path.join(homeDir, ".ade-runtime");
     fs.mkdirSync(projectRoot, { recursive: true });
@@ -458,17 +498,46 @@ describe("ProjectRegistry", () => {
       binDir: path.join(registryDir, "bin"),
       runtimeDir: path.join(registryDir, "runtime"),
     });
-    registry.add(projectRoot);
+    const registered = registry.add(projectRoot);
+    expect(registry.get(registered.projectId)?.gitOriginUrl ?? null).toBeNull();
+
+    fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, ".git", "config"), [
+      "[core]",
+      "\trepositoryformatversion = 0",
+      "[remote \"origin\"]",
+      "\turl = https://github.com/arul28/ADE.git",
+      "[extensions]",
+      "\tworktreeConfig = true",
+      "",
+    ].join("\n"));
     spawnSyncMock.mockClear();
-    spawnSyncMock.mockReturnValueOnce({
-      status: 0,
-      stdout: "git@github.com:arul28/ADE.git\n",
-    });
 
-    const updated = registry.add(projectRoot);
+    expect(registry.get(registered.projectId)?.gitOriginUrl).toBe("https://github.com/arul28/ADE.git");
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
 
-    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-    expect(updated.gitOriginUrl).toBe("git@github.com:arul28/ADE.git");
+  it("sends a repository key to this machine's one checkout of it, and never guesses between two", () => {
+    const root = makeTempRoot();
+    const registryDir = path.join(root, "machine");
+    const layout = { adeDir: registryDir, projectsPath: path.join(registryDir, "projects.json") } as any;
+    const registry = new ProjectRegistry(layout);
+    const checkout = (name: string, origin: string) => {
+      const projectRoot = path.join(root, name);
+      fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, ".git", "config"), `[remote "origin"]\n\turl = ${origin}\n`);
+      return registry.add(projectRoot).projectId;
+    };
+    const only = checkout("only", "git@github.com:Owner/Only.git");
+    const first = checkout("twice-a", "https://github.com/owner/twice.git");
+    checkout("twice-b", "https://github.com/owner/twice");
+
+    expect([
+      registry.resolveRepositoryProjectId("github.com/owner/only"),
+      registry.resolveRepositoryProjectId("github.com/owner/twice"),
+      registry.resolveRepositoryProjectId("github.com/owner/missing"),
+      registry.resolveRepositoryProjectId(first),
+    ]).toEqual([only, null, null, null]);
   });
 
   describe("writers in other processes", () => {

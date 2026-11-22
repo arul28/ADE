@@ -1,3 +1,4 @@
+import { PRIMARY_LANE_DISPLAY_NAME } from "../../../../shared/laneDisplayName";
 import type { ProjectLaneHealth } from "../../../../shared/types/projectHealth";
 import type { LaneReclaimRisk } from "../../../../shared/types/lanes";
 
@@ -42,7 +43,7 @@ function daysSince(iso: string | null, now: number): number | null {
 
 /** The one status pill a row wears. */
 export function laneStatusPill(lane: ProjectLaneHealth, now = Date.now()): { label: string; tone?: "ok" | "warn" | "crit" } {
-  if (lane.laneType === "primary") return { label: "Primary" };
+  if (lane.laneType === "primary") return { label: PRIMARY_LANE_DISPLAY_NAME };
   if (lane.stale === "pr-merged") return { label: "Stale · PR merged", tone: "warn" };
   if (lane.stale === "pr-closed") return { label: "Stale · PR closed", tone: "warn" };
   if (lane.stale === "idle") {

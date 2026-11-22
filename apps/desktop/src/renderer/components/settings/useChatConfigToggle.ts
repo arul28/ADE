@@ -4,6 +4,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { showToast } from "../app/toast/toastStore";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { requirePin } from "../../state/repositoryScope";
 
 type BooleanChatKey = {
   [K in keyof AiChatConfig]-?: NonNullable<AiChatConfig[K]> extends boolean ? K : never;
@@ -37,7 +38,8 @@ export function useChatConfigToggle(
     if (onWeb) return;
     let cancelled = false;
     setStatus("loading");
-    void window.ade.projectConfig.get(pin)
+    void Promise.resolve()
+      .then(() => window.ade.projectConfig.get(requirePin(pin)))
       .then((snapshot) => {
         if (cancelled) return;
         const value = (localOnly ? snapshot.local : snapshot.effective).ai?.chat?.[key];

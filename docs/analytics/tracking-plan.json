@@ -12,6 +12,8 @@
       "platform",
       "arch",
       "release_channel",
+      "environment",
+      "ade_cloud",
       "machine_id",
       "project_id",
       "session_id",
@@ -26,7 +28,10 @@
       "build_number",
       "distribution",
       "release_channel",
-      "machine_id"
+      "environment",
+      "machine_id",
+      "is_internal",
+      "review_context"
     ],
     "marketing": [
       "$referrer",
@@ -294,7 +299,8 @@
       "source": "desktop_policy",
       "purpose": "An installed update did not take effect after restart.",
       "properties": [
-        "attempt"
+        "attempt",
+        "handoff_step"
       ]
     },
     {
@@ -352,10 +358,16 @@
       ],
       "owner": "apps/desktop/src/main/main.ts",
       "source": "desktop_policy",
-      "purpose": "A window's renderer process was lost and whether it was reloaded.",
+      "purpose": "A window's renderer process was lost and whether it was reloaded, with how long the page was open and what it held at its last fresh memory snapshot (heap, share of the limit, open chat panes, largest transcript, session replay on).",
       "properties": [
         "crash_reason",
-        "recovered"
+        "recovered",
+        "heap_mb_bucket",
+        "heap_pct_bucket",
+        "duration_bucket",
+        "chat_pane_bucket",
+        "transcript_bucket",
+        "replay_active"
       ]
     },
     {
@@ -424,6 +436,7 @@
       "properties": [
         "action_domain",
         "brain_action",
+        "brain_frame",
         "error_code",
         "expected_kind"
       ]
@@ -591,9 +604,12 @@
       ],
       "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
       "source": "ios",
-      "purpose": "How an iOS account sign-in ended.",
+      "purpose": "How an iOS account sign-in ended. A failure also carries provider, reason, and error_code; a success carries outcome only.",
       "properties": [
-        "outcome"
+        "outcome",
+        "provider",
+        "reason",
+        "error_code"
       ]
     },
     {

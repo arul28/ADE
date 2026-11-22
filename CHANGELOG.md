@@ -7,27 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.130] - 2026-11-10
+## [1.2.132] - 2026-11-19
 
-### Added
+### Desktop and web
 
-- Linux desktop app: `.deb` and AppImage for x64 and arm64 (#2137, #2150).
-- Appearance schedule by time of day (#2153).
-- ADE MCP for outside bots: chat ids that resolve, events, webhooks, full `chat_start`, files, readable proof (#2145).
-- File links that open, PR writing help, optional release of settled chats (#2147).
-- Lanes are created in the background (#2149).
-- 23 more servers in the MCP catalogue (#2159).
+- ADE Cloud iPhone: minutes, idle stop and Keep on in the pane and top bar; chat start/stop notices; older machines say to update; faster agent path (#2426).
+- ADE Cloud: server-side move, free and copy with no machine of your own; kept lanes open their own page; agents never make a computer alone (#2400, #2401, #2404, #2405, #2407, #2413, #2424).
+- Brain no longer freezes on many lanes; CLI messages no longer stuck; new chats keep the screen; remote Windows update can't hang (#2421, #2423, #2425, #2394).
+- Sentry and ADE Web fixes (#2402, #2412, #2414, #2415, #2417, #2418, #2419).
 
-### Changed
+### iOS
 
-- Cursor SDK 1.3.1, Claude 0.3.319, Codex 0.167.0 (#2130, #2126, #2127).
-- Short CLI commands start faster (#2143).
+- Pull to list cloud computers made elsewhere; kept cloud lanes; main-thread fixes (#2407, #2410, #2422).
 
-### Fixed
+## [1.2.131] - 2026-11-18
 
-- `ade` refuses to open another ADE install's home as a project (#2157, #2160).
-- ADE Cloud: a send that wakes a computer reaches the right project; the app knows its computers without the Connections pane (#2162, #2156).
-- Chat recovery after updates, lane delete safety, Git and PR reliability, Sentry and PostHog issues (#2133, #2115, #2144, #2141, #2154).
+### Desktop and web
+
+- Update gate: ADE can ask a build that is too old to update before it keeps working, on every surface (#2381).
+- Delete account in Settings › Account (#2381).
+- ADE Cloud: approval cards for deletes and resizes in full-auto chats, drafts list models and branches, launches no longer need the tab's computer online (#2388, #2389, #2395).
+- Sends to a just-slept cloud computer go to the queue; slow-link typing and macOS redraw improvements; Sentry fixes (#2364, #2369, #2373, #2329, #2331, #2374, #2377, #2378).
+
+### iOS
+
+- ADE Cloud managed fully from the phone with no computer connected; Hub composer cloud lanes; delete and sleep fixes (#2379, #2385, #2387, #2390, #2393, #2396, #2398, #2399).
+
+## [1.2.130] - 2026-11-18
+
+### Desktop and web
+
+- ADE Cloud is one machine for every account: cloud lanes on their own computer, launches from web, phone and CLI, plans Free to Max, idle cleanup, and a redesigned ADE Cloud page (#2332, #2319, #2139, #2135, #2173, #2201, #2255, #2314, #2234, #2241, #2177, #2164, #2230).
+- Save at rest: each lane's work is saved before its computer rests, and cleanups never wake a computer (#2340, #2343).
+- One project tab shows every computer's work, and any computer uses any other's screens, App Control and builds (#2205, #2247, #2238, #2252, #2257, #2258).
+- Passwords (#2237, #2259); a CTO that remembers (#2295, #2301); automation rules follow the account (#2161); lane sharing with the real chat (#2236, #2220, #2165).
+- Provider sign-in once per account (#2171, #2172, #2341); Antigravity on `agy` (#2195); GPT-6.2 and Claude Fable 5.2 (#2335, #2148); Cursor /compact (#2130).
+- Phones and ADE Web update other machines (#2330); ADE Web sign-in, chat links and Connections (#2313, #2231, #2167, #2242).
+- Faster start and quieter idle (#2302, #2309, #2327); slow-link and brain-crash resilience (#2325, #2224, #2184, #2212).
+- Fixes: Sentry and PostHog issues (#2154, #2176, #2342, #2343, #2240), pre-launch hardening (#2338, #2180), cloud launch and delete states (#2320, #2322, #2294, #2345), deleted project folders (#2348), Cloud images and lane lists (#2349), cloud lane relaunch, free and delete, queued message files, lane chats on a new computer, and one chat's error on another (#2351, #2354, #2355, #2356, #2357, #2358); pairing, Manage lane, terminal previews, transcript reports and cloud resize fixes (#2344, #2334, #2228, #2288, #2179, #2296, #2291, #2293, #2251, #2209, #2312), Windows and Linux fixes (#2206, #2278, #2150).
+- CI, test and release tooling (#2244, #2282, #2285, #2289, #2311, #2315, #2318).
+
+### iOS
+
+- The Hub and project flows come from the account; CLI sessions on any computer; Duo layout fixes (#2202, #2204, #2210, #2225, #2245, #2168, #2175).
+- ADE Cloud on the iPhone: cloud chats with images, sends to a sleeping lane, lane computer management and delete (#2353).
+- The CLI message box stays fast while the CLI prints (#2326).
+
+### Linux
+
+- ADE desktop app for Linux with AppImage and .deb releases (#2137, #2150).
 
 ### Models
 
@@ -2871,7 +2899,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.130...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.132...HEAD
+[1.2.132]: https://github.com/arul28/ADE/compare/v1.2.131...v1.2.132
+[1.2.131]: https://github.com/arul28/ADE/compare/v1.2.130...v1.2.131
 [1.2.130]: https://github.com/arul28/ADE/compare/v1.2.129...v1.2.130
 [1.2.129]: https://github.com/arul28/ADE/compare/v1.2.128...v1.2.129
 [1.2.128]: https://github.com/arul28/ADE/compare/v1.2.127...v1.2.128

@@ -158,7 +158,11 @@ function sanitizeDetail(value: unknown, machineKey: string): MachineInventoryDet
           }];
         })
         : [];
-      return [{ provider, accounts, modelCount: boundedCount(raw.modelCount) }];
+      return [{
+        provider,
+        accounts,
+        modelCount: boundedCount(raw.modelCount),
+      }];
     })
     : [];
   const presets = Array.isArray(record.presets)

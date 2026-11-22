@@ -1,6 +1,7 @@
 import type { SyncRemoteCommandDescriptor } from "../../../../shared/types/sync";
 import type { AdeSyncClient } from "../../sync";
 import { noteProjectHostUnavailable } from "../../sync/projectHostRecoveryStore";
+import { noteBootCriticalRead, waitForBootPriority } from "./bootPriority";
 import { stableCacheKey } from "./cacheKey";
 import { createCoalescingReadCache } from "./coalescingReadCache";
 import type { AdapterProjectState } from "./projectState";
@@ -193,13 +194,22 @@ export class CommandCaller {
       : null;
     const retainLastRead = readKey !== null && !("retainLastRead" in options && options.retainLastRead === false);
     const send = async (): Promise<T> => {
-      const epoch = this.invalidationEpoch;
-      const value = (await this.client.sendCommand(action, args, {
-        projectId,
-        timeoutMs: options.timeoutMs,
-      })) as T;
-      if (readKey && retainLastRead && epoch === this.invalidationEpoch) this.rememberSuccessfulRead(readKey, value);
-      return value;
+      // On a page that opens on a chat, heavy reads wait until the chat has
+      // painted (bootPriority.ts). Writes never wait.
+      const deferred = readKey ? waitForBootPriority(action) : null;
+      if (deferred) await deferred;
+      const endCritical = readKey ? noteBootCriticalRead(action) : null;
+      try {
+        const epoch = this.invalidationEpoch;
+        const value = (await this.client.sendCommand(action, args, {
+          projectId,
+          timeoutMs: options.timeoutMs,
+        })) as T;
+        if (readKey && retainLastRead && epoch === this.invalidationEpoch) this.rememberSuccessfulRead(readKey, value);
+        return value;
+      } finally {
+        endCritical?.();
+      }
     };
 
     let value: T;

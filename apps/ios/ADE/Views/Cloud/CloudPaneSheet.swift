@@ -1,12 +1,41 @@
+import Combine
+import OSLog
 import SwiftUI
+import UIKit
 
-/// The phone's ADE Cloud page (Work ⋯ menu): the plan's hours left, the account's
-/// machines with every action the desktop card has, ready machines, a new
-/// machine (approved here as it joins), and what agents may spend alone.
+private let cloudPaneLog = Logger(subsystem: "com.ade.ios", category: "cloud-pane")
+
+/// The phone's ADE Cloud page: the mirror of the desktop's Settings › ADE
+/// Cloud dashboard (`settings/cloudDashboard/CloudDashboard.tsx`), in the
+/// same order and words, drawn with ADEKit (flat, cheap in lists):
 ///
-/// Layouts: on a phone and the Duo's outer display, a list that pushes a
-/// machine. On the inner display held as a book, the list on the left page and
-/// the machine on the right; held as a laptop, what you read on the top half
+/// 1. the plan, hours left (of N, resets <UTC date>), earned hours, extra
+///    hours, the forecast, disk and computers;
+/// 2. every lane and every computer the account pays for (a computer with no
+///    lane says "No lane"): size, disk, state, last run;
+/// 3. the plans side by side (what each includes, the current one marked);
+/// 4. the sizes (CPU, memory, disk limit, what it runs, rate, how long the
+///    hours left last there);
+/// 5. the sign-ins cloud computers use, one row per provider;
+/// 6. what agents may do alone.
+///
+/// App Store rule: the iPhone app never offers to buy or change a plan, shows
+/// no price, links to no checkout and says nowhere where to change a plan.
+/// The plans card says only what each plan includes.
+///
+/// Two ways in, both behind `sync.cloudAvailable && sync.cloudSupported`:
+/// Work › ⋯ › ADE Cloud (this sheet) and Settings › ADE Cloud
+/// (`CloudSettingsPage`). Reads go to the machine the phone is connected to
+/// (`cloud.read`); with none, the phone reads the account server itself. A
+/// computer's actions (sleep, wake, size, free, clear caches, keep, update,
+/// delete) work with no computer of the person's own: they go to the account
+/// server with the phone's own sign-in, the same routes the desktop uses
+/// (sleep, wake and a no-lane delete still go through a connected machine's
+/// `cloud.write`). The account's ADE Cloud is the same from any device.
+///
+/// Layouts: on a phone and the Duo's outer display, one page that pushes a
+/// computer. On the inner display held as a book, the page on the left and
+/// the computer on the right; held as a laptop, what you read on the top half
 /// and what you tap on the bottom half.
 struct CloudPaneSheet: View {
   @StateObject private var store: CloudPaneStore
@@ -32,37 +61,28 @@ struct CloudPaneSheet: View {
         laptopLayout(fold: fold)
       default:
         NavigationStack {
-          CloudListScreen(store: store, onClose: { dismiss() }, pushes: true)
-            .navigationDestination(for: CloudPhoneMachine.self) { machine in
-              CloudMachineScreen(store: store, instanceId: machine.instanceId)
-            }
+          CloudDashboardScreen(store: store, onClose: { dismiss() }, pushes: true)
         }
       }
     }
-    .task { await store.reload() }
-    .sheet(item: $store.approval) { request in
-      DeviceSignInApprovalSheet(request: request) { store.approval = nil }
-        .environmentObject(AccountService.shared)
-    }
-    .sheet(isPresented: $store.newMachinePresented) {
-      CloudNewMachineSheet(store: store)
-    }
+    .task { await store.load() }
+    .cloudLaneActionsHost()
   }
 
   private func bookLayout(fold: DuoFold, size: CGSize) -> some View {
     let listWidth: CGFloat = {
       if case .sideBySide(let rect) = fold, rect.minX > 240 { return rect.minX }
-      return min(360, size.width * 0.4)
+      return min(380, size.width * 0.42)
     }()
     return HStack(spacing: 0) {
       NavigationStack {
-        CloudListScreen(store: store, onClose: { dismiss() }, pushes: false)
+        CloudDashboardScreen(store: store, onClose: { dismiss() }, pushes: false)
       }
       .frame(width: listWidth)
       DuoSeam(axis: .vertical, foldRect: fold.frame)
       NavigationStack {
         if let id = store.selectedId {
-          CloudMachineScreen(store: store, instanceId: id)
+          CloudMachineScreen(store: store, instanceId: id, pops: false)
         } else {
           CloudPickPrompt()
         }
@@ -78,38 +98,89 @@ struct CloudPaneSheet: View {
           if let machine = store.selected {
             CloudMachineFacts(store: store, machine: machine).padding(16)
           } else {
-            CloudHoursSummary(store: store).padding(16)
+            CloudHero(store: store).padding(16)
           }
         }
         .background(ADEColor.pageBackground.ignoresSafeArea())
         .navigationTitle(store.selected?.displayName ?? "ADE Cloud")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-          ToolbarItem(placement: .topBarLeading) {
-            Button { dismiss() } label: { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)) }
+          ToolbarItem(placement: .topBarTrailing) {
+            Button(role: .close) { dismiss() }
               .accessibilityLabel("Close ADE Cloud")
           }
         }
       }
       .frame(height: topHeight)
       DuoSeam(axis: .horizontal, foldRect: fold.frame)
-      ScrollView {
-        VStack(alignment: .leading, spacing: 14) {
-          if let job = store.makeJob {
-            CloudMakeJobRow(store: store, job: job)
-              .padding(ADEKit.inset)
-              .background(RoundedRectangle(cornerRadius: ADEKit.radius).fill(ADEKit.surface))
+      // Its own stack, so an asleep lane's "Open its work" pushes the lane's
+      // saved work into this half. The bar shows only on that pushed page.
+      NavigationStack {
+        ScrollView {
+          VStack(alignment: .leading, spacing: 14) {
+            if let machine = store.selected {
+              CloudMachineControls(store: store, machine: machine)
+            }
+            ADEEyebrow("Lanes and computers")
+            CloudMachineChips(store: store)
           }
-          if let machine = store.selected {
-            CloudMachineControls(store: store, machine: machine)
-          }
-          CloudSectionLabel("Your machines")
-          CloudMachineChips(store: store)
+          .padding(16)
         }
-        .padding(16)
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
       }
-      .background(ADEColor.pageBackground.ignoresSafeArea())
     }
+  }
+}
+
+/// Settings › ADE Cloud: the same page, pushed in Settings' own stack (the
+/// desktop's sidebar tab). Settings shows the row only with access.
+struct CloudSettingsPage: View {
+  @StateObject private var store: CloudPaneStore
+
+  init(syncService: SyncService) {
+    _store = StateObject(wrappedValue: CloudPaneStore(syncService: syncService))
+  }
+
+  var body: some View {
+    CloudDashboardScreen(store: store, onClose: nil, pushes: true)
+      .task { await store.load() }
+      .cloudLaneActionsHost()
+  }
+}
+
+/// A cloud lane's "Manage computer": the same `CloudMachineScreen` as ADE
+/// Cloud's dashboard, for one computer. It shows the computer's state, size,
+/// disk and last run; opens the lane's work (at rest when the computer is
+/// asleep); sleeps or wakes it; changes its size; frees its computer (the
+/// lane stays); clears its caches; deletes the lane (with its computer, from
+/// the account, no wake); and downloads the lane's saved work. All of it
+/// works with no computer of the person's own.
+struct CloudLaneManageSheet: View {
+  @StateObject private var store: CloudPaneStore
+  let instanceId: String
+  let showsOpenWork: Bool
+  @Environment(\.dismiss) private var dismiss
+
+  init(syncService: SyncService, instanceId: String, showsOpenWork: Bool = true) {
+    _store = StateObject(wrappedValue: CloudPaneStore(syncService: syncService))
+    self.instanceId = instanceId
+    self.showsOpenWork = showsOpenWork
+  }
+
+  var body: some View {
+    NavigationStack {
+      CloudMachineScreen(store: store, instanceId: instanceId, showsOpenWork: showsOpenWork)
+        .toolbar {
+          // The trailing side, as Settings' close: on the Duo it sits on the edge bar.
+          ToolbarItem(placement: .topBarTrailing) {
+            Button(role: .close) { dismiss() }
+              .accessibilityLabel("Close")
+          }
+        }
+    }
+    .task { await store.load() }
+    .cloudLaneActionsHost()
   }
 }
 
@@ -122,44 +193,59 @@ final class CloudPaneStore: ObservableObject {
   @Published private(set) var phase: Phase = .loading
   @Published private(set) var machines: [CloudPhoneMachine] = []
   @Published private(set) var account: CloudPhoneAccount?
-  @Published private(set) var limits: CloudPhoneLimits?
-  @Published private(set) var readyProjects: [CloudPhoneReadyPool.Entry] = []
-  /// The machine a two-pane layout shows; the first one until the person picks.
+  @Published private(set) var limits: CloudPhoneLimits? {
+    didSet { if limits != nil { limitsError = nil } }
+  }
+  /// Why the account's limits could not be read; the card shows it in
+  /// place of "Reading…". Nil once limits are read.
+  @Published private(set) var limitsError: String?
+  /// The account's sign-ins (`providerLogins.status`); nil before the read,
+  /// on an older machine, or when it can't be read.
+  @Published private(set) var signIns: ProviderLoginsPhoneStatus?
+  @Published private(set) var signInsUnreadable = false
+  @Published private(set) var signInsSaving = false
+  /// The computer a two-pane layout shows; the first one until the person picks.
   @Published var selectedId: String?
-  /// An action running on a machine, by instance id (its buttons wait).
+  /// An action running on a computer, by instance id (its buttons wait).
   @Published private(set) var busy: Set<String> = []
   @Published var actionError: String?
-  @Published var newMachinePresented = false
-  @Published private(set) var makeJob: CloudPhoneMakeJob?
-  @Published var approval: DeviceSignInRequest?
+  /// One clock per read: "ran 3 h ago" moves when the list is read again.
+  @Published private(set) var now = Date()
+  /// Bumped by each pull to refresh: cards with reads of their own read again.
+  @Published private(set) var refreshes = 0
 
   let syncService: SyncService
-  private var pollTask: Task<Void, Never>?
-  /// The make whose approval the sheet already opened, so it opens once.
-  private var approvalShownFor: String?
 
   /// Fixture screens (`-adePreviewScreen duo-cloud…`) hold their data and read nothing.
   private var isFixture = false
+  private var signInsWatch: AnyCancellable?
+  /// Bumped by each sign-ins read and write: only the newest one's answer lands.
+  private var signInsRequest = 0
 
   init(syncService: SyncService) {
     self.syncService = syncService
+    // A sign-in saved or applied on the machine shows at once (its push), not on the next open.
+    signInsWatch = syncService.$providerLoginsRevision
+      .dropFirst()
+      .removeDuplicates()
+      .sink { [weak self] _ in
+        Task { @MainActor in await self?.reloadSignIns() }
+      }
   }
 
   #if DEBUG
-  init(syncService: SyncService, fixtureList: CloudPhoneList, limits: CloudPhoneLimits, ready: [CloudPhoneReadyPool.Entry], makeJob: CloudPhoneMakeJob? = nil) {
+  init(syncService: SyncService, fixtureList: CloudPhoneList, limits: CloudPhoneLimits, signIns: ProviderLoginsPhoneStatus? = nil, now: Date = Date()) {
     self.syncService = syncService
     isFixture = true
-    machines = fixtureList.machines
+    machines = CloudPaneStore.ordered(fixtureList.machines, now: now)
     account = fixtureList.account
     self.limits = limits
-    readyProjects = ready
-    self.makeJob = makeJob
-    selectedId = fixtureList.machines.first?.instanceId
+    self.signIns = signIns
+    self.now = now
+    selectedId = machines.first?.instanceId
     phase = .loaded
   }
   #endif
-
-  deinit { pollTask?.cancel() }
 
   var selected: CloudPhoneMachine? {
     machines.first { $0.instanceId == selectedId } ?? machines.first
@@ -169,26 +255,199 @@ final class CloudPaneStore: ObservableObject {
 
   var outOfHours: Bool { account?.outOfHours == true }
 
+  var tiers: [CloudPhoneTier] { cloudPhoneTiers(account?.catalog) }
+  /// The hours left now, earned hours too (what the sizes card counts); nil before the account is read.
+  var hoursLeftMilli: Int? { account.map { $0.hours.leftMilli + max(0, $0.earnedHours?.leftMilli ?? 0) } }
+
+  /// The phone may change things on this machine (a controlling device).
+  var canWrite: Bool { syncService.canInvokeRemoteAction("cloud.write") }
+
+  /// No connected computer runs this page: the phone reads the account
+  /// server itself (`/cloud/account`, `/cloud/instances`, `/cloud/limits`,
+  /// `/cloud/sign-ins`), and acts on each computer there too.
+  @Published private(set) var isDirect = false
+  /// Why the direct read of the account's computers failed; nil once it worked.
+  @Published private(set) var instancesError: String?
+  /// The revision of the limits a direct write names (`ifRevision`).
+  private var limitsRevision: String?
+
+  /// The person may change what agents may do: through a connected
+  /// computer, or straight on the account with their own sign-in.
+  var canWriteLimits: Bool { isDirect || canWrite }
+
+  /// Whether this page reads the account server itself.
+  static func readsDirect(_ sync: SyncService) -> Bool {
+    !sync.cloudSupported || sync.connectionState != .connected
+  }
+
   func reload() async {
     if isFixture { return }
+    if Self.readsDirect(syncService) {
+      await reloadDirect()
+      return
+    }
+    isDirect = false
+    instancesError = nil
     do {
-      let list = try await syncService.cloudRead("list", as: CloudPhoneList.self)
-      machines = list.machines.sorted { lhs, rhs in
-        if lhs.isAwake != rhs.isAwake { return lhs.isAwake }
-        return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
-      }
+      // The full list: each computer's lane, size, disk parts and last run,
+      // and the whole account. An older brain ignores `detail` and sends its
+      // summary, which the page shows with fewer facts.
+      let list = try await syncService.cloudRead("list", args: ["detail": "full"], as: CloudPhoneList.self)
+      now = Date()
+      machines = Self.ordered(list.machines, now: now)
+      CloudLaneComputerLabels.note(list.machines)
       account = list.account
       if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
       phase = .loaded
-      limits = try? await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
-      readyProjects = (try? await syncService.cloudRead("ready_status", as: CloudPhoneReadyPool.self))?.projects ?? []
     } catch {
-      let message = error.localizedDescription
-      if machines.isEmpty { phase = .failed(message) }
+      // The computer can't answer for the account: read it directly. With a
+      // sign-in, also over a list already shown: the computer that answered
+      // before may be the one that just went to sleep, and its old row
+      // would keep showing it awake.
+      if machines.isEmpty || AccountService.shared.isSignedIn {
+        await reloadDirect()
+        return
+      }
+    }
+    await readLimitsThroughComputer()
+    await reloadSignIns()
+  }
+
+  /// A pull to refresh: the page, and each card's own read.
+  func refresh() async {
+    refreshes += 1
+    await reload()
+    await loadMoves()
+  }
+
+  /// The page's first read, then the moves once (a move started on another device shows).
+  func load() async {
+    await reload()
+    await loadMoves()
+  }
+
+  /// The page from the account server, with this phone's own sign-in.
+  private func reloadDirect() async {
+    isDirect = true
+    guard let client = await syncService.cloudServerClient() else {
+      phase = .failed("Sign in to ADE to see ADE Cloud.")
+      return
+    }
+    async let accountRead = Self.readDirect("account") { try await client.account() }
+    // The computers' read keeps its failure: the lanes card shows the
+    // server's sentence then, never "No cloud lanes yet".
+    async let instancesRead: Result<[CloudServerInstance], Error> = {
+      do { return .success(try await client.instances()) } catch { return .failure(error) }
+    }()
+    limitsError = nil
+    async let limitsRead = client.agentLimits()
+    let (account, instancesResult) = await (accountRead, instancesRead)
+    let instances = try? instancesResult.get()
+    if case .failure(let error) = instancesResult {
+      instancesError = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't list your computers. Try again in a moment."
+      cloudPaneLog.notice("cloud_pane read=instances failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    } else {
+      instancesError = nil
+    }
+    now = Date()
+    if let account { self.account = account }
+    if let instances {
+      let live = instances.filter { !$0.isGone }
+      serverInstances = Dictionary(live.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+      let list = live.compactMap(cloudPhoneMachine(from:))
+      machines = Self.ordered(list, now: now)
+      if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
+    }
+    if account == nil, instances == nil {
+      if machines.isEmpty { phase = .failed("ADE Cloud didn't answer. Check the connection, then try again.") }
+    } else {
+      phase = .loaded
+    }
+    do {
+      let state = try await limitsRead
+      limits = state.phoneLimits
+      limitsRevision = state.revision
+    } catch CloudServerClient.Failure.noAccess {
+      // An older server has no limits route.
+      limitsError = "This ADE Cloud server can't show agent limits yet."
+    } catch {
+      limitsError = cloudServerFailureMessage(error)
+      cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    }
+    signIns = nil
+  }
+
+  /// The limits through the connected computer. A failed read gives the
+  /// card its reason in place of "Reading…".
+  private func readLimitsThroughComputer() async {
+    limitsError = nil
+    do {
+      limits = try await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
+    } catch {
+      limitsError = cloudPhoneWords(error.localizedDescription) ?? "ADE couldn't read the agent limits."
+      cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
   }
 
-  /// One write on a machine; the list reads again after it.
+  /// One direct read of the page; a failure is logged and reads as nil.
+  private static func readDirect<T>(_ name: String, _ read: () async throws -> T) async -> T? {
+    do {
+      return try await read()
+    } catch {
+      cloudPaneLog.notice("cloud_pane read=\(name, privacy: .public) failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return nil
+    }
+  }
+
+  /// Lanes first (awake, then the most recent), then computers with no lane.
+  static func ordered(_ machines: [CloudPhoneMachine], now: Date) -> [CloudPhoneMachine] {
+    machines.sorted { lhs, rhs in
+      if lhs.noLane != rhs.noLane { return !lhs.noLane }
+      if lhs.isAwake != rhs.isAwake { return lhs.isAwake }
+      let left = lhs.lastActiveAtMs ?? 0
+      let right = rhs.lastActiveAtMs ?? 0
+      if left != right { return left > right }
+      return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+    }
+  }
+
+  func reloadSignIns() async {
+    guard !isFixture else { return }
+    guard syncService.supportsRemoteAction("providerLogins.status") else {
+      signIns = nil
+      return
+    }
+    signInsRequest += 1
+    let request = signInsRequest
+    do {
+      let status = try await ProviderLoginsPhoneStatus.read(on: syncService)
+      guard request == signInsRequest else { return }
+      signIns = status
+      signInsUnreadable = false
+    } catch {
+      guard request == signInsRequest else { return }
+      signInsUnreadable = signIns == nil
+    }
+  }
+
+  /// "Share my sign-ins with ADE Cloud": the one switch for all.
+  func setSignInsShared(_ on: Bool) async {
+    guard !signInsSaving else { return }
+    signInsSaving = true
+    defer { signInsSaving = false }
+    actionError = nil
+    signInsRequest += 1
+    let request = signInsRequest
+    do {
+      let status = try await ProviderLoginsPhoneStatus.write("setCloudAll", args: ["on": on], on: syncService)
+      if request == signInsRequest { signIns = status }
+    } catch {
+      actionError = SyncUserFacingError.message(for: error)
+      ADEHaptics.error()
+    }
+  }
+
+  /// One write on a computer; the list reads again after it.
   func run(_ action: String, on machine: CloudPhoneMachine, args: [String: Any] = [:]) async {
     busy.insert(machine.instanceId)
     defer { busy.remove(machine.instanceId) }
@@ -199,758 +458,450 @@ final class CloudPaneStore: ObservableObject {
       _ = try await syncService.cloudWrite(action, args: input, as: CloudPhoneAck.self)
       ADEHaptics.success()
     } catch {
-      actionError = error.localizedDescription
+      actionError = cloudPhoneWords(error.localizedDescription) ?? "ADE Cloud couldn't do that."
       ADEHaptics.error()
     }
     await reload()
   }
 
+  // MARK: Actions on one computer
+
+  /// The phone can act on a computer: through the connected computer's
+  /// `cloud.write`, or with its own sign-in straight on the account server
+  /// (no computer of the person's own needed).
+  var canManage: Bool { canWrite || AccountService.shared.isSignedIn }
+
+  /// Every action asks the account server with the phone's own sign-in: it
+  /// is the account's, the same from any device. Only a phone that isn't
+  /// signed in to ADE sends sleep, wake and a no-lane delete through the
+  /// connected computer. Through the computer, a sleep of that same computer
+  /// never answered: it slept mid-call and the page kept showing it awake.
+  private var writesThroughComputer: Bool { !isDirect && canWrite && !AccountService.shared.isSignedIn }
+
+  /// The account server's rows from the last direct read, by id.
+  @Published private(set) var serverInstances: [String: CloudServerInstance] = [:]
+
+  /// The account server's row for a computer (its update facts): this page's
+  /// last direct read, else the phone's own read of the account's computers.
+  func serverInstance(_ instanceId: String) -> CloudServerInstance? {
+    serverInstances[instanceId] ?? syncService.cloudServerInstances.first { $0.id == instanceId }
+  }
+
+  func sleep(_ machine: CloudPhoneMachine) async {
+    if writesThroughComputer { return await run("sleep", on: machine) }
+    await act(on: machine) { client in
+      try await client.sleep(instanceId: machine.instanceId)
+      return nil
+    }
+  }
+
+  func wake(_ machine: CloudPhoneMachine) async {
+    if writesThroughComputer { return await run("wake", on: machine) }
+    await act(on: machine) { client in
+      try await client.start(instanceId: machine.instanceId)
+      return nil
+    }
+  }
+
+  /// Deletes a computer that holds no lane, and takes it off the account's machines.
+  func deleteComputer(_ machine: CloudPhoneMachine) async {
+    if writesThroughComputer {
+      await run("delete", on: machine)
+      if actionError == nil { CloudLaneActions.shared.deleted(instanceId: machine.instanceId) }
+      return
+    }
+    await act(on: machine, title: "Deleted \(machine.displayName)", gone: true) { client in
+      guard try await client.deleteInstanceConfirmed(machine.instanceId) else {
+        return CloudComputerOutcome(ok: false, message: "ADE Cloud took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.")
+      }
+      let account = AccountService.shared
+      if let key = machine.machineKey,
+         let row = account.machines.first(where: { $0.machineKey.caseInsensitiveCompare(key) == .orderedSame }) {
+        do {
+          try await account.removeMachineFromAccount(row)
+        } catch {
+          cloudPaneLog.notice("cloud_pane delete account_row=left error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+          return CloudComputerOutcome(ok: true, message: "Deleted on ADE Cloud. ADE couldn't take it off your computers; remove it in Settings › Machines.")
+        }
+      }
+      return CloudComputerOutcome(ok: true, message: "Deleted on ADE Cloud and removed from ADE.")
+    }
+  }
+
+  /// "Keep the lane, free its computer": the work is pushed, the computer
+  /// goes, the lane and its chats stay. It takes minutes.
+  func freeComputer(_ machine: CloudPhoneMachine) async {
+    let name = machine.displayName
+    await act(on: machine, title: "Freed \(name)'s computer", failureTitle: "Kept \(name)'s computer", gone: true) { client in
+      await client.freeLane(instanceId: machine.instanceId)
+    }
+  }
+
+  /// A size of the same kind, now: the computer restarts on it.
+  func changeSize(_ machine: CloudPhoneMachine, to tier: CloudPhoneTier) async {
+    await act(on: machine, title: "Changing \(machine.displayName) to \(tier.label)") { client in
+      await client.changeSize(instanceId: machine.instanceId, to: tier)
+    }
+  }
+
+  func clearCaches(_ machine: CloudPhoneMachine) async {
+    await act(on: machine, title: "Cleared caches on \(machine.displayName)") { client in
+      await client.clearCaches(instanceId: machine.instanceId)
+    }
+  }
+
+  /// "Keep it": the idle cleanup's clock starts again, with no wake.
+  func keep(_ machine: CloudPhoneMachine) async {
+    await act(on: machine, title: "Kept \(machine.displayName)") { _ in
+      if let failure = await AccountCloudStore.shared.keep(instanceId: machine.instanceId, using: syncService) {
+        return CloudComputerOutcome(ok: false, message: failure)
+      }
+      return CloudComputerOutcome(ok: true, message: "ADE won't delete it for not being used. Its idle clock starts again.")
+    }
+  }
+
+  /// Moves the computer to its channel's newest image; it restarts on it.
+  func update(_ machine: CloudPhoneMachine) async {
+    await act(on: machine, title: "Updating \(machine.displayName)") { _ in
+      if let failure = await AccountCloudStore.shared.updateComputer(instanceId: machine.instanceId, using: syncService) {
+        return CloudComputerOutcome(ok: false, message: failure)
+      }
+      return CloudComputerOutcome(ok: true, message: "It restarts and is back in a few minutes.")
+    }
+  }
+
+  /// One action on a computer, straight on the account server with the
+  /// phone's own sign-in. Its buttons wait meanwhile; a long one (a free
+  /// pushes work for minutes) goes on for a while with the app in the
+  /// background. It worked: a toast with its sentence (`title`). It didn't:
+  /// the server's sentence in `actionError` (and a toast with `failureTitle`).
+  /// `gone`: the computer is deleted after it worked, so its pages close and
+  /// the phone's own list reads again. The page reads again after.
+  private func act(
+    on machine: CloudPhoneMachine,
+    title: String? = nil,
+    failureTitle: String? = nil,
+    gone: Bool = false,
+    _ body: (CloudServerClient) async throws -> CloudComputerOutcome?
+  ) async {
+    let instanceId = machine.instanceId
+    guard !busy.contains(instanceId) else { return }
+    busy.insert(instanceId)
+    actionError = nil
+    var background = UIBackgroundTaskIdentifier.invalid
+    background = UIApplication.shared.beginBackgroundTask(withName: "ade.cloud.computer-action") {
+      UIApplication.shared.endBackgroundTask(background)
+      background = .invalid
+    }
+    var worked = false
+    if let client = await syncService.cloudServerClient() {
+      do {
+        let outcome = try await body(client)
+        worked = outcome?.ok ?? true
+        if let outcome, !outcome.ok {
+          // The phone never points at a purchase (App Store rule).
+          actionError = cloudPhoneWords(outcome.message) ?? "ADE Cloud couldn't do that."
+          if let failureTitle { CloudLaneActions.shared.toast = ADEToastMessage(text: failureTitle, kind: .failure, detail: actionError) }
+        } else if let title {
+          CloudLaneActions.shared.toast = ADEToastMessage(text: title, detail: outcome.flatMap { cloudPhoneWords($0.message) })
+        }
+      } catch {
+        actionError = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't do that."
+      }
+    } else {
+      actionError = "Sign in to ADE, then try again."
+    }
+    if worked { ADEHaptics.success() } else { ADEHaptics.error() }
+    busy.remove(instanceId)
+    if worked && gone {
+      CloudLaneActions.shared.deleted(instanceId: instanceId)
+      await syncService.refreshCloudServerInstances()
+    }
+    await reload()
+    if background != .invalid {
+      UIApplication.shared.endBackgroundTask(background)
+      background = .invalid
+    }
+  }
+
+  // MARK: Moves to the other kind
+
+  /// The moves this page shows, by move id: running ones, and failed ones
+  /// until the person dismisses them. A finished move leaves once handled.
+  @Published private(set) var moves: [String: CloudServerMove] = [:]
+  /// The account server is older than the move route: a size of the other
+  /// kind says why (a move needs ADE on a computer) and stays off.
+  @Published private(set) var movesUnsupported = false
+  /// When each move was last read, so two cards following one move read it once.
+  private var moveReadAt: [String: Date] = [:]
+  /// Each finished move's follow-up (lists read again, its toast), once.
+  private var moveEndings: [String: Task<Void, Never>] = [:]
+  /// Moves that ended well while this page followed them, by move id, once
+  /// their follow-up ran: a computer's page goes on to the new computer.
+  @Published private(set) var endedMoves: [String: CloudServerMove] = [:]
+  /// Moves whose cancel is on its way (their Cancel waits).
+  @Published private(set) var cancellingMoves: Set<String> = []
+
+  /// The moves to show, oldest first.
+  var shownMoves: [CloudServerMove] {
+    moves.values.sorted { ($0.createdAt ?? 0, $0.moveId) < ($1.createdAt ?? 0, $1.moveId) }
+  }
+
+  /// The move this computer is part of (from it or onto it), a running one first.
+  func move(for instanceId: String) -> CloudServerMove? {
+    let mine = moves.values.filter { $0.involves(instanceId) }
+    return mine.first { !$0.isFinished } ?? mine.first
+  }
+
+  /// The move that took this computer to a new one and ended well, once the
+  /// lists show the new computer.
+  func endedMove(from instanceId: String) -> CloudServerMove? {
+    endedMoves.values.first { $0.sourceInstanceId == instanceId }
+  }
+
+  /// The computer is part of a running move: its other actions wait.
+  func isMoving(_ instanceId: String) -> Bool {
+    moves.values.contains { !$0.isFinished && $0.involves(instanceId) }
+  }
+
+  /// The account's moves, once per open and per pull to refresh. Moves that
+  /// ended well or were cancelled aren't news; a failed one shows its reason.
+  func loadMoves() async {
+    guard !isFixture, AccountService.shared.isSignedIn,
+          let client = await syncService.cloudServerClient() else { return }
+    do {
+      let rows = try await client.moves()
+      movesUnsupported = false
+      for row in rows {
+        if let known = moves[row.moveId] {
+          await apply(row, was: known)
+        } else if !row.isFinished || row.state == "failed" {
+          moves[row.moveId] = row
+        }
+      }
+    } catch CloudServerClient.Failure.noAccess {
+      // An older server has no move routes; the POST says so when it's tried.
+    } catch {
+      cloudPaneLog.notice("cloud_pane read=moves failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    }
+  }
+
+  /// Starts the server's move of a computer to `tier`, of the other kind.
+  func startMove(_ machine: CloudPhoneMachine, to tier: CloudPhoneTier) async {
+    let instanceId = machine.instanceId
+    guard !busy.contains(instanceId), !isMoving(instanceId) else { return }
+    busy.insert(instanceId)
+    defer { busy.remove(instanceId) }
+    actionError = nil
+    let kind = tier.full ? "a full computer" : "a standard computer"
+    guard let client = await syncService.cloudServerClient() else {
+      actionError = "Sign in to ADE, then try again."
+      ADEHaptics.error()
+      return
+    }
+    do {
+      let record = try await client.startMove(instanceId: instanceId, to: tier.full ? "full" : "standard", sizeId: tier.id, moveId: UUID().uuidString.lowercased())
+      moves[record.moveId] = record
+      moveReadAt[record.moveId] = Date()
+      ADEHaptics.success()
+      CloudLaneActions.shared.toast = ADEToastMessage(text: "Moving \(machine.displayName) to \(kind)", kind: .info, detail: cloudPhoneWords(record.message))
+    } catch CloudServerClient.Failure.noAccess {
+      movesUnsupported = true
+      actionError = cloudPhoneKindChangeReason(to: tier)
+      ADEHaptics.error()
+    } catch {
+      let why = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't start the move."
+      actionError = why
+      ADEHaptics.error()
+      CloudLaneActions.shared.toast = ADEToastMessage(text: "Couldn't move \(machine.displayName)", kind: .failure, detail: why)
+    }
+  }
+
+  /// Cancels a move before its copy starts; the server's answer shows next.
+  func cancelMove(_ move: CloudServerMove) async {
+    guard !cancellingMoves.contains(move.moveId) else { return }
+    cancellingMoves.insert(move.moveId)
+    defer { cancellingMoves.remove(move.moveId) }
+    guard let client = await syncService.cloudServerClient() else {
+      actionError = "Sign in to ADE, then try again."
+      return
+    }
+    do {
+      try await client.cancelMove(move.moveId)
+      ADEHaptics.success()
+      if let fresh = try? await client.move(move.moveId) {
+        await apply(fresh, was: moves[move.moveId])
+      } else {
+        moves[move.moveId] = nil
+        CloudLaneActions.shared.toast = ADEToastMessage(text: "Cancelled the move", detail: "\(move.sourceName ?? "The computer") stays as it was.")
+      }
+    } catch {
+      ADEHaptics.error()
+      CloudLaneActions.shared.toast = ADEToastMessage(text: "Couldn't cancel the move", kind: .failure, detail: cloudPhoneWords(cloudServerFailureMessage(error)))
+    }
+  }
+
+  /// A failed move the person has read.
+  func dismissMove(_ moveId: String) {
+    guard moves[moveId]?.isFinished == true else { return }
+    moves[moveId] = nil
+  }
+
+  /// Follows one running move while a screen showing it is on screen: a
+  /// read every 5 s, none once it ends or the screen's task is cancelled.
+  /// Two screens following one move read it once.
+  func followMove(_ moveId: String) async {
+    while !Task.isCancelled {
+      guard let current = moves[moveId], !current.isFinished else { return }
+      try? await Task.sleep(for: .seconds(5))
+      if Task.isCancelled { return }
+      if let last = moveReadAt[moveId], Date().timeIntervalSince(last) < 4 { continue }
+      moveReadAt[moveId] = Date()
+      guard let client = await syncService.cloudServerClient() else { continue }
+      do {
+        let fresh = try await client.move(moveId)
+        await apply(fresh, was: moves[moveId])
+      } catch CloudServerClient.Failure.noAccess {
+        // The server keeps it no more.
+        moves[moveId] = nil
+        return
+      } catch {
+        // A read that didn't answer: the next round reads again.
+      }
+    }
+  }
+
+  /// A newer read of a move. The step to finished runs its follow-up once:
+  /// done reads the computers and the account's machines again and says
+  /// "Moved"; failed keeps the move to show its reason; cancelled leaves.
+  private func apply(_ fresh: CloudServerMove, was: CloudServerMove?) async {
+    moves[fresh.moveId] = fresh
+    guard fresh.isFinished, was?.isFinished != true, moveEndings[fresh.moveId] == nil else {
+      await moveEndings[fresh.moveId]?.value
+      return
+    }
+    let ending = Task { @MainActor [weak self] in
+      guard let self else { return }
+      let name = fresh.sourceName ?? "The computer"
+      switch fresh.state {
+      case "done":
+        await self.syncService.refreshCloudServerInstances()
+        await AccountService.shared.loadMachines()
+        await self.reload()
+        ADEHaptics.success()
+        CloudLaneActions.shared.toast = ADEToastMessage(
+          text: "Moved",
+          detail: fresh.sourceDeleted == false
+            ? "\(name) is on \(fresh.kindWords) now. ADE couldn't delete the old computer; delete it from its page."
+            : "\(name) is on \(fresh.kindWords) now. Its lane and chats came along."
+        )
+      case "failed":
+        ADEHaptics.error()
+        CloudLaneActions.shared.toast = ADEToastMessage(text: "Couldn't move \(name)", kind: .failure, detail: cloudPhoneWords(fresh.error ?? fresh.message))
+        await self.reload()
+      default:
+        CloudLaneActions.shared.toast = ADEToastMessage(text: "Cancelled the move", detail: cloudPhoneWords(fresh.message))
+        await self.reload()
+      }
+    }
+    moveEndings[fresh.moveId] = ending
+    await ending.value
+    if fresh.state == "done" { endedMoves[fresh.moveId] = fresh }
+    if fresh.state != "failed" { moves[fresh.moveId] = nil }
+  }
+
   func setLimits(_ args: [String: Any]) async {
     actionError = nil
+    if isDirect {
+      await setLimitsDirect(args)
+      return
+    }
     do {
       limits = nil
       _ = try await syncService.cloudWrite("set_limits", args: args, as: CloudPhoneAck.self)
     } catch {
-      actionError = error.localizedDescription
+      actionError = cloudPhoneWords(error.localizedDescription) ?? "ADE Cloud couldn't do that."
     }
-    limits = try? await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
+    await readLimitsThroughComputer()
   }
 
-  /// Makes, copies or moves in the background on the connected machine, and
-  /// follows it: the approval opens here when the new machine waits for it.
-  func startMake(_ action: String, args: [String: Any]) async {
-    actionError = nil
+  /// One limits write on the account. A preset sends its whole set of
+  /// limits. Another device's newer write wins: the page reads it again and
+  /// says so.
+  private func setLimitsDirect(_ args: [String: Any]) async {
+    var changes = args
+    if let preset = changes.removeValue(forKey: "preset") as? String, let values = CloudAgentLimitsState.presets[preset] {
+      changes["unattendedSpend"] = values.unattendedSpend
+      changes["machinesPerDay"] = values.machinesPerDay
+      changes["maxShape"] = values.maxShape
+      changes["extraDiskMonthCents"] = values.extraDiskMonthCents ?? NSNull()
+    }
+    guard let client = await syncService.cloudServerClient() else {
+      actionError = "Sign in to ADE again, then try again."
+      return
+    }
     do {
-      var input = args
-      input["background"] = true
-      let started = try await syncService.cloudWrite(action, args: input, as: CloudPhoneMakeStarted.self)
-      follow(requestId: started.requestId)
+      let state = try await client.setAgentLimits(changes, ifRevision: limitsRevision)
+      limits = state.phoneLimits
+      limitsRevision = state.revision
+      ADEHaptics.success()
+    } catch CloudServerClient.Failure.refused(let code, _) where code == "limits_changed" {
+      actionError = "These limits changed on another device. Check them, then try again."
+      if let state = try? await client.agentLimits() {
+        limits = state.phoneLimits
+        limitsRevision = state.revision
+      }
     } catch {
-      actionError = error.localizedDescription
+      actionError = cloudServerFailureMessage(error)
       ADEHaptics.error()
     }
   }
+}
 
-  private func follow(requestId: String) {
-    pollTask?.cancel()
-    pollTask = Task { @MainActor [weak self] in
-      // A make takes minutes; a status that can't be read for a minute (the
-      // machine restarted and forgot the make, or the link dropped) ends the wait.
-      var unreadable = 0
-      while !Task.isCancelled {
-        guard let self else { return }
-        let read = try? await self.syncService.cloudRead("make_status", args: ["requestId": requestId], as: CloudPhoneMakeJob.self)
-        if read == nil {
-          unreadable += 1
-          if unreadable >= 30 {
-            self.makeJob = nil
-            self.actionError = "ADE lost track of the new machine. Pull to refresh: if it joined, it's in the list."
-            await self.reload()
-            return
-          }
-        } else {
-          unreadable = 0
-        }
-        if let job = read {
-          self.makeJob = job
-          if let request = job.approvalRequest, self.approvalShownFor != requestId {
-            self.approvalShownFor = requestId
-            self.approval = request
-          }
-          if job.done {
-            if let error = job.error { self.actionError = error } else { ADEHaptics.success() }
-            await self.reload()
-            return
-          }
-        }
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-      }
-    }
-  }
-
-  func dismissMakeJob() {
-    pollTask?.cancel()
-    makeJob = nil
+/// A computer as the dashboard draws it, from the account server's row.
+/// Nil for a row with no id.
+/// The account server's computer status in the brain list's words
+/// (`computerStateOf` on the server): "sleeping" read as "Needs a look".
+func cloudPhoneMachineState(serverStatus status: String) -> String {
+  switch status {
+  case "running", "restarting": return "running"
+  case "sleeping": return "asleep"
+  case "waking", "provisioning", "updating": return "starting"
+  default: return status
   }
 }
 
-// MARK: - List
-
-struct CloudListScreen: View {
-  @ObservedObject var store: CloudPaneStore
-  var onClose: () -> Void
-  /// True on a phone: a row pushes the machine. False in the book layout: a row selects it.
-  var pushes: Bool
-
-  var body: some View {
-    List {
-      switch store.phase {
-      case .loading where store.machines.isEmpty:
-        Section { ProgressView().frame(maxWidth: .infinity).listRowBackground(Color.clear) }
-      case .failed(let message):
-        Section { CloudNotice(symbol: "exclamationmark.triangle", title: "Couldn't read ADE Cloud", detail: message) }
-      default:
-        Section { CloudHoursSummary(store: store).listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)) }
-          .listRowBackground(Color.clear)
-        if let job = store.makeJob { Section { CloudMakeJobRow(store: store, job: job) } }
-        if let error = store.actionError {
-          Section { CloudNotice(symbol: "exclamationmark.circle", title: "That didn't work", detail: error) }
-        }
-        Section {
-          if store.machines.isEmpty {
-            Text("No machines yet. Make one with +.").font(.subheadline).foregroundStyle(ADEColor.textSecondary)
-          }
-          ForEach(store.machines) { machine in
-            if pushes {
-              NavigationLink(value: machine) { CloudMachineRow(machine: machine, busy: store.busy.contains(machine.instanceId)) }
-            } else {
-              Button {
-                ADEHaptics.light()
-                store.selectedId = machine.instanceId
-              } label: {
-                CloudMachineRow(machine: machine, busy: store.busy.contains(machine.instanceId))
-              }
-              .buttonStyle(.plain)
-              .listRowBackground(store.selected?.instanceId == machine.instanceId ? ADEColor.accent.opacity(0.12) : Color.clear)
-            }
-          }
-        } header: { CloudSectionLabel("Machines") }
-        if !store.readyProjects.isEmpty {
-          Section {
-            ForEach(store.readyProjects) { entry in CloudReadyRow(store: store, entry: entry) }
-          } header: { CloudSectionLabel("Ready machines") }
-        }
-        Section {
-          NavigationLink { CloudLimitsScreen(store: store) } label: {
-            Label {
-              VStack(alignment: .leading, spacing: 2) {
-                Text("What agents may spend")
-                Text(store.limits.map(cloudLimitsSummary) ?? "…").font(.caption).foregroundStyle(ADEColor.textSecondary)
-              }
-            } icon: { Image(systemName: "shield.lefthalf.filled") }
-          }
-        }
-      }
-    }
-    .listStyle(.insetGrouped)
-    .scrollContentBackground(.hidden)
-    .background(ADEColor.pageBackground.ignoresSafeArea())
-    .refreshable { await store.reload() }
-    .navigationTitle("ADE Cloud")
-    .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      ToolbarItem(placement: .topBarLeading) {
-        Button { onClose() } label: { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)) }
-          .accessibilityLabel("Close ADE Cloud")
-      }
-      ToolbarItem(placement: .topBarTrailing) {
-        Button {
-          ADEHaptics.light()
-          store.newMachinePresented = true
-        } label: { Image(systemName: "plus") }
-          .disabled(store.phase != .loaded || store.outOfHours)
-          .accessibilityLabel("New ADE Cloud machine")
-      }
-    }
-  }
-}
-
-struct CloudHoursSummary: View {
-  @ObservedObject var store: CloudPaneStore
-
-  var body: some View {
-    if let account = store.account {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack(spacing: 8) {
-          CloudFigure(label: "Hours left", value: cloudHours(account.hours.leftMilli),
-                      unit: "of \(cloudHours(account.hours.includedMilli))")
-          CloudFigure(label: "Plan", value: account.plan == "paid" ? "Paid" : "Free", unit: nil)
-        }
-        if account.outOfHours {
-          CloudNotice(symbol: "pause.circle", title: "Out of hours", detail: "Your computers wait until your hours reset. Running work saves and stops.")
-        }
-      }
-    }
-  }
-}
-
-struct CloudFigure: View {
-  let label: String
-  let value: String
-  let unit: String?
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(label).font(.caption2).foregroundStyle(ADEColor.textMuted)
-      Text(value).font(.system(.headline, design: .rounded)).monospacedDigit().foregroundStyle(ADEColor.textPrimary)
-      if let unit { Text(unit).font(.caption2).foregroundStyle(ADEColor.textMuted) }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(10)
-    .background(RoundedRectangle(cornerRadius: 10).fill(ADEKit.surface))
-    .overlay(RoundedRectangle(cornerRadius: 10).stroke(ADEKit.edge))
-    .accessibilityElement(children: .combine)
-  }
-}
-
-struct CloudMachineRow: View {
-  let machine: CloudPhoneMachine
-  var busy = false
-
-  var body: some View {
-    HStack(spacing: 10) {
-      CloudStateDot(machine: machine)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(machine.displayName).font(.subheadline.weight(.semibold)).foregroundStyle(ADEColor.textPrimary).lineLimit(1)
-        Text([machine.isVM ? "Full computer" : "Computer", machine.shape.map(cloudShapeLabel), machine.stateLabel.lowercased()]
-          .compactMap { $0 }.joined(separator: " · "))
-          .font(.caption).foregroundStyle(ADEColor.textSecondary).lineLimit(1)
-      }
-      Spacer(minLength: 8)
-      if busy {
-        ProgressView()
-      } else {
-        Text(machine.isAwake || machine.isMoving ? machine.hoursRate.map(cloudHoursRate) ?? "" : "asleep")
-          .font(.caption).foregroundStyle(ADEColor.textMuted)
-      }
-    }
-    .frame(minHeight: 44)
-    .contentShape(Rectangle())
-  }
-}
-
-struct CloudStateDot: View {
-  let machine: CloudPhoneMachine
-
-  var body: some View {
-    Circle()
-      .fill(machine.isAwake ? ADEColor.success : machine.isMoving ? ADEColor.warning : machine.isAsleep ? ADEColor.textMuted : ADEColor.danger)
-      .frame(width: 8, height: 8)
-      .accessibilityHidden(true)
-  }
-}
-
-struct CloudReadyRow: View {
-  @ObservedObject var store: CloudPaneStore
-  let entry: CloudPhoneReadyPool.Entry
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack {
-        Text(entry.projectName).font(.subheadline.weight(.semibold))
-        Spacer()
-        Text(entry.keptReady ? "On" : "Off").font(.caption).foregroundStyle(ADEColor.textSecondary)
-      }
-      Text([entry.ready > 0 ? "\(entry.ready) ready" : nil, entry.preparing > 0 ? "\(entry.preparing) preparing" : nil,
-            entry.inUse > 0 ? "\(entry.inUse) in use" : nil].compactMap { $0 }.joined(separator: " · ").ifEmpty("Nothing ready yet"))
-        .font(.caption).foregroundStyle(ADEColor.textSecondary)
-      if let failure = entry.failure {
-        Text(failure).font(.caption).foregroundStyle(ADEColor.danger).lineLimit(3)
-      }
-    }
-    .frame(minHeight: 44)
-  }
-}
-
-struct CloudMakeJobRow: View {
-  @ObservedObject var store: CloudPaneStore
-  let job: CloudPhoneMakeJob
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      if job.done {
-        Image(systemName: job.error == nil ? "checkmark.circle.fill" : "xmark.octagon.fill")
-          .foregroundStyle(job.error == nil ? ADEColor.success : ADEColor.danger)
-      } else {
-        ProgressView()
-      }
-      VStack(alignment: .leading, spacing: 6) {
-        Text(job.done ? (job.error == nil ? "Your new machine is ready" : "The new machine didn't finish") : "Making your machine…")
-          .font(.subheadline.weight(.semibold))
-        Text(job.error ?? job.message).font(.caption).foregroundStyle(ADEColor.textSecondary)
-        if let request = job.approvalRequest, !job.done {
-          Button {
-            store.approval = request
-          } label: {
-            Label("Approve", systemImage: "checkmark.shield")
-              .symbolRenderingMode(.monochrome)
-              .foregroundStyle(.white)
-              .frame(minHeight: 32)
-          }
-          .buttonStyle(.borderedProminent)
-          .tint(ADEColor.accent)
-          .accessibilityHint("Lets the new machine join your ADE account")
-        }
-      }
-      Spacer(minLength: 0)
-      if job.done {
-        Button { store.dismissMakeJob() } label: { Image(systemName: "xmark") }
-          .buttonStyle(.plain)
-          .foregroundStyle(ADEColor.textMuted)
-          .accessibilityLabel("Dismiss")
-      }
-    }
-  }
-}
-
-// MARK: - One machine
-
-struct CloudMachineScreen: View {
-  @ObservedObject var store: CloudPaneStore
-  let instanceId: String
-
-  var body: some View {
-    ScrollView {
-      if let machine = store.machine(instanceId) {
-        VStack(alignment: .leading, spacing: 18) {
-          CloudMachineFacts(store: store, machine: machine)
-          CloudMachineControls(store: store, machine: machine)
-        }
-        .padding(16)
-      } else {
-        CloudNotice(symbol: "questionmark.circle", title: "That machine is gone", detail: "It was deleted, or moved to a new machine.").padding(16)
-      }
-    }
-    .background(ADEColor.pageBackground.ignoresSafeArea())
-    .refreshable { await store.reload() }
-    .navigationTitle(store.machine(instanceId)?.displayName ?? "Machine")
-    .navigationBarTitleDisplayMode(.inline)
-  }
-}
-
-struct CloudMachineFacts: View {
-  @ObservedObject var store: CloudPaneStore
-  let machine: CloudPhoneMachine
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 8) {
-        CloudStateDot(machine: machine)
-        Text(machine.stateLabel).font(.headline)
-        if machine.ready != nil {
-          Text("Ready machine").font(.caption2.weight(.semibold)).padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Capsule().fill(ADEColor.accent.opacity(0.16))).foregroundStyle(ADEColor.accent)
-        }
-      }
-      Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-        fact("Size", machine.size ?? (machine.isVM ? "Full computer" : "Computer"))
-        if let rate = machine.hoursRate { fact("Uses", cloudHoursRate(rate)) }
-        if let sleep = machine.sleep { fact("Sleeps", sleep.label) }
-        if machine.pastDue == true { fact("State", "Suspended") }
-      }
-      .font(.subheadline)
-    }
-    .padding(ADEKit.inset)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: ADEKit.radius).fill(ADEKit.surface))
-    .overlay(RoundedRectangle(cornerRadius: ADEKit.radius).stroke(ADEKit.edge))
-  }
-
-  private func fact(_ label: String, _ value: String) -> some View {
-    GridRow {
-      Text(label).foregroundStyle(ADEColor.textMuted)
-      Text(value).foregroundStyle(ADEColor.textPrimary)
-    }
-  }
-}
-
-struct CloudMachineControls: View {
-  @ObservedObject var store: CloudPaneStore
-  let machine: CloudPhoneMachine
-  @State private var confirmDelete = false
-  @State private var resizing = false
-  @State private var copying = false
-  @State private var moving = false
-
-  private var busy: Bool { store.busy.contains(machine.instanceId) || machine.isMoving }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      CloudSectionLabel("Actions")
-      CloudFlowRow {
-        if let key = machine.machineKey {
-          CloudActionButton("Open its work", symbol: "arrow.up.forward.app", primary: true, disabled: busy) {
-            store.syncService.cloudPanePresented = false
-            // Opened from Settings › Integrations the pane is Settings' own
-            // sheet; closing Settings closes it too, so the work shows.
-            store.syncService.settingsPresented = false
-            Task { _ = await store.syncService.ensureAccountMachineForNavigation(key) }
-          }
-        }
-        if machine.isAwake {
-          CloudActionButton("Sleep now", symbol: "moon", disabled: busy) { Task { await store.run("sleep", on: machine) } }
-        } else if machine.isAsleep {
-          CloudActionButton("Wake", symbol: "sun.max", disabled: busy || store.outOfHours) { Task { await store.run("wake", on: machine) } }
-        }
-        CloudActionButton("Resize…", symbol: "arrow.up.left.and.arrow.down.right", disabled: busy) { resizing = true }
-        CloudActionButton("Copy…", symbol: "plus.square.on.square", disabled: busy) { copying = true }
-        CloudActionButton(machine.isVM ? "Move to a standard computer…" : "Move to a full computer…", symbol: "arrow.left.arrow.right", disabled: busy) { moving = true }
-        CloudActionButton("Delete…", symbol: "trash", destructive: true, disabled: busy) { confirmDelete = true }
-      }
-    }
-    .confirmationDialog("Delete \(machine.displayName)?", isPresented: $confirmDelete, titleVisibility: .visible) {
-      Button("Delete it", role: .destructive) { Task { await store.run("delete", on: machine) } }
-    } message: {
-      Text("Everything on its disk is gone for good: repos, lanes, and any work not pushed.")
-    }
-    .confirmationDialog("Resize \(machine.displayName)", isPresented: $resizing, titleVisibility: .visible) {
-      ForEach(cloudShapes.filter { $0.id != machine.shape }, id: \.id) { shape in
-        Button(shape.label) { Task { await store.run("resize", on: machine, args: ["shape": shape.id]) } }
-      }
-    } message: {
-      Text("It restarts to change size: files stay, running chats and terminals stop.")
-    }
-    .confirmationDialog("Copy \(machine.displayName)", isPresented: $copying, titleVisibility: .visible) {
-      Button("Make a copy") { Task { await store.startMake("copy", args: ["machine": machine.instanceId]) } }
-    } message: {
-      Text("A new machine with the same files (repos, lanes, installed dependencies). You approve it joining your account.")
-    }
-    .confirmationDialog("Move \(machine.displayName) to a \(machine.isVM ? "standard computer" : "full computer")", isPresented: $moving, titleVisibility: .visible) {
-      Button("Move it") { Task { await store.startMake("move", args: ["machine": machine.instanceId, "to": machine.isVM ? "box" : "vm"]) } }
-    } message: {
-      Text("ADE makes the new machine, copies every repo, lane and chat into it, then deletes this one.\(machine.isVM ? " Docker images stay behind." : "")")
-    }
-  }
-}
-
-struct CloudMachineChips: View {
-  @ObservedObject var store: CloudPaneStore
-
-  var body: some View {
-    CloudFlowRow {
-      ForEach(store.machines) { machine in
-        Button {
-          ADEHaptics.light()
-          store.selectedId = machine.instanceId
-        } label: {
-          HStack(spacing: 6) {
-            CloudStateDot(machine: machine)
-            Text(machine.displayName).lineLimit(1)
-          }
-          .font(.subheadline)
-          .padding(.horizontal, 12)
-          .frame(minHeight: 44)
-          .background(Capsule().fill(store.selected?.instanceId == machine.instanceId ? ADEColor.accent.opacity(0.16) : ADEKit.surface))
-          .overlay(Capsule().stroke(ADEKit.edge))
-        }
-        .buttonStyle(.plain)
-      }
-      Button { store.newMachinePresented = true } label: {
-        Label("New", systemImage: "plus").font(.subheadline).padding(.horizontal, 12).frame(minHeight: 44)
-          .overlay(Capsule().stroke(ADEKit.edge))
-      }
-      .buttonStyle(.plain)
-    }
-  }
-}
-
-struct CloudPickPrompt: View {
-  var body: some View {
-    VStack(spacing: 10) {
-      Image(systemName: "cloud").font(.system(size: 30)).foregroundStyle(ADEColor.textMuted)
-      Text("Pick a machine").font(.headline)
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(ADEColor.pageBackground.ignoresSafeArea())
-  }
-}
-
-// MARK: - New machine
-
-struct CloudNewMachineSheet: View {
-  @ObservedObject var store: CloudPaneStore
-  @Environment(\.dismiss) private var dismiss
-  @State private var kind = "box"
-  @State private var shape = "2x4"
-  @State private var name = ""
-
-  var body: some View {
-    NavigationStack {
-      Form {
-        Section("Type") {
-          Picker("Type", selection: $kind) {
-            Text("Standard").tag("box")
-            Text("Full computer").tag("vm")
-          }
-          .pickerStyle(.segmented)
-          Text(kind == "vm" ? "Its own kernel: Docker and the Android emulator run. Uses hours faster." : "Lanes, chats, terminals and a Linux desktop. The cheapest.")
-            .font(.caption).foregroundStyle(ADEColor.textSecondary)
-        }
-        Section("Size") {
-          Picker("Size", selection: $shape) {
-            ForEach(cloudShapes, id: \.id) { entry in Text(entry.label).tag(entry.id) }
-          }
-          .pickerStyle(.inline)
-          .labelsHidden()
-        }
-        Section("Name") {
-          TextField("ADE Cloud computer", text: $name)
-            .textInputAutocapitalization(.never)
-        }
-        Section {
-          Text("It sleeps after 10 idle minutes and then bills only its disk. When it's ready, you approve it joining your account here.")
-            .font(.caption).foregroundStyle(ADEColor.textSecondary)
-        }
-      }
-      .navigationTitle("New machine")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-        ToolbarItem(placement: .confirmationAction) {
-          Button("Make it") {
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            var args: [String: Any] = ["kind": kind, "shape": shape]
-            if !trimmed.isEmpty { args["name"] = trimmed }
-            dismiss()
-            Task { await store.startMake("create", args: args) }
-          }
-        }
-      }
-      .onChange(of: kind) { _, next in if next == "vm" && shape == "2x4" { shape = "4x8" } }
-    }
-    .presentationDetents([.medium, .large])
-  }
-}
-
-// MARK: - What agents may do
-
-struct CloudLimitsScreen: View {
-  @ObservedObject var store: CloudPaneStore
-
-  private let presets: [(id: String, name: String, line: String, symbol: String)] = [
-    ("ask", "Ask me", "Nothing costs money without your yes.", "checkmark.shield"),
-    ("balanced", "Balanced", "Agents get what they need, within limits.", "scalemass"),
-    ("hands_off", "Hands-off", "For big runs: many machines at once.", "airplane.departure"),
+func cloudPhoneMachine(from instance: CloudServerInstance) -> CloudPhoneMachine? {
+  var object: [String: Any] = [
+    "instanceId": instance.id,
+    // A computer saving its work for the idle cleanup is on its way down.
+    "state": instance.idleSaving ? "stopping" : cloudPhoneMachineState(serverStatus: instance.status),
   ]
-
-  var body: some View {
-    List {
-      Section {
-        Text("When you're watching, agents ask first. These choose what an agent may do when nobody is: a full-auto chat or an automation.")
-          .font(.subheadline).foregroundStyle(ADEColor.textSecondary)
-      }
-      .listRowBackground(Color.clear)
-      Section {
-        ForEach(presets, id: \.id) { preset in
-          Button {
-            ADEHaptics.light()
-            Task { await store.setLimits(["preset": preset.id]) }
-          } label: {
-            HStack(spacing: 12) {
-              Image(systemName: preset.symbol).frame(width: 28).foregroundStyle(ADEColor.accent)
-              VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                  Text(preset.name).font(.subheadline.weight(.semibold)).foregroundStyle(ADEColor.textPrimary)
-                  if preset.id == "balanced" {
-                    Text("Recommended").font(.caption2).padding(.horizontal, 6).padding(.vertical, 1)
-                      .background(Capsule().fill(ADEColor.accent.opacity(0.16))).foregroundStyle(ADEColor.accent)
-                  }
-                }
-                Text(preset.line).font(.caption).foregroundStyle(ADEColor.textSecondary)
-              }
-              Spacer()
-              if store.limits?.preset == preset.id { Image(systemName: "checkmark").foregroundStyle(ADEColor.accent) }
-            }
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-        }
-      } header: { CloudSectionLabel("Choose") } footer: {
-        if store.limits?.preset == "custom" { Text("Custom: your own limits below.") }
-      }
-      if let limits = store.limits {
-        Section {
-          Toggle("Unattended agents may spend", isOn: Binding(
-            get: { limits.unattendedSpend },
-            set: { value in Task { await store.setLimits(["unattendedSpend": value]) } }
-          ))
-          Picker("New machines a day", selection: Binding(
-            get: { limits.machinesPerDay },
-            set: { value in Task { await store.setLimits(["machinesPerDay": value]) } }
-          )) {
-            ForEach([1, 3, 5, 10], id: \.self) { Text("\($0)").tag($0) }
-          }
-          .disabled(!limits.unattendedSpend)
-          Picker("Largest size", selection: Binding(
-            get: { limits.maxShape },
-            set: { value in Task { await store.setLimits(["maxShape": value]) } }
-          )) {
-            ForEach(cloudShapes, id: \.id) { Text($0.label).tag($0.id) }
-          }
-          .disabled(!limits.unattendedSpend)
-        } header: { CloudSectionLabel("Limits") }
-      } else {
-        Section { ProgressView().frame(maxWidth: .infinity) }
-      }
-      Section {
-        Label("Always yours to decide: keeping a machine awake for good, raising these limits, and deleting a machine an agent didn't make.", systemImage: "lock.fill")
-          .font(.caption).foregroundStyle(ADEColor.textSecondary)
-      }
-      .listRowBackground(Color.clear)
-      if let error = store.actionError {
-        Section { CloudNotice(symbol: "exclamationmark.circle", title: "That didn't save", detail: error) }
-      }
-    }
-    .listStyle(.insetGrouped)
-    .scrollContentBackground(.hidden)
-    .background(ADEColor.pageBackground.ignoresSafeArea())
-    .navigationTitle("What agents may spend")
-    .navigationBarTitleDisplayMode(.inline)
+  if let name = instance.name { object["name"] = name }
+  if let machineKey = instance.machineKey { object["machineKey"] = machineKey }
+  if let laneId = instance.laneId {
+    var lane: [String: Any] = ["laneId": laneId, "laneName": instance.laneName ?? "Cloud lane"]
+    if let origin = instance.projectOrigin { lane["projectOrigin"] = origin }
+    object["lane"] = lane
   }
-}
-
-// MARK: - Small pieces
-
-struct CloudSectionLabel: View {
-  let text: String
-  init(_ text: String) { self.text = text }
-  var body: some View {
-    Text(text.uppercased()).font(.caption2.weight(.semibold)).tracking(0.6).foregroundStyle(ADEColor.textMuted)
+  object["pastDue"] = instance.pastDue
+  // Its size, disk and last run: the computer page's facts, sizes and disk parts.
+  if let type = instance.type { object["type"] = type }
+  if let resources = instance.resources {
+    object["resources"] = ["cpu": resources.cpu, "memoryGb": resources.memory, "diskGb": resources.disk]
   }
-}
-
-struct CloudNotice: View {
-  let symbol: String
-  let title: String
-  let detail: String
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      Image(systemName: symbol).foregroundStyle(ADEColor.warning)
-      VStack(alignment: .leading, spacing: 3) {
-        Text(title).font(.subheadline.weight(.semibold))
-        Text(detail).font(.caption).foregroundStyle(ADEColor.textSecondary)
-      }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityElement(children: .combine)
+  if let lastActiveAt = instance.lastActiveAt { object["lastActiveAtMs"] = lastActiveAt }
+  // The server's `created` is in seconds.
+  if let created = instance.created { object["createdAtMs"] = created * 1000 }
+  if let usage = instance.diskUsage,
+     let data = try? JSONEncoder().encode(usage),
+     let json = try? JSONSerialization.jsonObject(with: data) {
+    object["diskUsage"] = json
   }
-}
-
-struct CloudActionLabel: View {
-  let title: String
-  let symbol: String
-  let primary: Bool
-  let destructive: Bool
-
-  var body: some View {
-    Label(title, systemImage: symbol)
-      .font(.subheadline)
-      .padding(.horizontal, 12)
-      .frame(minHeight: 44)
-      .foregroundStyle(destructive ? ADEColor.danger : primary ? ADEColor.accent : ADEColor.textPrimary)
-      .background(RoundedRectangle(cornerRadius: 10).fill(primary ? ADEColor.accent.opacity(0.14) : ADEKit.surface))
-      .overlay(RoundedRectangle(cornerRadius: 10).stroke(primary ? ADEColor.accent.opacity(0.5) : ADEKit.edge))
+  // "Safe to delete" and the delete's warning read it.
+  if let work = instance.laneWork {
+    object["laneWork"] = ["unpushed": work.unpushed as Any? ?? NSNull(), "prState": work.prState as Any? ?? NSNull()]
   }
-}
-
-struct CloudActionButton: View {
-  let title: String
-  let symbol: String
-  var primary = false
-  var destructive = false
-  var disabled = false
-  let action: () -> Void
-
-  init(_ title: String, symbol: String, primary: Bool = false, destructive: Bool = false, disabled: Bool = false, action: @escaping () -> Void) {
-    self.title = title
-    self.symbol = symbol
-    self.primary = primary
-    self.destructive = destructive
-    self.disabled = disabled
-    self.action = action
-  }
-
-  var body: some View {
-    Button {
-      ADEHaptics.light()
-      action()
-    } label: {
-      CloudActionLabel(title: title, symbol: symbol, primary: primary, destructive: destructive)
-    }
-    .buttonStyle(.plain)
-    .disabled(disabled)
-    .opacity(disabled ? 0.5 : 1)
-  }
-}
-
-/// Wraps its children onto as many rows as they need.
-struct CloudFlowRow: Layout {
-  var spacing: CGFloat = 8
-
-  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-    let width = proposal.width ?? .infinity
-    var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, widest: CGFloat = 0
-    for view in subviews {
-      let size = view.sizeThatFits(.unspecified)
-      if x > 0 && x + size.width > width {
-        y += rowHeight + spacing
-        x = 0
-        rowHeight = 0
-      }
-      x += size.width + spacing
-      rowHeight = max(rowHeight, size.height)
-      widest = max(widest, x - spacing)
-    }
-    return CGSize(width: proposal.width ?? widest, height: y + rowHeight)
-  }
-
-  func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-    var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
-    for view in subviews {
-      let size = view.sizeThatFits(.unspecified)
-      if x > bounds.minX && x + size.width > bounds.maxX {
-        y += rowHeight + spacing
-        x = bounds.minX
-        rowHeight = 0
-      }
-      view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-      x += size.width + spacing
-      rowHeight = max(rowHeight, size.height)
-    }
-  }
-}
-
-struct CloudShapeOption {
-  let id: String
-  let label: String
-}
-
-let cloudShapes: [CloudShapeOption] = [
-  .init(id: "2x4", label: "2 vCPU · 4 GB"),
-  .init(id: "4x8", label: "4 vCPU · 8 GB"),
-  .init(id: "4x16", label: "4 vCPU · 16 GB"),
-  .init(id: "4x32", label: "4 vCPU · 32 GB"),
-]
-
-func cloudShapeLabel(_ id: String) -> String {
-  cloudShapes.first { $0.id == id }?.label ?? id
-}
-
-/// Hours from thousandths, as the desktop writes them: "118", "42.5".
-func cloudHours(_ milli: Int) -> String {
-  let hours = Double(max(0, milli)) / 1000
-  return hours >= 100 ? String(Int(hours)) : String(Double(Int(hours * 10)) / 10)
-}
-
-/// "2.5× hours", as the desktop writes it.
-func cloudHoursRate(_ rate: Double) -> String {
-  "\(rate.formatted(.number.precision(.fractionLength(0...1))))× hours"
-}
-
-func cloudLimitsSummary(_ limits: CloudPhoneLimits) -> String {
-  let name: String
-  switch limits.preset {
-  case "ask": name = "Ask me"
-  case "balanced": name = "Balanced"
-  case "hands_off": name = "Hands-off"
-  default: name = "Custom"
-  }
-  guard limits.unattendedSpend else { return "\(name) · unattended agents ask" }
-  return "\(name) · \(limits.machinesPerDay) a day · up to \(cloudShapeLabel(limits.maxShape))"
-}
-
-private extension String {
-  func ifEmpty(_ fallback: String) -> String { isEmpty ? fallback : self }
+  guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+  return try? JSONDecoder().decode(CloudPhoneMachine.self, from: data)
 }

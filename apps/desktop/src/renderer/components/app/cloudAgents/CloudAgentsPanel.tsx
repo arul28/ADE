@@ -41,6 +41,10 @@ import {
   type CloudAgentScope,
 } from "./cloudAgentsModel";
 import { extractError } from "../../../lib/format";
+import { useTabCopyPin } from "../../../state/repositoryScope";
+
+/** Zero machines: no computer with this project is online, so nothing is read or sent. */
+const NO_COMPUTER_ONLINE = "No computer with this project is online.";
 
 const REFRESH_MS = 12_000;
 
@@ -123,6 +127,16 @@ export function CloudAgentsPanel({
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  // The panel works with the tab copy's lanes: opening or launching makes a
+  // lane there, and the lane list it refreshes is that machine's.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
+  const requirePin = useCallback(() => {
+    const pin = tabCopyPinRef.current;
+    if (!pin) throw new Error(NO_COMPUTER_ONLINE);
+    return pin;
+  }, []);
 
   const [list, setList] = useState<CloudAgentList | null>(null);
   const [loading, setLoading] = useState(true);
@@ -147,9 +161,17 @@ export function CloudAgentsPanel({
 
   const refresh = useCallback(async (force: boolean) => {
     const id = ++generation.current;
+    const pin = tabCopyPinRef.current;
+    if (!pin) {
+      setList(null);
+      setLoadError(NO_COMPUTER_ONLINE);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     if (force) setRefreshing(true);
     try {
-      const next = await window.ade.cloudAgents.list({ provider, force });
+      const next = await window.ade.cloudAgents.list({ provider, force }, pin);
       if (id !== generation.current) return;
       setList(next);
       setLoadError(null);
@@ -171,7 +193,7 @@ export function CloudAgentsPanel({
       setTick((tick) => tick + 1);
     }, REFRESH_MS);
     return () => window.clearInterval(interval);
-  }, [refresh]);
+  }, [refresh, tabCopyPin?.key]);
 
   useEffect(() => {
     if (!model && list?.models[0]) setModel(list.models[0].value);
@@ -225,6 +247,7 @@ export function CloudAgentsPanel({
       ?? lanes.find((lane) => lane.laneType === "primary")?.id
       ?? null;
     if (!laneId) throw new Error("No lane to host the terminal.");
+    const pin = requirePin();
     const created = await window.ade.pty.create({
       laneId,
       cols: 110,
@@ -234,22 +257,22 @@ export function CloudAgentsPanel({
       toolType: "devin",
       command: "devin",
       args: args(sessionId),
-    });
+    }, pin);
     revealTerminalSessionInWork(navigate, { terminalId: created.sessionId, laneId });
     onClose();
-  }, [lanes, navigate, onClose]);
+  }, [lanes, navigate, onClose, requirePin]);
 
   const actions: CloudAgentRowActions = useMemo(() => ({
     onOpen: (agent) => void runRowAction(agent, async () => {
-      revealChat(await window.ade.cloudAgents.open({ provider, id: agent.id }));
+      revealChat(await window.ade.cloudAgents.open({ provider, id: agent.id }, requirePin()));
     }),
     onStop: (agent) => void runRowAction(agent, async () => {
-      await window.ade.cloudAgents.stop({ provider, id: agent.id });
+      await window.ade.cloudAgents.stop({ provider, id: agent.id }, requirePin());
       showToast({ title: `Stopped “${agent.title}”`, tone: "success" });
       await refresh(true);
     }),
     onArchive: (agent) => void runRowAction(agent, async () => {
-      await window.ade.cloudAgents.archive({ provider, id: agent.id, archived: true });
+      await window.ade.cloudAgents.archive({ provider, id: agent.id, archived: true }, requirePin());
       showToast({ title: `Archived “${agent.title}”`, tone: "success" });
       await refresh(true);
     }),
@@ -272,7 +295,7 @@ export function CloudAgentsPanel({
         () => showToast({ title: "Could not copy the link", tone: "error" }),
       );
     },
-  }), [onClose, provider, refresh, revealChat, runRowAction, vmTerminal]);
+  }), [onClose, provider, refresh, requirePin, revealChat, runRowAction, vmTerminal]);
 
   const launch = useCallback(async () => {
     const text = prompt.trim();
@@ -286,7 +309,7 @@ export function CloudAgentsPanel({
         model: model || null,
         ...(provider === "devin" ? { platform } : {}),
         laneId: targetLaneId || null,
-      });
+      }, requirePin());
       setPrompt("");
       showToast({
         title: `${brand.name} is on it`,
@@ -299,7 +322,7 @@ export function CloudAgentsPanel({
     } finally {
       setLaunching(false);
     }
-  }, [brand.name, launching, model, platform, prompt, provider, revealChat, targetLaneId]);
+  }, [brand.name, launching, model, platform, prompt, provider, requirePin, revealChat, targetLaneId]);
 
   const unavailable = list?.unavailableReason ?? null;
   const fetchedAge = relativeAge(list?.fetchedAt);

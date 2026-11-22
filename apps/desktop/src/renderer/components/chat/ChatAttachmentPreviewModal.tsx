@@ -4,6 +4,7 @@ import type { OpenProjectBinding } from "../../../shared/types/core";
 import { createMonacoModelRegistry } from "../files/monacoModelRegistry";
 import { resolveLanguageId } from "../files/filePresentation";
 import { createPinnedFilesApi } from "../files/v2/pinnedFilesApi";
+import { noChatMachineError } from "./chatMachinePin";
 import { editorTabId, type EditorTab } from "../files/v2/editorGroupsStore";
 import { resolveViewerKind } from "../files/v2/viewerRegistry";
 import { ViewerHost } from "../files/v2/ViewerHost";
@@ -54,7 +55,8 @@ export function ChatAttachmentPreviewModal({
   fallbackImageDataUrl?: string | null;
   onClose: () => void;
 }) {
-  const files = useMemo(() => createPinnedFilesApi(pin), [pin]);
+  // No known computer: the preview says so instead of reading.
+  const files = useMemo(() => (pin ? createPinnedFilesApi(pin) : null), [pin]);
   const theme = useAppearanceStore((s) => s.theme);
   const registryRef = useRef(createMonacoModelRegistry());
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -63,12 +65,12 @@ export function ChatAttachmentPreviewModal({
 
   // A personal chat's files are in its own store, not in any project
   // workspace, and with no project open there is no file service to ask.
-  const personalChat = useChatPaneScope()?.kind === "personal";
+  const personalChat = useChatPaneScope() != null;
 
   useEffect(() => {
     let cancelled = false;
     if (personalChat) {
-      setState({ status: "error", message: "This attachment can't be previewed in a personal chat." });
+      setState({ status: "error", message: "This attachment can't be previewed in this chat." });
       return undefined;
     }
     setState({ status: "loading" });
@@ -76,7 +78,10 @@ export function ChatAttachmentPreviewModal({
     // `window.ade.files` at all) becomes the same error state as a rejected
     // read, instead of escaping the effect and taking the transcript down.
     Promise.resolve()
-      .then(() => files.listWorkspaces({}))
+      .then(() => {
+        if (!files) throw noChatMachineError();
+        return files.listWorkspaces({});
+      })
       .then((workspaces) => {
         if (cancelled) return;
         const target = resolveAttachmentWorkspaceTarget(attachmentPath, workspaces);
@@ -193,7 +198,7 @@ export function ChatAttachmentPreviewModal({
             ) : (
               <Centered tone="danger">{state.message}</Centered>
             )
-          ) : tab ? (
+          ) : tab && files ? (
             <ViewerHost
               workspaceId={state.target.workspaceId}
               files={files}

@@ -3,6 +3,7 @@ import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
 import { GIT_PULL_ACTION_TIMEOUT_MS, LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
+import { CLOUD_PHONE_BUILD_TIMEOUT_MS, CLOUD_PHONE_CALL_TIMEOUT_MS } from "../../../shared/cloudPhone";
 import {
   ARCHIVE_DELETE_TIMEOUT_MS,
   ARCHIVE_RESTORE_TIMEOUT_MS,
@@ -116,11 +117,11 @@ export const IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS =
   IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS - 30_000;
 export const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 /**
- * `ai.getStatus`. A forced Settings refresh waits for every installed ACP
- * provider's auth probe (`acpAuthProbe.ts`, in parallel): up to 60 s of
- * handshake, 60 s of `session/new` and 15 s of `authenticate`. On the 30 s
- * default the refresh failed while a slow provider's probe was still running.
- * A plain status read never waits on a probe; this is only its ceiling.
+ * `ai.getStatus`. This ADE's status read starts no probe, forced or not. A
+ * remote ADE from before that still runs every installed ACP provider's auth
+ * probe on a forced read (`acpAuthProbe.ts`, in parallel): up to 60 s of
+ * handshake, 60 s of `session/new` and 15 s of `authenticate`. This is the
+ * ceiling for that older host.
  */
 export const AI_STATUS_TIMEOUT_MS = 150_000;
 export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
@@ -335,6 +336,8 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // the daemon kept writing the tree to a successful completion.
   ["lane.create", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.importBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  // "Push this branch?" before an ADE Cloud launch: one push of the start branch.
+  ["lane.pushCloudStartBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.restoreDeletedLane", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.switchBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["git.checkoutBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
@@ -358,6 +361,10 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // batch can take as long as `lane.unarchive` / `lane.delete` on its own.
   ["archive.restore", ARCHIVE_RESTORE_TIMEOUT_MS],
   ["archive.delete", ARCHIVE_DELETE_TIMEOUT_MS],
+  // The Keychain read and the GitHub CLI read wait for the person to answer a
+  // prompt on that computer (their own limit is 2 min).
+  ["provider_logins.allowKeychain", 150_000],
+  ["provider_logins.allowGitHubCli", 150_000],
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   // Handoff = AI brief generation (bounded at 45s) + session creation +
@@ -369,6 +376,10 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // up to 30s) and then dispatches its first message.
   ["chat.startSideChat", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
+  // A new chat and its first message in one call: the two 30s budgets of the
+  // create and the send it replaces. Past it the window asks the machine
+  // whether the chat has the message (it may still be running there).
+  ["chat.createSessionAndSend", 60_000],
   // Cursor Cloud open-chat hydrates conversation + boots a worker + attaches
   // the live stream. The 30s default fired while Cursor's VM was still
   // installing, so the renderer reported failure on the draft pane while the
@@ -388,6 +399,18 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // service timed out" while the daemon kept building, so the session surfaced
   // minutes later with no error to explain it.
   ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
+  // The ADE Cloud iPhone: a build uploads the project and builds it there; a
+  // start may wait for a free phone (`CLOUD_PHONE_CALL_TIMEOUT_MS`, `CLOUD_PHONE_BUILD_TIMEOUT_MS`).
+  ["cloud_phone.launch", CLOUD_PHONE_BUILD_TIMEOUT_MS],
+  ["cloud_phone.installApp", CLOUD_PHONE_BUILD_TIMEOUT_MS],
+  ["cloud_phone.runTests", CLOUD_PHONE_BUILD_TIMEOUT_MS],
+  ["cloud_phone.start", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.look", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.act", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.screenshot", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.control", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.logs", CLOUD_PHONE_CALL_TIMEOUT_MS],
+  ["cloud_phone.record", CLOUD_PHONE_CALL_TIMEOUT_MS],
   // Builds into the lane's DerivedData like a launch, then installs.
   ["ios_simulator.installApp", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
   // See IOS_SIMULATOR_PREVIEW_TIMEOUT_MS.
@@ -487,6 +510,27 @@ export function longRunningLocalRuntimeActionTimeoutMs(
   actionKey: string,
 ): number | null {
   return LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS.get(actionKey) ?? null;
+}
+
+/** The most an ordinary call to another machine waits (`ade … --machine`, the brain's bridge). */
+export const REMOTE_MACHINE_CALL_MAX_TIMEOUT_MS = 180_000;
+/** On top of a long verb's own budget there: the answer still has to travel back. */
+const REMOTE_MACHINE_LONG_CALL_HEADROOM_MS = 60_000;
+
+/**
+ * How long a call to another machine may take when it is one of the verbs
+ * that run long on their own machine too (the table above: an iOS build and
+ * launch, a test run, a Gradle install, an emulator boot): that verb's local
+ * budget plus headroom, so the caller hears the real answer and not a
+ * timeout while the build goes on there. Null for any other call, which keeps
+ * `REMOTE_MACHINE_CALL_MAX_TIMEOUT_MS`. `actionKey` is `domain.action`.
+ */
+export function remoteMachineLongCallBudgetMs(actionKey: string | null | undefined): number | null {
+  if (!actionKey) return null;
+  const local = longRunningLocalRuntimeActionTimeoutMs(actionKey);
+  if (local == null) return null;
+  const budget = local + REMOTE_MACHINE_LONG_CALL_HEADROOM_MS;
+  return budget > REMOTE_MACHINE_CALL_MAX_TIMEOUT_MS ? budget : null;
 }
 
 export function localRuntimeActionTimeoutMs(

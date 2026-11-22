@@ -1,7 +1,9 @@
 /**
- * On a cloud machine, before the brain serves: turn the sign-ins the
- * machine was made with (instance env, cloudSignInStore.ts) into what
- * each provider reads. Every provider but Codex reads its key from the env
+ * On a cloud machine made by an older ADE, before the brain serves: turn the
+ * sign-ins the machine was made with (instance env) into what each provider
+ * reads. ADE no longer puts sign-ins in a new machine's env (the account
+ * vault carries them), so on a new machine this finds no key and does
+ * nothing; an older machine keeps its env until it is deleted. Every provider but Codex reads its key from the env
  * as it is. Codex's app server, which ADE chats run on, ignores
  * `OPENAI_API_KEY` (measured with codex 0.164 on a box: "Missing bearer"),
  * and reads only its auth file, so the key is written there in the shape

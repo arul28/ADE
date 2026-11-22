@@ -58,15 +58,15 @@ const fieldLabelStyle: React.CSSProperties = {
 export function LaneBranchSwitcher({
   lane,
   active,
-  pin = null,
+  pin,
   machineId = null,
   confirmSwitch,
   onSwitched,
 }: {
   lane: LaneSummary;
   active: boolean;
-  /** The lane's machine when it is not the tab's. Lists, switches and stops go there. */
-  pin?: OpenProjectBinding | null;
+  /** The lane's machine. Lists, switches and stops go there. */
+  pin: OpenProjectBinding;
   /** That machine's id, so its lane list refreshes after a switch. */
   machineId?: string | null;
   /**

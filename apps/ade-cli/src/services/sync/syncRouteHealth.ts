@@ -89,7 +89,14 @@ function resolveListenerReason(args: {
 }): string | null {
   if (!args.bound) return args.notBoundReason;
   if (args.loopbackAdeValidated) return null;
-  return args.rawValidation.reason ?? `127.0.0.1:${args.listenerPort} did not answer as ADE.`;
+  const detail = args.rawValidation.reason ?? `127.0.0.1:${args.listenerPort} did not answer as ADE.`;
+  const holder = args.rawValidation.port === args.listenerPort ? args.rawValidation.shadowedBy ?? null : null;
+  if (!holder) return detail;
+  // Named for the person reading Settings or `ade doctor`: which program, what
+  // it costs, and that ADE is already doing something about it.
+  return `Another program (${holder}) is using 127.0.0.1:${args.listenerPort}, ADE's sync port. `
+    + "ADE keeps checking and moves if it has to; Wi-Fi and ADE Relay connections keep working. "
+    + detail;
 }
 
 export function deriveListenerHealth(args: DeriveListenerHealthArgs): ListenerHealth {
@@ -115,6 +122,11 @@ export function deriveListenerHealth(args: DeriveListenerHealthArgs): ListenerHe
       lastFailureAt: args.rawValidation.lastFailureAt ?? args.validationHistory?.lastFailureAt ?? null,
       reason: listenerReason,
       lastSuccessAt: args.rawValidation.lastSuccessAt ?? args.validationHistory?.lastSuccessAt ?? null,
+      // Also kept while the side door answers (validated): the port is
+      // still taken, and Settings says so.
+      shadowedBy: args.bound && args.rawValidation.port === args.listenerPort
+        ? args.rawValidation.shadowedBy ?? null
+        : null,
     },
   };
 }
@@ -127,9 +139,9 @@ function resolveRelaySkipReason(args: BuildRelayRouteHealthArgs & {
   if (args.relayConfigured && args.relayTurnedOff) return RELAY_TURNED_OFF_MESSAGE;
   if (args.relayConfigured && !args.relayAccountSignedIn) return "Sign in to ADE to use ADE Relay.";
   if (!args.relayEnabled) return null;
-  if (!args.loopbackAdeValidated) {
-    return `Relay route is unusable because ${args.listenerReason ?? "the loopback ADE check failed"}`;
-  }
+  // Relay does not go through 127.0.0.1:<port>: the tunnel hands each pipe to
+  // the listener in process. A legacy loopback bridge still validates loopback
+  // itself, and that verdict arrives as relayBridgeValidated below.
   const status = args.tunnelStatus;
   if (!status) return "Relay tunnel status is unavailable in this ADE process.";
   if (!args.relayControlConnected) {
@@ -149,7 +161,7 @@ function resolveRelaySkipReason(args: BuildRelayRouteHealthArgs & {
   }
   if (!args.relayBridgeValidated) {
     return status.lastError
-      ?? `Relay bridge to 127.0.0.1:${args.listenerPort} has not been validated against the current sync port.`;
+      ?? "Relay bridge to the ADE sync listener has not been validated yet.";
   }
   return status.bridgeOpenFailure ?? null;
 }

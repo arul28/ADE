@@ -21,6 +21,9 @@ struct LaneDetailScreen: View {
   /// The machine the lane lives on, for the Duo's subtitle and dashboard.
   let machineName: String?
   let onRefreshRoot: @MainActor () async -> Void
+  /// Set by the host after "Wake and move" on the lane at rest: the move
+  /// sheet opens once the lane's chats are read.
+  @Binding var moveAfterWake: Bool
 
   @State private(set) var detail: LaneDetailPayload?
   @State var errorMessage: String?
@@ -55,6 +58,7 @@ struct LaneDetailScreen: View {
   }
   @State private var copiedLinkNotice: String?
   @State private var newLaneWithChangesPresented = false
+  @State private var movePresented = false
   /// The Duo's git column shows this diff in place of the git list.
   @State private var inlineDiffRequest: LaneDiffRequest?
 
@@ -67,6 +71,7 @@ struct LaneDetailScreen: View {
     showsBackButton: Bool = true,
     embedded: Bool = false,
     machineName: String? = nil,
+    moveAfterWake: Binding<Bool> = .constant(false),
     onRefreshRoot: @escaping @MainActor () async -> Void
   ) {
     self.laneId = laneId
@@ -77,6 +82,7 @@ struct LaneDetailScreen: View {
     self.embedded = embedded
     self.machineName = machineName
     self.onRefreshRoot = onRefreshRoot
+    _moveAfterWake = moveAfterWake
   }
 
   var currentSnapshot: LaneListSnapshot {
@@ -196,6 +202,26 @@ struct LaneDetailScreen: View {
     }
     .sheet(isPresented: $showCommitDiffPicker) {
       commitDiffPickerSheet
+    }
+    .sheet(isPresented: $movePresented) {
+      LaneMoveSheet(source: laneMoveSource(
+        laneId: laneId,
+        // The primary lane is the main checkout in every screen's copy.
+        laneName: currentSnapshot.lane.displayName,
+        machineName: machineName,
+        sessions: detail?.sessions ?? [],
+        chats: detail?.chatSessions ?? [],
+        sync: syncService
+      ))
+    }
+    // "Wake and move" on the lane at rest: the computer is up, so the move
+    // sheet opens once the lane's chats are read.
+    .onChange(of: detail != nil && moveAfterWake, initial: true) { _, ready in
+      guard ready else { return }
+      moveAfterWake = false
+      if !laneMoveChats(detail?.chatSessions ?? []).isEmpty {
+        movePresented = true
+      }
     }
     .sheet(isPresented: $showBranchPicker) {
       if let detail {
@@ -397,6 +423,8 @@ struct LaneDetailScreen: View {
       onManage: { managePresented = true },
       onCopyLaneLink: copyLaneLink,
       onCopyBranchLink: copyBranchLink,
+      // A lane moves only with its chats, so a lane with none has no item.
+      onMove: canRunLiveActions && !laneMoveChats(detail?.chatSessions ?? []).isEmpty ? { movePresented = true } : nil,
       forcesGit: inlineDiffRequest != nil
     ) {
       LaneDuoDashboard(

@@ -133,3 +133,41 @@ export async function findRecentProjectForRepo(
 
   return null;
 }
+
+/** A copy of a project on another machine of the account, as this app knows it. */
+export type RepoProjectCopyOnMachine = {
+  targetId: string;
+  machineName: string;
+  projectId: string;
+  rootPath: string;
+  displayName: string;
+  gitOriginUrl: string | null | undefined;
+};
+
+/**
+ * The copy of `repo` on another machine, when this computer has none. The
+ * origins come from each machine's own project list (or the recents this app
+ * kept of it), so no folder here is read. A plain GitHub origin answers first;
+ * an SSH alias costs one `ssh -G` lookup per host, all at once.
+ */
+export async function findProjectCopyOnMachineForRepo(
+  copies: readonly RepoProjectCopyOnMachine[],
+  repo: ProjectFindForRepoArgs,
+): Promise<ProjectFindForRepoResult> {
+  const targetSlug: GithubRepoSlug = { owner: repo.repoOwner, repo: repo.repoName };
+  const withOrigin = copies
+    .map((copy) => ({ copy, origin: typeof copy.gitOriginUrl === "string" ? copy.gitOriginUrl.trim() : "" }))
+    .filter((entry) => entry.origin);
+  const result = (copy: RepoProjectCopyOnMachine): ProjectFindForRepoResult => ({
+    rootPath: copy.rootPath,
+    displayName: copy.displayName,
+    remote: { targetId: copy.targetId, projectId: copy.projectId, machineName: copy.machineName },
+  });
+  for (const { copy, origin } of withOrigin) {
+    if (githubRepoSlugsEqual(parseGithubRemoteUrl(origin), targetSlug)) return result(copy);
+  }
+  const aliased = withOrigin.filter(({ origin }) => !parseGithubRemoteUrl(origin));
+  const resolved = await Promise.all(aliased.map(({ origin }) => resolveGithubRemoteRepo(origin)));
+  const index = resolved.findIndex((slug) => githubRepoSlugsEqual(slug, targetSlug));
+  return index >= 0 ? result(aliased[index]!.copy) : null;
+}

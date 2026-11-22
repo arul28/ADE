@@ -6,6 +6,7 @@ import React, {
   useState,
 } from "react";
 import { announceHostStall, announceHostStorageWait } from "../../lib/hostStallToast";
+import { markBoot } from "../../lib/debugLog";
 import {
   AppWindow,
   ArrowLineRight,
@@ -13,7 +14,6 @@ import {
   ChatCircleDots,
   Globe,
   CircleNotch,
-  DownloadSimple,
   Folder,
   FolderOpen,
   GearSix,
@@ -32,20 +32,36 @@ import {
   type ContextMenuEntry,
   type ContextMenuState,
 } from "../ui/ContextMenu";
-import { CloneLocallyDialog, type CloneLocallyTarget } from "../projects/CloneLocallyDialog";
+import type { CloneLocallyTarget } from "../projects/CloneLocallyDialog";
 import { cloneTargetFor, projectMenuSections } from "../projects/projectMenuEntries";
+import { ProjectCopiesMenu } from "../projects/ProjectCopiesMenu";
+import { RemoveProjectDialog, type RemoveProjectResult } from "../projects/RemoveProjectDialog";
+import { REQUEST_REMOVE_PROJECT_EVENT, notifyProjectCopiesChanged, type RemoveProjectRequest } from "../projects/removeProjectRequest";
+import { repoCopyMayRemain } from "../projects/projectCopies";
+import { subscribeCopyJobReady } from "../projects/projectCopyJobs";
+import { useProjectCopiesMenu } from "../projects/useProjectCopiesMenu";
 import { ProjectIconDialog, type ProjectIconDialogTarget } from "../projects/ProjectIconDialog";
 import {
   getProjectIconFromCache,
+  publishProjectIcon,
   setProjectIconCache,
   subscribeProjectIcon,
 } from "../../lib/projectIconCache";
+import { useProjectRecords } from "../../lib/useProjectRecords";
+import {
+  PROJECT_RECORD_ICON_KEY,
+  PROJECT_RECORD_NAME_KEY,
+  projectRecordScope,
+} from "../../../shared/projectRecord";
 
-import { useAppStore } from "../../state/appStore";
+import { takeLegacyNoMachineTabs, useAppStore } from "../../state/appStore";
+import { adeCloudProjectForTabId, useAdeCloudTabFollowsCopy } from "../../state/adeCloudTabs";
+import { useActiveRepositoryReader, useTabCopyPin } from "../../state/repositoryScope";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import { findMachineProject, remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import { captureError } from "../../../shared/sentry/capture";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
 import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
 import { consumeAppMenuCommand, installFindKeyBridge } from "../../lib/appMenuCommands";
@@ -64,6 +80,7 @@ import { closeMusicTab, MusicTabContent } from "../music/MusicTabContent";
 import {
   activeMachineForGroup,
   groupProjectTabs,
+  ownTabKeysOf,
   recentProjectLocationKey,
   remoteBindingFromRecent,
   resolveProjectTabFallback,
@@ -75,7 +92,19 @@ import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
 import { pressActivation } from "../../lib/pressActivation";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
-import { forgetExplicitRemotePicks, usePreferLocalCheckout } from "./usePreferLocalCheckout";
+import { useWebTabsFollowComputers } from "./useWebTabsFollowComputers";
+import {
+  carryRouteToCopy,
+  readWindowStripMemory,
+  renameInTabOrder,
+  reportStripRestoreFailure,
+  restoredStripFromSaved,
+  useRepositoryIdentity,
+  useRepositoryTabStrip,
+} from "./useRepositoryTabs";
+import { isAdeCloudTargetId, type AdeCloudBindingProject } from "../../../shared/adeCloud/binding";
+import { useAccountProjectListClient } from "../../state/accountProjectListClient";
+import { useConnectRepositoryCopies } from "../../state/connectRepositoryCopies";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac } from "../../lib/platform";
@@ -99,6 +128,7 @@ import { GitHubIssuesButton } from "../issues/GitHubIssuesButton";
 import { JiraIssuesButton } from "../issues/JiraIssuesButton";
 import { CloudAgentsQuickViewButton } from "./cloudAgents/CloudAgentsQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
+import { useHasOwnComputer } from "../../state/ownComputers";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import {
   subscribeOpenConnectionsPanel,
@@ -108,7 +138,8 @@ import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
-import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
+import { CloudIphoneTopBarButton } from "./CloudIphoneTopBarButton";
+import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription, type ResourcePressureLevel } from "../../lib/resourcePressure";
 import { ShellNavTab } from "./ShellNavTab";
 import { StoragePressureIndicator } from "./StoragePressureIndicator";
 import {
@@ -122,22 +153,20 @@ import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useProjectTabStripOverflow } from "./useProjectTabStripOverflow";
 import { AdeWordmark } from "../ui/AdeWordmark";
-
-// Hosted-client only: kept out of the desktop bundle's critical path, and out
-// of the desktop bundle's dependency graph for the sync client entirely.
-const WebConnectionsChip = React.lazy(() =>
-  import("../../webclient/workspace/WebConnectionsChip").then((module) => ({
-    default: module.WebConnectionsChip,
-  })),
-);
+import { machineLabelForMachine } from "../../state/adeCloudLaneIndex";
+import { useProjectOpenWaking } from "../../state/projectOpenWaking";
 
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
 const RESOURCE_PRESSURE_SAMPLE_MS = 2_000;
+/** How long a connected computer's list must lack an open tab's copy before the tab moves off it. */
+const COPY_REMOVED_SETTLE_MS = 3_000;
 // While the indicator is hidden, a sample only decides whether to show it.
-// Each one runs a machine-wide `ps` in Electron main (about 17 ms of CPU), so a
-// calm app checks every 10 s and speeds up once there is load to track.
-const RESOURCE_PRESSURE_CALM_SAMPLE_MS = 10_000;
+// Each one reads every Electron process's metrics and the running sessions in
+// Electron main, and main reuses a calm `ps` of the brain and terminals for
+// 30 s anyway, so a calm app checks at that same period and speeds up once
+// there is load to track. Focus and showing the window still sample at once.
+const RESOURCE_PRESSURE_CALM_SAMPLE_MS = 30_000;
 let recentProjectsCache:
   | { rows: RecentProjectSummary[]; fetchedAtMs: number }
   | null = null;
@@ -198,9 +227,16 @@ function connectedWebClients(snapshot: SyncRoleSnapshot | null) {
 function HeaderAccountAvatar() {
   const { status } = useAccountStatus();
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  // The GitHub sign-in of the copy that reads this repository. Null when no
+  // computer is online: the avatar then shows the account picture only.
+  const readerPin = useActiveRepositoryReader();
+  const readerPinRef = useRef(readerPin);
+  readerPinRef.current = readerPin;
+  const readerPinKey = readerPin?.key ?? null;
 
   useEffect(() => {
-    if (!status.signedIn || status.imageUrl) {
+    const pin = readerPinRef.current;
+    if (!status.signedIn || status.imageUrl || !pin) {
       setGithubStatus(null);
       return;
     }
@@ -209,13 +245,13 @@ function HeaderAccountAvatar() {
       if (cancelled) return;
       setGithubStatus(next);
     };
-    void window.ade.github?.getStatus?.().then(apply).catch(() => {});
-    const unsubscribe = window.ade.github?.onStatusChanged?.(apply);
+    void window.ade.github?.getStatus?.(undefined, pin).then(apply).catch(() => {});
+    const unsubscribe = window.ade.github?.onStatusChanged?.(apply, pin);
     return () => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [status.imageUrl, status.signedIn]);
+  }, [readerPinKey, status.imageUrl, status.signedIn]);
 
   return (
     <AccountAvatar
@@ -254,9 +290,23 @@ function useHeaderStatusCompactLayout(): boolean {
   return compact;
 }
 
+/**
+ * Samples in a row below the shown level before the indicator steps down. A
+ * load near a threshold crossed it on most samples, and each step repainted
+ * the chip and the blurred top bar behind it. A rise still shows at once.
+ */
+const RESOURCE_PRESSURE_STEP_DOWN_SAMPLES = 3;
+
+/** The sample the indicator draws, and the level it shows for it. */
+type ResourcePressureSample = {
+  usage: AppResourceUsageSnapshot | null;
+  level: ResourcePressureLevel;
+};
+
+const NO_RESOURCE_PRESSURE_SAMPLE: ResourcePressureSample = { usage: null, level: 0 };
+
 /** Everything `ResourcePressureIndicator` draws from a sample; null when it is hidden. */
-function resourcePressureView(usage: AppResourceUsageSnapshot | null) {
-  const level = appResourcePressureLevel(usage);
+function resourcePressureView({ usage, level }: ResourcePressureSample) {
   if (level === 0) return null;
   return {
     level,
@@ -272,22 +322,51 @@ function resourcePressureView(usage: AppResourceUsageSnapshot | null) {
   };
 }
 
-function resourcePressureIndicatorKey(usage: AppResourceUsageSnapshot | null): string {
-  return JSON.stringify(resourcePressureView(usage));
+/**
+ * What a new sample must change before the chip draws it. While the person
+ * reads the tooltip (`detailed`), that is every figure. Otherwise it is the
+ * level, the counts and the sample status: the CPU and memory figures change
+ * on every sample and are shown only in the tooltip, so they wait until the
+ * pointer or the focus comes to the chip.
+ */
+function resourcePressureIndicatorKey(sample: ResourcePressureSample, detailed: boolean): string {
+  if (detailed) return JSON.stringify(resourcePressureView(sample));
+  if (sample.level === 0) return "hidden";
+  return JSON.stringify([
+    sample.level,
+    sample.usage?.activePtyCount ?? 0,
+    sample.usage?.ptyProcessCount ?? 0,
+    sample.usage?.processSample?.status ?? "",
+  ]);
 }
 
-function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | null {
-  const [usage, setUsage] = useState<AppResourceUsageSnapshot | null>(null);
+function useResourcePressureSample(enabled: boolean, detailed: boolean): ResourcePressureSample {
+  const [sample, setSample] = useState<ResourcePressureSample>(NO_RESOURCE_PRESSURE_SAMPLE);
+  const latestRef = useRef<ResourcePressureSample>(NO_RESOURCE_PRESSURE_SAMPLE);
+  const detailedRef = useRef(detailed);
+  detailedRef.current = detailed;
+
+  // The pointer or the focus came to the chip: show the newest figures.
+  useEffect(() => {
+    if (!detailed) return;
+    const latest = latestRef.current;
+    setSample((previous) => (
+      resourcePressureIndicatorKey(previous, true) === resourcePressureIndicatorKey(latest, true) ? previous : latest
+    ));
+  }, [detailed]);
 
   useEffect(() => {
     if (!enabled) {
-      setUsage(null);
+      latestRef.current = NO_RESOURCE_PRESSURE_SAMPLE;
+      setSample(NO_RESOURCE_PRESSURE_SAMPLE);
       return;
     }
 
     let cancelled = false;
     let requestVersion = 0;
     let timer: number | undefined;
+    let shownLevel: ResourcePressureLevel = 0;
+    let samplesBelowShown = 0;
     // A hidden window schedules nothing; showing or focusing it samples again.
     const refresh = () => {
       window.clearTimeout(timer);
@@ -296,16 +375,30 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
       void getAppResourceUsageCoalesced()
         .then((snapshot) => {
           if (cancelled || version !== requestVersion) return;
+          const sampledLevel = appResourcePressureLevel(snapshot);
+          if (sampledLevel >= shownLevel) {
+            shownLevel = sampledLevel;
+            samplesBelowShown = 0;
+          } else if (++samplesBelowShown >= RESOURCE_PRESSURE_STEP_DOWN_SAMPLES) {
+            shownLevel = sampledLevel;
+            samplesBelowShown = 0;
+          }
+          const next: ResourcePressureSample = { usage: snapshot, level: shownLevel };
+          latestRef.current = next;
           // Every sample is a new object with fresh CPU numbers. Keep the old
           // one unless the indicator would draw something different.
-          setUsage((previous) => (
-            resourcePressureIndicatorKey(previous) === resourcePressureIndicatorKey(snapshot) ? previous : snapshot
+          const detailedNow = detailedRef.current;
+          setSample((previous) => (
+            resourcePressureIndicatorKey(previous, detailedNow) === resourcePressureIndicatorKey(next, detailedNow)
+              ? previous
+              : next
           ));
+          // A shown chip samples fast, also while a step down is pending.
           timer = window.setTimeout(
             refresh,
-            appResourcePressureLevel(snapshot) > 0 ? RESOURCE_PRESSURE_SAMPLE_MS : RESOURCE_PRESSURE_CALM_SAMPLE_MS,
+            shownLevel > 0 ? RESOURCE_PRESSURE_SAMPLE_MS : RESOURCE_PRESSURE_CALM_SAMPLE_MS,
           );
-        })
+        });
     };
 
     refresh();
@@ -322,16 +415,19 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
     };
   }, [enabled]);
 
-  return usage;
+  return sample;
 }
 
 /**
  * Samples on its own: under load its numbers change every sample, and only
- * this chip needs to redraw for that, not the whole top bar.
+ * this chip needs to redraw for that, not the whole top bar. At rest it
+ * writes to the page only when its level or its counts change.
  */
 function ResourcePressureIndicator({ enabled }: { enabled: boolean }) {
-  const usage = useResourcePressureUsage(enabled);
-  const view = resourcePressureView(usage);
+  const [pointerOver, setPointerOver] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const sample = useResourcePressureSample(enabled, pointerOver || focused);
+  const view = resourcePressureView(sample);
   if (!view) return null;
   const { level, description } = view;
   const color =
@@ -363,6 +459,10 @@ function ResourcePressureIndicator({ enabled }: { enabled: boolean }) {
           boxShadow: `0 0 0 1px ${color}22, 0 0 16px -10px ${color}`,
           outline: "none",
         }}
+        onPointerEnter={() => setPointerOver(true)}
+        onPointerLeave={() => setPointerOver(false)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onClick={() => {
           window.location.hash = `#${settingsRouteFor("storage.diagnostics")}`;
         }}
@@ -386,10 +486,13 @@ function ShellConnectionChip({
   trailing,
   layout = "chip",
   onboardingAnchor,
+  idle = false,
 }: {
   label: string;
   icon: React.ReactNode;
   connected: boolean;
+  /** Nothing to connect to (ADE Web with no computer of the person's own): no status dot. */
+  idle?: boolean;
   title: string;
   ariaExpanded?: boolean;
   onClick: () => void;
@@ -411,7 +514,7 @@ function ShellConnectionChip({
       role={layout === "menu-row" ? "menuitem" : undefined}
       style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       title={title}
-      aria-label={`${label}, ${connected ? "connected" : "not connected"}`}
+      aria-label={idle ? label : `${label}, ${connected ? "connected" : "not connected"}`}
       aria-expanded={ariaExpanded}
       onClick={onClick}
     >
@@ -421,13 +524,15 @@ function ShellConnectionChip({
       ) : (
         icon
       )}
-      <span
-        className={cn(
-          "h-1.5 w-1.5 shrink-0 rounded-full",
-          connected ? "bg-emerald-400" : "bg-red-400",
-        )}
-        aria-hidden
-      />
+      {idle ? null : (
+        <span
+          className={cn(
+            "h-1.5 w-1.5 shrink-0 rounded-full",
+            connected ? "bg-emerald-400" : "bg-red-400",
+          )}
+          aria-hidden
+        />
+      )}
       {trailing}
     </button>
   );
@@ -534,7 +639,7 @@ function fallbackProjectName(rootPath: string): string {
 
 
 
-/** An accent call-to-action in the header, such as Publish or Clone locally. */
+/** An accent call-to-action in the header, such as Publish. */
 function HeaderActionPill({
   icon: Icon,
   label,
@@ -583,14 +688,6 @@ function HeaderActionPill({
     </SmartTooltip>
   );
 }
-
-const REMOTE_TAB_STATUS_LABEL: Record<RemoteRuntimeConnectionState, string> = {
-  connected: "Connected",
-  connecting: "Reconnecting",
-  parked: "Parked",
-  idle: "Disconnected",
-  error: "Disconnected",
-};
 
 function ProjectTabIcon({
   rootPath,
@@ -760,6 +857,7 @@ export function TopBar({
   const usageHeaderPreferences = useUsageHeaderPreferences();
   const hasProject = Boolean(project?.rootPath);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  const tabCopyPin = useTabCopyPin();
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
@@ -780,6 +878,7 @@ export function TopBar({
   const musicTabOpen = useAppStore((s) => s.musicTabOpen);
   const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
+  const projectOpenWaking = useProjectOpenWaking();
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   // Which open tabs have a loaded project: only those switch at once.
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot);
@@ -813,19 +912,14 @@ export function TopBar({
       );
       // A machine that froze says so when it is reached again; once per freeze.
       for (const connection of snapshot.connections) {
+        if (!connection.hostStorageWait && !connection.hostStall) continue;
+        const machineName = machineLabelForMachine({ hostname: connection.target.hostname, name: connection.target.name?.trim() || connection.target.hostname });
         if (connection.hostStorageWait) {
-          announceHostStorageWait({
-            wait: connection.hostStorageWait,
-            machineKey: connection.target.id,
-            machineName: connection.target.name?.trim() || connection.target.hostname,
-          });
+          announceHostStorageWait({ wait: connection.hostStorageWait, machineKey: connection.target.id, machineName });
         }
-        if (!connection.hostStall) continue;
-        announceHostStall({
-          stall: connection.hostStall,
-          machineKey: connection.target.id,
-          machineName: connection.target.name?.trim() || connection.target.hostname,
-        });
+        if (connection.hostStall) {
+          announceHostStall({ stall: connection.hostStall, machineKey: connection.target.id, machineName });
+        }
       }
     },
     [],
@@ -860,18 +954,10 @@ export function TopBar({
   const connectionsPanelRef = useRef<HTMLDivElement | null>(null);
   const closeConnections = useCallback(() => setConnectionsOpen(false), []);
   const openConnections = useCallback((tab: ConnectionsPanelTab = "machines", machineId?: string) => {
-    if (webMode) {
-      // The hosted client has no header Connections panel — the connections
-      // chip in the top right owns that surface, and it listens for this event
-      // (WEB_OPEN_CONNECTIONS_EVENT in webclient/workspace/WebConnectionsChip).
-      // Returning early here is what left "Connect another machine…" inert.
-      window.dispatchEvent(new CustomEvent("ade-web:open-connections", { detail: { tab, machineId } }));
-      return;
-    }
     setConnectionsTab(tab);
     setConnectionsMachineId(machineId ?? null);
     setConnectionsOpen(true);
-  }, [webMode]);
+  }, []);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
   const remoteBinding =
     projectBinding?.kind === "remote" ? projectBinding : null;
@@ -922,6 +1008,7 @@ export function TopBar({
   const remoteConnected = connectedRemoteCount > 0;
   const syncConnected = isSyncConnected(syncSnapshot);
   const webConnected = isWebSyncConnected(syncSnapshot);
+  const hasOwnComputer = useHasOwnComputer();
   const showSyncControl = projectHydrated === true;
   const syncStatusTargetKey =
     remoteBinding?.key ?? project?.rootPath ?? "machine";
@@ -1024,6 +1111,16 @@ export function TopBar({
     fetchRecent({ force: true });
   }, [project?.rootPath, fetchRecent]);
 
+  // A new copy on this computer joins its tab once the recent list has it.
+  // A copy on another machine comes in through the connection snapshot.
+  useEffect(
+    () =>
+      subscribeCopyJobReady((job) => {
+        if (job.machine.targetId == null) fetchRecent({ force: true });
+      }),
+    [fetchRecent],
+  );
+
   useEffect(() => {
     const rootPath = project?.rootPath ?? null;
     if (!rootPath) {
@@ -1041,6 +1138,13 @@ export function TopBar({
     if (remoteBinding) {
       return;
     }
+    // A local binding for another folder means `project` is stale: the
+    // binding of a new local project can arrive before the project, and the
+    // old `project` may be a remote copy's folder. Adding it would make a
+    // local tab for a folder that exists only on the other machine.
+    if (projectBinding?.kind === "local" && projectBinding.rootPath !== rootPath) {
+      return;
+    }
     // Skip while a transition targeting a *different* root is in flight.
     // During switch/close, `project` briefly points at the OLD root before
     // the await resolves; re-adding it here would resurrect a tab the user
@@ -1051,7 +1155,7 @@ export function TopBar({
     setOpenProjectTabRoots((prev) =>
       prev.includes(rootPath) ? prev : [...prev, rootPath],
     );
-  }, [project?.rootPath, remoteBinding, projectTransition]);
+  }, [project?.rootPath, projectBinding, remoteBinding, projectTransition]);
 
   useEffect(() => {
     if (!remoteBinding) return;
@@ -1071,13 +1175,10 @@ export function TopBar({
     });
   }, [remoteBinding]);
 
-  useEffect(() => {
-    if (project || remoteBinding) return;
-    // Same guard as above: only wipe remote tabs on a true close, not while a
-    // transition is in flight or before the welcome screen is shown.
-    if (projectTransition != null || showWelcome !== true) return;
-    setOpenRemoteProjectTabs([]);
-  }, [project, remoteBinding, projectTransition, showWelcome]);
+  // No effect empties the remote tabs when the window has no project: main can
+  // close the front project for a moment ("Start fresh", "Use this copy"), and
+  // tabs of other computers must stay. A real close empties both tab lists in
+  // the store's `closeProject`.
 
   const projectTabs = useMemo<RecentProjectSummary[]>(
     () =>
@@ -1101,8 +1202,11 @@ export function TopBar({
 
   const remoteConnectionState = useCallback(
     (targetId: string): RemoteRuntimeConnectionState =>
-      remoteSnapshot?.connections.find((entry) => entry.target.id === targetId)
-        ?.state ?? "idle",
+      // ADE Cloud answers from the account: never a disconnected tab.
+      isAdeCloudTargetId(targetId)
+        ? "connected"
+        : remoteSnapshot?.connections.find((entry) => entry.target.id === targetId)
+          ?.state ?? "idle",
     [remoteSnapshot],
   );
 
@@ -1123,6 +1227,8 @@ export function TopBar({
   }, [openRemoteProjectTabs, remoteSnapshot]);
 
   const activeTabBindingKey = remoteBinding?.key ?? project?.rootPath ?? null;
+  const activeTabBindingKeyRef = useRef(activeTabBindingKey);
+  activeTabBindingKeyRef.current = activeTabBindingKey;
   const knownRemoteProjectTabs = useMemo<RemoteOpenProjectBinding[]>(() => {
     const byKey = new Map<string, RemoteOpenProjectBinding>();
     const add = (binding: RemoteOpenProjectBinding) => {
@@ -1151,9 +1257,89 @@ export function TopBar({
     return [...byKey.values()];
   }, [recentProjects, remoteSnapshot]);
 
-  // One tab per repository. Local and remote checkouts of the same repo collapse
-  // into a single group. The tab is the repo: its machines are not picked here,
-  // every tab shows all of them (see docs/plans/unified-machines.md).
+  // One tab per repository (S4). Local and remote copies of the same repo are
+  // one tab, keyed by the account project. The tab is the repo: its machines
+  // are not picked here, every tab shows all of them.
+  useAccountProjectListClient();
+  // Every online computer with a copy of the tab's repository joins the tab.
+  useConnectRepositoryCopies();
+  const repositoryIdentity = useRepositoryIdentity();
+  // A move: a tab's copy is replaced by another copy of its repository (the
+  // copy in front changed to one on another computer that no tab had open, or
+  // a fallback, a clone or a removal put one in its place). The new copy stays
+  // in the tab the move was made in (`joinTabOf`) while the old copy is open;
+  // once it closes, a copy that replaced a tab of its own keeps a tab of its
+  // own. A second checkout on the same computer is not a move: it opens in a
+  // tab of its own.
+  const lastTabsRef = useRef<{
+    activeKey: string | null;
+    activeMachine: string | null;
+    openKeys: ReadonlySet<string>;
+    tabPage: boolean;
+  }>({
+    activeKey: null,
+    activeMachine: null,
+    openKeys: new Set(),
+    tabPage: false,
+  });
+  const joinTabOfRef = useRef(new Map<string, string>());
+  const inheritedOwnTabsRef = useRef(new Set<string>());
+  /** Records that `to` takes the place of `from` in its tab; call before the open lists change. */
+  const noteTabMove = useCallback((from: string, to: string) => {
+    if (from === to) return;
+    const moves = joinTabOfRef.current;
+    moves.set(to, moves.get(from) ?? from);
+    // A tab that moved while another tab is in front opens the new copy on
+    // its next click, not the copy it left.
+    setPreferredBindingKeyByGroup((current) => {
+      let next: Record<string, string> | null = null;
+      for (const [groupId, key] of Object.entries(current)) {
+        if (key !== from) continue;
+        next ??= { ...current };
+        next[groupId] = to;
+      }
+      return next ?? current;
+    });
+  }, []);
+  const projectTabPageInFront = !isNewTabOpen;
+  const tabMoves = useMemo(() => {
+    const openKeys = new Set([...openProjectTabRoots, ...openRemoteProjectTabs.map((entry) => entry.key)]);
+    const last = lastTabsRef.current;
+    const moves = joinTabOfRef.current;
+    const inheritedOwn = inheritedOwnTabsRef.current;
+    const activeMachine = activeTabBindingKey ? remoteBinding?.targetId ?? "local" : null;
+    if (
+      activeTabBindingKey
+      && last.tabPage
+      && last.activeKey
+      && last.activeKey !== activeTabBindingKey
+      && last.activeMachine !== activeMachine
+      && last.openKeys.has(last.activeKey)
+      && !last.openKeys.has(activeTabBindingKey)
+    ) {
+      moves.set(activeTabBindingKey, moves.get(last.activeKey) ?? last.activeKey);
+    }
+    const ownBefore = ownTabKeysOf(tabGroupsRef.current);
+    // The copy in front may join the open list a render later.
+    const gone = (key: string) => key !== activeTabBindingKey && !openKeys.has(key);
+    // Until the window session is back, the open lists are the empty first
+    // paint: the own tabs restored from it must not be dropped as gone.
+    if (!windowSessionRestored) {
+      lastTabsRef.current = { activeKey: activeTabBindingKey, activeMachine, openKeys, tabPage: projectTabPageInFront };
+      return { joinTabOf: new Map(moves), inheritedOwn: new Set(inheritedOwn) };
+    }
+    for (const [key, from] of moves) {
+      if (gone(key)) {
+        moves.delete(key);
+      } else if (!openKeys.has(from)) {
+        if (ownBefore.has(from) || inheritedOwn.has(from)) inheritedOwn.add(key);
+        moves.delete(key);
+      }
+    }
+    for (const key of inheritedOwn) if (gone(key)) inheritedOwn.delete(key);
+    lastTabsRef.current = { activeKey: activeTabBindingKey, activeMachine, openKeys, tabPage: projectTabPageInFront };
+    return { joinTabOf: new Map(moves), inheritedOwn: new Set(inheritedOwn) };
+  }, [activeTabBindingKey, openProjectTabRoots, openRemoteProjectTabs, projectTabPageInFront, remoteBinding?.targetId, windowSessionRestored]);
   const tabGroups = useMemo(
     () =>
       groupProjectTabs({
@@ -1165,15 +1351,22 @@ export function TopBar({
         activeBindingKey: activeTabBindingKey,
         preferredBindingKeyByGroup,
         order: tabOrder,
+        canonicalOrigin: repositoryIdentity.canonicalOrigin,
+        repositoryIdForOrigin: repositoryIdentity.repositoryIdForOrigin,
+        // The last grouping: a second clone that has its own tab keeps it.
+        ownTabKeys: new Set([...ownTabKeysOf(tabGroupsRef.current), ...tabMoves.inheritedOwn]),
+        joinTabOf: tabMoves.joinTabOf,
       }),
     [
       activeTabBindingKey,
+      tabMoves,
       knownRemoteProjectTabs,
       localRecentProjects,
       openRemoteProjectTabs,
       preferredBindingKeyByGroup,
       projectTabs,
       remoteOriginByKey,
+      repositoryIdentity,
       tabOrder,
     ],
   );
@@ -1181,6 +1374,48 @@ export function TopBar({
   useEffect(() => {
     tabGroupsRef.current = tabGroups;
   }, [tabGroups]);
+
+  // The shared project record: one name and one icon per repository on every
+  // machine of the account. Names show here; when another machine changes a
+  // repository's icon, its tabs ask for the icon again.
+  const recordScopes = useMemo(
+    () => tabGroups.flatMap((group) => {
+      const scope = projectRecordScope(group.origin ?? null);
+      return scope ? [scope] : [];
+    }),
+    [tabGroups],
+  );
+  const refreshRecordIcon = useCallback((scope: string) => {
+    const targets = new Set<string>();
+    for (const group of tabGroupsRef.current) {
+      if (projectRecordScope(group.origin ?? null) !== scope) continue;
+      for (const machine of group.machines) {
+        if (machine.isLocal) {
+          void window.ade.project
+            .resolveIcon(machine.rootPath)
+            .then((icon) => publishProjectIcon(machine.rootPath, icon))
+            .catch(() => {});
+        } else if (machine.binding?.kind === "remote") {
+          targets.add(machine.binding.targetId);
+        }
+      }
+    }
+    // Only a machine already connected is asked: this must never wake one.
+    for (const targetId of targets) {
+      const state = remoteSnapshotRef.current?.connections.find((entry) => entry.target.id === targetId)?.state;
+      if (state === "connected") void window.ade.remoteRuntime.listProjects(targetId).catch(() => {});
+    }
+  }, []);
+  const recordNames = useProjectRecords(recordScopes, refreshRecordIcon);
+  const recordNameFor = useCallback(
+    (group: ProjectTabGroup): string | null => {
+      const scope = projectRecordScope(group.origin ?? null);
+      return scope ? recordNames.get(scope) ?? null : null;
+    },
+    [recordNames],
+  );
+  const recordNameForRef = useRef(recordNameFor);
+  recordNameForRef.current = recordNameFor;
 
   useEffect(() => {
     remoteSnapshotRef.current = remoteSnapshot;
@@ -1197,37 +1432,78 @@ export function TopBar({
         : { ...current, [activeGroup.id]: activeTabBindingKey });
   }, [activeTabBindingKey, tabGroups]);
 
-  usePreferLocalCheckout({
-    enabled: !webMode
-      && windowSessionRestored
-      && !machineRouteActive
-      && !isProjectBusy
-      && !isNewTabOpen,
-    remoteBinding,
-    remoteOrigin: remoteBinding
-      ? (remoteOriginByKey[remoteBinding.key] ?? remoteBinding.gitOriginUrl ?? null)
-      : null,
-    openLocalTabs: projectTabs,
-    knownLocalTabs: localRecentProjects,
+  // The open copies in a tab of their own, for the window's memory: a reload
+  // or a launch brings each back as its own tab.
+  const ownTabKeysNow = useMemo(() => {
+    const open = new Set([...openProjectTabRoots, ...openRemoteProjectTabs.map((entry) => entry.key)]);
+    return [...ownTabKeysOf(tabGroups)].filter((key) => open.has(key)).sort();
+  }, [openProjectTabRoots, openRemoteProjectTabs, tabGroups]);
+  // One tab and one open copy per repository, kept across a reload and a launch.
+  useRepositoryTabStrip({
+    windowSessionRestored,
+    projectBusy: isProjectBusy,
+    webMode,
+    tabGroups,
+    activeBindingKey: activeTabBindingKey,
+    openProjectTabRoots,
+    openRemoteProjectTabs,
+    setOpenProjectTabRoots,
     setOpenRemoteProjectTabs,
     setTabOrder,
+    preferredBindingKeyByGroup,
+    tabOrder,
+    noTabInFront: showWelcome === true || isNewTabOpen === true,
+    recordNameFor,
+    ownTabKeys: ownTabKeysNow,
   });
 
   useEffect(() => {
     let cancelled = false;
+    markBoot("session-asked");
     window.ade.app
       .getWindowSession()
       .then((session) => {
+        markBoot("session-answered");
         if (cancelled) return;
         setWindowId(session.windowId);
-        if (session.openProjectBindings?.length) {
-          const restoredRemoteBindings = session.openProjectBindings.filter(
+        // The main process keeps only the binding in front; this window's
+        // own memory brings back its other remote tabs after a reload (S4).
+        const strip = readWindowStripMemory();
+        if (strip) {
+          setPreferredBindingKeyByGroup((current) => ({ ...strip.preferredBindingKeyByGroup, ...current }));
+          setTabOrder((current) => (current.length > 0 ? current : strip.tabOrder));
+        }
+        // A launch: main hands back the strip it saved, by repository (S5).
+        // A reload reads the window's own memory above instead.
+        const launchStrip = !strip && session.repositoryTabs && session.repositoryTabs.tabs.length > 0
+          ? restoredStripFromSaved(session.repositoryTabs)
+          : null;
+        // Each copy that had a tab of its own gets it back, before the
+        // grouping first sees both copies of its repository open.
+        for (const key of strip?.ownTabKeys ?? launchStrip?.ownTabKeys ?? []) inheritedOwnTabsRef.current.add(key);
+        if (launchStrip) {
+          setTabOrder((current) => (current.length > 0 ? current : launchStrip.tabOrder));
+          for (const tab of launchStrip.adeCloudTabs) {
+            void useAppStore.getState().openAdeCloudProject(tab, { activate: false });
+          }
+        }
+        // Tabs an older version kept with no computer: bound to ADE Cloud now.
+        for (const tab of takeLegacyNoMachineTabs()) {
+          void useAppStore.getState().openAdeCloudProject(adeCloudProjectForTabId(tab.id, tab.displayName), { activate: false });
+        }
+        const sessionBindings = [
+          ...(session.openProjectBindings ?? []),
+          ...(strip?.remoteTabs ?? []),
+          ...(launchStrip?.remoteBindings ?? []),
+        ];
+        if (sessionBindings.length) {
+          const restoredRemoteBindings = sessionBindings.filter(
             (entry): entry is RemoteOpenProjectBinding => entry.kind === "remote",
           );
           if (restoredRemoteBindings.length > 0) {
             setOpenRemoteProjectTabs((current) => {
               const byKey = new Map(current.map((entry) => [entry.key, entry]));
-              for (const entry of restoredRemoteBindings) byKey.set(entry.key, entry);
+              for (const entry of restoredRemoteBindings) if (!byKey.has(entry.key)) byKey.set(entry.key, entry);
               return [...byKey.values()];
             });
           }
@@ -1235,8 +1511,11 @@ export function TopBar({
         // Restore every local tab root, loaded or not: an idle project's
         // context may be released while its tab stays open. Hosted web sends
         // only the loaded list.
-        const restored = session.openProjectTabRoots
-          ?? session.openProjectTabs.map((entry) => entry.rootPath);
+        const restored = [...(session.openProjectTabRoots
+          ?? session.openProjectTabs.map((entry) => entry.rootPath))];
+        for (const root of launchStrip?.localRoots ?? []) {
+          if (!restored.includes(root)) restored.push(root);
+        }
         if (restored.length > 0) {
           for (const tabProject of session.openProjectTabs) {
             useAppStore.getState().rememberProjectInfo(tabProject);
@@ -1257,6 +1536,21 @@ export function TopBar({
           setOpenProjectTabRoots([]);
         }
         setWindowSessionRestored(true);
+        // The tab that was in front comes back in front, unless the launch
+        // already opened a project (a startup project, an update restore).
+        const active = launchStrip?.active ?? null;
+        if (active && !session.binding && !session.project) {
+          const store = useAppStore.getState();
+          if (!active.copy) {
+            void store.openAdeCloudProject(adeCloudProjectForTabId(active.id, active.displayName)).catch(reportStripRestoreFailure);
+          } else if (active.copy.kind === "local") {
+            // The folder's Work view shows at once from saved state while the
+            // brain opens it, so the composer takes input before the open ends.
+            void store.switchProjectToPath(active.copy.rootPath, { skipWorktreeGate: true, showCachedView: true }).catch(reportStripRestoreFailure);
+          } else {
+            void store.switchRemoteProject(active.copy.binding.targetId, active.copy.binding.projectId).catch(reportStripRestoreFailure);
+          }
+        }
       })
       .catch(() => {
         if (!cancelled) {
@@ -1380,21 +1674,34 @@ export function TopBar({
   // Let other surfaces (e.g. the Account page) open the Connections panel to a
   // specific tab.
   useEffect(() => {
-    if (webMode) return;
-    return subscribeOpenConnectionsPanel((tab, machineId) => {
+    const unsubscribe = subscribeOpenConnectionsPanel((tab, machineId) => {
       openConnections(tab, machineId);
     });
+    if (!webMode) return unsubscribe;
+    // ADE Web callers that still send the old chip's open event.
+    const onWebOpenRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{ tab?: ConnectionsPanelTab; machineId?: string } | null>).detail;
+      openConnections(detail?.tab ?? "machines", detail?.machineId);
+    };
+    window.addEventListener("ade-web:open-connections", onWebOpenRequest);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("ade-web:open-connections", onWebOpenRequest);
+    };
   }, [openConnections, webMode]);
 
   const checkForActiveWorkloads = useCallback(
     async (projectRootPath: string): Promise<boolean> => {
       if (project?.rootPath !== projectRootPath) return true;
+      // The work that stops is the work on the copy this tab closes.
+      const closingPin = tabCopyPin;
+      if (!closingPin) return true;
 
       try {
         const [runningSessions, agentChats] =
           await Promise.all([
-            window.ade.sessions.list({ status: "running" }),
-            window.ade.agentChat.list(),
+            window.ade.sessions.list({ status: "running" }, closingPin),
+            window.ade.agentChat.list(undefined, closingPin),
           ]);
 
         const activeSessionCount = runningSessions.filter(
@@ -1434,7 +1741,7 @@ export function TopBar({
         return true;
       }
     },
-    [project?.rootPath],
+    [project?.rootPath, tabCopyPin],
   );
 
   const handleOpenNew = useCallback(() => {
@@ -1491,6 +1798,7 @@ export function TopBar({
         cancelNewTab();
         return Promise.resolve();
       }
+      carryRouteToCopy(remoteBinding?.key ?? project?.rootPath ?? null, rootPath, tabGroupsRef.current);
       // Called without the options argument at all when there is nothing to
       // pass, so the store action keeps its single-argument call shape.
       const switching = opts
@@ -1508,6 +1816,31 @@ export function TopBar({
     ],
   );
 
+  // The ADE Cloud tab a repository tab turns into when its computer is gone:
+  // ADE Cloud is the repository's machine while no own computer is online.
+  // Null for a folder with no repository: it has no other copy and no cloud.
+  const adeCloudTabFor = useCallback((tab: RemoteOpenProjectBinding): AdeCloudBindingProject | null => {
+    if (isAdeCloudTargetId(tab.targetId)) return null;
+    const group = tabGroupsRef.current.find((entry) =>
+      entry.machines.some((machine) => machine.bindingKey === tab.key));
+    if (!group?.origin) return null;
+    // A group keyed by a folder (a second clone's tab) names its
+    // repository apart.
+    const keyedByFolder = group.machines.some((machine) => machine.bindingKey === group.id);
+    const repositoryId = keyedByFolder
+      ? tabGroupsRef.current.find((entry) => (
+          entry.origin === group.origin && !entry.machines.some((machine) => machine.bindingKey === entry.id)
+        ))?.id ?? `repo:${group.origin}`
+      : group.id;
+    return {
+      accountProjectId: repositoryId,
+      displayName: recordNameForRef.current(group) ?? tab.displayName,
+      // A copy with no stamped origin still names its repository: the group has it.
+      gitOriginUrl: tab.gitOriginUrl?.trim() || `https://${group.origin}`,
+      iconDataUrl: tab.iconDataUrl ?? null,
+    };
+  }, []);
+
   const handleSwitchRemoteProject = useCallback(
     (binding: RemoteOpenProjectBinding): Promise<void> => {
       if (isProjectBusy) return Promise.resolve();
@@ -1516,14 +1849,39 @@ export function TopBar({
         cancelNewTab();
         return Promise.resolve();
       }
-      return switchRemoteProject(binding.targetId, binding.projectId).then(() => {}).catch(() => {});
+      carryRouteToCopy(remoteBinding?.key ?? project?.rootPath ?? null, binding.key, tabGroupsRef.current);
+      return switchRemoteProject(binding.targetId, binding.projectId).then(() => {}).catch(() => {
+        // The tab's computer did not answer: the tab still comes to the
+        // front, bound to ADE Cloud, and opens its copy when the computer is
+        // back. A connected computer that refused the open keeps the error
+        // banner instead.
+        const connected = (remoteSnapshotRef.current?.connections ?? []).some((connection) => (
+          connection.target.id === binding.targetId && connection.state === "connected"
+        ));
+        if (connected) return;
+        const adeCloud = adeCloudTabFor(binding);
+        if (!adeCloud) return;
+        const store = useAppStore.getState();
+        // Another switch started since this one: it owns the front.
+        if (store.projectTransition) return;
+        const nextRemoteTabs = openRemoteProjectTabsRef.current.filter((entry) => entry.key !== binding.key);
+        openRemoteProjectTabsRef.current = nextRemoteTabs;
+        setOpenRemoteProjectTabs(nextRemoteTabs);
+        // Keep the tab's view (its chat and draft) for when the computer is back.
+        store.evictProjectDataCaches(binding.key);
+        useAppStore.setState({ projectTransitionError: null });
+        void store.openAdeCloudProject(adeCloud).catch(reportStripRestoreFailure);
+      });
     },
     [
+      adeCloudTabFor,
       cancelNewTab,
       hubRouteActive,
       isProjectBusy,
       leaveMachineRoute,
+      project?.rootPath,
       remoteBinding?.key,
+      setOpenRemoteProjectTabs,
       switchRemoteProject,
     ],
   );
@@ -1548,6 +1906,7 @@ export function TopBar({
     checkForActiveWorkloads,
     isProjectBusy,
     tabSwitchRef,
+    noteTabMove,
   });
 
   // A project tab comes to the front on the press, as a browser tab does, so a
@@ -1617,7 +1976,15 @@ export function TopBar({
         }),
       }));
       const stayingTabs = plans.filter((plan) => plan.fallback);
-      const closingTabs = plans.filter((plan) => !plan.fallback);
+      // A repository tab with no other copy stays open, bound to ADE Cloud:
+      // a machine going away never closes a repository. A folder with no
+      // repository (no origin) has no other copy to wait for, and closes.
+      const waitingTabs = plans.flatMap((plan) => {
+        if (plan.fallback) return [];
+        const adeCloud = adeCloudTabFor(plan.tab);
+        return adeCloud ? [{ ...plan, adeCloud }] : [];
+      });
+      const closingTabs = plans.filter((plan) => !plan.fallback && !waitingTabs.some((entry) => entry.tab.key === plan.tab.key));
       const reconnectCopy = action === "remove"
         ? "Add the machine again to reconnect."
         : "ADE will not reconnect to this machine until you connect again.";
@@ -1631,12 +1998,22 @@ export function TopBar({
         }
         const lines: string[] = [];
         if (stayingTabs.length > 0) {
-          const plural = stayingTabs.length === 1 ? "" : "s";
+          const one = stayingTabs.length === 1;
           lines.push(
-            `${stayingTabs.length} open project tab${plural} also exist${stayingTabs.length === 1 ? "s" : ""} elsewhere:`,
+            `${stayingTabs.length} open project tab${one ? " has a copy" : "s have copies"} on another computer:`,
             stayingTabs.map((plan) => `- ${plan.tab.displayName}`).join("\n"),
             "",
-            `${stayingTabs.length === 1 ? "It stays" : "They stay"} open. ${action === "remove" ? "Removing" : "Disconnecting"} ${targetName} only removes its work from inside ${stayingTabs.length === 1 ? "it" : "them"}.`,
+            `${one ? "It stays open and switches to that copy" : "They stay open and switch to those copies"}.`,
+          );
+        }
+        if (waitingTabs.length > 0) {
+          if (lines.length > 0) lines.push("");
+          const plural = waitingTabs.length === 1 ? "" : "s";
+          lines.push(
+            `${waitingTabs.length} open project tab${plural} ${waitingTabs.length === 1 ? "is" : "are"} on no other computer that is online:`,
+            waitingTabs.map((plan) => `- ${plan.tab.displayName}`).join("\n"),
+            "",
+            `${waitingTabs.length === 1 ? "It stays" : "They stay"} open on ADE Cloud until a computer with the project is online.`,
           );
         }
         if (closingTabs.length > 0) {
@@ -1700,7 +2077,21 @@ export function TopBar({
         }
         useAppStore.getState().evictProjectDataCaches(bindingKey);
       };
+      // A tab that moves to another copy keeps its place in the strip.
+      const renamed = new Map<string, string>();
+      for (const plan of stayingTabs) {
+        const target = plan.fallback?.kind === "remote" ? plan.fallback.binding.key : plan.fallback?.kind === "local" ? plan.fallback.rootPath : null;
+        if (target) renamed.set(plan.tab.key, target);
+      }
+      // Each fallback copy takes the place of the copy that left, in its own tab.
+      for (const [from, to] of renamed) noteTabMove(from, to);
+      const shownBeforeClose = {
+        groups: tabGroupsRef.current,
+        openLocal: new Set(openProjectTabRootsRef.current),
+        openRemote: new Set(openRemoteProjectTabsRef.current.map((entry) => entry.key)),
+      };
       const finishAffectedTabClose = () => {
+        if (renamed.size > 0) setTabOrder((prev) => renameInTabOrder(prev, renamed, shownBeforeClose));
         openRemoteProjectTabsRef.current = nextRemoteTabs;
         setOpenRemoteProjectTabs(nextRemoteTabs);
         if (fallbackLocalRoots.length > 0) {
@@ -1715,10 +2106,9 @@ export function TopBar({
         for (const binding of affectedTabs) {
           evictForAction(binding.key);
         }
-        // A closed tab takes its deliberate pick with it: these bindings are no
-        // longer open here, so the local preference must win the next time one
-        // of these projects is opened from Home.
-        forgetExplicitRemotePicks(affectedKeys);
+        for (const plan of waitingTabs) {
+          void useAppStore.getState().openAdeCloudProject(plan.adeCloud, { activate: false });
+        }
       };
 
       const latestState = useAppStore.getState();
@@ -1737,13 +2127,20 @@ export function TopBar({
       // finally close.
       const activePlan =
         plans.find((plan) => plan.tab.key === latestRemoteBinding.key) ?? null;
+      const activeWaiting =
+        waitingTabs.find((plan) => plan.tab.key === latestRemoteBinding.key) ?? null;
       try {
-        if (activePlan?.fallback?.kind === "local") {
-          await latestState.switchProjectToPath(activePlan.fallback.rootPath);
+        if (activeWaiting) {
+          // The repository in front lost its last online copy: it stays in
+          // front, bound to ADE Cloud.
+          await latestState.openAdeCloudProject(activeWaiting.adeCloud);
+        } else if (activePlan?.fallback?.kind === "local") {
+          await latestState.switchProjectToPath(activePlan.fallback.rootPath, { carryWorkView: true });
         } else if (activePlan?.fallback?.kind === "remote") {
           await latestState.switchRemoteProject(
             activePlan.fallback.binding.targetId,
             activePlan.fallback.binding.projectId,
+            { carryWorkView: true },
           );
         } else {
           const nextRemoteTab = nextRemoteTabs[0] ?? null;
@@ -1783,10 +2180,27 @@ export function TopBar({
       return true;
     },
     [
+      adeCloudTabFor,
+      noteTabMove,
       setOpenProjectTabRoots,
       setOpenRemoteProjectTabs,
+      setTabOrder,
     ],
   );
+
+  // A tab bound to ADE Cloud moves to an own computer's copy once one is online.
+  useAdeCloudTabFollowsCopy();
+  // ADE Web: a computer that leaves this tab (forgotten, removed or stopped) never closes a tab.
+  useWebTabsFollowComputers({
+    webMode,
+    remoteBinding,
+    remoteSnapshot,
+    refs: { openRemoteProjectTabsRef, openProjectTabRootsRef, remoteSnapshotRef, tabGroupsRef, recordNameForRef },
+    setOpenRemoteProjectTabs,
+    setTabOrder,
+    setPreferredBindingKeyByGroup,
+    noteTabMove,
+  });
 
   const handleRemoteTargetDisconnectRequested = useCallback(
     (target: RemoteRuntimeTarget): Promise<boolean> =>
@@ -1824,8 +2238,6 @@ export function TopBar({
   const closeTabMenu = useCallback(() => setTabMenu(null), []);
   const [iconDialogTarget, setIconDialogTarget] = useState<ProjectIconDialogTarget | null>(null);
   const closeIconDialog = useCallback(() => setIconDialogTarget(null), []);
-  const [cloneLocallyTarget, setCloneLocallyTarget] = useState<CloneLocallyTarget | null>(null);
-
   /** The host's latest icon per project, so a changed icon shows at once. */
   const hostIconByKey = useMemo(() => {
     const byKey = new Map<string, string | null>();
@@ -1847,13 +2259,275 @@ export function TopBar({
     [remoteOriginByKey],
   );
 
-  const activeCloneTarget = useMemo(() => {
-    if (!remoteBinding) return null;
-    const group = tabGroups.find((entry) =>
-      entry.machines.some((machine) => machine.bindingKey === remoteBinding.key),
-    );
-    return group ? cloneTargetForGroup(group) : null;
-  }, [cloneTargetForGroup, remoteBinding, tabGroups]);
+  const {
+    copiesMenu,
+    closeCopiesMenu,
+    copiesMenuModel,
+    startCopyForRepo,
+    addLocalCopyFromTab,
+    removeTarget,
+    openRemoveDialog,
+    openRemoveNoMachineDialog,
+    openRemoveDialogWithTarget,
+    closeRemoveDialog,
+    copiesMenuView,
+    copiesMenuRows,
+    copiesMenuComputers,
+  } = useProjectCopiesMenu({
+    tabGroups,
+    remoteSnapshot,
+    webMode,
+    recordNameFor,
+    workspaceProjectOpen,
+    projectRootPath: project?.rootPath ?? null,
+    hasOrigin,
+    recentProjects,
+    activeTabBindingKey,
+    handleClonedLocally,
+  });
+
+  // The Location page and a no-machine tab's page ask for the dialog here.
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const request = (event as CustomEvent<RemoveProjectRequest>).detail;
+      if (!request) return;
+      if (request.kind === "no-machine") {
+        openRemoveNoMachineDialog({ id: request.id, displayName: request.displayName });
+        return;
+      }
+      if (request.kind === "target") {
+        openRemoveDialogWithTarget({ ...request.target, groupId: request.groupId, recordScope: request.recordScope });
+        return;
+      }
+      const group = tabGroupsRef.current.find((entry) =>
+        entry.machines.some((machine) => machine.bindingKey === request.bindingKey))
+        // A folder no tab lists: the group of the project in front, with that folder added.
+        ?? (request.copy && activeTabBindingKeyRef.current
+          ? tabGroupsRef.current.find((entry) => entry.machines.some((machine) => machine.bindingKey === activeTabBindingKeyRef.current))
+          : undefined);
+      if (group) openRemoveDialog(group.id, { currentBindingKey: request.bindingKey, extraCopy: request.copy });
+    };
+    window.addEventListener(REQUEST_REMOVE_PROJECT_EVENT, onRequest);
+    return () => window.removeEventListener(REQUEST_REMOVE_PROJECT_EVENT, onRequest);
+  }, [openRemoveDialog, openRemoveDialogWithTarget, openRemoveNoMachineDialog]);
+
+  /**
+   * After a removal: the tab moves to another copy of the repository when
+   * one remains (resolveProjectTabFallback), else it closes. A copy whose
+   * result is not known keeps its tab. "Remove from all my machines" also
+   * clears the repository's shared name and icon, but only when no copy of
+   * it may remain on any machine.
+   */
+  const handleProjectCopiesRemoved = useCallback(
+    async (groupId: string, recordScope: string | null, repoKey: string | null, result: RemoveProjectResult) => {
+      if (result.accountRemoved) {
+        // The account no longer lists it: its tab closes on every copy,
+        // including its ADE Cloud copy (one of the group's copies).
+        // The account list drops the project as soon as the route answers, so
+        // the group can have a new id (`repo:` instead of `ap_`) by now: find
+        // it by its removed copies too.
+        const removedKeys = new Set(result.removedBindingKeys);
+        const closing = tabGroupsRef.current
+          .filter((entry) => entry.id === groupId || entry.machines.some((machine) => removedKeys.has(machine.bindingKey)))
+          .map((entry) => entry.id);
+        if (closing.length > 0) {
+          await closeTabGroups(closing, { confirm: false, checkWorkloads: false, forgetState: true });
+        }
+      }
+      const removed = new Set(result.removedBindingKeys);
+      if (removed.size === 0) return;
+      // This computer's recents: the main process already forgot its own
+      // copy; another machine's copy is forgotten here.
+      for (const key of removed) {
+        if (key.startsWith("remote:")) await window.ade.project.forgetRecent(key).catch(() => null);
+      }
+      const freshRecents = await listRecentProjectsCached({ force: true }).catch(() => null);
+      if (freshRecents) setRecentProjects(freshRecents);
+      notifyProjectCopiesChanged();
+      const clearRecord = result.scope !== "this"
+        && recordScope !== null
+        && repoKey !== null
+        && freshRecents !== null
+        && result.unknownBindingKeys.length === 0
+        && !result.cloneRunning
+        && !repoCopyMayRemain(repoKey, { recents: freshRecents, snapshot: remoteSnapshotRef.current }, removed);
+      if (clearRecord) {
+        const removeSetting = window.ade.accountSettings?.remove;
+        for (const key of [PROJECT_RECORD_NAME_KEY, PROJECT_RECORD_ICON_KEY]) {
+          void removeSetting?.({ scope: recordScope, key }).catch(() => undefined);
+        }
+      }
+
+      const group = tabGroupsRef.current.find((entry) => entry.id === groupId);
+      if (!group) return;
+      const openLocal = openProjectTabRootsRef.current;
+      const openRemote = openRemoteProjectTabsRef.current;
+      const removedOpen = group.machines.filter((machine) =>
+        removed.has(machine.bindingKey)
+        && (openLocal.includes(machine.bindingKey) || openRemote.some((entry) => entry.key === machine.bindingKey)));
+      if (removedOpen.length === 0) return;
+      const remaining = group.machines.filter((machine) => !removed.has(machine.bindingKey));
+      const connectedTargetIds = new Set(
+        (remoteSnapshotRef.current?.connections ?? [])
+          .filter((connection) => connection.state === "connected")
+          .map((connection) => connection.target.id),
+      );
+      const fallback = resolveProjectTabFallback({
+        bindingKey: removedOpen[0]!.bindingKey,
+        groups: [{ ...group, machines: [removedOpen[0]!, ...remaining] }],
+        openLocalRoots: openLocal,
+        openRemoteBindingKeys: openRemote.map((entry) => entry.key),
+        connectedTargetIds,
+        excludeTargetId: "",
+      });
+      // A second folder's own tab whose folder is gone: it joins the
+      // repository's tab, which comes to the front in its place.
+      const repositoryGroup = !fallback && remaining.length === 0 && group.origin
+        ? tabGroupsRef.current.find((entry) => entry.id !== group.id && entry.origin === group.origin) ?? null
+        : null;
+      const repositoryOpen = repositoryGroup?.machines.find((machine) => (
+        machine.isLocal ? openLocal.includes(machine.rootPath) : openRemote.some((entry) => entry.key === machine.bindingKey)
+      )) ?? null;
+      if (repositoryOpen) {
+        const store = useAppStore.getState();
+        const frontKey = store.projectBinding?.kind === "remote" ? store.projectBinding.key : store.project?.rootPath ?? null;
+        try {
+          // That tab is already open: it comes back with its own chats and
+          // grid, not the removed checkout's view.
+          if (frontKey && removed.has(frontKey)) {
+            if (repositoryOpen.isLocal) await store.switchProjectToPath(repositoryOpen.rootPath);
+            else if (repositoryOpen.binding?.kind === "remote") {
+              await store.switchRemoteProject(repositoryOpen.binding.targetId, repositoryOpen.binding.projectId);
+            }
+          }
+        } catch (error) {
+          captureError(error, { fingerprint: ["repository-tabs", "remove-join-open"], level: "warning", handled: true });
+        }
+        const nextRemote = openRemoteProjectTabsRef.current.filter((entry) => !removed.has(entry.key));
+        openRemoteProjectTabsRef.current = nextRemote;
+        setOpenRemoteProjectTabs(nextRemote);
+        setOpenProjectTabRoots((prev) => prev.filter((root) => !removed.has(root)));
+        for (const key of removed) {
+          if (!key.startsWith("remote:")) continue;
+          useAppStore.getState().evictProjectState(key);
+          removeStoredProjectRoute(key);
+        }
+        return;
+      }
+      if (!fallback) {
+        // Other copies of the repository exist, on no computer that is online:
+        // the tab stays, bound to ADE Cloud, until one is (S4). Only a
+        // project with no copy left closes.
+        const removedRemote = openRemote.find((entry) => removedOpen.some((machine) => machine.bindingKey === entry.key)) ?? null;
+        const adeCloud = remaining.length > 0 && removedRemote ? adeCloudTabFor(removedRemote) : null;
+        if (!adeCloud) {
+          await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+          return;
+        }
+        const store = useAppStore.getState();
+        const wasInFront = store.projectBinding?.kind === "remote" && removed.has(store.projectBinding.key);
+        const nextRemote = openRemoteProjectTabsRef.current.filter((entry) => !removed.has(entry.key));
+        openRemoteProjectTabsRef.current = nextRemote;
+        setOpenRemoteProjectTabs(nextRemote);
+        for (const key of removed) {
+          if (!key.startsWith("remote:")) continue;
+          store.evictProjectState(key);
+          removeStoredProjectRoute(key);
+        }
+        await store.openAdeCloudProject(adeCloud, { activate: wasInFront }).catch(reportStripRestoreFailure);
+        return;
+      }
+      // The fallback copy takes the removed copy's place, in its own tab.
+      noteTabMove(removedOpen[0]!.bindingKey, fallback.kind === "local" ? fallback.rootPath : fallback.binding.key);
+      const state = useAppStore.getState();
+      const activeKey = state.projectBinding?.kind === "remote" ? state.projectBinding.key : state.project?.rootPath ?? null;
+      try {
+        if (activeKey && removed.has(activeKey)) {
+          if (fallback.kind === "local") await state.switchProjectToPath(fallback.rootPath, { carryWorkView: true });
+          else await state.switchRemoteProject(fallback.binding.targetId, fallback.binding.projectId, { carryWorkView: true });
+        }
+      } catch (error) {
+        // The switch failed: the tab closes rather than pointing at a removed copy.
+        captureError(error, { fingerprint: ["repository-tabs", "remove-fallback-open"], level: "warning", handled: true });
+        await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+        return;
+      }
+      const nextRemote = [
+        ...openRemoteProjectTabsRef.current.filter((entry) => !removed.has(entry.key)),
+        ...(fallback.kind === "remote" && !openRemoteProjectTabsRef.current.some((entry) => entry.key === fallback.binding.key)
+          ? [fallback.binding]
+          : []),
+      ];
+      openRemoteProjectTabsRef.current = nextRemote;
+      setOpenRemoteProjectTabs(nextRemote);
+      setOpenProjectTabRoots((prev) => {
+        const next = prev.filter((root) => !removed.has(root));
+        if (fallback.kind === "local" && !next.includes(fallback.rootPath)) next.push(fallback.rootPath);
+        return next;
+      });
+      const removedRemoteKeys = new Set([...removed].filter((key) => key.startsWith("remote:")));
+      for (const key of removedRemoteKeys) {
+        useAppStore.getState().evictProjectState(key);
+        removeStoredProjectRoute(key);
+      }
+    },
+    [adeCloudTabFor, closeTabGroups, noteTabMove, setOpenProjectTabRoots, setOpenRemoteProjectTabs],
+  );
+
+  // A copy removed outside this window (on its computer, or from another
+  // window or the phone): its computer stays connected and its project list
+  // no longer has it. The tab moves as it does after a removal made here.
+  // An empty list right after a connect proves nothing (the list has not
+  // arrived), so an empty list counts only after this connection listed
+  // projects once. The list must say so for a few seconds first.
+  const missingCopySinceRef = useRef(new Map<string, number>());
+  const followedCopyRemovalsRef = useRef(new Set<string>());
+  /** Each connection that listed a project: target id, with the time it connected. */
+  const listedProjectsConnectionRef = useRef(new Map<string, number | string | null>());
+  const [missingCopyTick, setMissingCopyTick] = useState(0);
+  useEffect(() => {
+    const nowMs = Date.now();
+    const missingSince = missingCopySinceRef.current;
+    const stillMissing = new Set<string>();
+    for (const tab of openRemoteProjectTabsRef.current) {
+      const connection = remoteSnapshot?.connections.find((entry) => entry.target.id === tab.targetId) ?? null;
+      const projects = connection?.projects ?? [];
+      if (connection?.state !== "connected" || typeof connection.reconnectingSinceMs === "number") continue;
+      const connectedAt = connection.connectedAt ?? null;
+      const listed = listedProjectsConnectionRef.current;
+      if (projects.length > 0) listed.set(tab.targetId, connectedAt);
+      else if (!listed.has(tab.targetId) || listed.get(tab.targetId) !== connectedAt) continue;
+      const present = projects.filter((entry) => entry.exists !== false);
+      if (findMachineProject(present, { projectId: tab.projectId, rootPath: tab.rootPath })) continue;
+      stillMissing.add(tab.key);
+    }
+    for (const key of [...missingSince.keys()]) if (!stillMissing.has(key)) missingSince.delete(key);
+    for (const key of [...followedCopyRemovalsRef.current]) if (!stillMissing.has(key)) followedCopyRemovalsRef.current.delete(key);
+    let nextCheckMs: number | null = null;
+    for (const key of stillMissing) {
+      if (followedCopyRemovalsRef.current.has(key)) continue;
+      const since = missingSince.get(key) ?? nowMs;
+      missingSince.set(key, since);
+      const dueMs = since + COPY_REMOVED_SETTLE_MS;
+      if (nowMs < dueMs) {
+        nextCheckMs = Math.min(nextCheckMs ?? dueMs, dueMs);
+        continue;
+      }
+      const group = tabGroupsRef.current.find((entry) => entry.machines.some((machine) => machine.bindingKey === key));
+      if (!group) continue;
+      followedCopyRemovalsRef.current.add(key);
+      void handleProjectCopiesRemoved(group.id, null, null, {
+        scope: "this",
+        accountRemoved: false,
+        removedBindingKeys: [key],
+        unknownBindingKeys: [],
+        cloneRunning: false,
+      });
+    }
+    if (nextCheckMs == null) return undefined;
+    const timer = window.setTimeout(() => setMissingCopyTick((tick) => tick + 1), Math.max(0, nextCheckMs - nowMs));
+    return () => window.clearTimeout(timer);
+  }, [handleProjectCopiesRemoved, missingCopyTick, remoteSnapshot]);
 
   const recentForMachine = useCallback(
     (machine: ProjectTabMachine): RecentProjectSummary | null => {
@@ -1894,7 +2568,7 @@ export function TopBar({
       { webMode },
       {
         onChangeIcon: setIconDialogTarget,
-        onClone: setCloneLocallyTarget,
+        onClone: (target) => addLocalCopyFromTab(target, { x: tabMenu.x, y: tabMenu.y }, group.id),
         onTogglePin: () => {
           if (!recent) return;
           void window.ade.project
@@ -1940,6 +2614,16 @@ export function TopBar({
         onSelect: () => void window.ade.app.writeClipboardText(machine.displayName).catch(() => {}),
       },
       { kind: "separator", key: "sep-close" },
+      ...(!webMode
+        ? [{
+            kind: "item" as const,
+            key: "remove-project",
+            label: "Remove project…",
+            icon: Trash,
+            disabled: isProjectBusy,
+            onSelect: () => openRemoveDialog(group.id),
+          }]
+        : []),
       {
         kind: "item",
         key: "close",
@@ -1971,8 +2655,10 @@ export function TopBar({
     ];
     return entries.filter((entry): entry is ContextMenuEntry => entry != null);
   }, [
+    addLocalCopyFromTab,
     closeTabGroups,
     cloneTargetForGroup,
+    openRemoveDialog,
     handleMoveTabToNewWindow,
     hostIconByKey,
     isProjectBusy,
@@ -1999,6 +2685,8 @@ export function TopBar({
   );
 
   const anyConnectionActive = remoteConnected || syncConnected || webConnected;
+  // A person on ADE Web with no computer of their own has nothing to connect: no red dot.
+  const connectionsIdle = !hasOwnComputer && !anyConnectionActive;
 
   const renderDesktopIntegrationControls = () => (
     <>
@@ -2017,19 +2705,13 @@ export function TopBar({
     ? <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
     : null;
 
-  const renderWebConnectionsControl = () => (
-    <React.Suspense fallback={null}>
-      <WebConnectionsChip />
-    </React.Suspense>
-  );
-
-  const renderDesktopConnectionsControl = () => webMode
-    ? renderWebConnectionsControl()
-    : (
+  // ADE Web shows the same Connections menu as the desktop app.
+  const renderDesktopConnectionsControl = () => (
       <ShellConnectionChip
         label="Connections"
         onboardingAnchor="connections"
         connected={anyConnectionActive}
+        idle={connectionsIdle}
         title="Machines, mobile, and web clients"
         ariaExpanded={connectionsOpen}
         onClick={() => (connectionsOpen ? closeConnections() : openConnections("machines"))}
@@ -2067,21 +2749,20 @@ export function TopBar({
           deferInitialRead={Boolean(remoteBinding)}
         />
       ) : null}
-      {webMode ? renderWebConnectionsControl() : (
-        <ShellConnectionChip
-          layout="menu-row"
-          label="Connections"
-          connected={anyConnectionActive}
-          title="Machines, mobile, and web clients"
-          ariaExpanded={connectionsOpen}
-          onClick={() => {
-            openConnections("machines");
-            onActivate();
-          }}
-          icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
-          trailing={<HeaderAccountAvatar />}
-        />
-      )}
+      <ShellConnectionChip
+        layout="menu-row"
+        label="Connections"
+        connected={anyConnectionActive}
+        idle={connectionsIdle}
+        title="Machines, mobile, and web clients"
+        ariaExpanded={connectionsOpen}
+        onClick={() => {
+          openConnections("machines");
+          onActivate();
+        }}
+        icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
+        trailing={<HeaderAccountAvatar />}
+      />
     </div>
   );
 
@@ -2102,7 +2783,10 @@ export function TopBar({
         projectTransitionLabel = "Opening project…";
         break;
       case "switching":
-        projectTransitionLabel = `Switching to ${transitionTargetName}…`;
+        // ADE Web opening a project on a sleeping ADE Cloud computer wakes it first.
+        projectTransitionLabel = projectOpenWaking
+          ? `Waking ${projectOpenWaking}…`
+          : `Switching to ${transitionTargetName}…`;
         break;
       case "closing":
         projectTransitionLabel = "Closing project…";
@@ -2185,7 +2869,6 @@ export function TopBar({
                   const remoteTabConnecting = remoteTabState === "connecting";
                   const remoteTabDisconnected =
                     remoteTabState === "error" || remoteTabState === "idle";
-                  const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
                   const remoteTabKey = tabOrderKey(group);
                   return (
                     <div
@@ -2197,14 +2880,14 @@ export function TopBar({
                         if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
                       }}
                       onContextMenu={(event) => openTabMenu(event, group.id)}
-                      data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive ? "active" : undefined}
+                      data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive && !isNewTabOpen ? "active" : undefined}
                       data-remote-state={remoteTabState}
-                      aria-current={isCurrentRemote ? "true" : undefined}
+                      aria-current={isCurrentRemote && !isNewTabOpen ? "true" : undefined}
                       // A project tab looks the same wherever its checkout
-                      // lives. The machine is in the tooltip; only a connection
-                      // problem, which stops the tab from loading, is marked.
+                      // lives. Only a connection problem, which stops the tab
+                      // from loading, is marked.
                       className={cn(
-                        "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] items-center gap-1.5 px-2.5",
+                        "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[260px] items-center gap-1.5 px-2.5",
                         "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                         "cursor-pointer",
                         isCurrentRemote && "font-semibold",
@@ -2215,7 +2898,9 @@ export function TopBar({
                           ...projectTabDrag.tabDragStyle(remoteTabKey),
                         } as React.CSSProperties
                       }
-                      title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
+                      // The tab is the project: its tooltip is its name, never
+                      // one computer or the folder of one copy.
+                      title={recordNameFor(group) ?? remoteTab.displayName}
                       onClick={() => {
                         if (projectTabDrag.isDragClick()) return;
                         handleSwitchRemoteProject(remoteTab);
@@ -2237,21 +2922,21 @@ export function TopBar({
                         }
                       />
                       <span className="min-w-0 flex-1 truncate text-center text-[12px]">
-                        {remoteTab.displayName}
+                        {recordNameFor(group) ?? remoteTab.displayName}
                       </span>
                       {remoteTabConnecting ? (
                         <CircleNotch
                           size={11}
                           weight="bold"
                           className="shrink-0 animate-spin text-amber-300"
-                          aria-label={`Reconnecting: ${remoteTab.runtimeName}`}
+                          aria-label="Reconnecting"
                         />
                       ) : remoteTabDisconnected ? (
                         <WarningCircle
                           size={11}
                           weight="fill"
                           className="shrink-0 text-red-300"
-                          aria-label={`Disconnected: ${remoteTab.runtimeName}`}
+                          aria-label="Not connected"
                         />
                       ) : null}
                       <button
@@ -2301,9 +2986,9 @@ export function TopBar({
                 let projectTabState: string | undefined;
                 if (isRelocating) projectTabState = "open";
                 else if (isMissing) projectTabState = "missing";
-                // While the Chats machine tab is the foreground surface, the
+                // While the Chats machine tab or a New Tab is in front, the
                 // bound project tab stays rendered but must not also read active.
-                else if (isCurrent && !machineRouteActive && !hubRouteActive) projectTabState = "active";
+                else if (isCurrent && !machineRouteActive && !hubRouteActive && !isNewTabOpen) projectTabState = "active";
                 const indicator = terminalAttention?.indicator;
                 const localTabPress = pressActivation(() => {
                   if (projectTabDrag.isDragClick()) return;
@@ -2320,7 +3005,7 @@ export function TopBar({
                         ? "project.activeTab"
                         : undefined
                     }
-                    aria-current={isCurrent ? "true" : undefined}
+                    aria-current={isCurrent && !isNewTabOpen ? "true" : undefined}
                     aria-disabled={
                       isRelocating || isProjectBusy ? true : undefined
                     }
@@ -2348,7 +3033,7 @@ export function TopBar({
                         handleSwitchProject(rp.rootPath);
                       }
                     }}
-                    title={isMissing ? `Missing: ${rp.rootPath}` : rp.rootPath}
+                    title={isMissing ? `Missing: ${rp.rootPath}` : recordNameFor(group) ?? rp.displayName}
                   >
                     <ProjectTabIcon
                       rootPath={rp.rootPath}
@@ -2385,7 +3070,7 @@ export function TopBar({
                         isMissing && "line-through",
                       )}
                     >
-                      {rp.displayName}
+                      {recordNameFor(group) ?? rp.displayName}
                     </span>
                     {isMissing ? (
                       <span className="inline-flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
@@ -2437,7 +3122,8 @@ export function TopBar({
                           if (isProjectBusy) return;
                           handleRemoveTab(rp.rootPath);
                         }}
-                        title="Remove project"
+                        // Closes the tab; "Remove project…" in the copies menu removes it.
+                        title="Close project"
                       >
                         <X size={13} weight="regular" />
                       </button>
@@ -2579,11 +3265,10 @@ export function TopBar({
           data-variant="ghost"
           onClick={handleOpenNew}
           disabled={isProjectBusy}
+          // The tooltip names the action; the glow and the count say other computers are online.
           title={
-            webMode
-              ? "Open another project"
-              : remoteStatusCount > 0
-              ? `${remoteStatusCount} remote device${remoteStatusCount === 1 ? "" : "s"} available`
+            !webMode && remoteStatusCount > 0
+              ? `Open another project (${remoteStatusCount} other computer${remoteStatusCount === 1 ? "" : "s"} online)`
               : "Open another project"
           }
           style={
@@ -2635,19 +3320,6 @@ export function TopBar({
         </div>
       ) : null}
 
-      {/* Cloning is to this machine, which the web client has no notion of. */}
-      {!webMode && activeCloneTarget && !isProjectBusy ? (
-        <HeaderActionPill
-          icon={DownloadSimple}
-          label="Clone locally"
-          tooltip={{
-            label: "Clone locally",
-            description: `${activeCloneTarget.displayName} runs on ${activeCloneTarget.machineName}. Clone it to this machine to work on it here too.`,
-          }}
-          onClick={() => setCloneLocallyTarget(activeCloneTarget)}
-        />
-      ) : null}
-
       {showPublishPill ? (
         <HeaderActionPill
           icon={UploadSimple}
@@ -2680,6 +3352,10 @@ export function TopBar({
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />
 
+        {/* The ADE Cloud iPhone, only while one runs: minutes, idle stop, Stop. */}
+        {/* Any open project, a remote one too: the phone is the account's. */}
+        <CloudIphoneTopBarButton enabled={projectHydrated === true && showWelcome !== true && isNewTabOpen !== true && Boolean(project?.rootPath || remoteBinding)} />
+
 
         <div className="hidden md:flex items-center gap-1.5">
           {renderDesktopIntegrationControls()}
@@ -2691,8 +3367,10 @@ export function TopBar({
         <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
         {/* App settings with no project surface in front (welcome page, new
-            tab, Chats). A project's own sidebar carries Settings otherwise. */}
-        {!webMode && !projectSurfaceVisible && !isSettingsTabOpen ? (
+            tab, Chats). A project's own sidebar carries Settings otherwise.
+            The web app too: its account pages (ADE Cloud among them) need no
+            machine, and the machine sections say to connect one. */}
+        {!projectSurfaceVisible && !isSettingsTabOpen ? (
           <SmartTooltip
             forceEnabled
             side="bottom"
@@ -2735,7 +3413,7 @@ export function TopBar({
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
           never participate in flex gap accounting when toggled open. */}
       <HeaderSheet
-        open={connectionsOpen && !webMode}
+        open={connectionsOpen}
         bare
         panelRef={connectionsPanelRef}
         title="Connections"
@@ -2743,6 +3421,7 @@ export function TopBar({
         onClose={closeConnections}
       >
         <ConnectionsPanel
+          variant={webMode ? "web" : "desktop"}
           initialTab={connectionsTab}
           machineId={connectionsMachineId}
           onClose={closeConnections}
@@ -2758,12 +3437,37 @@ export function TopBar({
         label="Project tab"
       />
       <ProjectIconDialog target={iconDialogTarget} onClose={closeIconDialog} />
-      <CloneLocallyDialog
-        target={cloneLocallyTarget}
-        onClose={() => setCloneLocallyTarget(null)}
-        onCloned={(result) => {
-          if (cloneLocallyTarget) void handleClonedLocally(result.rootPath, cloneLocallyTarget.remoteKey);
+      {removeTarget ? (
+        <RemoveProjectDialog
+          key={removeTarget.groupId}
+          target={removeTarget}
+          onClose={closeRemoveDialog}
+          onRemoved={(result) => void handleProjectCopiesRemoved(
+            removeTarget.groupId,
+            removeTarget.recordScope,
+            removeTarget.repoKey,
+            result,
+          )}
+        />
+      ) : null}
+      <ProjectCopiesMenu
+        menu={copiesMenuView && copiesMenu ? { x: copiesMenu.x, y: copiesMenu.y } : null}
+        projectName={copiesMenuView?.projectName ?? ""}
+        repoKey={copiesMenuView?.repoKey ?? null}
+        rows={copiesMenuRows}
+        computers={copiesMenuComputers}
+        onlyOneMachine={copiesMenuView?.onlyOneMachine ?? null}
+        // The clone call takes only GitHub repositories, on every machine.
+        canAddCopies={!webMode && Boolean(copiesMenuView?.repoKey?.startsWith("github.com/"))}
+        onAddCopy={(machine) => {
+          if (!copiesMenuView?.repoKey) return;
+          startCopyForRepo(copiesMenuView.repoKey, copiesMenuView.projectName, machine);
         }}
+        onPublish={copiesMenuModel?.canPublish && !isProjectBusy ? () => setPublishOpen(true) : null}
+        onRemove={!webMode && copiesMenuModel && !isProjectBusy
+          ? () => openRemoveDialog(copiesMenuModel.group.id)
+          : null}
+        onClose={closeCopiesMenu}
       />
       <PublishToGitHubDialog
         open={publishOpen}

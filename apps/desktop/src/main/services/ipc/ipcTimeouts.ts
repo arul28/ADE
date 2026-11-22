@@ -1,3 +1,4 @@
+import { goneTargetMachineKey } from "../machines/goneTargets";
 import { MCP_SIGN_IN_TIMEOUT_MS } from "../mcp/mcpOAuth";
 import { IPC } from "../../../shared/ipc";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
@@ -23,10 +24,13 @@ import {
   AI_STATUS_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
+import { REMOTE_RUNTIME_EVENT_SETUP_IPC_TIMEOUT_MS } from "../remoteRuntime/remoteEventSetup";
+import { REMOTE_RUNTIME_SYNC_IPC_TIMEOUT_MS } from "../remoteRuntime/pairedRuntimeRoutes";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
 import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { DISK_USAGE_TIMEOUT_MS } from "../../../../../ade-cli/src/services/projects/projectMove/moveCopy";
+import { MANUAL_DIAGNOSTICS_IPC_TIMEOUT_MS } from "../diagnostics/autoDiagnosticsService";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -56,7 +60,7 @@ export function readRuntimeActionRequest(
 
 /** The longest provider call (a backup) plus a minute for the reads around it. */
 const CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS = 16 * 60_000;
-/** The machine list reads the machines, then the usage: two request budgets. */
+/** The machine list: the access check, then the machines and the usage together. Two request budgets. */
 const CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS = 50_000;
 
 const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
@@ -143,8 +147,15 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   },
 };
 
+/** What a runtime action through a gone connection adds to its own budget: pairing again (a woken computer, up to 2 min) and connecting. */
+const GONE_PIN_PAIRING_BUDGET_MS = 150_000;
 const REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
+/** A cloud lane's work check: waking its computer, then the check itself (3 minutes at most). */
+const CLOUD_LANE_WORK_CHECK_IPC_TIMEOUT_MS = 6 * 60_000;
+/** A cloud lane's free: a wake, the push, the check again (3 minutes each at most), then the delete. */
+const CLOUD_LANE_FREE_IPC_TIMEOUT_MS = 12 * 60_000;
 const REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS = 75_000;
+const REMOTE_ATTACHMENT_MAX_TIMEOUT_MS = 10 * 60_000;
 
 function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
   const request = readRuntimeActionRequest(args);
@@ -161,7 +172,22 @@ function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
 function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null {
   const request = readRuntimeActionRequest(args);
   if (!request?.action) return null;
-  return isReplaySafeAdeAction(request.domain, request.action)
+  if (isReplaySafeAdeAction(request.domain, request.action)) return REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS;
+  const payload = isRecord(args[0]) && isRecord(args[0].request) ? args[0].request : null;
+  // A paste goes in parts on a slow link (`sendAttachmentInParts`), and each
+  // part may go again after a drop. Its room grows with its size: 16 KB/s,
+  // about 128 kbit/s, is a slow satellite uplink.
+  if (request.domain === "chat" && request.action === "saveTempAttachment" && isRecord(payload?.args)) {
+    const encoded = typeof payload.args.data === "string" ? payload.args.data.length : 0;
+    return Math.min(REMOTE_ATTACHMENT_MAX_TIMEOUT_MS, REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS + Math.ceil(encoded / 16));
+  }
+  // A send with a client id goes out again after a reconnect
+  // (`isDedupedSend`), so it gets the same room as a replay-safe read.
+  const sendArgs = request.domain === "chat" && isRecord(payload?.args) ? payload.args : null;
+  const sendId = request.action === "sendMessage"
+    ? sendArgs?.clientSendId
+    : request.action === "typeIntoCli" ? sendArgs?.clientMessageId : null;
+  return typeof sendId === "string" && sendId.trim()
     ? REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS
     : null;
 }
@@ -201,11 +227,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     return builtInBrowserRemoteCallDoneTimeoutMs(typeof request.method === "string" ? request.method : "", request.input);
   }
   if (channel === IPC.remoteRuntimeCallAction) {
-    const actionTimeoutMs = runtimeActionTimeoutMs(args);
-    if (actionTimeoutMs != null) return actionTimeoutMs;
-    const retryableActionTimeoutMs = retryableRemoteActionTimeoutMs(args);
-    if (retryableActionTimeoutMs != null) return retryableActionTimeoutMs;
-    return 30_000;
+    // A write through a pin whose connection is gone pairs again first, waking
+    // a sleeping cloud computer (machines/goneTargets.ts): up to two minutes.
+    const pinId = isRecord(args[0]) && typeof args[0].id === "string" ? args[0].id : null;
+    const actionTimeoutMs = runtimeActionTimeoutMs(args) ?? retryableRemoteActionTimeoutMs(args) ?? 30_000;
+    return pinId && goneTargetMachineKey(pinId) ? actionTimeoutMs + GONE_PIN_PAIRING_BUDGET_MS : actionTimeoutMs;
   }
   switch (channel) {
     // Switching projects can cold-start and bind the local runtime. Keep the
@@ -217,8 +243,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return PI_LOGIN_IPC_TIMEOUT_MS;
     case IPC.aiCursorAuthLogin:
       return CURSOR_LOGIN_IPC_TIMEOUT_MS;
-    // A forced refresh waits on the ACP auth probes; see AI_STATUS_TIMEOUT_MS.
-    // A plain read keeps the default.
+    // A forced refresh on a remote ADE older than the disk-only status read
+    // still waits on its ACP auth probes; see AI_STATUS_TIMEOUT_MS. A plain
+    // read keeps the default.
     case IPC.aiGetStatus:
       return isRecord(args[0]) && args[0].force === true
         ? AI_STATUS_TIMEOUT_MS + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS
@@ -231,6 +258,16 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // renderer reported a timeout while the update was still going.
     case IPC.remoteRuntimeUpdateAndRestart:
       return REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS;
+    // A lane's delete or free first checks its work on the computer: a wake
+    // (a sleeping one takes a minute or two), then the check, which may run 3 minutes.
+    case IPC.cloudLaneLifeCall:
+      if (!isRecord(args[0])) return 30_000;
+      // Free pushes the work, then checks it again (3 minutes each), around a wake and the delete.
+      if (args[0].method === "freeLane") return CLOUD_LANE_FREE_IPC_TIMEOUT_MS;
+      return args[0].method === "workState" || args[0].method === "deleteLane" ? CLOUD_LANE_WORK_CHECK_IPC_TIMEOUT_MS : 30_000;
+    // Pairs through the account (25 s) when needed, then connects, which can wake a cloud computer.
+    case IPC.machinesConnect:
+    case IPC.cloudFollowLane:
     case IPC.remoteRuntimeConnect:
     case IPC.remoteRuntimeListProjects:
     case IPC.remoteRuntimeAddProject:
@@ -245,28 +282,42 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeListMyGitHubRepos:
     case IPC.remoteRuntimeOpenProject:
     case IPC.remoteRuntimeListActionRegistry:
-    case IPC.remoteRuntimeCallSync:
     case IPC.remoteRuntimeEnsurePortForward:
-    case IPC.remoteRuntimeStreamEvents:
       return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
+    // Short `sync.*` and `modelPicker.*` calls. The call has its own deadline
+    // (REMOTE_RUNTIME_SYNC_DEADLINE_MS) that names the method and the step,
+    // and this sits just above it.
+    case IPC.remoteRuntimeCallSync:
+      return REMOTE_RUNTIME_SYNC_IPC_TIMEOUT_MS;
+    // An event poll answers with a batch, or once its subscription is
+    // acknowledged; it never stays open for the stream. Its own ceiling
+    // (REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS) names the step that hung, and
+    // this sits just above it, like the local twin's poll budget.
+    case IPC.remoteRuntimeStreamEvents:
+      return REMOTE_RUNTIME_EVENT_SETUP_IPC_TIMEOUT_MS;
+    // The account server runs the code on the cloud computer: its own request waits 90 s.
+    case IPC.cloudLaunchSignInCode:
+      return 100_000;
     case IPC.lanesArchive:
       return 4 * 60_000;
+    // The state read runs git in every lane of the project; the removal can
+    // delete a large folder (another machine) or move it to the Trash.
+    case IPC.projectInspectRemoval:
+    case IPC.remoteRuntimeInspectProjectRemoval:
+      return 2 * 60_000;
+    case IPC.projectRemoveCopy:
+    case IPC.remoteRuntimeRemoveProjectCopy:
+      return 11 * 60_000;
     // A box's sleep, wake, resize, backup or delete answers once the provider is done.
     case IPC.cloudMachineAction:
     // A wake, then every lane's commit and push on the computer.
     case IPC.cloudPushAllWork:
+    // Up to 50 MB of a lane's saved work, read and written; the save dialog waits on the person.
+    case IPC.cloudLaneBackupSavePatch:
+    case IPC.cloudLaneBackupToBranch:
       return CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS;
     case IPC.cloudListMachines:
       return CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS;
-    // A claim reads the pool, tags the machine and waits for its wake; a
-    // project change runs one pool pass (which may delete a machine).
-    case IPC.cloudReadyClaim:
-    case IPC.cloudReadyRelease:
-    case IPC.cloudReadySetProject:
-    case IPC.cloudReadyRemoveProject:
-    case IPC.cloudReadyRetry:
-    case IPC.cloudReadyStatus:
-      return CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS;
     case IPC.filesDelete:
       return localRuntimeActionIpcTimeoutMs("file", "deletePath");
     // Checkout, `worktree add` and `worktree remove`; see
@@ -355,6 +406,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // merged PR. The 30s default reported a failure while the merge went on.
     case IPC.prsLand:
       return 120_000;
+    // A report dialog's prepare or send waits for a report already running
+    // (an automatic send collects, then uploads for up to 20s) before its own
+    // collection or upload. On the 30s default the dialog showed a raw IPC
+    // timeout while the report went on.
+    case IPC.diagnosticsPrepareReport:
+    case IPC.diagnosticsSendReport:
+      return MANUAL_DIAGNOSTICS_IPC_TIMEOUT_MS;
     // The Usage page's Refresh runs the isolated ledger worker end to end. On
     // the 30s default the renderer rejected with a raw IPC timeout — and blanked
     // the page — while the daemon kept scanning for another nine minutes.
@@ -434,10 +492,16 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // default the renderer reported a failure while the dialog was still up.
     case IPC.projectChooseDirectory:
     case IPC.projectChooseIcon:
-    case IPC.projectSecretsChooseEnvFile:
+    case IPC.passwordsChooseEnvFile:
     case IPC.machineResetChooseRescueDir:
     case IPC.historyExportOperations:
       return 10 * 60_000;
+    // Reset and .env export wait on Touch ID / Windows Hello first; every
+    // other call gets the brain action's own budget.
+    case IPC.passwordsCall: {
+      const action = isRecord(args[0]) && typeof args[0].action === "string" ? args[0].action : "";
+      return action === "reset" || action === "exportSecrets" ? 10 * 60_000 : localRuntimeActionIpcTimeoutMs("passwords", action);
+    }
     // Dialog, then the same project switch projectSwitchToPath budgets for.
     case IPC.projectOpenRepo:
       return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS + 10 * 60_000;

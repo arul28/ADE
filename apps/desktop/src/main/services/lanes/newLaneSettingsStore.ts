@@ -206,6 +206,31 @@ export function createNewLaneSettingsStore(args: {
     setTemplates(templates: LaneTemplate[]): void {
       write(TEMPLATES_KEY, templates);
     },
+
+    /**
+     * Write the old per-computer choices to the account once, where the
+     * account has none yet (account project plan, slice Y2). Call after the
+     * account store has synced, so another computer's choice is known. Only
+     * an account-backed store under a repository does this; never throws.
+     */
+    adoptLegacySettings(): { defaults: boolean; templates: boolean } {
+      const adopted = { defaults: false, templates: false };
+      if (location().kind !== "account-repo") return adopted;
+      try {
+        const legacy = args.legacy();
+        if ((legacy.baseSource || legacy.defaultTemplateId?.trim()) && read(DEFAULTS_KEY) == null) {
+          write(DEFAULTS_KEY, legacyDefaults());
+          adopted.defaults = true;
+        }
+        if (legacy.templates?.length && read(TEMPLATES_KEY) == null) {
+          write(TEMPLATES_KEY, legacy.templates);
+          adopted.templates = true;
+        }
+      } catch (error) {
+        args.logger?.warn("lanes.new_lane_settings.adopt_failed", { error: error instanceof Error ? error.name : "unknown" });
+      }
+      return adopted;
+    },
   };
 }
 

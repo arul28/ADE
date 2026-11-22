@@ -32,8 +32,10 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   // `key=value` and `"key": "value"` pairs whose key names a secret.
   // A quoted value goes whole, spaces and all.
   /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret|password|passwd|authorization|cookie|session[_-]?token|private[_-]?key)["']?\s*[:=]\s*)(?:"[^"\n]*"?|'[^'\n]*'?|[^\s"',;&]+)/gi,
-  // Credentials embedded in URLs: https://user:pass@host
-  /(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi,
+  // Credentials embedded in URLs: https://user:pass@host. The scheme is capped
+  // at 32 characters (real ones are short): uncapped, a long run like `a.a.a…`
+  // made every word start rescan the whole run, seconds on one long line.
+  /(\b[a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@:]+:[^\s/@]+@/gi,
 ];
 
 /** Query parameters whose value is a credential. */
@@ -86,7 +88,10 @@ export function scrubString(input: string, options?: { maxLength?: number }): st
   return output;
 }
 
-const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+// The local part is capped at 64 characters, the most an address may have (RFC
+// 5321). Uncapped, every position of a long run with no `@` (a base64 blob, a
+// minified line) rescanned the rest of the run: seconds per scrub at 64k.
+const EMAIL = /[A-Z0-9._%+-]{1,64}@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 // A home path (`~/x`), or an absolute path with at least one folder, also
 // after a colon (`path:/Users/a/b`). The lookbehind keeps relative paths
 // (`src/a.ts`) whole, and a URL's `//` never starts a folder, so its path stays.

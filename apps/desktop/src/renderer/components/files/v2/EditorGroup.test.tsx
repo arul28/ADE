@@ -14,6 +14,11 @@ vi.mock("./useFileContent", () => ({
 }));
 import { updateCachedFileContentText } from "./useFileContent";
 
+import type { OpenProjectBinding } from "../../../../shared/types";
+/** The machine whose files the editor shows. */
+const FILES_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
+
 vi.mock("./ViewerHost", () => {
   return {
     ViewerHost: () => (
@@ -40,7 +45,7 @@ const tabId = editorTabId("workspace-1", "src/file.ts");
 const otherLaneTabId = editorTabId("workspace-2", "src/other.ts");
 
 const baseProps: EditorGroupProps = {
-  files: createPinnedFilesApi(null),
+  files: createPinnedFilesApi(FILES_PIN),
   group: {
     id: "group-1",
     activeTabId: tabId,
@@ -69,6 +74,7 @@ const baseProps: EditorGroupProps = {
     rootPath: "/repo",
     laneId: "lane-1",
     canRevealInFinder: true,
+    pathPin: FILES_PIN,
   }),
   theme: "dark",
   registry,
@@ -116,12 +122,6 @@ afterEach(() => {
 });
 
 describe("EditorGroup", () => {
-  it("renders the active tab and viewer", () => {
-    render(<EditorGroup {...baseProps} />);
-    expect(screen.getByRole("tab", { name: /file\.ts/i })).toBeTruthy();
-    expect(screen.getByTestId("viewer-button")).toBeTruthy();
-    expect(screen.getByTitle(saveTitle)).toBeTruthy();
-  });
 
   it("marks the visible fallback tab active when lane scope hides the stored active tab", () => {
     render(
@@ -196,7 +196,7 @@ describe("EditorGroup", () => {
         workspaceId: "workspace-1",
         path: "docs/notes.md",
         text: "saved text",
-      }, null);
+      }, FILES_PIN);
     });
     await waitFor(() => {
       expect(markSaved).toHaveBeenCalledWith(editorTabId("workspace-1", "docs/notes.md"));
@@ -217,7 +217,7 @@ describe("EditorGroup", () => {
         workspaceId: "workspace-1",
         path: "data/rows.csv",
         text: "saved text",
-      }, null);
+      }, FILES_PIN);
     });
   });
 

@@ -9,10 +9,11 @@ import {
   releaseLaneRuntimeResources,
   restoreUnarchivedLaneRuntime,
 } from "../lanes/laneRuntimeLifecycle";
-import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import { deleteSessionRowWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { readableHistoryBytes } from "../storage/historyCompression";
 import { resolveChatTranscriptReadPath } from "../storage/legacyChatTranscripts";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
+import { agentCliDisplayName, agentCliRowTitle } from "../chat/cliSessionLifecycle";
 import {
   ARCHIVE_ITEM_KINDS,
   DEFAULT_ARCHIVE_STALE_DAYS,
@@ -58,10 +59,12 @@ type ArchivedSessionRow = {
   laneColor: string | null;
   title: string | null;
   toolType: string | null;
+  tracked: number | null;
   archivedAt: string;
   transcriptPath: string | null;
   chatSessionId: string | null;
 };
+
 
 
 function errorMessage(error: unknown): string {
@@ -195,6 +198,7 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
                l.color as laneColor,
                s.title as title,
                s.tool_type as toolType,
+               s.tracked as tracked,
                s.archived_at as archivedAt,
                s.transcript_path as transcriptPath,
                s.chat_session_id as chatSessionId
@@ -208,10 +212,16 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
 
   const toSessionItem = async (row: ArchivedSessionRow): Promise<ArchivedItem> => {
     const kind = sessionKind(row.toolType);
+    // A tracked agent CLI is labelled with its CLI (Claude Code, Codex, …),
+    // the name its live row carries, never "Shell".
+    const cliName = kind === "shell" && row.tracked ? agentCliDisplayName(row.toolType) : null;
+    const title = (cliName ? agentCliRowTitle(row.title, row.toolType) : row.title?.trim())
+      || (kind === "chat" ? "Chat" : "Shell");
     return {
       kind,
       id: row.id,
-      title: row.title?.trim() || (kind === "chat" ? "Chat" : "Shell"),
+      title,
+      ...(cliName ? { toolLabel: cliName } : {}),
       laneId: row.laneId ?? null,
       laneName: row.laneName ?? null,
       laneColor: row.laneColor ?? null,
@@ -351,10 +361,11 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
       await requireChatService().deleteSession({ sessionId: ref.id });
       return;
     }
-    deleteTerminalSessionWithRuntimeCleanup({
+    await deleteSessionRowWithRuntimeCleanup({
       sessionId: ref.id,
       sessionService: deps.sessionService,
       ptyService: deps.ptyService,
+      agentChatService: deps.agentChatService ?? null,
     });
   };
 

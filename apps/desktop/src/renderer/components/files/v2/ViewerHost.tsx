@@ -4,6 +4,7 @@ import type { MonacoModelRegistry } from "../monacoModelRegistry";
 import type { EditorTab } from "./editorGroupsStore";
 import { useFileContent } from "./useFileContent";
 import type { PinnedFilesApi } from "./pinnedFilesApi";
+import type { OpenProjectBinding } from "../../../../shared/types/core";
 import { tabIsTextEditable } from "./viewerRegistry";
 import { CodeViewer } from "./viewers/CodeViewer";
 import { ImageViewer } from "./viewers/ImageViewer";
@@ -26,6 +27,12 @@ export type ViewerHostProps = {
   workspaceId: string;
   files: PinnedFilesApi;
   rootPath: string;
+  /**
+   * The copy path actions name (see `ViewerProps.pathPin`). Omitted: the copy
+   * `files` reads, which is right whenever the file is not in a folder opened
+   * from this computer's Finder.
+   */
+  pathPin?: OpenProjectBinding;
   tab: EditorTab;
   theme: EditorThemeMode;
   registry: MonacoModelRegistry;
@@ -55,6 +62,7 @@ export function ViewerHost(props: ViewerHostProps) {
     workspaceId,
     files,
     rootPath: props.rootPath,
+    pathPin: props.pathPin ?? files.pin,
     tab,
     content: contentState.content,
     // Read-only only when the payload can't round-trip as text (partial stream,

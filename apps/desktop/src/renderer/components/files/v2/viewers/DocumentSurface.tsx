@@ -4,6 +4,8 @@ import { COLORS } from "../../../lanes/laneDesignTokens";
 import { joinDisplayPath } from "../pathDisplay";
 import { formatBytes } from "../../../../../shared/formatting";
 import { isWebClientMode } from "../../../../lib/webClientMode";
+import type { OpenProjectBinding } from "../../../../../shared/types/core";
+import { runPathActionHere } from "../../pathOnThisComputer";
 
 /**
  * The honest "no in-app preview" card, shared by every viewer that cannot (or
@@ -17,6 +19,7 @@ import { isWebClientMode } from "../../../../lib/webClientMode";
  */
 export function DocumentSurface({
   rootPath,
+  pathPin,
   relativePath,
   title,
   mimeType,
@@ -27,6 +30,8 @@ export function DocumentSurface({
   extraActions = null,
 }: {
   rootPath: string;
+  /** The copy "Open externally" names; a file on another computer is refused with its name. */
+  pathPin: OpenProjectBinding;
   relativePath: string;
   title: string;
   mimeType: string | null;
@@ -36,7 +41,11 @@ export function DocumentSurface({
 }) {
   const absolutePath = joinDisplayPath(rootPath, relativePath);
   const openExternally = () => {
-    void window.ade.app.openPathInEditor?.({ rootPath, relativePath, target: "default" }).catch(() => {});
+    runPathActionHere(
+      pathPin,
+      () => window.ade.app.openPathInEditor({ rootPath, relativePath, target: "default" }, pathPin),
+      { failTitle: `Could not open "${title}"` },
+    );
   };
   const copyPath = () => {
     void window.ade.app.writeClipboardText?.(absolutePath);

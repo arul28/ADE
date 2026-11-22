@@ -48,6 +48,7 @@ import {
 
   subTextStyle,
 } from "./remoteTargetListStyles";
+import { adeCloudMachineLabel, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 type AccountMachineRowProps = {
   row: AccountMachineRowModel;
@@ -91,7 +92,17 @@ type AccountMachineRowProps = {
    * (Wake). A sleeping box can't take a connection, so the row never offers one.
    */
   parked?: { label: string; action: ReactNode } | null;
+  /** The relays this client trusts besides ADE's own (ADE Web's configured relay). */
+  relayBaseUrls?: readonly string[];
+  /**
+   * ADE Web holds this many connections now, its limit: an online computer
+   * here connects when the person opens it, and the row says so instead of
+   * calling it unreachable.
+   */
+  sessionLimit?: number | null;
 };
+
+const NO_RELAYS: readonly string[] = [];
 
 function relativeLastSeen(lastSeenAt: number | null): string {
   const phrase = relativeLastSeenPhrase(lastSeenAt);
@@ -111,6 +122,7 @@ function accountMachineStatusLabel(
   machine: AdeAccountMachine,
   connectionState: ReturnType<typeof accountMachineConnectionState>,
   presence: MachinePresence,
+  sessionLimit: number | null,
 ): string {
   if (presence === "asleep") {
     return machineStatusLine(machine, { presence }) ?? "Asleep";
@@ -122,6 +134,9 @@ function accountMachineStatusLabel(
   }
   if (connectionState === "unreachable") {
     return "Can't reach this computer right now — make sure it's online and up to date.";
+  }
+  if (presence === "online" && sessionLimit != null) {
+    return `Online · This tab already has ${sessionLimit} computers connected`;
   }
   if (presence === "online") {
     return machineStatusLine(machine, { presence }) ?? "Ready to connect";
@@ -148,9 +163,15 @@ export function AccountMachineRow({
   extraActions = [],
   footer = null,
   parked = null,
+  relayBaseUrls = NO_RELAYS,
+  sessionLimit = null,
 }: AccountMachineRowProps) {
   const { machine } = row;
   const displayName = accountMachineDisplayName(machine) ?? "Unnamed machine";
+  const cloudIndex = useAdeCloudLaneComputers();
+  // An ADE Cloud computer reads "ADE Cloud"; its own name moves to the tooltip and the rename field.
+  const cloudLabel = adeCloudMachineLabel({ machineKey: machine.machineKey, hostname: machine.name }, cloudIndex);
+  const shownName = cloudLabel ?? displayName;
   const installLabel = accountMachineInstallLabel(machine);
   const installTag = installLabel && installLabel !== "ADE" ? installLabel : null;
   const [renaming, setRenaming] = useState(false);
@@ -160,7 +181,7 @@ export function AccountMachineRow({
   useEffect(() => {
     if (!renaming) setRenameValue(displayName);
   }, [displayName, renaming]);
-  const connectionState = accountMachineConnectionState(machine);
+  const connectionState = accountMachineConnectionState(machine, relayBaseUrls);
   // Presence is resolved once, here, and passed down. Never re-derive it from
   // `online` / `lastSeenAt` further in — that is the disagreement this helper
   // exists to prevent.
@@ -199,10 +220,10 @@ export function AccountMachineRow({
       style={{ display: "grid", gap: 8 }}
     >
       <div style={{ ...machineRowStyle, opacity: !awake && section === "unavailable" ? 0.62 : 1 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 12, alignItems: "center" }}>
+        <div className="ade-cx-row-grid">
           <MachineAvatar
             colorKey={machine.machineKey}
-            name={displayName}
+            name={shownName}
             platform={machinePlatform(machine.platform)}
             formFactor={machineFormFactor({ name: displayName, power: machine.power })}
             editable
@@ -262,8 +283,8 @@ export function AccountMachineRow({
                 </form>
               ) : (
                 <>
-                  <span style={nameStyle} title={machine.adeHome ?? undefined}>
-                    {installTag ? accountMachineRowName(machine) ?? displayName : displayName}
+                  <span style={nameStyle} title={cloudLabel ? displayName : machine.adeHome ?? undefined}>
+                    {cloudLabel ?? (installTag ? accountMachineRowName(machine) ?? displayName : displayName)}
                   </span>
                   {/* The install is named only when it is not the regular
                       app, which is the case where two rows share a name. */}
@@ -290,11 +311,11 @@ export function AccountMachineRow({
               />
             </div>
             <div style={helperTextStyle}>
-              {parkedLine ? parkedLine.label : accountMachineStatusLabel(machine, connectionState, presence)}
+              {parkedLine ? parkedLine.label : accountMachineStatusLabel(machine, connectionState, presence, sessionLimit)}
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
+          <div className="ade-cx-row-actions" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
             {connecting ? (
               <button
                 type="button"

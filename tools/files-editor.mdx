@@ -26,11 +26,11 @@ The file tree is scoped to one **workspace** at a time. A workspace is a directo
 
 | Workspace | Where it comes from |
 |---|---|
-| **Primary** | Your repository root — always present. |
+| **Main checkout** | Your repository root — always present. |
 | **Lane worktree** | The isolated worktree behind a lane, under `.ade/worktrees/`. |
 | **Attached** | An external worktree path you linked in. |
 
-ADE shows the active workspace name prominently so you never edit the primary checkout when you meant to edit a lane. Switching workspaces changes the tree, diffs, and Git panel together — confirm the selector before you save.
+ADE shows the active workspace name prominently so you never edit the main checkout when you meant to edit a lane. Switching workspaces changes the tree, diffs, and Git panel together — confirm the selector before you save.
 
 <Frame caption="Files: the active workspace, its file tree, and the open file with Preview or Source.">
   <img src="/media/current/files.jpg" alt="The Files tab with a workspace tree and an open README" />

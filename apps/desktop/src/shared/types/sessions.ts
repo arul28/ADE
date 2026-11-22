@@ -113,12 +113,12 @@ export type TerminalToolType =
   | "grok"
   | "copilot"
   | "devin"
+  | "antigravity"
   | "qwen-chat"
   | "kimi-chat"
   | "grok-chat"
   | "copilot-chat"
   | "devin-chat"
-  // Antigravity is ACP-only: it has a chat runtime and no terminal CLI.
   | "antigravity-chat"
   | "aider"
   | "continue"
@@ -137,6 +137,7 @@ export type TrackedAgentCliToolType =
   | "grok"
   | "copilot"
   | "devin"
+  | "antigravity"
   | "claude-orchestrated"
   | "codex-orchestrated"
   | "opencode-orchestrated";
@@ -176,6 +177,7 @@ export function isTrackedAgentCliToolType(
     || toolType === "grok"
     || toolType === "copilot"
     || toolType === "devin"
+    || toolType === "antigravity"
     || toolType === "claude-orchestrated"
     || toolType === "codex-orchestrated"
     || toolType === "opencode-orchestrated";
@@ -243,7 +245,8 @@ export type TerminalResumeProvider =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 
 export type TerminalResumeTargetKind = "session" | "thread";
 
@@ -278,6 +281,13 @@ export type TerminalResumeLaunchConfig = {
   presetId?: string | null;
   /** Stored API credential this tracked CLI launched under, when no preset. */
   credentialId?: string | null;
+  /**
+   * ADE route home (`provider-homes/route/<id>`) to resume in, when Import
+   * found the session there but could not name the route again. Set only
+   * when no instance, preset or key is. A resume runs the CLI in that home on
+   * its own sign-in; a home that is gone falls back to the default one.
+   */
+  routeHomeId?: string | null;
 };
 
 export type TerminalResumeMetadata = {
@@ -726,6 +736,12 @@ export type PtyCreateArgs = {
    * can read/update its issue through `ade linear` (no Linear MCP/creds needed).
    */
   linearIssues?: LaneLinearIssue[];
+  /**
+   * Main-process only: the launch command already carries the first prompt
+   * (Codex's trailing argument, a resume with the message), so the turn it
+   * starts counts as submitted even though no Enter is typed.
+   */
+  promptSubmittedAtLaunch?: boolean;
 };
 
 export type PtyCreateResult = {
@@ -737,6 +753,55 @@ export type PtyCreateResult = {
 export type PtyDisposeResult = {
   disposed: boolean;
   reason: "disposed" | "orphaned" | "missing" | "not-running" | "session-mismatch" | "owned-by-peer" | "already-disposed";
+};
+
+/**
+ * Text for a running tracked agent CLI (the Work input box, a phone, the web),
+ * typed at its prompt only while the prompt is free: never over a turn that is
+ * still running, and never into a CLI whose process has ended.
+ */
+export type AgentCliTypeArgs = {
+  sessionId: string;
+  text: string;
+  /**
+   * When the CLI is mid-turn, the host keeps the text in its saved send queue
+   * and types it once the prompt is free, instead of answering `deferred`.
+   * For callers that keep no queue of their own (the phone, the web).
+   */
+  holdUntilFree?: boolean;
+  /**
+   * The caller's id for this text. A second call with the same id (another
+   * window sending the same queued item, a retry) gets the first call's
+   * answer instead of typing the text again.
+   */
+  clientMessageId?: string;
+  /**
+   * `free` (the default): typed only at a free prompt, as above. `now`:
+   * typed into the CLI's input at once and submitted, like the person's own
+   * keys. Only older desktops send `now` (their terminal's local line); the
+   * host still reads it for them.
+   */
+  when?: "now" | "free";
+  /** Who sent it (`sessionInputOrigin`), stamped by the preload. */
+  inputOrigin?: unknown;
+};
+
+/**
+ * `delivered`: typed and submitted. `deferred`: nothing typed, the CLI is
+ * mid-turn (or run by another ADE runtime); try again later. `held`: nothing
+ * typed yet, the host types it when the prompt is free. `ended`: the CLI's
+ * process is gone, so nothing was typed (continue the session instead).
+ */
+export type AgentCliTypeOutcome = "delivered" | "deferred" | "held" | "ended";
+
+export type AgentCliTypeResult = {
+  outcome: AgentCliTypeOutcome;
+  /**
+   * `delivered` only: typed at once, with no wait for a free prompt, because
+   * ADE cannot read this CLI's prompt (`agentCliReadsFreePrompt`). A client
+   * says so, since the CLI may have been mid-turn.
+   */
+  typedAtOnce?: true;
 };
 
 export type PtySendToSessionArgs = {
@@ -762,6 +827,28 @@ export type PtySendToSessionResult = PtyCreateResult & {
 };
 
 export type PtyResumeSessionResult = PtySendToSessionResult;
+
+/** Relaunch a tracked agent CLI in its own row, resuming its conversation, with new launch settings or account. */
+export type PtyRestartAgentCliArgs = PtyResumeSessionArgs & {
+  /** Provider account to relaunch under (Claude and Codex). Saved on the row. */
+  instanceId?: string | null;
+  /** Refuse, after the settings are checked, while the CLI is mid-turn instead of stopping it. */
+  requireIdle?: boolean;
+};
+
+export type PtyRestartAgentCliResult = PtyResumeSessionResult & {
+  /** True when a running CLI process was stopped first. */
+  stoppedProcess: boolean;
+};
+
+export type AgentCliInterruptResult = {
+  /** Whether a CLI process is running in the terminal. */
+  live: boolean;
+  /** False when the CLI sat at a free prompt, so nothing was pressed. */
+  interrupted: boolean;
+  /** The provider's cancel key that was pressed, e.g. "esc". */
+  key: string | null;
+};
 
 export type PtyDataEvent = {
   ptyId: string;

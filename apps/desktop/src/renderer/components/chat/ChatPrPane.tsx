@@ -28,6 +28,7 @@ import { selectChatPrs, selectGithubLanePrTags } from "../lanes/lanePageModel";
 import { Banner } from "../ui/notice";
 import { openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { isImeComposing } from "../../lib/imeComposition";
+import { requireChatPin, withChatPin } from "./chatMachinePin";
 
 /**
  * "Link a PR by number or URL" — the manual route into the many-to-many model.
@@ -37,19 +38,20 @@ import { isImeComposing } from "../../lib/imeComposition";
  * teammate — had no way to reach the chat at all, so a thread could show every
  * PR except the one the user was actually working on.
  *
- * The caller hides this row whenever the pane is pinned to another machine.
- * `prs.linkToLane` carries no pin, so it resolves the lane against the bound
- * machine, which does not own this lane. That is the same reason the inline
- * creator is hidden there.
+ * The caller hides this row whenever the pane is pinned to another machine,
+ * like the inline creator. The link names the chat's machine.
  */
 const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
   laneId,
   sessionId,
   onLinked,
+  pin,
 }: {
   laneId: string;
   sessionId?: string | null;
   onLinked: (pr: PrSummary) => void;
+  /** The chat's machine, which owns the lane. Null: none known. */
+  pin: OpenProjectBinding | null;
 }) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState("");
@@ -72,7 +74,7 @@ const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
         laneId,
         prUrlOrNumber: trimmed,
         sessionId: sessionId ?? null,
-      });
+      }, requireChatPin(pin));
       setBusy(false);
       close();
       onLinked(linked);
@@ -82,7 +84,7 @@ const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
       setError(err instanceof Error ? err.message : "Could not link that pull request.");
       setBusy(false);
     }
-  }, [busy, close, laneId, onLinked, sessionId, value]);
+  }, [busy, close, laneId, onLinked, pin, sessionId, value]);
 
   if (!open) {
     return (
@@ -209,7 +211,7 @@ export const ChatPrPane = React.memo(function ChatPrPane(props: ChatPrPaneProps)
 function ChatPrPaneAsleep({ laneId, branchName, runtimePin, box }: ChatPrPaneProps & { box: CloudMachine }) {
   const pinMachine = useMachineEntryForBinding(runtimePin ?? null);
   const scope = useChatRuntimeScopeForPin(runtimePin ?? null, laneId);
-  const { pullRequests: github, readFailed, retry } = useWindowMachineGithubPrs(Boolean(runtimePin));
+  const { pullRequests: github, readFailed, retry } = useWindowMachineGithubPrs(!scope.isActiveBinding);
 
   const lane = useMemo(() => ({
     laneType: scope.lane?.laneType ?? "worktree",
@@ -225,7 +227,7 @@ function ChatPrPaneAsleep({ laneId, branchName, runtimePin, box }: ChatPrPanePro
     : saved.map((pr) => ({ key: pr.githubUrl ?? pr.id, title: pr.title, number: pr.githubPrNumber, url: pr.githubUrl, state: pr.state }));
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 px-3 py-3 text-[13px]">
-      <Banner layout="inline" model={{ id: "chat-pr-asleep", tone: "info", title: `${box.name ?? "This computer"} is asleep`, detail: "Actions on its branch need it awake." }} />
+      <Banner layout="inline" model={{ id: "chat-pr-asleep", tone: "info", title: "This lane's computer is asleep", detail: "Actions on its branch need it awake." }} />
       {rows.map((row) => (
         <a key={row.key} href={row.url ?? undefined} target="_blank" rel="noreferrer" className="truncate text-fg underline">
           #{row.number} {row.title} ({row.state})
@@ -252,6 +254,8 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
   // Also rendered from the Work view area, which has no chat scope above it,
   // so the scope is derived from the pin this pane is handed.
   const scope = useChatRuntimeScopeForPin(runtimePin, laneId);
+  // The pin when it names another copy than the tab's own: UI that means "another machine" reads this.
+  const foreignPin = scope.isActiveBinding ? null : runtimePin;
   const projectRoot = scope.rootPath;
   // Keep the PR refresh callback keyed to the lane identity, not the lanes
   // collection. Lane status refreshes replace that array frequently, and
@@ -339,7 +343,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     let nextLinkedPrs: PrSummary[] = [];
     try {
       if (typeof window.ade.prs.listAll === "function") {
-        const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
+        const allPrs = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.listAll(chatPin));
         const scopedPrs = selectPrsForChatInLane(allPrs, laneId, sessionId);
         const visiblePrs = selectChatPrs(laneForPr, scopedPrs, sessionId);
         nextLinkedPrs = visiblePrs;
@@ -348,7 +352,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
           ?? pickPrimaryPr(visiblePrs)
           ?? selectPrimaryLanePr(laneForPr, scopedPrs);
       } else {
-        const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+        const legacy = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getForLane(laneId, chatPin));
         nextLinkedPrs = legacy ? [legacy] : [];
         cached = selectPrimaryLanePr(laneForPr, legacy ? [legacy] : []);
       }
@@ -402,7 +406,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     if (syncing) return;
     setSyncing(true);
     try {
-      await window.ade.prs.syncLanePr(laneId, runtimePinRef.current);
+      await withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.syncLanePr(laneId, chatPin));
     } catch {
       // best-effort
     } finally {
@@ -420,6 +424,8 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
   // timer lives in a ref cleared only on unmount, so a PR-row change can no
   // longer strand it.
   useEffect(() => {
+    const feedPin = runtimePinRef.current;
+    if (!feedPin) return undefined;
     const unsubscribe = window.ade.prs.onEvent((event) => {
       if (event.type !== "pr-reconcile") return;
       // Debounce the hide so a fast reconcile doesn't flicker.
@@ -440,7 +446,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
         // A reconcile just healed backend state — re-read the lane's PR.
         void refresh();
       }
-    }, runtimePinRef.current);
+    }, feedPin);
     return () => {
       unsubscribe();
     };
@@ -458,6 +464,8 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
   }, []);
 
   useEffect(() => {
+    const feedPin = runtimePinRef.current;
+    if (!feedPin) return undefined;
     const unsubscribe = window.ade.prs.onEvent((event) => {
       const currentPrId = currentPrIdRef.current;
       if (event.type === "pr-notification") {
@@ -472,7 +480,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
       } else {
         setCurrentPr(null);
       }
-    }, runtimePinRef.current);
+    }, feedPin);
     return unsubscribe;
   }, [laneId, refresh, runtimePinKey, setCurrentPr]);
 
@@ -514,9 +522,9 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     const prId = pr.id;
     let cancelled = false;
     void Promise.allSettled([
-      window.ade.prs.getChecks(prId, runtimePinRef.current),
-      window.ade.prs.getReviews(prId, runtimePinRef.current),
-      window.ade.prs.getStatus(prId, runtimePinRef.current),
+      withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getChecks(prId, chatPin)),
+      withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getReviews(prId, chatPin)),
+      withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getStatus(prId, chatPin)),
     ]).then(([c, r, s]) => {
       if (cancelled) return;
       if (c.status === "fulfilled") setChecks(c.value);
@@ -535,7 +543,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
       return;
     }
     let cancelled = false;
-    void window.ade.prs.getStackLinkOffer({ sessionId, prId: pr.id }, runtimePinRef.current)
+    void withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getStackLinkOffer({ sessionId, prId: pr.id }, chatPin))
       .then((offer) => {
         if (cancelled) return;
         const linkable = (offer?.siblings ?? []).filter((sibling) => !sibling.claimedByOtherChat);
@@ -555,11 +563,11 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     setStackLinkBusy(true);
     setStackLinkError(null);
     try {
-      const result = await window.ade.prs.linkChatStack({
+      const result = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.linkChatStack({
         sessionId: visibleStackOffer.sessionId,
         stackNumber: visibleStackOffer.stackNumber,
         prId: visibleStackOffer.prId,
-      }, runtimePinRef.current);
+      }, chatPin));
       if (!result?.ok) {
         setStackLinkError("Could not link this GitHub stack.");
         return;
@@ -603,8 +611,8 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
   // tab. `openLanePr` sends a foreign PR to GitHub instead.
   const openInAde = useCallback(() => {
     if (!pr) return;
-    openLanePr(pr, { foreign: Boolean(runtimePin), navigate });
-  }, [pr, navigate, runtimePin]);
+    openLanePr(pr, { foreign: Boolean(foreignPin), navigate });
+  }, [pr, navigate, foreignPin]);
 
   const openInGitHub = useCallback(async () => {
     if (!pr) return;
@@ -653,9 +661,9 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
   // activity itself. Without the pin those reads went to this window's machine,
   // which has no row for another machine's PR, so the body stayed empty.
   const detailRuntime = useMemo<PrDetailRuntime | null>(() => {
-    if (!runtimePin) return null;
+    if (!foreignPin) return null;
     return {
-      pin: runtimePin,
+      pin: foreignPin,
       machineName: pinMachineName ?? "this lane's machine",
       onOpenLane: () => {
         if (pinMachineId) navigate(openLaneOnMachinePath(laneId, pinMachineId));
@@ -665,7 +673,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     };
     // Keyed on the stable pin key; see `runtimePinRef`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneId, navigate, pinMachineId, pinMachineName, runtimePinKey]);
+  }, [laneId, navigate, pinMachineId, pinMachineName, runtimePinKey, scope.isActiveBinding]);
 
   if (variant === "tools") {
     if (loading) {
@@ -700,7 +708,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     return (
       <div className="flex h-full min-h-0 flex-col overflow-y-auto p-3.5">
         <p className="px-1 pb-3 text-[12px] font-medium text-fg/70">No pull request open</p>
-        {runtimePin ? (
+        {foreignPin ? (
           <p className="px-1 text-[12px] leading-relaxed text-fg/40">
             Switch to {pinMachineName ?? "this chat's machine"} to open one.
           </p>
@@ -712,8 +720,9 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
               sessionTitle={sessionTitle}
               sessionId={sessionId}
               onCreated={handleCreated}
+              pin={runtimePin}
             />
-            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} />
+            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} pin={runtimePin} />
           </>
         )}
       </div>
@@ -788,11 +797,11 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
               />
             </div>
           ) : null}
-          {runtimePin ? null : (
-            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} />
+          {foreignPin ? null : (
+            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} pin={runtimePin} />
           )}
           </>
-        ) : runtimePin ? (
+        ) : foreignPin ? (
           // Reading a foreign lane's PR is now routed to its machine; CREATING
           // one is not. The creator derives its branch, base and Linear link
           // from `state.lanes` — the bound machine's lanes, which do not contain
@@ -812,8 +821,9 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
               sessionTitle={sessionTitle}
               sessionId={sessionId}
               onCreated={handleCreated}
+              pin={runtimePin}
             />
-            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} />
+            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} pin={runtimePin} />
           </>
         )}
       </div>

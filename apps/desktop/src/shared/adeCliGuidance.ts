@@ -1,4 +1,4 @@
-import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
+import { STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
 import { adeWithheldAgentSkills, formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } from "./agentSkillRoots";
 import { SESSION_ACTIVITY_VALUES, type AgentSpawnLineage } from "./types/sessions";
 
@@ -68,19 +68,13 @@ export function adeAdvertisedAgentSkillNames(): string[] {
  */
 // NOTE: the Work-board status rule deliberately does NOT live here. This
 // constant is emitted whole inside the Cursor SDK prompt's hard 3 KB budget,
-// which truncates from the END — and that prompt already sits at ~100% of it,
-// so every byte added here comes out of the subagent routing contract and the
-// project rules below it. The board rule is documented where an agent actually
-// reads it: the "Board and status" section of the ade-cli-control-plane skill.
-export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
-  "ADE control protocol for truthful Work status:",
-  `- Use \`ade chat note "testing desktop auth fallback"\` for a durable one-line summary (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; notes truncate past ${MAX_STATUS_NOTE_CHARACTERS} characters).`,
-  '- Asking the user anything, even while background work runs: `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done. Not for progress updates. A subagent puts its question in its report instead.',
-  "- The next accepted user message clears the prior hand-raise; re-ask if still blocked.",
-  '- Done: report it and leave `ade chat note "<delivered result>"`.',
-  "- You cannot settle or unsettle a session; that is the user's call, or the automatic result of its PR merging.",
-  "- Keep lane and chat names accurate. When the work changes direction or moves to a new branch, rename without asking: `ade lanes rename`, `ade chat update --title`, or `ade chat generate-names`. A lane keeps its name when its branch changes.",
-].join("\n");
+// which truncates from the END, so every byte added here comes out of the
+// subagent routing contract and the project rules below it. The details (the
+// 72-character cut (MAX_STATUS_NOTE_CHARACTERS), how a question clears, a
+// subagent's report, settling, the other rename commands) live in the "Board
+// and status" section of the ade-cli-control-plane skill. The 2026-11-16
+// discovery bench found agents still find note, ask and rename from this line.
+export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = `Work row: \`ade chat note "<${STATUS_NOTE_GUIDELINE_WORDS} words>"\` sets your status, also when done; a question for the user goes only through \`ade chat ask "<question>"\`, never a note; rename with \`ade chat update --title\`.`;
 
 /**
  * Pin every ADE CLI socket selector to the same runtime. Different command
@@ -177,7 +171,7 @@ export function buildAdeSessionActivityGuidance(args: {
   }
   const personal = target.type === "personal";
   const scopeFlag = personal ? " --personal" : "";
-  const command = (activity: "debugging" | "clear"): string => {
+  const command = (activity: "debugging"): string => {
     const invoke = `${cliCommand} chat activity ${activity}${scopeFlag} --session ${safeSessionId}`;
     if (target.type !== "inline" || !safeRuntimeSocketPath) return invoke;
     return `${runtimeTargetAssignments}${invoke}`;
@@ -188,12 +182,12 @@ export function buildAdeSessionActivityGuidance(args: {
     // OpenCode shell (one shared server) has no ADE_CHAT_SCOPE to route by.
     ...(personal
       ? [
-        `- For long work, keep a one-line status on this chat's ${row} with \`${cliCommand} chat note${scopeFlag} --session ${safeSessionId} "<what you are doing>"\`; when you are blocked on the user, \`${cliCommand} chat ask${scopeFlag} --session ${safeSessionId} "<the question>"\`. If you asked and then kept working anyway, take the hand down with \`${cliCommand} chat ask --clear${scopeFlag} --session ${safeSessionId}\`.`,
+        `For long work, keep a one-line status on this chat's ${row} with \`${cliCommand} chat note${scopeFlag} --session ${safeSessionId} "<what you are doing>"\`; when you are blocked on the user, \`${cliCommand} chat ask${scopeFlag} --session ${safeSessionId} "<the question>"\`. If you asked and then kept working anyway, take the hand down with \`${cliCommand} chat ask --clear${scopeFlag} --session ${safeSessionId}\`.`,
       ]
       : []),
-    `- ADE shows this chat's activity on its ${row}, detected from your tool calls. You do not need to report it.`,
-    `  When the detected state is wrong or too coarse (debugging looks like testing to it), name the real one with \`${command("debugging")}\` (replace debugging with the real value); clear it with \`${command("clear")}\`.`,
-    `  Values: ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
+    // ADE reads the activity from tool calls; this override is only for a
+    // wrong label. "clear" takes the place of the value to reset it.
+    `Wrong activity label (debugging can look like testing)? \`${command("debugging")}\` (${SESSION_ACTIVITY_VALUES.join(", ")}, or clear).`,
   ].join("\n");
 }
 
@@ -228,8 +222,11 @@ export function buildAdePosixTrackedCliActivityGuidance(): string {
  * blob is gone: ADE's capabilities are delivered as session-scoped Agent Skills, with
  * `ade skill show` as the runtime-independent activation fallback. Do not re-grow this.
  */
-export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt()): string {
-  return buildAdeBootstrapGuidance(skillRoots);
+export function buildAdeCliAgentGuidance(
+  skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt(),
+  options: AdeBootstrapGuidanceOptions = {},
+): string {
+  return buildAdeBootstrapGuidance(skillRoots, options);
 }
 
 export const ADE_CLI_AGENT_GUIDANCE = buildAdeCliAgentGuidance();
@@ -263,9 +260,11 @@ export const ADE_PARENT_REPORT_COMMAND_GUIDANCE = [
 ].join(" ");
 
 /**
- * What a provider CLI started by another chat is told about that chat. A
- * terminal has no reliable turn end ADE can read, so unlike a chat subagent
- * nothing reports for it: the CLI reports itself, by message, when it is done.
+ * What a provider CLI started by another chat is told about that chat. ADE
+ * also sends the parent the CLI's closing message when a turn ends (where it
+ * can read the turn end) and when the CLI exits, but a terminal's turn end is
+ * not always readable, so the CLI still reports itself, by message; a turn it
+ * reported on wakes the parent once, not twice.
  */
 export function buildCliSpawnReportGuidance(
   lineage: AgentSpawnLineage | null | undefined,
@@ -274,8 +273,9 @@ export function buildCliSpawnReportGuidance(
   if (!parent) return null;
   // `$ADE_PARENT_CHAT_SESSION_ID` is exported to this process and holds the
   // same id; it is named here too in case a shell loses the variable.
+  // `peer` is the stored name of a chat that does not report back.
   if (lineage?.spawnKind === "peer") {
-    return `ADE chat ${parent} started you as a peer: nobody waits on your result. If that chat needs it, report it. ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`;
+    return `ADE chat ${parent} started you. Nobody waits for your result. If that chat needs it, report it with \`ade chat message\`. ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`;
   }
   return [
     `You are a subagent of ADE chat ${parent} ($ADE_PARENT_CHAT_SESSION_ID). That chat cannot see this terminal, so report to it yourself:`,
@@ -308,39 +308,67 @@ export const ADE_CLI_INLINE_GUIDANCE = buildAdeCliInlineGuidance();
 /**
  * Minimal always-on bootstrap that replaces the heavier {@link buildAdeCliAgentGuidance}
  * blob. It teaches the habit (reach for the matching `ade-*` skill on demand) and the
- * ground-truth fallback (`ade help` / `ade actions list`) instead of inlining every
+ * usage fallback (`ade help`) instead of inlining every
  * socket/browser/proof rule on every turn — those now live in their skills, which each
  * runtime discovers natively when it supports extra roots. Keep this short; do not re-grow it.
  */
+export type AdeBootstrapGuidanceOptions = {
+  /**
+   * The runtime lists the `ade-*` skills itself, with their descriptions
+   * (Claude's bundled `ade` plugin), so the name index, the skill root and the
+   * no-native-skills fallback are a second copy and are left out.
+   */
+  nativeSkillListing?: boolean;
+  /** The prompt already names the subagent route (the runtime block). */
+  subagentRouteStated?: boolean;
+  /**
+   * The same prompt carries the computer-use directive
+   * (`buildComputerUseDirective`), which states the real-screen rule, so the
+   * `mcp__computer_use` line here is a second copy and is left out.
+   */
+  computerUseDirectiveIncluded?: boolean;
+};
+
 export function buildAdeBootstrapGuidance(
   skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt(),
+  options: AdeBootstrapGuidanceOptions = {},
 ): string {
   return [
     "## ADE",
-    "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state.",
-    `Skills: read the matching \`ade-*\` skill first: ${adeAdvertisedAgentSkillNames().map((name) => `\`${name}\``).join(", ")}.`,
-    formatAdeAgentSkillRootsForPrompt(skillRoots),
-    "No native skills? `ade skill list --text`, then `ade skill show <name> --text`.",
+    "ADE is a local-first dev environment (lanes, chats, terminals, PRs, proof, apps, iOS, browsers); its `ade` CLI controls ADE state.",
+    ...(options.nativeSkillListing
+      ? ["Before a task in an ADE area, read its `ade:ade-*` skill."]
+      : [
+        `Skills: read the matching \`ade-*\` skill first: ${adeAdvertisedAgentSkillNames().map((name) => `\`${name}\``).join(", ")}.`,
+        formatAdeAgentSkillRootsForPrompt(skillRoots),
+        "No native skills? `ade skill list --text`, then `ade skill show <name> --text`.",
+      ]),
     // The one scene line every agent sees. Without it the skill was opened only
     // when a model happened to read the index, so scenes almost never appeared.
-    "Visuals: when a picture beats prose (status across many items, a comparison, a trend) or when asked, add one ```scene block; its buttons can offer choices. Run `ade scene guide` first; check with `ade scene preview`.",
+    "Visuals: for a chart, a comparison or a choice, add a ```scene block; run `ade scene guide` first.",
     // The one proof line every agent sees. Chat shows a picture only from the
     // project's own files or the proof store; an agent that linked a screenshot
     // it saved to /tmp left the user a chip saying "Outside this project".
-    "Images in answers: `ade proof attach <file>`, then paste its `cite:` line; other paths may not show. Proof or demos for people: read `ade-proof-artifacts`.",
+    // Naming the case ("an existing image file") matters: without it agents
+    // opened the browser skill for "put this screenshot in your answer". Do
+    // not add "a chart" here; it pulls chart requests away from scenes.
+    "Images in answers: to show an existing image file, such as a screenshot, run `ade proof attach <file>` and paste its `cite:` line; a plain path may not show. Proof or demos for people: **ade-proof-artifacts**.",
     // Agents opened about two thirds of recent PRs with `gh`, and rewrote the
     // text of the rest with `gh pr edit`, which drops ADE's footer and leaves
     // cited proof as links GitHub cannot show.
     "PRs: open with `ade prs create`, rewrite text with `ade prs body`; `gh` skips proof upload and the lane link.",
-    "`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`.",
-    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings: `ade settings find <words>`; clean up started processes.",
+    ...(options.computerUseDirectiveIncluded
+      ? []
+      : ["`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`."]),
     // Without this line an agent that needed Linear asked for the API key in
     // chat, where it stays in the transcript. Each command shows a card only
     // the user can answer, and the value never reaches the agent.
-    "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show a card. Read only requested `ade secrets`; never print them or `.env` files.",
+    "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show the user a card. Read only requested `ade secrets`; never print them or `.env` files.",
     // One default per scenario: same chat and lane, subagents for other
     // models, and one wake per thing waited on, so an agent never polls.
-    "Stay in this chat and lane unless asked. Another model works as your subagent (`ade new chat --mode chat`). Later: subagents report back; a PR you watch → `ade prs watch`; terminal → `ade terminal watch`; else `ade chat scheduled-work create`. `ade drafts` sends as the user.",
+    // `ade drafts` and `ade settings find` stay named here: without them the
+    // 2026-11-16 discovery bench lost both features.
+    `Stay in this chat and lane unless asked.${options.subagentRouteStated ? "" : " Another model works as your subagent (`ade new chat --mode chat --provider <p> --model <id>`)."} Subagents report back; to wait on a PR use \`ade prs watch\`, on a terminal \`ade terminal watch\`, else \`ade chat scheduled-work create\`. \`ade drafts\` sends a message as the user. ADE settings: \`ade settings find <words>\`. Stop processes you start; \`ade help <command>\` shows usage.`,
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }

@@ -42,7 +42,7 @@ it through `cacheLookup.ts` and `pinnedTool.ts`; downloads go through
 | Qwen Code | `qwen` | Vendor standalone bundle from GitHub releases, with its own Node | Qwen ACP chats and terminals. |
 | Kimi Code | `kimi` | Archive from GitHub releases | Kimi ACP chats and terminals. |
 | Devin | `devin` | Archive from `static.devin.ai` | Devin ACP chats and terminals. |
-| Antigravity | `antigravity` | Zip from `dl.google.com` | See the Antigravity provider doc. |
+| Antigravity | `antigravity` | Archive of the `agy` CLI from GitHub releases | Antigravity ACP chats (`agy acp`) and terminals. See the Antigravity provider doc. |
 | Pi | `pi` | npm dependency tree of `@earendil-works/pi-coding-agent` | The Pi SDK worker imports it; terminals run its `dist/cli.js`. |
 | Node | `node` | Archive from `nodejs.org` | Runtime for Pi's terminal CLI only. |
 | Muse Code | `muse` | One bare executable from Meta's release manifest | Not on npm at all; 330-470 MB per target. See [Muse: a direct-file pin](#muse-a-direct-file-pin). |
@@ -80,7 +80,7 @@ has them in `node_modules`, so it never downloads them.
 | Tool | Version | Format | Integrity | Download host |
 |---|---|---|---|---|
 | `claude-code` | 0.3.321 (Claude Code 2.1.321) | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
-| `codex` | 0.167.0 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
+| `codex` | 0.169.0 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `opencode` | 2.0.29 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `copilot` | 1.0.28 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `copilot-cli` | 1.0.105 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
@@ -90,12 +90,12 @@ has them in `node_modules`, so it never downloads them.
 | `qwen` | 0.25.0 | `archive` (tar.gz, win zip, strip 1) | vendor `SHA256SUMS`, cross-checked with GitHub asset digests | `github.com` + release-asset hosts |
 | `kimi` | 2.3.1 | `archive` (tar.gz, win zip) | vendor `.sha256` sidecars, cross-checked with GitHub asset digests | `github.com` + release-asset hosts |
 | `devin` | 3000.11.3 | `archive` (tar.gz, win zip) | vendor `manifest.json` sha256 | `static.devin.ai` |
-| `antigravity` | 1.4.1 | `archive` (zip) | sha256 computed by `tools:pin` (Google publishes none) | `dl.google.com` |
+| `antigravity` | 1.5.6 | `archive` (tar.gz, win zip) | GitHub asset digests, checked against the download | `github.com` + release-asset hosts |
 | `cursor-cli` | 2026.10.16-e3cb207 | `archive` (tar.gz, win zip, strip 1) | sha256 computed by `tools:pin` (Cursor publishes none) | `downloads.cursor.com` |
 | `node` | 24.22.0 | `archive` (tar.gz, win zip, strip 1) | vendor `SHASUMS256.txt` | `nodejs.org` |
 | `muse` | 1.4.7-R6101.1 | `file` | Meta manifest sha256 + size | `lookaside.facebook.com` |
 
-For the two computed hashes, the first download is trusted; re-pinning the same
+For the computed hash (Cursor), the first download is trusted; re-pinning the same
 version must reproduce the hash or `tools:pin` fails.
 
 ### Pin formats
@@ -112,8 +112,8 @@ with Node's zlib; Grok ships `bin/grok.br` and runs `bin/grok`.
 
 An entry may name extra required `files` (`{ path, windowsPath?, executable? }`).
 Every resolution returns them as absolute paths, and an install that lacks one
-is not usable. Qwen's `script`, Cursor's `script`, Pi's `module` and `cli`, and
-Antigravity's `harness` are files.
+is not usable. Qwen's `script`, Cursor's `script`, and Pi's `module` and `cli` are
+files.
 
 ### Download hosts
 
@@ -126,8 +126,7 @@ and HTTPS is required.
 | `npm-tarball`, `npm-tree` | `registry.npmjs.org` |
 | `muse` | `lookaside.facebook.com` |
 | `devin` | `static.devin.ai` |
-| `antigravity` | `dl.google.com` |
-| `qwen`, `kimi` | `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` |
+| `qwen`, `kimi`, `antigravity` | `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` |
 | `cursor-cli` | `downloads.cursor.com` |
 | `node` | `nodejs.org` |
 
@@ -211,7 +210,7 @@ without unpacking the tarball.
 | `qwen` | `node/bin/node` + file `script` = `lib/cli-entry.js` | `node/node.exe` |
 | `kimi` | `kimi` | `kimi.exe` |
 | `devin` | `bin/devin` | `bin/devin.exe` |
-| `antigravity` | `agy_acp_server.par` + file `harness` = `localharness_external` | `agy_acp_server.exe`, `localharness_external.exe` |
+| `antigravity` | `antigravity` | `antigravity.exe` |
 | `pi` | directory `node_modules/@earendil-works/pi-coding-agent` + files `module` = `dist/index.js`, `cli` = `dist/bundle/cli.js` | same |
 | `cursor-cli` | `node` (Cursor's bundled Node) + file `script` = `index.js` | `node.exe` |
 | `node` | `bin/node` | `node.exe` |
@@ -279,8 +278,37 @@ The root is resolved by `resolveMachineToolsRoot` in `paths.ts`:
 | Condition | Root |
 |---|---|
 | `ADE_TOOLS_ROOT` set | that path, resolved absolute |
+| `ADE_SYSTEM_CACHE_ROOT` set (absolute, writable) | `<that>/tools`, with the per-user root below as the fallback |
 | `win32` | `%LOCALAPPDATA%\ADE\tools` |
 | otherwise | `~/.ade/tools` |
+
+`resolveToolsRootLayout` (`paths.ts`) gives the whole layout, all of it from
+the machine's environment, so a machine image decides where rebuildable caches
+go and ADE has no code path per provider or OS:
+
+- **Baked roots** (`ADE_TOOLS_BAKED_ROOTS`, separated like PATH): read-only
+  caches in the same layout that an image ships (ADE Cloud's `/opt/ade-tools`).
+  The current pin is taken from a baked root first, so it is used only while
+  its version is the pin; a newer pin downloads. Never collected.
+- **System cache** (`ADE_SYSTEM_CACHE_ROOT`, budget
+  `ADE_SYSTEM_CACHE_BUDGET_BYTES`, default 7 GB): a folder that is not the
+  person's disk (ADE Cloud's system layer, `/var/cache/ade`). Installs go to
+  `<root>/tools` when the whole folder (package caches included) fits the new
+  tool within the budget and the folder's filesystem has the room; before
+  that, entries are removed (`systemCache.ts`): tool versions first, by their
+  last use, then the package caches, by the newest time among what they hold.
+  A tool that ran in the last 24 hours keeps its current copy, and an install
+  a process of this ADE runs from (`holdToolInstallsWhileRunning`) is never
+  removed, here or by collection. What still does not fit, or a full disk
+  under the budget, installs into the per-user root instead. This runs only
+  right before an install, one at a time (`toolRoots.ts`); nothing checks the
+  folder between installs. Collection removes a per-user copy of a version a
+  baked root or the system cache also holds.
+- **Use record** (`.last-used.json`, `usage.ts`): when each tool last ran,
+  written only by `pinnedToolDownload` (every spawn site calls it right before
+  it runs a tool), at most once per tool per 10 minutes per process. It lives
+  in the per-user root, which survives what a system cache does not (an image
+  update resets it).
 
 The root is **deliberately not derived from `ADE_HOME`**. `ADE_HOME` is
 channel-scoped (`~/.ade`, `~/.ade-alpha`), and the entire point of
@@ -307,7 +335,7 @@ profile — 650 MB must never roam.
 ```
 
 Vendor pins use a cache directory name of their own (`devin-<target>`,
-`qwen-code-<target>`, `antigravity-acp-<target>`, …), not an npm package name.
+`qwen-code-<target>`, `antigravity-cli-<target>`, …), not an npm package name.
 
 `.install-complete` (`TOOL_INSTALL_SENTINEL`) is written as the last step of an
 install and contains the tool name, package, version, target, integrity (or
@@ -488,7 +516,8 @@ Every place that starts a pinned copy applies `shared/pinnedToolSpawnEnv.ts`:
 | `qwen` | `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true`, plus `general.enableAutoUpdate: false` in ADE's own system-defaults file (`QWEN_CODE_SYSTEM_DEFAULTS_PATH`, `qwenSkillDefaults.ts`); the user's `~/.qwen/settings.json` is never written |
 | `pi` | `PI_SKIP_VERSION_CHECK=1` |
 | `cursor-cli` | `--disable-auto-update` (no env var; its updater would relink the user's `~/.local/bin/cursor-agent`) |
-| `devin`, `antigravity`, `muse` | none found; their updaters do not touch ADE's layout |
+| `antigravity` | `AGY_CLI_DISABLE_AUTO_UPDATE=1` |
+| `devin`, `muse` | none found; their updaters do not touch ADE's layout |
 
 ### Claude fall-forward
 
@@ -668,7 +697,7 @@ or reports the download.
 
 Downloads happen only on demand. Neither the brain nor the desktop app
 downloads every pinned tool at launch: every pin together is well over a
-gigabyte (Antigravity alone unpacks to about 1 GB on Linux).
+gigabyte.
 
 ### Which tools a machine fetches
 
@@ -677,13 +706,20 @@ picks the tools this machine shows signs of using, and only those are fetched at
 startup. A CLI on the PATH counts only as a sign of use (so a machine that ran
 the user's own CLI before migrates to ADE's copy); ADE never runs it.
 
+Being in the cache is not a sign of use: one wrong download used to keep
+itself current forever. `ADE_TOOLS_PREFETCH` (from the machine's environment)
+narrows the rule: `signals` (default) is the table below; `used` counts only a
+recent use, for a machine whose sign-ins were copied onto it for every
+provider at once (an ADE Cloud computer), where a login file says nothing
+about which agent runs; `off` fetches nothing at startup.
+
 | Tool | Fetched at startup when |
 |---|---|
-| any | it is already in the cache, current or previous version, so an ADE update keeps it current |
+| any | it ran on this machine in the last 30 days (the use record), so an ADE update keeps it current |
 | `claude-code` | `claude` on the PATH or a known install dir, `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`, `~/.claude/.credentials.json`, or `~/.claude.json` |
 | `codex` | `codex` on the PATH, or `~/.codex/auth.json` (`CODEX_HOME`) |
 | `copilot`, `copilot-cli` | `copilot` on the PATH, `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, `~/.copilot/config.json`, or gh's `hosts.yml` (`gh auth login`) |
-| `opencode` | `opencode`, `ollama` or `lms` on the PATH, an API-key env var ADE reads (`ENV_KEY_MAP`, `OPENROUTER_API_KEY`), an OpenCode `auth.json`, or `~/.ollama` / `~/.lmstudio`. OpenCode runs ADE's API-key, OpenRouter and local models too. |
+| `opencode` | `opencode`, `ollama` or `lms` on the PATH, an API-key env var ADE reads (`ENV_KEY_MAP`, `OPENROUTER_API_KEY`), an OpenCode `auth.json`, or `~/.ollama` / `~/.lmstudio`. OpenCode runs ADE's API-key, OpenRouter and local models too. Under `signals` it is also fetched when no agent is set up (`node`, `ffmpeg` and a GitHub CLI sign-in alone do not count): its free models need no account or key, so they are the only chat a person with no agent can start. |
 | `muse` | `muse` on the PATH, or Muse's `auth.json` |
 | `droid` | `droid` on the PATH, `FACTORY_API_KEY`, or a Factory home (`~/.factory`, `FACTORY_HOME_OVERRIDE`) |
 | `grok` | `grok` on the PATH, `XAI_API_KEY`, or `$GROK_HOME/auth.json` |
@@ -717,22 +753,31 @@ where it was (ADE's previous copy, or missing), never a PATH CLI.
 
 | Who waits for it | Tool |
 |---|---|
-| Chat runtime start: Claude (`startClaudeQuery`, the warm start, `runClaudeBackgroundCliCommand`), Codex, Copilot, Droid, Pi and every ACP provider. The chat shows "Downloading … for this machine" while it waits, then throws `PinnedToolNotReadyError` if the download fails. | every provider's tool |
-| One-shot tasks (`providerTaskRunner.ts`), auth probes (`acpAuthProbe.ts`, `claudeRuntimeProbe.ts`), usage reads, automation planning, sign-out, the orchestrated worker PTY | the provider's tool |
+| Chat runtime start: Claude (`startClaudeQuery`, the warm start, `runClaudeBackgroundCliCommand`), Codex, Copilot, Droid, Pi and every ACP provider. The chat shows "Getting <Agent> ready" while it waits (nothing is spawned until the install is complete), then throws `PinnedToolNotReadyError` if the download fails. | every provider's tool |
+| One-shot tasks (`providerTaskRunner.ts`), automation planning, sign-out, the orchestrated worker PTY | the provider's tool |
 | `startOpenCodeChatSession`, `runOpenCodeTextPrompt`, and `acquireOpenCodeServer` (terminals, sign-in) | `opencode` |
 | Provider terminals and login terminals (`pty/pinnedProviderCli.ts`): the terminal prints "ADE is downloading <Tool> for this machine. It starts here when the download finishes." and types the launch once it lands | the CLI tool (`copilot-cli`, `cursor-cli`, `pi` + `node`, …) |
 | `ade harness env` | the harness's tool |
 | Muse keeps its own `ensureMuseBinary` | `muse` |
 
-A provider the user signs in to after launch would otherwise read "not
-detected" (Copilot's status needs its runtime) or list no models (API-key models
-come from OpenCode's inventory), leaving no chat to start the download. So each
-AI status refresh calls `startDemandedAgentToolFetches`: for every pinned tool
-that is missing, its provider switched on in Settings, and the machine now shows
-the signals above (or, for `opencode`, the refresh found an API key, OpenRouter
-key or local model, including keys in ADE's own store), it starts the download
-without waiting. The provider's blocker reads "ADE is downloading <Tool> for
-this machine" meanwhile. The launch and `ade serve` passes run their own fetches
+**A status read never downloads.** Not the AI status refresh, not a model
+list, not a sign-in check (`acpAuthProbe.ts`, `claudeRuntimeProbe.ts`), not a
+usage or limits read (`requireInstalledPinnedProviderExecutable`). Those
+report the state instead ("ADE has not downloaded <Tool> for this machine
+yet. It downloads the first time this machine uses it."). So that a chat can
+still start, a provider whose copy is missing but downloadable
+(`CliAuthStatus.pinnedDownloadPending`) and whose sign-in is on disk keeps its
+models (`detectAllAuth`; Claude and Codex read their saved login with
+`savedSignInPresent`), its connection carries `runtimeDownloadPending`, the AI
+status lists it as available with its models (`runtimeAvailable` stays false,
+so health and banners still read "not here yet"), and its first turn
+downloads it. The ACP model-list warm (`warmAcpModelCatalog`) skips a provider
+whose copy is not here yet, without counting a failure.
+Saving an API key in ADE (other than Cursor's) starts OpenCode's download,
+since that key's models run on OpenCode. The status refresh used to start
+these downloads itself (`startDemandedAgentToolFetches`, removed): on an ADE
+Cloud computer, where every sign-in is copied over, that fetched every agent
+(about 2 GB) on every wake. The launch and `ade serve` passes run their own fetches
 through the same tracker (`trackPinnedToolFetch`), so an on-demand caller joins
 a download already running in that process instead of queueing a second
 install, and the blocker reads "downloading" during the launch fetch too.
@@ -743,7 +788,11 @@ A download that lands bumps `pinnedToolInstallGeneration()`, which voids the
 cached status (including `authDetector`'s), so the next refresh sees the tool.
 
 Model-list requests never start a download: the picker can ask every provider
-at once. Neither do Droid/Copilot model reads, ACP warm-up or Devin cloud reads.
+at once. Neither do Codex's `model/list` (ADE's own list until Codex is here),
+Droid/Copilot model reads, ACP warm-up (only from a copy already on disk) or
+Devin cloud reads. A chat whose copy is still on its way shows no runtime
+banner (`runtimeDownloadPending`): the turn's "Getting <Agent> ready" line is
+the one place that wait shows.
 
 Remote machines: every download runs in the process that owns the chat, lane or
 status (the brain on that machine), against that machine's tools root. A remote
@@ -828,7 +877,8 @@ on it rather than parsing prose.
 ### Garbage collection
 
 `gcTools` (`install.ts`) runs after a fully clean startup pass and on
-`ade tools gc`.
+`ade tools gc`, over every root ADE writes (a system cache and the per-user
+fallback, each with its own previous version and ledger), never a baked root.
 
 - **Versions of a pinned package:** it keeps the current pin and the newest
   superseded version (`keepPrevious`), preferring a finished install over a
@@ -1061,7 +1111,7 @@ needs only Node built-ins (plus the `npm` CLI for Pi's tree); no `npm ci`.
 | `qwen` | newest non-prerelease `v<x.y.z>` GitHub release (GitHub's "latest" points at an SDK tag) | `SHA256SUMS`, cross-checked with GitHub asset digests |
 | `kimi` | newest `@moonshot-ai/kimi-code@<x.y.z>` GitHub release | `.sha256` sidecars, cross-checked with GitHub asset digests |
 | `devin` | `static.devin.ai/cli/current/manifest.json` | `static.devin.ai/cli/<v>/manifest.json` + HEAD size |
-| `antigravity` | the ACP registry's `antigravity-acp/agent.json` | downloads every target and hashes it (~1 GB) |
+| `antigravity` | GitHub releases of `google-antigravity/antigravity-cli` | GitHub asset digests, each checked against a full download |
 | `pi` | npm latest | `npm install --package-lock-only --ignore-scripts` in a scratch dir, every tarball downloaded once to measure and verify its sha512 |
 | `copilot-cli` | npm `@github/copilot` latest | npm version manifest |
 | `cursor-cli` | the build named in `https://cursor.com/install` | downloads every target and hashes it (~0.8 GB) |
@@ -1084,8 +1134,16 @@ an SDK):
   `npm install --package-lock-only`, then `tools:manifest`, or `tools:muse-pin`
   for Muse), force-pushes `pins/<item>`, opens or updates that item's one PR
   (label `dependencies`), and starts `ci.yml` on the branch with
-  `workflow_dispatch` (pushes made with `GITHUB_TOKEN` do not start CI). A
-  newer release updates the same PR.
+  `workflow_dispatch` (pushes made with `GITHUB_TOKEN` do not start CI), at
+  most two such runs at a time. `ci.yml` gates a dispatch on a `pins/*` branch
+  like a pull request: the runtime targets, the Linux desktop driver and the
+  iOS suite follow its diff from main, so a tool bump builds only linux-x64 and
+  skips iOS. A bump of an SDK the CLI also depends on changes
+  `apps/ade-cli/package.json`, so it still builds all five. The Copilot SDK is
+  a desktop dependency only: the runtime build installs only `apps/ade-cli`, so
+  the binary does not contain it, and its bump builds linux-x64 only. The run
+  ends in the `ci-pass` check the PR needs to merge. A newer release updates
+  the same PR.
 - **Main has the newest:** it closes the item's open PR and deletes
   `pins/<item>`, or deletes a leftover branch with no PR.
 

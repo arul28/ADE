@@ -21,12 +21,24 @@ struct LanesRootInputs: Equatable {
   var focusedMachineKey: String?
   var focusedMachineName = ""
   var hasHostProfile = false
-  var liveMachineKeys: [String] = []
+  /// Each machine's row state ("parked", "offline"; "live" while live): a
+  /// change redraws the other machines' rows at once.
+  var machineStateKeys: [String] = []
+  /// False while the focused machine is off past its reconnect window.
+  var focusedListsWork = true
+  /// The open project's repository on the account server, and its ADE
+  /// Cloud lanes ADE kept without a computer (rows of the list), newest first.
+  var cloudProjectOrigin: String?
+  var keptCloudLanes: [CloudLaneWithoutComputer] = []
+  /// Lane launches ("New computer") of this project the phone still shows.
+  var keptCloudLaneLaunchCount = 0
 
   @MainActor
   init(_ sync: SyncService, fleet: MachineFleet, isActive: Bool) {
     self.isActive = isActive
-    activeProjectId = sync.activeProjectId
+    // The account view (no computer's copy open) is a project too: its ADE
+    // Cloud lanes poll and reset on a switch like a computer's project.
+    activeProjectId = sync.activeProjectId ?? sync.activeAccountProjectId.map { "account:\($0)" }
     requestedLaneNavigationId = sync.requestedLaneNavigation?.id
     guard isActive else { return }
     connectionState = sync.connectionState
@@ -40,7 +52,18 @@ struct LanesRootInputs: Equatable {
     focusedMachineKey = sync.focusedMachineKey
     focusedMachineName = sync.focusedMachineDisplayName
     hasHostProfile = sync.activeHostProfile != nil
-    liveMachineKeys = fleet.liveMachineKeys
+    // Which machines list their lanes, and which have a live link to read
+    // them through.
+    machineStateKeys = fleet.listedMachines.map { "\($0.machineKey)=\($0.state == .live ? "live" : "listed")" }
+    focusedListsWork = sync.focusedMachineListsWork
+    let origin = sync.cloudProjectOrigin
+    cloudProjectOrigin = origin
+    keptCloudLanes = origin.map { origin in
+      AccountCloudStore.shared.lanesWithoutComputer
+        .filter { $0.projectOrigin == origin }
+        .sorted { ($0.since ?? 0) > ($1.since ?? 0) }
+    } ?? []
+    keptCloudLaneLaunchCount = origin.map { AccountCloudLaunchStore.shared.openLaneLaunches(origin: $0).count } ?? 0
   }
 }
 
@@ -51,6 +74,9 @@ struct LanesTabShell: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
+  /// The kept lanes are rows of the list; their launches show as cards above it.
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
+  @ObservedObject private var cloudLaunches = AccountCloudLaunchStore.shared
   var isActive = true
 
   var body: some View {
@@ -83,6 +109,8 @@ struct LanesTabView: View, Equatable {
   @State var pullRequests: [PullRequestListItem] = []
   @State var laneListPresentation = LaneListPresentation.empty
   @State var errorMessage: String?
+  /// The last pull couldn't read the account's machines or ADE Cloud computers.
+  @State var cloudReadFailed = false
   @State var searchText = ""
   @State var quickFilter: LaneQuickFilter = .active
   @State var lanePath = NavigationPath()
@@ -96,6 +124,8 @@ struct LanesTabView: View, Equatable {
   @State var primaryBranchLaneId: String?
   @State var primaryBranchError: String?
   @State var detailSheetTarget: LaneDetailSheetTarget?
+  /// "Wake and move" on a lane at rest: its live detail opens the move.
+  @State var moveAfterWakeLaneId: String?
   @State var batchManageLaneIds: [String] = []
   @State var batchManagePresented = false
   @State var refreshFeedbackToken = 0
@@ -144,7 +174,7 @@ struct LanesTabView: View, Equatable {
   /// project, and again when a machine's live link comes or goes.
   var remoteLanesPollKey: String? {
     guard isActive, let projectId = inputs.activeProjectId else { return nil }
-    return "\(projectId)|\(inputs.liveMachineKeys.joined(separator: ","))"
+    return "\(projectId)|\(inputs.machineStateKeys.joined(separator: ","))"
   }
 
   var laneNavigationRequestKey: String? {
@@ -212,7 +242,7 @@ struct LanesTabView: View, Equatable {
         try? await Task.sleep(nanoseconds: LaneRemoteMachinesModel.refreshIntervalNanoseconds)
       }
     }
-    .onChange(of: syncService.activeProjectId) { _, _ in
+    .onChange(of: inputs.activeProjectId) { _, _ in
       // The tab stays mounted across a project switch: drop the previous
       // project's lanes so they never show while the new project loads.
       remoteLanes.reset()
@@ -238,6 +268,26 @@ struct LanesTabView: View, Equatable {
     .onChange(of: quickFilter) { _, _ in refreshLaneListPresentation() }
     .onChange(of: pinnedLaneIdsStorage) { _, _ in refreshLaneListPresentation() }
     .onChange(of: syncService.laneGithubPrItems) { _, _ in refreshLaneListPresentation() }
+    .onChange(of: syncService.focusedMachineListsWork) { _, _ in refreshLaneListPresentation() }
+    .onChange(of: machineFilter) { _, _ in refreshLaneListPresentation() }
+    // The badge counts follow the focused roster (the Hub's rule) between reloads.
+    .onChange(of: syncService.rosterRevision) { _, _ in
+      let next = laneSnapshotsByHubRule(
+        laneSnapshots,
+        roster: syncService.activeProject.flatMap { syncService.rosterProject(for: $0) }
+      )
+      guard next != laneSnapshots else { return }
+      laneSnapshots = next
+      refreshLaneListPresentation()
+    }
+    .onChange(of: remoteLanes.machines) { _, machines in
+      // A machine that left the list cannot stay the filter: it would hide
+      // every row, this machine's too.
+      if case .machine(let key) = machineFilter, !machines.contains(where: { $0.machineKey == key }) {
+        machineFilter = .all
+      }
+      refreshLaneListPresentation()
+    }
     .onChange(of: syncService.pendingLaneDeletionIds) { _, _ in
       refreshLaneListPresentation()
       let pendingIds = syncService.pendingLaneDeletionIds
@@ -258,31 +308,56 @@ struct LanesTabView: View, Equatable {
       }
     }
     .sheet(isPresented: $addLaneSheetPresented) {
-      AddLaneSheet(
-        machines: laneCreateMachines,
-        onLaneCreated: { createdLaneId in
-          addLaneSheetPresented = false
-          if !openLaneIds.contains(createdLaneId) {
-            openLaneIds.insert(createdLaneId, at: 0)
+      StartOnAccountHost {
+        AddLaneSheet(
+          machines: laneCreateMachines,
+          startOn: laneStartOnContext,
+          onLaneCreated: { createdLaneId in
+            addLaneSheetPresented = false
+            if !openLaneIds.contains(createdLaneId) {
+              openLaneIds.insert(createdLaneId, at: 0)
+            }
+            if isWorkRemoteLaneId(createdLaneId) {
+              await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+            } else {
+              await reload(refreshRemote: true)
+            }
           }
-          if isWorkRemoteLaneId(createdLaneId) {
-            await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
-          } else {
-            await reload(refreshRemote: true)
-          }
-        }
-      )
+        )
+      }
     }
     .sheet(item: $detailSheetTarget) { target in
       NavigationStack {
-        LaneDetailScreen(
-          laneId: target.laneId,
-          initialSnapshot: target.snapshot,
-          allLaneSnapshots: laneSnapshots,
-          initialSection: target.initialSection,
-          onRefreshRoot: { await reload(refreshRemote: true, includeDecorations: false) }
-        )
+        if let fleetKey = cloudLaneFleetKey(target.laneId, sync: syncService),
+           laneRestsOnCloud(target.laneId, sync: syncService),
+           let subject = cloudLaneAtRestSubject(fleetKey: fleetKey, lane: target.snapshot.lane, sync: syncService) {
+          // A lane whose ADE Cloud computer is asleep: what the account keeps
+          // for it, with no wake.
+          CloudLaneAtRestScreen(subject: subject, onAwake: {
+            detailSheetTarget = nil
+            await reloadAfterLaneAction(target.laneId, refreshRemote: true)
+          }, onAwakeToMove: {
+            moveAfterWakeLaneId = target.laneId
+            detailSheetTarget = nil
+            await reloadAfterLaneAction(target.laneId, refreshRemote: true)
+          })
+          .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+              Button("Done") { detailSheetTarget = nil }
+            }
+          }
+        } else {
+          LaneDetailScreen(
+            laneId: target.laneId,
+            initialSnapshot: target.snapshot,
+            allLaneSnapshots: laneSnapshots,
+            initialSection: target.initialSection,
+            moveAfterWake: moveAfterWake(target.laneId),
+            onRefreshRoot: { await reload(refreshRemote: true, includeDecorations: false) }
+          )
+        }
       }
+      .cloudLaneActionsHost()
     }
     .sheet(isPresented: $batchManagePresented) {
       LaneBatchManageSheet(
@@ -326,6 +401,76 @@ struct LanesTabView: View, Equatable {
       ))
     }
     return machineChoicesLeastBusyFirst(machines, runningCount: \.runningCount)
+  }
+
+  /// The Start-on list for an account project. Nil for a folder that is not
+  /// on the account: the sheet keeps its list of live machines.
+  var laneStartOnContext: LaneStartOnContext? {
+    guard let project = syncService.accountProjectForActiveProject() else { return nil }
+    let focusedKey = syncService.focusedMachineKey
+    var candidates = syncService.startOnCandidates(for: project)
+    // A computer whose lanes this tab reads is a live copy, also when the
+    // account does not list its copy yet (it publishes on its next beat, as
+    // right after "Copy to").
+    for machine in laneCreateMachines {
+      guard let key = machine.id.isEmpty ? focusedKey : machine.id else { continue }
+      if let index = candidates.firstIndex(where: { $0.fleetKey == key }) {
+        // A clone-first row that now has lanes holds its computer's only copy.
+        if candidates[index].kind == .cloneFirst { candidates[index].isMain = true }
+        candidates[index].kind = .copy
+        candidates[index].isLive = true
+        continue
+      }
+      candidates.append(StartOnCandidate(
+        accountMachineKey: AccountService.shared.machine(forFleetKey: key)?.machineKey ?? "fleet:\(key)",
+        fleetKey: key,
+        name: machine.name,
+        symbol: machineSymbol(machineKey: key, name: machine.name),
+        kind: .copy,
+        isMain: true,
+        lastSeenAt: 0,
+        isLive: true
+      ))
+    }
+    return LaneStartOnContext(
+      accountProjectId: project.id,
+      projectName: project.name,
+      candidates: resolveStartOn(candidates, lastMachineKey: StartOnMemory.lastMachine(for: project.id)),
+      focusedKey: focusedKey,
+      connect: { candidate in
+        switch await syncService.connectForStartOn(accountMachineKey: candidate.accountMachineKey) {
+        case .failure(let failure):
+          return failure.message
+        case .success(let key):
+          return await awaitStartOnLanes(machineKey: key, name: candidate.name)
+        }
+      },
+      copy: { candidate in
+        switch await syncService.putAccountProjectCopy(project, onAccountMachine: candidate.accountMachineKey) {
+        case .failure(let failure):
+          return failure.message
+        case .success(let copy):
+          return await awaitStartOnLanes(machineKey: copy.phoneKey, name: candidate.name)
+        }
+      }
+    )
+  }
+
+  /// Waits (bounded) until a computer's roster lists the open repository,
+  /// then reads its lanes once, so Start on can open the lane form there.
+  /// Nil when its lanes are in; otherwise what to tell the user.
+  @MainActor
+  private func awaitStartOnLanes(machineKey: String, name: String) async -> String? {
+    if machineKey == syncService.focusedMachineKey { return nil }
+    let deadline = Date().addingTimeInterval(20)
+    while !syncService.remoteReposForActiveProject().contains(where: { $0.machineKey == machineKey }) {
+      guard Date() < deadline, !Task.isCancelled else {
+        return "\(name) is connected, but it does not list this project yet. Try again in a moment."
+      }
+      try? await Task.sleep(nanoseconds: 400_000_000)
+    }
+    await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+    return nil
   }
 
   // MARK: - Top bar

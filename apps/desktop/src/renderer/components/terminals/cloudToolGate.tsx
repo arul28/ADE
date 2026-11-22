@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Moon } from "@phosphor-icons/react";
-import { cloudOutOfHours, type CloudMachine } from "../../../shared/adeCloud";
+import { cloudCatalogOf, cloudOutOfHours, type CloudMachine } from "../../../shared/adeCloud";
+import { cloudTierOfMachine, cloudTiers, cloudTierUsesHours } from "../../../shared/cloudTiers";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { PushAllWorkButton } from "../remoteTargets/PushAllWorkButton";
+import { openCloudPlanSettings } from "../remoteTargets/openCloudPlanSettings";
+import { CloudLaneSavedWork } from "../cloudLane/CloudLaneSavedWork";
+import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { computerIsDown, useCloudComputer } from "../remoteTargets/useCloudComputer";
-import { Banner } from "../ui/notice";
+import { Banner, type BannerModel } from "../ui/notice";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
 
 /**
  * ADE Cloud's half of a Work tool: a person opening a tool that needs the
  * computer wakes it (a stopped computer starts), a restored tab or a background
- * read never does, and at 0 hours the tool says so instead.
+ * read never does, and at 0 hours the tool says so instead (a Small computer
+ * never uses hours, so it still wakes).
  *
  * Account-level on the wake (ADE Cloud knows the machine by its id); the tool
  * itself keeps its `pin`. Everything here is a no-op off the machine list:
@@ -46,8 +50,9 @@ function useStillWatching(tool: string, pin: OpenProjectBinding | null | undefin
           console.warn("[cloud] still-watching check failed", error);
           return false;
         });
-        if (here) {
-          await window.ade.workTools?.noteWatching?.(pinRef.current).catch((error: unknown) => {
+        const pin = pinRef.current;
+        if (here && pin) {
+          await window.ade.workTools?.noteWatching?.(pin).catch((error: unknown) => {
             console.warn("[cloud] still-watching signal failed", error);
           });
         }
@@ -89,7 +94,9 @@ export function CloudToolGate({
   useStillWatching(tool, pin, box);
 
   const down = computerIsDown(box);
-  const outOfHours = cloudOutOfHours(account);
+  // Out of hours stops the sizes that use them; a Small computer keeps working.
+  const tier = box ? cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account))) : null;
+  const outOfHours = cloudOutOfHours(account) && !(tier && !cloudTierUsesHours(tier));
   const instanceId = box?.instanceId ?? null;
   const openedByPerson = opened != null && opened.tool === tool && Date.now() - opened.at < OPENED_BY_PERSON_WINDOW_MS;
   const [waking, setWaking] = useState(false);
@@ -122,14 +129,23 @@ export function CloudToolGate({
   }, [down, instanceId, openedByPerson, outOfHours, wake]);
 
   if (!needsComputer || !box || (!down && !waking && box.state !== "starting")) return <>{children}</>;
-  const name = box.name ?? "This computer";
+  // ADE Cloud is one machine: the lane's computer is "This lane's computer", never its own name.
+  const name = "This lane's computer";
+  // A computer the account can't wake: why, and the lane's saved work, which needs no wake.
+  const laneId = (box as CloudLaneMachine).lane?.laneId ?? null;
+  const restingGate = (model: Pick<BannerModel, "id" | "title" | "detail" | "actions">) => (
+    <div className="flex h-full min-h-0 flex-col justify-center gap-3 px-4">
+      <Banner layout="inline" model={{ ...model, tone: "warning", report: false }} />
+      {laneId ? <CloudLaneSavedWork laneId={laneId} /> : null}
+    </div>
+  );
   if (outOfHours && down) {
-    return (
-      <div className="flex h-full min-h-0 flex-col justify-center gap-3 px-4">
-        <Banner layout="inline" model={{ id: "cloud-tool-out-of-hours", tone: "warning", title: "Out of hours", detail: `${name} needs ADE Cloud hours to wake. They come back when your hours reset.`, report: false }} />
-        <PushAllWorkButton instanceId={box.instanceId} />
-      </div>
-    );
+    return restingGate({
+      id: "cloud-tool-out-of-hours",
+      title: "Out of hours",
+      detail: `${name} needs ADE Cloud hours to wake at its size. They come back when your hours reset; a Small computer never uses them.`,
+      actions: [{ label: "Plans and hours", onClick: openCloudPlanSettings }],
+    });
   }
   const comingUp = waking || box.state === "starting";
   return (
@@ -141,7 +157,7 @@ export function CloudToolGate({
           tone: "info",
           icon: <Moon size={15} />,
           busy: comingUp,
-          title: comingUp ? `Waking ${name}…` : `${name} is asleep`,
+          title: comingUp ? "Waking this lane's computer…" : "This lane's computer is asleep",
           actions: comingUp ? undefined : [{ label: "Wake", variant: "solid", onClick: wake }],
         }}
       />

@@ -35,8 +35,8 @@ export type QuitPromptDeps = {
 export type QuitPrompt = {
   /**
    * Asks before quitting or restarting. Resolves true when ADE may go.
-   * Skipped when the person ticked "Don't ask again", unless quitting would
-   * stop running agents.
+   * Skipped when no agent is working and nothing would stop, and when the
+   * person ticked "Don't ask again", unless quitting would stop running agents.
    */
   confirm: (
     ownerWindow: BrowserWindow | null | undefined,
@@ -229,6 +229,11 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
     // cannot prove that nothing is running, and the prompt says so.
     if (!owned && !readAskBeforeQuit()) return true;
     const impact = await deps.collectImpact();
+    // Nothing would stop and nothing is working: a quit with nothing to say
+    // goes ahead. Unknown (the probe could not check) still asks, and so does
+    // a quit that installs an update.
+    const nothingRunning = impact.checked && !impact.busyWithoutDetail && impact.chats.length === 0;
+    if (!owned && nothingRunning && !extras?.updateOnQuit) return true;
     const request: QuitPromptRequest = {
       requestId: randomUUID(),
       relaunch,

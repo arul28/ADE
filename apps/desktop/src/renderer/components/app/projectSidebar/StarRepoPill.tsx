@@ -2,16 +2,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Star } from "@phosphor-icons/react";
 import { Banner } from "../../ui/notice";
 import { rootAppStoreApi, useRootAppStore } from "../../../state/appStore";
+import { useActiveRepositoryReader } from "../../../state/repositoryScope";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
 import {
   ADE_GITHUB_REPO_URL,
+  STAR_PILL_SCHEDULE,
   STAR_PILL_SNOOZE_MESSAGES,
   isStarCheckDue,
   isStarPillVisible,
   starPillShowing,
 } from "../../../lib/starPill";
 import { captureStarPromptAnalytics } from "../../../lib/starPillActivity";
-import type { GitHubRepoStarState } from "../../../../shared/types";
+import { isInvitePillVisible, useInvitePillPrefs } from "../../../lib/invitePill";
+import { useCloudAccount } from "../../../state/cloudAccountStore";
+import { useTourOpen } from "../../../onboarding/useTourOpen";
+import type { GitHubRepoStarState, OpenProjectBinding } from "../../../../shared/types";
 
 /** How long "Thanks!" stays up before it fades. */
 const THANKS_HOLD_MS = 2_000;
@@ -20,9 +25,11 @@ const THANKS_FADE_MS = 320;
 
 type ThanksPhase = "none" | "showing" | "leaving";
 
-async function readStarState(): Promise<GitHubRepoStarState> {
+/** Asks GitHub through the reader copy's machine; no copy online answers "unknown". */
+async function readStarState(pin: OpenProjectBinding | null): Promise<GitHubRepoStarState> {
+  if (!pin) return "unknown";
   try {
-    return (await window.ade?.github?.isRepoStarred?.()) ?? "unknown";
+    return (await window.ade?.github?.isRepoStarred?.(pin)) ?? "unknown";
   } catch {
     return "unknown";
   }
@@ -31,11 +38,14 @@ async function readStarState(): Promise<GitHubRepoStarState> {
 /**
  * The desktop "Star ADE on GitHub" pill above the sidebar footer. The parent
  * mounts it only on the Work tab of the desktop app; the rules for when it
- * shows live in `lib/starPill.ts`.
+ * shows live in `lib/starPill.ts`. One nudge at a time: it waits while the
+ * "Invite friends" pill is up, and both wait while the tour runs.
  */
 export function StarRepoPill() {
   const prefs = useRootAppStore((s) => s.starPill);
-  const visible = isStarPillVisible(prefs);
+  const inviteUp = isInvitePillVisible(useInvitePillPrefs(), useCloudAccount());
+  const tourOpen = useTourOpen();
+  const visible = !tourOpen && !inviteUp && isStarPillVisible(prefs);
   const showing = starPillShowing(prefs);
   const reducedMotion = usePrefersReducedMotion();
   const [thanks, setThanks] = useState<ThanksPhase>("none");
@@ -43,12 +53,15 @@ export function StarRepoPill() {
   const checkAfterFocusRef = useRef(false);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  const readerPin = useActiveRepositoryReader();
+  const readerPinRef = useRef(readerPin);
+  readerPinRef.current = readerPin;
 
   const runCheck = useCallback(async () => {
     if (checkingRef.current) return;
     checkingRef.current = true;
     try {
-      const state = await readStarState();
+      const state = await readStarState(readerPinRef.current);
       // Read fresh: the pill may have been hidden while the request ran.
       const shownWhenAnswered = visibleRef.current;
       const before = rootAppStoreApi.getState().starPill;
@@ -75,9 +88,9 @@ export function StarRepoPill() {
   useEffect(() => {
     if (!visible) return;
     const store = rootAppStoreApi.getState();
-    if (store.starPill.shownReported > store.starPill.dismissCount) return;
+    if (!STAR_PILL_SCHEDULE.shownDue(store.starPill)) return;
     captureStarPromptAnalytics({ action: "star_prompt_shown", outcome: showing });
-    store.updateStarPill((prev) => ({ ...prev, shownReported: prev.dismissCount + 1 }));
+    store.updateStarPill(STAR_PILL_SCHEDULE.markShown);
   }, [showing, visible]);
 
   // Periodic check: at most every 6 hours, and only while the pill would show.
@@ -121,11 +134,7 @@ export function StarRepoPill() {
   const dismiss = useCallback(() => {
     const store = rootAppStoreApi.getState();
     captureStarPromptAnalytics({ action: "star_prompt_dismissed", outcome: starPillShowing(store.starPill) });
-    store.updateStarPill((prev) => ({
-      ...prev,
-      dismissCount: prev.dismissCount + 1,
-      snoozedUntilMessageCount: prev.messagesSent + STAR_PILL_SNOOZE_MESSAGES,
-    }));
+    store.updateStarPill(STAR_PILL_SCHEDULE.dismissed);
   }, []);
 
   if (thanks !== "none") {
@@ -171,7 +180,7 @@ export function StarRepoPill() {
           ),
           dismiss: {
             onDismiss: dismiss,
-            title: showing === "prompt_first" ? `Hide for ${STAR_PILL_SNOOZE_MESSAGES} messages` : "Don't show again",
+            title: STAR_PILL_SCHEDULE.finalDismissal(prefs) ? "Don't show again" : `Hide for ${STAR_PILL_SNOOZE_MESSAGES} messages`,
             label: "Hide the GitHub star prompt",
           },
         }}

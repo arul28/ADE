@@ -177,6 +177,16 @@ function urlHoldsSecret(text: string): boolean {
     if (!value || ENV_REFERENCE.test(value)) continue;
     if (SECRET_WORD.test(name) || looksLikeToken(value)) return true;
   }
+  // The fragment is read like a query (`#access_token=…`), and a bare token
+  // there (`#ghp_…`) counts too.
+  for (const [name, value] of new URLSearchParams(url.hash.replace(/^#/, ""))) {
+    if (!value) {
+      if (looksLikeToken(name)) return true;
+      continue;
+    }
+    if (ENV_REFERENCE.test(value)) continue;
+    if (SECRET_WORD.test(name) || looksLikeToken(value)) return true;
+  }
   // A stray `%` is a legal thing to type and to have saved; it must not throw
   // out of a render.
   return url.pathname.split("/").some((segment) => {

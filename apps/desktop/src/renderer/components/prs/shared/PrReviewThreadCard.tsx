@@ -42,6 +42,7 @@ import { PrCommentEditForm } from "./PrCommentEditForm";
 import { PrReactionBar } from "./PrReactionBar";
 import { Banner } from "../../ui/notice";
 import { usePrCommentEdit } from "./usePrCommentEdit";
+import { usePrRuntimePin } from "../state/prMachines";
 
 export type PrReviewThreadCardHandle = {
   focus: () => void;
@@ -395,6 +396,9 @@ export const PrReviewThreadCard = memo(
     // nothing until the backend supplies a `diffHunk` on the thread/comment.
     const diffHunk = useMemo(() => readDiffHunk(thread), [thread]);
 
+    // The PR's machine: replies and resolves go where the PR row lives.
+    const runtimePin = usePrRuntimePin();
+
     const handleViewDiff = useCallback(() => {
       if (!thread.path) return;
       navigate("/files", {
@@ -410,14 +414,14 @@ export const PrReviewThreadCard = memo(
     const handleReply = useCallback(async () => {
       if (replyInFlightRef.current) return;
       const bridge = window.ade?.prs?.postReviewComment;
-      if (!bridge) return;
+      if (!bridge || !runtimePin) return;
       const body = replyValue.trim();
       if (!body) return;
       replyInFlightRef.current = true;
       setBusy("reply");
       setError(null);
       try {
-        await bridge({ prId, threadId: thread.id, body });
+        await bridge({ prId, threadId: thread.id, body }, runtimePin);
         setReplyValue("");
         setReplyOpen(false);
       } catch (err) {
@@ -426,18 +430,18 @@ export const PrReviewThreadCard = memo(
         replyInFlightRef.current = false;
         setBusy(null);
       }
-    }, [replyValue, prId, thread.id]);
+    }, [replyValue, prId, runtimePin, thread.id]);
 
     const handleResolveToggle = useCallback(async () => {
       if (resolveInFlightRef.current) return;
       const bridge = window.ade?.prs?.setReviewThreadResolved;
-      if (!bridge) return;
+      if (!bridge || !runtimePin) return;
       const next = !localResolved;
       resolveInFlightRef.current = true;
       setBusy("resolve");
       setError(null);
       try {
-        const result = await bridge({ prId, threadId: thread.id, resolved: next });
+        const result = await bridge({ prId, threadId: thread.id, resolved: next }, runtimePin);
         setLocalResolved(result?.isResolved ?? next);
       } catch (err) {
         setError(extractError(err));
@@ -445,7 +449,7 @@ export const PrReviewThreadCard = memo(
         resolveInFlightRef.current = false;
         setBusy(null);
       }
-    }, [localResolved, prId, thread.id]);
+    }, [localResolved, prId, runtimePin, thread.id]);
 
     const onKeyDown = useCallback(
       (event: ReactKeyboardEvent<HTMLDivElement>) => {

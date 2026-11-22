@@ -1,7 +1,10 @@
 import type { AgentChatCreateArgs, AgentChatSendArgs, AgentChatFileRef } from "./chat";
 import type { LaneEnvInitStep } from "./config";
-import type { LaneLinearIssue } from "./lanes";
+import type { LaneJiraIssue } from "./jira";
+import type { LaneGitHubIssue, LaneLinearIssue } from "./lanes";
 import type { LaneStart } from "../laneStart";
+import type { OpenProjectBinding } from "./core";
+import type { CLOUD_COMPUTER_LIMIT_CODE, CLOUD_OUTSIDE_AGENT_FREE_CODE, CloudComputerLimitDetail } from "../../../../account-directory/src/cloud/contract";
 
 /**
  * A chat (or CLI session) launched into a lane that does not exist yet.
@@ -26,6 +29,12 @@ import type { LaneStart } from "../laneStart";
  *   queueMessage,completeClient,onEvent}` (every call takes an optional pin).
  * - Sync commands `chat.startLaunch` … `chat.completeLaunchClient` (same names
  *   as the action domain) and the pushed `chat_launch_event` envelope for iOS.
+ * - A launch whose args carry a `cloud` target first makes its own ADE Cloud
+ *   computer. The desktop app's main process owns `computer`, `join` and
+ *   `clone`, then starts the same launch (same id) on that computer's brain
+ *   with those stages as `priorStages`; that brain owns the rest. The desktop
+ *   routes every `window.ade.chatLaunch.*` call for such a launch to whichever
+ *   side owns it now (see `cloudLaneLaunchService.ts`).
  * - Once the chat exists its transcript carries an `ade_card` with variant
  *   `lane_setup` and cardId `lane-setup:<launchId>` (built by
  *   `buildLaneSetupCard` in shared/chatLaunch.ts; each row's `key` is its stage
@@ -33,7 +42,19 @@ import type { LaneStart } from "../laneStart";
  *   in the thread after reload and on every device.
  */
 
-export type ChatLaunchKind = "chat" | "cli";
+/**
+ * What the launch starts in its new lane: a chat, a tracked CLI session (the
+ * launching client starts it at `awaiting-client`), or nothing (`lane`: the
+ * lane alone, with no `agent` stage; `ade lanes create --machine cloud`).
+ */
+export type ChatLaunchKind = "chat" | "cli" | "lane";
+
+/**
+ * Every kind this ADE's brain runs. A brain advertises them as the
+ * `chatLaunchKinds` capability of `ade/initialize`, so the ADE Cloud hand-off
+ * can refuse a kind an older brain (which would read it as `chat`) can't run.
+ */
+export const CHAT_LAUNCH_KINDS: readonly ChatLaunchKind[] = ["chat", "cli", "lane"];
 
 /** foreground = the launching client opens the chat now; background = it keeps its composer. */
 export type ChatLaunchMode = "foreground" | "background";
@@ -46,8 +67,14 @@ export type ChatLaunchMode = "foreground" | "background";
  * - `environment` is omitted when neither a default lane template nor a
  *   project lane-environment config applies.
  * - `agent` is "Start agent" for a chat and "Start CLI session" for a CLI launch.
+ * - `computer`, `join` and `clone` are present only for an ADE Cloud launch
+ *   (`ChatLaunchArgs.cloud`): make the computer, let it join the account, and
+ *   clone the repository there. They come before every other stage.
  */
-export type ChatLaunchStageId = "fetch" | "checkout" | "environment" | "agent";
+export type ChatLaunchStageId = "computer" | "join" | "clone" | "fetch" | "checkout" | "environment" | "agent";
+
+/** The stages an ADE Cloud launch runs on the desktop before its computer's brain takes over. */
+export type ChatLaunchCloudStageId = "computer" | "join" | "clone";
 
 export type ChatLaunchStageStatus =
   | "pending"
@@ -80,7 +107,7 @@ export type ChatLaunchPhase =
   | "awaiting-client"
   /** A stage failed. The launch waits for Retry, Start anyway, or Delete. */
   | "failed"
-  /** The agent is running and every stage has finished. Terminal. */
+  /** The agent is running (a `lane` launch: the lane is ready) and every stage has finished. Terminal. */
   | "completed"
   /** The user cancelled or deleted the launch; its lane and chat are gone. Terminal. */
   | "cancelled";
@@ -102,6 +129,86 @@ export type ChatLaunchQueuedMessage = {
    * message is never dropped. Clients show it as failed-to-send.
    */
   deliveryError?: string | null;
+};
+
+/**
+ * Why ADE Cloud refused a launch, when the card or the agent answers it
+ * itself: `computer_limit` (all the plan's cloud computers in use) carries
+ * what the limit card shows; `outside_agent_free_plan` is an outside agent on
+ * the free plan.
+ */
+export type ChatLaunchCloudRefusal = {
+  code: typeof CLOUD_COMPUTER_LIMIT_CODE | typeof CLOUD_OUTSIDE_AGENT_FREE_CODE;
+  computerLimit?: CloudComputerLimitDetail | null;
+};
+
+/**
+ * An ADE Cloud launch's computer, on its snapshot. Absent for a launch that
+ * runs on a machine that already exists.
+ */
+export type ChatLaunchCloudState = {
+  /** The size picked at Send (a `CloudTierId`); Medium once ADE Cloud started a default Small there (`sizeNote`). */
+  sizeId: string;
+  /** How the size was chosen (`CloudLaunchSizeChoice`); absent is `picked`. */
+  sizeChoice?: "default" | "picked" | "capped";
+  /** Why the computer is bigger than the size asked for, in plain words ("Medium: this repo's setup needed more than 4 GB before."). */
+  sizeNote?: string | null;
+  /** The repository the lane clones, `github.com/owner/repo`: which project's views show this launch. */
+  projectOrigin: string;
+  /** The ADE Cloud computer, once the create answered. */
+  instanceId: string | null;
+  /** Set on a failed launch the server refused with a code the card answers itself (`computer_limit`); absent otherwise. */
+  refusal?: ChatLaunchCloudRefusal | null;
+  /** The computer's ADE account machine key, once it joined. */
+  machineKey: string | null;
+  /**
+   * The project on the new computer, once it is cloned there. This is the pin
+   * for every call to the chat (its session id is the launch id) and its lane.
+   * Null until the `clone` stage is done.
+   */
+  binding: (OpenProjectBinding & { kind: "remote" }) | null;
+  /**
+   * True once the computer's own brain owns the launch. From then on the
+   * snapshot is that brain's, and the launch goes on with this app closed.
+   */
+  handedOff: boolean;
+  /**
+   * True once ADE Cloud's list no longer has this launch's computer (deleted
+   * from ADE, the web page, the phone or a cleanup) before it finished: the
+   * launch failed here, nothing reads that brain again, and Delete closes it
+   * without asking the computer.
+   */
+  computerGone?: boolean;
+  /**
+   * What the start's GitHub check (contract C4) could not settle, in plain
+   * words: GitHub didn't answer whether the repository is public, and the
+   * account has no GitHub sign-in, so a private one won't clone. The card
+   * shows it until the clone is done. Absent when the check settled it.
+   */
+  warning?: string;
+  /**
+   * While ADE Cloud waits for a person to let the new computer join: its own
+   * sign-in stopped on a page a person must confirm (the server launcher's
+   * `needs_approval`). The page that approves it, opened where the person is
+   * signed in to ADE; the card shows Approve. Absent otherwise.
+   */
+  approvalUrl?: string;
+  /**
+   * While the new computer waits for the chat's provider sign-in (the server
+   * launcher's `waiting_for_sign_in`): the provider, its sign-in link, the
+   * code to enter there, and one sentence on what to do. The card shows it.
+   * Absent otherwise.
+   */
+  signIn?: {
+    label: string;
+    url: string | null;
+    userCode: string | null;
+    reason: string | null;
+    /** The computer's sign-in job, for a pasted code (`providers.remoteSignInCode` on that computer). */
+    jobId?: string | null;
+    /** The provider shows a code after sign-in that goes back to the computer (Claude). */
+    needsPastedCode?: boolean;
+  };
 };
 
 export type ChatLaunchSnapshot = {
@@ -135,6 +242,13 @@ export type ChatLaunchSnapshot = {
   };
   /** Chat model id the launch runs with (for display). */
   modelId: string | null;
+  /**
+   * What the person picked at Send besides the model (effort, Fast,
+   * permissions), so every client shows it while the chat is set up, after a
+   * failed setup, and on Retry, before the chat's own settings exist. Absent
+   * on a launch from an older brain.
+   */
+  chatSettings?: ChatLaunchChatSettings | null;
   phase: ChatLaunchPhase;
   stages: ChatLaunchStage[];
   /** Failure summary when `phase === "failed"`. */
@@ -153,16 +267,46 @@ export type ChatLaunchSnapshot = {
   /** Id of the device/window that started the launch (for "mine" filtering in the slide-out). */
   originClientId: string | null;
   startedAt: string;
+  /**
+   * When an earlier host began this attempt (an ADE Cloud launch's computer,
+   * join and clone ran on the launching app before this brain's clock
+   * started), or null when this host's `startedAt` is the whole launch. A
+   * retry here resets it to null, so its clock starts again. Absent on a
+   * launch from an older brain (`chatLaunchStartedAt` falls back to the cloud
+   * steps' own times).
+   */
+  setupStartedAt?: string | null;
   endedAt: string | null;
   updatedAt: string;
   /** Monotonic per launch; clients drop snapshots older than the one they hold. */
   sequence: number;
+  /** Present only for an ADE Cloud launch. */
+  cloud?: ChatLaunchCloudState;
 };
 
 export type ChatLaunchEvent =
   | { type: "launch-updated"; launch: ChatLaunchSnapshot }
   /** The launch record expired: it finished (completed or cancelled) and its retention window ran out. */
   | { type: "launch-removed"; launchId: string };
+
+/** The settings a launch's chat starts with, as picked at Send (`ChatLaunchSnapshot.chatSettings`). */
+export type ChatLaunchChatSettings = Pick<
+  AgentChatCreateArgs,
+  | "reasoningEffort"
+  | "fastMode"
+  | "fastTier"
+  | "interactionMode"
+  | "permissionMode"
+  | "claudePermissionMode"
+  | "codexApprovalPolicy"
+  | "codexSandbox"
+  | "codexConfigSource"
+  | "opencodePermissionMode"
+  | "droidPermissionMode"
+  | "copilotPermissionMode"
+  | "musePermissionMode"
+  | "cursorModeId"
+>;
 
 export type ChatLaunchChatArgs = {
   /** Session args minus the lane, which the launch creates. */
@@ -193,6 +337,15 @@ export type ChatLaunchLaneConfig = {
   color?: string | null;
   /** Linear issue bound to the new lane. */
   linearIssue?: LaneLinearIssue | null;
+  /** New mode: a GitHub issue linked to the new lane, as a local lane from that issue links it. */
+  githubIssue?: LaneGitHubIssue | null;
+  /** New mode: a Jira issue linked to the new lane, as a local lane from that issue links it. */
+  jiraIssue?: LaneJiraIssue | null;
+  /**
+   * Existing mode: the pull request this branch belongs to. The lane is
+   * linked to it once it exists, as a local lane made from a PR's branch is.
+   */
+  pullRequestUrl?: string | null;
   /**
    * New mode: nobody chose the lane's name, so the launch names it like a
    * plain auto-create (placeholder branch, then a title from the prompt).
@@ -236,8 +389,43 @@ export type ChatLaunchArgs = {
   provider?: string | null;
   title?: string | null;
   originClientId?: string | null;
-  /** Required for kind "chat"; ignored for kind "cli". */
+  /** Required for kind "chat"; ignored for kinds "cli" and "lane". */
   chat?: ChatLaunchChatArgs;
+  /**
+   * Run the launch on a new ADE Cloud computer made for this lane alone.
+   * Any kind (a chat, a CLI session, or the lane alone). The desktop app handles it, or a brain's
+   * `cloud.lane_launch` (the CLI's `--machine cloud`); `chat.startLaunch` ignores it.
+   */
+  cloud?: ChatLaunchCloudTarget | null;
+  /**
+   * Stages that finished before this brain got the launch (an ADE Cloud
+   * launch's `computer`, `join` and `clone`). Only those ids, only finished
+   * statuses; the brain shows them first and keeps them on the card.
+   */
+  priorStages?: ChatLaunchStage[];
+  /**
+   * When the host before this brain began the launch's current attempt (an
+   * ADE Cloud launch: the launching app's own clock, reset by its Retry), so
+   * the card's total counts the steps that ran there (`setupStartedAt`).
+   */
+  setupStartedAt?: string | null;
+};
+
+export type ChatLaunchCloudTarget = {
+  /** The size, as `cloudTiers` names it: `small`, `medium`, `large` or `xlarge`. */
+  sizeId: string;
+  /**
+   * How it was chosen (`CloudLaunchSizeChoice`): `default` when nobody picked
+   * one for this launch, so a Small may move to Medium when its setup needs
+   * more memory. Absent is `picked`: the size stays.
+   */
+  sizeChoice?: "default" | "picked" | "capped";
+  /**
+   * The project's git origin as the launching window knows it (the one its
+   * composer checked before Send), so main clones the same repository the
+   * composer allowed. Absent: main reads the project's origin itself.
+   */
+  originUrl?: string | null;
 };
 
 export type ChatLaunchIdArgs = { launchId: string };
@@ -247,6 +435,13 @@ export type ChatLaunchQueueMessageArgs = {
   text: string;
   displayText?: string | null;
   attachments?: AgentChatFileRef[];
+  /**
+   * The message's id from whoever queued it first (an ADE Cloud launch hands
+   * its queued messages to the computer with their ids). It becomes the queued
+   * message's id and its `clientSendId`, so a retried hand-off is queued and
+   * sent once. Absent: the host makes one.
+   */
+  clientSendId?: string;
 };
 
 /** CLI launches: the launching client reports the PTY session it started in the lane. */

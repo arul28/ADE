@@ -20,6 +20,12 @@ import { cloudflareTransientKind, logCloudflareTransient, transientUnavailableRe
 import { logDirectoryLifecycle, logDirectoryRefusal } from "./logging";
 import { scrubString } from "./sentryScrub";
 import { trustedHttpsOrigin } from "./trustedOrigin";
+import { ACCOUNT_PROJECTS_CURSOR_FIELD } from "./accountProjects/contract";
+import { deleteMachineCopies, readAccountProjectsCursor } from "./accountProjects/store";
+import { dropAccountLanes } from "./accountLanes/routes";
+import { reportCloudFailure } from "./cloud/store";
+import { computerStateOf } from "./cloud/projectOverview";
+import type { CloudComputerState } from "./cloud/contract";
 
 export type { ActivityRelayOptions } from "./activityRelay";
 
@@ -784,9 +790,16 @@ async function upsertMachine(
     insert into machines (
       user_id, machine_key, device_id, name, platform, device_type, pubkey,
       reachable_endpoints, power, sleep_state, sleep_state_at,
-      last_seen_at, created_at, hardware_id, channel, ade_home
+      last_seen_at, created_at, hardware_id, channel, ade_home, custom_name
     )
-    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    -- A new row for an ADE Cloud computer lists under the computer's name
+    -- (its lane), not its host name. The computer's metadata names the row
+    -- when the row is there first (nameMachineAfterComputerStatement); this
+    -- covers the other order. An existing row keeps whatever name it has.
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      (select nullif(trim(c.name), '') from cloud_computers c
+        where c.user_id = ? and c.machine_key = ? and c.deleted_at is null
+        order by c.created_at desc limit 1)
      where exists (select 1 from machines where user_id = ? and machine_key = ?)
         or (select count(*) from machines where user_id = ?) < ?
     on conflict(user_id, machine_key) do update set
@@ -856,6 +869,8 @@ async function upsertMachine(
     args.userId,
     input.machineKey,
     args.userId,
+    input.machineKey,
+    args.userId,
     MAX_MACHINES_PER_ACCOUNT,
     input.retainRelayEndpoints ? 1 : 0,
   ).run();
@@ -904,6 +919,8 @@ async function supersedePhantomDuplicates(
     input: RegisterInput;
     pairingProof: PairingProofBroker;
     refuse: RefusalLogger;
+    /** This registration's time: a row it inserted has this `created_at`. */
+    nowMs: number;
   },
 ): Promise<string[]> {
   const { userId, input } = args;
@@ -960,8 +977,16 @@ async function supersedePhantomDuplicates(
         env.DB.prepare(`
           update machines
              set custom_name = ?
-           where user_id = ? and machine_key = ? and custom_name is null
-        `).bind(carriedName, userId, input.machineKey),
+           where user_id = ? and machine_key = ?
+             and (custom_name is null
+               -- An ADE Cloud computer's row this registration just made
+               -- was named after the computer (upsertMachine): a default,
+               -- so the person's own name for the old row wins over it. An
+               -- older row's name may be one the person chose, and stays.
+               or (machines.created_at = ? and custom_name = (select nullif(trim(c.name), '') from cloud_computers c
+                 where c.user_id = machines.user_id and c.machine_key = machines.machine_key and c.deleted_at is null
+                 order by c.created_at desc limit 1)))
+        `).bind(carriedName, userId, input.machineKey, args.nowMs),
       ]
       : []),
     // The identifiers stay in the predicate, and it mirrors the select exactly:
@@ -1048,19 +1073,31 @@ async function handleRegister(
     input,
     pairingProof,
     refuse,
+    nowMs,
   });
 
-  const row = await env.DB.prepare(`
-    select ${MACHINE_ROW_COLUMNS}
-      from machines
-     where user_id = ? and machine_key = ?
-  `).bind(userId, input.machineKey).first<MachineRow>();
+  // A replaced key's folders are not on the account any more; this machine
+  // publishes them again under its new key. Before the cursor read, so the
+  // answer already counts the change.
+  if (supersededMachineKeys.length > 0) await dropAccountProjectCopies(userId, supersededMachineKeys, env);
+  // The account project list's change counter rides the heartbeat, so a
+  // machine reads the list only when it changed and asks nothing new on a
+  // timer. One indexed read, beside the row read so it adds no round trip.
+  const [row, accountProjectsCursor] = await Promise.all([
+    env.DB.prepare(`
+      select ${MACHINE_ROW_COLUMNS}
+        from machines
+       where user_id = ? and machine_key = ?
+    `).bind(userId, input.machineKey).first<MachineRow>(),
+    readHeartbeatProjectsCursor(userId, env),
+  ]);
   if (!row) return json({ error: "machine was not stored" }, { status: 500 });
-  // `supersededMachineKeys` is additive and omitted when empty, so a heartbeat
-  // response is byte-identical to what every deployed client already parses.
+  // `supersededMachineKeys` is additive and omitted when empty; the cursor is
+  // additive too. Deployed clients ignore fields they do not read.
   return json({
     ...machineRecord(row),
     ...(supersededMachineKeys.length > 0 ? { supersededMachineKeys } : {}),
+    ...(accountProjectsCursor !== null ? { [ACCOUNT_PROJECTS_CURSOR_FIELD]: accountProjectsCursor } : {}),
   });
 }
 
@@ -1083,14 +1120,62 @@ async function handleList(
   const dbDurationMs = performance.now() - dbStartedAt;
   const now = Date.now();
   const windowMs = onlineWindowMs(env);
-  const machines = rows.map((row) => ({
+  const cloud = await cloudComputerTruth(env, userId);
+  const machines = rows.map((row) => withCloudTruth({
     ...machineRecord(row),
     online: typeof row.last_seen_at === "number" && now - row.last_seen_at <= windowMs,
-  })).sort((left, right) => {
+  }, cloud)).sort((left, right) => {
     if (left.online !== right.online) return left.online ? -1 : 1;
     return Number(right.lastSeenAt ?? 0) - Number(left.lastSeenAt ?? 0);
   });
   return withServerTiming(json({ machines }), authDurationMs, dbDurationMs);
+}
+
+/**
+ * Remove the account project copies of machines that left the account.
+ * Best effort: the machine change already happened, and a copy left behind
+ * names a folder only to its own account; the next publish from a live
+ * machine does not bring it back, so the failure goes to Sentry for a retry
+ * by hand.
+ */
+async function dropAccountProjectCopies(userId: string, machineKeys: string[], env: Env): Promise<void> {
+  try {
+    await deleteMachineCopies(env.DB, userId, machineKeys, Date.now());
+  } catch (error) {
+    reportCloudFailure("account_project.machine_copies_delete_failed", {
+      userId,
+      machines: machineKeys.length,
+      message: scrubString(error instanceof Error ? error.message : String(error)),
+    }, "account_projects");
+  }
+  // Its lanes leave the account lane index with it (`accountLanes/routes.ts`); the same best effort.
+  try {
+    await dropAccountLanes(env.DB, userId, machineKeys);
+  } catch (error) {
+    reportCloudFailure("account_lanes.machine_lanes_delete_failed", {
+      userId,
+      machines: machineKeys.length,
+      message: scrubString(error instanceof Error ? error.message : String(error)),
+    }, "account_projects");
+  }
+}
+
+/**
+ * The account project list's cursor for the heartbeat answer, or null. A
+ * failure (D1 trouble, or a deploy that ran before migration 0028) leaves
+ * the field out and never fails the heartbeat; it goes to Sentry, at most
+ * once an hour per isolate.
+ */
+async function readHeartbeatProjectsCursor(userId: string, env: Env): Promise<number | null> {
+  try {
+    return await readAccountProjectsCursor(env.DB, userId);
+  } catch (error) {
+    reportCloudFailure("account_project.heartbeat_cursor_failed", {
+      userId,
+      message: scrubString(error instanceof Error ? error.message : String(error)),
+    }, "account_projects");
+    return null;
+  }
 }
 
 /**
@@ -1144,6 +1229,8 @@ async function handleDelete(
       .bind(userId, machineKey)
       .run();
   }
+  // Its folders leave the account's project list with it (also on a retry).
+  await dropAccountProjectCopies(userId, [machineKey], env);
 
   const purged = await callActivityRelay(request, env, {
     operation: "purge",
@@ -1196,10 +1283,12 @@ async function handleRename(
   if (!isRecord(raw) || !Object.hasOwn(raw, "customName")) {
     return json({ error: "invalid request body" }, { status: 400 });
   }
-  const customName = optionalString(raw, "customName");
-  if (customName === undefined || (customName?.length ?? 0) > MAX_CUSTOM_NAME_CHARS) {
+  const asked = optionalString(raw, "customName");
+  if (asked === undefined || (asked?.length ?? 0) > MAX_CUSTOM_NAME_CHARS) {
     return json({ error: "invalid request body" }, { status: 400 });
   }
+  // Shown in every machine list: control and format characters out, as the reported name's are.
+  const customName = asked === null ? null : boundedDisplayText(asked, MAX_CUSTOM_NAME_CHARS);
 
   const result = await env.DB.prepare(`
     update machines
@@ -1216,11 +1305,51 @@ async function handleRename(
      where user_id = ? and machine_key = ?
   `).bind(userId, machineKey).first<MachineRow>();
   if (!row) return json({ error: "machine not found" }, { status: 404 });
-  return json({
+  return json(withCloudTruth({
     ...machineRecord(row),
     online: typeof row.last_seen_at === "number"
       && Date.now() - row.last_seen_at <= onlineWindowMs(env),
-  });
+  }, await cloudComputerTruth(env, userId)));
+}
+
+type CloudTruthRow = { machine_key: string; status: string; status_changed_at: number; idle_deleting_at: number | null };
+
+/**
+ * The account's ADE Cloud computers by machine key, from their own rows (one
+ * indexed read, no provider call). The server's row is the truth: a computer
+ * the provider put to sleep sends no last heartbeat, so `last_seen_at` alone
+ * reads it online for minutes after it went to rest.
+ */
+async function cloudComputerTruth(env: Env, userId: string): Promise<Map<string, CloudTruthRow>> {
+  try {
+    const rows = (await env.DB.prepare(`
+      select machine_key, status, status_changed_at, idle_deleting_at from cloud_computers
+       where user_id = ? and deleted_at is null and machine_key is not null
+       order by created_at
+    `).bind(userId).all<CloudTruthRow>()).results ?? [];
+    return new Map(rows.map((row) => [row.machine_key.toLowerCase(), row]));
+  } catch (error) {
+    // The list never fails for the cloud facts: without them it answers as before.
+    reportCloudFailure("directory.cloud_truth_read_failed", { userId, message: scrubString(error instanceof Error ? error.message : String(error)) });
+    return new Map();
+  }
+}
+
+/**
+ * A resting ADE Cloud computer answers `online: false, sleepState: "asleep"`,
+ * which every released client already reads as "asleep, wake to reach it".
+ * `cloud.state` is additive, for clients that know it.
+ */
+function withCloudTruth<T extends MachineRecord & { online: boolean }>(machine: T, cloud: Map<string, CloudTruthRow>): T & { cloud?: { state: CloudComputerState; stateAt: number } } {
+  const row = cloud.get(machine.machineKey.toLowerCase());
+  if (!row) return machine;
+  const state = computerStateOf(row);
+  const resting = state === "asleep" || state === "stopped" || state === "deleting";
+  return {
+    ...machine,
+    ...(resting ? { online: false, sleepState: "asleep" as const, sleepStateAt: row.status_changed_at } : {}),
+    cloud: { state, stateAt: row.status_changed_at },
+  };
 }
 
 /**

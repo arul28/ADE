@@ -22,10 +22,10 @@ import type { AgentChatEventEnvelope } from "../../../shared/types";
  * back, under the same trim caps. On return the pane calls
  * `adoptRetainedSession(sessionId)`, which tears the module handler down again.
  *
- * BATCHED, LIKE THE LIVE PATH
- * ---------------------------
+ * BATCHED
+ * -------
  * Envelopes are buffered per session and handed to the host in one batch on a
- * ~16ms timer — the same cadence the visible pane's own flush uses. Appending
+ * 250 ms timer (`CHAT_SESSION_RETENTION_FLUSH_MS`). Appending
  * one-at-a-time makes a HIDDEN chat cost more per event than a visible one
  * (each append re-walks the whole transcript to dedupe, trim, derive and
  * measure), which janks the tab the user is actually looking at. Adoption and
@@ -66,10 +66,13 @@ export const CHAT_SESSION_RETENTION_TTL_MS = 5 * 60 * 1000;
 export const MAX_RETAINED_CHAT_SESSIONS = 2;
 
 /**
- * Coalescing window for buffered envelopes. Matches the visible pane's own
- * queued-event flush so a hidden chat costs no more per event than a shown one.
+ * Coalescing window for buffered envelopes. A hidden chat draws nothing, and
+ * only the pane that adopts it reads the cache, after a synchronous flush. So
+ * each append (a merge, trim and derive over the cached transcript) runs a
+ * few times a second, not once per streamed batch: a chat streaming in the
+ * background costs the tab the person is typing in almost nothing.
  */
-export const CHAT_SESSION_RETENTION_FLUSH_MS = 16;
+export const CHAT_SESSION_RETENTION_FLUSH_MS = 250;
 
 export type ChatSessionRetentionHost = {
   /**
@@ -96,6 +99,14 @@ type RetainedChatSession = {
 };
 
 let retentionHost: ChatSessionRetentionHost | null = null;
+
+/**
+ * Open holds (`holdRetainedChatFlushes`). While one is open, a flush timer
+ * that fires leaves its batch buffered and notes the session here; the last
+ * release drains them.
+ */
+let retentionFlushHolds = 0;
+const heldRetentionFlushes = new Set<string>();
 
 /**
  * Insertion-ordered, so the cap evicts the least recently retained session.
@@ -138,6 +149,30 @@ function drainRetainedChatSession(sessionId: string, entry: RetainedChatSession)
   } catch {
     // The cache write is best-effort; a throwing host must not kill retention.
   }
+}
+
+/**
+ * Hold the background flushes while a chat that was just opened paints its
+ * transcript. The batches stay buffered and nothing is dropped: the last
+ * release drains every held session. Adoption and release still flush at
+ * once, so a pane that takes a session back always reads a complete view.
+ * Returns the release; calling it more than once does nothing.
+ */
+export function holdRetainedChatFlushes(): () => void {
+  retentionFlushHolds += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    retentionFlushHolds -= 1;
+    if (retentionFlushHolds > 0) return;
+    const held = [...heldRetentionFlushes];
+    heldRetentionFlushes.clear();
+    for (const sessionId of held) {
+      const entry = retainedChatSessions.get(sessionId);
+      if (entry) drainRetainedChatSession(sessionId, entry);
+    }
+  };
 }
 
 /**
@@ -220,6 +255,10 @@ export function retainChatSession(
       }
       entry.flushHandle = window.setTimeout(() => {
         entry.flushHandle = null;
+        if (retentionFlushHolds > 0) {
+          heldRetentionFlushes.add(sessionId);
+          return;
+        }
         drainRetainedChatSession(sessionId, entry);
       }, CHAT_SESSION_RETENTION_FLUSH_MS);
     });

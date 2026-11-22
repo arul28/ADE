@@ -10,6 +10,7 @@ import {
   CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
   clampHistoryPageBytes,
   findTranscriptOffsetForSequence,
+  omittedHistoryRowMayHoldMessage,
   readTranscriptHistoryPage,
   readTranscriptHistoryPageBeforeSequence,
 } from "./chatTranscriptHistoryPager";
@@ -35,18 +36,26 @@ function envelopeLine(args: {
   sequence?: number;
   /** Pad `text` with "x" until the serialized line (incl. trailing \n) is exactly this many BYTES. */
   exactLineBytes?: number;
+  targetKind?: string;
+  /** The event's `type` (default "text"). */
+  eventType?: string;
+  /** Serialize `sequence` before `event`, unlike the chat service's envelopes. */
+  sequenceFirst?: boolean;
 }): string {
+  const makeEvent = (text: string) => ({ type: args.eventType ?? "text", text }) as AgentChatEventEnvelope["event"];
   const envelope: AgentChatEventEnvelope = {
     sessionId: args.sessionId ?? SESSION_ID,
     timestamp: "2026-06-10T10:00:00.000Z",
-    event: { type: "text", text: args.text } as AgentChatEventEnvelope["event"],
+    ...(args.sequenceFirst && args.sequence != null ? { sequence: args.sequence } : {}),
+    event: makeEvent(args.text),
     ...(args.sequence != null ? { sequence: args.sequence } : {}),
+    ...(args.targetKind ? { provenance: { targetKind: args.targetKind } } : {}),
   };
   let line = `${JSON.stringify(envelope)}\n`;
   if (args.exactLineBytes != null) {
     const padding = args.exactLineBytes - Buffer.byteLength(line, "utf8");
     if (padding < 0) throw new Error(`fixture line already exceeds ${args.exactLineBytes} bytes`);
-    envelope.event = { type: "text", text: args.text + "x".repeat(padding) } as AgentChatEventEnvelope["event"];
+    envelope.event = makeEvent(args.text + "x".repeat(padding));
     line = `${JSON.stringify(envelope)}\n`;
     expect(Buffer.byteLength(line, "utf8")).toBe(args.exactLineBytes);
   }
@@ -252,20 +261,128 @@ describe("readTranscriptHistoryPage", () => {
     ).toBeLessThan(seenTexts.findIndex((text) => text.startsWith("after-giant")));
   });
 
-  it("fails explicitly instead of advancing past a row above the hard page ceiling", async () => {
-    const giant = envelopeLine({
-      text: "too-large",
-      sequence: 1,
-      exactLineBytes: CHAT_EVENT_HISTORY_PAGE_MAX_BYTES + 1_000,
+  // A row above the page ceiling is never loaded, but never skipped silently
+  // either: its page is exactly that row, it stands in as a marked notice
+  // without a sequence, and paging continues from the row's start.
+  it.each([
+    {
+      name: "just over the ceiling, between normal rows",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: CHAT_EVENT_HISTORY_PAGE_MAX_BYTES + 1_000 },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "omitted", "tail"],
+    },
+    {
+      name: "at the head of the file, with no newline before it",
+      rows: [{ text: "giant", sequence: 1, bytes: 3_000_000 }, { text: "tail", sequence: 2 }],
+      expected: ["omitted", "tail"],
+    },
+    {
+      name: "with CRLF line endings",
+      crlf: true,
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 3_000_000 },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "omitted", "tail"],
+    },
+    {
+      name: "of another chat, which the normal parse drops too",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 3_000_000, sessionId: "someone-else" },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "tail"],
+    },
+    {
+      // Not parsed: still stood in for (the file is this chat's) and dated
+      // from the row's leading timestamp.
+      name: "past the 8 MB parse bound",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 9 * 1024 * 1024 },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "omitted", "tail"],
+    },
+    {
+      name: "past the 8 MB parse bound, of another chat",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 9 * 1024 * 1024, sessionId: "someone-else" },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "tail"],
+    },
+    {
+      // Unparsed, but its usual start names the event's type: not a message.
+      name: "past the 8 MB parse bound, a tool result",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 9 * 1024 * 1024, eventType: "tool_result" },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "omitted:not-a-message", "tail"],
+    },
+    {
+      // An unusual start leaves the type unknown: possibly a message.
+      name: "past the 8 MB parse bound, with an unusual start",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 9 * 1024 * 1024, eventType: "tool_result", sequenceFirst: true },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "omitted", "tail"],
+    },
+  ])("pages past a row above the page ceiling: $name", async ({ rows, crlf, expected }) => {
+    const lines = rows.map((row) => {
+      const line = envelopeLine({
+        text: row.text,
+        sequence: row.sequence,
+        ...("sessionId" in row && row.sessionId ? { sessionId: row.sessionId } : {}),
+        ...("bytes" in row && row.bytes ? { exactLineBytes: row.bytes } : {}),
+        ...("eventType" in row && row.eventType ? { eventType: row.eventType } : {}),
+        ...("sequenceFirst" in row && row.sequenceFirst ? { sequenceFirst: true } : {}),
+      });
+      return crlf ? line.replace(/\n$/, "\r\n") : line;
     });
-    const { size } = writeTranscript([envelopeLine({ text: "head" }), giant]);
+    const { size, lineOffsets } = writeTranscript(lines);
 
-    await expect(readTranscriptHistoryPage({
-      transcriptPath,
-      sessionId: SESSION_ID,
-      beforeOffset: size,
-      maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
-    })).rejects.toThrow("chat_history_row_too_large");
+    const seen: string[] = [];
+    const cursors: number[] = [];
+    let beforeOffset = size;
+    for (let guard = 0; guard < 20 && beforeOffset > 0; guard += 1) {
+      const page = await readTranscriptHistoryPage({
+        transcriptPath,
+        sessionId: SESSION_ID,
+        beforeOffset,
+        maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
+      });
+      expect(page.startOffset).toBeLessThan(beforeOffset);
+      expect(lineOffsets).toContain(page.startOffset);
+      expect(page.envelopeStartOffsets).toHaveLength(page.envelopes.length);
+      expect(page.hasMore).toBe(page.startOffset > 0);
+      cursors.push(page.startOffset);
+      seen.unshift(...page.envelopes.map((envelope) => {
+        if (envelope.event.type !== "system_notice") return eventText(envelope).replace(/x+$/, "");
+        expect(envelope.event.status).toBe("history_row_omitted");
+        expect(envelope.timestamp).toBe("2026-06-10T10:00:00.000Z");
+        // Display-only: never the real row's sequence.
+        expect(envelope.sequence).toBeUndefined();
+        // "omitted" when transcript reads must report it as a possible message.
+        return omittedHistoryRowMayHoldMessage(envelope) ? "omitted" : "omitted:not-a-message";
+      }));
+      beforeOffset = page.startOffset;
+    }
+
+    expect(beforeOffset).toBe(0);
+    expect(seen).toEqual(expected);
+    // The cursor stopped on every row start, the oversized one included.
+    expect([...cursors].reverse()).toEqual(lineOffsets);
   });
 
   it("keeps byte cursors on line boundaries when lines contain multi-byte UTF-8", async () => {
@@ -402,6 +519,58 @@ describe("readTranscriptHistoryPageBeforeSequence", () => {
     expect(await findTranscriptOffsetForSequence({ transcriptPath, sessionId: SESSION_ID, sequence: 99 })).toBe(size);
     const page = await readTranscriptHistoryPageBeforeSequence({ transcriptPath, sessionId: SESSION_ID, beforeSequence: 99 });
     expect(page.envelopes.map(sequenceOf)).toEqual([2, 4, 6, 8]);
+  });
+
+  // The client's next request is its oldest sequence, so a sequence-cursor
+  // reply must hold a sequenced row it can see, older than the cursor, or say
+  // `hasMore: false`: else it asks for the same page forever. Rows 1 and 2
+  // sit below each run; `isVisible` is the service's filter (Codex subagent
+  // rows hidden).
+  const MB9 = 9 * 1024 * 1024;
+  type Fill = "big" | "big9" | "otherBig9" | "other1k" | "legacy1k" | "subagent1k";
+  it.each<{ name: string; fill: Array<[Fill, number]> }>([
+    { name: "one big row", fill: [["big", 1]] },
+    { name: "a run of big rows past the parse bound", fill: [["big9", 3]] },
+    { name: "another chat's big row", fill: [["otherBig9", 1]] },
+    { name: "two of another chat's big rows", fill: [["otherBig9", 2]] },
+    { name: "a big row over windows of another chat's rows", fill: [["other1k", 200], ["big", 1]] },
+    { name: "windows of another chat's rows", fill: [["other1k", 200]] },
+    { name: "a big row over pages of legacy unsequenced rows", fill: [["legacy1k", 200], ["big", 1]] },
+    { name: "pages of legacy unsequenced rows", fill: [["legacy1k", 200]] },
+    { name: "a big row over pages of hidden subagent rows", fill: [["subagent1k", 200], ["big", 1]] },
+    { name: "pages of hidden subagent rows", fill: [["subagent1k", 200]] },
+  ])("moves a sequence cursor past $name", async ({ fill }) => {
+    let sequence = 3;
+    const lines = [envelopeLine({ text: "r1", sequence: 1 }), envelopeLine({ text: "r2", sequence: 2 })];
+    let ownBigRows = 0;
+    for (const [kind, count] of fill) {
+      for (let index = 0; index < count; index += 1) {
+        if (kind === "big" || kind === "big9") ownBigRows += 1;
+        lines.push(envelopeLine({
+          text: kind,
+          ...(kind === "legacy1k" ? {} : { sequence: sequence++ }),
+          ...(kind === "otherBig9" || kind === "other1k" ? { sessionId: "someone-else" } : {}),
+          ...(kind === "subagent1k" ? { targetKind: "codex_subagent" } : {}),
+          exactLineBytes: kind === "big" ? 3_000_000 : kind.endsWith("9") ? MB9 : 1_024,
+        }));
+      }
+    }
+    lines.push(envelopeLine({ text: "top", sequence }));
+    writeTranscript(lines);
+    const isVisible = (envelope: AgentChatEventEnvelope) => envelope.provenance?.targetKind !== "codex_subagent";
+    const page = await readTranscriptHistoryPageBeforeSequence({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      beforeSequence: sequence,
+      maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
+      isVisible,
+    });
+    const seen = page.envelopes.filter(isVisible);
+    expect(seen.filter((envelope) => typeof envelope.sequence === "number").map((envelope) => envelope.sequence))
+      .toEqual([1, 2]);
+    expect(seen.filter((envelope) => envelope.event.type === "system_notice")).toHaveLength(ownBigRows);
+    expect(page.envelopeStartOffsets).toHaveLength(page.envelopes.length);
+    expect(page.hasMore).toBe(false);
   });
 
   it("never returns a row at or above the cursor from a file whose numbering restarted", async () => {

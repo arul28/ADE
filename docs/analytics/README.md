@@ -6,7 +6,7 @@ properties it may carry (beyond the common ones listed at the top of the file).
 `docs/logging.md` holds the privacy rules, consent, budgets and architecture;
 this folder is the catalog.
 
-`scripts/check-analytics-tracking-plan.mjs` runs in CI (the `validate-docs`
+`scripts/check-analytics-tracking-plan.mjs` runs in CI (the `docs`
 job) and fails when the code, the plan and the dashboards disagree: an event is
 sent but not in the plan, the plan lists an event nothing sends, a desktop or
 brain event is declared but never captured, or a dashboard in
@@ -147,6 +147,14 @@ them in PostHog and update this list in the same branch.
 - **Dashboard "ADE · Agent turns (LLM analytics)"** is managed by
   `scripts/posthog/provision.mjs` like the others; PostHog's own LLM analytics
   and Error tracking pages read `$ai_generation` and `$exception` directly.
+- **Real-user counts** use the event properties the apps send, because iOS
+  has person profiles off and a workflow never becomes a person. Leave out
+  `is_internal = true`, `review_context = 'app_review'` and
+  `environment = 'ci'`. Do not count `ade_signed_up` or `ade_marketing_*` as
+  someone who used the app. Count installs with `uniq(properties.machine_id)`.
+  The provisioned dashboards apply the first three filters
+  (`scripts/posthog/dashboard-spec.mjs`). CI and the cloud template check
+  send nothing; a development build that opts in sends `is_internal: true`.
 - **Transformation "Mark ADE team accounts internal"**: sets
   `is_internal: true` (and `is_internal_source: account`) on every event from a
   distinct id on its list: each Clerk account flagged `ade_internal` and each
@@ -168,7 +176,8 @@ them in PostHog and update this list in the same branch.
   PostHog inbox. No report gets `auto-fix`, and the automation rules that
   started an ADE agent from it (`posthog-report-investigate`,
   `linear-auto-fix-labeled`) are off: a person decides what an agent works on.
-  It authenticates with the project secret `LINEAR_POSTHOG_API_KEY`.
+  It authenticates with a Linear API key; the source copy is the project
+  secret `LINEAR_API_KEY`.
   - Scouts on (daily unless noted): General, Anomaly detection, Customer
     analytics, Inbox validation, Product analytics (Mondays), Surveys
     (Mondays), Data pipelines (Mondays), and ADE's own "ADE reliability" and
@@ -208,13 +217,20 @@ them in PostHog and update this list in the same branch.
   iPhone "download" clicks.
 - **`error_kind` on a failed chat turn** says why it failed (`rate_limit`,
   `permission`, `budget`, `network`, `busy`, `cli_missing`) from the first
-  desktop release after 1.2.129-beta.8; earlier it is always `other`.
+  desktop release after 1.2.129-beta.8; earlier it is always `other`. From
+  the first release after 1.2.130-beta.25 it also says `plan` (signed in, but
+  the plan does not include this), and more sign-in, exit, network and
+  timeout failures leave `other` for `permission`, `process_exited`,
+  `network` and `timeout`, so `other` steps down at that release.
   `ade_brain_action_failed` carries `brain_action` and `expected_kind` from
   1.2.129-beta.6; on older builds most of its `error_code` values are
   `unknown`. Up to and including 1.2.130-beta.2, `expected_kind: unexpected`
   also holds answers that carry no mark (no GitHub sign-in, a lane whose
   folder is gone); later builds send those as `expected`, so `unexpected`
-  steps down at that release.
+  steps down at that release. From the first release after
+  1.2.130-beta.51 an unexpected failure also carries `brain_frame`
+  (`function:line` in the brain), so `rpc_tool_failed` can be split by
+  the code that threw.
 - **`metadata_regenerated`** is sent at most once per mode and outcome per
   install an hour from the first desktop release after 1.2.129-beta.8. Before,
   it was a quarter of the events of the installs that reached their daily

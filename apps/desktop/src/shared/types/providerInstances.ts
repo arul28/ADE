@@ -145,6 +145,27 @@ export function providerAccountName(
 }
 
 /**
+ * What a pickable account is called: its stored label (the pass title for an
+ * email-less Claude pass) first, then the canonical email/no-email name.
+ */
+export function providerAccountDisplayName(
+  instance: Pick<ProviderInstance, "label" | "account">,
+): string {
+  return instance.label?.trim() || providerAccountName(instance);
+}
+
+/**
+ * A working login of its own, so a new chat can start on it: signed in, not
+ * broken, and not a copy of another account's login. The one rule every
+ * account picker uses.
+ */
+export function providerAccountCanTakeChats(
+  instance: Pick<ProviderInstance, "signedIn" | "loginBroken" | "sameLoginAs">,
+): boolean {
+  return instance.signedIn && instance.loginBroken !== true && !instance.sameLoginAs;
+}
+
+/**
  * How many distinct logins a list of accounts holds. A copy (`sameLoginAs`)
  * is a second config home signed in to a login another account already
  * holds: it adds no quota, so it is not another account to count. Every
@@ -311,6 +332,8 @@ export type ProviderLoginStatus = {
   url: string | null;
   /** The CLI is asking for a code pasted from the browser. */
   awaitingCode: boolean;
+  /** A pasted code was sent and the CLI has not answered yet ("Checking the code…"). */
+  checkingCode?: boolean;
   /** A device sign-in's one-time code, typed into the sign-in page. */
   deviceCode?: string;
   /** The CLI's output so far, without terminal escapes; the last few KB. */
@@ -331,10 +354,11 @@ export function isProviderLoginLive(login: Pick<ProviderLoginStatus, "state"> | 
 export type ProviderLoginStartArgs = {
   id: string;
   /**
-   * Sign in with a one-time code typed into the sign-in page (Codex
-   * `--device-auth`), for a machine other than the one with the browser:
-   * Codex's normal sign-in returns to a localhost port on the account's
-   * machine, which a browser on another computer cannot reach.
+   * The browser is not on the account's machine. Codex then signs in with a
+   * one-time code typed into the sign-in page (`--device-auth`): its normal
+   * sign-in returns to a localhost port on the account's machine, which a
+   * browser on another computer cannot reach. Claude keeps its printed link
+   * (which ends in a pasted code) and does not open a page on that machine.
    */
   deviceAuth?: boolean;
 };

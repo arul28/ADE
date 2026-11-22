@@ -1,3 +1,4 @@
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { parsePairingQrText } from "../../../shared/pairingQr";
 import type {
   RemoteRuntimeParsedPairingInput,
@@ -12,7 +13,8 @@ export function parseRemoteRuntimePairingInput(
 ): RemoteRuntimeParsedPairingInput {
   const payload = parsePairingQrText(text);
   if (!payload) {
-    throw new Error("Invalid ADE pairing link or code.");
+    // A pasted link or code that is not one: the person checks it and tries again.
+    throw new AdeExpectedError("Invalid ADE pairing link or code.", "user");
   }
 
   const directEndpoints = payload.addressCandidates.flatMap((candidate) => {

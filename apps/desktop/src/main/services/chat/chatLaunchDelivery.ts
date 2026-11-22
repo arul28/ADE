@@ -28,15 +28,21 @@ export function createQueuedMessageDelivery(deps: {
   publish: (record: LaunchRecord) => void;
   isDisposed: () => boolean;
 }) {
+  /**
+   * `clientSendId` is the queued message's id, the same on every retry: a
+   * retry of a message the chat already took (its send timed out after the
+   * provider started the turn) is dropped by the chat instead of sent twice.
+   */
   const send = (
     sessionId: string,
-    message: Pick<ChatLaunchQueueMessageArgs, "text" | "displayText" | "attachments">,
+    message: Pick<ChatLaunchQueueMessageArgs, "text" | "displayText" | "attachments"> & { clientSendId?: string },
   ): Promise<unknown> => deps.sendMessage(
     {
       sessionId,
       text: message.text,
       ...(message.displayText ? { displayText: message.displayText } : {}),
       ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+      ...(message.clientSendId ? { clientSendId: message.clientSendId } : {}),
     },
     { awaitDispatch: false, routeActiveToSteer: true },
   );
@@ -60,7 +66,7 @@ export function createQueuedMessageDelivery(deps: {
       while (record.snapshot.queuedMessages.length > 0 && record.snapshot.phase !== "cancelled" && !deps.isDisposed()) {
         const next = record.snapshot.queuedMessages[0]!;
         try {
-          await send(sessionId, next);
+          await send(sessionId, { ...next, clientSendId: next.id });
         } catch (error) {
           const message = getErrorMessage(error);
           deps.logger.warn("chat_launch.queued_message_failed", { launchId: record.snapshot.launchId, attempt: state.deliveryAttempts, error: message });

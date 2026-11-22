@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { GitPullRequest } from "@phosphor-icons/react";
-import type { GitCommitSummary } from "../../../shared/types";
+import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { HistoryGitContextMenu } from "./HistoryGitContextMenu";
@@ -74,6 +74,8 @@ function ShaCell({ commit }: { commit: GitCommitSummary }) {
 }
 
 export type RowMenuContext = {
+  /** The lane's machine. Null: nothing can be sent there, so actions do nothing. */
+  pin: OpenProjectBinding | null;
   remoteMachineName: string | null;
   onNotice: (message: string) => void;
   onError: (message: string) => void;
@@ -147,6 +149,7 @@ export const CommitRow = React.memo(function CommitRow({
   return (
     <HistoryGitContextMenu
       laneId={actionLaneId}
+      pin={menu.pin}
       commit={commit}
       isHead={actionIsHead}
       hasWorktree={actionHasWorktree}

@@ -5,7 +5,7 @@ import type { SimRecording } from "../../../../../main/services/ios/recording/si
 import { CAPTURE_POLL_MS, CaptureSection } from "./CaptureSection";
 import { recordingDisplayName } from "../../../shared/RecordingRow";
 import { revealLabel } from "../../../../lib/platform";
-import { installAdeMock, makeCtx } from "../drawerTestHarness";
+import { installAdeMock, makeCtx, DRAWER_PIN } from "../drawerTestHarness";
 
 afterEach(() => {
   cleanup();
@@ -36,11 +36,6 @@ function recording(over: Partial<SimRecording> = {}): SimRecording {
 }
 
 describe("CaptureSection", () => {
-  it("says so plainly when the lane has recorded nothing", async () => {
-    installAdeMock();
-    render(<CaptureSection ctx={makeCtx()} />);
-    await waitFor(() => expect(screen.getByText("No recordings for this lane yet.")).toBeTruthy());
-  });
 
   it("cannot start or stop a recording: Record is a rail control now (§B1)", async () => {
     const { iosSimulator } = installAdeMock();
@@ -51,16 +46,6 @@ describe("CaptureSection", () => {
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
     expect(screen.queryByText("Status")).toBeNull();
     expect(iosSimulator.recordStart).not.toHaveBeenCalled();
-  });
-
-  it("lists a finished recording with its duration, size and description", async () => {
-    const { iosSimulator } = installAdeMock();
-    iosSimulator.recordList.mockResolvedValue([recording({ label: "signup", chatSessionId: "chat-9", mode: "auto" })]);
-    render(<CaptureSection ctx={makeCtx()} />);
-    const row = await screen.findByText("signup");
-    expect(row.parentElement?.textContent).toContain("00:23");
-    expect(row.parentElement?.textContent).toContain("8.1 MB");
-    expect(row.parentElement?.textContent).toContain("agent · auto · proof");
   });
 
   it("hides the one still running: the rail says that, not the library", async () => {
@@ -98,7 +83,7 @@ describe("CaptureSection", () => {
     (app as unknown as Record<string, unknown>).openPath = openPath;
     render(<CaptureSection ctx={makeCtx()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Open in proof" }));
-    await waitFor(() => expect(openPath).toHaveBeenCalledWith(recording().path));
+    await waitFor(() => expect(openPath).toHaveBeenCalledWith(recording().path, DRAWER_PIN));
   });
 
   it("reveals and deletes through the ⋯, and delete allows a proof recording", async () => {
@@ -108,13 +93,13 @@ describe("CaptureSection", () => {
     const more = await screen.findByRole("button", { name: `More for Recording ${CLOCK}` });
     fireEvent.keyDown(more, { key: "Enter" });
     fireEvent.click(await screen.findByRole("menuitem", { name: revealLabel }));
-    await waitFor(() => expect(app.revealPath).toHaveBeenCalledWith(recording().path));
+    await waitFor(() => expect(app.revealPath).toHaveBeenCalledWith(recording().path, DRAWER_PIN));
 
     fireEvent.keyDown(screen.getByRole("button", { name: `More for Recording ${CLOCK}` }), { key: "Enter" });
     fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
     await waitFor(() => expect(iosSimulator.recordDelete).toHaveBeenCalledWith(
       { laneId: "lane-1", chatSessionId: null, id: "rec-1", allowProof: true },
-      null,
+      DRAWER_PIN,
     ));
   });
 

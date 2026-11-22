@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  THIS_MACHINE_ID,
-  THIS_MACHINE_NAME,
-  machineIdForBinding,
-  machineNameForBinding,
-} from "./machineIdentity";
+import { THIS_MACHINE_ID, machineIdForBinding } from "./machineIdentity";
 
 describe("machineIdForBinding", () => {
   it("returns This computer for a local or missing binding", () => {
@@ -28,11 +23,5 @@ describe("machineIdForBinding", () => {
       displayName: "ADE",
       rootPath: "/Users/admin/ADE",
     })).toBe("studio");
-  });
-});
-
-describe("machineNameForBinding", () => {
-  it("names a local binding This computer", () => {
-    expect(machineNameForBinding(null)).toBe(THIS_MACHINE_NAME);
   });
 });

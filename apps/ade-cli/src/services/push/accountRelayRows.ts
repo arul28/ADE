@@ -123,7 +123,11 @@ export type AccountVaultItemKind =
   | "linear_refresh_token"
   | "project_secret"
   /** ADE MCP: the account secret and the connections (token hashes only). */
-  | "ade_mcp";
+  | "ade_mcp"
+  /** A provider sign-in (the login a provider's CLI keeps on disk). The relay allows 16,000 chars, not 6,000. */
+  | "provider_login"
+  /** The CTO's account copy, one per repository (`shared/ctoAccountCopy.ts`). The relay allows 48,000 chars. */
+  | "cto_copy";
 
 export type AccountVaultItem = {
   scope: string;
@@ -151,6 +155,8 @@ const ACCOUNT_VAULT_ITEM_KINDS: ReadonlySet<string> = new Set<AccountVaultItemKi
   "linear_refresh_token",
   "project_secret",
   "ade_mcp",
+  "provider_login",
+  "cto_copy",
 ]);
 
 export function isAccountVaultItemKind(value: unknown): value is AccountVaultItemKind {
@@ -162,7 +168,7 @@ export function isAccountVaultItemKind(value: unknown): value is AccountVaultIte
  * them in their own batch, because a Worker refuses a whole batch for one
  * unknown kind.
  */
-export const NEWER_VAULT_KINDS: ReadonlySet<AccountVaultItemKind> = new Set<AccountVaultItemKind>(["ade_mcp"]);
+export const NEWER_VAULT_KINDS: ReadonlySet<AccountVaultItemKind> = new Set<AccountVaultItemKind>(["ade_mcp", "provider_login", "cto_copy"]);
 
 /** Validate one vault row before callers can mistake corrupt data for a secret. */
 export function decodeAccountVaultItem(value: unknown): AccountVaultItem | null {
@@ -208,6 +214,12 @@ export type AccountVaultWrite = {
   refreshOwner?: string | null;
   /** When this machine made the write, on its clock; see `AccountWriteResult`. */
   writtenAt?: string;
+  /**
+   * The revision (an `updatedAt` the relay returned, or `absent`) this write
+   * replaces. A relay that knows revisions answers `stale` when the row moved
+   * on since; an older relay ignores it and writes as before.
+   */
+  ifRevision?: string;
 };
 
 export type AccountVaultPage = {

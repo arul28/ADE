@@ -114,8 +114,18 @@ struct WorkDraftScheduleSheet: View {
     _fireDate = State(initialValue: Date(timeIntervalSince1970: (base.timeIntervalSince1970 / 60).rounded(.up) * 60))
   }
 
+  /// A timed send runs on a computer's own scheduler. The account server
+  /// has no timed send for ADE Cloud yet, so ADE Cloud is no target here.
   private var machineOptions: [WorkNewChatMachineOption] {
-    workNewChatMachineOptions(syncService: syncService, fleet: machineFleet)
+    let options = workNewChatMachineOptions(syncService: syncService, fleet: machineFleet).filter { !$0.isCloud }
+    if !options.isEmpty { return options }
+    let name = syncService.focusedMachineDisplayName
+    return [WorkNewChatMachineOption(
+      machineKey: nil,
+      name: name,
+      symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: name),
+      isLive: syncService.connectionState == .connected
+    )]
   }
 
   private var selectedMachineOption: WorkNewChatMachineOption {

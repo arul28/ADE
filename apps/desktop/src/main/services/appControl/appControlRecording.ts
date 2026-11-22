@@ -43,6 +43,7 @@ import type {
   AppControlScreencastFrame,
   AppControlSession,
 } from "../../../shared/types/appControl";
+import { APP_CONTROL_PROOF_BACKEND_NAME } from "../../../shared/types/appControl";
 import type {
   ComputerUseArtifactIngestionRequest,
   ComputerUseArtifactIngestionResult,
@@ -62,9 +63,6 @@ import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngine
 import { finalPathForRaw, rawPathFor, recordingCapMsFor, watchDemoRecording } from "../demoVideo/demoRecordingGuard";
 import { demoLengths, produceDemoVideo, DemoRecordingUnusableError } from "../demoVideo/demoRenderService";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
-
-/** The broker's backend name for everything App Control files. */
-export const APP_CONTROL_PROOF_BACKEND_NAME = "ade-app-control";
 
 export const APP_CONTROL_RECORDING_NEEDS_DESKTOP_CODE = "APP_CONTROL_RECORDING_NEEDS_DESKTOP";
 export const APP_CONTROL_SCREEN_RECORDING_DENIED_CODE = "APP_CONTROL_SCREEN_RECORDING_DENIED";
@@ -130,6 +128,11 @@ export type AppControlWindowRecorder = {
   stop(key: string): Promise<AppControlRecordingFinish>;
   /** The helper says a window recording's stream ended (window closed, app quit). */
   onInterrupted(listener: (key: string) => void): () => void;
+  /**
+   * Stops the helper when no window recording runs and no call waits for it.
+   * The next call starts a new one. False when it kept the helper.
+   */
+  releaseIdle?(): boolean;
   dispose(): void;
 };
 
@@ -645,6 +648,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     reason: AppControlRecordingStopReason,
     recordedTo: string,
     demo: DemoArtifactMetadata | null,
+    fileHere: boolean,
   ): Promise<{ caption: string | null; proofArtifactId: string | null }> => {
     const selfFiled = !existing.caption && reason !== "requested" && Boolean(existing.chatSessionId);
     const startTitle = recordingAppTitles.get(laneId) ?? null;
@@ -657,7 +661,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       ]);
       caption = `${appControlProofCaption(liveTitle || startTitle, laneName)} · ${captionDuration(finished)}`;
     }
-    if (!caption || !finished.filePath || !deps.ingestArtifacts) return { caption, proofArtifactId: null };
+    if (!caption || !finished.filePath || !deps.ingestArtifacts || !fileHere) return { caption, proofArtifactId: null };
     const owners: ComputerUseArtifactOwner[] = [{ kind: "lane", id: laneId, relation: "attached_to" }];
     const chatSessionId = existing.chatSessionId ?? stopperChatSessionId;
     if (chatSessionId) owners.push({ kind: "chat_session", id: chatSessionId, relation: "attached_to" });
@@ -698,6 +702,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     laneId: string,
     stopperChatSessionId: string | null,
     reason: AppControlRecordingStopReason,
+    fileHere: boolean,
   ): Promise<AppControlRecordingStatus> => {
     const existing = recordings.get(laneId);
     if (!existing?.running) {
@@ -795,6 +800,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       reason,
       recordedTo,
       demo,
+      fileHere,
     );
     const status: AppControlRecordingStatus = {
       ...finished,
@@ -816,14 +822,16 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     return status;
   };
 
+  /** `fileHere: false` files nothing here: a caller on another machine files the video in its own drawer. */
   const stopRecording = (
     laneId: string,
     stopperChatSessionId: string | null,
     reason: AppControlRecordingStopReason,
+    fileHere = true,
   ): Promise<AppControlRecordingStatus> => {
     const inFlight = stopping.get(laneId);
     if (inFlight) return inFlight;
-    const run = finishRecording(laneId, stopperChatSessionId, reason);
+    const run = finishRecording(laneId, stopperChatSessionId, reason, fileHere);
     stopping.set(laneId, run);
     const forget = (): void => {
       if (stopping.get(laneId) === run) stopping.delete(laneId);
@@ -855,8 +863,8 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
   return {
     startRecording,
 
-    stopRecording: (laneId: string, stopperChatSessionId: string | null = null) =>
-      stopRecording(laneId, stopperChatSessionId, "requested"),
+    stopRecording: (laneId: string, stopperChatSessionId: string | null = null, fileHere = true) =>
+      stopRecording(laneId, stopperChatSessionId, "requested", fileHere),
 
     getStatus(laneId: string): AppControlRecordingStatus {
       return recordings.get(laneId) ?? {

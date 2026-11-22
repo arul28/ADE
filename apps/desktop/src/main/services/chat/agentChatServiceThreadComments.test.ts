@@ -62,13 +62,14 @@ async function startHeldClaudeTurn() {
   return { service, session, events, activeTurn, finishActiveTurn, send };
 }
 
-function createComment(service: Service, sessionId: string) {
+function createComment(service: Service, sessionId: string, clientId?: string) {
   return service.createThreadComment({
     sessionId,
     messageKey: "message:1",
     messageExcerpt: "an earlier reply",
     anchor: { kind: "text", quote: "the quoted part", prefix: "", suffix: "" },
     body: "my note",
+    ...(clientId ? { clientId } : {}),
   });
 }
 
@@ -95,21 +96,24 @@ describe("thread comments riding a steer", () => {
     service.forceDisposeAll();
   });
 
-  it("puts the comments back when a queued steer is cancelled", async () => {
+  it("puts the comments back when a queued steer is cancelled, and never takes one the steer excludes", async () => {
     const { service, session, activeTurn, finishActiveTurn } = await startHeldClaudeTurn();
     await createComment(service, session.id);
+    // The sender shows this one as failed to save: it stays on the host.
+    const excluded = await createComment(service, session.id, "client-failed");
 
     const queued = await service.steer({
       sessionId: session.id,
       text: "carry my comments",
       includeThreadComments: true,
+      excludeThreadCommentClientIds: ["client-failed"],
     });
     expect(queued).toMatchObject({ queued: true, steerId: expect.any(String) });
-    expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(0);
+    expect(service.listThreadComments({ sessionId: session.id }).map((comment) => comment.id)).toEqual([excluded.id]);
 
     await service.cancelSteer({ sessionId: session.id, steerId: queued.steerId });
 
-    expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(1);
+    expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(2);
     finishActiveTurn();
     await activeTurn;
     service.forceDisposeAll();

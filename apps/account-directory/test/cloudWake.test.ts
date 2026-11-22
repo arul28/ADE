@@ -26,7 +26,7 @@ const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
 /** D1's statement surface over node:sqlite, with the real migration applied. */
 function sqliteD1(): D1Database {
   const db = new DatabaseSync(":memory:");
-  for (const migration of ["0016_agent37_wakes.sql", "0017_cloud_wakes.sql"]) {
+  for (const migration of ["0016_agent37_wakes.sql", "0017_cloud_wakes.sql", "0018_cloud_account.sql"]) {
     db.exec(fs.readFileSync(path.join(__dirname, "../migrations", migration), "utf8"));
   }
   const statement = (sql: string, params: unknown[] = []) => ({
@@ -103,6 +103,27 @@ describe("cloud timed wakes", () => {
       fetchImpl: (async (url: string) => { requested.push(String(url)); return new Response(null); }) as unknown as typeof fetch,
     });
     expect(requested).toEqual([]);
+  });
+
+  it("an account at the awake cap (a reservation being made counts) waits without holding back another account's wake", async () => {
+    const target = env();
+    const run = (sql: string, ...params: unknown[]) => target.DB.prepare(sql).bind(...params).run();
+    const computerSql = "insert into cloud_computers (instance_id, user_id, type, cpu, memory_gb, disk_gb, multiplier_milli, status, status_changed_at, created_at) values (?, 'user_1', 'default', 2, 4, 4, 1000, ?, ?, ?)";
+    // 24 awake and one being made: user_1 is at the cap of 25.
+    for (let index = 0; index < 25; index += 1) await run(computerSql, `awake${String(index).padStart(5, "0")}`, index === 0 ? "provisioning" : "running", NOW, NOW);
+    // More of its sleeping computers due than one tick reads, all due before user_2's.
+    for (let index = 0; index < 100; index += 1) {
+      await run("insert into cloud_wakes (user_id, instance_id, wake_url, wake_at, updated_at) values ('user_1', ?, ?, ?, ?)", `sleep${String(index).padStart(5, "0")}`, `https://sleep-${index}.agent37.app`, NOW - 10 * 60_000, NOW);
+    }
+    await run("insert into cloud_wakes (user_id, instance_id, wake_url, wake_at, updated_at) values ('user_2', 'abcde12345', ?, ?, ?)", WAKE, NOW, NOW);
+    const requested: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      requested.push(String(url));
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    expect(await runCloudWakes(target, { now: NOW, fetchImpl })).toEqual({ woken: 1, failed: 0 });
+    expect(requested).toEqual([WAKE]);
   });
 
   it("refuses a caller without an account bearer", async () => {

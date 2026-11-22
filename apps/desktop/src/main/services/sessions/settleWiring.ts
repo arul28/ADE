@@ -24,6 +24,11 @@ export type SettleChatService = {
   } | null>;
   /** Subagents of these sessions, so a settled parent can settle its subagents. */
   listSubagentLinks?: (parentSessionIds: readonly string[]) => Promise<SubagentLink[]>;
+  /**
+   * The live turn of a session that is not a chat: a tracked agent CLI answers
+   * with `cliSession` set. Absent or null means no turn status is known.
+   */
+  getTurnStatus?: (sessionId: string) => Promise<{ phase: string; cliSession?: unknown } | null>;
 };
 
 export type SettleWiringDeps = {
@@ -52,7 +57,14 @@ export function createSettleWiring(deps: SettleWiringDeps): SettleWiring {
   const checkSettle = createSettleTurnCheck({
     readTurnRunning: async (sessionId) => {
       const summary = await deps.agentChatService.getSessionSummary(sessionId);
-      if (!summary) return null;
+      if (!summary) {
+        // A tracked agent CLI has no chat summary, but its terminal knows when
+        // it is working; without this a CLI could be settled mid-turn.
+        const turn = await deps.agentChatService.getTurnStatus?.(sessionId);
+        if (!turn?.cliSession) return null;
+        // A CLI waiting at its prompt may be settled: that is the user being done with it.
+        return turn.phase === "running";
+      }
       // Another live brain runs this chat; its turn is invisible here and the
       // summary reads idle either way. The owner can settle it.
       if (summary.runtimeOwnedElsewhere) return "unknown";

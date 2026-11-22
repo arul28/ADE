@@ -14,13 +14,16 @@ export function RuleHistory({
   automationId,
   ruleName,
   pin = null,
+  isActiveBinding = true,
   machineName = null,
   offlineMessage = null,
 }: {
   automationId: string;
   ruleName: string;
-  /** The machine that owns the rule; null = the tab's machine. */
+  /** The copy that owns the rule (the tab's own included); null = no address. */
   pin?: OpenProjectBinding | null;
+  /** Whether the owner is the tab's machine: its reads keep no timeout. */
+  isActiveBinding?: boolean;
   machineName?: string | null;
   /** Set while the owning machine is unreachable; nothing is read. */
   offlineMessage?: string | null;
@@ -38,12 +41,16 @@ export function RuleHistory({
       setError(offlineMessage);
       return;
     }
+    if (!pin) {
+      setError("No computer with this project is online.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const next = await onMachine(
         window.ade.automations.listRuns({ automationId, limit: 80 }, pin),
-        { pin, machineName: machineName ?? "That machine" },
+        { pin, machineName: machineName ?? "That machine", isActiveBinding },
       );
       setRuns(next);
       setSelectedRunId((current) => current ?? next[0]?.id ?? null);
@@ -52,18 +59,19 @@ export function RuleHistory({
     } finally {
       setLoading(false);
     }
-  }, [automationId, machineName, offlineMessage, pin]);
+  }, [automationId, isActiveBinding, machineName, offlineMessage, pin]);
 
   const loadDetail = useCallback(async (runId: string) => {
     const requestId = detailRequestId.current + 1;
     detailRequestId.current = requestId;
     setSelectedRunId(runId);
+    if (!pin) return;
     setDetailLoading(true);
     setError(null);
     try {
       const next = await onMachine(
         window.ade.automations.getRunDetail(runId, pin),
-        { pin, machineName: machineName ?? "That machine" },
+        { pin, machineName: machineName ?? "That machine", isActiveBinding },
       );
       if (detailRequestId.current !== requestId) return;
       setDetail(next);
@@ -73,7 +81,7 @@ export function RuleHistory({
     } finally {
       if (detailRequestId.current === requestId) setDetailLoading(false);
     }
-  }, [machineName, pin]);
+  }, [isActiveBinding, machineName, pin]);
 
   useEffect(() => {
     detailRequestId.current += 1;
@@ -85,14 +93,14 @@ export function RuleHistory({
 
   useEffect(() => {
     // The event feed is the tab machine's own; another machine's runs refresh
-    // on the Refresh button instead.
-    if (pin) return undefined;
+    // on the Refresh button instead, so no new event pump starts for them.
+    if (!pin || !isActiveBinding) return undefined;
     const unsubscribe = window.ade.automations.onEvent(() => {
       void load();
       if (selectedRunId) void loadDetail(selectedRunId);
-    });
+    }, pin);
     return () => unsubscribe();
-  }, [load, loadDetail, pin, selectedRunId]);
+  }, [isActiveBinding, load, loadDetail, pin, selectedRunId]);
 
   useEffect(() => {
     if (selectedRunId && !detail) void loadDetail(selectedRunId);

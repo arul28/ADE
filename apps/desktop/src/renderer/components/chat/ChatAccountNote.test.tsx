@@ -95,6 +95,33 @@ describe("ChatAccountNote account resolution", () => {
     });
   });
 
+  it("names a working pass without an email by its pass label", async () => {
+    const pass = instance({ id: "claude-pass", label: "Claude pass", isDefault: true });
+    installBridge([pass, WORK_INSTANCE]);
+
+    const view = render(
+      <ChatAccountNote sessionId="chat-pass" provider="claude" instanceId="claude-pass" events={[]} runtimePin={pin("pass")} />,
+    );
+    await waitFor(() => {
+      expect(noteText()).toContain("Claude pass");
+    });
+    expect(noteText()).not.toContain("Not signed in");
+    view.unmount();
+    cleanup();
+
+    const switchAccount = vi.fn().mockResolvedValue({ ok: true, instanceId: "claude-pass" });
+    installBridge([DEFAULT_INSTANCE, pass], switchAccount);
+    render(
+      <ChatAccountNote sessionId="chat-pass" provider="claude" instanceId="claude" events={[]} runtimePin={pin("pass-switch")} />,
+    );
+    await waitFor(() => {
+      expect(noteText()).toContain("default@example.com");
+    });
+    openSwitcher();
+    const passRow = await screen.findByRole("menuitem", { name: /Claude pass/ });
+    expect(passRow.textContent).toContain("Claude pass");
+  });
+
   it("names the chat's current account when the latest turn ran on the account it moved from", async () => {
     installBridge([DEFAULT_INSTANCE, WORK_INSTANCE]);
     const events = [

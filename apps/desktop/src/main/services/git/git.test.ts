@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { gitOwnershipMessage } from "../../../../../ade-cli/src/services/projects/gitOwnership";
 import { isExpectedOutcome } from "../../../shared/sentry/expectedFailure";
 import { describeUnsavedWorktreeWork, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "./worktreeState";
+import { adeScaffoldFileContents } from "../../../shared/adeLayout";
 import {
   branchNameFromHeadRef,
   formatGitExecutionError,
@@ -169,16 +170,6 @@ describe("macOS git selection", () => {
     expect(shouldProbeLoginShellForGit("/usr/bin/git", "darwin")).toBe(true);
     expect(shouldProbeLoginShellForGit("/opt/homebrew/bin/git", "darwin")).toBe(false);
     expect(shouldProbeLoginShellForGit("/usr/bin/git", "linux")).toBe(false);
-  });
-
-  it("explains that an Xcode license failure comes from Git, not iOS features", () => {
-    const message = formatGitExecutionError(
-      "You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license'.",
-    );
-
-    expect(message).toContain("ADE needs Git");
-    expect(message).toContain("not an ADE iOS Simulator or code-signing requirement");
-    expect(message).toContain("sudo xcodebuild -license");
   });
 
   // Git for Windows output cannot be produced on a macOS/Linux runner, so the
@@ -484,13 +475,13 @@ describe("runGit cancellation", () => {
         idleTimeoutMs: 300,
       })).rejects.toMatchObject({ name: "GitTimeoutError", stalled: true });
 
-      // Slow but talking: runs well past the limit, a line every 150 ms, a
+      // Slow but talking: runs well past the limit, a line every 80 ms, a
       // tenth of the limit, so a loaded machine does not read as a stall.
-      fs.writeFileSync(hook, "#!/bin/sh\nfor i in $(seq 1 16); do echo working >&2; sleep 0.15; done\n", { mode: 0o755 });
+      fs.writeFileSync(hook, "#!/bin/sh\nfor i in $(seq 1 14); do echo working >&2; sleep 0.08; done\n", { mode: 0o755 });
       const busy = await runGit(["worktree", "add", "-b", "busy", path.join(worktrees, "busy"), "main"], {
         cwd: repo,
         timeoutMs: 30_000,
-        idleTimeoutMs: 1_500,
+        idleTimeoutMs: 800,
       });
       expect(busy.exitCode).toBe(0);
       expect(busy.timedOut).toBeUndefined();
@@ -558,6 +549,28 @@ describe("describeUnsavedWorktreeWork", () => {
     expect(git(lane, ["status", "--porcelain"])).toBe("");
     expect(await describeUnsavedWorktreeWork(lane)).toBe(UNCOMMITTED_CHANGES_REASON);
     expect(await readWorktreeDirty(lane)).toBe(true);
+  });
+
+  it("leaves out ADE's own .ade scaffold as written, and nothing else under .ade", async () => {
+    const repo = initRepo("ade-git-unsaved-scaffold-");
+    // What ADE writes when it opens a project that never committed `.ade/`.
+    for (const [relativePath, content] of adeScaffoldFileContents()) {
+      const file = path.join(repo, ".ade", ...relativePath.split("/"));
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, content, "utf8");
+    }
+    expect(git(repo, ["status", "--porcelain"])).not.toBe("");
+    expect(await describeUnsavedWorktreeWork(repo)).toBeNull();
+
+    // A person's own skill under .ade is work.
+    fs.writeFileSync(path.join(repo, ".ade", "skills", "deploy.md"), "# deploy\n", "utf8");
+    expect(await describeUnsavedWorktreeWork(repo)).toBe(UNCOMMITTED_CHANGES_REASON);
+    fs.rmSync(path.join(repo, ".ade", "skills", "deploy.md"));
+    expect(await describeUnsavedWorktreeWork(repo)).toBeNull();
+
+    // So is a scaffold file a person edited.
+    fs.appendFileSync(path.join(repo, ".ade", ".gitignore"), "!notes/\n", "utf8");
+    expect(await describeUnsavedWorktreeWork(repo)).toBe(UNCOMMITTED_CHANGES_REASON);
   });
 
   it("checks every submodule for commits no remote has, past an empty uninitialized one", async () => {

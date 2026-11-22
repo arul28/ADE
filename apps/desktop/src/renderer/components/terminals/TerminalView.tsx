@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useMachineSlotHold } from "../../lib/machineSlotHolds";
 import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
+import { createTerminalTypeAhead, type TerminalTypeAhead } from "./terminalTypeAhead";
 import type { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -14,6 +16,7 @@ import {
   type TerminalPreferences,
   type ThemeId,
 } from "../../state/appStore";
+import { useTypeAheadRoundTripMs } from "../../state/projectMachines";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
 import { TERMINAL_BRACKETED_PASTE_END, TERMINAL_BRACKETED_PASTE_START } from "./terminalBracketedPaste";
@@ -37,6 +40,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import type { TerminalToolType } from "../../../shared/types";
 import { resolveTheme, resolveThemeById } from "../../../shared/theme";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "./pendingSessionAnchors";
+import { registerTerminalRuntimeSnapshotReader } from "./terminalRuntimeSnapshots";
 import {
   readDismissedScrollHints,
   terminalScrollHintFor,
@@ -60,6 +64,7 @@ import type {
   TerminalSnapshotRow,
   TerminalSessionStatus,
 } from "../../../shared/types";
+import { requireChatPin } from "../chat/chatMachinePin";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
 type TerminalRendererMode = "webgl" | "dom";
@@ -71,6 +76,8 @@ export type TerminalHealthCounters = {
   droppedChunks: number;
   fitRecoveries: number;
 };
+
+export type TerminalRuntimeSnapshot = RuntimeSnapshot;
 
 type RuntimeSnapshot = {
   exitCode: number | null;
@@ -198,6 +205,8 @@ type CachedRuntime = {
   ptyDataUnsub: (() => void) | null;
   ptyExitUnsub: (() => void) | null;
   termDataSub: { dispose: () => void } | null;
+  /** Dimmed guesses of typed characters on a slow link (`terminalTypeAhead.ts`). */
+  typeAhead: TerminalTypeAhead | null;
   linkProviderSub: { dispose: () => void } | null;
   pathLinkProviderSub: { dispose: () => void } | null;
   pathLinks: TerminalPathLinkContext;
@@ -302,6 +311,13 @@ const pinnedPtyExitUnsubs = new Map<string, () => void>();
 let pinnedPtyRuntimeCount = 0;
 let ptyDataSubscriptionSignature: string | null = null;
 const pinnedPtyDataSubscriptionSignatures = new Map<string, string>();
+/**
+ * The terminal list each machine is still taking, by pin. A machine that
+ * sends output by list sends a terminal's output only once it has the list,
+ * so a terminal there that comes back reads its screen after that
+ * (`hydrateTranscript`); output printed in between would be lost.
+ */
+const pinnedPtyDataSubscriptionUpdates = new Map<string, Promise<void>>();
 
 function terminalRuntimeKey(args: {
   sessionId: string;
@@ -867,16 +883,16 @@ function scheduleFailedPtyResizeRetry(runtime: CachedRuntime, dims: TerminalDims
 }
 
 function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
-  if (runtime.disposed) return;
+  // A terminal with no known machine has no PTY to resize.
+  const runtimePin = runtime.runtimePin;
+  if (runtime.disposed || !runtimePin) return;
   runtime.ptyResizeInFlight = true;
   runtime.inFlightPtyResizeDims = dims;
   reportTerminalDimsMismatch(runtime, { reason: "pty-resize-send", sentResize: dims });
-  const resize = runtime.runtimePin
-    ? window.ade.pty.resize(
-        { ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows },
-        runtime.runtimePin,
-      )
-    : window.ade.pty.resize({ ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows });
+  const resize = window.ade.pty.resize(
+    { ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows },
+    runtimePin,
+  );
   resize
     .then(
       () => {
@@ -1153,8 +1169,7 @@ function updatePtyDataSubscriptions(removedRuntime?: CachedRuntime): void {
     && pinnedPtyDataSubscriptionSignatures.size === 0
     && !removedRuntime?.runtimePin
   ) {
-    // Preserve the original unpinned subscription path: one Set, one sorted
-    // array, the existing signature check, and the one-argument preload call.
+    // Only runtimes with no known machine: track the signature, ask nothing.
     const ptyIds = new Set<string>();
     for (const [ptyId, runtimes] of ptyDataRuntimesByPtyId) {
       for (const runtime of runtimes) {
@@ -1170,9 +1185,7 @@ function updatePtyDataSubscriptions(removedRuntime?: CachedRuntime): void {
     if (signature === ptyDataSubscriptionSignature) return;
     ptyDataSubscriptionSignature = signature;
 
-    const setDataSubscriptions = window.ade.pty.setDataSubscriptions;
-    if (typeof setDataSubscriptions !== "function") return;
-    setDataSubscriptions({ ptyIds: next }).catch(() => {});
+    // A runtime with no known machine has no data feed to ask for.
     return;
   }
 
@@ -1209,11 +1222,7 @@ function updatePtyDataSubscriptions(removedRuntime?: CachedRuntime): void {
     const signature = next.join("\0");
     if (signature !== ptyDataSubscriptionSignature) {
       ptyDataSubscriptionSignature = signature;
-      if (typeof setDataSubscriptions === "function") {
-        // The overwhelmingly common local path intentionally retains the
-        // original one-argument call shape and allocation count.
-        setDataSubscriptions({ ptyIds: next }).catch(() => {});
-      }
+      // A runtime with no known machine has no data feed to ask for.
     }
   }
 
@@ -1223,7 +1232,11 @@ function updatePtyDataSubscriptions(removedRuntime?: CachedRuntime): void {
     if (signature === pinnedPtyDataSubscriptionSignatures.get(key)) continue;
     pinnedPtyDataSubscriptionSignatures.set(key, signature);
     if (typeof setDataSubscriptions === "function") {
-      setDataSubscriptions({ ptyIds: next }, group.pin).catch(() => {});
+      const update = setDataSubscriptions({ ptyIds: next }, group.pin).catch(() => {});
+      pinnedPtyDataSubscriptionUpdates.set(key, update);
+      void update.then(() => {
+        if (pinnedPtyDataSubscriptionUpdates.get(key) === update) pinnedPtyDataSubscriptionUpdates.delete(key);
+      });
     }
   }
 
@@ -1280,6 +1293,7 @@ function pauseRuntimePtyStream(runtime: CachedRuntime): void {
 
 function resumeRuntimePtyStream(runtime: CachedRuntime): void {
   if (!runtime.liveStreamPaused || !shouldRuntimeReceivePtyData(runtime)) return;
+  runtime.typeAhead?.reset();
   runtime.liveStreamPaused = false;
   runtime.hydrationGeneration += 1;
   runtime.staleContentBeforeHydration = runtime.hasAppliedTerminalContent;
@@ -1297,12 +1311,14 @@ function resumeRuntimePtyStream(runtime: CachedRuntime): void {
 
 function syncRuntimePtyDataStreaming(runtime: CachedRuntime, wasReceiving: boolean): void {
   const isReceiving = shouldRuntimeReceivePtyData(runtime);
+  // The list goes out first, so a terminal that comes back finds the update
+  // its screen read waits for.
+  updatePtyDataSubscriptions();
   if (wasReceiving && !isReceiving) {
     pauseRuntimePtyStream(runtime);
   } else if (!wasReceiving && isReceiving) {
     resumeRuntimePtyStream(runtime);
   }
-  updatePtyDataSubscriptions();
 }
 
 function setRuntimeVisibilityState(runtime: CachedRuntime, visible: boolean) {
@@ -1320,11 +1336,9 @@ function clearPtyInputFlushTimer(runtime: CachedRuntime): void {
 
 function writePtyInputNow(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
-  if (runtime.runtimePin) {
-    window.ade.pty.write({ ptyId: runtime.ptyId, data }, runtime.runtimePin).catch(() => {});
-    return;
-  }
-  window.ade.pty.write({ ptyId: runtime.ptyId, data }).catch(() => {});
+  // A terminal with no known machine has no PTY to write to.
+  if (!runtime.runtimePin) return;
+  window.ade.pty.write({ ptyId: runtime.ptyId, data }, runtime.runtimePin).catch(() => {});
 }
 
 function consumePendingPtyInput(runtime: CachedRuntime): string {
@@ -1345,6 +1359,7 @@ function flushPendingPtyInput(runtime: CachedRuntime): void {
 
 function writePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
+  runtime.typeAhead?.noteInput(data);
   if (runtime.pasteWriteInFlight) {
     runtime.deferredInputDuringPasteWrite.push({ kind: "input", data });
     return;
@@ -1440,9 +1455,12 @@ function schedulePtyInputFlush(runtime: CachedRuntime): void {
 function enqueuePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
   if (runtime.pasteWriteInFlight) {
+    // Sent when the paste ends, through `writePtyInput`, which notes it then.
+    // Noting it here too would show every key twice until the echo.
     runtime.deferredInputDuringPasteWrite.push({ kind: "input", data });
     return;
   }
+  runtime.typeAhead?.noteInput(data);
   runtime.inputWriteChunks.push(data);
   runtime.inputWriteBytes += data.length;
   if (shouldFlushPtyInputImmediately(data) || runtime.inputWriteBytes >= MAX_PTY_INPUT_BATCH_BYTES) {
@@ -1675,6 +1693,8 @@ function teardownRuntime(runtime: CachedRuntime) {
   }
   try {
     runtime.termDataSub?.dispose();
+    runtime.typeAhead?.dispose();
+    runtime.typeAhead = null;
   } catch {
     // ignore
   }
@@ -2193,11 +2213,13 @@ function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
   }
 
   if (ev.replace === true) {
+    runtime.typeAhead?.reset();
     replaceRuntimeTerminalData(runtime, ev.data, { screen: ev.screen === true });
     return;
   }
 
   updateTerminalInputModes(runtime, ev.data);
+  runtime.typeAhead?.noteOutput(ev.data);
 
   if (!runtime.hydrationCompleted) {
     runtime.pendingHydrationChunks.push(ev.data);
@@ -2304,10 +2326,8 @@ function subscribeRuntimePtyData(runtime: CachedRuntime): () => void {
         ),
       );
     }
-  } else if (!sharedPtyDataUnsub) {
-    // Keep the original active-project listener and call arity untouched.
-    sharedPtyDataUnsub = window.ade.pty.onData((ev) => dispatchPtyDataEvent(ev, null));
   }
+  // A runtime with no known machine has no feed.
   return () => {
     removeRuntimePtySubscription(ptyDataRuntimesByPtyId, runtime);
     if (runtime.runtimePin) pinnedPtyRuntimeCount = Math.max(0, pinnedPtyRuntimeCount - 1);
@@ -2345,10 +2365,8 @@ function subscribeRuntimePtyExit(runtime: CachedRuntime): () => void {
         ),
       );
     }
-  } else if (!sharedPtyExitUnsub) {
-    // Keep the original active-project listener and call arity untouched.
-    sharedPtyExitUnsub = window.ade.pty.onExit((ev) => dispatchPtyExitEvent(ev, null));
   }
+  // A runtime with no known machine has no feed.
   return () => {
     removeRuntimePtySubscription(ptyExitRuntimesByPtyId, runtime);
     if (subscriptionKey && !hasRuntimeForSubscriptionKey(ptyExitRuntimesByPtyId, subscriptionKey)) {
@@ -2417,10 +2435,8 @@ async function readPreviewHydrationData(
         terminalId: runtime.sessionId,
         maxBytes: HYDRATE_TAIL_BYTES,
       }, runtime.runtimePin)
-    : await window.ade.terminal.preview({
-        terminalId: runtime.sessionId,
-        maxBytes: HYDRATE_TAIL_BYTES,
-      });
+    // No machine for the session: there is no screen to read.
+    : null;
   if (preview?.snapshot) {
     reportTerminalDimsMismatch(runtime, {
       reason: "snapshot-hydrate",
@@ -2442,9 +2458,7 @@ async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise
       maxBytes: HYDRATE_TAIL_BYTES,
       raw: true,
     };
-    transcript = (runtime.runtimePin
-      ? await window.ade.sessions.readTranscriptTail(args, runtime.runtimePin)
-      : await window.ade.sessions.readTranscriptTail(args)) || "";
+    transcript = (await window.ade.sessions.readTranscriptTail(args, requireChatPin(runtime.runtimePin))) || "";
     if (hasTerminalPrivateModeSequence(transcript, TERMINAL_BRACKETED_PASTE_MODE)) {
       return transcript;
     }
@@ -2458,10 +2472,8 @@ async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise
           terminalId: runtime.sessionId,
           maxBytes: HYDRATE_TAIL_BYTES,
         }, runtime.runtimePin)
-      : await window.ade.terminal.preview({
-          terminalId: runtime.sessionId,
-          maxBytes: HYDRATE_TAIL_BYTES,
-        });
+      // No machine for the session: there is no screen to read.
+      : null;
     const snapshot = preview?.snapshot?.serialized ?? "";
     const previewTranscript = preview?.transcript ?? "";
     return `${snapshot}${previewTranscript}${transcript}`;
@@ -2478,9 +2490,7 @@ async function readReplayHydrationData(runtime: CachedRuntime): Promise<InitialH
     maxBytes: REPLAY_TRANSCRIPT_MAX_BYTES,
     raw: true,
   };
-  const data = runtime.runtimePin
-    ? await window.ade.sessions.readTranscriptTail(args, runtime.runtimePin)
-    : await window.ade.sessions.readTranscriptTail(args);
+  const data = await window.ade.sessions.readTranscriptTail(args, requireChatPin(runtime.runtimePin));
   if (!data) return { source: "empty", text: "" };
   return { source: "replay", text: stripFullScreenRedrawSequences(data) };
 }
@@ -2521,9 +2531,7 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
   let sessionStatus: TerminalSessionStatus | null = null;
   let sessionExitCode: number | null = null;
   try {
-    const detail = runtime.runtimePin
-      ? await window.ade.sessions.get(runtime.sessionId, runtime.runtimePin)
-      : await window.ade.sessions.get(runtime.sessionId);
+    const detail = await window.ade.sessions.get(runtime.sessionId, requireChatPin(runtime.runtimePin));
     sessionStatus = detail?.status ?? null;
     sessionExitCode = detail?.exitCode ?? null;
   } catch {
@@ -2547,10 +2555,8 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
           terminalId: runtime.sessionId,
           maxBytes: HYDRATE_TAIL_BYTES,
         }, runtime.runtimePin)
-      : await window.ade.terminal.preview({
-          terminalId: runtime.sessionId,
-          maxBytes: HYDRATE_TAIL_BYTES,
-        });
+      // No machine for the session: there is no screen to read.
+      : null;
     const previewSessionStatus = preview?.session?.status ?? sessionStatus;
     const previewSessionExitCode = preview?.session?.exitCode ?? sessionExitCode;
 
@@ -2585,9 +2591,7 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
     maxBytes: HYDRATE_TAIL_BYTES,
     raw: true,
   };
-  const transcript = runtime.runtimePin
-    ? await window.ade.sessions.readTranscriptTail(transcriptArgs, runtime.runtimePin)
-    : await window.ade.sessions.readTranscriptTail(transcriptArgs);
+  const transcript = await window.ade.sessions.readTranscriptTail(transcriptArgs, requireChatPin(runtime.runtimePin));
   return transcript
     ? { source: "transcript", text: transcript }
     : { source: "empty", text: "" };
@@ -2808,6 +2812,9 @@ function rehydrateAfterFit(runtime: CachedRuntime): void {
   const queuedReplace = runtime.pendingReplaceData;
   const queuedReplaceIsScreen = runtime.pendingReplaceIsScreen;
   clearRuntimeHydrationTimers(runtime);
+  // A guess drawn on the old screen must not survive the reset: the hydration
+  // writes below do not go through `noteOutput`, so nothing else would clear it.
+  runtime.typeAhead?.reset();
   try {
     runtime.term.reset();
   } catch {
@@ -2950,10 +2957,17 @@ function startHydration(runtime: CachedRuntime) {
   };
 
   const hydrateTranscript = () => {
-    readInitialHydrationData(runtime)
-      .then((data) => normalizeHydrationData(runtime, data))
-      .then(finalizeHydration)
-      .catch(() => finalizeHydration({ source: "empty", text: "" }));
+    const read = () => {
+      readInitialHydrationData(runtime)
+        .then((data) => normalizeHydrationData(runtime, data))
+        .then(finalizeHydration)
+        .catch(() => finalizeHydration({ source: "empty", text: "" }));
+    };
+    const listUpdate = runtime.runtimePin
+      ? pinnedPtyDataSubscriptionUpdates.get(runtimePinSubscriptionKey(runtime.runtimePin))
+      : undefined;
+    if (listUpdate) void listUpdate.then(read);
+    else read();
   };
 
   const waitForFitThenHydrate = (attempt: number) => {
@@ -3248,6 +3262,7 @@ function createRuntime(args: {
     ptyDataUnsub: null,
     ptyExitUnsub: null,
     termDataSub: null,
+    typeAhead: null,
     linkProviderSub,
     pathLinkProviderSub,
     pathLinks,
@@ -3368,7 +3383,7 @@ function createRuntime(args: {
       }
       if (isMac && ev.metaKey) {
         ev.preventDefault();
-        writePtyInput(runtime, "\x03");
+        enqueuePtyInput(runtime, "\x03");
         return false;
       }
       return true;
@@ -3385,21 +3400,21 @@ function createRuntime(args: {
 
     if (isMac && ev.altKey && ev.key === "Backspace") {
       ev.preventDefault();
-      writePtyInput(runtime, "\x1b\x7f");
+      enqueuePtyInput(runtime, "\x1b\x7f");
       return false;
     }
 
     if (isMac && ev.metaKey && ev.key === "Backspace") {
       ev.preventDefault();
       // Ctrl+U: kill to beginning of line
-      writePtyInput(runtime, "\x15");
+      enqueuePtyInput(runtime, "\x15");
       return false;
     }
 
     // Ctrl+Backspace: delete word backward (same as Ctrl+W)
     if (ev.ctrlKey && ev.key === "Backspace") {
       ev.preventDefault();
-      writePtyInput(runtime, "\x17");
+      enqueuePtyInput(runtime, "\x17");
       return false;
     }
 
@@ -3409,9 +3424,8 @@ function createRuntime(args: {
   // Debounce rapid terminal input into fewer PTY writes. Remote runtimes pay a
   // full RPC round trip per write, so per-character bursts make typing feel
   // much slower than a local shell.
-  runtime.termDataSub = term.onData((data) => {
-    enqueuePtyInput(runtime, data);
-  });
+  runtime.typeAhead = createTerminalTypeAhead({ term });
+  runtime.termDataSub = term.onData((data) => enqueuePtyInput(runtime, data));
 
   runtime.ptyDataUnsub = subscribeRuntimePtyData(runtime);
   runtime.ptyExitUnsub = subscribeRuntimePtyExit(runtime);
@@ -3510,6 +3524,9 @@ export function getTerminalRuntimeSnapshot(sessionId: string): RuntimeSnapshot |
   return runtimeSnapshot(runtime);
 }
 
+// Code that must not load xterm (the session info popover) reads through this.
+registerTerminalRuntimeSnapshotReader(getTerminalRuntimeSnapshot);
+
 export function getTerminalRuntimeHealth(sessionId: string): TerminalHealthCounters | null {
   return getTerminalRuntimeSnapshot(sessionId)?.health ?? null;
 }
@@ -3560,6 +3577,13 @@ export function TerminalView({
   const themeId = useAppStore(selectEffectiveThemeId);
   const customThemes = useAppStore((s) => s.customThemes);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
+  // A terminal on screen keeps its computer's ADE Web connection slot.
+  useMachineSlotHold(runtimePin, isVisible);
+  // On a far link to the terminal's machine, typed characters show before the
+  // echo. Plain shells only: an agent CLI (any provider) draws its own input
+  // box, so it keeps the fast key path and gets no guesses.
+  const linkRttMs = useTypeAheadRoundTripMs(runtimePin?.kind === "remote" ? runtimePin.targetId : null);
+  const typeAheadRttMs = toolType == null || toolType === "shell" ? linkRttMs : null;
   // Keyboard-scroll hint: web only, and only for a session whose provider we
   // have documented keys for. See `terminalScrollHint.ts` for why the wheel is
   // slow over sync and why this is provider-specific.
@@ -3622,6 +3646,11 @@ export function TerminalView({
     lineHeight: terminalPreferences?.lineHeight ?? DEFAULT_TERMINAL_PREFERENCES.lineHeight,
     scrollback: terminalPreferences?.scrollback ?? DEFAULT_TERMINAL_PREFERENCES.scrollback,
   }), [terminalPreferences]);
+  const typeAheadRttMsRef = useRef(typeAheadRttMs);
+  typeAheadRttMsRef.current = typeAheadRttMs;
+  useEffect(() => {
+    runtimeRef.current?.typeAhead?.setWanted(typeAheadRttMs != null, typeAheadRttMs);
+  }, [typeAheadRttMs]);
   const currentMountConfig = { isActive, isVisible, theme: termTheme, preferences: resolvedPreferences };
   const mountConfigRef = useRef(currentMountConfig);
   mountConfigRef.current = currentMountConfig;
@@ -3648,6 +3677,7 @@ export function TerminalView({
       imagePasteMode,
     });
     runtimeRef.current = runtime;
+    runtime.typeAhead?.setWanted(typeAheadRttMsRef.current != null, typeAheadRttMsRef.current);
     if (pathLinkHandleRef.current) {
       runtime.pathLinks.openWorkspacePath = pathLinkHandleRef.current.openWorkspacePath;
       runtime.pathLinks.ensureLaneId = pathLinkHandleRef.current.ensureLaneId;
@@ -4107,7 +4137,7 @@ export function TerminalView({
         />
       ) : null}
       {exited != null ? (
-        <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg border border-border/15 bg-card backdrop-blur-sm shadow-card px-2 py-1 text-[11px] text-muted-fg">
+        <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg border border-border/15 bg-card shadow-card px-2 py-1 text-[11px] text-muted-fg">
           exited {exited}
         </div>
       ) : null}
@@ -4124,7 +4154,7 @@ export function TerminalView({
       {scrollHint != null && exited == null ? (
         <div
           data-ade-terminal-scroll-hint={scrollHint.toolType}
-          className="absolute bottom-2 right-2 flex items-center gap-2 rounded-lg border border-border/15 bg-card/95 backdrop-blur-sm shadow-card px-2 py-1 text-[11px] text-muted-fg"
+          className="absolute bottom-2 right-2 flex items-center gap-2 rounded-lg border border-border/15 bg-card/95 shadow-card px-2 py-1 text-[11px] text-muted-fg"
         >
           <span>
             Faster: <span className="font-medium text-fg">{scrollHint.keys}</span>

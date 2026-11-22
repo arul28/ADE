@@ -1,4 +1,4 @@
-import type { GitCommitSummary } from "../../../shared/types";
+import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
 import { trackPendingLaneCreate } from "../../lib/pendingLaneCreates";
@@ -119,13 +119,14 @@ function defaultBranchNameForCommit(commit: GitCommitSummary): string {
 
 async function copyCommitPatch(args: {
   laneId: string;
+  pin: OpenProjectBinding;
   commit: GitCommitSummary;
   onNotice?: (message: string) => void;
 }): Promise<void> {
   const files = await window.ade.git.listCommitFiles({
     laneId: args.laneId,
     commitSha: args.commit.sha,
-  });
+  }, args.pin);
   if (files.length === 0) {
     args.onNotice?.("No changed files found for this commit");
     return;
@@ -148,7 +149,7 @@ async function copyCommitPatch(args: {
             mode: "commit",
             compareRef: args.commit.sha,
             compareTo: "parent",
-          });
+          }, args.pin);
           const body = patch.patch.trim();
           patchResults[index] = { status: "fulfilled", value: body.length ? body : null };
         } catch (err) {
@@ -300,12 +301,14 @@ export function groupCommitContextActions(actions: HistoryGitAction[]): HistoryG
 export async function runHistoryGitAction(args: {
   actionId: HistoryGitActionId;
   laneId: string;
+  /** The lane's machine: every git call of the action goes there. */
+  pin: OpenProjectBinding;
   commit: GitCommitSummary;
   onNotice?: (message: string) => void;
   onError?: (message: string) => void;
   navigate?: (path: string) => void;
 }): Promise<void> {
-  const { actionId, laneId, commit, onNotice, onError, navigate } = args;
+  const { actionId, laneId, pin, commit, onNotice, onError, navigate } = args;
 
   try {
     switch (actionId) {
@@ -319,7 +322,7 @@ export async function runHistoryGitAction(args: {
         return;
       case "open_commit":
       case "copy_commit_link": {
-        const remote = await window.ade.git.getOriginRemote({ laneId });
+        const remote = await window.ade.git.getOriginRemote({ laneId }, pin);
         const url = githubCommitUrl(remote.remoteUrl, commit.sha);
         if (!url) {
           onNotice?.("No GitHub remote found for this commit");
@@ -335,7 +338,7 @@ export async function runHistoryGitAction(args: {
         return;
       }
       case "copy_patch":
-        await copyCommitPatch({ laneId, commit, onNotice });
+        await copyCommitPatch({ laneId, pin, commit, onNotice });
         return;
       case "checkout":
         navigate?.(laneCommitDeepLink(laneId, commit.sha));
@@ -354,7 +357,7 @@ export async function runHistoryGitAction(args: {
           branchName: trimmed,
           mode: "create",
           startPoint: commit.sha,
-        });
+        }, pin);
         onNotice?.(`Created ${trimmed}`);
         return;
       }
@@ -379,11 +382,12 @@ export async function runHistoryGitAction(args: {
         // The lane lists show a "Creating…" row while this runs.
         const lane = await trackPendingLaneCreate(
           { name: laneName, scopeKey },
+          // The commit exists on the lane's machine, so the new lane starts there.
           () => window.ade.lanes.create({
             name: laneName,
             branchName: trimmedBranchName,
             startPoint: commit.sha,
-          }),
+          }, pin),
         );
         onNotice?.(`Created lane ${lane.name}`);
         navigate?.(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
@@ -399,19 +403,19 @@ export async function runHistoryGitAction(args: {
           tagName: trimmed,
           commitSha: commit.sha,
           ...(message ? { message } : {}),
-        });
+        }, pin);
         onNotice?.(`Created tag ${trimmed}`);
         return;
       }
       case "cherry_pick": {
         if (!(await confirmDialog({ title: `Cherry-pick ${commit.shortSha} onto this lane?`, confirmLabel: "Cherry-pick" }))) return;
-        await window.ade.git.cherryPickCommit({ laneId, commitSha: commit.sha });
+        await window.ade.git.cherryPickCommit({ laneId, commitSha: commit.sha }, pin);
         onNotice?.(`Cherry-picked ${commit.shortSha}`);
         return;
       }
       case "revert": {
         if (!(await confirmDialog({ title: `Revert ${commit.shortSha}?`, message: "This creates a new commit.", confirmLabel: "Revert" }))) return;
-        await window.ade.git.revertCommit({ laneId, commitSha: commit.sha });
+        await window.ade.git.revertCommit({ laneId, commitSha: commit.sha }, pin);
         onNotice?.(`Reverted ${commit.shortSha}`);
         return;
       }
@@ -431,7 +435,7 @@ export async function runHistoryGitAction(args: {
           destructive: true,
         });
         if (!confirmed) return;
-        await window.ade.git.resetToCommit({ laneId, commitSha: commit.sha, mode });
+        await window.ade.git.resetToCommit({ laneId, commitSha: commit.sha, mode }, pin);
         onNotice?.(`Reset lane to ${commit.shortSha}`);
         return;
       }

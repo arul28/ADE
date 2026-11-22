@@ -22,7 +22,6 @@ import type * as AcpHostModule from "./acpHost";
 import type * as TurnUsageReconcilersModule from "../usage/turnUsageReconcilers";
 import type * as PiSdkPoolModule from "./piSdkPool";
 import type * as PiInstallationModule from "../ai/piInstallation";
-import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "../cto/ctoStateService";
 import { createCtoMemoryService } from "../cto/ctoMemoryService";
 import {
@@ -93,6 +92,32 @@ async function waitForFakeTimers(
     if (options.realYield) await new Promise<void>((resolve) => realSetImmediate(() => resolve()));
   }
   throw lastError;
+}
+
+/**
+ * Runs `work` with fake timeouts, stepping them a quarter second at a time
+ * until it settles, then puts real timers back. For a Claude turn whose fake
+ * stream stays open after its result (as a live SDK query does): the turn
+ * then waits out the one-second post-result drain for a tail message, and
+ * stepping turns that second of sleep into a few microtask flushes. Stepping
+ * stops the moment `work` settles, so no later timer fires early.
+ */
+async function settleSteppingTimeouts<T>(work: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    let settled = false;
+    const pending = work().finally(() => { settled = true; });
+    pending.catch(() => {});
+    // At most 60 s of fake time (past any turn timeout these tests pass), so
+    // a turn that never settles fails here instead of spinning to the test timeout.
+    for (let elapsedMs = 0; !settled && elapsedMs < 60_000; elapsedMs += 250) {
+      await vi.advanceTimersByTimeAsync(250);
+    }
+    if (!settled) throw new Error("settleSteppingTimeouts: the work did not settle within 60 s of fake time");
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 const streamText = vi.fn();
@@ -206,6 +231,8 @@ const mockState = vi.hoisted(() => ({
   codexLineHandler: null as ((line: string) => void) | null,
   cursorSdkAcquireCalls: [] as Array<Record<string, unknown>>,
   cursorSdkSendCalls: [] as Array<Record<string, unknown>>,
+  /** Waiting on `cursorSendsReached`; settled as each send is recorded. */
+  cursorSendWaiters: [] as Array<{ count: number; resolve: () => void }>,
   cursorSdkPolicyUpdates: [] as Array<Record<string, unknown>>,
   cursorSdkPooled: null as any,
   /** Text pushed through `Run.steer()`, in call order. */
@@ -229,6 +256,8 @@ const mockState = vi.hoisted(() => ({
   piInstallation: null as null | Record<string, unknown>,
   cursorSendPromptGate: null as Promise<void> | null,
   cursorSendPromptError: null as unknown,
+  /** How many sends have thrown `cursorSendPromptError`. */
+  cursorSendPromptErrorThrows: 0,
   cursorSendPromptResult: null as unknown,
   onCursorSendPrompt: null as ((pooled: any) => void) | null,
   cursorAcquireErrorOnCall: null as number | null,
@@ -617,6 +646,20 @@ vi.mock("node:readline", () => {
   return { default: { createInterface }, createInterface };
 });
 
+// The SDK's loader reaches the package through `require` as its packaged
+// fallback, which a module mock cannot intercept. Mocking the loader keeps the
+// whole file on the mocked SDK: without this, the first synchronous access (a
+// usage-limit check on a result frame) loads the real SDK and later turns run
+// real queries against the harness's fake process.
+vi.mock("../ai/claudeSdkLoader", async () => {
+  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  return {
+    loadClaudeSdk: async () => sdk,
+    claudeSdkIfLoaded: () => sdk,
+    loadedClaudeSdk: () => sdk,
+  };
+});
+
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   // Mirrors the real export. Structured usage-limit detection reads it, so the
   // mock has to provide it; these are the prefixes the tests below exercise.
@@ -691,6 +734,7 @@ vi.mock("../opencode/openCodeInventory", () => ({
   clearOpenCodeInventoryCache: vi.fn(),
   shutdownInventoryServer: vi.fn(),
   peekOpenCodeInventoryCache: vi.fn(() => null),
+  openCodeInventoryGeneration: vi.fn(() => "0:0"),
   probeOpenCodeProviderInventory: vi.fn(async () => ({
     modelIds: ["opencode/openai/gpt-5.4"],
     providers: [],
@@ -948,10 +992,21 @@ vi.mock("./cursorSdkPool", () => ({
         // test's ledger; see `mockState.generation`.
         if (acquiredGeneration === mockState.generation) {
           mockState.cursorSdkSendCalls.push(payload);
+          const sent = mockState.cursorSdkSendCalls.length;
+          mockState.cursorSendWaiters = mockState.cursorSendWaiters.filter((waiter) => {
+            if (sent < waiter.count) return true;
+            waiter.resolve();
+            return false;
+          });
         }
         mockState.onCursorSendPrompt?.(pooled);
         if (mockState.cursorSendPromptGate) await mockState.cursorSendPromptGate;
-        if (mockState.cursorSendPromptError) throw mockState.cursorSendPromptError;
+        // Only this test's sends fail: a send leaked by an earlier test that
+        // read it would recycle too and take an acquire slot this test armed.
+        if (mockState.cursorSendPromptError && acquiredGeneration === mockState.generation) {
+          mockState.cursorSendPromptErrorThrows += 1;
+          throw mockState.cursorSendPromptError;
+        }
         if (mockState.cursorSendPromptResult) return mockState.cursorSendPromptResult;
         return { id: "cursor-sdk-run-1", status: "finished" };
       }),
@@ -1056,6 +1111,7 @@ vi.mock("./droidSdkPool", () => ({
     };
   }),
   releaseDroidSdkConnection: vi.fn(),
+  isDroidSdkPooledAlive: vi.fn(() => true),
 }));
 
 // The Copilot SDK worker is a forked process: the pool is its boundary. The fake
@@ -1168,6 +1224,7 @@ import {
 import { createChatRuntimeBudget } from "./chatRuntimeBudget";
 import { readThreadPointerLedger } from "./threadPointerLedger";
 import { SESSION_STALE_AFTER_MS } from "../../../shared/sessionCanonicalState";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import {
   enforceCrossMachineForkEncodedBudget,
   gunzipFromBase64,
@@ -1660,7 +1717,16 @@ function createMockSessionService() {
         manuallyNamed: false,
         headShaStart: null,
         headShaEnd: null,
+        ownerPid: args.ownerPid ?? null,
+        ownerProcessStartedAt: args.ownerProcessStartedAt ?? null,
       });
+    }),
+    setOwnerPid: vi.fn((sessionId: string, ownerPid: number | null, ownerProcessStartedAt?: string | null) => {
+      const row = sessions.get(sessionId);
+      if (row) {
+        row.ownerPid = ownerPid;
+        row.ownerProcessStartedAt = ownerProcessStartedAt ?? null;
+      }
     }),
     get: vi.fn((sessionId: string) => sessions.get(sessionId) ?? null),
     list: vi.fn((opts?: any) => {
@@ -1693,6 +1759,23 @@ function createMockSessionService() {
         row.status = args?.status ?? "disposed";
         row.endedAt = args?.endedAt ?? new Date().toISOString();
       }
+    }),
+    endRunningSessionsOwnedBy: vi.fn((
+      owners: Array<{ pid: number; startedAt: string | null }>,
+      options: { sessionIds?: string[]; isRestingChat?: (row: { id: string; lastActivityAt: string }) => boolean } = {},
+    ) => {
+      const result = { detached: 0, completed: 0 };
+      for (const row of sessions.values()) {
+        if (row.status !== "running") continue;
+        if (!owners.some((owner) => owner.pid === row.ownerPid && owner.startedAt === row.ownerProcessStartedAt)) continue;
+        if (options.sessionIds && !options.sessionIds.includes(row.id)) continue;
+        const resting = isChatToolType(row.toolType)
+          && options.isRestingChat?.({ id: row.id, lastActivityAt: row.lastOutputAt ?? row.startedAt }) === true;
+        row.status = resting ? "completed" : "detached";
+        row.endedAt = new Date().toISOString();
+        result[resting ? "completed" : "detached"] += 1;
+      }
+      return result;
     }),
     deleteSession: vi.fn((sessionId: string) => {
       sessions.delete(sessionId);
@@ -1999,6 +2082,19 @@ function createService(overrides: Record<string, unknown> = {}) {
   return { service, logger, laneService, sessionService, projectConfigService, aiIntegrationService };
 }
 
+/**
+ * Resolves once this test has recorded `count` Cursor sends. It waits on the
+ * send itself, not a poll against the wall clock: a recycle re-send can take
+ * longer than a poll's budget on a loaded CI runner. Real timers only; a test
+ * that must advance fake timers to reach the send keeps `vi.waitFor`.
+ */
+function cursorSendsReached(count: number): Promise<void> {
+  if (mockState.cursorSdkSendCalls.length >= count) return Promise.resolve();
+  return new Promise((resolve) => {
+    mockState.cursorSendWaiters.push({ count, resolve });
+  });
+}
+
 async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
@@ -2296,6 +2392,7 @@ beforeEach(() => {
   mockState.codexLineHandler = null;
   mockState.cursorSdkAcquireCalls = [];
   mockState.cursorSdkSendCalls = [];
+  mockState.cursorSendWaiters = [];
   mockState.cursorSdkPolicyUpdates = [];
   mockState.cursorSdkPooled = null;
   mockState.cursorSdkSteerCalls = [];
@@ -2315,6 +2412,7 @@ beforeEach(() => {
   mockState.cursorSendParks = [];
   mockState.cursorSendPromptGate = null;
   mockState.cursorSendPromptError = null;
+  mockState.cursorSendPromptErrorThrows = 0;
   mockState.cursorSendPromptResult = null;
   mockState.onCursorSendPrompt = null;
   mockState.cursorAcquireErrorOnCall = null;
@@ -2350,12 +2448,22 @@ beforeEach(() => {
   vi.mocked(clearOpenCodeInventoryCache).mockClear();
   clearCursorCliModelsCache();
   // No test reaches Cursor's API. A Cursor send loads the model catalog when
-  // the chat names an effort, and a catalog the mocked SDK cannot list falls
-  // back to api.cursor.com; a real request there made those tests depend on
-  // the network. `vi.restoreAllMocks()` in afterEach puts `fetch` back.
+  // the chat names an effort; the catalog comes from `GET /v1/models` now, so
+  // a test that stubs the SDK's `Cursor.models.list` answers that read too,
+  // and anything else at api.cursor.com still fails. `vi.restoreAllMocks()` in
+  // afterEach puts `fetch` back.
   const passThroughFetch = globalThis.fetch;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (/^https:\/\/api\.cursor\.com\/v1\/models(?:\?|$)/u.test(url)) {
+      // `cursorModelsListMock` rejects in the tests that model a catalog that
+      // cannot be listed; that rejection is the answer here as well.
+      const rows = (await cursorModelsListMock()) as unknown[] | undefined;
+      return new Response(JSON.stringify({ items: Array.isArray(rows) ? rows : [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (/^https:\/\/api\.cursor\.com\//u.test(url)) throw new Error("Tests do not reach Cursor's API.");
     return passThroughFetch(input, init);
   });
@@ -2383,6 +2491,7 @@ afterEach(async () => {
   // next test (the recycle-copy cancel notice becomes "turn failed").
   vi.useRealTimers();
   mockState.cursorSendPromptError = null;
+  mockState.cursorSendPromptErrorThrows = 0;
   mockState.cursorSteerError = null;
   mockState.cursorSteerOutcome = "complete_delivered";
   mockState.releaseCursorSendPrompt?.();
@@ -2434,6 +2543,7 @@ const flushCursorSdkSilenceRecycle = async (): Promise<void> => {
 
 
 export {
+  settleSteppingTimeouts,
   CLAUDE_MUTATING_BUILTIN_TOOLS,
   CLAUDE_READ_ONLY_TOOLS,
   CODEX_REPLAY_MAX_CHARS,
@@ -2513,7 +2623,6 @@ export {
   mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
-  openKvDb,
   os,
   parkCursorSend,
   parseAgentChatTranscript,
@@ -2546,6 +2655,7 @@ export {
   tmpHomeRoot,
   tmpRoot,
   turnDiffMockState,
+  cursorSendsReached,
   waitFor,
   waitForCondition,
   waitForEvent,

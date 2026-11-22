@@ -5,6 +5,11 @@ ADE project, lane, branch, or pull request. They use the same provider and model
 catalog as Work chat, but present a general-purpose conversation surface on
 desktop, the hosted web client, mobile, and the ADE CLI.
 
+Personal chats stay on the machine that owns them. The account does not hold a
+copy, and ADE Cloud does not run them. A person with no computer of their own
+online sees no personal chats; the web app and the iPhone list the chats of
+each connected computer.
+
 ## Source file map
 
 | Path | Role |
@@ -32,7 +37,7 @@ desktop, the hosted web client, mobile, and the ADE CLI.
 | `apps/desktop/src/renderer/components/app/` | Global `/chats` route, sidebar entry, and project/no-project shell integration in `App.tsx`, `AppShell.tsx`, and `TopBar.tsx`. The Chats top tab is a machine-level tab backed by `personalChatsTabOpen` in `state/appStore.ts` and rendered through the reusable `ShellNavTab.tsx` (shared by the Chats and New Tab shell tabs). |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Global authenticated browser profile plus an independent personal-chat tab collection. Cookies and site storage are shared with project browser collections; visible tabs are not. |
 | `apps/desktop/src/renderer/webclient/adapter/personalChats.ts` | Hosted-web adapter over runtime-scoped sync commands. |
-| `apps/desktop/src/renderer/webclient/shell/` | Projectless Chats entry and shell routing without choosing an active project in `WebClientRoot.tsx`, `WebShell.tsx`, and `ProjectPicker.tsx`. |
+| `apps/desktop/src/renderer/webclient/shell/` | Projectless Chats entry and shell routing without choosing an active project in `WebClientRoot.tsx`. |
 | `apps/ios/ADE/Views/PersonalChats/` | Native mobile list, new-chat, and chat destination flow. |
 | `apps/ios/ADE/Services/SyncService.swift` | Runtime-scoped commands and personal chat subscription routing. |
 

@@ -45,3 +45,38 @@ export function runtimeEventFrameLaneId(event: BufferedEvent): string | null {
     frame: { laneId: typeof record.frame?.laneId === "string" ? record.frame.laneId : null },
   });
 }
+
+const MAX_PTY_DATA_IDS = 2_000;
+
+/**
+ * The terminals whose output a client wants, from a `ptyDataIds` param: null
+ * when the client sent no list (it wants every terminal's output).
+ *
+ * A desktop window asks only for the terminals it shows and reads a hidden
+ * one's screen again when it comes back, so output it would drop anyway does
+ * not need to cross the link. The list is an allow-list of PTY ids; `pty_exit`
+ * and every other event still reach the client.
+ */
+export function readPtyDataIds(value: unknown): Set<string> | null {
+  if (!Array.isArray(value)) return null;
+  const ids = new Set<string>();
+  for (const item of value.slice(0, MAX_PTY_DATA_IDS)) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (id && id.length <= 256) ids.add(id);
+  }
+  return ids;
+}
+
+/** False only for a `pty_data` event of a terminal outside `ptyDataIds`. */
+export function passesPtyDataFilter(
+  event: BufferedEvent,
+  ptyDataIds: ReadonlySet<string> | null,
+): boolean {
+  if (!ptyDataIds || event.category !== "pty") return true;
+  const payload = event.payload as Record<string, unknown> | null;
+  if (!payload || payload.type !== "pty_data") return true;
+  const inner = payload.event as Record<string, unknown> | null | undefined;
+  const ptyId = inner && typeof inner === "object" && typeof inner.ptyId === "string" ? inner.ptyId : "";
+  return !ptyId || ptyDataIds.has(ptyId);
+}

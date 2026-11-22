@@ -148,19 +148,20 @@ Run in parallel — ensures lock files are in sync with package.json (mirrors CI
 cd apps/desktop && npm install
 cd apps/ade-cli && npm install
 cd apps/web && npm install
+npm install   # repo root: the Cloudflare Workers' one workspace
 ```
 
 After install, check for uncommitted lock file changes — a dirty lock file means `package.json` was modified without regenerating the lock, which will break CI's `npm ci`:
 
 ```bash
-git diff --name-only -- '*/package-lock.json'
+git diff --name-only -- package-lock.json '*/package-lock.json'
 ```
 
 This is a **hard gate**: if any lock file is dirty, stage it (`git add <path>`) and report it in the Phase 4 summary so the user commits it before pushing. Do not proceed past 3b with dirty lock files.
 
 ### 3c. Typecheck all apps
 
-Run in parallel to match CI jobs (`typecheck-desktop`, `typecheck-ade-cli`, `typecheck-web`):
+Run in parallel, as CI does (the `typecheck` job runs desktop and ade-cli; the `packages` job runs web):
 
 ```bash
 cd apps/desktop && npm run typecheck
@@ -179,7 +180,7 @@ cd apps/desktop && npm run test:lint-tooling && npm run lint:ci
 
 ### 3e. Tests — desktop sharded 8-way + ade-cli, ALL 9 commands in one parallel round
 
-`/finalize` is the gate that runs the whole test suite. Issue these **9 commands as concurrent Bash tool calls in a single message**. Do not chain with `&&`/`;`, do not run them sequentially — that takes 9× longer and masks real CI wall-clock behavior. Mirrors `.github/workflows/ci.yml` jobs `test-desktop` (matrix 1–8) and `test-ade-cli`:
+`/finalize` is the gate that runs the whole test suite. Issue these **9 commands as concurrent Bash tool calls in a single message**. Do not chain with `&&`/`;`, do not run them sequentially — that takes 9× longer and masks real CI wall-clock behavior. Mirrors `.github/workflows/ci.yml` jobs `test-desktop` (matrix 1–8) and `test-ade-cli` (CI splits it into 2 shards; one local run covers both):
 
 ```bash
 cd apps/desktop && npx vitest run --shard=1/8

@@ -5,6 +5,7 @@ import { createAskOnceStore, type AskOnceRequest } from "../../lib/askOnceStore"
 import { useConfirmKeys } from "../../lib/useConfirmKeys";
 import { Dialog } from "../ui/dialog";
 import { androidLaneDeviceName } from "./androidDeviceState";
+import { useAppStore } from "../../state/appStore";
 
 /**
  * "Shut down {device}?": the question closing the Android Development TAB
@@ -59,15 +60,17 @@ export async function confirmAndroidToolClose(args: {
   const { laneId } = args;
   if (!laneId) return "keep";
   const api = window.ade?.androidEmulator;
-  if (!api?.getStatus) return "keep";
-  const status = await api.getStatus({ laneId }, args.runtimePin ?? undefined).catch((cause: unknown) => {
+  // The emulator's machine: the caller's pin, else the tab's copy. None: nothing to ask.
+  const pin = args.runtimePin ?? useAppStore.getState().projectBinding;
+  if (!api?.getStatus || !pin) return "keep";
+  const status = await api.getStatus({ laneId }, pin).catch((cause: unknown) => {
     logRendererDebugEvent("android.tab_close_status_failed", { error: cause instanceof Error ? cause.message : String(cause) });
     return null;
   });
   const lane = status?.lane ?? null;
   if (!lane?.device || (lane.state !== "booted" && lane.state !== "starting")) return "keep";
   // One read, only when the question shows. A failed read leaves the recording sentence out.
-  const recordings = await api.recordList?.({ laneId }, args.runtimePin ?? undefined).catch((cause: unknown) => {
+  const recordings = await api.recordList?.({ laneId }, pin).catch((cause: unknown) => {
     logRendererDebugEvent("android.tab_close_recordings_failed", { error: cause instanceof Error ? cause.message : String(cause) });
     return null;
   });

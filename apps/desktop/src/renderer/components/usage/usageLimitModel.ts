@@ -36,6 +36,8 @@ export type UsageAccountView = {
   url?: string;
   /** Banked reset credits, when the host tracks them. */
   resetCredits?: { availableCount: number; nextExpiresAt?: string };
+  /** The other machine the credits are banked on, when they are not this machine's. */
+  resetCreditsOn?: UsageAccount["resetCreditsOn"];
   /** Why this account has no fresh numbers, when the host knows. */
   notice?: NonNullable<UsageAccount["notice"]>;
   /** This machine's login state for the account; local like `notice`. */
@@ -105,6 +107,7 @@ export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccount
         machines: [...account.machines],
         ...(account.url ? { url: account.url } : {}),
         ...(account.resetCredits ? { resetCredits: account.resetCredits } : {}),
+        ...(account.resetCredits && account.resetCreditsOn ? { resetCreditsOn: account.resetCreditsOn } : {}),
         ...(account.notice ? { notice: account.notice } : {}),
         ...(account.login ? { login: account.login } : {}),
         ...(account.readingFrom ? { readingFrom: account.readingFrom } : {}),
@@ -126,6 +129,7 @@ export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccount
     // first machine to report any is enough.
     if (!existing.resetCredits && account.resetCredits) {
       existing.resetCredits = account.resetCredits;
+      if (account.resetCreditsOn) existing.resetCreditsOn = account.resetCreditsOn;
     }
     // A notice only ever rides a local account (peers drop it), so the first
     // one seen is this machine's latest word on that login.

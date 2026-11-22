@@ -20,6 +20,9 @@
  * `live` marks what only the running brain can answer (`isLiveOnlyAdeAction`):
  * `"all"` for a whole domain, or the named actions.
  */
+
+import { CLOUD_PHONE_SPEND_ACTIONS, CLOUD_PHONE_USER_ONLY_ACTIONS } from "./cloudPhone";
+
 export type AdeActionAccess = "read" | "write";
 
 type AdeActionAccessTable = Readonly<
@@ -59,13 +62,20 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: ["getStatus", "listActivity"],
     write: ["setEnabled", "setMachineIncluded", "createToken", "updateConnection", "removeConnection"],
   },
+  lane_share: {
+    read: ["list", "listReceived", "moveList", "moveReceiveStatus", "movePackStatus"],
+    write: [
+      "create", "updateRights", "revoke", "resendInvite", "leave",
+      "moveStart", "moveRespond", "moveCancel", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveCancel", "movePackStart", "movePackChunk", "movePackRelease",
+    ],
+  },
   lane: {
     live: [
       "proxyAddRoute", "proxyRemoveRoute", "proxyStart", "proxyStop",
       "portAcquire", "portGetLease", "portRecoverOrphans", "portRelease",
     ],
     read: [
-      "checkBranchName", "diagnosticsGetLaneHealth", "diagnosticsGetStatus", "getBranchDrift",
+      "checkBranchName", "cloudStartBranch", "diagnosticsGetLaneHealth", "diagnosticsGetStatus", "getBranchDrift",
       "getDefaultTemplate", "getNewLaneDefaults", "getDeleteRisk", "getDependencyStatus", "getLeftoverWorktree", "getReclaimRisk",
       "getEnvStatus", "getOverlay", "getSummary", "getTemplate",
       "list", "listDeleteProgress", "listDeletedLanes", "listSnapshots",
@@ -79,7 +89,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: [
       "acknowledgeDependencyStatus", "archive", "archiveAndReclaim", "attachLinearIssueToSession", "attachGitHubIssueToSession",
       "attachJiraIssueToSession",
-      "cancelDelete", "cancelGitWrite", "create",
+      "cancelDelete", "cancelGitWrite", "create", "pushCloudStartBranch",
       "delete", "deleteLeftoverWorktree", "deleteTemplate", "detachLinearIssueFromSession",
       "detachGitHubIssueFromSession", "diagnosticsActivateFallback",
       "detachJiraIssueFromSession",
@@ -190,14 +200,15 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getClaudePluginUi", "getMcpApp", "listMcpAppGrants",
       "modelCatalog", "codexFuzzyFileSearch", "fileSearch", "listMentionSuggestions",
       "preflightCrossMachineDestination", "getCrossMachineHandoffOptions",
-      "getCrossMachineBatchMove",
+      "getCrossMachineBatchMove", "crossMachineBatchSourceChanged",
       "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSmartLinkImage", "resolveSourceFavicons",
       "readTranscript", "readTranscriptPage", "suggestLaneNameFromPrompt",
-      "generateAutoLaneIdentity", "listDeletedChats", "getDeletedChatDetail",
+      "generateAutoLaneIdentity", "listDeletedChats", "getDeletedChatDetail", "getDeviceSources",
+      "getRootFullAccess",
     ],
     write: [
       "archiveSession", "cancelDispatchedSteer", "cancelSteer", "createSession", "deleteSession",
-      "reopenDeletedChat", "removeDeletedChats",
+      "reopenDeletedChat", "removeDeletedChats", "setRootFullAccess",
       "dispatchSteer", "editSteer", "ensureCtoSession", "moveSteer", "setCodexGoal",
       "setCodexGoalStatus", "clearCodexGoal", "startCodexRealtime", "stopCodexRealtime",
       "resetCodexMemory", "terminateCodexBackgroundTerminal", "interrupt",
@@ -205,24 +216,25 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "holdBackgroundWork", "recoverTurn", "recoverCodexTurn", "resolveUnprocessedMessage",
       "recoverContinuity", "restoreCancelledQueue", "killDroidWorker", "launchCli",
       "launchHeadless", "startLaunch", "cancelLaunch", "retryLaunch", "startLaunchNow",
-      "queueLaunchMessage", "completeLaunchClient", "createScheduledWork", "armUpdateResume",
+      "queueLaunchMessage", "completeLaunchClient", "createScheduledWork", "armUpdateResume", "releaseChatRuntime",
       "createDraft", "updateDraft", "deleteDraft", "claimDraft", "sendDraftNow",
       "createThreadComment", "updateThreadComment", "deleteThreadComment", "messageSession",
-      "actOnClaudePluginUi",
+      "typeIntoCli", "actOnClaudePluginUi",
       "approveToolUse", "handoffSession", "startSideChat", "endSideChat", "prepareCrossMachineHandoff",
       "validateCrossMachineSource", "fastForwardCrossMachineHandoffLane",
       "acceptCrossMachineHandoff", "markCrossMachineHandoff", "startCrossMachineHandoff",
       "cancelCrossMachineHandoff", "retryCrossMachineHandoff",
       "resolveCrossMachineHandoffApproval", "acknowledgeCrossMachineHandoff", "respondToInput",
-      "clearAsk",
+      "clearAsk", "setDeviceSource",
       "startCrossMachineBatchMove", "retryCrossMachineBatchMove", "importCrossMachineHandoffLane",
       "resolveCrossMachineBatchMoveApproval",
       "dismissPendingInput", "reloadClaudePlugins", "rewindFiles", "saveTempAttachment",
-      "copyTempAttachment", "createAttachmentUpload", "sendMessage", "setClaudeOutputStyle",
+      "saveTempAttachmentPart", "copyTempAttachment", "createAttachmentUpload", "sendMessage", "createSessionAndSend", "setClaudeOutputStyle",
       "setParallelLaunchState", "cancelScheduledWork", "resumeUsageLimitNow",
-      "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused", "steer",
+      "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused",
+      "setScheduledWorkItemPaused", "runScheduledWorkNow", "steer",
       "unarchiveSession", "updateSession", "regenerateSessionMetadata", "setSpawnKind", "setParent",
-      "dismissSubagentTakeoverPrompt", "warmupModel", "mcpAppRequest", "revokeMcpAppGrant",
+      "dismissSubagentTakeoverPrompt", "warmupModel", "prewarmDraft", "mcpAppRequest", "revokeMcpAppGrant",
     ],
   },
   keybindings: {
@@ -246,8 +258,8 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getCursorAgentUsage", "ensureMuseBinary", "pinnedToolDownload", "antigravitySignInStart", "antigravitySignInComplete",
       "antigravitySignInCancel", "cliLoginStart", "cliLoginSubmitCode", "cliLoginCancel",
       "museSettings", "museSettingsClose",
-      "acpProviderDiagnostics", "storeApiCredential", "removeApiCredential",
-      "verifyApiKeyConnection", "storeApiKey", "deleteApiKey", "updateConfig", "setContinueAfterRestart",
+      "acpProviderDiagnostics", "runAcpProviderDoctor", "storeApiCredential", "removeApiCredential",
+      "verifyApiKeyConnection", "verifyProviderSignIn", "storeApiKey", "deleteApiKey", "updateConfig", "setContinueAfterRestart",
       "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey",
       "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename",
       "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "testHarnessRoute", "harnessLaunchEnv",
@@ -277,19 +289,18 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   cto_state: {
     live: "all",
     read: [
-      "getAttention", "getIdentity", "getOnboardingState", "getSessionLogs", "getSnapshot",
-      "getThreadHealth", "previewSystemPrompt",
+      "getAccountCopyStatus", "getAttention", "getIdentity", "getOnboardingState", "getSnapshot", "previewSystemPrompt",
     ],
     write: [
-      "completeOnboardingStep", "runProjectScan", "startFreshSession", "updateIdentity",
+      "adoptAccountCopy", "completeOnboardingStep", "refreshContext", "runProjectScan", "updateIdentity",
     ],
   },
   cto_memory: {
     read: [
-      "getSnapshot", "searchMemory",
+      "getSnapshot",
     ],
     write: [
-      "updateMemory", "recordDiscovery",
+      "updateNotes", "updateOpenWork", "recordDiscovery",
     ],
   },
   session: {
@@ -300,7 +311,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "backfillDeltas", "clearWokeMarker", "deleteSession", "moveOnBoard",
-      "requestSessionAttention", "setSessionActivity", "setSessionStatusNote",
+      "reportCliTurnSignal", "requestSessionAttention", "setSessionActivity", "setSessionStatusNote",
       "setSettleOverride", "undoBoardMove", "snoozeSession", "snoozeSessions", "settleSession",
       "settleSessions", "updateLifecycleSettings", "unsettleSession", "unsettleSessions",
       "updateMeta", "wakeSession", "wakeSessions",
@@ -327,7 +338,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "diffAgainstDisk", "get",
     ],
     write: [
-      "save", "setPrTranscriptGists", "validate",
+      "resolveAccountSettingNotice", "save", "setPrTranscriptGists", "validate",
     ],
   },
   project_secret: {
@@ -335,23 +346,48 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "list", "get",
     ],
     write: [
-      "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount",
-      "request",
+      "set", "delete", "request", "exec",
     ],
+  },
+  // Passwords: agents read summaries (sites, usernames, never a value). The
+  // writes and the one value read (`resolveForFill`) are the person's, and
+  // `resolveForFill` only for this computer's own desktop app.
+  passwords: {
+    // Sign-in needs the running brain's browser bridge and chats.
+    live: ["signin", "signup", "requestLogin"],
+    read: ["status", "activity", "code", "list", "loginsForPage", "previewLaneEnv"],
+    write: ["saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "importLaneEnv", "exportSecrets", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
+  },
+  // Messages on the Mac the person sits at: reading follows its Read Texts
+  // switch; each text an agent sends is approved on a card first.
+  messages: {
+    // Every call reaches the Mac the person sits at, through the running brain.
+    live: "all",
+    read: ["status", "recent", "chats", "codeWait"],
+    write: ["send"],
   },
   integration_connect: {
     read: ["status"],
     write: ["request"],
   },
   cloud: {
-    read: ["access", "ready_status", "list", "hours", "make_status", "limits", "cloud_sign_in_status"],
+    read: [
+      "access", "status", "list", "hours", "referral", "make_status", "limits", "cloud_sign_in_status", "lane_launch_status", "saved_chat_machine",
+      "lanes", "lane_show", "lane_git", "saved_chats_list", "saved_chats_read", "sessions_list", "session_read", "backups_list", "jobs_list", "project_overview",
+      "kept_lane_move_preview", "kept_lane_move_status",
+    ],
     write: [
-      "claim_ready", "release_ready", "create", "sleep", "wake", "resize", "copy", "move", "delete",
-      "update", "ready_set", "ready_off", "ready_retry", "set_limits",
+      "create", "sleep", "wake", "resize", "copy", "move", "delete", "invite_redeem",
+      "kept_lane_move",
+      "update", "set_limits", "lane_launch", "lane_launch_cancel", "tier_request",
+      "clear_caches", "grow_disk",
+      "lane_delete", "lane_free", "lane_start", "lane_keep", "saved_chat_delete", "session_delete", "backup_forget", "job_cancel",
       "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
+      "cloud_sign_in_keep",
     ],
     // Claude's sign-in for new machines is a terminal the brain keeps open.
-    live: ["cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel"],
+    // A kept lane's move to this machine is a job in the brain.
+    live: ["cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_keep", "kept_lane_move_preview", "kept_lane_move", "kept_lane_move_status"],
   },
   mcp_registry: {
     read: ["list", "chatStatus"],
@@ -424,7 +460,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: [
       "clearToken", "clearAppUserAuth", "detectRepo", "createRepoAutolink", "createIssue",
       "linkSubIssue", "updateIssue", "commentOnIssue", "pollAppUserDeviceAuth",
-      "publishCurrentProject", "setToken", "startAppUserDeviceAuth",
+      "publishCurrentProject", "setGhAccountSharing", "setToken", "startAppUserDeviceAuth",
     ],
   },
   jira: {
@@ -562,9 +598,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     live: "all",
     read: [
       "getLaneState", "readObservationPreview", "listDevServers", "probePort", "noteWatching",
+      "readBrowserTabFrame",
     ],
     write: [
-      "setActiveTool", "show", "acknowledgeShow", "stopDevServer",
+      "setActiveTool", "show", "acknowledgeShow", "stopDevServer", "sendBrowserTabInput",
     ],
   },
   computer_use_artifacts: {
@@ -576,6 +613,13 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "deleteArtifacts", "ingestSceneSnapshot", "pruneBrokenArtifacts", "recoverArtifact",
       "updateArtifactReview",
     ],
+  },
+  // The ADE Cloud iPhone (`cloudPhoneService`): every action but the status
+  // read can start a phone, which spends the plan's minutes, so all are writes.
+  cloud_phone: {
+    live: "all",
+    read: ["getStatus"],
+    write: ["stop", ...CLOUD_PHONE_SPEND_ACTIONS, ...CLOUD_PHONE_USER_ONLY_ACTIONS],
   },
   ios_simulator: {
     live: "all",
@@ -679,12 +723,15 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: [
       "getStatus", "getDevServers", "listSessions", "getTrace", "readText", "getNetworkLog",
       "listDownloads", "waitForDownload", "readClipboard",
+      // Messages on the person's Mac: reached only through the `messages`
+      // domain; the RPC server refuses them as browser actions.
+      "messagesStatus", "messagesRecent", "messagesChats",
     ],
     write: [
       "requestOriginAccess", "claim", "startHandoff", "waitForHandoff", "startSession",
       "endSession", "showPanel", "setBounds", "navigate", "createTab", "switchTab", "closeTab",
       "reload", "goBack", "goForward", "stop", "observe", "click", "typeText", "dispatchKey",
-      "scroll", "fill", "clear", "wait", "startInspect", "stopInspect", "captureScreenshot",
+      "scroll", "fill", "signin", "signup", "messagesSend", "clear", "wait", "startInspect", "stopInspect", "captureScreenshot",
       "selectPoint", "selectCurrent", "clearSelection", "setEmulation", "setZoom", "findInPage",
       "stopFindInPage", "setDevTools", "setNetworkLogging", "exportHar", "hover", "drag",
       "selectOption", "uploadFile", "dropFiles", "paste", "writeClipboard", "startRecording", "stopRecording", "noteDemoStep",
@@ -744,6 +791,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "loginSubmitCode", "loginCancel", "setSettings", "loginCommand", "refresh",
     ],
   },
+  provider_logins: {
+    read: ["status"],
+    write: ["captureNow", "allowKeychain", "allowGitHubCli", "use", "setCloud", "setCloudAll", "setCloudBalance", "remove"],
+  },
 };
 
 const accessByAction = new Map<string, AdeActionAccess>();
@@ -759,6 +810,59 @@ for (const [domain, declared] of Object.entries(ADE_ACTION_ACCESS)) {
 /** The declared access, or null for an action this table does not know. */
 export function adeActionAccess(domain: string, action: string): AdeActionAccess | null {
   return accessByAction.get(`${domain}.${action}`) ?? null;
+}
+
+/**
+ * Actions that only the ADE desktop app on the computer that runs them may
+ * call, never a desktop driving this computer from another one: the action
+ * acts on what is in front of the person (an OS keyring or a prompt on this screen).
+ * Each one is also user-only (`ADE_ACTION_USER_ONLY` in actionPolicy).
+ * The value is the refusal the person sees, the same in the preload and in
+ * the brain.
+ */
+export const ADE_ACTION_THIS_DESKTOP_ONLY: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  passwords: {
+    resolveForFill: "Saved logins are filled by ADE on the computer whose browser shows the page.",
+    revealValue: "A saved value is shown only in ADE on the computer you are using, after Touch ID or Windows Hello.",
+    passkeysForRp: "Passkeys are used by ADE's browser on the computer you are using.",
+    savePasskey: "Passkeys are saved by ADE's browser on the computer you are using.",
+    exportSecrets: "A .env export is written on the computer you are using, after Touch ID or Windows Hello.",
+  },
+  provider_logins: {
+    allowKeychain: "Run this on that computer. ADE reads a computer's OS keyring only on the computer you are using.",
+  },
+};
+
+/** The refusal for a caller that is not this computer's own desktop app, or null when any user client may call it. */
+export function thisDesktopOnlyRefusal(domain: string, action: string): string | null {
+  return ADE_ACTION_THIS_DESKTOP_ONLY[domain]?.[action] ?? null;
+}
+
+/**
+ * Actions that are this-desktop-only for some inputs: turning Copilot's GitHub
+ * CLI copy on runs `gh`, which can show a keychain or keyring prompt on the
+ * computer that runs it, so only that computer's desktop may turn it on.
+ * Turning it off shows nothing, so any of the person's desktops may (pinned
+ * to that computer). Every input that is not plainly "off" is refused.
+ */
+const ADE_ACTION_THIS_DESKTOP_ONLY_FOR_INPUT: Readonly<Record<string, Readonly<Record<string, { refusal: string; allows: (input: unknown) => boolean }>>>> = {
+  provider_logins: {
+    allowGitHubCli: {
+      refusal: "Turn this on at that computer. The GitHub CLI can ask there to unlock its keychain, so ADE reads it only on the computer you are using.",
+      allows: (input) => Boolean(input) && typeof input === "object" && (input as { on?: unknown }).on === false,
+    },
+  },
+};
+
+/**
+ * `thisDesktopOnlyRefusal` for one call, with its input: also refuses the
+ * inputs `ADE_ACTION_THIS_DESKTOP_ONLY_FOR_INPUT` keeps for this desktop.
+ */
+export function thisDesktopOnlyRefusalFor(domain: string, action: string, input: unknown): string | null {
+  const fixed = thisDesktopOnlyRefusal(domain, action);
+  if (fixed) return fixed;
+  const rule = ADE_ACTION_THIS_DESKTOP_ONLY_FOR_INPUT[domain]?.[action];
+  return rule && !rule.allows(input) ? rule.refusal : null;
 }
 
 /**
@@ -784,6 +888,10 @@ const REPLAY_SAFE_WRITES = new Set<string>([
   "chat.prepareCrossMachineHandoff",
   "chat.validateCrossMachineSource",
   "chat.markCrossMachineHandoff",
+  // Writes the given choice for one device kind; the same choice twice leaves
+  // it as it was (only its `chosenAt` moves). A cloud computer restarting
+  // drops the link mid-call, and a replay beats an "outcome unknown" error.
+  "chat.setDeviceSource",
   "file.refreshGitDecorations",
   "lane.portGetLease",
   // Single-flighted and throttled on the host; a second run is a no-op sync.
@@ -792,6 +900,8 @@ const REPLAY_SAFE_WRITES = new Set<string>([
   "session.clearWokeMarker",
   // Publishes which tool a desktop has open; the same publish twice is a no-op.
   "work_tools.setActiveTool",
+  // Each part says where it starts; a repeat is answered, not added again.
+  "chat.saveTempAttachmentPart",
 ]);
 
 // Reads that are never run again: they wait on purpose, call a model, or walk
@@ -812,6 +922,14 @@ const UNREPLAYED_READS = new Set<string>([
  * a person asked: they don't wake a sleeping cloud computer or keep one awake.
  */
 const BACKGROUND_WRITES = new Set<string>([
+  // Opening a provider's page in Settings loads its CLI facts on its own.
+  // "Run doctor" is the person's (`ai.runAcpProviderDoctor`, a normal write).
+  "ai.acpProviderDiagnostics",
+  // Warm-ups a composer sends while a person types: the send loads what it needs.
+  "chat.prewarmDraft",
+  "chat.warmupModel",
+  // Reads the repository's origin from git; a composer asks it on mount.
+  "github.detectRepo",
   "pr.reconcileOnFocus",
   "session.backfillDeltas",
   "session.clearWokeMarker",

@@ -8,6 +8,7 @@ import { LinearAssigneeAvatar } from "./LinearIssueBrowserRows";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { showToast } from "./toast/toastStore";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 
 /**
  * The connected person's Linear inbox inside the Linear pane. Opening an item
@@ -27,18 +28,21 @@ export function LinearInboxList({
   const [items, setItems] = useState<LinearInboxNotification[] | null>(null);
   const [includeRead, setIncludeRead] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The inbox comes from the Linear reader copy; with none online, nothing is read.
+  const linearPin = useActiveRepositoryReader();
 
   const load = useCallback(async () => {
     const cto = window.ade?.cto;
-    if (!cto?.getLinearInbox) return;
+    if (!cto?.getLinearInbox || !linearPin) return;
     try {
-      const next = await cto.getLinearInbox({ first: 50, includeRead });
+      const next = await cto.getLinearInbox({ first: 50, includeRead }, linearPin);
       setItems(next);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load the Linear inbox.");
     }
-  }, [includeRead]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [includeRead, linearPin?.key]);
 
   useEffect(() => {
     void load();
@@ -55,7 +59,8 @@ export function LinearInboxList({
       return current.map((entry) => (entry.id === item.id ? { ...entry, readAt: new Date().toISOString() } : entry));
     });
     try {
-      await window.ade?.cto?.markLinearNotification?.({ notificationId: item.id, action });
+      if (!linearPin) throw new Error("No computer with this project is online.");
+      await window.ade?.cto?.markLinearNotification?.({ notificationId: item.id, action }, linearPin);
     } catch (err) {
       setItems((current) => {
         if (!current) return current;
@@ -69,7 +74,7 @@ export function LinearInboxList({
         message: err instanceof Error ? err.message : "Linear did not accept the change.",
       });
     }
-  }, [includeRead]);
+  }, [includeRead, linearPin]);
 
   // The unread count follows the list itself, so quick clicks never count from a stale copy.
   useEffect(() => {

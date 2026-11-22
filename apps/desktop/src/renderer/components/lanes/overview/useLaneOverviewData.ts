@@ -17,6 +17,8 @@ import type {
 import { getGitHubSnapshotCoalesced, listPrsCoalesced } from "../../../lib/prReadCache";
 import { listSessionsCached } from "../../../lib/sessionListCache";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
+import { useActiveRepositoryReader } from "../../../state/repositoryScope";
+import { cacheScopePin } from "../../../lib/tabBindingKey";
 import { buildLanePrsByLaneId } from "../../terminals/useLanePrs";
 import {
   normalizeProvider,
@@ -89,29 +91,37 @@ const NO_GITHUB_PRS: GitHubPrListItem[] = [];
  * PR rows (from the cross-machine union). The tab machine's PR list and GitHub
  * snapshot are not read then — their lane links name the tab machine's lanes,
  * and a lane id can exist on both machines.
+ *
+ * `pin` is the tab copy's address for a lane of the tab's own copy. Null (the
+ * copy is offline): no read.
  */
 export function useLaneOverviewPrs(
   lane: LaneSummary | null,
   foreignPrs: PrSummary[] | null = null,
+  pin: OpenProjectBinding | null = null,
 ): { current: LaneHistoryPr[]; all: LaneHistoryPr[] } {
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  // The snapshot read is unpinned, so it follows the window's binding.
+  // The snapshot read names the lane's copy; the key keeps the old cache scope.
   const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   const [boundPrs, setPrs] = useState<PrSummary[]>([]);
   const [boundGithubPrs, setGithubPrs] = useState<GitHubPrListItem[]>([]);
   const isForeign = foreignPrs != null;
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const prs = foreignPrs ?? boundPrs;
   const githubPrs = isForeign ? NO_GITHUB_PRS : boundGithubPrs;
 
   useEffect(() => {
-    if (isForeign || !window.ade?.prs) return;
+    const tabPin = pinRef.current;
+    if (isForeign || !tabPin || !window.ade?.prs) return;
     let cancelled = false;
-    const readSnapshot = () => getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey: projectBindingKey })
+    const readSnapshot = () => getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey: projectBindingKey, pin: tabPin })
       .then((snapshot) => {
         if (!cancelled) setGithubPrs(snapshot?.repoPullRequests ?? []);
       })
       .catch(() => {});
-    void listPrsCoalesced({ projectRoot })
+    void listPrsCoalesced({ projectRoot, pin: tabPin })
       .then((list) => {
         if (!cancelled) setPrs(list);
       })
@@ -121,12 +131,14 @@ export function useLaneOverviewPrs(
       if (event.type !== "prs-updated") return;
       setPrs(event.prs);
       void readSnapshot();
-    });
+    }, tabPin);
     return () => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [isForeign, projectRoot, projectBindingKey]);
+    // `pinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isForeign, projectRoot, projectBindingKey, pinKey]);
 
   return useMemo(() => {
     if (!lane) return { current: [], all: [] };
@@ -173,8 +185,8 @@ export function clearTrailerProviderCacheForTest(): void {
 export function useLaneCommits(
   lane: LaneSummary | null,
   primaryLimit: number,
-  /** The lane's machine when it is not the tab's; null reads the tab's machine. */
-  pin: OpenProjectBinding | null = null,
+  /** The lane's machine. Null: no machine online, so nothing is read. */
+  pin: OpenProjectBinding | null,
 ): { commits: GitCommitSummary[]; trailerProviderBySha: ReadonlyMap<string, string | null>; loaded: boolean } {
   const [commits, setCommits] = useState<GitCommitSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -203,20 +215,17 @@ export function useLaneCommits(
   }, [laneId, pinKey]);
 
   useEffect(() => {
-    if (!laneId) return;
+    if (!laneId || !pin) return;
     if (limit <= 0) {
       setCommits([]);
       setLoaded(true);
       return;
     }
     let cancelled = false;
-    // Unpinned calls keep their exact pre-pin shape (the tab's machine).
     // The rows carry each commit's Co-authored-by trailers from the same
     // `git log`, so the trailer pass below reads no message for a commit whose
     // trailers name an agent.
-    void (pin
-      ? window.ade.git.listRecentCommits({ laneId, limit, includeCoAuthors: true }, pin)
-      : window.ade.git.listRecentCommits({ laneId, limit, includeCoAuthors: true }))
+    void window.ade.git.listRecentCommits({ laneId, limit, includeCoAuthors: true }, pin)
       .then((rows) => {
         if (cancelled) return;
         for (const row of rows) {
@@ -245,7 +254,7 @@ export function useLaneCommits(
   // the commit list): read the full message of only the newest few, one at a
   // time. Older commits fall back to other signals.
   useEffect(() => {
-    if (!laneId || !lane) return;
+    if (!laneId || !lane || !pin) return;
     const pending = selectLaneCommits(commits, lane)
       .slice(0, TRAILER_LOOKUPS)
       .filter((commit) => !trailerProviderCache.has(commit.sha));
@@ -254,9 +263,7 @@ export function useLaneCommits(
     void (async () => {
       for (const commit of pending) {
         if (cancelled) return;
-        const message = await (pin
-          ? window.ade.git.getCommitMessage({ laneId, commitSha: commit.sha }, pin)
-          : window.ade.git.getCommitMessage({ laneId, commitSha: commit.sha }))
+        const message = await window.ade.git.getCommitMessage({ laneId, commitSha: commit.sha }, pin)
           .catch(() => null);
         if (message == null) continue;
         trailerProviderCache.set(commit.sha, parseCoAuthorProvider(message));
@@ -340,8 +347,8 @@ export function laneHistorySessionsFrom(
 export function useLaneSessions(
   laneId: string | null,
   refreshKey: string,
-  /** The lane's machine when it is not the tab's; null reads the tab's machine. */
-  pin: OpenProjectBinding | null = null,
+  /** The lane's machine. Null: no machine online, so nothing is read. */
+  pin: OpenProjectBinding | null,
 ): { chats: AgentChatSessionSummary[]; terminals: TerminalSessionSummary[]; loaded: boolean } {
   const [state, setState] = useState<{
     laneId: string | null;
@@ -353,17 +360,14 @@ export function useLaneSessions(
   const pinKey = pin?.key ?? null;
 
   useEffect(() => {
-    if (!laneId) return;
+    if (!laneId || !pin) return;
     const requestId = ++requestRef.current;
     void Promise.all([
-      (pin
-        ? window.ade.agentChat.list({ laneId, includeArchived: true }, pin)
-        : window.ade.agentChat.list({ laneId, includeArchived: true })
-      ).catch(() => []),
+      window.ade.agentChat.list({ laneId, includeArchived: true }, pin).catch(() => []),
       // The session cache is keyed for the tab's machine only.
-      (pin
+      (cacheScopePin(pin)
         ? window.ade.sessions.list({ laneId, limit: SESSION_HISTORY_LIMIT }, pin)
-        : listSessionsCached({ laneId, limit: SESSION_HISTORY_LIMIT })
+        : listSessionsCached({ laneId, limit: SESSION_HISTORY_LIMIT }, undefined, pin)
       ).catch(() => []),
     ]).then(([chats, terminals]) => {
       if (requestId !== requestRef.current) return;
@@ -388,8 +392,8 @@ export function useLaneSessions(
 export function useLaneUpstream(
   lane: LaneSummary | null,
   active: boolean,
-  /** The lane's machine when it is not the tab's; null reads the tab's machine. */
-  pin: OpenProjectBinding | null = null,
+  /** The lane's machine. Null: no machine online, so nothing is read. */
+  pin: OpenProjectBinding | null,
 ): GitUpstreamSyncStatus | null {
   const [state, setState] = useState<{ laneKey: string | null; status: GitUpstreamSyncStatus | null }>({ laneKey: null, status: null });
   const laneId = lane?.id ?? null;
@@ -400,9 +404,9 @@ export function useLaneUpstream(
     : "";
 
   useEffect(() => {
-    if (!active || !laneId) return;
+    if (!active || !laneId || !pin) return;
     let cancelled = false;
-    (pin ? window.ade.git.getSyncStatus({ laneId }, pin) : window.ade.git.getSyncStatus({ laneId }))
+    window.ade.git.getSyncStatus({ laneId }, pin)
       .then((next) => { if (!cancelled) setState({ laneKey, status: next }); })
       .catch(() => { if (!cancelled) setState({ laneKey, status: null }); });
     return () => { cancelled = true; };
@@ -460,18 +464,28 @@ async function readPrDetail(
   pr: LaneHistoryPr,
   previous: LanePrDetail | null,
   pin: OpenProjectBinding | null,
+  readerPin: OpenProjectBinding | null,
 ): Promise<LanePrDetail> {
   const api = window.ade.prs;
   const coords = { repoOwner: pr.repoOwner, repoName: pr.repoName, githubPrNumber: pr.number };
   // A linked id names a row on the lane's machine, so it is read there. The
-  // GitHub-coordinate reads are repo-wide and stay on the tab's machine.
+  // GitHub-coordinate reads are repo-wide and go to the repository's reader copy.
   const id = pr.linkedPrId;
-  // Unpinned reads keep their exact pre-pin call shape (the tab's machine).
+  const readPin = id ? pin : readerPin;
+  // No copy to read from: keep what is on screen.
+  if (!readPin) {
+    return {
+      status: previous?.status ?? null,
+      checks: previous?.checks ?? [],
+      reviews: previous?.reviews ?? [],
+      files: previous?.files ?? [],
+    };
+  }
   const [status, checks, reviews, files] = await Promise.allSettled([
-    id ? (pin ? api.getStatus(id, pin) : api.getStatus(id)) : api.getStatusByGithub(coords),
-    id ? (pin ? api.getChecks(id, pin) : api.getChecks(id)) : api.getChecksByGithub(coords),
-    id ? (pin ? api.getReviews(id, pin) : api.getReviews(id)) : api.getReviewsByGithub(coords),
-    id ? (pin ? api.getFiles(id, pin) : api.getFiles(id)) : api.getFilesByGithub(coords),
+    id ? api.getStatus(id, readPin) : api.getStatusByGithub(coords, readPin),
+    id ? api.getChecks(id, readPin) : api.getChecksByGithub(coords, readPin),
+    id ? api.getReviews(id, readPin) : api.getReviewsByGithub(coords, readPin),
+    id ? api.getFiles(id, readPin) : api.getFilesByGithub(coords, readPin),
   ]);
   // A read that failed keeps what was already on screen.
   return {
@@ -491,8 +505,8 @@ async function readPrDetail(
 export function useLanePrDetail(
   pr: LaneHistoryPr | null,
   active: boolean,
-  /** The lane's machine when it is not the tab's; null reads the tab's machine. */
-  pin: OpenProjectBinding | null = null,
+  /** The lane's machine. Null: no machine online, so nothing is read. */
+  pin: OpenProjectBinding | null,
 ): { detail: LanePrDetail | null; loaded: boolean } {
   const key = pr ? prDetailKey(pr, pin) : null;
   const token = pr ? prDetailToken(pr) : "";
@@ -504,6 +518,10 @@ export function useLanePrDetail(
   prRef.current = pr;
   const pinRef = useRef(pin);
   pinRef.current = pin;
+  const readerPin = useActiveRepositoryReader(active && pr != null && !pr.linkedPrId);
+  const readerPinRef = useRef(readerPin);
+  readerPinRef.current = readerPin;
+  const readerPinKey = readerPin?.key ?? null;
 
   useEffect(() => {
     if (!key || !active || !window.ade?.prs) return;
@@ -514,14 +532,15 @@ export function useLanePrDetail(
     if (cached && cached.token === token && Date.now() - cached.at < PR_DETAIL_FRESH_MS) return;
     let cancelled = false;
     // `key` already carries the pin, so the ref is current for this key.
-    void readPrDetail(current, cached, pinRef.current).then((detail) => {
+    void readPrDetail(current, cached, pinRef.current, readerPinRef.current).then((detail) => {
       rememberPrDetail(key, { ...detail, token, at: Date.now() });
       if (!cancelled) setState({ key, detail, loaded: true });
     });
     return () => {
       cancelled = true;
     };
-  }, [active, key, token]);
+    // `readerPinKey` re-reads a GitHub-only PR once a reader copy is online.
+  }, [active, key, token, readerPinKey]);
 
   if (state.key !== key) {
     const cached = key ? prDetailCache.get(key) ?? null : null;
@@ -538,20 +557,18 @@ const OPERATION_LIMIT = 200;
 export function useLaneOperations(
   laneId: string | null,
   refreshKey: string,
-  /** The lane's machine when it is not the tab's; null reads the tab's machine. */
-  pin: OpenProjectBinding | null = null,
+  /** The lane's machine. Null: the lane has no machine online, so nothing is read. */
+  pin: OpenProjectBinding | null,
 ): OperationRecord[] {
   const [operations, setOperations] = useState<OperationRecord[]>([]);
   const pinKey = pin?.key ?? null;
   useEffect(() => {
-    if (!laneId || !window.ade?.history?.listOperations) {
+    if (!laneId || !pin || !window.ade?.history?.listOperations) {
       setOperations([]);
       return;
     }
     let cancelled = false;
-    void (pin
-      ? window.ade.history.listOperations({ laneId, limit: OPERATION_LIMIT }, pin)
-      : window.ade.history.listOperations({ laneId, limit: OPERATION_LIMIT }))
+    void window.ade.history.listOperations({ laneId, limit: OPERATION_LIMIT }, pin)
       .then((rows) => {
         if (!cancelled) setOperations(rows);
       })

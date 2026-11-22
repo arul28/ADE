@@ -1,6 +1,19 @@
 import Foundation
 import SwiftUI
 
+extension URLSession {
+  /// The session for account requests (the account directory, projects,
+  /// cloud computers, GitHub and password reads, device sign-in). No answer
+  /// is written to disk: no URL cache and no saved cookies, so no account's
+  /// computers or projects stay in `Cache.db` after it leaves.
+  static let adeAccount: URLSession = {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.urlCache = nil
+    configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+    return URLSession(configuration: configuration)
+  }()
+}
+
 /// A single reachable route advertised by an account machine, mirroring the
 /// directory Worker's `ReachableEndpoint` shape (`apps/account-directory`).
 struct AccountMachineEndpoint: Codable, Equatable, Hashable {
@@ -219,14 +232,28 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   /// Rename fields and name matching keep using `displayName`.
   var rowLabel: String {
     guard let installLabel else { return displayName }
-    let custom = customName?.trimmingCharacters(in: .whitespacesAndNewlines)
-    if let custom, !custom.isEmpty { return "\(custom) · \(installLabel)" }
+    let base = baseComputerName
+    return base.isEmpty ? installLabel : "\(base) · \(installLabel)"
+  }
+
+  /// The computer half of `rowLabel` ("MacBook Pro"), for rows that show the
+  /// install on its own line so several installs on one computer stay apart.
+  /// Falls back to `displayName`.
+  var rowComputerName: String {
+    guard installLabel != nil else { return displayName }
+    let base = baseComputerName
+    return base.isEmpty ? displayName : base
+  }
+
+  /// The computer's own name: the custom name, else the reported one without
+  /// its channel suffix (" (Beta)"). Empty when neither is known.
+  private var baseComputerName: String {
+    if let custom = customName?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty { return custom }
     let reported = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     let suffix = channel?.nameSuffix ?? ""
-    let base = !suffix.isEmpty && reported.hasSuffix(suffix)
+    return !suffix.isEmpty && reported.hasSuffix(suffix)
       ? String(reported.dropLast(suffix.count))
       : reported
-    return base.isEmpty ? installLabel : "\(base) · \(installLabel)"
   }
 
   /// The endpoint we'd prefer to connect through: a direct LAN route first, then
@@ -375,13 +402,14 @@ func accountMachinePresentationName(
        $0.machineKey.lowercased() == identity
          || $0.deviceId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == identity
      }) {
-    return machine.displayName
+    return machine.presentedName
   }
   guard let fallback = fallback?.trimmingCharacters(in: .whitespacesAndNewlines),
         !fallback.isEmpty else {
     return nil
   }
-  return fallback
+  // A cloud lane computer's host name is its instance id: it shows as "ADE Cloud" instead.
+  return CloudLaneComputerLabels.present(fallback, machineKey: identity, hostName: fallback)
 }
 
 /// Thin HTTP client for the account-directory Worker. The official Worker URL
@@ -409,7 +437,7 @@ struct AccountDirectoryClient {
     }
   }
 
-  var session: URLSession = .shared
+  var session: URLSession = .adeAccount
 
   /// Fetch the caller's machines. `baseURL` is the Worker origin (e.g.
   /// `https://ade-account-directory.example.workers.dev`); `token` is the
@@ -612,7 +640,7 @@ struct AccountAttentionRelayClient {
     }
   }
 
-  var session: URLSession = .shared
+  var session: URLSession = .adeAccount
 
   func fetchSnapshot(
     baseURL: URL,

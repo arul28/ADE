@@ -45,6 +45,14 @@ Each coding agent uses the login or key you already have. ADE detects your exist
   </Accordion>
 </AccordionGroup>
 
+## Your keys and sign-ins follow your account
+
+API keys you save in **Settings › Providers** go to one store in your ADE account. Every machine you sign in on gets them, and ADE Cloud does too. The **This computer / ADE Cloud** switch at the top of the page shows the same keys on both sides. A key that only one computer holds is marked "This computer only".
+
+- **Qwen on ADE Cloud** uses a DashScope API key. Qwen's own sign-in ended on 2026-04-15.
+- **Antigravity on ADE Cloud** needs one sign-in on ADE desktop first. That login then carries to your cloud computers.
+- **ADE's proxy logins** reach your cloud computers as access-only copies, so a custom provider works there too.
+
 ## Custom providers: any harness on a plan you have
 
 A **custom provider** runs one harness (the agent program, such as Claude Code or Codex) on a model from somewhere else: another provider's sign-in, a provider signed in inside OpenCode, or a stored API key. Run Claude Code on your ChatGPT plan, or Codex on your Claude plan, with the sign-ins you already have. There is no extra login.

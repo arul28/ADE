@@ -1,6 +1,6 @@
 ---
 name: ade-browser
-description: Use this skill for any browser behavior at all — opening a URL, checking a localhost page, clicking or filling a form, logging in, screenshotting, inspecting the DOM, or verifying a page renders — before reaching for an external browser or tool. ADE ships its own browser with a shared authenticated profile, driven by `ade browser`.
+description: "Any browser work, before any outside browser or tool: open a URL or localhost page, click, fill forms, log in, screenshots, inspect the DOM, check a page renders. ADE's own browser with a shared signed-in profile (`ade browser`)."
 ---
 
 # ADE browser
@@ -43,6 +43,8 @@ The owner column says what you may do with a tab:
 - `this chat`: yours. Reuse it, and close it when the task is done.
 - `free — ade browser claim --tab <id>`: no chat holds it (or its chat went
   idle for 10 minutes). Claim it with that command to drive it.
+  In the user's tab strip your tabs sit in a group named after this chat,
+  like a Chrome tab group, so the user can tell your work from theirs.
 - `free (the user's tab; ask first) — …`: the user opened it, or used an
   agent's tab by hand. Ask before you claim, drive or close it. `--lane` comes
   from `ADE_LANE_ID`; pass it when working from another shell. A personal
@@ -59,9 +61,25 @@ Any agent may close any tab, a held one included. Check the owner first:
 close this chat's tabs and free ones; close a held tab only when the task
 needs it; never close a tab the user opened or kept (`opened by the user`, or
 `the user's tab`) without asking them. `close`
-prints whose tab it closed. A deleted or archived lane frees its tabs and
-leaves them open. An agent's tab is not brought back after ADE restarts; a tab
-the user opened or used keeps its id across a restart.
+prints whose tab it closed. An agent's tab is not brought back after ADE
+restarts; a tab the user opened or used keeps its id across a restart.
+
+Your tabs clean themselves up, so do not keep one open "just in case":
+- ADE closes this chat's tabs 15 minutes after the chat goes idle, and at once
+  when the chat ends or its lane is archived or deleted. A new turn, or any
+  browser command from this chat, stops the countdown.
+- A tab the user clicked or typed in, navigated, attached to a chat, or
+  pressed Keep on is theirs: ADE never closes it, and you should not either.
+- A tab on screen, recording, being watched or being signed in on waits until
+  it is not, then closes.
+- An agent tab nobody touched for 2 hours closes even without word from its
+  chat.
+Still close your tab yourself when the task is done; the cleanup is the
+backstop, not the plan.
+
+A background tab nobody used for 30 minutes may be asleep (`sleeping` in
+status): its page was dropped to save memory. Any command on it wakes it with
+its history first, so just use it.
 
 Treat a tab as a workspace, not a log: reuse your own tab for follow-up work
 instead of opening a second one, and close it with
@@ -185,11 +203,42 @@ ade browser proof --browser-session <session-id> --caption "Checkout confirmatio
 Use `inspect-start`, `select`, `select-current`, and `clear-selection` when a
 DOM-backed context item belongs in the chat rather than in proof.
 
-### 5. Hand off a login to the human
+### 5. Sign in with Passwords, or hand off a login to the human
 
-Stop when a page needs credentials, CAPTCHA, HTTP/proxy authentication, or a
-client-certificate choice. Hand off the exact tab with an actionable
-`--reason`.
+When a page asks you to sign in, try `ade browser signin` first. It types a
+login saved in Passwords into the page itself; you never see the password.
+Prefer it over typing credentials you were given, and never ask the person to
+paste a password in chat. If Passwords has no login for the site, the command
+asks the person in your chat with a secure sign-in card and waits: they save a
+login (ADE fills it and the command finishes signed in), or they choose to type
+it themselves (the command says so; then run `ade browser handoff` to wait for
+them). On a page that asks for an authenticator code, run `ade browser signin`
+again: it fills the saved login's current code. Otherwise `ade code wait --site
+<host> --text` returns the saved authenticator code, or the next code texted
+to the person's Mac (when Messages is connected). For an email one-time code,
+open Gmail or Outlook in the ADE browser (it is already signed in) and read the
+newest code. Passkeys saved in ADE work by themselves in ADE's browser: the
+person confirms each use with Touch ID.
+
+```bash
+ade browser signin --tab <tab-id> --text
+ade browser signin --tab <tab-id> --account me@example.com --text
+```
+
+To create an account, fill the email or username yourself, then run `ade
+browser signup` on the sign-up form. ADE makes a strong password, types it
+into the password and confirm boxes, and saves the login to Passwords once the
+form holds all of it; you never see it. Submit the form yourself. From then on `ade browser signin`
+uses that login.
+
+```bash
+ade browser signup --tab <tab-id> --text
+ade browser signup --tab <tab-id> --account me@example.com --text
+```
+
+Stop when a page needs a CAPTCHA, HTTP/proxy
+authentication, or a client-certificate choice. Hand off the exact tab with an
+actionable `--reason`.
 
 ```bash
 ade browser handoff --browser-session <session-id> --reason "Sign in to staging" --timeout 5m --text
@@ -285,8 +334,9 @@ Dev servers you start are found on their own, even in the background:
 
 On a machine without ADE Desktop, and with no desktop connected to this chat,
 only `open`, `new-tab`, and `panel` can still land on a Desktop with this lane
-pinned; page actions such as `observe`, `click`, `fill`, and `screenshot` have
-no browser to run in. Do not retry a page action after that failure.
+pinned; page actions such as `observe`, `click`, `fill`, `signin`, and
+`screenshot` have no browser to run in. Do not retry a page action after that
+failure.
 
 ```bash
 ade browser open localhost:5173 --new-tab --text

@@ -13,7 +13,7 @@
  * page opens, and again when someone presses "Run doctor".
  */
 
-import type { AcpChatProvider } from "../../../shared/types/chat";
+import { ACP_CHAT_PROVIDERS, isAcpChatProvider, type AcpChatProvider } from "../../../shared/types/chat";
 import type { AcpProviderDiagnostics } from "../../../shared/types/config";
 import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { spawnAsync } from "../shared/utils";
@@ -37,6 +37,14 @@ const DOCTOR_COMMANDS: Partial<Record<AcpChatProvider, readonly string[]>> = {
   grok: ["doctor"],
   kimi: ["doctor"],
 };
+
+/** An action's `provider` argument, checked: one of the ACP chat providers. */
+export function requireAcpProvider(provider: unknown): AcpChatProvider {
+  if (typeof provider !== "string" || !isAcpChatProvider(provider)) {
+    throw new Error(`provider must be one of ${ACP_CHAT_PROVIDERS.join(", ")}.`);
+  }
+  return provider;
+}
 
 export function acpProviderSupportsDoctor(provider: AcpChatProvider): boolean {
   return DOCTOR_COMMANDS[provider] != null;
@@ -116,7 +124,7 @@ export async function collectAcpProviderDiagnostics(
     const pinnedVersion = status?.runningVersion ?? status?.version ?? null;
     return {
       ...base,
-      version: pinnedVersion ? `agy_acp_server ${pinnedVersion} (ADE's pinned copy)` : null,
+      version: pinnedVersion ? `agy ${pinnedVersion} (ADE's pinned copy)` : null,
       versionError: pinnedVersion ? null : "ADE could not read its Antigravity version.",
     };
   }

@@ -16,12 +16,47 @@ import {
   resolveCanonicalCommandLineLaunch,
 } from "../../../shared/shell";
 
+/**
+ * The provider config home a transcript was found in, and the ADE launch
+ * identity that writes there.
+ *
+ * ADE does not run its CLIs under the provider's default folder: an account
+ * gets `CLAUDE_CONFIG_DIR=<adeHome>/provider-homes/claude/<id>`, a harness
+ * preset or a stored API key gets its own home too. A session started in an
+ * ADE terminal therefore lives in one of those homes, and an import has to
+ * launch the resume against that same home or the CLI reports "no conversation
+ * found" for an id that is plainly on disk.
+ */
+export type ExternalSessionConfigHome = {
+  dir: string;
+  /** The provider account ("instance") whose home this is, when ADE can name it. */
+  instanceId?: string | null;
+  /** The saved harness preset whose home this is, when ADE can name it. */
+  presetId?: string | null;
+  /** The stored API credential whose home this is, when ADE can name it. */
+  credentialId?: string | null;
+  /**
+   * The ad-hoc route home (`provider-homes/route/<id>`) this is. Its folder is
+   * named after a hash of the route, so only ADE's own launch records can name
+   * the route again (see `externalSessionsService`).
+   */
+  routeHomeId?: string | null;
+};
+
 export type ExternalSessionDiscoveryRecord = Omit<
   ExternalSessionSummary,
   "alreadyImported" | "possiblyActive" | "cwdMatchesRequestedLane" | "capabilities"
 > & {
   sourcePath?: string | null;
   sourceMtimeMs?: number | null;
+  /**
+   * True when this row came from ADE's own managed provider store rather than
+   * the user's. Today only OpenCode has one. Optional: every other provider
+   * has a single store and omits it.
+   */
+  adeOwned?: boolean;
+  /** Where the transcript lives when discovery scanned beyond a provider's default home. */
+  configHome?: ExternalSessionConfigHome | null;
   /**
    * Provider ids this row supersedes, because discovery collapsed them into it
    * (a Claude continuation chain, a Codex parent hidden behind its fork). A
@@ -40,10 +75,17 @@ export type ExternalSessionDiscoveryArgs = {
   sessionId?: string | null;
   /**
    * Keep sessions ADE itself ran, which import normally hides (they are ADE
-   * chats already). Recently deleted sets it to read a deleted chat's own
-   * conversation back; only an exact `sessionId` lookup should pass it.
+   * chats already). The OpenCode import list passes it to read ADE's managed
+   * store beside the user's own; Recently deleted uses it for an exact
+   * session id.
    */
   includeAdeOwned?: boolean;
+  /**
+   * Read only the provider's default home (the one `env` names), not the
+   * preset, API-key and route homes ADE owns. For a caller that is looking for
+   * the session of one launch whose environment it already knows.
+   */
+  defaultHomeOnly?: boolean;
   limit?: number | null;
   scopeRoots?: string[] | null;
   /**

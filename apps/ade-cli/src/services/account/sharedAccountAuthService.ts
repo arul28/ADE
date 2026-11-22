@@ -1,5 +1,9 @@
+import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
+import { expectedErrorKind, markExpected } from "../../../../desktop/src/shared/expectedError";
 import { createProjectSecretService } from "../../../../desktop/src/main/services/secrets/projectSecretService";
+import { SIGN_IN_CONFIG_SECRET_NAMES } from "../../../../desktop/src/shared/types/passwords";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_JWKS_URL,
@@ -67,12 +71,114 @@ export function registerAccountConfigProjectRoot(
   configProjectRoots.set(key, new Set([resolved, ...rest]));
 }
 
-function readProjectSecret(projectRoot: string, name: string): string | null {
+/**
+ * Project folders that must not be read for account settings: those the brain
+ * refused as too slow to open (`projectOpenStrikes.ts`). The settings live in
+ * each registered project's own secrets and are read synchronously, on the
+ * brain's thread, so a refused folder would freeze it again.
+ *
+ * A refused folder is answered from what was last read from it, never from
+ * the defaults: falling back to ADE's own sign-in settings while a project's
+ * custom ones are out of reach would refresh a session against the wrong
+ * issuer (and so mark it signed out) or read the wrong machine directory. So
+ * every read from a project is remembered, in this machine's secrets folder,
+ * and a refused folder never read before makes the settings unavailable
+ * (an error for that call) rather than defaulted.
+ */
+/**
+ * The only names ever remembered on disk, in plain text: public identifiers
+ * and URLs. Any other name is read as before, never remembered, and is
+ * unavailable while its project is refused.
+ */
+const REMEMBERED_ACCOUNT_SETTING_NAMES: ReadonlySet<string> = SIGN_IN_CONFIG_SECRET_NAMES;
+
+type AccountConfigRootGate = {
+  skip: (projectRoot: string) => boolean;
+  memoPath: string;
+  memo: Map<string, Record<string, string | null>> | null;
+};
+let accountConfigRootGate: AccountConfigRootGate | null = null;
+
+export function setAccountConfigRootSkip(skip: (projectRoot: string) => boolean, secretsDir: string): void {
+  accountConfigRootGate = { skip, memoPath: path.join(secretsDir, "account-project-settings.json"), memo: null };
+}
+
+function accountConfigMemo(gate: AccountConfigRootGate): Map<string, Record<string, string | null>> {
+  if (gate.memo) return gate.memo;
+  gate.memo = new Map();
   try {
-    return createProjectSecretService(projectRoot).get({ name }).value.trim() || null;
+    const parsed = JSON.parse(fs.readFileSync(gate.memoPath, "utf8")) as Record<string, unknown>;
+    for (const [root, values] of Object.entries(parsed ?? {})) {
+      if (!values || typeof values !== "object") continue;
+      const entry: Record<string, string | null> = {};
+      for (const [name, value] of Object.entries(values as Record<string, unknown>)) {
+        if (!REMEMBERED_ACCOUNT_SETTING_NAMES.has(name)) continue;
+        if (typeof value === "string" || value === null) entry[name] = value;
+      }
+      gate.memo.set(root, entry);
+    }
   } catch {
+    // Missing or unreadable: nothing remembered yet.
+  }
+  return gate.memo;
+}
+
+function rememberProjectSecret(gate: AccountConfigRootGate, projectRoot: string, name: string, value: string | null): void {
+  if (!REMEMBERED_ACCOUNT_SETTING_NAMES.has(name)) return;
+  const memo = accountConfigMemo(gate);
+  const entry = memo.get(projectRoot) ?? {};
+  if (Object.prototype.hasOwnProperty.call(entry, name) && entry[name] === value) return;
+  entry[name] = value;
+  memo.set(projectRoot, entry);
+  try {
+    writeFileAtomic(gate.memoPath, `${JSON.stringify(Object.fromEntries(memo))}\n`, { mode: 0o600 });
+  } catch {
+    // Remembering is best-effort; the next read tries again.
+  }
+}
+
+/**
+ * One project secret service per project folder. Account settings are read
+ * from each registered project on every sign-in and directory lookup, several
+ * times a minute at idle. The service keeps no values of its own (each read
+ * asks the machine's password store, whose reads are cached against the
+ * credential file), so one object can answer every read. Keeping it also keeps
+ * its old per-project store object, whose reads are cached by the file's stat.
+ */
+const projectSecretServices = new Map<string, ReturnType<typeof createProjectSecretService>>();
+
+function projectSecretServiceFor(projectRoot: string): ReturnType<typeof createProjectSecretService> {
+  const key = path.resolve(projectRoot);
+  let service = projectSecretServices.get(key);
+  if (!service) {
+    service = createProjectSecretService(projectRoot);
+    projectSecretServices.set(key, service);
+  }
+  return service;
+}
+
+function readProjectSecret(projectRoot: string, name: string): string | null {
+  const gate = accountConfigRootGate;
+  if (gate?.skip(projectRoot)) {
+    const remembered = REMEMBERED_ACCOUNT_SETTING_NAMES.has(name) ? accountConfigMemo(gate).get(projectRoot) : undefined;
+    if (remembered && Object.prototype.hasOwnProperty.call(remembered, name)) return remembered[name] ?? null;
+    throw markExpected(
+      new Error("ADE can't read your account settings right now: a project's folder is too slow to open. Try again later."),
+      "environment",
+    );
+  }
+  let value: string | null;
+  try {
+    value = projectSecretServiceFor(projectRoot).getSignInConfig({ name }).value.trim() || null;
+  } catch (error) {
+    // The secret service answers "not set" with an expected `user` error;
+    // anything else is a read that failed. Only a real answer is remembered,
+    // so a failed read never replaces the last good one with "none".
+    if (gate && expectedErrorKind(error) === "user") rememberProjectSecret(gate, projectRoot, name, null);
     return null;
   }
+  if (gate) rememberProjectSecret(gate, projectRoot, name, value);
+  return value;
 }
 
 function enforcePackagedOAuthConfig(

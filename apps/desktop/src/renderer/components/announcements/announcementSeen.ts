@@ -1,11 +1,25 @@
 import { useSyncExternalStore } from "react";
 import { ANNOUNCEMENT_PAGES, type AnnouncementPageDef } from "./announcementPages";
 import { createLocalStore, finiteNumber, storedRecord } from "../../onboarding/localStore";
+import { markUnaskedShown, unaskedAllowed } from "../../onboarding/unaskedBudget";
+import {
+  mergeSeenAnnouncements,
+  seenAnnouncementsCover,
+  type SeenAnnouncementsMap,
+} from "../../../shared/announcementsSeen";
 
 /**
- * Which "What's new" pages this computer has shown, and when it last showed
- * any. Per computer, like onboarding: this renderer's localStorage, never
- * synced. It outlives updates, so a page shown once never shows again.
+ * Which "What's new" pages have been shown, and when this computer last showed
+ * any. The seen pages are kept in this renderer's localStorage and also follow
+ * the account (`announcementSeenSync.ts`), so a page seen on one computer or
+ * in ADE Web does not show again on another. Signed out, the local copy is all
+ * there is. When this computer last showed a page stays per computer.
+ *
+ * A page added before the signed-in account was created never shows by
+ * itself: a new account starts with only what is new after it joined
+ * (`setAnnouncementsAccountCreatedAt`, from the sync pass). Nothing is written
+ * for this, so it cannot hide a page from an existing account through a sync
+ * race; Help › What's new still lists every page.
  */
 
 /** Same key as before the catalogue: its values were revisions, and any value means shown. */
@@ -13,13 +27,13 @@ export const ANNOUNCEMENTS_SEEN_STORAGE_KEY = "ade.announcements.seen.v1";
 const LAST_SHOWN_STORAGE_KEY = "ade.announcements.lastShownAt.v1";
 
 /** A page shows by itself for this long after it was added. */
-const FRESH_MS = 45 * 24 * 60 * 60 * 1000;
+const FRESH_MS = 21 * 24 * 60 * 60 * 1000;
 /** Pages per showing. */
-export const PAGES_PER_SHOWING = 3;
-/** Inside a project, one showing a day. A little under 24h, so a daily habit is not missed by minutes. */
-const IN_PROJECT_GAP_MS = 20 * 60 * 60 * 1000;
+export const PAGES_PER_SHOWING = 2;
+/** Inside a project, one showing a week. A little under 7 days, so a weekly habit is not missed by hours. */
+const IN_PROJECT_GAP_MS = (6 * 24 + 12) * 60 * 60 * 1000;
 
-type SeenMap = Record<string, number>;
+type SeenMap = SeenAnnouncementsMap;
 
 function parseSeen(stored: unknown): SeenMap {
   const out: SeenMap = {};
@@ -31,11 +45,19 @@ function parseSeen(stored: unknown): SeenMap {
 }
 
 const seenStore = createLocalStore({ key: ANNOUNCEMENTS_SEEN_STORAGE_KEY, event: "ade:announcements-seen", parse: parseSeen });
-const lastShownStore = createLocalStore({
+const announcementsLastShownStore = createLocalStore({
   key: LAST_SHOWN_STORAGE_KEY,
   event: "ade:announcements-last-shown",
   parse: (stored) => finiteNumber(stored) ?? 0,
 });
+
+/** When the signed-in account was created; null when signed out or unknown. */
+let accountCreatedAt: number | null = null;
+
+/** Set by the account sync pass (`announcementSeenSync.ts`) before it resolves. */
+export function setAnnouncementsAccountCreatedAt(createdAt: number | null): void {
+  accountCreatedAt = createdAt;
+}
 
 function addedAt(page: AnnouncementPageDef): number {
   const time = Date.parse(`${page.added}T12:00:00Z`);
@@ -50,10 +72,19 @@ function newestFirst(pages: readonly AnnouncementPageDef[]): AnnouncementPageDef
     .map(({ page }) => page);
 }
 
-/** The next pages to show by themselves: unseen, still fresh, newest first, at most three. */
-export function dueAnnouncements(seen: SeenMap = seenStore.get(), now = Date.now()): AnnouncementPageDef[] {
+/**
+ * The next pages to show by themselves: unseen, still fresh, added after the
+ * account was created, newest first, at most two.
+ */
+export function dueAnnouncements(
+  seen: SeenMap = seenStore.get(),
+  now = Date.now(),
+  createdAt: number | null = accountCreatedAt,
+): AnnouncementPageDef[] {
   return newestFirst(ANNOUNCEMENT_PAGES)
-    .filter((page) => seen[page.id] === undefined && now - addedAt(page) <= FRESH_MS)
+    .filter((page) => seen[page.id] === undefined
+      && now - addedAt(page) <= FRESH_MS
+      && (createdAt == null || addedAt(page) >= createdAt))
     .slice(0, PAGES_PER_SHOWING);
 }
 
@@ -64,7 +95,8 @@ export function allAnnouncements(): AnnouncementPageDef[] {
 
 /** Whether a project may show pages now: none were shown in the last day (after an update counts). */
 export function inProjectShowingAllowed(now = Date.now()): boolean {
-  return now - lastShownStore.get() >= IN_PROJECT_GAP_MS;
+  // The shared budget too: nothing else unasked showed today, and the account is past its quiet first days.
+  return now - announcementsLastShownStore.get() >= IN_PROJECT_GAP_MS && unaskedAllowed(now);
 }
 
 export function markAnnouncementSeen(page: AnnouncementPageDef, now = Date.now()): void {
@@ -73,9 +105,28 @@ export function markAnnouncementSeen(page: AnnouncementPageDef, now = Date.now()
   seenStore.set({ ...current, [page.id]: now });
 }
 
-/** Called when a showing opens by itself (not from Help), so the next one waits a day. */
+/** Called when a showing opens by itself (not from Help): the next one waits a week, and it spends the day's unasked budget. */
 export function markShowing(now = Date.now()): void {
-  lastShownStore.set(now);
+  announcementsLastShownStore.set(now);
+  markUnaskedShown(now);
+}
+
+/** This computer's seen pages, for the account sync. */
+export function readSeenAnnouncements(): SeenMap {
+  return seenStore.get();
+}
+
+/** Adds pages seen elsewhere; never forgets one seen here. Returns the combined map. */
+export function mergeSeenAnnouncementsFromAccount(remote: SeenMap): SeenMap {
+  const current = seenStore.get();
+  const merged = mergeSeenAnnouncements(current, remote);
+  if (!seenAnnouncementsCover(current, merged)) seenStore.set(merged);
+  return merged;
+}
+
+/** Calls `listener` when this computer's seen pages change. */
+export function subscribeSeenAnnouncements(listener: () => void): () => void {
+  return seenStore.subscribe(listener);
 }
 
 export function useSeenAnnouncements(): SeenMap {

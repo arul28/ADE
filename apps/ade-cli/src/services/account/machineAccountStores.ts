@@ -8,6 +8,8 @@ import { getSignedInAccountAccessToken } from "./accountAuthService";
 import { createAccountSettingsStore, getSharedAccountSettingsStore, type AccountSettingsStore } from "./accountSettingsStore";
 import { createAccountVaultStore, getSharedAccountVaultStore, type AccountVaultStore } from "./accountVaultStore";
 import { getSharedAccountAuthService } from "./sharedAccountAuthService";
+import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
+import { createPasswordService, getSharedPasswordService, passwordsCloudSwitch, type PasswordService } from "../passwords/passwordService";
 
 /**
  * The machine's account stores, for code that runs without a project runtime
@@ -26,6 +28,7 @@ type StoreLogger = {
 export type MachineAccountStores = {
   settings: AccountSettingsStore;
   vault: AccountVaultStore;
+  passwords: PasswordService;
   /** The signed-in account's user id, or null when this machine is signed out. */
   accountUserId: () => string | null;
 };
@@ -39,7 +42,11 @@ export function getMachineAccountStores(logger: StoreLogger): MachineAccountStor
   };
   const deviceIdPath = path.join(layout.secretsDir, "sync-device-id");
   const deviceId = (): string | null => readMachineIdFile(deviceIdPath);
-  const relayClient = createPushRelayClient({
+  // Built only when one of the shared stores below is first created: once
+  // they exist, every later call (each project secret read asks for these
+  // stores) would build a relay client and a registration store for nothing.
+  let relayClient: ReturnType<typeof createPushRelayClient> | null = null;
+  const relay = (): ReturnType<typeof createPushRelayClient> => relayClient ??= createPushRelayClient({
     store: createPushRegistrationStore({ filePath: resolvePushRelayStateFile(layout.secretsDir), logger }),
     logger,
     getAccountAccessToken: (options) => getSignedInAccountAccessToken(accountAuth(), options),
@@ -47,17 +54,26 @@ export function getMachineAccountStores(logger: StoreLogger): MachineAccountStor
   });
   const settings = getSharedAccountSettingsStore(layout.adeDir, () => createAccountSettingsStore({
     adeDir: layout.adeDir,
-    relay: relayClient,
+    relay: relay(),
     getAccountUserId: accountUserId,
     getDeviceId: deviceId,
     logger,
   }));
   const vault = getSharedAccountVaultStore(layout.adeDir, () => createAccountVaultStore({
     adeDir: layout.adeDir,
-    relay: relayClient,
+    relay: relay(),
     getAccountUserId: accountUserId,
     getDeviceId: deviceId,
     logger,
   }));
-  return { settings, vault, accountUserId };
+  const passwords = getSharedPasswordService(layout.adeDir, () => createPasswordService({
+    adeDir: layout.adeDir,
+    relay: relay(),
+    getAccountUserId: accountUserId,
+    getDeviceId: deviceId,
+    machineKind: isAdeCloudComputer() ? "cloud" : "desktop",
+    ...passwordsCloudSwitch(settings),
+    logger,
+  }));
+  return { settings, vault, passwords, accountUserId };
 }

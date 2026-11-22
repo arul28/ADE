@@ -231,7 +231,6 @@ func workResolveCliProvider(for modelId: String, provider: String) -> String {
   case "grok": return "grok"
   case "copilot": return "copilot"
   case "devin": return "devin"
-  // ACP-only: Antigravity has a chat runtime and no terminal CLI.
   case "antigravity": return "antigravity"
   default: return "opencode"
   }
@@ -436,7 +435,7 @@ private func workVisibleReasoningEfforts(
     return fallback
   }
   switch canonicalId {
-  case "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-6.1-terra", "openai/gpt-6-sol", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
+  case "openai/gpt-6.2-sol", "openai/gpt-6.2-astra", "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-6.1-terra", "openai/gpt-6-sol", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
     return workCodex56ReasoningEfforts(includeUltra: true)
   case "openai/gpt-6-luna", "openai/gpt-5.6-luna":
     return workCodex56ReasoningEfforts(includeUltra: false)
@@ -463,7 +462,7 @@ private func workVisibleDefaultReasoningEffort(
     return normalizedFallback
   }
   switch canonicalId {
-  case "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-6.1-terra", "openai/gpt-5.6-sol": return "low"
+  case "openai/gpt-6.2-sol", "openai/gpt-6.2-astra", "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-6.1-terra", "openai/gpt-5.6-sol": return "low"
   case "openai/gpt-6-sol", "openai/gpt-6-luna", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna": return "medium"
   default: return nil
   }
@@ -592,18 +591,18 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         displayName: "OpenAI",
         models: [
           WorkModelOption(
-            id: "gpt-6.1-sol",
-            displayName: "GPT-6.1 Sol",
+            id: "gpt-6.2-sol",
+            displayName: "GPT-6.2 Sol",
             tier: .flagship,
-            tagline: "Near-Astra · 1.05M context",
+            tagline: "Daily coding · 1.05M context",
             provider: "codex",
             reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
             defaultReasoningEffort: "low",
             serviceTiers: ["fast"]
           ),
           WorkModelOption(
-            id: "gpt-6-astra",
-            displayName: "GPT-6 Astra",
+            id: "gpt-6.2-astra",
+            displayName: "GPT-6.2 Astra",
             tier: .flagship,
             tagline: "Flagship · 1.05M context",
             provider: "codex",
@@ -662,6 +661,26 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             serviceTiers: ["fast"]
           ),
           WorkModelOption(id: "gpt-5.5", displayName: "GPT-5.5", tier: .flagship, tagline: "Flagship · 1M context", provider: "codex", serviceTiers: ["fast"]),
+          WorkModelOption(
+            id: "gpt-6.1-sol",
+            displayName: "GPT-6.1 Sol",
+            tier: .flagship,
+            tagline: "Near-Astra · 1.05M context",
+            provider: "codex",
+            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
+            defaultReasoningEffort: "low",
+            serviceTiers: ["fast"]
+          ),
+          WorkModelOption(
+            id: "gpt-6-astra",
+            displayName: "GPT-6 Astra",
+            tier: .flagship,
+            tagline: "Flagship · 1.05M context",
+            provider: "codex",
+            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
+            defaultReasoningEffort: "low",
+            serviceTiers: ["fast"]
+          ),
         ]
       )
     ]
@@ -951,6 +970,28 @@ func workModelCatalogGroups(
     currentModelId: currentModelId,
     currentProvider: currentProvider
   )
+}
+
+/// ADE Cloud's models (`GET /cloud/models`) in the picker's groups, so ADE
+/// Cloud gets the same picker as any machine: provider rail, favorites,
+/// efforts and fast mode. Only ADE Cloud's own models; a model picked for
+/// another machine is never added in.
+func workModelCatalogGroups(cloudCatalog: CloudModelCatalog) -> [WorkModelCatalogGroup] {
+  var byProvider: [String: [AgentChatModelInfo]] = [:]
+  for entry in cloudCatalog.providers {
+    byProvider[entry.provider, default: []] += entry.models.map { model in
+      AgentChatModelInfo(
+        id: model.id,
+        displayName: model.displayName,
+        description: "Runs on ADE Cloud",
+        isDefault: model.id == entry.defaultModelId,
+        reasoningEfforts: model.reasoningTiers.map { AgentChatModelReasoningEffort(effort: $0, description: "") },
+        defaultReasoningEffort: model.defaultReasoningEffort,
+        serviceTiers: model.fast ? ["fast"] : []
+      )
+    }
+  }
+  return workModelCatalogGroups(availableModelsByProvider: byProvider, currentModelId: "", currentProvider: "")
 }
 
 func workModelCatalogGroups(
@@ -1318,19 +1359,21 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
   }
 }
 
-/// Sorts after every named Codex model, so a new family member never ties with an older model.
-private let workCodexUnrankedSortPriority = Int.max
+/// Unranked models follow preferred families and precede the previous Sol/Astra generation.
+private let workCodexUnrankedSortPriority = Int.max - 2
 
 private func workCodexFamilySortPriority(_ canonicalId: String?) -> Int? {
   switch canonicalId {
-  case "openai/gpt-6.1-sol": return 0
-  case "openai/gpt-6-astra": return 1
-  case "openai/gpt-6.1-terra": return 2
-  case "openai/gpt-6-sol": return 3
-  case "openai/gpt-6-luna": return 4
-  case "openai/gpt-5.6-sol": return 5
-  case "openai/gpt-5.6-terra": return 6
-  case "openai/gpt-5.6-luna": return 7
+  case "openai/gpt-6.2-sol": return 0
+  case "openai/gpt-6.2-astra": return 1
+  case "openai/gpt-6.1-sol": return Int.max - 1
+  case "openai/gpt-6-astra": return Int.max
+  case "openai/gpt-6.1-terra": return 4
+  case "openai/gpt-6-sol": return 5
+  case "openai/gpt-6-luna": return 6
+  case "openai/gpt-5.6-sol": return 7
+  case "openai/gpt-5.6-terra": return 8
+  case "openai/gpt-5.6-luna": return 9
   default: return nil
   }
 }
@@ -1341,9 +1384,13 @@ private func workIsCodexNamedEffortFamily(_ canonicalId: String?) -> Bool {
 
 private func workCanonicalCodexRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-  case "astra", "gpt-6-astra", "openai/gpt-6-astra":
+  case "astra", "gpt-6.2-astra", "openai/gpt-6.2-astra":
+    return "openai/gpt-6.2-astra"
+  case "gpt-6-astra", "openai/gpt-6-astra":
     return "openai/gpt-6-astra"
-  case "sol", "gpt-6.1-sol", "openai/gpt-6.1-sol":
+  case "sol", "gpt-6.2-sol", "openai/gpt-6.2-sol":
+    return "openai/gpt-6.2-sol"
+  case "gpt-6.1-sol", "openai/gpt-6.1-sol":
     return "openai/gpt-6.1-sol"
   case "gpt-6-sol", "openai/gpt-6-sol":
     return "openai/gpt-6-sol"
@@ -1376,9 +1423,15 @@ private func workCanonicalCodexRegistryId(for raw: String) -> String? {
 
 private func workCodexRuntimeModelId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-  case "astra", "gpt-6-astra", "openai/gpt-6-astra":
+  case "astra", "gpt-6.2-astra", "openai/gpt-6.2-astra":
+    return "gpt-6.2-astra"
+  case "sol", "gpt-6.2-sol", "openai/gpt-6.2-sol":
+    return "gpt-6.2-sol"
+  case "gpt-6.1-sol", "openai/gpt-6.1-sol":
+    return "gpt-6.1-sol"
+  case "gpt-6-astra", "openai/gpt-6-astra":
     return "gpt-6-astra"
-  case "sol", "gpt-6-sol", "openai/gpt-6-sol":
+  case "gpt-6-sol", "openai/gpt-6-sol":
     return "gpt-6-sol"
   case "luna", "gpt-6-luna", "openai/gpt-6-luna":
     return "gpt-6-luna"
@@ -1488,9 +1541,13 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
     return "Claude Haiku 5.5"
   case "opencode/anthropic/claude-haiku-4-5":
     return "Claude Haiku 4.5"
-  case "astra", "gpt-6-astra", "openai/gpt-6-astra":
+  case "astra", "gpt-6.2-astra", "openai/gpt-6.2-astra":
+    return "GPT-6.2 Astra"
+  case "sol", "gpt-6.2-sol", "openai/gpt-6.2-sol":
+    return "GPT-6.2 Sol"
+  case "gpt-6-astra", "openai/gpt-6-astra":
     return "GPT-6 Astra"
-  case "sol", "gpt-6.1-sol", "openai/gpt-6.1-sol":
+  case "gpt-6.1-sol", "openai/gpt-6.1-sol":
     return "GPT-6.1 Sol"
   case "gpt-6-sol", "openai/gpt-6-sol":
     return "GPT-6 Sol"

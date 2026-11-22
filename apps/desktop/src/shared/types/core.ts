@@ -51,6 +51,19 @@ export type LocalRuntimeStatus = {
     lastCommand: string;
     blockedMs: number;
     ts: string;
+    /** Who froze the loop: the brain itself, or the machine past the wait ceiling. */
+    freezeCause?: "self" | "memory" | "drive";
+  } | null;
+  /**
+   * The brain started after the one before it on this endpoint stopped
+   * without an orderly stop (a crash, a kill) and the service started it
+   * again. Not set for an update, a restart someone asked for, or a reboot.
+   * The window shows one banner per `ts` (`BrainRestartNotice`).
+   */
+  lastUnplannedRestart?: {
+    ts: string;
+    chats: number;
+    cliSessions: number;
   } | null;
   /**
    * "isolated" means the desktop fell back to an app-owned no-sync brain
@@ -406,6 +419,24 @@ export const AUTO_UPDATE_INSTALL_ABORT_REASONS = [
 export type AutoUpdateInstallAbortReason =
   (typeof AUTO_UPDATE_INSTALL_ABORT_REASONS)[number];
 
+/**
+ * How far the quit that installs an update got: the updater was asked to
+ * quit, macOS Squirrel staged the new bundle, or ADE force-quit a quit that
+ * would not finish. One closed list for the pending record and analytics.
+ */
+export const PENDING_INSTALL_HANDOFF_STEPS = [
+  "quit_started",
+  "native_staged",
+  "quit_escalated_hard_deadline",
+  "quit_escalated_post_staging",
+] as const;
+
+export type PendingInstallHandoffStep = (typeof PENDING_INSTALL_HANDOFF_STEPS)[number];
+
+export function isPendingInstallHandoffStep(value: unknown): value is PendingInstallHandoffStep {
+  return typeof value === "string" && (PENDING_INSTALL_HANDOFF_STEPS as readonly string[]).includes(value);
+}
+
 export type AutoUpdatePreferences = {
   /** Automatically restart ADE to install a downloaded update. */
   automaticInstall: boolean;
@@ -650,6 +681,8 @@ export type AppNavigationTarget =
       event?: number | null;
       offset?: number | null;
       ownership?: DeeplinkOwnership | null;
+      /** From a link: the account project (`ap_…`), with or without the pair. */
+      accountProjectId?: string | null;
     }
   | {
       kind: "file";
@@ -679,6 +712,8 @@ export type AppNavigationTarget =
       envelope?: DeeplinkEnvelope | null;
       /** From a link: the account machine and project that own the lane. */
       ownership?: DeeplinkOwnership | null;
+      /** From a link: the account project (`ap_…`), with or without the pair. */
+      accountProjectId?: string | null;
     }
   | {
       kind: "pr";
@@ -692,6 +727,8 @@ export type AppNavigationTarget =
       repoOwner?: string | null;
       repoName?: string | null;
       ownership?: DeeplinkOwnership | null;
+      /** From a link: the account project (`ap_…`), with or without the pair. */
+      accountProjectId?: string | null;
     }
   | {
       kind: "branch";
@@ -717,11 +754,26 @@ export type AppNavigationTarget =
       entryId?: string | null;
       /** The machine a Computer page opens for. Null or absent: the default. */
       machineId?: string | null;
+      /**
+       * An ADE Cloud invite code to fill in Settings › Account's code box
+       * (`ade://invite/<CODE>`). The page gets it as `?invite=<CODE>`.
+       */
+      inviteCode?: string | null;
+      /**
+       * An ADE Cloud lane kept without a computer, for Settings › ADE Cloud to
+       * open its row (New computer, Delete). The page gets it as `?lane=<id>`.
+       */
+      cloudLaneId?: string | null;
     }
   | {
       /** A page from `shared/openPlaces.ts`. Only a chat chip click sends it. */
       kind: "open-place";
       place: string;
+    }
+  | {
+      /** A lane another account shares with this one (an invite link). No project needed. */
+      kind: "lane-share";
+      grantId: string;
     }
   | {
       kind: "linear-issue";
@@ -734,6 +786,17 @@ export type AppNavigationTarget =
   | {
       kind: "route";
       route: string;
+    }
+  | {
+      /**
+       * A link to an account project that no reachable computer can open
+       * (main resolves the link's `accountProjectId` first). `no-copy` opens
+       * the repository tab with no machine; `removed` and `unknown` say so.
+       */
+      kind: "account-project";
+      accountProjectId: string;
+      name?: string | null;
+      reason: "no-copy" | "removed" | "unknown";
     }
   | {
       kind: "files-external";
@@ -900,6 +963,12 @@ export type ProjectFindForRepoArgs = {
 export type ProjectFindForRepoResult = {
   rootPath: string;
   displayName: string;
+  /**
+   * Set when the only copy is on another machine of the account: the link
+   * opens the project there. A project is the repository, so a copy on any
+   * connected machine answers.
+   */
+  remote?: { targetId: string; projectId: string; machineName: string };
 } | null;
 
 export type CreateProjectInput = {
@@ -920,6 +989,13 @@ export type CloneProjectInput = {
 
 export type CloneProjectResult = {
   rootPath: string;
+  /**
+   * True when the clone signed in with another computer's one-shot header
+   * (`githubAuthHeader`) and this computer has no GitHub sign-in of its own:
+   * its fetch and push won't sign in until GitHub is connected there. The
+   * header is never stored. Absent otherwise, and from an older ADE.
+   */
+  githubSignInMissing?: boolean;
 };
 
 export type MyGitHubRepoSummary = {

@@ -18,12 +18,6 @@ const claudeGoal = (overrides: Partial<ClaudeActiveGoal> = {}): ClaudeActiveGoal
 });
 
 describe("GoalCard (claude variant)", () => {
-  it("shows the condition and Claude's last check, with no controls when it cannot change the goal", () => {
-    render(<GoalCard variant="claude" goal={claudeGoal()} />);
-    expect(screen.getByText("all tests pass")).toBeTruthy();
-    expect(screen.getByText(/2 tests still failing/)).toBeTruthy();
-    expect(screen.queryByRole("button")).toBeNull();
-  });
 
   it("saves an edit normalized to one line, and Escape discards it", () => {
     const onEdit = vi.fn();

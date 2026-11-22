@@ -18,6 +18,7 @@ import { useProjectTabShortcuts } from "./useProjectTabShortcuts";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { useActiveRepositoryReader, useTabCopyPin } from "../../state/repositoryScope";
 import { APP_BANNER_PRIORITY, AppBannerHost, useAppBanner } from "../ui/notice";
 import { ProjectMoveHost } from "../projectMove/ProjectMoveHost";
 import type {
@@ -43,6 +44,7 @@ import {
   hasConfiguredAiProvider,
   shouldRefreshAiStatusForChatEvent,
 } from "../../lib/aiProviderStatus";
+import { subscribeToolInstalled } from "../../lib/toolsCacheEvents";
 import { hasDismissedGithubReminder } from "../../lib/bannerDismiss";
 import {
   getStoredZoomLevel,
@@ -57,14 +59,16 @@ import { cn } from "../ui/cn";
 import { disposeTerminalRuntimesForProjectChange } from "../terminals/terminalRuntimeLifecycle";
 import { ToastViewport } from "./toast/ToastViewport";
 import { ChatLaunchesSlideOut, useChatLaunchSlideOutVisible } from "./ChatLaunchesSlideOut";
+import { CloudLaneJobsSlideOut, useCloudLaneJobsSlideOutVisible } from "../cloudLane/CloudLaneJobsSlideOut";
 import { useChatLaunchSync } from "../../state/useChatLaunchSync";
 import { AutoUpdateBanner } from "./AutoUpdateBanner";
 import { AppBundleOwnershipBanner } from "./AppBundleOwnershipBanner";
+import { CloudSignInEndNotice } from "../settings/providers/cloud/CloudSignInEndNotice";
 import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
+import { BrainRestartNotice } from "./BrainRestartNotice";
 import { AppFallbackBanner } from "./AppFallbackBanner";
 import { FolderSimpleDashed, ShieldWarning } from "@phosphor-icons/react";
 import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
-import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { usePrEventToasts } from "./toast/usePrEventToasts";
 import { useStaleCliToast } from "./toast/useStaleCliToast";
 import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveReminderBanner";
@@ -84,6 +88,7 @@ import { GlobalCaptureGestureHost } from "../capture/GlobalCaptureGestureHost";
 import { useActivitySync } from "../activity/useActivitySync";
 import { useAgentMessageToasts } from "../activity/useAgentMessageToasts";
 import { isActivityRoute } from "../../lib/legacyRoutes";
+import { CloudPlanMomentWatcher } from "../settings/cloudDashboard/CloudPlanMomentNotice";
 import {
   BROWSER_TAB_KEYBINDING,
   BROWSER_TAB_ROUTE,
@@ -98,6 +103,24 @@ import {
 } from "../music/musicTab";
 import { setMusicTabOpener } from "../music/musicStore";
 import { isImeComposing } from "../../lib/imeComposition";
+
+// The worktree prompt's code loads the first time a folder needs it.
+const WorktreeOpenDialog = React.lazy(() =>
+  import("../projects/WorktreeOpenDialog").then((m) => ({ default: m.WorktreeOpenDialog }))
+);
+
+/** Mounts the worktree prompt once one is first asked for, then keeps it, so its close still animates. */
+function WorktreeOpenDialogHost() {
+  const asked = useAppStore((s) => s.worktreeOpenPrompt != null);
+  const [mounted, setMounted] = useState(asked);
+  if (asked && !mounted) setMounted(true);
+  if (!mounted && !asked) return null;
+  return (
+    <React.Suspense fallback={null}>
+      <WorktreeOpenDialog />
+    </React.Suspense>
+  );
+}
 
 /**
  * A shortcut that opens a machine tab (Browser, Music) from anywhere, project
@@ -273,11 +296,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const lanes = useAppStore((s) => s.lanes);
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  // The tab's copy: the shell's AI status reads its machine, so its chat
+  // events say when to read again.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
+  // The copy that reads this repository's GitHub state for the banner.
+  const githubReaderPin = useActiveRepositoryReader();
+  const githubReaderPinRef = useRef(githubReaderPin);
+  githubReaderPinRef.current = githubReaderPin;
   const projectRevision = useAppStore((s) => s.projectRevision);
   // One launch feed for the whole window; the slide-out renders only when it
   // has a background chat or CLI launch of ours to show.
   useChatLaunchSync();
   const chatLaunchesVisible = useChatLaunchSlideOutVisible();
+  const cloudLaneJobsVisible = useCloudLaneJobsSlideOutVisible();
   const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
   const showWelcome = useAppStore((s) => s.showWelcome);
@@ -314,13 +347,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const githubReconnectContextRef = useRef({
     currentProjectRoot,
     isRemoteProject,
-    bindingKey: projectBinding?.key,
+    bindingKey: githubReaderPin?.key,
     pathname: location.pathname,
   });
   githubReconnectContextRef.current = {
     currentProjectRoot,
     isRemoteProject,
-    bindingKey: projectBinding?.key,
+    bindingKey: githubReaderPin?.key,
     pathname: location.pathname,
   };
   const isPersonalChatsRoute =
@@ -588,6 +621,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const welcomeChanged = currentShowWelcome === hasStoredProject;
 
       if (remoteBinding) {
+        // A remote open that Home superseded (Home opened while it was on its
+        // way) opens under Home: Home stays in front.
+        const openedUnderHome = currentIsNewTabOpen
+          && useAppStore.getState().takeRemoteOpenSupersededByHome(remoteBinding);
         setProjectBinding(remoteBinding);
         setProject({
           rootPath: remoteBinding.rootPath,
@@ -598,8 +635,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // opening a local one does. Every local open path clears this in the
         // store; this branch bypasses them all, which left a blank "New Tab"
         // pill sitting next to the tab it had just become.
-        if (currentIsNewTabOpen) cancelNewTab();
-        setShowWelcome(false);
+        if (currentIsNewTabOpen && !openedUnderHome) cancelNewTab();
+        if (!openedUnderHome) setShowWelcome(false);
         clearScheduledRefreshes();
         void refreshLanes({ includeStatus: false });
         return;
@@ -648,14 +685,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }
     };
 
+    // The launch's saved Work view is on screen and its open is on its way.
+    // Until the open settles (`switchProjectToPath` hands over or goes Home on
+    // failure), a "no project" push is the window from before that open, not
+    // a move off the folder.
+    const cachedViewOpening = (): boolean => {
+      const state = useAppStore.getState();
+      return state.cachedProjectViewRoot != null
+        && state.project?.rootPath === state.cachedProjectViewRoot;
+    };
+
     const initializeProjectState = async () => {
       setProjectHydrated(false);
       try {
         const session = await window.ade.app.getWindowSession();
         if (cancelled) return;
-        applyProjectState(session.project, session.binding);
+        // A session read before the launch's open names no project; applying
+        // it would replace the saved Work view with Home.
+        const showsCachedView = !session.project && !session.binding && cachedViewOpening();
+        if (!showsCachedView) applyProjectState(session.project, session.binding);
       } catch {
         if (cancelled) return;
+        if (cachedViewOpening()) return;
         setProject(null);
         setProjectMissing(false);
         setShowWelcome(true);
@@ -667,6 +718,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     const disposeProjectChanged = window.ade.app.onProjectChanged((nextProject) => {
       const state = useAppStore.getState();
+      if (!nextProject && cachedViewOpening()) return;
       const nextRoot = nextProject?.rootPath ?? null;
       const currentRoot = state.project?.rootPath ?? null;
       const expectedShowWelcome = !nextProject;
@@ -689,7 +741,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     });
     const disposeProjectBindingChanged = window.ade.app.onProjectBindingChanged((binding) => {
       const state = useAppStore.getState();
+      if (!binding && cachedViewOpening()) return;
       if (state.projectTransition) {
+        // A switch to a folder on this computer publishes its local binding
+        // before the project arrives. The store action that runs the switch
+        // sets the binding with the project; applied now, it would show the
+        // open project (perhaps one on another machine) as a local folder.
+        if (binding?.kind === "local" && binding.rootPath !== state.project?.rootPath) return;
         setProjectBinding(binding);
         return;
       }
@@ -769,6 +827,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let refreshSerial = 0;
     let lastChatEventRefreshAt = 0;
     let lastKnownHasProvider = hasConfiguredAiProvider(cachedStatus);
+    let lastKnownOpenCodeInstalled = cachedStatus?.opencodeBinaryInstalled === true;
     const chatEventSubscriptionStartedAt = Date.now();
     const refreshAiStatus = (options: { force?: boolean } = {}) => {
       if (document.visibilityState !== "visible") return;
@@ -777,6 +836,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         if (serial !== refreshSerial) return;
         lastKnownHasProvider = hasConfiguredAiProvider(status);
+        lastKnownOpenCodeInstalled = status.opencodeBinaryInstalled === true;
         setAiStatus(status);
       }).catch(() => {
         if (cancelled) return;
@@ -800,7 +860,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    const unsubscribeChatEvents = window.ade.agentChat.onEvent((envelope) => {
+    const chatEventPin = tabCopyPinRef.current;
+    const unsubscribeChatEvents = chatEventPin ? window.ade.agentChat.onEvent((envelope) => {
       if (isRemoteProject) {
         const eventTimestamp = Date.parse(envelope.timestamp);
         if (Number.isFinite(eventTimestamp) && eventTimestamp < chatEventSubscriptionStartedAt - 10_000) {
@@ -812,13 +873,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       if (now - lastChatEventRefreshAt < AI_STATUS_CHAT_EVENT_REFRESH_MIN_GAP_MS) return;
       lastChatEventRefreshAt = now;
       refreshAiStatus({ force: true });
-    });
+    }, chatEventPin) : () => {};
     const onAiStatusCacheInvalidated = (event: Event) => {
       const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
       if (detail && !detail.allProjects && detail.projectRoot !== aiStatusProjectRoot) return;
       refreshAiStatus({ force: detail?.force !== false });
     };
     window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
+    // OpenCode landing on this computer (downloaded at launch when no agent
+    // is set up) makes its free models ready. A computer that already
+    // has it ignores the tools cache's pushes: no forced re-probe for them.
+    const unsubscribeOpenCodeInstalled = isRemoteProject
+      ? () => undefined
+      : subscribeToolInstalled("opencode", () => {
+        if (!lastKnownOpenCodeInstalled) refreshAiStatus({ force: true });
+      });
     return () => {
       cancelled = true;
       window.clearTimeout(aiTimer);
@@ -826,12 +895,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
       unsubscribeChatEvents();
+      unsubscribeOpenCodeInstalled();
     };
-  }, [currentProjectRoot, isRemoteProject, location.pathname]);
+  }, [currentProjectRoot, isRemoteProject, location.pathname, tabCopyPin?.key]);
 
   useEffect(() => {
     let cancelled = false;
-    if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
+    const readerPin = githubReaderPinRef.current;
+    if (!currentProjectRoot || !readerPin || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
       githubStatusScopeRef.current = null;
       setGithubStatus(null);
       return;
@@ -847,7 +918,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const request = ++githubStatusRequestRef.current;
       void window.ade.github.getStatus({
         forceRefresh: false,
-      }).then((status) => {
+      }, readerPin).then((status) => {
         if (cancelled || request !== githubStatusRequestRef.current) return;
         setGithubStatus(status);
       }).catch(() => {
@@ -862,7 +933,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [
     currentProjectRoot,
     githubStatusScope,
-    projectBinding?.key,
+    githubReaderPin?.key,
     isRemoteProject,
     location.pathname,
   ]);
@@ -888,9 +959,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       );
     };
     const githubTimer = window.setTimeout(() => {
-      if (!isCurrentContext()) return;
+      const readerPin = githubReaderPinRef.current;
+      if (!isCurrentContext() || !readerPin) return;
       const request = ++githubStatusRequestRef.current;
-      void window.ade.github.getStatus({ forceRefresh: true }).then((status) => {
+      void window.ade.github.getStatus({ forceRefresh: true }, readerPin).then((status) => {
         if (!isCurrentContext() || request !== githubStatusRequestRef.current) return;
         setGithubStatus(status);
       }).catch(() => {
@@ -904,10 +976,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [githubConnectionGeneration]);
 
   // Local events may arrive while this tab owns a remote project. Treat those
-  // as refresh signals and read through the bound route instead of accepting
+  // as refresh signals and read through the reader copy instead of accepting
   // a status payload from a different machine.
   useEffect(() => {
     let cancelled = false;
+    const readerPin = githubReaderPinRef.current;
+    if (!readerPin) return;
     const off = window.ade.github?.onStatusChanged?.((status) => {
       if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) return;
       const request = ++githubStatusRequestRef.current;
@@ -915,14 +989,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setGithubStatus(status);
         return;
       }
-      void window.ade.github.getStatus().then((boundStatus) => {
+      void window.ade.github.getStatus(undefined, readerPin).then((boundStatus) => {
         if (!cancelled && request === githubStatusRequestRef.current) setGithubStatus(boundStatus);
       }).catch((error: unknown) => {
         if (!cancelled && request === githubStatusRequestRef.current) captureError(error, { fingerprint: ["github", "bound-status-refresh"] });
       });
-    });
+    }, readerPin);
     return () => { cancelled = true; off?.(); };
-  }, [currentProjectRoot, projectBinding?.key, isRemoteProject, location.pathname]);
+  }, [currentProjectRoot, githubReaderPin?.key, isRemoteProject, location.pathname]);
 
   const relocateMissingProject = useCallback(() => {
     void openRepo()
@@ -998,6 +1072,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const hasAnyAiProvider = useMemo(() => {
     return hasConfiguredAiProvider(aiStatus);
   }, [aiStatus]);
+  const freeModelsReady = aiStatus?.freeModels?.nothingSignedIn === true && aiStatus.opencodeBinaryInstalled === true;
 
   const commandPaletteBinding = useMemo(
     () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
@@ -1135,7 +1210,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <AccountSignedOutBanner navigate={navigate} />
       <AutoUpdateBanner />
       <AppBundleOwnershipBanner />
+      <CloudSignInEndNotice navigate={navigate} />
       <BrainRecoveryNotice />
+      <BrainRestartNotice />
       <AppFallbackBanner />
       {!showWelcome && project?.rootPath ? (
         <IntegrationBanners
@@ -1144,6 +1221,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           currentProjectRoot={currentProjectRoot}
           githubStatus={githubStatusScopeRef.current === githubStatusScope ? githubStatus : null}
           hasAnyAiProvider={hasAnyAiProvider}
+          freeModelsReady={freeModelsReady}
           aiStatusLoaded={aiStatusLoaded && aiStatus !== null}
           relayHealth={syncRelayHealth}
           navigate={navigate}
@@ -1159,6 +1237,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       />
       {/* One ask a minute after the window opens; the card loads only when a survey is due. */}
       <SurveyHost />
+      {/* "You're on Plus": once, when an ADE Cloud plan is bought or moved up. Renders nothing. */}
+      <CloudPlanMomentWatcher />
 
       <div className="flex-1 flex min-h-0">
         <main className={cn("relative flex flex-col min-h-0 min-w-0 flex-1", tintClass)}>
@@ -1170,8 +1250,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {children}
           </div>
           <ToastViewport
-            slot={chatLaunchesVisible ? <ChatLaunchesSlideOut /> : null}
-            slotKey="chat-launches"
+            slots={[
+              { key: "cloud-lane-jobs", node: cloudLaneJobsVisible ? <CloudLaneJobsSlideOut /> : null },
+              { key: "chat-launches", node: chatLaunchesVisible ? <ChatLaunchesSlideOut /> : null },
+            ]}
           />
         </main>
       </div>
@@ -1194,7 +1276,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           in the BACKGROUND, so nothing mounted by a tab could be listening
           when it lands. */}
       <GlobalCaptureGestureHost />
-      <WorktreeOpenDialog />
+      <WorktreeOpenDialogHost />
     </div>
   );
 }

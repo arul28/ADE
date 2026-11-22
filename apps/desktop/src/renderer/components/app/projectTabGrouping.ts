@@ -14,6 +14,7 @@ import {
   THIS_MACHINE_NAME as LOCAL_MACHINE_NAME,
 } from "../../../shared/machineIdentity";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import type { AccountProjectView } from "../../../shared/accountProject";
 export { LOCAL_MACHINE_ID, LOCAL_MACHINE_NAME };
 
 
@@ -44,6 +45,11 @@ export type ProjectTabGroup = {
   machines: ProjectTabMachine[];
   /** The machine this tab is currently bound to, when it is the active tab. */
   activeBindingKey: string | null;
+  /**
+   * The repository's normalized origin, also on a tab that stays apart from
+   * another open checkout of the same repository; null when it has none.
+   */
+  origin?: string | null;
 };
 
 /** The binding that opens a recent project on the machine it lives on. */
@@ -107,25 +113,38 @@ function remoteMachine(binding: RemoteOpenProjectBinding): ProjectTabMachine {
 }
 
 /**
- * Builds one tab per open project. A project can have checkouts on several
- * machines; the tab records every known checkout of the same repository, so
- * the project's context spans all of its machines. There is no per-tab
- * machine picker in the UI.
+ * Builds one tab per repository (S4). A repository can have copies on several
+ * machines; its tab records every known copy, open or not, so the tab is the
+ * repository and never a machine.
  *
- * The join key is the repo's normalized git origin. Three rules keep it honest:
+ * The join key is the repository: its normalized git origin, mapped to the
+ * account project's current address when the account knows an old address
+ * (`canonicalOrigin`). The group id is the repository tab id
+ * (`repositoryIdForOrigin`): the account project id, or `repo:<origin>`.
+ * Three rules keep it honest:
  *
  * - A project with no resolvable origin is never merged with anything. It gets
  *   its own group keyed by its binding, so two unrelated origin-less folders
  *   can't collapse into one tab.
- * - An OPEN tab is never absorbed by another open tab. Only checkouts the user
- *   has not opened join an existing group. Two open tabs are two things the
- *   user asked to keep in front of them, and collapsing them produced a single
- *   tab whose machine changed every time the other tab was activated — the tab
- *   you left appeared to jump machines. Only checkouts you do NOT have open are
- *   attached, so tab fallback can reach them.
+ * - Open copies of one repository on different machines share one tab. The
+ *   top bar keeps one copy of a repository open at a time
+ *   (`useOneCopyPerRepository`), so two open copies are only the moment of a
+ *   switch, or a window saved by an older version.
  * - At most one checkout per machine joins a group. A lane worktree shares its
  *   parent repo's origin, so without this a worktree and its parent would
- *   silently become one tab that can't represent both.
+ *   silently become one tab that can't represent both. A second open folder
+ *   on the same machine keeps its own tab.
+ * - A tab never takes in another open tab. A copy in `ownTabKeys` (a second
+ *   clone that already has its own tab) keeps that tab while it stays open,
+ *   even after the copy it stood next to moved to another machine. Without
+ *   this, the one-copy rule would close it as a duplicate of the moved tab.
+ *   When every open copy of the repository is such a copy, the first one is
+ *   the repository tab (with every known copy) and the rest keep their own.
+ * - A move stays in the tab it was made in. A copy in `joinTabOf` (the copy a
+ *   tab just moved to, keyed to the copy it moved from) joins the tab of that
+ *   copy, whatever tab that is, as long as both are one repository. Without
+ *   this, a second clone's tab that moved to another machine joined the first
+ *   tab of the repository, and the one-copy rule closed that tab's copy.
  */
 export function groupProjectTabs(args: {
   localTabs: readonly RecentProjectSummary[];
@@ -142,6 +161,15 @@ export function groupProjectTabs(args: {
   /** The user's tab order, as binding keys. Open tabs missing from it keep
    *  their relative order after the ordered ones. */
   order?: readonly string[];
+  /** The repository's current origin for an old address of it (a renamed or moved repository). */
+  canonicalOrigin?: (origin: string) => string;
+  /** The repository tab id of an origin. Defaults to `repo:<origin>`. */
+  repositoryIdForOrigin?: (origin: string) => string;
+  /** Open copies that head a tab of their own (a second clone): each keeps
+   *  that tab and joins no other. */
+  ownTabKeys?: ReadonlySet<string>;
+  /** The copy a tab just moved to → the copy it moved from: it joins that tab. */
+  joinTabOf?: ReadonlyMap<string, string>;
 }): ProjectTabGroup[] {
   const {
     localTabs,
@@ -152,18 +180,23 @@ export function groupProjectTabs(args: {
     activeBindingKey = null,
     preferredBindingKeyByGroup = {},
     order = [],
+    canonicalOrigin = (origin: string) => origin,
+    repositoryIdForOrigin = (origin: string) => `repo:${origin}`,
+    ownTabKeys,
+    joinTabOf,
   } = args;
+  const repositoryOf = (origin: string | null): string | null => (origin ? canonicalOrigin(origin) : null);
 
   const openEntries: { machine: ProjectTabMachine; origin: string | null }[] = [
     ...localTabs.map((tab) => ({
       machine: localMachine(tab),
-      origin: cachedGitRemoteIdentity(tab.gitOriginUrl),
+      origin: repositoryOf(cachedGitRemoteIdentity(tab.gitOriginUrl)),
     })),
     ...remoteTabs.map((binding) => ({
       machine: remoteMachine(binding),
-      origin: cachedGitRemoteIdentity(
+      origin: repositoryOf(cachedGitRemoteIdentity(
         remoteOriginByKey[binding.key] ?? binding.gitOriginUrl ?? null,
-      ),
+      )),
     })),
   ];
   if (order.length > 0) {
@@ -178,13 +211,13 @@ export function groupProjectTabs(args: {
   const knownEntries: { machine: ProjectTabMachine; origin: string | null }[] = [
     ...knownLocalTabs.map((tab) => ({
       machine: localMachine(tab),
-      origin: cachedGitRemoteIdentity(tab.gitOriginUrl),
+      origin: repositoryOf(cachedGitRemoteIdentity(tab.gitOriginUrl)),
     })),
     ...knownRemoteTabs.map((binding) => ({
       machine: remoteMachine(binding),
-      origin: cachedGitRemoteIdentity(
+      origin: repositoryOf(cachedGitRemoteIdentity(
         remoteOriginByKey[binding.key] ?? binding.gitOriginUrl ?? null,
-      ),
+      )),
     })),
   ];
 
@@ -192,39 +225,77 @@ export function groupProjectTabs(args: {
   const groupByOrigin = new Map<string, ProjectTabGroup>();
   const claimedMachines = new Map<string, Set<string>>();
 
-  const standalone = (machine: ProjectTabMachine): ProjectTabGroup => ({
+  const standalone = (machine: ProjectTabMachine, origin: string | null): ProjectTabGroup => ({
     id: machine.bindingKey,
     displayName: machine.displayName,
     machines: [machine],
     activeBindingKey: machine.bindingKey === activeBindingKey ? machine.bindingKey : null,
+    origin,
   });
 
+  const openKeySet = new Set(openEntries.map((entry) => entry.machine.bindingKey));
+  // A moved copy waits for the tab it moved from (it can sort before it).
+  const movesIn = (machine: ProjectTabMachine, origin: string | null): boolean => {
+    const from = joinTabOf?.get(machine.bindingKey);
+    if (!from || !origin || !openKeySet.has(from)) return false;
+    return openEntries.some((entry) => entry.machine.bindingKey === from && entry.origin === origin);
+  };
+  // The repositories with an open copy that has no tab of its own: that copy
+  // heads the repository tab. Without one, the first own copy heads it, so a
+  // tab of its own that is now the repository's only tab gets every copy.
+  const sharedOpen = new Set<string>();
   for (const { machine, origin } of openEntries) {
-    if (!origin) {
-      groups.push(standalone(machine));
+    if (origin && !ownTabKeys?.has(machine.bindingKey) && !movesIn(machine, origin)) sharedOpen.add(origin);
+  }
+  const moved: { machine: ProjectTabMachine; origin: string }[] = [];
+  for (const { machine, origin } of openEntries) {
+    if (origin && movesIn(machine, origin)) {
+      moved.push({ machine, origin });
+      continue;
+    }
+    if (
+      !origin
+      || (ownTabKeys?.has(machine.bindingKey) && (sharedOpen.has(origin) || groupByOrigin.has(origin)))
+    ) {
+      groups.push(standalone(machine, origin));
       continue;
     }
     const existing = groupByOrigin.get(origin);
     if (!existing) {
-      const group = { ...standalone(machine), id: origin };
+      const group = { ...standalone(machine, origin), id: repositoryIdForOrigin(origin) };
       groupByOrigin.set(origin, group);
       claimedMachines.set(origin, new Set([machine.machineId]));
       groups.push(group);
       continue;
     }
-    // Another open tab already holds this origin. Claim this machine so a
-    // discovered counterpart cannot re-add it below, and give the tab its own
-    // group — an open tab always keeps its own tab, and therefore its own
-    // machine, no matter which tab is active.
-    claimedMachines.get(origin)!.add(machine.machineId);
-    groups.push(standalone(machine));
+    const claimed = claimedMachines.get(origin)!;
+    if (claimed.has(machine.machineId)) {
+      // A second open folder of the repository on the same machine (a lane
+      // worktree opened as a project, a second clone): its own tab.
+      groups.push(standalone(machine, origin));
+      continue;
+    }
+    // The same repository open on another machine: one tab, the repository.
+    claimed.add(machine.machineId);
+    existing.machines.push(machine);
+    if (machine.bindingKey === activeBindingKey) existing.activeBindingKey = machine.bindingKey;
+  }
+
+  for (const { machine, origin } of moved) {
+    const from = joinTabOf!.get(machine.bindingKey)!;
+    const tab = groups.find((group) => group.machines.some((candidate) => candidate.bindingKey === from))!;
+    tab.machines.push(machine);
+    claimedMachines.get(origin)?.add(machine.machineId);
+    if (machine.bindingKey === activeBindingKey) tab.activeBindingKey = machine.bindingKey;
   }
 
   // Attach discovered counterparts only after open entries establish the tab
   // set. This is what lets an unopened local checkout appear in the machine
-  // switcher without turning every recent project into an open tab.
+  // switcher without turning every recent project into an open tab. A copy
+  // open in a tab of its own is that tab's, never another tab's machine.
+  const openKeys = new Set(openEntries.map((entry) => entry.machine.bindingKey));
   for (const { machine, origin } of knownEntries) {
-    if (!origin) continue;
+    if (!origin || openKeys.has(machine.bindingKey)) continue;
     const existing = groupByOrigin.get(origin);
     if (!existing) continue;
     if (existing.machines.some((candidate) => candidate.bindingKey === machine.bindingKey)) {
@@ -250,6 +321,18 @@ export function groupProjectTabs(args: {
   return groups;
 }
 
+/**
+ * The open copies in a tab of their own in `groups`: a repository's second
+ * clone, keyed by its copy, and the copy that tab just moved to.
+ */
+export function ownTabKeysOf(groups: readonly ProjectTabGroup[]): Set<string> {
+  return new Set(groups.flatMap((group) => (
+    group.origin && group.machines.some((machine) => machine.bindingKey === group.id)
+      ? group.machines.map((machine) => machine.bindingKey)
+      : []
+  )));
+}
+
 /** The key a tab is ordered by: the binding key of the checkout it opened on. */
 export function tabOrderKey(group: ProjectTabGroup): string {
   return group.machines[0]?.bindingKey ?? group.id;
@@ -264,28 +347,6 @@ export function activeMachineForGroup(group: ProjectTabGroup): ProjectTabMachine
   );
 }
 
-/**
- * This computer's checkout of the repo another machine's checkout belongs to,
- * when there is one on disk. A project tab always runs on it: another
- * machine's copy is only for a repo this computer does not have. Open tabs
- * win over recents, and lane worktrees never stand in for the repo itself.
- */
-export function localCheckoutForRemote(args: {
-  remoteOrigin: string | null | undefined;
-  openLocalTabs: readonly RecentProjectSummary[];
-  knownLocalTabs: readonly RecentProjectSummary[];
-}): string | null {
-  const origin = cachedGitRemoteIdentity(args.remoteOrigin ?? null);
-  if (!origin) return null;
-  const match = [...args.openLocalTabs, ...args.knownLocalTabs].find((entry) =>
-    entry.kind !== "remote"
-    && entry.exists !== false
-    && !entry.worktreeOf
-    && Boolean(entry.rootPath)
-    && cachedGitRemoteIdentity(entry.gitOriginUrl ?? null) === origin);
-  return match?.rootPath ?? null;
-}
-
 /** Where a project tab moves when its machine is disconnected or removed. */
 export type ProjectTabFallback =
   | { kind: "local"; rootPath: string }
@@ -295,8 +356,10 @@ export type ProjectTabFallback =
  * A logical tab is a repo, so one machine going away is not a reason to close
  * it: the tab falls back to another checkout of the same repo — the local
  * checkout first (it needs no connection and is the tab's natural default),
- * then a connected machine, then any other. `null` means the repo lives nowhere
- * else and the tab must close.
+ * then a connected machine, then any other. A checkout that another tab has
+ * open is never a fallback: moving there would close one tab and replace the
+ * other tab's view. `null` means no free checkout: the tab waits with no
+ * computer (or closes, for a folder with no repository).
  */
 export function resolveProjectTabFallback(args: {
   bindingKey: string;
@@ -329,16 +392,16 @@ export function resolveProjectTabFallback(args: {
       ? openLocalRoots.includes(machine.rootPath)
       : openRemoteKeys.has(machine.bindingKey);
 
-  const locals = others.filter(
-    (machine) => machine.isLocal && machine.exists && machine.rootPath,
+  const local = others.find(
+    (machine) => machine.isLocal && machine.exists && machine.rootPath && !isOpen(machine),
   );
-  const local = locals.find(isOpen) ?? locals[0];
   if (local) return { kind: "local", rootPath: local.rootPath };
 
   const remotes = others.filter(
     (machine): machine is ProjectTabMachine & { binding: RemoteOpenProjectBinding } =>
       machine.binding?.kind === "remote" &&
-      machine.binding.targetId !== excludeTargetId,
+      machine.binding.targetId !== excludeTargetId &&
+      !isOpen(machine),
   );
   const remote =
     remotes.find((machine) => connectedTargetIds.has(machine.binding.targetId)) ??
@@ -564,4 +627,212 @@ export function groupRecentProjects(args: {
       if (pinDelta !== 0) return pinDelta;
       return isoTimestamp(right.lastOpenedAt) - isoTimestamp(left.lastOpenedAt);
     });
+}
+
+/** The target id of a copy on a machine this client has no saved connection to. */
+export const ACCOUNT_MACHINE_TARGET_PREFIX = "account-machine:";
+
+/**
+ * The location of an account project that no computer has a copy of: the
+ * account prefix with no machine key. It opens the no-machine tab, like a
+ * copy on a machine with no saved connection.
+ */
+export const ACCOUNT_NO_COPY_TARGET_ID = ACCOUNT_MACHINE_TARGET_PREFIX;
+
+export function isAccountNoCopyLocation(summary: Pick<RecentProjectSummary, "kind" | "remote">): boolean {
+  return summary.kind === "remote" && summary.remote?.targetId === ACCOUNT_NO_COPY_TARGET_ID;
+}
+
+function connectionKeyOf(connection: RemoteRuntimeConnectionSnapshot["connections"][number]): string {
+  return connection.target.pairedMachine?.machineKey?.trim() || connection.target.id;
+}
+
+/**
+ * The folders on this computer that are another machine's copy (F6). A path
+ * can exist on two machines, and on a dev Mac a test machine's clone even
+ * lives on this disk. A recent row at such a path is not this computer's
+ * copy when the account lists the path on another machine and lists this
+ * computer's copies without it. Empty until the account list and this
+ * computer's machine key are both known.
+ */
+export function foreignCopyPaths(args: {
+  projects: readonly AccountProjectView[] | null;
+  thisMachineKey: string | null;
+}): ReadonlySet<string> {
+  const { projects, thisMachineKey } = args;
+  const foreign = new Set<string>();
+  if (!projects || !thisMachineKey) return foreign;
+  const mine = new Set<string>();
+  let publishesHere = false;
+  for (const project of projects) {
+    for (const copy of project.copies) {
+      if (copy.machineKey === thisMachineKey) {
+        mine.add(copy.rootPath);
+        publishesHere = true;
+      }
+    }
+  }
+  if (!publishesHere) return foreign;
+  for (const project of projects) {
+    for (const copy of project.copies) {
+      if (copy.machineKey !== thisMachineKey && !mine.has(copy.rootPath)) foreign.add(copy.rootPath);
+    }
+  }
+  return foreign;
+}
+
+/**
+ * Home rows with the account's projects: `shownGroups` (the recents), with
+ * each account copy no recent row shows added to its project's row, then a
+ * row for each account project no recent row shows (added or cloned on
+ * another machine). Each copy is a location: this computer's folder, a
+ * connected machine's checkout, or a machine with no saved connection
+ * (`account-machine:<key>`, which opens the no-machine tab).
+ */
+export function accountProjectGroups(args: {
+  projects: readonly AccountProjectView[];
+  shownGroups: readonly RecentProjectGroup[];
+  remoteSnapshot?: RemoteRuntimeConnectionSnapshot | null;
+  thisMachineKey: string | null;
+  machineNames?: Readonly<Record<string, string>>;
+  /** A shown row's machine id to its account machine key, when they differ (the web). */
+  accountMachineKeys?: ReadonlyMap<string, string>;
+}): RecentProjectGroup[] {
+  const { projects, shownGroups, remoteSnapshot = null, thisMachineKey, machineNames = {}, accountMachineKeys } = args;
+  const connections = remoteSnapshot?.connections ?? [];
+  // The shown row of each repository, by origin.
+  const shownByOrigin = new Map<string, number>();
+  shownGroups.forEach((group, index) => {
+    for (const location of group.locations) {
+      const origin = cachedGitRemoteIdentity(location.summary.gitOriginUrl ?? location.summary.remote?.gitOriginUrl ?? null);
+      if (origin && !shownByOrigin.has(origin)) shownByOrigin.set(origin, index);
+    }
+  });
+  const shown = [...shownGroups];
+  const groups: RecentProjectGroup[] = [];
+  for (const project of projects) {
+    const origins = [project.repoKey, ...project.aliases]
+      .map((key) => cachedGitRemoteIdentity(key.startsWith("repo:") ? key.slice("repo:".length) : key))
+      .filter((origin): origin is string => origin != null);
+    const shownIndex = origins.map((origin) => shownByOrigin.get(origin)).find((index) => index != null);
+    const address = project.repoKey.startsWith("repo:") ? project.repoKey.slice("repo:".length) : project.repoKey;
+    const gitOriginUrl = `https://${address}`;
+    const locations: RecentProjectLocation[] = [];
+    for (const copy of project.copies) {
+      const lastOpenedAt = copy.lastSeenAt > 0 ? new Date(copy.lastSeenAt).toISOString() : "";
+      if (thisMachineKey && copy.machineKey === thisMachineKey) {
+        locations.push({
+          summary: { rootPath: copy.rootPath, displayName: project.name, lastOpenedAt, exists: true, kind: "local", gitOriginUrl },
+          recentKey: null,
+          machineId: LOCAL_MACHINE_ID,
+          machineName: LOCAL_MACHINE_NAME,
+          connectionState: null,
+          reachable: true,
+        });
+        continue;
+      }
+      const connection = connections.find((entry) => connectionKeyOf(entry) === copy.machineKey) ?? null;
+      const row = connection?.projects?.find((entry) => entry.projectId === copy.checkoutId)
+        ?? connection?.projects?.find((entry) => entry.rootPath === copy.rootPath)
+        ?? null;
+      const targetId = connection ? connection.target.id : `${ACCOUNT_MACHINE_TARGET_PREFIX}${copy.machineKey}`;
+      const runtimeName = connection
+        ? connection.target.name?.trim() || connection.target.hostname || connection.target.id
+        : machineNames[copy.machineKey]?.trim() || "Another computer";
+      const state = connection?.state ?? "idle";
+      locations.push({
+        summary: {
+          rootPath: copy.rootPath,
+          displayName: project.name,
+          lastOpenedAt,
+          exists: row?.exists !== false,
+          kind: "remote",
+          gitOriginUrl,
+          remote: {
+            targetId,
+            projectId: row?.projectId ?? copy.checkoutId,
+            runtimeName,
+            hostname: connection?.target.hostname ?? "",
+            gitOriginUrl,
+            iconDataUrl: row?.icon?.dataUrl ?? null,
+            ...(connection?.target.transport ? { transport: connection.target.transport } : {}),
+          },
+        },
+        recentKey: null,
+        machineId: targetId,
+        machineName: runtimeName,
+        connectionState: state,
+        reachable: state === "connected" && row != null && row.exists !== false,
+      });
+    }
+    if (shownIndex != null) {
+      // Until this computer's identity is read, its copy looks like another
+      // computer's (`account-machine:`); merging then would list it twice.
+      if (!thisMachineKey && !accountMachineKeys) continue;
+      // A recent row shows this repository: add the copies on computers it
+      // lacks (a computer with no saved connection, for example).
+      const group = shown[shownIndex]!;
+      // By machine: a recent row's path can be spelled another way than the account's.
+      const has = new Set(group.locations.flatMap((location) => {
+        const accountKey = accountMachineKeys?.get(location.machineId);
+        return accountKey ? [location.machineId, `${ACCOUNT_MACHINE_TARGET_PREFIX}${accountKey}`] : [location.machineId];
+      }));
+      const missing = locations.filter((location) => !has.has(location.machineId));
+      if (missing.length > 0) {
+        const merged = [...group.locations, ...missing];
+        // An added copy on this computer opens before an offline recent.
+        const primary = group.primary.reachable
+          ? group.primary
+          : merged.find((location) => location.summary.kind !== "remote" && location.reachable)
+            ?? merged.find((location) => location.reachable)
+            ?? group.primary;
+        shown[shownIndex] = { ...group, locations: merged, primary };
+      }
+      continue;
+    }
+    // A project with no copy is still the account's (added with no
+    // computer, or every copy removed): its row opens the no-machine tab,
+    // where a copy can be added.
+    if (locations.length === 0) {
+      const addedAt = project.addedAt > 0 ? new Date(project.addedAt).toISOString() : "";
+      locations.push({
+        summary: {
+          rootPath: "",
+          displayName: project.name,
+          lastOpenedAt: addedAt,
+          exists: true,
+          kind: "remote",
+          gitOriginUrl,
+          remote: {
+            targetId: ACCOUNT_NO_COPY_TARGET_ID,
+            projectId: project.id,
+            runtimeName: "No computer",
+            hostname: "",
+            gitOriginUrl,
+            iconDataUrl: null,
+          },
+        },
+        recentKey: null,
+        machineId: ACCOUNT_NO_COPY_TARGET_ID,
+        machineName: "No computer",
+        connectionState: null,
+        reachable: false,
+      });
+    }
+    locations.sort((left, right) => recentTimestamp(right.summary) - recentTimestamp(left.summary));
+    const primary =
+      locations.find((location) => location.summary.kind !== "remote" && location.reachable)
+      ?? locations.find((location) => location.reachable)
+      ?? locations[0]!;
+    groups.push({
+      id: project.id,
+      displayName: project.name,
+      locations,
+      primary,
+      recentKeys: [],
+      pinned: false,
+      lastOpenedAt: primary.summary.lastOpenedAt,
+    });
+  }
+  return [...shown, ...groups];
 }

@@ -138,6 +138,9 @@ export type PaceVisual = {
   detail?: string;
 };
 
+/** Projected use at the reset, in percent, above which "Room to spare" overstates it. */
+const ROOM_TO_SPARE_MAX_PROJECTED_PERCENT = 75;
+
 /**
  * Maps computed pacing to a calm/warm/hot read. "ahead" means burning faster
  * than a steady pace through the window; "behind" means headroom.
@@ -156,7 +159,14 @@ export function paceVisual(pacing?: UsagePacing | null): PaceVisual | null {
   // reach tomorrow's reset with room to spare."): "29% ahead of pace" in mono
   // made the reader do the arithmetic. The figure stays on the tooltip.
   const detail = `${mag}% ${ahead ? "ahead of" : "behind"} a steady pace`;
-  if (!ahead) return { label: "Room to spare", tone, detail };
+  // Behind pace means the window lasts to its reset, which is not the same as
+  // room to spare: 24% left an hour before the reset is behind pace too. Room
+  // to spare needs a quarter of the window still unused at the reset.
+  if (!ahead) {
+    return pacing.projectedWeeklyPercent <= ROOM_TO_SPARE_MAX_PROJECTED_PERCENT
+      ? { label: "Room to spare", tone, detail }
+      : { label: "Lasts to reset", tone: "calm", detail };
+  }
   // "Runs out early" only when the projection really ends past the limit; a
   // window used faster than a steady pace can still last to its reset, and
   // saying it runs out (in red) on an account with most of its room left was

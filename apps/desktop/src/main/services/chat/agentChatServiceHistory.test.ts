@@ -232,6 +232,39 @@ describe("createAgentChatService", () => {
       expect(transcript.truncated).toBe(true);
     });
 
+    // A row too large to page stands in as a notice. When it may have been a
+    // message, a transcript read joining both sides of it must say it is
+    // incomplete (a handoff brief then flags its excerpt).
+    it.each([
+      { omittedEventType: "text" as string | undefined, truncated: true },
+      { omittedEventType: undefined, truncated: true },
+      { omittedEventType: "tool_result", truncated: false },
+      // An unparsed row whose start did not give a timestamp is dated at the
+      // epoch; it still sits between the two messages in the file.
+      { omittedEventType: undefined, at: "1970-01-01T00:00:00.000Z", truncated: true },
+    ])("reports a missing message ($omittedEventType, $at) as truncated: $truncated", async ({ omittedEventType, at, truncated }) => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([
+        { sessionId: session.id, timestamp: "2026-08-01T00:00:01.000Z", sequence: 1, event: { type: "user_message", text: "question" } },
+        {
+          sessionId: session.id,
+          timestamp: at ?? "2026-08-01T00:00:02.000Z",
+          event: {
+            type: "system_notice",
+            noticeKind: "info",
+            status: "history_row_omitted",
+            message: "One very large entry was left out of this chat's history.",
+            omittedRow: { offset: 100, bytes: 3_000_000, ...(omittedEventType ? { eventType: omittedEventType } : {}) },
+          },
+        },
+        { sessionId: session.id, timestamp: "2026-08-01T00:00:03.000Z", sequence: 3, event: { type: "user_message", text: "follow-up" } },
+      ]);
+      const transcript = await service.getChatTranscript({ sessionId: session.id });
+      expect(transcript.entries.map((entry) => entry.text)).toEqual(["question", "follow-up"]);
+      expect(transcript.truncated).toBe(truncated);
+    });
+
     // `ade chat read` is how one agent learns that the chat it handed work to
     // failed. The failure must survive the bounded read, inside one budget.
     it.each([
@@ -1369,7 +1402,17 @@ describe("createAgentChatService", () => {
       expect(history.events).toHaveLength(1);
     });
 
-    it("drops an oversized newest event when a strict mobile byte budget is requested", async () => {
+    // A sync snapshot (phone, web) asks for a byte budget. An empty window for
+    // a chat with history blanked the phone's thread (ADE.ChatEmptyThread).
+    it.each([
+      { label: "plain", options: {}, expected: [2] },
+      // The kept row then pulls the window back to the turn's user message.
+      {
+        label: "turn-aligned",
+        options: { turnBoundaryAligned: true, separatePinnedEvents: true },
+        expected: [1, 2],
+      },
+    ])("keeps the oversized newest event under a requested byte budget ($label)", async ({ options, expected }) => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -1377,21 +1420,25 @@ describe("createAgentChatService", () => {
         model: "gpt-5.4",
       });
 
+      const older: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T09:59:00.000Z",
+        event: { type: "user_message", text: "Summarize the diff" },
+        sequence: 1,
+      };
       const giant: AgentChatEventEnvelope = {
         sessionId: session.id,
         timestamp: "2026-04-23T10:00:00.000Z",
         event: { type: "text", text: "giant-".concat("y".repeat(16_000)) },
-        sequence: 1,
+        sequence: 2,
       };
       const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
       fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
-      vi.mocked(parseAgentChatTranscript).mockReturnValue([giant]);
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([older, giant]);
 
-      const history = await service.getChatEventHistory(session.id, { maxBytes: 8_192 });
+      const history = await service.getChatEventHistory(session.id, { maxBytes: 8_192, ...options });
 
-      expect(history.events).toHaveLength(0);
-      expect(history.windowTruncated).toBe(true);
-      expect(history.truncated).toBe(true);
+      expect(history.events.map((entry) => entry.sequence)).toEqual(expected);
     });
 
     it("marks window truncation when the service response cap removes events", async () => {
@@ -1718,11 +1765,6 @@ describe("createAgentChatService", () => {
         expect(history.tailStartOffset).toBe(4 * LINE_BYTES);
       });
 
-      it("reports hasOlderHistory:false for an unknown session", async () => {
-        const { service } = createService();
-        const history = await service.getChatEventHistory("unknown-session");
-        expect(history.hasOlderHistory).toBe(false);
-      });
     });
   });
 

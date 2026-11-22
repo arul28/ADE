@@ -41,7 +41,7 @@ function gistOf(prompt: string): string {
 
 export type ModelHintHistoryEntry = {
   at: number;
-  /** The chat provider (claude, codex, cursor, opencode). */
+  /** The chat provider (claude, codex, cursor, opencode, copilot). */
   harness: string;
   /** Who makes the model: "Anthropic", "OpenAI". */
   maker: string;

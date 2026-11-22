@@ -1,9 +1,13 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { isIanaTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
+import { ADE_CLOUD_HOME_DEVICE_ID, ADE_CLOUD_HOME_NAME, isAdeCloudHome } from "../../../shared/automationHome";
+import { LANE_SETUP_PLATFORM_FIELDS } from "../../../shared/laneSetupPlatform";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import YAML from "yaml";
-import cron from "node-cron";
+import { isDeepStrictEqual } from "node:util";
+import { YAML } from "../shared/lazyPackages";
+import { loadNodeCron } from "../shared/lazyPackages";
 import { z } from "zod";
 import type {
   AiConfig,
@@ -67,7 +71,7 @@ import type {
 } from "../../../shared/types";
 import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE, isPullRequestTriggerType } from "../../../shared/types";
 import {
-  laneSetupScriptHasWork,
+  laneSetupScriptIsConfigured,
   PROJECT_CONFIG_CHANGED_ON_DISK,
 } from "../../../shared/types/config";
 import { mergeLaneEnvInitConfig } from "../lanes/laneEnvInitMerge";
@@ -88,7 +92,8 @@ import { markExpected } from "../../../shared/expectedError";
 import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 import type { AutomationRuleAccountStore } from "../automations/automationRuleAccountStore";
-import { createAutomationRuleAccountSync, type AutomationRuleAccountSync } from "../automations/automationRuleAccountSync";
+import { createAutomationRuleAccountSync, type AutomationRuleAccountSync, type CloudHomesView } from "../automations/automationRuleAccountSync";
+import { createProjectConfigAccountLayer, type ProjectConfigAccountBackend, type ProjectConfigAccountLayer } from "./projectConfigAccountLayer";
 
 const VERSION = 1;
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
@@ -443,6 +448,8 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
 
   const out: AutomationTrigger = { type };
   const cron = asString(value.cron);
+  const timezone = asString(value.timezone)?.trim();
+  if (timezone && isIanaTimeZone(timezone)) out.timezone = timezone;
   const branch = asString(value.branch);
   const targetBranch = asString(value.targetBranch);
   const event = asString(value.event);
@@ -676,10 +683,12 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
   const laneNameTemplate = laneNamePreset === "custom"
     ? asString(value.laneNameTemplate)?.trim() || undefined
     : undefined;
+  const cloud = parseAutomationCloudTarget(value.cloud);
   const sharedLaneFields = {
     ...(laneMode ? { laneMode } : {}),
     ...(laneNamePreset ? { laneNamePreset } : {}),
     ...(laneNameTemplate ? { laneNameTemplate } : {}),
+    ...(cloud ? { cloud } : {}),
   };
 
   if (kind === "agent-session") {
@@ -901,6 +910,17 @@ export function coerceAutomationRuleHome(value: unknown): AutomationRuleHome | u
   if (!deviceId || !name || !chosenAt) return undefined;
   const checkout = asString(value.checkout)?.trim();
   const previousDeviceId = asString(value.previousDeviceId)?.trim();
+  // ADE Cloud's home names no computer and no checkout, whatever the row says.
+  if (isAdeCloudHome({ deviceId, kind: asString(value.kind) })) {
+    return {
+      kind: "cloud",
+      deviceId: ADE_CLOUD_HOME_DEVICE_ID,
+      name: ADE_CLOUD_HOME_NAME,
+      chosenAt,
+      checkout: null,
+      ...(previousDeviceId && previousDeviceId !== ADE_CLOUD_HOME_DEVICE_ID ? { previousDeviceId } : {}),
+    };
+  }
   return {
     deviceId,
     name,
@@ -1112,37 +1132,34 @@ function coerceLaneCopyPath(value: unknown): LaneCopyPathConfig | null {
  */
 function coerceLaneSetupScript(value: unknown): LaneSetupScriptConfig | undefined {
   if (!isRecord(value)) return undefined;
+  // An explicit list is kept even when empty: `linuxCommands: []` means "run
+  // nothing on Linux", not "fall back to the macOS/Linux commands".
   const readCommands = (candidate: unknown): string[] | undefined => {
     if (!Array.isArray(candidate)) return undefined;
-    const commands = candidate
+    return candidate
       .map((entry) => asString(entry)?.trim() ?? "")
       .filter((entry) => entry.length > 0);
-    return commands.length ? commands : undefined;
   };
   const readPath = (candidate: unknown): string | undefined => asString(candidate)?.trim() || undefined;
 
-  const commands = readCommands(value.commands);
-  const unixCommands = readCommands(value.unixCommands);
-  const windowsCommands = readCommands(value.windowsCommands);
-  const scriptPath = readPath(value.scriptPath);
-  const unixScriptPath = readPath(value.unixScriptPath);
-  const windowsScriptPath = readPath(value.windowsScriptPath);
-
-  const parsed: LaneSetupScriptConfig = {
-    ...(commands ? { commands } : {}),
-    ...(unixCommands ? { unixCommands } : {}),
-    ...(windowsCommands ? { windowsCommands } : {}),
-    ...(scriptPath ? { scriptPath } : {}),
-    ...(unixScriptPath ? { unixScriptPath } : {}),
-    ...(windowsScriptPath ? { windowsScriptPath } : {}),
-    ...(asBool(value.injectPrimaryPath) === true ? { injectPrimaryPath: true } : {}),
-  };
+  // Every commands list first, then every script path: the stored key order.
+  const parsed: LaneSetupScriptConfig = {};
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const commands = readCommands(value[field.commandsKey]);
+    if (commands) parsed[field.commandsKey] = commands;
+  }
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const scriptPath = readPath(value[field.scriptKey]);
+    if (scriptPath) parsed[field.scriptKey] = scriptPath;
+  }
+  if (asBool(value.injectPrimaryPath) === true) parsed.injectPrimaryPath = true;
 
   // `injectPrimaryPath` on its own configures nothing to run, so a config with
   // only that key is not a setup script — returning one would emit an empty
-  // init step that always "succeeds". Shared with the resolver and the template
-  // editor so all three agree on what counts as a script.
-  return laneSetupScriptHasWork(parsed) ? parsed : undefined;
+  // init step that always "succeeds". An explicit per-OS list (even empty) is
+  // kept, so a layer that says "run nothing on Linux" survives the merge; the
+  // resolver runs nothing for it.
+  return laneSetupScriptIsConfigured(parsed) ? parsed : undefined;
 }
 
 function coerceLaneEnvInitConfig(value: unknown): LaneEnvInitConfig | undefined {
@@ -2467,6 +2484,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       triggers: triggers.map((trigger) => ({
         type: trigger.type,
         ...(trigger.cron ? { cron: trigger.cron.trim() } : {}),
+        ...(trigger.timezone ? { timezone: trigger.timezone } : {}),
         ...(trigger.branch ? { branch: trigger.branch.trim() } : {}),
         ...(trigger.targetBranch ? { targetBranch: trigger.targetBranch.trim() } : {}),
         ...(trigger.event ? { event: trigger.event.trim() } : {}),
@@ -2957,7 +2975,7 @@ function validateEffectiveConfig(
         const expr = (trigger.cron ?? "").trim();
         if (!expr) {
           issues.push({ path: `${tp}.cron`, message: "Schedule trigger requires cron" });
-        } else if (!cron.validate(expr)) {
+        } else if (!loadNodeCron().validate(expr)) {
           issues.push({ path: `${tp}.cron`, message: `Invalid cron expression '${expr}'` });
         }
       }
@@ -3131,11 +3149,11 @@ function validateEffectiveConfig(
   };
 }
 
-function readLocalHashFromDisk(filePath: string): string {
+function readLocalTextFromDisk(filePath: string): string {
   try {
-    return hashContent(fs.readFileSync(filePath, "utf8"));
+    return fs.readFileSync(filePath, "utf8");
   } catch (err: any) {
-    if (err?.code === "ENOENT") return hashContent("");
+    if (err?.code === "ENOENT") return "";
     throw err;
   }
 }
@@ -3155,12 +3173,21 @@ function changedOnDiskError(): Error {
   );
 }
 
-function invalidConfigError(validation: ProjectConfigValidationResult): Error {
+/**
+ * A config that breaks a rule. `onDisk` is the read path: the file itself is
+ * invalid (a hand edit, an agent's write, or a file an older ADE accepted),
+ * and the message names the field, so the person can fix it. That is an
+ * answer about their config, not a defect, so it is marked `user`. A save
+ * stays unmarked: a candidate the Settings form built and the rules refuse
+ * is a defect in the form. With no issue to name, the validator itself
+ * failed, and that stays reported too.
+ */
+function invalidConfigError(validation: ProjectConfigValidationResult, options: { onDisk?: boolean } = {}): Error {
   const first = validation.issues[0];
   const msg = first ? `${first.path}: ${first.message}` : "Unknown config validation failure";
   const err = new Error(`ADE_CONFIG_INVALID: ${msg}`);
   (err as Error & { code?: string }).code = "ADE_CONFIG_INVALID";
-  return err;
+  return first && options.onDisk ? markExpected(err, "user") : err;
 }
 
 export function createProjectConfigService({
@@ -3168,13 +3195,20 @@ export function createProjectConfigService({
   adeDir,
   projectId,
   db,
-  logger
+  logger,
+  storeOfferedApiKey
 }: {
   projectRoot: string;
   adeDir: string;
   projectId: string;
   db: AdeDb;
   logger: Logger;
+  /**
+   * Saves a provider key that a config write offers (a new or changed
+   * `ai.apiKeys` entry) in the API key store instead of the file. Throws when
+   * it cannot. Without it, such a write is refused.
+   */
+  storeOfferedApiKey?: (provider: string, key: string) => void;
 }) {
   const sharedPath = path.join(adeDir, "ade.yaml");
   const localPath = path.join(adeDir, "local.yaml");
@@ -3400,6 +3434,84 @@ export function createProjectConfigService({
     }
   };
 
+  // Settings that follow the account (`projectConfigAccountLayer.ts`). Null
+  // until the brain attaches its account store, and on hosts without one.
+  let accountLayer: ProjectConfigAccountLayer | null = null;
+
+  /**
+   * The snapshot's `localHash`: the file, plus the account's values of the
+   * settings that follow it. A save from a snapshot read before another
+   * computer changed one of them is refused as changed (Settings reads again
+   * and re-applies its edit), so it never writes the old value back.
+   */
+  const localHashOf = (raw: string): string => {
+    const account = accountLayer?.fingerprint() ?? null;
+    return account === null ? hashContent(raw) : hashContent(`${raw}\n# account settings: ${account}`);
+  };
+
+  /**
+   * What the account added to the last snapshot: the account's values over
+   * the file, the account's rules, the hash and the notices. Building it read
+   * the account settings store a few dozen times (each read checks the
+   * signed-in account), and about ten timers per project ask for a snapshot
+   * each minute (automation pollers, the PR poll, storage cleanup, the settle
+   * nudge, the AI status); this was most of the brain's idle config cost.
+   * It is kept while the file and every account input are unchanged (the
+   * layer's and the rule store's `revision`), so a change on another computer
+   * or a write here shows on the next read. Validation and `stampRunsHere`
+   * still run on every read. The age limit re-reads what no revision covers:
+   * an account value judged alone against the disk (a path that appears),
+   * which the layer itself re-judges every 5 s.
+   */
+  const ACCOUNT_PARTS_MAX_AGE_MS = 30_000;
+  type AccountParts = {
+    config: ProjectConfigFile;
+    notes: typeof automationNotes;
+    localHash: string;
+    notices: NonNullable<ProjectConfigSnapshot["accountNotices"]>;
+  };
+  // `file` is the `cachedLocalFile` object it was built from: a re-read is a
+  // new object, also when a same-size write kept the file's stat identity.
+  let keptAccountParts: (AccountParts & { key: string; file: object; atMs: number }) | null = null;
+
+  /** Null when an input cannot say whether it changed: nothing is kept then. */
+  const accountPartsKey = (fileKey: string): string | null => {
+    const layer = accountLayer ? accountLayer.revision() : "-";
+    const rules = automationRuleSync ? automationRuleSync.revision() : "-";
+    if (layer === null || rules === null) return null;
+    return `${fileKey}#${layer}#${rules}`;
+  };
+
+  const buildAccountParts = (file: { config: ProjectConfigFile; raw: string }): AccountParts => {
+    const fileConfig = structuredClone(file.config);
+    // The layer compares paths as the file means them (project-relative).
+    const layerFile = accountLayer ? normalizeConfigFilePaths(fileConfig, projectRoot) : null;
+    const config = withAccountRules(accountLayer && layerFile ? accountLayer.overlay(layerFile) : fileConfig);
+    return {
+      config,
+      notes: automationNotes,
+      localHash: localHashOf(file.raw),
+      notices: accountLayer && layerFile ? accountLayer.notices(layerFile) : [],
+    };
+  };
+
+  const readAccountParts = (fileKey: string, file: { config: ProjectConfigFile; raw: string }): AccountParts => {
+    if (!accountLayer && !automationRuleSync) return buildAccountParts(file);
+    const key = accountPartsKey(fileKey);
+    const nowMs = Date.now();
+    const kept = keptAccountParts;
+    if (key !== null && kept && kept.key === key && kept.file === file && nowMs - kept.atMs < ACCOUNT_PARTS_MAX_AGE_MS) {
+      automationNotes = kept.notes;
+      // Copies: the snapshot owns what it is built from, and callers may edit it.
+      return { config: structuredClone(kept.config), notes: kept.notes, localHash: kept.localHash, notices: structuredClone(kept.notices) };
+    }
+    const parts = buildAccountParts(file);
+    keptAccountParts = key === null
+      ? null
+      : { ...parts, config: structuredClone(parts.config), notices: structuredClone(parts.notices), key, file, atMs: nowMs };
+    return parts;
+  };
+
   const readSnapshotFromDisk = (): ProjectConfigSnapshot => {
     // Keyed by the identity seen before the read: a write racing the read
     // changes the files again, so the next call misses and reads afresh.
@@ -3410,14 +3522,16 @@ export function createProjectConfigService({
       const localFile = readConfigFile(localPath);
       cachedLocalFile = { key, config: localFile.config, raw: localFile.raw };
     }
+    const parts = readAccountParts(key, cachedLocalFile);
     const snapshot = buildSnapshotFromFiles(
       emptySharedConfig(),
-      withAccountRules(structuredClone(cachedLocalFile.config)),
-      { sharedHash: hashContent(""), localHash: hashContent(cachedLocalFile.raw) },
+      parts.config,
+      { sharedHash: hashContent(""), localHash: parts.localHash },
       { persistSnapshots: persistedKey !== key },
     );
     if (snapshot.validation.ok) persistedKey = key;
     stampRunsHere(snapshot);
+    if (parts.notices.length > 0) snapshot.accountNotices = parts.notices;
     return snapshot;
   };
 
@@ -3432,6 +3546,21 @@ export function createProjectConfigService({
 
   let automationRuleSync: AutomationRuleAccountSync | null = null;
   let automationNotes = new Map<string, { needsNewerAde?: true; localReason?: AutomationRuleLocalReason }>();
+
+  /**
+   * A part of the config judged alone, for values from the account: one bad
+   * value from another computer must not make this computer's config invalid.
+   */
+  const configValidAlone = (partial: ProjectConfigFile): boolean => {
+    const local = normalizeConfigFilePaths(
+      { version: VERSION, testSuites: [], laneOverlayPolicies: [], ...partial },
+      projectRoot,
+    );
+    const shared = emptySharedConfig();
+    const parts = Object.keys(partial);
+    return !validateEffectiveConfig(resolveEffectiveConfig(shared, local), projectRoot, shared, local).issues
+      .some((issue) => parts.some((part) => issue.path.includes(part)));
+  };
 
   /** A rule's own problems, judged alone: one bad rule from another computer must not break this config. */
   const automationRuleProblems = (rule: ConfigAutomationRule): string[] => {
@@ -3462,15 +3591,63 @@ export function createProjectConfigService({
     automationRuleSync?.stamp(snapshot.effective.automations, automationNotes);
   };
 
-  const writeLocalFile = (local: ProjectConfigFile): void => {
-    initializeOrRepairAdeProject(projectRoot, { logger });
-    fs.mkdirSync(path.dirname(localPath), { recursive: true });
-    writeFileAtomicSync(localPath, toCanonicalYaml(local));
-    cachedLocalFile = null;
-  };
-
   /** The file's own config, without the account's rules. */
   const readLocalFileConfig = (): ProjectConfigFile => normalizeConfigFilePaths(readConfigFile(localPath).config, projectRoot);
+
+  /**
+   * `.ade/local.yaml` never gets a new provider key (account project plan,
+   * slice Y1). A write keeps an `ai.apiKeys` entry only when the file already
+   * holds that exact value: a key still waiting to move to the key store
+   * (`localYamlApiKeys.ts`). A new or changed key goes to the key store
+   * through `storeOfferedApiKey`, before anything is written; without that
+   * hook the write is refused, so the caller still has the key. The dead
+   * `providers` block keeps only the entries the file already has.
+   */
+  const withoutNewPlaintextKeys = (local: ProjectConfigFile): ProjectConfigFile => {
+    const offeredKeys = local.ai?.apiKeys ?? {};
+    if (Object.keys(offeredKeys).length === 0 && !local.providers) return local;
+    const onDisk = readLocalFileConfig();
+    const diskKeys = onDisk.ai?.apiKeys ?? {};
+    const keptKeys: Record<string, string> = {};
+    const offered: Array<[string, string]> = [];
+    for (const [provider, value] of Object.entries(offeredKeys)) {
+      if (diskKeys[provider] === value) keptKeys[provider] = value;
+      else offered.push([provider, value]);
+    }
+    if (offered.length > 0) {
+      if (!storeOfferedApiKey) {
+        throw new Error("Provider API keys are not saved in .ade/local.yaml any more. Add the key in ADE Settings.");
+      }
+      for (const [provider, value] of offered) storeOfferedApiKey(provider, value);
+      logger.info("projectConfig.api_key_saved_to_store", { providers: offered.map(([provider]) => provider) });
+    }
+    let ai = local.ai;
+    if (ai?.apiKeys) {
+      const { apiKeys: _offered, ...rest } = ai;
+      ai = Object.keys(keptKeys).length > 0 ? { ...rest, apiKeys: keptKeys } : rest;
+    }
+    let providers = local.providers;
+    if (providers) {
+      const diskProviders = onDisk.providers ?? {};
+      const kept: Record<string, unknown> = {};
+      const refused: string[] = [];
+      for (const [name, entry] of Object.entries(providers)) {
+        if (isDeepStrictEqual(diskProviders[name], entry)) kept[name] = entry;
+        else refused.push(name);
+      }
+      if (refused.length > 0) logger.warn("projectConfig.providers_write_refused", { providers: refused });
+      providers = Object.keys(kept).length > 0 ? kept : undefined;
+    }
+    return { ...local, ...(ai ? { ai } : {}), providers };
+  };
+
+  const writeLocalFile = (local: ProjectConfigFile): void => {
+    const safeLocal = withoutNewPlaintextKeys(local);
+    initializeOrRepairAdeProject(projectRoot, { logger });
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    writeFileAtomicSync(localPath, toCanonicalYaml(safeLocal));
+    cachedLocalFile = null;
+  };
 
   const validateCandidate = (shared: ProjectConfigFile, local: ProjectConfigFile): ProjectConfigValidationResult => {
     const sharedHash = hashContent(toCanonicalYaml(shared));
@@ -3489,26 +3666,41 @@ export function createProjectConfigService({
     if (!validation.ok) {
       throw invalidConfigError(validation);
     }
-    // Account rules never land in the file; a new one is filed in the account.
-    const local = options.divert === false || !automationRuleSync
-      ? candidateLocal
-      : { ...candidateLocal, automations: automationRuleSync.divert(candidateLocal.automations ?? []) };
-
-    const localYaml = toCanonicalYaml(local);
-
+    // Before anything is written anywhere (the key store, the account's
+    // rules): a save refused here must change nothing.
     // Read the file itself, not the cached parse: the cache is keyed on stat
     // identity, which a same-size edit inside the clock's resolution keeps.
     const baseLocalHash = typeof candidate.baseLocalHash === "string" ? candidate.baseLocalHash : null;
-    if (baseLocalHash && readLocalHashFromDisk(localPath) !== baseLocalHash) {
+    if (baseLocalHash && localHashOf(readLocalTextFromDisk(localPath)) !== baseLocalHash) {
       cachedLocalFile = null;
       logger.info("projectConfig.save.changedOnDisk", { localPath });
       throw changedOnDiskError();
     }
 
+    // Keys first: a refused or failed key store fails the save before any
+    // setting reaches the account (none of these keys is an account row).
+    const keyed = withoutNewPlaintextKeys(candidateLocal);
+    // A changed setting that follows the account goes there; the file keeps
+    // the account's values for older ADE processes on this computer.
+    const routing = accountLayer ? accountLayer.routeSave(keyed, readLocalFileConfig()) : { local: keyed, refused: [], commit: () => {} };
+    if (routing.refused.length > 0) {
+      // Writing only the file would look saved, but the account's value
+      // wins on the next read. Fail the save so the person can try again.
+      throw new Error(`ADE couldn't save ${routing.refused.join(", ")} to your ADE account, so nothing was saved. Try again.`);
+    }
+    const routed = routing.local;
+    // Account rules never land in the file; a new one is filed in the account.
+    const local = options.divert === false || !automationRuleSync
+      ? routed
+      : { ...routed, automations: automationRuleSync.divert(routed.automations ?? []) };
+
+    const localYaml = toCanonicalYaml(local);
+
     initializeOrRepairAdeProject(projectRoot, { logger });
     fs.mkdirSync(path.dirname(localPath), { recursive: true });
     writeFileAtomicSync(localPath, localYaml);
     cachedLocalFile = null;
+    routing.commit();
 
     logger.info("projectConfig.save", {
       localPath,
@@ -3521,7 +3713,69 @@ export function createProjectConfigService({
     return snapshot;
   };
 
+  /** Write the account's values into the file for older ADE processes; never throws. */
+  const mirrorAccountSettings = (): void => {
+    try {
+      const mirrored = accountLayer?.mirror(readLocalFileConfig());
+      if (!mirrored) return;
+      // The marks follow the file: a failed write keeps the old ones.
+      if (mirrored.file) writeLocalFile(mirrored.file);
+      mirrored.commit();
+    } catch (error) {
+      logger.warn("projectConfig.account_mirror_failed", { error: error instanceof Error ? error.name : "unknown" });
+    }
+  };
+
   return {
+    /**
+     * Attach the account settings store (the brain does). Until then, and on
+     * hosts without one, every setting lives in `.ade/local.yaml` as before.
+     */
+    setAccountSettingsStore(args: {
+      backend: () => ProjectConfigAccountBackend | null;
+      accountUserId: () => string | null;
+      readOriginUrl: () => string | null;
+      statePath: string;
+    } | null): void {
+      accountLayer = args
+        ? createProjectConfigAccountLayer({ ...args, rules: { coerceFile: coerceConfigFile, validAlone: configValidAlone }, logger })
+        : null;
+      keptAccountParts = null;
+    },
+
+    /**
+     * Move the settings that follow the account out of `.ade/local.yaml`
+     * (write-if-absent), then mirror the account's values into the file. Call
+     * after the account store has synced.
+     */
+    moveSettingsToAccount(): { moved: string[]; joined: string[]; conflicts: string[] } {
+      const empty = { moved: [], joined: [], conflicts: [] };
+      if (!accountLayer) return empty;
+      try {
+        const result = accountLayer.move(readLocalFileConfig());
+        mirrorAccountSettings();
+        return result;
+      } catch (error) {
+        logger.warn("projectConfig.account_move_failed", { error: error instanceof Error ? error.name : "unknown" });
+        return empty;
+      }
+    },
+
+    /**
+     * The person's answer to a moved setting's notice: `use_local` puts this
+     * computer's old value in the account, `keep` keeps the account's.
+     */
+    resolveAccountSettingNotice(args: { key: string; choice: "use_local" | "keep" }): ProjectConfigSnapshot {
+      const choice = args?.choice === "use_local" ? "use_local" : "keep";
+      const outcome = accountLayer && typeof args?.key === "string" ? accountLayer.resolve(args.key, choice) : "missing";
+      if (outcome === "refused") {
+        // The notice stays; the person can try again.
+        throw new Error("ADE couldn't save this computer's value to your ADE account. Try again.");
+      }
+      if (outcome === "resolved") mirrorAccountSettings();
+      return readSnapshotFromDisk();
+    },
+
     /**
      * Attach the account's rule store (the brain does, when it has the
      * account settings store). Until then, and on hosts without one, rules
@@ -3541,11 +3795,27 @@ export function createProjectConfigService({
         : null;
       automationNotes = new Map();
       cachedLocalFile = null;
+      keptAccountParts = null;
     },
 
     /** Changes when the account's rules for this repository do; null without a store or remote. */
     accountAutomationRulesFingerprint(): string | null {
       return automationRuleSync?.fingerprint() ?? null;
+    },
+
+    /**
+     * What ADE Cloud's copy of this repository's rules must follow; see
+     * `AutomationRuleAccountSync.cloudHomes`. Null (logged on a failure) when
+     * the account can't be read: never an empty list, which would read as
+     * "every cloud rule is gone".
+     */
+    cloudHomedAutomationRules(): CloudHomesView | null {
+      try {
+        return automationRuleSync?.cloudHomes() ?? null;
+      } catch (error) {
+        logger.warn("projectConfig.cloud_homed_rules_failed", { error: error instanceof Error ? error.message : String(error) });
+        return null;
+      }
     },
 
     /** Move rules from `.ade/local.yaml` into the account; see `AutomationRuleAccountSync.migrate`. */
@@ -3580,7 +3850,7 @@ export function createProjectConfigService({
      */
     saveAutomationRule(
       rule: ConfigAutomationRule,
-      options: { home?: AutomationRuleHome | "this-computer" | null } = {},
+      options: { home?: AutomationRuleHome | "this-computer" | "ade-cloud" | null } = {},
     ): ProjectConfigSnapshot {
       const id = rule.id.trim();
       if (!id) throw new Error("Automation id is required");
@@ -3703,7 +3973,7 @@ export function createProjectConfigService({
       lastSeenSharedHash = snapshot.trust.sharedHash;
       lastSeenLocalHash = snapshot.trust.localHash;
       if (!snapshot.validation.ok) {
-        throw invalidConfigError(snapshot.validation);
+        throw invalidConfigError(snapshot.validation, { onDisk: true });
       }
       return snapshot.effective;
     },

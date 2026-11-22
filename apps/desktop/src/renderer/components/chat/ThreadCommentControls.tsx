@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { motion } from "motion/react";
-import { ArrowSquareOut, ChatTeardropText, FilmStrip, Image as ImageIcon, PencilSimple, Trash } from "@phosphor-icons/react";
+import { ArrowSquareOut, ChatTeardropText, FilmStrip, Image as ImageIcon, PencilSimple, Trash, WarningCircle } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { threadCommentQuoteText, threadReviewCountLabel, type ChatThreadComment } from "../../../shared/threadComments";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
@@ -10,18 +10,42 @@ import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { parseMessageAuthor } from "../../../shared/messageAuthor";
+import { ipcErrorMessage, isConnectionTroubleText } from "../../lib/format";
+import { requireChatPin } from "./chatMachinePin";
 import {
   countCommentsForNextSend,
+  countFailedThreadComments,
+  discardFailedThreadComment,
   isLocalThreadComment,
   patchThreadComment,
   refreshThreadComments,
   removeThreadCommentLocally,
+  retryFailedThreadComment,
+  threadCommentDiscardFailed,
+  threadCommentSaveError,
   threadCommentsApi,
 } from "./threadCommentsStore";
 
-/** An error from a comment write, without Electron's IPC wrapper text. */
+/** An error from a comment write, as a person reads it, and whether it was the link to the chat's machine. */
+export type ThreadCommentError = { text: string; connection: boolean };
+
+const CONNECTION_TROUBLE_COPY = "ADE didn't hear back from the chat's machine. Try again in a moment.";
+
+/** An error from a comment write, as a person reads it (never the IPC wrapper or the bridge timeout). */
+export function threadCommentError(error: unknown): ThreadCommentError {
+  const text = ipcErrorMessage(error) || (typeof error === "string" ? error : "");
+  if (!text || isConnectionTroubleText(text)) return { text: CONNECTION_TROUBLE_COPY, connection: true };
+  return { text, connection: false };
+}
+
 export function threadCommentErrorText(error: unknown): string {
-  return error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : String(error);
+  return threadCommentError(error).text;
+}
+
+/** Connection trouble is not ADE's failure to hear about: no "Report…" for it. */
+function threadCommentErrorReport(error: ThreadCommentError, surface: string) {
+  return error.connection ? false : { surface };
 }
 
 /**
@@ -34,7 +58,7 @@ export function useThreadCommentActions(
   sessionId: string | null | undefined,
   pin: OpenProjectBinding | null | undefined,
 ) {
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ThreadCommentError | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const stopEditing = useCallback(() => setEditingId(null), []);
   // An edit belongs to the chat it started in; another chat starts clean.
@@ -49,7 +73,7 @@ export function useThreadCommentActions(
       const result = await action();
       return result ?? null;
     } catch (cause) {
-      setError(threadCommentErrorText(cause));
+      setError(threadCommentError(cause));
       return null;
     }
   };
@@ -58,14 +82,14 @@ export function useThreadCommentActions(
     if (!sessionId || isLocalThreadComment(commentId)) return null;
     // The change shows at once; if the host refuses it, show the host's list again.
     patchThreadComment(sessionId, commentId, patch);
-    const result = await run(() => threadCommentsApi()?.update({ sessionId, commentId, ...patch }, pin ?? null));
+    const result = await run(() => threadCommentsApi()?.update({ sessionId, commentId, ...patch }, requireChatPin(pin)));
     if (!result) void refreshThreadComments(sessionId, pin);
     return result;
   };
   const remove = async (commentId: string) => {
     if (!sessionId || isLocalThreadComment(commentId)) return null;
     removeThreadCommentLocally(sessionId, commentId);
-    const result = await run(() => threadCommentsApi()?.delete({ sessionId, commentId }, pin ?? null));
+    const result = await run(() => threadCommentsApi()?.delete({ sessionId, commentId }, requireChatPin(pin)));
     // The row went early; if the host kept it, show the host's list again.
     if (!result) void refreshThreadComments(sessionId, pin);
     return result;
@@ -90,6 +114,12 @@ export function useThreadCommentActions(
       },
       onToggleSend: (next: boolean) => void update(comment.id, { includeInNextSend: next }),
       onDelete: () => void remove(comment.id),
+      onRetrySave: () => {
+        if (sessionId) void retryFailedThreadComment(sessionId, comment.id, pin, threadCommentErrorText);
+      },
+      onDiscardFailed: () => {
+        if (sessionId) void discardFailedThreadComment(sessionId, comment.id, pin, threadCommentErrorText);
+      },
     }),
   };
 }
@@ -109,7 +139,7 @@ export function ThreadCommentEditor({
   placeholder?: string;
   saveLabel?: string;
   busy?: boolean;
-  error?: string | null;
+  error?: ThreadCommentError | null;
   onSave: (body: string) => void;
   onCancel: () => void;
   /** Every edit of the text, for a caller that keeps unsaved text. */
@@ -161,8 +191,8 @@ export function ThreadCommentEditor({
           model={{
             id: "thread-comment-save-error",
             tone: "error",
-            title: error,
-            report: { surface: "thread_comment_save" },
+            title: error.text,
+            report: threadCommentErrorReport(error, "thread_comment_save"),
           }}
         />
       ) : null}
@@ -202,22 +232,33 @@ export function ThreadCommentListItem({
   onCancelEdit,
   onToggleSend,
   onDelete,
+  onRetrySave,
+  onDiscardFailed,
   onJump,
 }: {
   comment: ChatThreadComment;
   editing: boolean;
-  error?: string | null;
+  error?: ThreadCommentError | null;
   onStartEdit: () => void;
   onSaveEdit: (body: string) => void;
   onCancelEdit: () => void;
   onToggleSend?: (next: boolean) => void;
   onDelete: () => void;
+  /** Saves a comment whose create failed again (`threadCommentSaveError`). */
+  onRetrySave?: () => void;
+  onDiscardFailed?: () => void;
   onJump?: () => void;
 }) {
+  // A comment whose save failed: the note stays, with one quiet line and Retry / Discard.
+  const saveError = threadCommentSaveError(comment.id);
+  const discardFailed = saveError ? threadCommentDiscardFailed(comment.id) : false;
   const quote = threadCommentQuoteText(comment.anchor);
   // An image or video reads as its caption, not as the bracketed line the agent gets.
   const media = comment.anchor.kind === "media" ? comment.anchor : null;
   const MediaIcon = media?.mediaKind === "video" ? FilmStrip : ImageIcon;
+  // Lane sharing: a guest's comment names its author (set by the host).
+  const author = parseMessageAuthor(comment.author);
+  const guestName = author?.kind === "guest" ? (author.name?.trim() || "A guest") : null;
   return (
     <div
       className={cn(
@@ -242,16 +283,27 @@ export function ThreadCommentListItem({
               <ArrowSquareOut size={12} />
             </button>
           ) : null}
-          <button type="button" aria-label="Edit comment" title="Edit" onClick={onStartEdit} className="rounded p-1 text-fg/45 hover:bg-fg/[0.06] hover:text-fg/85">
-            <PencilSimple size={12} />
-          </button>
-          <button type="button" aria-label="Delete comment" title="Delete" onClick={onDelete} className="rounded p-1 text-fg/45 hover:bg-red-500/15 hover:text-red-200">
-            <Trash size={12} />
-          </button>
+          {saveError ? null : (
+            <>
+              <button type="button" aria-label="Edit comment" title="Edit" onClick={onStartEdit} className="rounded p-1 text-fg/45 hover:bg-fg/[0.06] hover:text-fg/85">
+                <PencilSimple size={12} />
+              </button>
+              <button type="button" aria-label="Delete comment" title="Delete" onClick={onDelete} className="rounded p-1 text-fg/45 hover:bg-red-500/15 hover:text-red-200">
+                <Trash size={12} />
+              </button>
+            </>
+          )}
         </div>
       </div>
-      {editing ? (
+      {guestName ? (
+        <div className="truncate pl-[11px] font-sans text-[10.5px] text-fg/50" data-testid="thread-comment-author" title={guestName}>
+          From {guestName}
+        </div>
+      ) : null}
+      {editing && !saveError ? (
         <ThreadCommentEditor initialBody={comment.body} saveLabel="Save" error={error} onSave={onSaveEdit} onCancel={onCancelEdit} />
+      ) : saveError ? (
+        <div className="whitespace-pre-wrap break-words pl-[11px] font-sans text-[12px] leading-[1.5] text-fg/60">{comment.body}</div>
       ) : (
         <button
           type="button"
@@ -261,7 +313,24 @@ export function ThreadCommentListItem({
           {comment.body}
         </button>
       )}
-      {onToggleSend ? (
+      {saveError ? (
+        <div className="flex items-center gap-1.5 pl-[11px] font-sans text-[10.5px]" data-testid="thread-comment-save-failed">
+          <span className="inline-flex min-w-0 items-center gap-1 text-amber-200/80" title={saveError}>
+            <WarningCircle size={11} weight="fill" className="shrink-0" aria-hidden />
+            <span className="truncate">{discardFailed ? "Couldn't discard." : "Couldn't save."}</span>
+          </span>
+          {onRetrySave && !discardFailed ? (
+            <button type="button" onClick={onRetrySave} className="rounded px-1 py-px font-medium text-fg/70 hover:bg-fg/[0.06] hover:text-fg/90">
+              Retry
+            </button>
+          ) : null}
+          {onDiscardFailed ? (
+            <button type="button" onClick={onDiscardFailed} className="rounded px-1 py-px text-fg/45 hover:bg-fg/[0.06] hover:text-fg/80">
+              Discard
+            </button>
+          ) : null}
+        </div>
+      ) : onToggleSend ? (
         <label className="flex cursor-pointer items-center gap-1.5 pl-[11px] font-sans text-[10.5px] text-fg/50 select-none">
           <input
             type="checkbox"
@@ -305,6 +374,7 @@ export function ComposerThreadCommentsButton({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const actions = useThreadCommentActions(sessionId, pin);
   const sendCount = countCommentsForNextSend(comments);
+  const failedCount = countFailedThreadComments(comments);
 
   useEffect(() => {
     if (!comments.length) setOpen(false);
@@ -347,9 +417,11 @@ export function ComposerThreadCommentsButton({
       forceEnabled
       content={{
         label,
-        description: carrying
+        description: `${carrying
           ? `Your next message carries ${sendCount === 1 ? "this comment" : `these ${sendCount} comments`} to the agent. Click to review them.`
-          : "Every comment is held back. Open the list to choose which ones to send.",
+          : "Every comment is held back. Open the list to choose which ones to send."}${failedCount
+          ? ` ${failedCount === 1 ? "One comment" : `${failedCount} comments`} couldn't be saved and won't be sent until you retry.`
+          : ""}`,
       }}
     >
       <motion.button
@@ -358,7 +430,7 @@ export function ComposerThreadCommentsButton({
         data-testid="composer-thread-comments-button"
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={`${label}. Open the comment list.`}
+        aria-label={`${label}.${failedCount ? ` ${failedCount} couldn't be saved.` : ""} Open the comment list.`}
         onClick={() => setOpen((value) => !value)}
         initial={{ width: 0, opacity: 0 }}
         animate={{ width: "auto", opacity: 1 }}
@@ -372,6 +444,18 @@ export function ComposerThreadCommentsButton({
       >
         <ChatTeardropText size={14} weight={carrying ? "fill" : "regular"} aria-hidden />
         {carrying ? sendCount : comments.length}
+        {failedCount ? (
+          <span
+            aria-hidden
+            data-testid="composer-thread-comments-failed"
+            className={cn(
+              "inline-flex h-3.5 w-3.5 items-center justify-center rounded-full text-[9px] font-bold leading-none",
+              carrying ? "bg-white text-amber-700" : "bg-amber-400 text-black/80",
+            )}
+          >
+            !
+          </span>
+        ) : null}
       </motion.button>
     </SmartTooltip>
   );
@@ -430,8 +514,8 @@ export function ComposerThreadCommentsButton({
                   model={{
                     id: "thread-comment-action-error",
                     tone: "error",
-                    title: actions.error,
-                    report: { surface: "thread_comment_action" },
+                    title: actions.error.text,
+                    report: threadCommentErrorReport(actions.error, "thread_comment_action"),
                   }}
                 />
               ) : null}

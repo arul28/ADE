@@ -340,6 +340,16 @@ export async function setProviderKey(
     // The key is saved; the next server start reads it.
     deps.logger.warn("opencode.provider_key_config_refresh_failed", { providerId, error: errorMessage(err) });
   }
+  // List the provider's models now, as a sign-in does: a key's route needs them.
+  void probeOpenCodeProviderInventory({
+    projectRoot: deps.projectRoot,
+    projectConfig: deps.projectConfig,
+    logger: deps.logger,
+    force: true,
+    discoveredLocalModels: lastOpenCodeDiscoveredLocalModels(),
+  }).catch((err) => {
+    deps.logger.warn("opencode.provider_key_probe_failed", { providerId, error: errorMessage(err) });
+  });
   return { ok: true };
 }
 

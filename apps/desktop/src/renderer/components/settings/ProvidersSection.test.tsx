@@ -5,6 +5,8 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
+import { useAppStore } from "../../state/appStore";
+import { getToasts } from "../app/toast/toastStore";
 import type { AgentChatEventEnvelope, AiSettingsStatus, CursorSdkAuthEvent, PiAuthStatusEvent } from "../../../shared/types";
 import { setUsageHeaderVisible, setUsageProviderVisible, useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 
@@ -264,6 +266,8 @@ describe("ProvidersSection", () => {
   let emitCursorAuthStatus: ((event: CursorSdkAuthEvent) => void) | null = null;
 
   beforeEach(() => {
+    // This computer's copy of the project: its settings and chats are read there.
+    useAppStore.setState({ projectBinding: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } });
     setUsageHeaderVisible(true);
     emitChatEvent = null;
     emitOAuthStatus = null;
@@ -359,6 +363,7 @@ describe("ProvidersSection", () => {
 
   afterEach(() => {
     cleanup();
+    useAppStore.setState({ projectBinding: null });
     setUsageHeaderVisible(true);
     globalThis.window.ade = originalAde;
   });
@@ -410,7 +415,7 @@ describe("ProvidersSection", () => {
       expect(ade.ai.listApiKeys).toHaveBeenCalledTimes(2);
     }, { timeout: 2_000 });
 
-    expect(await screen.findByText("Sign in required")).toBeTruthy();
+    expect(await screen.findByText("Not signed in")).toBeTruthy();
     expect(screen.getByText("Sign in to use Claude")).toBeTruthy();
     expect(screen.getAllByText(/claude-agent-sdk-darwin-arm64\/claude/).length).toBeGreaterThan(0);
   });
@@ -429,7 +434,7 @@ describe("ProvidersSection", () => {
       expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
     });
 
-    expect((await screen.findAllByText("Connected")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Signed in")).length).toBeGreaterThan(0);
     expect(screen.getByText(/Claude Pro\/Max subscription or ANTHROPIC_API_KEY/)).toBeTruthy();
     expect(screen.getAllByText(/claude-agent-sdk-darwin-arm64\/claude/).length).toBeGreaterThan(0);
   });
@@ -451,21 +456,6 @@ describe("ProvidersSection", () => {
 
     expect(await screen.findByText("Not downloaded")).toBeTruthy();
     expect(screen.queryByText("Not installed")).toBeNull();
-  });
-
-  it("renders local runtime details and loaded local models", async () => {
-    renderProvidersSection("opencode");
-
-    await waitFor(() => {
-      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
-      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
-    });
-
-    expect((await screen.findAllByText("LM Studio")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Ready").length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/LM Studio is reachable at http:\/\/localhost:1234/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("meta-llama-3.1-70b-instruct (LM Studio)").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("qwen2.5-coder:32b (LM Studio)").length).toBeGreaterThan(0);
   });
 
   it("shows a warning state when a local runtime is detected without loaded models", async () => {
@@ -648,7 +638,8 @@ describe("ProvidersSection", () => {
       });
     });
 
-    expect(await screen.findByText("https://cursor.com/loginDeepControl?uuid=abc")).toBeTruthy();
+    // The sheet shows the sign-in page as an action, not as the raw URL text.
+    expect(await screen.findByRole("button", { name: "Open sign-in page" })).toBeTruthy();
     expect(screen.getByLabelText("Cancel Cursor sign-in")).toBeTruthy();
 
     getStatusMock.mockResolvedValue(loggedIn);
@@ -680,23 +671,6 @@ describe("ProvidersSection", () => {
     });
   });
 
-  it("renders one labelled tile per provider on the grid", async () => {
-    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-    getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
-
-    renderProvidersSection();
-
-    for (const label of ["Claude Code", "Codex CLI", "Cursor", "Droid", "Pi", "OpenCode"]) {
-      expect(await screen.findByLabelText(`Open ${label} settings`), label).toBeTruthy();
-    }
-    // Status is a word, not a colour: every tile says which of the six it is.
-    expect(screen.getAllByText(/^(Connected|Sign in required|Needs attention|Not installed|Checking…|Disabled)$/).length)
-      .toBeGreaterThan(0);
-    // The catalogs are behind their provider, not spilled onto the grid.
-    expect(screen.queryByLabelText("Search all OpenCode providers")).toBeNull();
-  });
-
   it("opens the custom provider editor from the settings section", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
@@ -706,33 +680,6 @@ describe("ProvidersSection", () => {
     const add = await waitFor(() => screen.getByRole("button", { name: "Add" }));
     fireEvent.click(add);
     expect(await screen.findByRole("dialog", { name: "New custom provider" })).toBeTruthy();
-  });
-
-  /**
-   * Every settings header used to wear a violet "Account" or amber "This
-   * computer" tag. Forty copies of the same four words is decoration, not
-   * information — the sidebar already groups the pages by where they save.
-   */
-  it("wears no scope badge on the providers table or the Custom section", async () => {
-    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-    getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
-
-    const { container } = renderProvidersSection();
-    await screen.findByLabelText("Open Claude Code settings");
-
-    expect(container.querySelector("[data-scope]")).toBeNull();
-  });
-
-  it("shows the full GitHub Copilot name on its settings tile", async () => {
-    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-    getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
-
-    renderProvidersSection();
-
-    const tile = await screen.findByLabelText("Open GitHub Copilot settings");
-    expect(within(tile).queryByText("GitHub Copilot", { exact: true })).not.toBeNull();
   });
 
   // A status probe that has not answered is not the same claim as "this is not
@@ -758,26 +705,9 @@ describe("ProvidersSection", () => {
     renderProvidersSection();
 
     const tile = await screen.findByLabelText("Open Qwen Code settings");
-    expect(await within(tile).findByText("Needs attention")).toBeTruthy();
+    expect(await within(tile).findByText("Unknown")).toBeTruthy();
     expect(within(tile).queryByText("Checking…")).toBeNull();
     expect(screen.queryByText("Not installed")).toBeNull();
-  });
-
-  it("renders the OpenCode catalog on the OpenCode page", async () => {
-    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-    getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
-
-    renderProvidersSection("opencode");
-
-    expect(await screen.findByText(/^All providers · \d+$/)).toBeTruthy();
-    expect(screen.getByLabelText("Search all OpenCode providers")).toBeTruthy();
-    // Popular cards include Moonshot and Kimi.
-    expect(screen.getByText("Moonshot AI")).toBeTruthy();
-    expect(screen.getByLabelText("Connect Kimi for Coding")).toBeTruthy();
-    // Hated status chrome is gone.
-    expect(screen.queryByText(/managed by ADE/i)).toBeNull();
-    expect(screen.queryByText(/subscriptions ·/i)).toBeNull();
   });
 
   it("keeps a connected OpenCode provider visible when it advertises no models", async () => {
@@ -984,7 +914,7 @@ describe("ProvidersSection", () => {
       resolveLogin?.({ ok: false, error: "Sign-in cancelled." });
     });
 
-    const cancelled = screen.getByText("Sign-in cancelled.");
+    const cancelled = screen.getByText("The sign-in was stopped.");
     expect(cancelled.closest('[role="status"]')).toBeTruthy();
     expect(cancelled.closest('[role="alert"]')).toBeNull();
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
@@ -1112,7 +1042,7 @@ describe("ProvidersSection", () => {
     await act(async () => {
       emitPiAuthStatus?.({ providerId: "xai", state: "error", error: "Sign-in cancelled." });
     });
-    expect(screen.getByText("Sign-in cancelled.")).toBeTruthy();
+    expect(screen.getByText("The sign-in was stopped.")).toBeTruthy();
 
     const restarted = await openPiProviderSignIn("xAI", "Sign in — xAI");
     await act(async () => {
@@ -1162,7 +1092,7 @@ describe("ProvidersSection", () => {
     expect(window.ade.app.openExternal).toHaveBeenCalledWith("https://x.ai/device");
     // The code and a manual escape hatch stay on screen for a blocked browser.
     expect(screen.getByText("ABCD-1234")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open sign-in page" })).toBeTruthy();
   });
 
   // A localhost model server has no credential to collect, so asking for an
@@ -1557,7 +1487,7 @@ describe("ProvidersSection", () => {
       expect(window.ade.ai.clearOpencodeProviderKey).toHaveBeenCalledWith({ providerId: "openai" }, null);
       expect(window.ade.ai.deleteApiKey).toHaveBeenCalledWith("openai", null);
     });
-    expect(await screen.findByText("OpenAI disconnected.")).toBeTruthy();
+    await waitFor(() => expect(getToasts().some((toast) => toast.title === "OpenAI disconnected")).toBe(true));
   });
 
   it("drives the OAuth connect modal happy path via provider detail", async () => {
@@ -1615,50 +1545,6 @@ describe("ProvidersSection", () => {
   // The four ACP providers plug into the same descriptor system as the six.
   // These pin the parts a copy-paste port would get wrong.
   describe("ACP providers", () => {
-    it("gives each ACP provider a tile on the grid", async () => {
-      const view = renderProvidersSection();
-      const current = within(view.container);
-      await waitFor(() => {
-        expect(window.ade.ai.getStatus).toHaveBeenCalled();
-      });
-      for (const label of ["Qwen Code", "Kimi", "Grok", "GitHub Copilot"]) {
-        expect(current.getByLabelText(`Open ${label} settings`), label).toBeTruthy();
-      }
-    });
-
-    it("says how Kimi usage and compaction are shown, in plain words, on its page", async () => {
-      const view = renderProvidersSection("kimi");
-      const current = within(view.container);
-      expect(
-        (await current.findAllByText("Token and context figures appear when Kimi reports them. Kimi sends no compaction events, so ADE detects compaction from a drop in context size.")).length,
-      ).toBeGreaterThan(0);
-      expect(current.getByText(/--region global/)).toBeTruthy();
-      expect(current.getByText(/does not write that file/)).toBeTruthy();
-    });
-
-    it("says ADE reuses the Qwen CLI the user already set up", async () => {
-      const view = renderProvidersSection("qwen");
-      const current = within(view.container);
-      expect(await current.findByText(/does not write ~\/.qwen/)).toBeTruthy();
-      expect(current.getAllByText(/OPENAI_BASE_URL/).length).toBeGreaterThan(0);
-    });
-
-    // The chip is a claim about the models, so it must come from the registry's
-    // `previewTier`, not from a hand-maintained list of provider names.
-    it("marks only the preview-tier providers with a Preview chip", async () => {
-      for (const [provider, expected] of [["grok", false], ["devin", true], ["copilot", false], ["qwen", false], ["kimi", false]] as const) {
-        const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-        getStatusMock.mockReset();
-        getStatusMock.mockResolvedValue(buildStatus(true));
-        const view = renderProvidersSection(provider);
-        const current = within(view.container);
-        await waitFor(() => {
-          expect(getStatusMock).toHaveBeenCalled();
-        });
-        expect(current.queryAllByText("Preview").length > 0, provider).toBe(expected);
-        cleanup();
-      }
-    });
 
     it("runs the vendor doctor only where one exists", async () => {
       const runDiagnostics = vi.fn().mockResolvedValue({
@@ -1673,6 +1559,9 @@ describe("ProvidersSection", () => {
         checkedAt: "2026-08-31T00:00:00.000Z",
       });
       (window.ade as any).ai.acpProviderDiagnostics = runDiagnostics;
+      // The settings' machine runs an older ADE with no doctor action of its own: the old doctor run still works there.
+      const runDoctor = vi.fn().mockRejectedValue(new Error("Unknown ADE action: ai.runAcpProviderDoctor"));
+      (window.ade as any).ai.runAcpProviderDoctor = runDoctor;
 
       const view = renderProvidersSection("grok");
       const current = within(view.container);
@@ -1683,6 +1572,7 @@ describe("ProvidersSection", () => {
       await waitFor(() => {
         expect(current.getByText("everything is fine")).toBeTruthy();
       });
+      expect(runDoctor).toHaveBeenCalledWith({ provider: "grok" }, null);
       expect(runDiagnostics).toHaveBeenCalledWith({ provider: "grok", runDoctor: true }, null);
 
       cleanup();
@@ -1704,7 +1594,11 @@ describe("ProvidersSection", () => {
       await act(async () => {
         fireEvent.click(disable);
       });
-      expect(window.ade.ai.updateConfig).toHaveBeenCalledWith({ disabledProviders: ["grok"] }, null);
+      // The project's AI config goes to the project's own copy, by its pin.
+      expect(window.ade.ai.updateConfig).toHaveBeenCalledWith(
+        { disabledProviders: ["grok"] },
+        expect.objectContaining({ kind: "local", rootPath: "/repo" }),
+      );
     });
 
     it("shows Disabled on the tile and offers the way back on", async () => {

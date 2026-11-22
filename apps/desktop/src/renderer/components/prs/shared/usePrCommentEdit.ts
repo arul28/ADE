@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import type { PrComment } from "../../../../shared/types";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { usePrRuntimePin } from "../state/prMachines";
 
 export function usePrCommentEdit(args: {
   prId: string;
@@ -16,6 +17,8 @@ export function usePrCommentEdit(args: {
   const [editing, setEditing] = useState(false);
   const [editBusy, setEditBusy] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  // The PR's machine: an edit goes where the PR row lives.
+  const pin = usePrRuntimePin();
 
   useEffect(() => {
     setBody(args.initialBody ?? "");
@@ -37,7 +40,7 @@ export function usePrCommentEdit(args: {
   const saveEdit = async (): Promise<boolean> => {
     const bridge = window.ade?.prs?.updateComment;
     const trimmed = editValue.trim();
-    if (!isAdeAvailable(bridge) || args.commentId == null || !trimmed) return false;
+    if (!isAdeAvailable(bridge) || !pin || args.commentId == null || !trimmed) return false;
     setEditBusy(true);
     setEditError(null);
     try {
@@ -46,7 +49,7 @@ export function usePrCommentEdit(args: {
         commentId: String(args.commentId),
         body: trimmed,
         source: args.source,
-      });
+      }, pin);
       if (!updated) throw new Error("Editing comments is not available here.");
       setBody(updated.body ?? trimmed);
       setEditing(false);

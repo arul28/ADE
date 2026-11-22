@@ -6,10 +6,12 @@ import {
   permissionLevelRank,
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
+import { BUILT_IN_BROWSER_MESSAGES_METHODS } from "../../desktop/src/shared/types/builtInBrowserRemote";
 import { CHAT_HAS_NO_PROOF_YET } from "../../desktop/src/shared/proofProvenance";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { DEMO_STEP_MAX_CHARS, RECORDING_MAX_MS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
 import { cloudDomainEnabled } from "../../desktop/src/shared/adeCloud";
+import { CLOUD_PHONE_SPEND_ACTIONS as CLOUD_PHONE_SPEND_ACTION_NAMES } from "../../desktop/src/shared/cloudPhone";
 import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
 import { localLinkOwnership } from "./services/projects/localLinkOwnership";
 import { reviewProofFile, type ProofReviewWindow } from "../../desktop/src/main/services/demoVideo/proofReview";
@@ -17,6 +19,7 @@ import { SHEET_MAX_FRAMES } from "../../desktop/src/main/services/demoVideo/shee
 import { resolveStoredProofFile } from "../../desktop/src/main/services/prs/prBodyProofStaging";
 import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
+import { LANE_SHARE_DEFAULT_RIGHTS_KEY, LANE_SHARE_PERSON_ONLY_MESSAGE } from "../../desktop/src/shared/laneShareRights";
 import { ownerOnlyProjectConfigChange } from "../../desktop/src/shared/settingsAgentAccess";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../desktop/src/shared/claudePluginUi";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
@@ -32,11 +35,15 @@ import {
   isRemoteWorkSyncMode,
   createRemoteWorkCopyService,
   findRemoteWorkCopyForLane,
+  releaseChatRemoteWork,
+  remoteWorkCopiesInRepo,
   remoteWorkLaneIdFor,
   RemoteWorkError,
+  type RemoteWorkPrepareOptions,
   type RemoteWorkPrepareResult,
   type RemoteWorkPrepareWithinResult,
 } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
+import { createRemoteWorkScratchDir, removeRemoteWorkScratchDir } from "../../desktop/src/main/services/remoteWork/remoteWorkScratch";
 import {
   createRemoteWorkFiles,
   RemoteWorkFileError,
@@ -45,12 +52,13 @@ import {
 import { isRemoteWorkFileOp, type RemoteWorkFileOp } from "../../desktop/src/shared/types/remoteWork";
 import { remoteRunOnceShellLaunch } from "../../desktop/src/main/services/pty/ptyService";
 import { windowsCommandLineOverLimitMessage } from "../../desktop/src/main/services/shared/processExecution";
-import { externalChatContext } from "../../desktop/src/main/services/chat/externalChats";
+import { externalChatContext, externalChatLatestTurn } from "../../desktop/src/main/services/chat/externalChats";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
 import {
   desktopProductName,
   LINUX_DESKTOP_SETUP_USER_STEP,
+  MAC_DESKTOP_LANE_FREE_ACTIONS,
   MAC_DESKTOP_USER_CLI_HOLDER_ID,
   USER_ONLY_CONSENT_CARD_REFUSAL,
   WINDOWS_DESKTOP_NEXT_STEP,
@@ -64,7 +72,7 @@ import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools
 import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
 import { requirePinnedProviderExecutable } from "../../desktop/src/main/services/ai/pinnedProviderTools";
-import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../desktop/src/shared/pinnedToolSpawnEnv";
+import { CODEX_NO_UPDATE_CHECK_ARGS, codexLinuxShellArgs, codexSandboxCliArgs, providerSelfUpdateEnv } from "../../desktop/src/shared/pinnedToolSpawnEnv";
 import {
   createComputerUseArtifactPath,
   createComputerUseScratchPath,
@@ -96,8 +104,8 @@ import { isMovedAwayChatError } from "../../desktop/src/shared/crossMachineMoveL
 import { crossMachineMoveRelation, withoutCrossMachineCallerFields } from "../../desktop/src/shared/crossMachineHandoff";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { parseDiffNameOnly, resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
-import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
+import { thisDesktopOnlyRefusal, thisDesktopOnlyRefusalFor } from "../../desktop/src/shared/adeActionAccess";
 import { isSceneParseFailure, parseSceneFence } from "../../desktop/src/shared/chatScene";
 import {
   SCENE_PREVIEW_MAX_SOURCE_BYTES,
@@ -150,7 +158,6 @@ import {
 } from "../../desktop/src/shared/types";
 import type { PrCheck, PrChecksStatus, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import type { LaneEnvInitProgress } from "../../desktop/src/shared/types/config";
-import { isTrackedAgentCliToolType } from "../../desktop/src/shared/types/sessions";
 import type { CtoLinearQuickView } from "../../desktop/src/shared/types/cto";
 import type { LinearConnectionStatus } from "../../desktop/src/shared/types/linearSync";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
@@ -178,8 +185,10 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
-import { assertActionModelNames, assertFullModelName, savedRuleModelNames } from "./modelNameGuard";
-import { captureError } from "../../desktop/src/shared/sentry/capture";
+import { readHarnessPresetsFromMachine } from "../../desktop/src/main/services/chat/harnessPresetSettings";
+import { resolveMachineAdeDir } from "./services/projects/machineLayout";
+import { assertActionModelNames, assertCliLaunchModelNamed, assertFullModelName, assertLaunchModels, automationDraftMissingModels, savedRuleModelNames } from "./modelNameGuard";
+import { captureError, wasReportedToSentry } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import {
@@ -195,6 +204,7 @@ import {
   isDesktopClientName,
 } from "../../desktop/src/shared/runtimeClientNames";
 import { isSyntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
+import { isRunningRemoteRun } from "./services/remoteMcp/remoteMcpRunner";
 import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
 import {
   ADE_CAPTURE_ACTIONS,
@@ -210,7 +220,9 @@ import {
   ANDROID_LANE_FREE_ACTIONS,
   ANDROID_SDK_PERSON_ONLY_ACTIONS,
 } from "../../desktop/src/shared/types/androidEmulator";
-import { trackBrainLoopWatchdogCommand } from "./services/runtime/brainLoopWatchdog";
+import { APP_CONTROL_CODE_SYNC_ACTIONS, APP_CONTROL_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/appControl";
+import { trackBrainLoopWatchdogCommand, brainPingReply } from "./services/runtime/brainLoopWatchdog";
+import { passesPtyDataFilter, readPtyDataIds } from "./runtimeEventVolume";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
@@ -352,6 +364,17 @@ function withoutIncludeThreadComments(args: Record<string, unknown>): Record<str
   return rest;
 }
 
+/** Actions whose caller's own chat is stamped into the arguments (never taken from them). */
+const STAMP_OWN_CHAT_ACTIONS: ReadonlySet<string> = new Set(["project_secret.exec", "messages.send"]);
+
+/**
+ * Who a Passwords use or `secrets exec` is credited to in Activity. An outside
+ * AI app on ADE MCP has no chat, but it is still an agent, never the person.
+ */
+function activityCaller(session: SessionState): "agent" | "person" {
+  return isUserClientSession(session) && !session.identity.remoteMcpConnectionId ? "person" : "agent";
+}
+
 /**
  * Whether the caller is a person's client rather than an agent.
  *
@@ -377,6 +400,15 @@ function mayUseUserOnlyActions(session: SessionState): boolean {
   return isUserClientSession(session) && isDesktopClientName(session.clientName);
 }
 
+/**
+ * Whether a caller may use a this-desktop-only action (`thisDesktopOnlyRefusal`):
+ * only the desktop app of this computer, never a desktop that drives this
+ * computer from another one (`ade-desktop-remote`).
+ */
+function mayUseThisDesktopOnlyActions(session: SessionState): boolean {
+  return isUserClientSession(session) && session.clientName === DESKTOP_CLIENT_NAMES.local;
+}
+
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_PTY_COLS = 120;
 const DEFAULT_PTY_ROWS = 36;
@@ -392,7 +424,7 @@ const NEW_LANE_SETUP_TOOL_PROPERTIES = {
 const TOOL_SPECS: ToolSpec[] = [
   {
     name: "spawn_agent",
-    description: "Spawn a Codex or Claude CLI session in a lane-scoped tracked terminal.",
+    description: "Old: starts a Codex or Claude CLI session in a lane. start_cli_session starts any provider; use it instead.",
     inputSchema: {
       type: "object",
       required: ["laneId"],
@@ -444,7 +476,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "create_lane",
-    description: "Create a new lane/worktree for task execution, then set it up with the project's default lane template (or templateId; skipSetup leaves it a plain worktree). Waits for setup and returns its progress.",
+    description: "Create a new lane (a git worktree on a new branch), then set it up with the project's default lane template (or templateId; skipSetup leaves it a plain worktree). Waits for setup and returns its progress.",
     inputSchema: {
       type: "object",
       required: ["name"],
@@ -497,14 +529,14 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "start_cli_session",
-    description: "Start a tracked ADE Work CLI terminal for an allowlisted provider, using the same launch helpers as desktop and mobile.",
+    description: "Start a tracked ADE Work CLI session for a provider in a lane. Pass model (not for shell).",
     inputSchema: {
       type: "object",
       required: ["laneId", "provider"],
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        provider: { type: "string", enum: ["claude", "codex", "muse", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "devin", "shell"] },
+        provider: { type: "string", enum: ["claude", "codex", "muse", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "devin", "antigravity", "shell"] },
         permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES], default: "default" },
         droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },
         musePermissionMode: { type: "string", enum: [...AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES] },
@@ -527,12 +559,12 @@ const TOOL_SPECS: ToolSpec[] = [
         // Which of this machine's provider accounts the session signs in as.
         // Claude and Codex only; omit it to use the provider's default account.
         instanceId: { type: "string", minLength: 1 },
-        // Saved harness preset (body + brain + model) this CLI launches under.
+        // The Custom provider (harness + where it runs + model) this CLI
+        // launches under, by id (the CLI resolves `--custom-provider <name>`).
         // Ignored for grok/cursor/copilot/kimi, whose CLIs take no outside key
         // and therefore launch on their own sign-in.
         presetId: { type: "string", minLength: 1 },
-        // A stored API credential, for a model chosen from a provider key
-        // rather than from a preset.
+        // A stored API key, for a model chosen from a provider key.
         credentialId: { type: "string", minLength: 1 },
         tracked: { type: "boolean", default: true }
       }
@@ -1406,7 +1438,9 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         cursor: { type: "number", minimum: 0 },
         limit: { type: "number", minimum: 1, maximum: 1000 },
-        category: { type: "string", enum: [...REMOTE_RUNTIME_EVENT_CATEGORIES] }
+        category: { type: "string", enum: [...REMOTE_RUNTIME_EVENT_CATEGORIES] },
+        // Only these terminals' `pty_data`; other events all come.
+        ptyDataIds: { type: "array", items: { type: "string" } }
       }
     }
   },
@@ -1419,47 +1453,63 @@ const STANDALONE_CHAT_HIDDEN_TOOL_NAMES = new Set([
 const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   {
     name: "get_cto_state",
-    description: "Read the reconstructed CTO identity and recent continuity state maintained by ADE. Prefer this over shell-reading .ade/cto files from the workspace.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        recentLimit: { type: "number", minimum: 0, maximum: 50 }
-      }
-    }
-  },
-  {
-    name: "saveMemory",
-    description: "Save a durable fact to your persistent memory (MEMORY.md) — decisions, preferences, conventions, and standing project context you should remember across sessions and model switches. One crisp sentence per fact; exact duplicates are ignored.",
-    inputSchema: {
-      type: "object",
-      required: ["fact"],
-      additionalProperties: false,
-      properties: {
-        fact: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "searchMemory",
-    description: "Search your persistent memory (MEMORY.md, thread state, and recent daily logs) for prior context before asking the user to restate something.",
-    inputSchema: {
-      type: "object",
-      required: ["query"],
-      additionalProperties: false,
-      properties: {
-        query: { type: "string", minLength: 1 },
-        limit: { type: "number", minimum: 1, maximum: 100 }
-      }
-    }
-  },
-  {
-    name: "readMemory",
-    description: "Read your persistent memory: durable facts (MEMORY.md) and the current thread state.",
+    description: "Read the CTO identity ADE maintains. Prefer this over shell-reading .ade/cto files from the workspace.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {}
+    }
+  },
+  {
+    name: "remember",
+    description: "Write a note the CTO sees on every turn: a decision, a convention, a trap, how the person likes to work. One short line. Pass part of an existing line in `replaces` to rewrite it. Refused past the notes' size cap.",
+    inputSchema: {
+      type: "object",
+      required: ["note"],
+      additionalProperties: false,
+      properties: {
+        note: { type: "string", minLength: 1, maxLength: 400 },
+        scope: { type: "string", enum: ["project", "user"] },
+        replaces: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "forget",
+    description: "Remove the note whose line contains this exact text (it must match one note).",
+    inputSchema: {
+      type: "object",
+      required: ["note"],
+      additionalProperties: false,
+      properties: {
+        note: { type: "string", minLength: 1 },
+        scope: { type: "string", enum: ["project", "user"] }
+      }
+    }
+  },
+  {
+    name: "readHistory",
+    description: "Page or search the CTO's whole conversation, newest first. With `query`, messages containing all its words, each with its neighbours. Pass `nextBefore` as `before` for older pages.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", minLength: 1 },
+        before: { type: "string", minLength: 1 },
+        limit: { type: "number", minimum: 1, maximum: 50 }
+      }
+    }
+  },
+  {
+    name: "replyNow",
+    description: "Answer the person right away while you keep working: only when they wrote mid-task and asked something or changed the plan. One or two sentences, then continue.",
+    inputSchema: {
+      type: "object",
+      required: ["message"],
+      additionalProperties: false,
+      properties: {
+        message: { type: "string", minLength: 1, maxLength: 600 }
+      }
     }
   },
   {
@@ -1476,13 +1526,14 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "spawnChat",
-    description: "Create a Work chat session in ADE on a lane and optionally seed it with an initial prompt.",
+    description: "Create a Work chat session in ADE on a lane and optionally seed it with an initial prompt. modelId is required: ADE never picks a model (`ade chat models --text` lists the ids).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
+      required: ["modelId"],
       properties: {
         laneId: { type: "string" },
-        modelId: { type: "string" },
+        modelId: { type: "string", description: "The model the chat runs, e.g. anthropic/claude-opus-5-5." },
         reasoningEffort: { type: "string" },
         permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES] },
         droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },
@@ -1698,6 +1749,8 @@ const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
   "preview_scene",
   "read_remote_caller_capture",
+  // A chat on another machine asking which checkout here holds its work copy.
+  "find_remote_work_copy",
   "list_ade_actions",
   "get_ade_action_status",
   "stream_events",
@@ -1714,8 +1767,7 @@ const READ_ONLY_TOOLS = new Set([
   "pr_get_checks",
   "pr_get_review_comments",
   "get_cto_state",
-  "searchMemory",
-  "readMemory",
+  "readHistory",
   "listChats",
   "getChatStatus",
   "readChatTranscript",
@@ -1731,9 +1783,13 @@ const READ_ONLY_TOOLS = new Set([
 ]);
 
 const MUTATION_TOOLS = new Set([
-  "saveMemory",
+  "remember",
+  "forget",
+  "replyNow",
   // A chat on another machine deleting its own work copy here.
   "release_remote_work_copy",
+  // A chat on another machine whose turn ended letting go of the devices it holds here.
+  "release_remote_work_devices",
   // A chat on another machine copying a file into or out of its own work copy here.
   "work_copy_file",
   "create_lane",
@@ -1789,18 +1845,35 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** The model names the rule an `automations.saveRule` edit replaces already holds. */
-function savedModelNamesKeptBy(domain: string, action: string, input: unknown, service: Record<string, unknown>): Set<string> {
-  if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return new Set();
+/**
+ * What the rule an `automations.saveRule` edit replaces already holds: its
+ * model names (an unchanged old shorthand passes) and the places it already
+ * left without a model (an edit, such as a rename, may keep those; a model
+ * removed now is refused).
+ */
+function savedRuleKeptBy(
+  domain: string,
+  action: string,
+  input: unknown,
+  service: Record<string, unknown>,
+): { modelNames: Set<string>; missingModels: Set<string> } {
+  const none = { modelNames: new Set<string>(), missingModels: new Set<string>() };
+  if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return none;
   const id = typeof input.draft.id === "string" ? input.draft.id.trim() : "";
-  if (!id || typeof service.get !== "function") return new Set();
+  if (!id || typeof service.get !== "function") return none;
   try {
-    return savedRuleModelNames((service.get as (args: { id: string }) => unknown)({ id }));
+    const saved = (service.get as (args: { id: string }) => unknown)({ id });
+    if (!isRecord(saved)) return none;
+    return {
+      modelNames: savedRuleModelNames(saved),
+      missingModels: new Set(automationDraftMissingModels(saved).map((place) => place.key)),
+    };
   } catch (error) {
     // The save itself reports a missing or unreadable rule; without the saved
-    // names an unchanged old name is refused, which the caller can correct.
+    // rule an unchanged old name or missing model is refused, which the
+    // caller can correct.
     captureError(error, { tags: { area: "rpc.model_name_guard" }, fingerprint: ["rpc", "model_name_guard", "saved_rule_read"] });
-    return new Set();
+    return none;
   }
 }
 
@@ -2085,6 +2158,8 @@ function reportFailedAction(
   callerReportsFailure: boolean,
 ): void {
   if (isMovedAwayChatError(error)) return;
+  // The action reported it itself (the ADE Cloud iPhone's domain): one issue, not two.
+  if (wasReportedToSentry(error)) return;
   if (error instanceof JsonRpcError && CALLER_ERROR_CODES.has(error.code)) return;
   if (isExpectedFailure(error)) return;
   const logOnly = (kind: string) => forwardLogToSentry("warn", `runtime_action.${kind}.${actionName}`, {
@@ -2142,7 +2217,7 @@ function parseCliSessionProvider(value: unknown): LaunchProfile {
   if (!isLaunchProfile(provider)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "provider must be one of claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or shell",
+      "provider must be one of claude, codex, muse, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, devin, antigravity, or shell",
     );
   }
   return provider;
@@ -2156,6 +2231,43 @@ function parseCliSessionPermissionMode(value: unknown): AgentChatPermissionMode 
     JsonRpcErrorCode.invalidParams,
     "permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml",
   );
+}
+
+/**
+ * The permission a tracked agent CLI starts with when its launch names none:
+ * the same default a chat launched without controls gets
+ * (`agentChatService.resolveChatConfig`). The project's per-provider setting
+ * wins, then the shared CLI mode, and with nothing configured it is full
+ * access, the mode the desktop composer starts on. Null for a plain shell, or
+ * when the provider cannot take the resolved mode (the launch then keeps the
+ * provider's own default). The agent ceiling is applied after this.
+ */
+function configuredCliLaunchPermissionMode(
+  runtime: AdeRuntime,
+  provider: string,
+): AgentChatPermissionMode | null {
+  if (provider === "shell" || !isLaunchProfile(provider)) return null;
+  let permissions: { cli?: { mode?: string }; providers?: Record<string, unknown> } = {};
+  try {
+    permissions = (runtime.projectConfigService?.get()?.effective?.ai?.permissions ?? {}) as typeof permissions;
+  } catch {
+    permissions = {};
+  }
+  const configuredProvider = permissions.providers?.[provider];
+  const cliMode = permissions.cli?.mode;
+  const mode: AgentChatPermissionMode = typeof configuredProvider === "string" && isTrackedCliPermissionMode(configuredProvider)
+    ? configuredProvider
+    : cliMode === "read-only"
+      ? "plan"
+      : cliMode === "edit"
+        ? "edit"
+        : "full-auto";
+  try {
+    validateLaunchProfilePermissionMode(provider, mode);
+    return mode;
+  } catch {
+    return null;
+  }
 }
 
 function parseCliSessionDroidPermissionMode(value: unknown): AgentChatDroidPermissionMode | undefined {
@@ -2525,7 +2637,9 @@ function emptyLinearQuickView(connection: LinearConnectionStatus): CtoLinearQuic
 }
 
 async function resolveDefaultLaneId(runtime: AdeRuntime): Promise<string> {
-  await runtime.laneService.ensurePrimaryLane().catch(() => {});
+  await runtime.laneService.ensurePrimaryLane().catch((err) => {
+    console.warn(`[adeRpcServer] ensurePrimaryLane failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
   // Every CTO operator action (chat status, list, transcript, create, send)
   // asks this. The primary lane's row answers it; a lane list also runs git
   // and the worktree reconcile, about 80 ms per call on Windows, so it is
@@ -3038,7 +3152,7 @@ function workCopyOwner(session: SessionState): string {
   if (!owner || !parseForeignCallerSessionId(owner)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "A work copy is for commands sent from another machine (`ade shell start --machine <name>`).",
+      "A copy of a chat's code is kept here only for commands sent from another machine (`ade shell start --machine <name>`).",
     );
   }
   return owner;
@@ -3047,7 +3161,7 @@ function workCopyOwner(session: SessionState): string {
 function workCopyPreparingError(machineName: string | null): JsonRpcError {
   return new JsonRpcError(
     JsonRpcErrorCode.invalidRequest,
-    `This chat's work copy on ${machineName?.trim() || "this machine"} is still being made (the first command `
+    `The copy of this chat's code on ${machineName?.trim() || "this machine"} is still being made (the first command `
     + "fetches the commit and checks it out, which can take a few minutes). It goes on there; run the command again in a minute.",
     { code: "work_copy_preparing", retryable: true },
   );
@@ -3066,6 +3180,7 @@ async function prepareCallerWorkCopy(
   runtime: AdeRuntime,
   session: SessionState,
   remoteWork: Record<string, unknown>,
+  prepareOptions: RemoteWorkPrepareOptions = {},
 ): Promise<{ owner: string; laneId: string; prepared: RemoteWorkPrepareResult }> {
   const owner = workCopyOwner(session);
   const laneId = remoteWorkLaneIdFor(owner);
@@ -3078,7 +3193,7 @@ async function prepareCallerWorkCopy(
       patchBase64: typeof remoteWork.patchBase64 === "string" ? remoteWork.patchBase64 : null,
       branch: asOptionalTrimmedString(remoteWork.branch),
       machineName,
-    }, isRemoteWorkSyncMode(remoteWork.sync) ? remoteWork.sync : "sync");
+    }, isRemoteWorkSyncMode(remoteWork.sync) ? remoteWork.sync : "sync", prepareOptions);
   } catch (error) {
     if (error instanceof RemoteWorkError) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, { code: error.code });
     throw error;
@@ -3087,30 +3202,163 @@ async function prepareCallerWorkCopy(
   return { owner, laneId, prepared: answer.prepared };
 }
 
+/** How many of the files a sync kept in place an answer names. */
+const REMOTE_WORK_KEPT_FILES_SHOWN = 20;
+
 /**
  * A device action (`ios_simulator`, `android_emulator`) from a chat on another
  * machine with no lane here: its work copy here stands in for the lane. Gives
  * the args without the caller's `remoteWork`, `laneId` and `projectRoot`, the
  * copy's lane id, a check for the copy, the step that readies it (resolving to
  * its `done`), and the answer with `workCopy.laneId` added. `sync` overrides
- * the caller's sync mode.
+ * the caller's sync mode; `prepareOptions` go to the copy's prepare.
  */
 function remoteWorkDeviceScope(
   runtime: AdeRuntime,
   session: SessionState,
   deviceArgs: Record<string, unknown>,
   sync?: "none",
+  prepareOptions: RemoteWorkPrepareOptions = {},
 ) {
   const { remoteWork, laneId: _laneId, projectRoot: _projectRoot, ...rest } = deviceArgs;
   const laneId = remoteWorkLaneIdFor(workCopyOwner(session));
   const request = { ...(remoteWork as Record<string, unknown>), ...(sync ? { sync } : {}) };
+  // Files made in the copy that its sync kept in place, for the answer.
+  let keptFiles: string[] = [];
   return {
     rest,
     laneId,
     copyExists: (): boolean => findRemoteWorkCopyForLane(runtime.projectRoot, laneId) !== null,
-    prepare: async (): Promise<() => void> => (await prepareCallerWorkCopy(runtime, session, request)).prepared.done,
-    withWorkCopy: (value: unknown): unknown => (isRecord(value) ? { ...value, workCopy: { laneId } } : value),
+    prepare: async (): Promise<() => void> => {
+      const { prepared } = await prepareCallerWorkCopy(runtime, session, request, prepareOptions);
+      keptFiles = prepared.keptFiles;
+      return prepared.done;
+    },
+    withWorkCopy: (value: unknown): unknown => (isRecord(value)
+      ? { ...value, workCopy: { laneId, ...(keptFiles.length ? { keptFiles: keptFiles.slice(0, REMOTE_WORK_KEPT_FILES_SHOWN) } : {}) } }
+      : value),
   };
+}
+
+/** `mac_desktop` actions from another machine that make the chat's work copy here when it has none. */
+const MAC_DESKTOP_WORK_COPY_MAKING_ACTIONS = new Set<string>(["start", "open"]);
+
+/**
+ * `mac_desktop` actions a chat on another machine is refused: each asks the
+ * user with a card in the calling chat, and that chat is not on this machine.
+ */
+const MAC_DESKTOP_REMOTE_REFUSED_ACTIONS: Readonly<Record<string, string>> = {
+  requestInputLease: "real input on this machine's screen is granted with a card in a chat on this machine, and this chat is on another one. "
+    + "Use the default (accessibility) input, or ask the user to take control from the Desktop panel",
+  requestSharedDesktop: "the main desktop is shared with a card in a chat on this machine, and this chat is on another one. "
+    + "Use this chat's own screen there (ade screen start --machine <name>)",
+};
+
+/** `app_control` actions from another machine that make the chat's work copy here when it has none. */
+const APP_CONTROL_WORK_COPY_MAKING_ACTIONS = new Set<string>(["launch", "launchInTerminal", "connect"]);
+
+/** `app_control` actions from another machine that sync the work copy to the caller's code first (a launch builds and runs it). */
+const APP_CONTROL_WORK_COPY_CODE_SYNC_ACTIONS = new Set<string>(APP_CONTROL_CODE_SYNC_ACTIONS);
+
+/** No `mac_desktop` action needs the caller's code: the screen shows what runs here. */
+const NO_CODE_SYNC_ACTIONS: ReadonlySet<string> = new Set<string>();
+
+/**
+ * A `mac_desktop`, `app_control` or `android_emulator` action from a chat on
+ * another machine with no lane here (`ade screen … --machine`, `ade
+ * app-control … --machine`, `ade android … --machine`): its work copy's lane
+ * stands in for the lane, so the display, lease, windows, session or
+ * emulator belong to that lane, and the chat stays their owner
+ * (`chatSessionId` is still the caller's own, set by the scope function).
+ *
+ * - A lane-free read (status, window, driver and device lists) makes no copy:
+ *   it names the copy's lane only when the copy is here already.
+ * - A copy-making action (start, open, launch, connect, a device boot) makes
+ *   the copy at the caller's commit when it is missing; one in `codeSync` also
+ *   gets the caller's code.
+ * - Anything else acts on the copy's lane; with no copy here the service says
+ *   there is nothing on it, and no copy is made for that.
+ * - Naming another lane is refused, as for a chat on this machine.
+ *
+ * `prepare` (null when no copy is used) readies the copy and resolves to its
+ * `done`; `answer` adds `workCopy.laneId` (and `extraAnswer`) so the caller's
+ * machine learns the lane. The caller puts `laneId`, when there is one, back
+ * into `args`.
+ */
+function remoteWorkSurfaceScope(
+  runtime: AdeRuntime,
+  session: SessionState,
+  domain: "mac_desktop" | "app_control" | "android_emulator",
+  action: string,
+  surfaceArgs: Record<string, unknown>,
+  rules: {
+    laneFree: ReadonlySet<string>;
+    copyMaking: ReadonlySet<string>;
+    codeSync: ReadonlySet<string>;
+    /** Added to every answer that does not carry the key already. */
+    extraAnswer?: Record<string, unknown>;
+    /** A forced App Control relaunch: the copy's running app is stopped before the sync, not refused for. */
+    replacingApp?: boolean;
+  },
+): {
+  args: Record<string, unknown>;
+  laneId: string | null;
+  prepare: (() => Promise<() => void>) | null;
+  answer: ((value: unknown) => unknown) | null;
+} {
+  const method = `run_ade_action:${domain}.${action}`;
+  const remote = remoteWorkDeviceScope(
+    runtime,
+    session,
+    surfaceArgs,
+    rules.codeSync.has(action) ? undefined : "none",
+    { replacingApp: rules.replacingApp === true },
+  );
+  const requestedLaneId = asOptionalTrimmedString(surfaceArgs.laneId);
+  if (requestedLaneId && requestedLaneId !== remote.laneId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.policyDenied,
+      `A chat on another machine uses the copy of its code here (lane ${remote.laneId}) as its lane; --lane ${requestedLaneId} was refused. `
+        + "Leave out --lane.",
+      { kind: "lane_bound", method, callerLaneId: remote.laneId, requestedLaneId },
+    );
+  }
+  const extra = rules.extraAnswer ?? {};
+  // Input actions answer nothing; the caller's machine still learns the lane.
+  const answer = (value: unknown): unknown => {
+    if (value == null) return { workCopy: { laneId: remote.laneId }, ...extra };
+    const withCopy = remote.withWorkCopy(value);
+    if (!isRecord(withCopy)) return withCopy;
+    const missing = Object.entries(extra).filter(([key]) => !(key in withCopy));
+    return missing.length ? { ...withCopy, ...Object.fromEntries(missing) } : withCopy;
+  };
+  const copyExists = remote.copyExists();
+  if (rules.laneFree.has(action)) {
+    return { args: remote.rest, laneId: copyExists ? remote.laneId : null, prepare: null, answer: copyExists ? answer : null };
+  }
+  const usesCopy = rules.copyMaking.has(action) || copyExists;
+  return { args: remote.rest, laneId: remote.laneId, prepare: usesCopy ? remote.prepare : null, answer: usesCopy ? answer : null };
+}
+
+/**
+ * An App Control launch's `cwd` from another machine is relative to the
+ * caller's checkout (`withRemoteAppControlArgs`); here it is the same folder
+ * in the chat's work copy. An absolute path names the caller's machine and is
+ * refused, as is a folder outside the copy.
+ */
+function remoteWorkLaunchCwd(runtime: AdeRuntime, laneId: string, cwd: unknown): string | null {
+  const relative = asOptionalTrimmedString(cwd);
+  if (!relative) return null;
+  if (path.isAbsolute(relative) || /^[a-zA-Z]:/.test(relative)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "--cwd from another machine must be a folder inside the checkout, relative to its top.");
+  }
+  const copyPath = findRemoteWorkCopyForLane(runtime.projectRoot, laneId)?.path;
+  if (!copyPath) return null;
+  const resolved = path.resolve(copyPath, relative);
+  if (!isPathWithinAuthorizedRoot(copyPath, resolved)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `--cwd ${relative} is outside your code there.`);
+  }
+  return resolved;
 }
 
 /**
@@ -3124,7 +3372,13 @@ async function prepareRemoteWorkShell(
   runtime: AdeRuntime,
   session: SessionState,
   ptyArgs: Record<string, unknown>,
-): Promise<{ args: Record<string, unknown>; workCopy: { path: string; created: boolean; synced: boolean; laneId: string }; done: () => void }> {
+): Promise<{
+  args: Record<string, unknown>;
+  workCopy: { path: string; created: boolean; synced: boolean; laneId: string; keptFiles?: string[]; scratch?: true };
+  done: () => void;
+  /** A `--scratch` run's temporary folder, removed when its shell ends. */
+  scratchDir: string | null;
+}> {
   const primary = runtime.laneService.getPrimaryLane();
   if (!primary) {
     throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "This project has no primary lane here to run the command in.");
@@ -3153,16 +3407,42 @@ async function prepareRemoteWorkShell(
     // this long, and the spawn never says so (it hung the brain).
     const tooLong = process.platform === "win32" ? windowsCommandLineOverLimitMessage(runOnce.command, runOnce.args) : null;
     if (tooLong) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, tooLong, { code: "command_too_long" });
-    launch = { command: runOnce.command, args: runOnce.args, ...(runOnce.env ? { env: runOnce.env } : {}) };
+    launch = { command: runOnce.command, args: runOnce.args, env: runOnce.env };
   }
-  const { owner, laneId, prepared } = await prepareCallerWorkCopy(runtime, session, remoteWork);
   const cols = typeof ptyArgs.cols === "number" ? ptyArgs.cols : 120;
   const rows = typeof ptyArgs.rows === "number" ? ptyArgs.rows : 36;
+  if (remoteWork.scratch === true) {
+    // `--scratch`: one command that needs no code, in an empty folder under
+    // ADE's home, with no work copy and no git; the folder goes when it ends.
+    if (remoteWork.exitWhenDone !== true || !command) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "--no-code runs one command: ade shell start --machine <name> --no-code -- <command>.");
+    }
+    const owner = workCopyOwner(session);
+    const scratchDir = createRemoteWorkScratchDir(owner);
+    return {
+      args: {
+        ...launch,
+        title: asOptionalTrimmedString(ptyArgs.title) ?? command.slice(0, 120),
+        cols,
+        rows,
+        laneId: primary.laneId,
+        cwd: scratchDir,
+        allowExternalCwd: true,
+        chatSessionId: owner,
+        toolType: "shell",
+        tracked: true,
+      },
+      workCopy: { path: scratchDir, created: true, synced: false, laneId: remoteWorkLaneIdFor(owner), scratch: true },
+      done: () => {},
+      scratchDir,
+    };
+  }
+  const { owner, laneId, prepared } = await prepareCallerWorkCopy(runtime, session, remoteWork);
   return {
     args: {
       ...launch,
       // The command names the shell where the chat's views list it.
-      title: asOptionalTrimmedString(ptyArgs.title) ?? (command ? command.slice(0, 120) : "Work copy shell"),
+      title: asOptionalTrimmedString(ptyArgs.title) ?? (command ? command.slice(0, 120) : "Shell for a chat on another machine"),
       cols,
       rows,
       laneId: primary.laneId,
@@ -3172,9 +3452,38 @@ async function prepareRemoteWorkShell(
       toolType: "shell",
       tracked: true,
     },
-    workCopy: { path: prepared.path, created: prepared.created, synced: prepared.synced, laneId },
+    workCopy: {
+      path: prepared.path,
+      created: prepared.created,
+      synced: prepared.synced,
+      laneId,
+      ...(prepared.keptFiles.length ? { keptFiles: prepared.keptFiles.slice(0, REMOTE_WORK_KEPT_FILES_SHOWN) } : {}),
+    },
     done: prepared.done,
+    scratchDir: null,
   };
+}
+
+/**
+ * Remove a `--scratch` run's folder once its shell has ended: now when it
+ * already has (or never started), else on its exit.
+ */
+function removeScratchDirWhenShellEnds(runtime: AdeRuntime, scratchDir: string, terminalId: string | null): void {
+  const remove = () => removeRemoteWorkScratchDir(scratchDir, undefined, runtime.logger);
+  if (!terminalId) {
+    remove();
+    return;
+  }
+  const stop = runtime.ptyService.onExit((event) => {
+    if (event.sessionId !== terminalId) return;
+    stop();
+    remove();
+  });
+  // A command that ended before the listener was added.
+  if (!runtime.ptyService.hasLivePty(terminalId)) {
+    stop();
+    remove();
+  }
 }
 
 const remoteCallerCaptureRegistries = new WeakMap<AdeRuntime, RemoteCallerCaptures>();
@@ -3196,7 +3505,7 @@ function existingCallerWorkCopyPath(runtime: AdeRuntime, owner: string): string 
   if (!copy || !fs.existsSync(copy.path)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "This chat has no work copy on this machine yet. `ade shell start --machine <this machine>` or `ade files push --machine <this machine>` makes it.",
+      "This chat has no copy of its code on this machine yet. `ade shell start --machine <this machine>` or `ade files push --machine <this machine>` makes it.",
       { code: "copy_missing" },
     );
   }
@@ -3427,8 +3736,8 @@ function ptyAccessDenied(method: string, session?: SessionState): never {
     callerChatSessionId,
     nextStep: foreignCaller
       ? "A caller on another machine owns no lane here, including a lane it created. "
-        + "Run `ade shell start --machine <this machine>` without --lane to use this chat's work copy, "
-        + "or start a chat in that lane with `ade chat create --machine <this machine> --lane <lane>` and open the terminal from it."
+        + "Run `ade shell start --machine <this machine>` without --lane to use your code there, "
+        + "or start a chat in that lane with `ade chat create --machine <this machine> --lane <lane> --provider <p> --model <id>` and open the terminal from it."
       : null,
   });
 }
@@ -3554,22 +3863,6 @@ function ensurePtyTargetAuthorized(
   }
 }
 
-function ensureTrackedCliTargetAuthorized(
-  runtime: AdeRuntime,
-  session: SessionState,
-  method: string,
-  targetSessionId: string | null,
-): void {
-  if (
-    callerHasRoleAtLeast(session.identity.role, "cto")
-    || isUnboundAdeCliCaller(session)
-    || !targetSessionId
-  ) return;
-  const target = getPtySessionForAuthorization(runtime, targetSessionId);
-  if (!target || !isTrackedAgentCliToolType(target.toolType ?? null)) return;
-  ensurePtyTargetAuthorized(runtime, session, method, { sessionId: targetSessionId });
-}
-
 function listAuthorizedPtySessions(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3665,25 +3958,57 @@ function scopeTerminalListArgs(
   method: string,
   terminalArgs: Record<string, unknown>,
 ): Record<string, unknown> {
+  // Any caller may list any lane's or chat's terminals. With nothing asked
+  // for, the list stays the caller's own (its chat, or its one lane).
   const scopedArgs = { ...terminalArgs };
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const requestedChatSessionId = asOptionalTrimmedString(scopedArgs.chatSessionId);
   const requestedLaneId = extractLaneId(scopedArgs);
-  const laneIds = authorizedPtyLaneIds(runtime, session);
-  if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
-    ptyAccessDenied(method, session);
-  }
-  if (requestedLaneId && !laneIds.has(requestedLaneId)) {
-    ptyAccessDenied(method, session);
-  }
-  if (!requestedChatSessionId && callerChatSessionId) {
+  if (requestedChatSessionId || requestedLaneId) return scopedArgs;
+  if (callerChatSessionId) {
     scopedArgs.chatSessionId = callerChatSessionId;
-  } else if (!requestedLaneId && laneIds.size === 1) {
-    scopedArgs.laneId = [...laneIds][0];
-  } else if (!requestedChatSessionId && !requestedLaneId) {
-    ptyAccessDenied(method, session);
+    return scopedArgs;
   }
-  return scopedArgs;
+  const laneIds = authorizedPtyLaneIds(runtime, session);
+  if (laneIds.size === 1) {
+    scopedArgs.laneId = [...laneIds][0];
+    return scopedArgs;
+  }
+  ptyAccessDenied(method, session);
+}
+
+/**
+ * `terminal.preview` as an agent gets it: the screen as text. The snapshot's
+ * `visibleRows` is a styled cell per column (about 18 KB a row, over 1 MB for
+ * a 228x58 screen), which only the desktop's tile painter reads; desktop,
+ * phone and web clients call as the person and keep it.
+ */
+function agentTerminalPreview(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.snapshot) || !Array.isArray(value.snapshot.visibleRows)) return value;
+  const { visibleRows, screenSerialized: _screenSerialized, ...snapshot } = value.snapshot;
+  const lines = visibleRows.map((row) => (isRecord(row) && typeof row.text === "string" ? row.text.replace(/\s+$/u, "") : ""));
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return { ...value, snapshot: { ...snapshot, screenText: lines.join("\n") } };
+}
+
+/**
+ * `terminal.read` / `terminal.preview`: any caller reads any terminal (by id,
+ * pty or chat). With no target it reads the caller's own chat's terminal.
+ */
+function scopeTerminalReadArgs(
+  session: SessionState,
+  method: string,
+  terminalArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const scopedArgs = { ...terminalArgs };
+  if (
+    asOptionalTrimmedString(scopedArgs.terminalId)
+    || asOptionalTrimmedString(scopedArgs.ptyId)
+    || asOptionalTrimmedString(scopedArgs.chatSessionId)
+  ) return scopedArgs;
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!callerChatSessionId) ptyAccessDenied(method, session);
+  return { ...scopedArgs, chatSessionId: callerChatSessionId };
 }
 
 function scopeTerminalTargetArgs(
@@ -3728,15 +4053,9 @@ function scopeTerminalWatchArgs(
   method: string,
   terminalArgs: Record<string, unknown>,
 ): Record<string, unknown> {
+  // Watching is reading: any terminal may be the target. The watch itself
+  // belongs to the caller's chat (scopeTerminalChatArgs pins that).
   const scopedArgs = scopeTerminalChatArgs(runtime, session, method, terminalArgs);
-  const terminalId = asOptionalTrimmedString(scopedArgs.terminalId);
-  const ptyId = asOptionalTrimmedString(scopedArgs.ptyId);
-  if (terminalId || ptyId) {
-    ensurePtyTargetAuthorized(runtime, session, method, {
-      ...(terminalId ? { sessionId: terminalId } : {}),
-      ...(ptyId ? { ptyId } : {}),
-    });
-  }
   // An agent's own watch is armed by the agent, whatever it claims.
   return { ...scopedArgs, armedBy: "agent" };
 }
@@ -3756,6 +4075,7 @@ function scopeTerminalAdeActionArgs(
       return scopeTerminalChatArgs(runtime, session, method, terminalArgs);
     case "read":
     case "preview":
+      return scopeTerminalReadArgs(session, method, terminalArgs);
     case "write":
     case "resize":
     case "signal":
@@ -3815,7 +4135,11 @@ function scopeCrossMachineMoveArgs(
     return { ...startArgs, requestedBy: "agent", requestingSessionId: boundChatSessionId };
   }
 
-  if (action === "getCrossMachineBatchMove" || action === "retryCrossMachineBatchMove") {
+  if (
+    action === "getCrossMachineBatchMove"
+    || action === "retryCrossMachineBatchMove"
+    || action === "crossMachineBatchSourceChanged"
+  ) {
     const batchId = asOptionalTrimmedString(rawArgs.batchId);
     if (!batchId) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `chat.${action} requires batchId.`);
@@ -3899,7 +4223,11 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
   "integration_connect.request": "ade integrations connect",
   "mcp_registry.request": "ade mcp servers add",
   "mcp_registry.remove": "ade mcp servers remove",
+  "passwords.requestLogin": "ade browser signin",
 };
+
+/** The ADE Cloud iPhone's actions that run (and so spend) its minutes: the phone checks who is asking (`cloudPhoneAgentGuard`). */
+const CLOUD_PHONE_SPEND_ACTIONS: ReadonlySet<string> = new Set(CLOUD_PHONE_SPEND_ACTION_NAMES);
 
 /**
  * The `cloud` actions that spend money or delete something. The RPC server
@@ -3907,8 +4235,23 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
  * unless a person's own client is asking.
  */
 const CLOUD_APPROVED_ACTIONS = new Set([
-  "create", "resize", "update", "copy", "move", "delete", "ready_set", "ready_retry", "set_limits",
+  "create", "resize", "update", "copy", "move", "delete", "set_limits",
+  "lane_launch", "lane_launch_cancel",
+  // Clears a computer's caches: the person's dashboard, or an agent that asks with a card.
+  "clear_caches",
+  // Grows this computer's disk, up to its size's maximum (Pricing v2: no plan disk).
+  "grow_disk",
+  // The card goes to the stamped chat, never one the caller names.
+  "tier_request",
+  // A launch's approval link and starting chat go only to who started it.
+  "lane_launch_status",
+  // The account's lanes, chats, copies, backups and jobs: each delete asks in the stamped chat.
+  // `lane_start` makes a lane's new computer through `lane_launch`'s own card.
+  "lane_delete", "lane_free", "lane_start", "saved_chat_delete", "session_delete", "backup_forget", "job_cancel",
 ]);
+
+/** The `cloud` actions that add a computer that is not a new lane's: an agent's always waits on the person. */
+const CLOUD_COMPUTER_MAKE_ACTIONS: ReadonlySet<string> = new Set(["create", "copy", "move"]);
 
 /**
  * The move actions that name a source chat (`sourceSessionId`). A chat-bound
@@ -3925,6 +4268,7 @@ const CROSS_MACHINE_MOVE_ACTIONS = new Set([
   "getCrossMachineHandoffOptions",
   "startCrossMachineBatchMove",
   "getCrossMachineBatchMove",
+  "crossMachineBatchSourceChanged",
   "retryCrossMachineBatchMove",
 ]);
 
@@ -3969,6 +4313,8 @@ const CHAT_ACTION_SCOPE = new Map<string, "mesh" | "self">([
   // transcript records the cancel as the user's.
   ["cancelScheduledWork", "self"],
   ["setScheduledWorkPaused", "self"],
+  ["setScheduledWorkItemPaused", "self"],
+  ["runScheduledWorkNow", "self"],
   // Spends a real turn on the target; a bound agent could otherwise force any
   // usage-limited chat on the machine to burn its retry.
   ["resumeUsageLimitNow", "self"],
@@ -3978,7 +4324,12 @@ const CHAT_ACTION_SCOPE = new Map<string, "mesh" | "self">([
   ["switchAccount", "self"],
   ["requestSessionAttention", "self"],
   ["clearAsk", "self"],
+  // `ade devices use|current`: a chat picks and reads its own device sources.
+  ["getDeviceSources", "self"],
+  ["setDeviceSource", "self"],
   ["setSessionActivity", "self"],
+  // A CLI's hook reports its own turn; another session's would be a forged status.
+  ["reportCliTurnSignal", "self"],
   ["setSessionStatusNote", "self"],
   ["setSpawnKind", "self"],
   ["dismissSubagentTakeoverPrompt", "self"],
@@ -3992,12 +4343,15 @@ const SCOPED_CHAT_ACTIONS: ReadonlySet<string> = new Set(CHAT_ACTION_SCOPE.keys(
  * agent. `startLaunch` carries its create fields under `chat.create`.
  */
 const RUNTIME_ACTOR_CHAT_ACTIONS = new Set([
+  "respondToInput",
   "createSession",
   "updateSession",
   "handoffSession",
   "startSideChat",
   "launchHeadless",
   "startLaunch",
+  // Carries its create fields under `create`.
+  "createSessionAndSend",
   "launchCli",
   // The Codex goal RPCs record whether a person or the harness mutated the
   // goal, and `ade chat goal` reaches the same method the chat's goal controls
@@ -4022,6 +4376,9 @@ function stampChatRuntimeActor(
     const { runtimeActor: _callerValue, ...rest } = target;
     return actor ? { ...rest, runtimeActor: actor } : rest;
   };
+  if (action === "createSessionAndSend") {
+    return isRecord(args.create) ? { ...args, create: stamp(args.create) } : args;
+  }
   if (action !== "startLaunch") return stamp(args);
   const chat = isRecord(args.chat) ? args.chat : null;
   const create = chat && isRecord(chat.create) ? chat.create : null;
@@ -4106,7 +4463,7 @@ function scopeChatAdeActionArgs(
     // A direct, unbound `ade` CLI keeps project-wide access for read actions,
     // but agent-reported activity is a write and must stay attached to the
     // caller's own chat or tracked terminal. The CTO/user path is unaffected.
-    if (action === "setSessionActivity") {
+    if (action === "setSessionActivity" || action === "reportCliTurnSignal") {
       chatAccessDenied(method, {
         callerChatSessionId: null,
         requestedSessionId: asOptionalTrimmedString(chatArgs.sessionId),
@@ -4131,7 +4488,7 @@ function scopeChatAdeActionArgs(
     return scopedArgs;
   }
 
-  const requestedOwnedTerminal = action === "setSessionActivity"
+  const requestedOwnedTerminal = (action === "setSessionActivity" || action === "reportCliTurnSignal")
     && requestedSessionId != null
     && callerChatSessionId != null
     && runtime.sessionService.get(requestedSessionId)?.chatSessionId === callerChatSessionId;
@@ -4158,6 +4515,8 @@ function scopeChatAdeActionArgs(
 /** Chat actions whose caller-supplied metadata is persisted on a `user_message`,
  * where this provenance decides whether a completion may wake another agent. */
 const HOST_STAMPED_CHAT_ACTIONS = new Set(["messageSession", "sendMessage", "steer"]);
+/** The same, for an action whose message rides under `message` (a new chat's first send). */
+const HOST_STAMPED_OPENING_MESSAGE_CHAT_ACTIONS = new Set(["createSessionAndSend"]);
 
 /** Does a `cto_state.updateIdentity` patch set the cross-machine switch? */
 function ctoIdentityPatchTouchesCrossMachineAccess(patch: unknown): boolean {
@@ -4211,6 +4570,16 @@ function withTrustedAgentProvenance(
   return { ...chatArgs, metadata: existingMetadata };
 }
 
+/** `withTrustedAgentProvenance` for the `message` of a new chat's first send. */
+function withTrustedOpeningMessageProvenance(
+  runtime: AdeRuntime,
+  session: SessionState,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isRecord(args.message)) return args;
+  return { ...args, message: withTrustedAgentProvenance(runtime, session, args.message) };
+}
+
 /** Search is a machine-readable discovery surface. Drop the old internal-only
  * callerScope field at the RPC edge so bound agents and unbound shells receive
  * the same project-wide results and cannot accidentally request silent scope
@@ -4240,6 +4609,8 @@ function scopeBuiltInBrowserAdeActionArgs(
     action === "getProfileDiagnostics"
     || action === "listPermissions"
     || action === "clearPermissions"
+    // Messages is the `messages` domain: its send goes through the approval card.
+    || (BUILT_IN_BROWSER_MESSAGES_METHODS as readonly string[]).includes(action)
   ) {
     builtInBrowserAccessDenied(method);
   }
@@ -4277,8 +4648,12 @@ function scopeBuiltInBrowserAdeActionArgs(
   };
 }
 
-/** Session statuses of a chat that can still act; the rest mean it ended. */
-const LIVE_CHAT_SESSION_STATUSES = new Set(["running", "detached"]);
+/**
+ * Session statuses of a chat that can still act; the rest mean it ended.
+ * `completed` is a chat a clean stop found at rest: a send or a wake reopens
+ * its row, exactly as `detached` does after a crash.
+ */
+const LIVE_CHAT_SESSION_STATUSES = new Set(["running", "detached", "completed"]);
 
 /**
  * Authorize a call that acts in the user's own browser (`attach` / `detach`,
@@ -4397,6 +4772,15 @@ function scopeWorkToolsAdeActionArgs(
   }
   // The desktop's once-a-minute "still watching" for a cloud computer; carries no lane.
   if (action === "noteWatching") return workToolsArgs;
+  if (action === "readBrowserTabFrame" || action === "sendBrowserTabInput") {
+    // A person watching (or driving) a tab from another machine. An agent
+    // reads pages with `ade browser observe` and acts with its own commands,
+    // which keep ownership, presence and access checks; these keep none.
+    if (!isUserClient) {
+      scopeAccessDenied(`work_tools.${action} is limited to user clients`, method);
+    }
+    return workToolsArgs;
+  }
   if (action === "setActiveTool") {
     // Writing the pane's active tool is the human's move on their own desktop.
     // Same gate shape as `built_in_browser.acknowledgeRemoteRequest`.
@@ -4462,7 +4846,7 @@ function scopeWorkToolsAdeActionArgs(
  * capability probe and has to work on every host; `listWindows` and
  * `getStreamStatus` are redacted reads.
  */
-const MAC_DESKTOP_READ_ONLY_ACTIONS = new Set<string>(["getStatus", "listWindows", "getStreamStatus"]);
+const MAC_DESKTOP_READ_ONLY_ACTIONS = new Set<string>(MAC_DESKTOP_LANE_FREE_ACTIONS);
 
 /**
  * Derived, not listed: every allowlisted `mac_desktop` action that is neither a
@@ -4535,6 +4919,10 @@ export const MAC_DESKTOP_LANE_BOUND_ACTIONS = new Set<string>(
  * lanes and the reason. Nothing changes for a caller that names its own lane,
  * which is what an agent that passes `--lane` at all normally does.
  *
+ * A chat on another machine has no lane here: its work copy's lane
+ * (`workCopyLaneId`, from `remoteWorkSurfaceScope`) is its lane, under every
+ * rule above.
+ *
  * Exported for the scope tests: the refusal is a contract, not an implementation
  * detail, and the full RPC dispatch is the wrong size for proving one sentence.
  */
@@ -4544,6 +4932,7 @@ export function scopeMacDesktopAdeActionArgs(
   isUserClient: boolean,
   action: string,
   macDesktopArgs: Record<string, unknown>,
+  workCopyLaneId: string | null = null,
 ): Record<string, unknown> {
   if (isUserClient) return macDesktopArgs;
   // The role gate alone is not enough: a chat identity is clamped to `agent`,
@@ -4576,7 +4965,7 @@ export function scopeMacDesktopAdeActionArgs(
     ...rest
   } = macDesktopArgs;
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  const sessionLaneId = workCopyLaneId ?? resolveChatSessionLaneId(runtime, session);
   if (!sessionLaneId && MAC_DESKTOP_LANE_BOUND_ACTIONS.has(action)) {
     scopeAccessDenied(
       "mac_desktop actions need a resolvable lane for this caller",
@@ -5008,7 +5397,7 @@ export async function scopeUnboundAndroidAdeActionArgs(
  * the driver list. Everything else acts on, or reads, one lane's session, so a
  * caller with no lane is refused it.
  */
-const APP_CONTROL_LANE_FREE_ACTIONS = new Set<string>(["getStatus", "listDrivers"]);
+const APP_CONTROL_LANE_FREE = new Set<string>(APP_CONTROL_LANE_FREE_ACTIONS);
 
 /**
  * Derived, not listed, for the reason `MAC_DESKTOP_LANE_BOUND_ACTIONS` is: a
@@ -5018,7 +5407,7 @@ const APP_CONTROL_LANE_FREE_ACTIONS = new Set<string>(["getStatus", "listDrivers
  */
 export const APP_CONTROL_LANE_BOUND_ACTIONS = new Set<string>(
   (ADE_ACTION_ALLOWLIST.app_control ?? []).filter(
-    (action) => !APP_CONTROL_LANE_FREE_ACTIONS.has(action) && !isCtoOnlyAdeAction("app_control", action),
+    (action) => !APP_CONTROL_LANE_FREE.has(action) && !isCtoOnlyAdeAction("app_control", action),
   ),
 );
 
@@ -5053,6 +5442,9 @@ function appControlLaneBoundError(
  *   `listDrivers`). Every other action is refused: with no lane there is no
  *   session it may own, and the service must never fall back to some lane.
  *
+ * A chat on another machine has no lane here: its work copy's lane
+ * (`workCopyLaneId`, from `remoteWorkSurfaceScope`) is its lane.
+ *
  * User clients never reach this; `scopeUnboundAppControlAdeActionArgs` covers
  * an `ade` process with no chat identity.
  */
@@ -5061,6 +5453,7 @@ export function scopeAppControlAdeActionArgs(
   session: SessionState,
   action: string,
   appControlArgs: Record<string, unknown>,
+  workCopyLaneId: string | null = null,
 ): Record<string, unknown> {
   const method = `run_ade_action:app_control.${action}`;
   if (isCtoOnlyAdeAction("app_control", action)) {
@@ -5075,7 +5468,7 @@ export function scopeAppControlAdeActionArgs(
     ...rest
   } = appControlArgs;
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  const sessionLaneId = workCopyLaneId ?? resolveChatSessionLaneId(runtime, session);
   if (!sessionLaneId && APP_CONTROL_LANE_BOUND_ACTIONS.has(action)) {
     scopeAccessDenied("app_control actions need a resolvable lane for this caller", method);
   }
@@ -5144,7 +5537,7 @@ export async function scopeUnboundAppControlAdeActionArgs(
  * derivation below; anything else on the allowlist floats the card.
  */
 const APP_CONTROL_NON_DRIVING_ACTIONS = new Set<string>([
-  ...APP_CONTROL_LANE_FREE_ACTIONS,
+  ...APP_CONTROL_LANE_FREE,
   "claim",
   "stop",
   "screenshot",
@@ -5178,7 +5571,17 @@ export const APP_CONTROL_AGENT_DRIVING_ACTIONS = new Set<string>(
 );
 
 /** `work_tools` actions scoped for every role, the CTO's included. */
-const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set(["setActiveTool", "show", "acknowledgeShow", "stopDevServer"]);
+// The person-only actions are scoped for a CTO caller too: watching or
+// driving a tab carries none of the ownership or access checks agent browser
+// commands keep, so the CTO's cross-lane read carve-out must not reach them.
+const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set([
+  "setActiveTool",
+  "show",
+  "acknowledgeShow",
+  "stopDevServer",
+  "readBrowserTabFrame",
+  "sendBrowserTabInput",
+]);
 
 /**
  * `ios_simulator` actions that mean an agent is driving the device, so the
@@ -5506,23 +5909,9 @@ async function runCtoOperatorBridgeTool(
   // the real CTO is trusted, a CTO-role run or step agent is capped. Resolved
   // only when a create or update actually runs.
   const bridgeActor = async () => (await callerRuntimeActor(runtime, session, false)) ?? undefined;
-  const ctoIdentity = runtime.ctoStateService.getIdentity();
-  // Null until the user picks a model the CTO can steer live; the Claude/Codex
-  // fallback below already covers "nothing chosen yet".
-  const ctoModelPreferences = ctoIdentity.modelPreferences;
-  const preferredProvider = (ctoModelPreferences?.provider ?? "").trim().toLowerCase();
-  const fallbackModelId = preferredProvider.includes("claude")
-    ? (getDefaultModelDescriptor("claude")?.id ?? null)
-    : (getDefaultModelDescriptor("codex")?.id ?? null);
-  const defaultModelId =
-    (typeof ctoModelPreferences?.modelId === "string" && ctoModelPreferences.modelId.trim().length
-      ? ctoModelPreferences.modelId.trim()
-      : null)
-    ?? fallbackModelId;
   const tools = createCtoOperatorTools({
     currentSessionId: session.identity.callerId || "ade-cli-cto",
     defaultLaneId,
-    defaultModelId,
     sessionService: runtime.sessionService,
     resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || defaultLaneId,
     laneService: runtime.laneService,
@@ -5531,6 +5920,12 @@ async function runCtoOperatorBridgeTool(
     fileService: runtime.fileService ?? null,
     issueTracker: runtime.linearIssueTracker ?? null,
     ctoMemoryService: runtime.ctoMemoryService ?? null,
+    readHistory: (historyArgs) => agentChatService.readCtoHistory(historyArgs),
+    // The caller is the CTO chat itself; the service refuses any other session.
+    postInterimReply: ({ text }) => agentChatService.postCtoInterimReply({
+      sessionId: session.identity.chatSessionId?.trim() || session.identity.callerId,
+      text,
+    }),
     listChats: agentChatService.listSessions,
     getChatStatus: agentChatService.getSessionSummary,
     getChatTranscript: agentChatService.getChatTranscript,
@@ -6312,8 +6707,7 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
     if (name === "get_cto_state") {
-      const recentLimit = Math.max(0, Math.min(50, Math.floor(asNumber(toolArgs.recentLimit, 10))));
-      return runtime.ctoStateService.getSnapshot(recentLimit);
+      return runtime.ctoStateService.getSnapshot();
     }
     return await runCtoOperatorBridgeTool(runtime, session, name, toolArgs);
   }
@@ -6406,6 +6800,7 @@ async function runTool(args: {
       return listAllowedAdeActionNames(entry, service)
         .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
         .filter((action) => !isUserOnlyAdeAction(entry, action) || mayUseUserOnlyActions(session))
+        .filter((action) => !thisDesktopOnlyRefusal(entry, action) || mayUseThisDesktopOnlyActions(session))
         .filter((action) => entry !== "analytics" || action !== "capture" || isUserClient)
         .filter((action) => !remoteBrainCaller || !isSecretBearingAdeAction(entry, action))
         .map((action) => {
@@ -6480,7 +6875,12 @@ async function runTool(args: {
       // The input the action receives: the first positional argument, a scalar
       // `arg` (an object there reaches the action too), or `args`.
       const actionInput = argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args;
-      assertActionModelNames(domain, action, actionInput, savedModelNamesKeptBy(domain, action, actionInput, service));
+      const savedRule = savedRuleKeptBy(domain, action, actionInput, service);
+      assertActionModelNames(domain, action, actionInput, savedRule.modelNames);
+      assertLaunchModels(domain, action, actionInput, {
+        readPresets: () => readHarnessPresetsFromMachine(resolveMachineAdeDir()),
+        keptMissingModels: savedRule.missingModels,
+      });
     }
     if (
       domain === "cto_state"
@@ -6494,6 +6894,18 @@ async function runTool(args: {
         JsonRpcErrorCode.policyDenied,
         "Only the user can change whether the CTO reaches other machines (Settings › CTO).",
       );
+    }
+    if (
+      domain === "account_settings"
+      && (action === "set" || action === "remove")
+      && typeof argsList?.[1] === "string"
+      && argsList[1].trim() === LANE_SHARE_DEFAULT_RIGHTS_KEY
+      && !mayUseUserOnlyActions(session)
+    ) {
+      // The start rights of every new lane share (Settings › Sharing) are the
+      // person's: an agent that raised them would widen the next share a
+      // person makes without looking.
+      throw new JsonRpcError(JsonRpcErrorCode.policyDenied, LANE_SHARE_PERSON_ONLY_MESSAGE);
     }
     if (domain === "project_config" && action === "save" && !userAtControls) {
       // An agent may change the setup of the work (tests, automations, lane
@@ -6524,7 +6936,8 @@ async function runTool(args: {
     // completion may wake another agent — and now decides it for the whole
     // mission, not one turn — so no caller, elevated or not, gets to supply it.
     const stampedChatAction = domain === "chat" && HOST_STAMPED_CHAT_ACTIONS.has(action);
-    if (stampedChatAction && (argsList || hasScalarArg)) {
+    const stampedOpeningMessageAction = domain === "chat" && HOST_STAMPED_OPENING_MESSAGE_CHAT_ACTIONS.has(action);
+    if ((stampedChatAction || stampedOpeningMessageAction) && (argsList || hasScalarArg)) {
       // Positional invocation would carry caller metadata straight past the
       // re-derivation below. These actions take object arguments anyway.
       throw new JsonRpcError(
@@ -6540,6 +6953,8 @@ async function runTool(args: {
     // its arguments from these raw ones.
     const providedObjectArgs = stampedChatAction
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
+      : stampedOpeningMessageAction
+        ? withTrustedOpeningMessageProvenance(runtime, session, safeObject(toolArgs.args))
       : domain === "chat" && action === "armWait"
         // A send wait's provenance is derived by the host (bound agents, in
         // the chat scoping below), not accepted from the caller; only the ADE
@@ -6580,6 +6995,11 @@ async function runTool(args: {
         `${domain}.${action} is limited to user clients${androidUserOnlyReason(domain, action)}`,
         `run_ade_action:${domain}.${action}`,
       );
+    }
+    const thisDesktopOnly = thisDesktopOnlyRefusalFor(domain, action, argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args);
+    if (thisDesktopOnly && !mayUseThisDesktopOnlyActions(session)) {
+      // It acts on this computer's screen (a macOS prompt): never for a desktop on another computer.
+      throw new JsonRpcError(JsonRpcErrorCode.policyDenied, thisDesktopOnly);
     }
     if (
       domain === "chat"
@@ -6648,6 +7068,43 @@ async function runTool(args: {
       ensureAskUserAllowed(session);
       scopedObjectArgs = { ...secretArgs, chatSessionId: targetChatSessionId };
     }
+    if (domain === "project_secret" && action === "exec" && isRemoteBrainCallerClientName(session.clientName)) {
+      // Runs a command on THIS computer with its secrets: never for a call
+      // relayed from another machine's brain, which could not otherwise run
+      // commands here.
+      throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "`ade secrets exec` runs only on the computer that holds the secrets. Run it in a chat on that computer.");
+    }
+    if (STAMP_OWN_CHAT_ACTIONS.has(`${domain}.${action}`)) {
+      // The caller's own chat (exec's Activity row, a text's approval card)
+      // and who called are stamped here, never taken from the arguments.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${domain}.${action} requires object arguments.`);
+      }
+      const { chatSessionId: _ignoredChat, sessionId: _ignoredSession, calledBy: _ignoredCaller, ...ownArgs } = rawObjectArgs;
+      const boundChat = asOptionalTrimmedString(callerCtx.chatSessionId) ?? asOptionalTrimmedString(session.identity.chatSessionId);
+      scopedObjectArgs = {
+        ...ownArgs,
+        ...(boundChat ? { chatSessionId: boundChat } : {}),
+        calledBy: activityCaller(session),
+      };
+    }
+    if (domain === "passwords" && (action === "signin" || action === "signup")) {
+      // `ade browser signin` may raise the secure sign-in card, and only in
+      // the caller's own chat. Stamped here, never taken from the arguments,
+      // and not rate-limited: most sign-ins fill a saved login and ask nobody
+      // (the card itself joins one ask per chat and site).
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `passwords.${action} requires object arguments.`);
+      }
+      const { chatSessionId: _ignoredChat, sessionId: _ignoredSession, calledBy: _ignoredCaller, ...signinArgs } = rawObjectArgs;
+      // The browser half acts as this caller, exactly like `ade browser fill`
+      // (its own chat's tabs, its lane): the same scoping stamps it. Who
+      // called is stamped for Activity.
+      scopedObjectArgs = {
+        ...scopeBuiltInBrowserAdeActionArgs(runtime, session, action, signinArgs),
+        calledBy: activityCaller(session),
+      };
+    }
     if (domain === "automations" && action === "webhookSendTest" && !isUserClient && !callerIsCto) {
       // `config` is the builder's unsaved draft, and it names the secret the
       // test is signed with. An agent tests the rule as saved, so it cannot
@@ -6658,17 +7115,40 @@ async function runTool(args: {
       const { config: _ignoredDraftConfig, ...testArgs } = rawObjectArgs;
       scopedObjectArgs = testArgs;
     }
-    if (domain === "cloud" && CLOUD_APPROVED_ACTIONS.has(action)) {
+    if ((domain === "cloud" && CLOUD_APPROVED_ACTIONS.has(action)) || (domain === "cloud_phone" && CLOUD_PHONE_SPEND_ACTIONS.has(action))) {
       if (argsList || hasScalarArg) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `cloud.${action} requires object arguments.`);
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${domain}.${action} requires object arguments.`);
       }
       // Who may say yes to spending or deleting: a person's own client (the
       // desktop, the CTO thread) already decided; anyone else is an agent and
       // is asked in its own chat. Never taken from the arguments. A chatless
       // `ade --role cto` is not a person: an agent's shell can claim that role
       // (the same rule as answering a card, above).
+      // A computer that is not a new lane's (make, copy, move) is never the
+      // CTO's call: it is an agent there, and the person answers its card.
+      const makesComputer = domain === "cloud" && CLOUD_COMPUTER_MAKE_ACTIONS.has(action);
       const callerIsPerson = mayUseUserOnlyActions(session)
-        || (callerIsCto && !isTrustedChatlessAdeCliCaller(session) && await callerIsTrustedCto(runtime, session));
+        || (!makesComputer && callerIsCto && !isTrustedChatlessAdeCliCaller(session) && await callerIsTrustedCto(runtime, session));
+      // An outside app on an ADE MCP connection with write access (the runner
+      // gives it the operator role) has no chat: it is an unattended agent,
+      // held to the agent limits. Read only runs as `agent` and stays a
+      // chatless agent, which is refused. The connection id is only an
+      // environment claim, so the caller's process must also be one the
+      // runner started and still runs; otherwise it stays a chatless agent.
+      // A caller with a chat is that chat's agent, asked in its chat: it never
+      // takes the unattended ADE MCP path. The run, and the connection it was
+      // started for, are this brain's own records.
+      const stampedChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
+        ?? asOptionalTrimmedString(session.identity.chatSessionId)
+        ?? null;
+      const callerPid = Number(/:(\d+)$/.exec(session.identity.callerId ?? "")?.[1] ?? Number.NaN);
+      const claimedConnection = asOptionalTrimmedString(session.identity.remoteMcpConnectionId);
+      const viaAdeMcp = !stampedChatSessionId
+        && Boolean(claimedConnection)
+        && callerHasRoleAtLeast(session.identity.role, "cto")
+        && isSyntheticCallerId(session.identity.callerId)
+        && Number.isInteger(callerPid)
+        && isRunningRemoteRun(callerPid, claimedConnection);
       const { approval: _ignoredApproval, ...cloudArgs } = rawObjectArgs;
       scopedObjectArgs = {
         ...cloudArgs,
@@ -6676,9 +7156,8 @@ async function runTool(args: {
           ? { by: "person" }
           : {
               by: "agent",
-              chatSessionId: asOptionalTrimmedString(callerCtx.chatSessionId)
-                ?? asOptionalTrimmedString(session.identity.chatSessionId)
-                ?? null,
+              chatSessionId: stampedChatSessionId,
+              ...(viaAdeMcp ? { viaAdeMcp: true } : {}),
             },
       };
     }
@@ -6775,11 +7254,6 @@ async function runTool(args: {
           ? value
           : value.filter((entry) => isRecord(entry) && typeof entry.laneId === "string" && laneIds.has(entry.laneId))
         : [];
-    } else if (!callerIsCto && domain === "chat" && action === "getTurnStatus") {
-      const targetSessionId = typeof argsList?.[0] === "string"
-        ? argsList[0]
-        : asOptionalTrimmedString(rawObjectArgs.sessionId);
-      ensureTrackedCliTargetAuthorized(runtime, session, `run_ade_action:${domain}.${action}`, targetSessionId);
     }
 
     if (domain === "chat" && (action === "readTranscript" || action === "readTranscriptPage")) {
@@ -6790,9 +7264,10 @@ async function runTool(args: {
         hasScalarArg,
         rawObjectArgs,
       );
+      // Any caller may read any session's transcript and turn status, a CLI
+      // agent's in another lane included: reading is how chats follow each
+      // other's work. Writing to another session stays scoped.
       const callerSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-      const targetSessionId = asOptionalTrimmedString(chatArgs.sessionId) || callerSessionId;
-      ensureTrackedCliTargetAuthorized(runtime, session, `run_ade_action:${domain}.${action}`, targetSessionId);
       scopedObjectArgs = asOptionalTrimmedString(chatArgs.sessionId) || !callerSessionId
         ? chatArgs
         : { ...chatArgs, sessionId: callerSessionId };
@@ -6804,7 +7279,13 @@ async function runTool(args: {
       } else if (action === "create" && isRecord(scopedObjectArgs.remoteWork)) {
         const prepared = await prepareRemoteWorkShell(runtime, session, scopedObjectArgs);
         scopedObjectArgs = prepared.args;
-        afterScopedCall = prepared.done;
+        const scratchDir = prepared.scratchDir;
+        afterScopedCall = scratchDir
+          ? () => {
+            // Runs whether or not the shell started; `result` is set only when it did.
+            removeScratchDirWhenShellEnds(runtime, scratchDir, isRecord(result) ? asOptionalTrimmedString(result.sessionId) : null);
+          }
+          : prepared.done;
         transformScopedResult = (value) => {
           // Background work for a chat on another machine: archived from the
           // start, so no list on this machine shows it (one row per command
@@ -6831,13 +7312,19 @@ async function runTool(args: {
       // `terminal.write` `fromUser` strip above already removed a claim a
       // non-user caller may not make, and re-reading the raw args would put it
       // back.
+      const requestedTerminalArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, scopedObjectArgs);
+      // A list that names a chat or lane is a read of exactly that, which any
+      // caller may make; only the default list (the caller's own) is filtered below.
+      const namedTerminalList = Boolean(
+        asOptionalTrimmedString(requestedTerminalArgs.chatSessionId) || extractLaneId(requestedTerminalArgs),
+      );
       scopedObjectArgs = scopeTerminalAdeActionArgs(
         runtime,
         session,
         action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, scopedObjectArgs),
+        requestedTerminalArgs,
       );
-      if (action === "list") {
+      if (action === "list" && !namedTerminalList) {
         // A lane-wide list leaves out shells a chat on another machine owns here.
         const caller = asOptionalTrimmedString(session.identity.chatSessionId);
         // A chat on another machine lists only its own shells here (the scope
@@ -6968,12 +7455,40 @@ async function runTool(args: {
       // clients are branched around entirely rather than returned early from the
       // scoping function, so this adds no object-args requirement to a surface
       // that was already free to call the domain however it liked.
+      let macDesktopArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      let workCopyLaneId: string | null = null;
+      // A chat on another machine with no lane here: its work copy's lane is
+      // its lane (`ade screen … --machine`).
+      if (isRecord(macDesktopArgs.remoteWork)) {
+        const remote = remoteWorkSurfaceScope(runtime, session, domain, action, macDesktopArgs, {
+          laneFree: MAC_DESKTOP_READ_ONLY_ACTIONS,
+          copyMaking: MAC_DESKTOP_WORK_COPY_MAKING_ACTIONS,
+          codeSync: NO_CODE_SYNC_ACTIONS,
+          // The screen (Mac, Windows or Linux Desktop) is named by this
+          // machine's platform; the caller's machine runs another one.
+          extraAnswer: { platform: process.platform },
+        });
+        const refusal = MAC_DESKTOP_REMOTE_REFUSED_ACTIONS[action];
+        if (refusal) scopeAccessDenied(refusal, `run_ade_action:mac_desktop.${action}`);
+        macDesktopArgs = remote.args;
+        workCopyLaneId = remote.laneId;
+        const prepare = remote.prepare;
+        // Readied last, right before the call, so a refusal on the way leaves
+        // nothing busy; busy until the call returns.
+        if (prepare) {
+          prepareBeforeCall = async () => {
+            afterScopedCall = await prepare();
+          };
+        }
+        transformScopedResult = remote.answer;
+      }
       scopedObjectArgs = scopeMacDesktopAdeActionArgs(
         runtime,
         session,
         isUserClient,
         action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        macDesktopArgs,
+        workCopyLaneId,
       );
     } else if (domain === "mac_desktop" && isUnboundAdeCliCaller(session)) {
       // A user client by shape, but possibly an agent whose shell has no chat
@@ -6998,11 +7513,48 @@ async function runTool(args: {
       scopedObjectArgs = scopeTrustedChatlessMacDesktopAdeActionArgs(rawObjectArgs);
     } else if (domain === "app_control" && !isUserClient) {
       // A bound agent acts only on its chat's lane session, as its own chat.
+      let appControlArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      let workCopyLaneId: string | null = null;
+      // A chat on another machine with no lane here: its work copy's lane is
+      // its lane (`ade app-control … --machine`); a launch runs the caller's code.
+      if (isRecord(appControlArgs.remoteWork)) {
+        const remote = remoteWorkSurfaceScope(runtime, session, domain, action, appControlArgs, {
+          laneFree: APP_CONTROL_LANE_FREE,
+          copyMaking: APP_CONTROL_WORK_COPY_MAKING_ACTIONS,
+          codeSync: APP_CONTROL_WORK_COPY_CODE_SYNC_ACTIONS,
+          // `launch --force` replaces the running app, whose terminal would otherwise refuse the sync.
+          replacingApp: APP_CONTROL_WORK_COPY_CODE_SYNC_ACTIONS.has(action) && appControlArgs.force === true,
+        });
+        const { cwd: callerCwd, ...withoutCwd } = remote.args;
+        // The caller's `--cwd` is the same folder in the copy, which exists
+        // only once it is readied; with no copy to find it in it is dropped.
+        appControlArgs = withoutCwd;
+        workCopyLaneId = remote.laneId;
+        const prepare = remote.prepare;
+        const laneId = remote.laneId;
+        if (prepare && laneId) {
+          prepareBeforeCall = async () => {
+            const done = await prepare();
+            // A refused `--cwd` must not leave the copy busy: the call's
+            // `finally` that frees it is not reached from here.
+            try {
+              const cwd = remoteWorkLaunchCwd(runtime, laneId, callerCwd);
+              if (cwd) scopedObjectArgs = { ...scopedObjectArgs, cwd };
+            } catch (error) {
+              done();
+              throw error;
+            }
+            afterScopedCall = done;
+          };
+        }
+        transformScopedResult = remote.answer;
+      }
       scopedObjectArgs = scopeAppControlAdeActionArgs(
         runtime,
         session,
         action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        appControlArgs,
+        workCopyLaneId,
       );
     } else if (domain === "app_control" && isUnboundAdeCliCaller(session)) {
       // Placed by the lane worktree it stands in, and acting as no chat.
@@ -7030,6 +7582,16 @@ async function runTool(args: {
         // The caller's machine learns which lane here is its work copy, so its
         // views can show this simulator.
         transformScopedResult = remote.withWorkCopy;
+      } else if (action === "getStatus" && !asOptionalTrimmedString(appleArgs.laneId)) {
+        // A status read from a chat on another machine (it sends no
+        // `remoteWork`: a read makes no copy) is about that chat's lane here,
+        // its work copy's, when there is one: its own device, not whichever
+        // simulator this Mac has booted. With no copy it stays the machine's.
+        const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+        const copyLaneId = owner && parseForeignCallerSessionId(owner) ? remoteWorkLaneIdFor(owner) : null;
+        if (copyLaneId && findRemoteWorkCopyForLane(runtime.projectRoot, copyLaneId)) {
+          appleArgs = { ...appleArgs, laneId: copyLaneId };
+        }
       }
       scopedObjectArgs = isUserClient
         ? await scopeUnboundAppleAdeActionArgs(runtime, session, action, appleArgs, toolArgs.callerRoot)
@@ -7042,29 +7604,24 @@ async function runTool(args: {
       if (isRecord(androidArgs.remoteWork)) {
         // Used as it is, made at the caller's commit when missing; an install
         // or launch that builds or reads an APK gets the caller's code first.
-        const remote = remoteWorkDeviceScope(runtime, session, androidArgs, ANDROID_CODE_SYNC.has(action) ? undefined : "none");
-        // Input actions answer nothing; the caller's machine still learns the lane.
-        const answer = (value: unknown): unknown => (value == null ? { workCopy: { laneId: remote.laneId } } : remote.withWorkCopy(value));
-        if (ANDROID_LANE_FREE.has(action)) {
-          // Status and the AVD list make no copy: they name this chat's
-          // emulator only when its copy is here already.
-          const copyExists = remote.copyExists();
-          androidArgs = copyExists ? { ...remote.rest, laneId: remote.laneId } : remote.rest;
-          if (copyExists) transformScopedResult = answer;
-        } else {
-          androidArgs = { ...remote.rest, laneId: remote.laneId };
-          // A stop, an input or a screenshot with no copy here has no device
-          // to act on: the service says so, and no copy is made for it.
-          if (ANDROID_COPY_MAKING_ACTIONS.has(action) || remote.copyExists()) {
-            // Busy until the call returns (a boot runs for its length).
-            prepareBeforeCall = async () => {
-              afterScopedCall = await remote.prepare();
-            };
-            // The caller's machine learns which lane here is its work copy, so
-            // its views can show this emulator.
-            transformScopedResult = answer;
-          }
+        // Status and the AVD list make no copy; a stop, an input or a
+        // screenshot with no copy here has no device to act on.
+        const remote = remoteWorkSurfaceScope(runtime, session, domain, action, androidArgs, {
+          laneFree: ANDROID_LANE_FREE,
+          copyMaking: ANDROID_COPY_MAKING_ACTIONS,
+          codeSync: ANDROID_CODE_SYNC,
+        });
+        androidArgs = remote.laneId ? { ...remote.args, laneId: remote.laneId } : remote.args;
+        const prepare = remote.prepare;
+        // Busy until the call returns (a boot runs for its length).
+        if (prepare) {
+          prepareBeforeCall = async () => {
+            afterScopedCall = await prepare();
+          };
         }
+        // The caller's machine learns which lane here is its work copy, so
+        // its views can show this emulator.
+        transformScopedResult = remote.answer;
       }
       scopedObjectArgs = isUserClient
         ? await scopeUnboundAndroidAdeActionArgs(runtime, session, action, androidArgs, toolArgs.callerRoot)
@@ -7106,6 +7663,11 @@ async function runTool(args: {
         rawObjectArgs,
       );
     } else if (domain === "built_in_browser") {
+      // Saved logins are filled only through `passwords.signin`, which records
+      // the use in Activity and the chat; never as a bare browser action.
+      if (action === "signin" || action === "signup") {
+        throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `Use \`ade browser ${action}\` (the \`passwords.${action}\` action).`);
+      }
       // Decided once, here: the scoping authorizes the call for this
       // destination and stamps it, and the router obeys the stamp. Asking
       // again at dispatch would let an attachment that ended (or began) in
@@ -7180,6 +7742,28 @@ async function runTool(args: {
         externalSessionsAccessDenied(`run_ade_action:${domain}.${action}`);
       }
     }
+    if (domain === "lane_share") {
+      // Only the runtime says who calls (`laneShareCallerOf` in the action
+      // registry): a person at the desktop, by the same test as user-only
+      // actions, or an agent (the `ade` CLI, an agent's shell, ADE MCP,
+      // another machine's brain). Any value the caller sent is dropped.
+      // Positional arguments would skip the stamp, so the domain takes one
+      // object argument from every caller.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `lane_share.${action} takes one object argument.`);
+      }
+      // A read-only ADE MCP connection runs the CLI as role agent, full
+      // access as cto (remoteMcpRunner). The command policy refuses its
+      // writes first; this holds even if a flag gets past that parse.
+      if (session.identity.remoteMcpConnectionId && session.identity.role !== "cto" && action !== "list") {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          "This ADE MCP connection is read-only, so it can list a lane's shares but not make or stop one. Ask the person for full access in ADE Settings → ADE MCP.",
+        );
+      }
+      const { callerClass: _callerSent, ...shareArgs } = scopedObjectArgs;
+      scopedObjectArgs = { ...shareArgs, callerClass: mayUseUserOnlyActions(session) ? "person" : "agent" };
+    }
     if (domain === "chat" && RUNTIME_ACTOR_CHAT_ACTIONS.has(action)) {
       // Only the runtime says who is calling (`AgentChatRuntimeActor`): any
       // value the caller sent is dropped. An agent's create, update or fork is
@@ -7246,6 +7830,9 @@ async function runTool(args: {
     }
     await rememberCaptureActionResult(runtime, domain, action, result, session);
     if (transformScopedResult) result = transformScopedResult(result);
+    // Any model-driven caller, whatever its role (a CTO, a run, an outside AI
+    // app on ADE MCP), reads the screen as text; a person's client keeps the grid.
+    if (domain === "terminal" && action === "preview" && activityCaller(session) === "agent") result = agentTerminalPreview(result);
     if (domain === "pty" && (action === "resumeSession" || action === "sendToSession") && isRecord(result) && result.resumed === true) {
       const sessionId = typeof result.sessionId === "string"
         ? result.sessionId
@@ -7391,13 +7978,17 @@ async function runTool(args: {
     const parentLevel = orchestrationParentSessionId
       ? runtime.agentChatService?.getPermissionCeiling?.({ parentSessionId: orchestrationParentSessionId })
       : null;
-    const defaultPermissionMode = spawnKind === "subagent"
-      && parentLevel === "full-auto"
-      && !asOptionalTrimmedString(toolArgs.permissionMode)
-      && !requestedDroidPermissionMode
-      && !requestedMusePermissionMode
-      ? "full-auto"
-      : requestedPermissionMode;
+    const permissionNamed = Boolean(asOptionalTrimmedString(toolArgs.permissionMode))
+      || Boolean(requestedDroidPermissionMode)
+      || Boolean(requestedMusePermissionMode);
+    // Nothing named: the CLI starts where a chat launched the same way would
+    // (a full-auto parent's subagent follows it; otherwise the project's
+    // default, full access when unconfigured). The ceiling below still caps it.
+    const defaultPermissionMode = permissionNamed
+      ? requestedPermissionMode
+      : spawnKind === "subagent" && parentLevel === "full-auto"
+        ? "full-auto"
+        : configuredCliLaunchPermissionMode(runtime, provider) ?? requestedPermissionMode;
     const permissionMode = cliCeiling
       ? clampGenericPermissionMode(defaultPermissionMode, cliCeiling) as AgentChatPermissionMode
       : defaultPermissionMode;
@@ -7455,7 +8046,15 @@ async function runTool(args: {
     const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 200);
     const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
     const model = asOptionalTrimmedString(toolArgs.model) ?? asOptionalTrimmedString(toolArgs.modelId);
-    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
+    if (!mayUseUserOnlyActions(session)) {
+      assertCliLaunchModelNamed(model, provider);
+      assertFullModelName(model, provider);
+      // A Custom provider or route runs its own model; a different one named here
+      // would be replaced silently, so it is refused as on `chat.launchCli`.
+      assertLaunchModels("chat", "launchCli", { provider, model, presetId }, {
+        readPresets: () => readHarnessPresetsFromMachine(resolveMachineAdeDir()),
+      });
+    }
     const reasoningEffort = asOptionalTrimmedString(toolArgs.reasoningEffort);
     const fastMode = asOptionalBoolean(toolArgs.fastMode) ?? asOptionalBoolean(toolArgs.codexFastMode);
     const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
@@ -7471,7 +8070,12 @@ async function runTool(args: {
       ? await resolveCodexComputerUseMcpConfig()
       : null;
 
-    const launchInstance = resolveProviderInstanceForLaunch(provider, instanceId);
+    // A named account wins; otherwise a new CLI session starts where a new
+    // chat would. A preset or a stored key brings its own sign-in.
+    const pickedInstanceId = !instanceId && !presetId && !credentialId && provider !== "shell"
+      ? runtime.agentChatService?.pickNewCliSessionAccount(provider, model ?? null) ?? null
+      : null;
+    const launchInstance = resolveProviderInstanceForLaunch(provider, instanceId || pickedInstanceId);
     await prepareHarnessLaunch({ provider, presetId, credentialId });
     const trackedPreset = resolveTrackedCliPreset(provider, { presetId, credentialId });
     const userMcp = await resolveTrackedCliUserMcp({
@@ -7715,7 +8319,12 @@ async function runTool(args: {
       if (!own || `${own.owner}/${own.name}`.toLowerCase() !== repo) return none;
     }
     const ownership = localLinkOwnership(runtime.projectRoot, { logger: runtime.logger });
-    return { accountMachineKey: ownership?.accountMachineKey ?? null, projectId: ownership?.projectId ?? null };
+    return {
+      accountMachineKey: ownership?.accountMachineKey ?? null,
+      projectId: ownership?.projectId ?? null,
+      // Additive: the account project of this folder, which links add (L33).
+      ...(ownership?.accountProjectId ? { accountProjectId: ownership.accountProjectId } : {}),
+    };
   }
 
   if (name === "list_lanes") {
@@ -8206,12 +8815,95 @@ async function runTool(args: {
     if (!owner || !parseForeignCallerSessionId(owner)) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
+    // In every checkout of this repository here (`releaseChatRemoteWork`).
+    // `ended`: the chat was archived or deleted on its own machine, which says
+    // so at once (the hourly sweep is the fallback); its shells in each
+    // copy's project stop first. `keepUnsynced`: a copy holding work nobody
+    // pushed stays.
+    const ended = toolArgs.ended === true;
+    const keepUnsynced = toolArgs.keepUnsynced === true;
     try {
-      return { released: await workCopiesFor(runtime).release(owner) };
+      const { removed, kept } = await releaseChatRemoteWork({
+        projectRoot: runtime.projectRoot,
+        owner,
+        ended,
+        keepUnsynced,
+        logger: runtime.logger,
+      });
+      return { released: removed.length > 0, removed, ...(kept.length ? { kept } : {}) };
     } catch (error) {
       if (error instanceof RemoteWorkError) throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, error.message, { code: error.code });
       throw error;
     }
+  }
+
+  if (name === "find_remote_work_copy") {
+    // A chat on another machine asking which checkouts of this repository
+    // here hold its work copy, so its `--machine` calls keep landing in the
+    // one that has it (`agentMachineBridge`). Its own copies only.
+    const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!owner || !parseForeignCallerSessionId(owner)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    const copies = remoteWorkCopiesInRepo(runtime.projectRoot, owner, undefined, runtime.logger);
+    return { projectRoots: copies.map((copy) => copy.projectRoot) };
+  }
+
+  if (name === "release_remote_work_devices") {
+    // A chat on another machine whose turn ended (its own brain sends this):
+    // it lets go of what it holds here, as a chat here does when it ends,
+    // but nothing is powered off or quit. Only its own claims: every release
+    // below is keyed on the caller's own foreign id.
+    const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!owner || !parseForeignCallerSessionId(owner)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    // Sent without waiting, so it can land after the chat's next turn
+    // already called here: then it could free that turn's claim, and is
+    // skipped. A turn id is when the turn started, so "newer" is an order;
+    // the caller's next turn end releases here again, so nothing a skipped
+    // release held stays held. A caller that names no turn (older ADE)
+    // releases as before.
+    const endedTurnId = asOptionalTrimmedString(toolArgs.turnId);
+    const endedMs = endedTurnId ? Date.parse(endedTurnId) : Number.NaN;
+    const newerTurnStarted = (): boolean => {
+      const latestTurnId = externalChatLatestTurn(owner);
+      const latestMs = latestTurnId ? Date.parse(latestTurnId) : Number.NaN;
+      if (!(Number.isFinite(endedMs) && Number.isFinite(latestMs) && latestMs > endedMs)) return false;
+      runtime.logger.info("remote_work.turn_release_stale", { endedTurnId, latestTurnId });
+      return true;
+    };
+    if (newerTurnStarted()) return { released: [], skipped: "newer_turn" };
+    const released: string[] = [];
+    // Each release checks again first: a newer turn can start while an
+    // earlier release is awaited. Each service ends the chat's leases in the
+    // same synchronous step as that check, before its first await; claims
+    // released after an await (the iOS hub) are released in the order that
+    // keeps that window shortest.
+    const release = async (device: string, run: () => Promise<boolean>): Promise<void> => {
+      if (newerTurnStarted()) return;
+      try {
+        if (await run()) released.push(device);
+      } catch (error) {
+        runtime.logger.warn("remote_work.device_release_failed", { device, error: error instanceof Error ? error.message : String(error) });
+      }
+    };
+    // Leases, the app session and the device session; the simulator stays on.
+    await release("simulator", async () => {
+      const ios = runtime.iosSimulatorService;
+      return ios ? (await ios.releaseIfOwnedBy(owner, { keepRunning: true })).released : false;
+    });
+    // Its automatic recordings stop (filed as proof) and its leases pass on;
+    // a recording it started itself and the emulator keep going.
+    await release("android_emulator", async () => {
+      if (!runtime.androidEmulatorService) return false;
+      await runtime.androidEmulatorService.releaseIfOwnedBy(owner, { turnEnded: true });
+      return true;
+    });
+    // The real-input lease on this machine's screen.
+    await release("desktop", async () => (await runtime.macDesktopService?.releaseIfOwnedBy(owner))?.released === true);
+    if (released.length) runtime.logger.info("remote_work.devices_released_after_turn", { released });
+    return { released };
   }
 
   if (name === "work_copy_file") {
@@ -9199,7 +9891,10 @@ async function runTool(args: {
     }
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
-    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
+    if (!mayUseUserOnlyActions(session)) {
+      assertCliLaunchModelNamed(model, provider);
+      assertFullModelName(model, provider);
+    }
     const requestedSpawnPermissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
     const spawnCeiling = await agentCliPermissionCeiling(runtime, session, null);
     const permissionMode = spawnCeiling
@@ -9263,7 +9958,7 @@ async function runTool(args: {
     const finalPrompt = promptSegments.join("\n").trim();
 
     // ADE's pinned Codex never checks for its own update; the preview stays short.
-    const commandArgs: string[] = provider === "codex" ? [...CODEX_NO_UPDATE_CHECK_ARGS] : [];
+    const commandArgs: string[] = provider === "codex" ? [...CODEX_NO_UPDATE_CHECK_ARGS, ...codexLinuxShellArgs(process.platform)] : [];
     const commandPreviewParts: string[] = [provider];
     if (model) {
       commandArgs.push("--model", model);
@@ -9274,17 +9969,17 @@ async function runTool(args: {
         commandArgs.push("--dangerously-bypass-approvals-and-sandbox");
         commandPreviewParts.push("--dangerously-bypass-approvals-and-sandbox");
       } else if (permissionMode === "default") {
-        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
-        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
+        commandArgs.push(...codexSandboxCliArgs("workspace-write"), "--ask-for-approval", "on-request");
+        commandPreviewParts.push(...codexSandboxCliArgs("workspace-write").map(previewShellEscapeArg), "--ask-for-approval", "on-request");
       } else if (permissionMode === "config-toml") {
         // No explicit Codex permission flags; let the host config.toml decide.
       } else if (permissionMode === "plan") {
-        commandArgs.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
-        commandPreviewParts.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
+        commandArgs.push(...codexSandboxCliArgs("read-only"), "--ask-for-approval", "on-request");
+        commandPreviewParts.push(...codexSandboxCliArgs("read-only").map(previewShellEscapeArg), "--ask-for-approval", "on-request");
       } else {
         // The CLI flag refuses `untrusted` and exits (see `codexApprovalPolicy.ts`).
-        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
-        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
+        commandArgs.push(...codexSandboxCliArgs("workspace-write"), "--ask-for-approval", "on-request");
+        commandPreviewParts.push(...codexSandboxCliArgs("workspace-write").map(previewShellEscapeArg), "--ask-for-approval", "on-request");
       }
     } else {
       let claudePermission: string;
@@ -9378,13 +10073,14 @@ async function runTool(args: {
     const cursor = asNumber(toolArgs.cursor, 0);
     const limit = asNumber(toolArgs.limit, 100);
     const category = asOptionalTrimmedString(toolArgs.category);
-    if (category) {
-      // The drain looks at up to ten times `limit` events and returns only this
-      // category. Its cursor moves past the events it skipped, so polling
+    const ptyDataIds = readPtyDataIds(toolArgs.ptyDataIds);
+    if (category || ptyDataIds) {
+      // The drain looks at up to ten times `limit` events and returns only the
+      // ones that pass. Its cursor moves past the events it skipped, so polling
       // cannot stall, and it stops at the last event it returned, so a match
       // past `limit` is not skipped.
       const result = runtime.eventBuffer.drain(cursor, limit, {
-        filter: (e) => e.category === category,
+        filter: (e) => (!category || e.category === category) && passesPtyDataFilter(e, ptyDataIds),
         maxScan: limit * 10
       });
       return {
@@ -9574,7 +10270,8 @@ export function createAdeRpcRequestHandler(args: {
     }
 
     if (method === "ping") {
-      return { pong: true, at: nowIso() };
+      // A freeze here is not the network: the reply says so (`hostFrozenMs`).
+      return brainPingReply(nowIso());
     }
 
     if (method.startsWith("sync.")) {
@@ -9983,7 +10680,14 @@ export function createAdeRpcRequestHandler(args: {
     }
 
     if (method === "exit") {
-      process.nextTick(() => process.exit(0));
+      process.nextTick(() => {
+        try {
+          handler.dispose();
+        } catch {
+          // Best-effort cleanup before exit.
+        }
+        process.exit(0);
+      });
       return {};
     }
 

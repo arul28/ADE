@@ -671,13 +671,14 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // ADE codex chat surfaces use real OpenAI model ids as the canonical
   // registry ids; older ADE-internal "-codex" wrapper ids remain aliases so
   // persisted sessions continue to resolve. Rows follow the Codex catalog's own
-  // order. The deprecated rows below are ones a ChatGPT sign-in can no longer
-  // run; they stay so persisted chats still resolve.
+  // order, with the previous Sol/Astra generation last. The deprecated rows
+  // below are ones a ChatGPT sign-in can no longer run; they stay so persisted
+  // chats still resolve.
   {
-    id: "openai/gpt-6.1-sol",
-    shortId: "gpt-6.1-sol",
-    aliases: ["sol", "gpt-6.1-sol"],
-    displayName: "GPT-6.1 Sol",
+    id: "openai/gpt-6.2-sol",
+    shortId: "gpt-6.2-sol",
+    aliases: ["sol", "gpt-6.2-sol"],
+    displayName: "GPT-6.2 Sol",
     family: "openai",
     authTypes: ["cli-subscription"],
     contextWindow: 1_050_000,
@@ -688,18 +689,19 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     serviceTiers: ["fast"],
     color: "#10A37F",
     providerRoute: "codex-cli",
-    providerModelId: "gpt-6.1-sol",
+    providerModelId: "gpt-6.2-sol",
     cliCommand: "codex",
     isCliWrapped: true,
     inputPricePer1M: 2,
     outputPricePer1M: 10,
+    cacheReadPricePer1M: 0.1,
     costTier: "medium",
   },
   {
-    id: "openai/gpt-6-astra",
-    shortId: "gpt-6-astra",
-    aliases: ["astra", "gpt-6-astra"],
-    displayName: "GPT-6 Astra",
+    id: "openai/gpt-6.2-astra",
+    shortId: "gpt-6.2-astra",
+    aliases: ["astra", "gpt-6.2-astra"],
+    displayName: "GPT-6.2 Astra",
     family: "openai",
     authTypes: ["cli-subscription"],
     contextWindow: 1_050_000,
@@ -710,11 +712,12 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     serviceTiers: ["fast"],
     color: "#10A37F",
     providerRoute: "codex-cli",
-    providerModelId: "gpt-6-astra",
+    providerModelId: "gpt-6.2-astra",
     cliCommand: "codex",
     isCliWrapped: true,
-    inputPricePer1M: 10,
-    outputPricePer1M: 50,
+    inputPricePer1M: 8,
+    outputPricePer1M: 40,
+    cacheReadPricePer1M: 0.4,
     costTier: "very_high",
   },
   {
@@ -977,6 +980,50 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     outputPricePer1M: 14,
     costTier: "medium",
     deprecated: true,
+  },
+  {
+    id: "openai/gpt-6.1-sol",
+    shortId: "gpt-6.1-sol",
+    aliases: ["gpt-6.1-sol"],
+    displayName: "GPT-6.1 Sol",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultReasoningEffort: "low",
+    serviceTiers: ["fast"],
+    color: "#10A37F",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-6.1-sol",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 2,
+    outputPricePer1M: 10,
+    costTier: "medium",
+  },
+  {
+    id: "openai/gpt-6-astra",
+    shortId: "gpt-6-astra",
+    aliases: ["gpt-6-astra"],
+    displayName: "GPT-6 Astra",
+    family: "openai",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_050_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultReasoningEffort: "low",
+    serviceTiers: ["fast"],
+    color: "#10A37F",
+    providerRoute: "codex-cli",
+    providerModelId: "gpt-6-astra",
+    cliCommand: "codex",
+    isCliWrapped: true,
+    inputPricePer1M: 10,
+    outputPricePer1M: 50,
+    costTier: "very_high",
   },
 
   // ---- Meta Muse Code (CLI-wrapped via `muse`; chat over MSP) ----
@@ -1557,6 +1604,7 @@ let activeManifest: ModelManifest | null = null;
 let activeManifestAdeVersion: string | null = null;
 let activeAppDefaults: string[] = [];
 let activeProviderDefaults = new Map<ModelProviderGroup, string[]>();
+let activeFreeDefaults: string[] = [];
 const manifestListeners = new Set<() => void>();
 
 function cloneManifestValue<T>(value: T): T {
@@ -1684,6 +1732,7 @@ export function applyModelManifest(
   activeManifest = manifest;
   activeManifestAdeVersion = adeVersion;
   activeAppDefaults = gatedDefaultIds(manifest.defaults?.app, adeVersion);
+  activeFreeDefaults = gatedDefaultIds(manifest.defaults?.free, adeVersion);
   activeProviderDefaults = new Map();
   for (const [provider, list] of Object.entries(manifest.defaults?.providers ?? {})) {
     if (!isModelProviderGroup(provider)) continue;
@@ -3755,6 +3804,17 @@ export function getAppDefaultModelDescriptor(): ModelDescriptor | undefined {
     if (descriptor && !descriptor.deprecated) return descriptor;
   }
   return getDefaultModelDescriptor("claude") ?? getDefaultModelDescriptor("codex");
+}
+
+/**
+ * The free models a new chat prefers when nothing is signed in, from the
+ * manifest's `defaults.free`, else ADE's own fallback (`shared/freeModels.ts`).
+ * Ids only: free models live in OpenCode's live list, not in this registry.
+ */
+export const FREE_MODEL_FALLBACK_DEFAULT_ID = "opencode/opencode/big-pickle";
+
+export function getFreeModelDefaultIds(): string[] {
+  return activeFreeDefaults.length ? [...activeFreeDefaults] : [FREE_MODEL_FALLBACK_DEFAULT_ID];
 }
 
 /**

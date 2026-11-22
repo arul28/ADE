@@ -4,6 +4,7 @@ import { Dialog } from "../ui/dialog";
 import { laneDeviceBooted } from "./appleDeviceState";
 import { createAskOnceStore, type AskOnceRequest } from "../../lib/askOnceStore";
 import { useConfirmKeys } from "../../lib/useConfirmKeys";
+import { useAppStore } from "../../state/appStore";
 
 /**
  * "Shut down {device}?" — the one question closing the Apple Development TAB
@@ -65,9 +66,11 @@ export async function confirmAppleToolClose(args: {
   const { laneId } = args;
   if (!laneId) return true;
   const api = window.ade?.iosSimulator;
-  if (!api?.deviceList) return true;
+  // The device's machine: the caller's pin, else the tab's copy. None: nothing to ask.
+  const pin = args.runtimePin ?? useAppStore.getState().projectBinding;
+  if (!api?.deviceList || !pin) return true;
   const listed = await api
-    .deviceList({ laneId, installed: true }, args.runtimePin ?? undefined)
+    .deviceList({ laneId, installed: true }, pin)
     .catch(() => null);
   const lane = listed?.lane ?? null;
   if (!lane || !laneDeviceBooted(listed)) return true;

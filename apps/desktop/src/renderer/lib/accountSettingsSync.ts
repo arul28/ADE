@@ -42,14 +42,17 @@ import {
 } from "../../shared/accountSettingsScope";
 import type {
   AccountSettingRow,
+  AccountSettingsPullState,
   AccountSettingsResult,
   AccountSettingsWriteOptions,
 } from "../../shared/types/accountSettings";
 import { HARNESS_PRESETS_SETTING_KEY } from "../../shared/harnessPresets";
+import { CLOUD_DEFAULT_TIER_SETTING_KEY, isCloudTierId } from "../../shared/cloudTiers";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import { applyAccountHarnessPresets, type AppState } from "../state/appStore";
 import { withUnreadableHarnessPresets } from "./harnessPresetCarry";
 import { mergeStarPillPrefs } from "./starPill";
+import { isPageHidden, observePageVisibility } from "./pageVisibility";
 
 /** How often a signed-in machine reconciles with the account. */
 export const ACCOUNT_SETTINGS_POLL_MS = 30_000;
@@ -148,6 +151,11 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   pref("chatTranscriptDensity", (state) => state.chatTranscriptDensity, (state, value) => state.setChatTranscriptDensity(value)),
   pref("chatChromeTint", (state) => state.chatChromeTint, (state, value) => state.setChatChromeTint(value)),
   pref("chatShellGeometry", (state) => state.chatShellGeometry, (state, value) => state.setChatShellGeometry(value)),
+  // The size a new ADE Cloud lane starts with. A tier name this build cannot
+  // read (a newer ADE's) keeps the local choice.
+  pref(CLOUD_DEFAULT_TIER_SETTING_KEY, (state) => state.cloudDefaultTier, (state, value: unknown) => {
+    if (isCloudTierId(value)) state.setCloudDefaultTier(value);
+  }),
   // Harness presets are a list rather than a scalar, which the registry handles
   // unchanged: the whole list is one value under one key, so the newer-wins
   // rule applies to the list as a whole and two machines never interleave
@@ -244,7 +252,7 @@ export type AccountSettingsApi = {
   set(
     args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
   ): Promise<AccountSettingsResult<null>>;
-  sync(): Promise<AccountSettingsResult<null>>;
+  sync(): Promise<AccountSettingsResult<AccountSettingsPullState>>;
   /** Fired when the brain persists account rows pulled from the relay. */
   onChanged?(listener: () => void): () => void;
 };
@@ -769,7 +777,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
 
   void pullThenHydrate();
 
-  const timer = schedule(() => {
+  const tick = (): void => {
     if (!options.getApi() || !options.isSignedIn()) return;
     // Same sync-then-hydrate path as first sign-in, including the identity
     // abort. Seed still happens only when that merge succeeded — and the merge
@@ -793,8 +801,20 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
       resync();
       return;
     }
+    // The local-cache read is only a safety net for a window someone looks
+    // at. A hidden window (minimized, or covered by another window on macOS)
+    // skips it; the brain's change event still hydrates at once, and showing
+    // the window runs this tick right away, so nothing stale is drawn.
+    if (isPageHidden()) return;
     void hydrate();
-  }, options.pollMs ?? ACCOUNT_SETTINGS_POLL_MS);
+  };
+  const timer = schedule(tick, options.pollMs ?? ACCOUNT_SETTINGS_POLL_MS);
+  const stopObservingVisibility = observePageVisibility({
+    onHidden: () => {},
+    onVisible: () => {
+      if (!stopped) tick();
+    },
+  });
 
   const stop = (): void => {
     stopped = true;
@@ -802,6 +822,7 @@ export function startAccountSettingsSync<State = AccountSyncedState>(
     unsubscribeAccount?.();
     unsubscribeDevice?.();
     unsubscribeSettingsChanged?.();
+    stopObservingVisibility();
     unschedule(timer);
   };
   // One function, one extra method: a caller that must not read a stale copy

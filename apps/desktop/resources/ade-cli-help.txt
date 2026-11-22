@@ -18,7 +18,12 @@ Agent-focused command-line interface for ADE.
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
     $ ade machines connect <id|name>                Save an account machine on this install
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
+    $ ade devices [--kind ios|android|screen|app] --text
+                                                    Every device this chat can use, on every machine
+    $ ade devices use <kind>@<machine|here> | current
+                                                    Pick the machine this chat's iPhone, Android, screen or app runs on
+    $ ade new chat --mode chat|cli --provider <p> --model <id> --prompt "fix"
+                                                    Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
     $ ade desktop                                   Launch the installed ADE desktop app
     $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
@@ -37,8 +42,11 @@ Agent-focused command-line interface for ADE.
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
+    $ ade status                                    Does the ADE brain answer
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade health --text                             This project's problems and their fixes
+    $ ade report-issue [--send] [--open]            Print a redacted diagnostic report; --send hands it to ADE privately,
+                                                    --open then opens a public GitHub issue that holds only its reference
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade reset --all [--dry-run]                   Remove everything ADE put on this computer (hard reset)
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -50,7 +58,7 @@ Agent-focused command-line interface for ADE.
     $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
                                                     Send a push to the phones on your ADE account
     $ ade mcp status | on | off | token create | activity
-                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
+                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this machine
     $ ade prs list | create | show | checks          Manage PRs and their GitHub state
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -61,7 +69,7 @@ Agent-focused command-line interface for ADE.
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
-                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
+                                                    A chat or CLI session on the Work board: file it, snooze it until a deadline
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
                                                     Create, read, and edit Linear issues
     $ ade jira status | connect | projects | list | issue | create | edit
@@ -81,6 +89,7 @@ Agent-focused command-line interface for ADE.
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade scene preview <file> --text              Check a ```scene before putting it in a reply
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control | android | floating-android
                                                     Show a surface of this chat to the user
@@ -88,13 +97,17 @@ Agent-focused command-line interface for ADE.
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
     $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
+    $ ade harness routes | providers | env | test   Any model in any harness (--via), and your Custom providers
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
     $ ade providers accounts list | add | remove | default
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -112,6 +125,8 @@ Agent-focused command-line interface for ADE.
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
+    --role <cto|agent>      Who the call acts as. Agents run as agent; --role cto is for the person's
+                            own terminal, and a few commands (marked CTO only) need it.
 
   Common agent flows:
     $ ade doctor --text
@@ -168,151 +183,15 @@ ADE Account
                                    session expires.
 
 ## ade doctor --help
-Agent-focused command-line interface for ADE.
+ADE doctor
 
-  ADE CLI commands operate through the machine ADE brain by default.
-  The brain is the always-on ADE process for this machine: it owns the project
-  catalog, sync endpoint, and execution authority for the channel.
+  Is ADE healthy on this machine: the installed app, the machine brain, the
+  CLI on PATH, the socket, and what to do about each problem. Read-only. Run
+  it first when the ADE environment is unclear.
 
-    $ ade help <command...>                         Display help for a command
-    $ ade connect [--status]                        Link this machine to your ADE account
-    $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
-    $ ade login [--headless] [--max-wait <seconds>] Sign in to your ADE account
-    $ ade logout                                    Sign out of the ADE account
-    $ ade auth status                               Show ADE account sign-in status
-    $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
-    $ ade machines list                             List machines from the ADE account directory
-    $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
-    $ ade machines connect <id|name>                Save an account machine on this install
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
-    $ ade desktop                                   Launch the installed ADE desktop app
-    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
-                                                     or Linux Desktop)
-    $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
-    $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
-                                                     Build a shareable deeplink (copies to clipboard)
-    $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
-    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
-    $ ade brain start | stop | status               Manage the background ADE brain
-    $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
-    $ ade runtime run --socket <path> --profile embedded
-                                                    Run a guest runtime for an external embedder (ADE SDK):
-                                                    personal chats only, no automations, sync off
-    $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
-    $ ade init [path]                               Register a project with this machine brain
-    $ ade projects list                             List projects registered on this machine
-    $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
-    $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
-    $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
-    $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
-    $ ade reset --all [--dry-run]                   Remove everything ADE put on this computer (hard reset)
-    $ ade lanes list | show | create | child        Work with lanes and lane stacks
-    $ ade git status | commit | push | stash        Run ADE-aware git operations
-    $ ade operations status | wait                  Poll operation/test/chat/run status
-    $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
-    $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
-    $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
-                                                    Send a push to the phones on your ADE account
-    $ ade mcp status | on | off | token create | activity
-                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
-    $ ade prs list | create | show | checks          Manage PRs and their GitHub state
-    $ ade shell start | write | resize | close      Launch and control tracked shell sessions
-    $ ade terminal list | resume | read | write | signal
-                                                    Control an attached session terminal
-    $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
-    $ ade chat list | create | send | ask | note | interrupt
-                                                    Work with ADE agent chats
-    $ ade drafts list | create | schedule | update | delete | now | show
-                                                    Drafts and scheduled sends
-    $ ade session show | move | snooze | wake | clear-woke
-                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
-    $ ade linear create | edit | comment | set-state | assign | issue | graphql
-                                                    Create, read, and edit Linear issues
-    $ ade jira status | connect | projects | list | issue | create | edit
-                                                    Connect to Jira Cloud and manage issues
-    $ ade issue list | view | comment | state | create | open-url
-                                                    Read and update issues across trackers
-    $ ade github issue list | view | create | edit | comment | close
-                                                    Create, read, and edit GitHub issues
-    $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
-    $ ade automations list | create | run | runs    Manage automation rules
-    $ ade tests list | run | stop | runs | logs     Run configured test suites
-    $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
-    $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
-    $ ade android status | create | start | tap    Drive this lane's Android emulator
-    $ ade app-control launch | observe | click | record
-                                                    Drive this lane's Electron app, record it, file proof
-    $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade browser attach | detach                  The user's own browser, only when they ask
-    $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
-    $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
-        | app-control | floating-app-control | android | floating-android
-                                                    Show a surface of this chat to the user
-    $ ade usage limits --text                       What's left of each subscription, per account
-    $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
-    $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
-    $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
-    $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
-    $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
-    $ ade providers accounts list | add | remove | default
-                                                    Manage this machine's Claude/Codex logins
-    $ ade proxy status | start | stop | login | logout
-                                                    Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
-    $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
-    $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
-    $ ade update status | check | install | dismiss Read auto-update state and drive install
-    $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
-    $ ade actions list | describe | run | status | wait  Escape hatch for every ADE service action
-    $ ade cursor cloud agents | runs | artifacts | repos | models | me
-                                                    Drive Cursor Cloud agents via @cursor/sdk
-
-  Global options:
-    --project-root <path>   ADE project root. Inside a lane worktree, this resolves to the parent project.
-    --workspace-root <path> Lane/worktree to treat as the active workspace.
-    --headless              Skip the machine brain and run an in-process ADE runtime.
-    --socket                Require a live ADE endpoint; fail instead of falling back to headless.
-    --json                  Print machine-readable JSON. This is the default output mode.
-    --text                  Print a compact human-readable summary when a formatter exists.
-    --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
-
-  Common agent flows:
-    $ ade doctor --text
-    $ ade lanes list --text
-    $ ade lanes create --name fix-login --description "Repair login redirect"
-    $ ade git status --lane <lane> --text
-    $ ade git status --full --lane <lane> --text
-    $ ade git sync --lane <lane> --rebase --base main
-    $ ade git stage --lane <lane> src/index.ts
-    $ ade git commit --lane <lane> -m "Fix login redirect"
-    $ ade prs create --lane <lane> --base main --draft
-    $ ade prs checks <pr-id-or-number-or-url> --text
-    $ ade proof record --seconds 20
-    $ ade apple apps --text
-    $ ade apple launch --target <id> --text
-    $ ade app-control launch --command "pnpm dev" --text
-    $ ade browser open http://localhost:5173 --new-tab --text
-    $ ade terminal read --chat-session <owner-session-id> --text
-    $ ade terminal read --pty <pty-id> --text
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-
-  Generic ADE action JSON contract:
-    Object-shaped call:
-      $ ade actions run git.push --input-json '{"laneId":"lane-1","setUpstream":true}'
-      $ ade actions run git.push --arg laneId=lane-1 --arg setUpstream=true
-    JSON value fields:
-      $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
-    Multi-parameter service call:
-      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
-    $ ade actions list --text
-    $ ade actions list --domain pr --text
-    $ ade actions run <domain.action> --input-json '{"key":"value"}'
-
-  Start with: ade doctor --text
+    $ ade doctor --text                             Check this machine
+    $ ade doctor --online --text                    Also check the ADE account and relay services
+    $ ade health --text                             This project's problems (moved folders, broken lanes, ...)
 
 ## ade triage --help
 ADE Triage
@@ -380,7 +259,7 @@ Lanes
                    [--from default|primary|<branch>] [--on remote|local|uncommitted] [--branch-name <branch>]
                    [--existing-branch <branch>]   (no new branch: the lane works directly on <branch>)
                    [--template <id>|--no-template]
-                   [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
+                   [--linear-issue-json '{...}' [--start-chat [--no-report] --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
   ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
@@ -431,6 +310,14 @@ Lanes
     $ ade lanes deleted restore <id>                Bring one back, uncommitted files included: as a new lane, or into its lane if space was freed
     $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
+    $ ade lanes share --lane <lane> --text          List the lane's shares (people, state, access, risk, end, made by)
+    $ ade lanes share --lane <lane> --add <email> [--ends 1h|today|1w|<ISO date>] [--hide-machines] [--hide-models]
+                                                    Share the lane with another ADE account, Watch only: they see
+                                                    its chats and sessions and cannot send, run or approve anything.
+                                                    From the CLI, an agent or ADE MCP: Watch only, at most 5 an hour.
+                                                    More rights: the share sheet in the ADE app
+    $ ade lanes share --lane <lane> --remove <email|grant id>
+                                                    Stop a share of this lane
     $ ade lanes actions --text                      List callable lane service methods
 
 ## ade git --help
@@ -501,13 +388,15 @@ Files
     $ ade files quick-open --workspace <lane> -q src --include-directories
                                                     Also offer folders; they print with a trailing slash
 
-  On another machine (this chat's work copy there, the one ade shell start
-  --machine uses; paths there are relative to it, / or \ both work):
-    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (made at your commit if missing)
+  On another machine (your code there, the one ade shell start --machine uses;
+  paths there are relative to its top, / or \ both work):
+    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (your code is put there at your commit if missing)
     $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
   Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
-  base64 in shell commands. A pushed file is a change made there, so the next
-  ade shell start --machine needs --no-sync (keep it) or --discard (drop it).
+  base64 in shell commands. A pushed file git does not track stays there
+  through the next sync (--code fresh drops it); one that replaces a file of
+  the repo is a change made there, so the next sync needs --code as-is or
+  --code fresh.
 
 ## ade search --help
 ADE Search
@@ -564,6 +453,7 @@ Pull requests
   and deployments still resolve through ADE's own row.
 
     $ ade prs list --text                           List PRs known to ADE
+    $ ade prs show <pr> --text                      One PR: state, branch, checks and reviews
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
     $ ade prs create --lane <lane> --base main      Open a GitHub PR from a lane; prints GitHub + ADE URLs
     $ ade prs create --lane <lane> --title "fix(web): new chats no longer spike CPU" --body-file pr.md
@@ -587,6 +477,7 @@ Pull requests
     $ ade prs link --lane <lane> --url <pr-url>     Point a lane at an existing GitHub PR
     $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
     $ ade prs comments <pr> --text                  Show unresolved review work
+    $ ade prs reply <pr> --thread <id> --body "..." Reply to one review thread
     $ ade prs comment-edit <pr> --comment <id> --body "..."
                                                     Edit an issue or review comment
     $ ade prs comment-react <pr> --comment <id> --content +1
@@ -623,10 +514,10 @@ Shell sessions
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start -- npm test                   Without --lane: your own lane, else the project's primary lane
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
-    $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --prompt "fix tests"
-    $ ade shell start-cli codex --lane <lane> --permission-mode edit
-    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --prompt "fix tests"
-    $ ade shell start --provider claude --lane <lane> --message "fix tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --permission-mode edit --prompt "fix tests"
+    $ ade shell start-cli codex --lane <lane> --model openai/gpt-5.6-sol --permission-mode edit
+    $ ade shell start-cli claude --lane <lane> --model claude-opus-5-5 --reasoning-effort ultracode --prompt "fix tests"
+    $ ade shell start --provider claude --model claude-opus-5-5 --lane <lane> --message "fix tests"
     $ ade shell start --lane <lane> --chat-session <owner-session-id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
     $ ade shell resize <pty-id> --cols 120 --rows 36
@@ -635,20 +526,28 @@ Shell sessions
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
 
-  On another machine (this chat's work copy there: a hidden worktree at your
-  commit, which must be on origin, with your uncommitted changes applied):
+  On another machine (in your code there: ADE keeps a copy of this chat's code
+  on that machine, at your commit, which must be pushed, with your uncommitted
+  changes applied):
     $ ade shell start --machine <name> --wait -- npm test   Stream the output, exit with its code
-    $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
-    $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
-    $ ade shell clean --machine <name>               Delete this chat's work copy there
-  Each call opens a new shell there and syncs the copy again, so put all the
-  steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+    $ ade shell start --machine <name> --code as-is -- git status   Use your code there as it is now
+    $ ade shell start --machine <name> --code fresh --wait -- npm test   Throw away changes made there first
+    $ ade shell clean --machine <name>               Delete your code there and everything it held
+    $ ade shell start --machine <name> --clone --wait -- npm test   Clone this repo there first if it is missing (GitHub)
+    $ ade shell start --machine <name> --no-code --wait -- nvidia-smi   No code needed: an empty folder there, removed after
+  --code synced (the default) makes your code there match this checkout before
+  the command runs. Each call opens a new shell there and syncs again, so put
+  all the steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+  Files made there that git does not track (a generated .xcodeproj, a pushed
+  file) stay through a sync; edits there to the repo's files refuse it.
+  --no-code needs no commit or push, only a project open in ADE there.
   The shell runs in the background there; no list on that machine shows it.
   To move a file, use ade files push|pull --machine <name> (see ade files
   --help), never base64 or echo inside a shell command.
 
-  Provider CLI launches accept --instance for Claude/Codex accounts and
-  --preset or --credential for saved harness brains.
+  Provider CLI launches take --model (required) and accept --instance for a
+  Claude/Codex account, and --custom-provider, --credential or --via for where
+  the model runs (ade help providers).
 
   Prefer ade new chat --mode cli for new tracked provider CLI sessions. start-cli
   remains as the compatibility command behind that mode.
@@ -704,7 +603,7 @@ Work chats
     $ ade chat list --personal --text               List machine personal chats (no project required)
     $ ade chat list --machine "Mac mini" --text     Chats on another machine on your account (this repo's checkout there)
     $ ade chat list --all-machines --text           Every machine in one table, with a machine column
-    $ ade chat create --machine "Mac mini" --lane <lane there> --type subagent --prompt "…"
+    $ ade chat create --machine "Mac mini" --lane <lane there> --provider <p> --model <id> --type subagent --prompt "…"
                                                     Start a child on another machine; it wakes you when done.
                                                     Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
@@ -726,7 +625,7 @@ Work chats
                                                     only level "enforced" means the caller's servers are the whole
                                                     surface. A server the provider cannot carry fails the create.
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
-    $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
+    $ ade chat create --from-linear-issue ENG-431 --provider <p> --model <id> --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait
                                                     Start a chat in a brand-new lane (the desktop composer's new-lane
@@ -739,7 +638,7 @@ Work chats
                                                     or work directly on --existing-branch <branch>. Also:
                                                     --lane-name, --title, --effort, --permissions, --fast, --launch-id,
                                                     --lane-id (UUIDs; generated when omitted). The chat is top-level;
-                                                    use 'ade new chat --lane auto --type ...' for a parented child.
+                                                    use 'ade new chat --lane auto --model <id> --type ...' for a parented child.
     $ ade chat launches --text                      List new-lane launches running or recently finished on the brain
     $ ade chat launch-status <launch>               One launch's stages (exit 1 when unknown or expired)
     $ ade chat launch-cancel <launch>               Cancel a launch before its agent starts; deletes its chat, lane, and branch
@@ -772,8 +671,11 @@ Work chats
                                                     row stops saying "Needs you" about a question nobody is on.
     $ ade chat deleted list --text                  Recently deleted chats this machine can still reopen (--query <text>)
     $ ade chat deleted reopen <id> [--lane <lane>]  Reopen one with its history; a chat whose lane is gone needs --lane
-    $ ade chat inbox --text                         Every chat in the project that waits on you, each with its question
-                                                    or approval inline and the exact 'chat respond' that answers it
+                                                    A deleted CLI session (AGENT "claude CLI") relaunches in its lane,
+                                                    resuming its own conversation when ADE knows it, else fresh
+    $ ade chat inbox --text                         Every chat and CLI session in the project that waits on you, each
+                                                    with its question or approval inline and the exact command that
+                                                    answers it
                                                     (--all-machines: every machine on your account)
     $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
                                                     and the exact 'chat respond' command for each
@@ -786,6 +688,10 @@ Work chats
                                                     Approval: --approve | --approve-session | --deny (--text is the
                                                     reason). Approvals are the person's to answer unless you were
                                                     told you may approve. --deny/--cancel also decline a question.
+                                                    A Codex plan ready to implement can go to a chat of its own:
+                                                    --new-chat (with --approve implied) starts that chat, sends it
+                                                    the plan, and prints its session id. Only the person may do
+                                                    this; the plan itself stays in the planning chat.
                                                     While a chat waits on input, 'chat message' and 'chat send' are
                                                     refused (error -32011) until it is answered. A subagent's question
                                                     is also sent to its parent chat with these commands filled in.
@@ -814,7 +720,7 @@ Work chats
                                                     declines inline and stages instead. Other providers
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
-    $ ade chat wait <session> --for idle --timeout-ms 600000
+    $ ade chat wait <session> --for idle --timeout 10m   (or --timeout-ms 600000)
     $ ade chat events <session> --since <cursor> --json   Turn starts and ends, input needed, errors since a cursor; answers at once
     $ ade chat notify <session> --url https://… --token-stdin   POST there each time it goes idle, needs input or fails (7 days)
     $ ade chat notify <session> --list | --cancel
@@ -843,9 +749,9 @@ Work chats
                                                     Start a new chat with an extra handoff note
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
-    $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+    $ ade chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
                                                     Move the chat to another machine on your account (brief by
-                                                    default; --fork carries full history). --machine names the
+                                                    default; --fork carries full history). --to names the
                                                     DESTINATION; the chat moves from here. Without --model it
                                                     keeps the chat's own model. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
@@ -859,19 +765,27 @@ Work chats
     $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
     $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
     $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
-    $ ade chat move --machine "Mac Studio" <session> [<session>…]
+    $ ade chat move --to "Mac Studio" <session> [<session>…]
                                                     Move selected chats, their lanes, and descendants in tree order
-    $ ade chat move --machine "Mac Studio" --all    Move every active Work chat in this project and its lanes
+    $ ade chat move --to "Mac Studio" --all         Move every active Work chat in this project and its lanes
                                                     Defaults to fork; --brief sends a short context summary.
                                                     An agent batch with any unrelated chat waits for one approval
                                                     card on the caller's chat, listing the chats; deny cancels all.
                                                     A person's batch needs no approval. Chats that already
                                                     continue on another machine are skipped (named: refused).
                                                     Also: --no-descendants, --no-changes, --interrupt, --note "…"
+                                                    A CLI session (Claude Code, Codex, …) moves as a CLI: it stops
+                                                    here and resumes its own conversation there (Claude Code,
+                                                    Codex), else starts fresh there with a brief (other agents, or
+                                                    --brief). --all includes CLIs.
     $ ade chat move --status <batch-id>              Show batch progress and per-item state
     $ ade chat move --retry <batch-id>               Resume remaining batch items
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
+    $ ade chat fork <cli-session> [--model <model>]  A CLI session (Claude Code, Codex, …) forks into a new chat from its
+                                                    own conversation file; without --model it keeps the CLI's model.
+                                                    handoff <cli-session> sends a brief instead (its terminal output when
+                                                    ADE can't read the conversation).
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
                                                     Fork from an earlier finished turn; later turns are left out
     $ ade chat side <session> "Why did we pick Redis?"
@@ -881,6 +795,7 @@ Work chats
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
     $ ade chat scheduled-work pause <session>        Pause this agent session's durable wakeups/cron/loops
+    $ ade chat scheduled-work resume <session>       Re-arm them
     $ ade chat scheduled-work status <session>       Inspect pause state + next armed wake (resume to re-arm)
     $ ade chat scheduled-work list [session]         List durable jobs (--all includes recent history)
     $ ade chat scheduled-work create --in 12m --prompt "<text>"
@@ -893,7 +808,7 @@ Work chats
     $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
                                                     <session> is the chat that owns the job (first), <id> the job id;
                                                     also --session <s> --id <id>. Inside a chat, 'cancel <id>' is enough.
-    $ ade new chat --mode cli --lane <lane> --provider claude --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --provider claude --model claude-opus-5-5 --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
                                                     Attach a Linear issue to a chat/CLI session
@@ -911,34 +826,39 @@ Work chats
     $ ade chat restart [<session>] [--stop | --after-turn]
                                                     Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP).
                                                     With no session, restarts your own chat once this turn ends (--stop is ignored for your own chat)
+    $ ade chat update <session> --pin | --unpin      Pin or unpin a chat or CLI session in the Work list
     $ ade chat archive <session>                    Archive a chat (hidden from lists; ade chat unarchive <session> brings it back)
+                                                    Also a CLI session: one at its prompt stops (Resume picks it up); mid-turn it finishes first.
+                                                    ade chat delete <cli-session> stops it and keeps it in Recently deleted.
                                                     --dry-run prints the call without running it
-    $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
-    $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
+    $ ade chat demote <session>                     Take over a subagent: its reports to its parent stop
+    $ ade chat promote <session>                    Make the chat report back to its parent again
     $ ade chat set-parent <session> --parent <chat> Make <chat> this chat's parent; reports go there from the next turn
-                                                    [--type subagent|peer]; a chat whose old parent is gone becomes a subagent
+                                                    [--no-report]; a chat whose old parent is gone becomes a subagent
     $ ade chat set-parent <session> --no-parent     Detach the chat from its parent
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
-    $ ade new chat --mode cli --lane <lane> --parent <session> --type subagent --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --provider <p> --model <id> --parent <session> --type subagent --prompt "fix"
                                                     Start a tracked provider CLI session
 
   Create flags:
     --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-    --model <id>            Model id, also sent as modelId for runtime parity.
+    --model <id>            Required. The model id (ade chat models --provider <p> --text).
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
     --prompt <text>         Create the chat, then send this as the first message.
     --prompt-file <path|->  The first message from a file, or stdin with -. Use it
                             for multi-line text (ade.cmd on Windows cuts arguments
                             at the first line break).
-    --instance <email>      Provider account, by its email (its id works too);
-                            --credential <id> and --preset <id> pick a saved
-                            credential or harness preset (ade help providers).
+    --instance <email>      Provider account, by its email (its id works too).
+    --custom-provider <name>, --credential <id>, --via <source>
+                            Where the model runs: a saved Custom provider, a
+                            stored API key, or any model in any harness. Pass
+                            one (ade help providers, ade help harness).
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
-                            The host may lower it for an agent caller (stderr note).
+                            ADE may lower it for an agent: never above the agent's own access (stderr note).
     --fast                  Request fast service tier when the model advertises it.
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
@@ -948,8 +868,8 @@ Work chats
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
     --no-parent             A separate top-level chat that does not report back.
                             Only when the user asks for one.
-    --type <subagent|peer>  subagent (default with a parent) reports back after
-                            every turn; peer leaves quiet notes.
+    --no-report             With a parent, the chat does not report back. By
+                            default it reports back after every turn.
 
   Transcript read flags:
     --limit <n>             Messages per bounded window (default 50, max 100).
@@ -997,7 +917,12 @@ Agent-focused command-line interface for ADE.
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
     $ ade machines connect <id|name>                Save an account machine on this install
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
+    $ ade devices [--kind ios|android|screen|app] --text
+                                                    Every device this chat can use, on every machine
+    $ ade devices use <kind>@<machine|here> | current
+                                                    Pick the machine this chat's iPhone, Android, screen or app runs on
+    $ ade new chat --mode chat|cli --provider <p> --model <id> --prompt "fix"
+                                                    Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
     $ ade desktop                                   Launch the installed ADE desktop app
     $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
@@ -1016,8 +941,11 @@ Agent-focused command-line interface for ADE.
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
+    $ ade status                                    Does the ADE brain answer
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade health --text                             This project's problems and their fixes
+    $ ade report-issue [--send] [--open]            Print a redacted diagnostic report; --send hands it to ADE privately,
+                                                    --open then opens a public GitHub issue that holds only its reference
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade reset --all [--dry-run]                   Remove everything ADE put on this computer (hard reset)
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -1029,7 +957,7 @@ Agent-focused command-line interface for ADE.
     $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
                                                     Send a push to the phones on your ADE account
     $ ade mcp status | on | off | token create | activity
-                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
+                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this machine
     $ ade prs list | create | show | checks          Manage PRs and their GitHub state
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1040,7 +968,7 @@ Agent-focused command-line interface for ADE.
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
-                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
+                                                    A chat or CLI session on the Work board: file it, snooze it until a deadline
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
                                                     Create, read, and edit Linear issues
     $ ade jira status | connect | projects | list | issue | create | edit
@@ -1060,6 +988,7 @@ Agent-focused command-line interface for ADE.
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade scene preview <file> --text              Check a ```scene before putting it in a reply
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control | android | floating-android
                                                     Show a surface of this chat to the user
@@ -1067,13 +996,17 @@ Agent-focused command-line interface for ADE.
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
     $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
+    $ ade harness routes | providers | env | test   Any model in any harness (--via), and your Custom providers
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
     $ ade providers accounts list | add | remove | default
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -1091,6 +1024,8 @@ Agent-focused command-line interface for ADE.
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
+    --role <cto|agent>      Who the call acts as. Agents run as agent; --role cto is for the person's
+                            own terminal, and a few commands (marked CTO only) need it.
 
   Common agent flows:
     $ ade doctor --text
@@ -1140,6 +1075,9 @@ Linear workflows
                                                     Attach an issue to the current CLI session
     $ ade linear issues --this-session --text       List issues attached to this session
     $ ade linear issue ENG-431 --text               Read one issue (defaults to the session's attached issue)
+    $ ade linear issue-comments ENG-431 --text      Its comments
+    $ ade linear picker-data --text                 Workflow states and users (for set-state and assign)
+    $ ade linear inbox [--all] --text               Your Linear notifications (unread unless --all)
     $ ade linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
     $ ade linear comment ENG-431 "Done"             Comment on a specific issue
     $ ade linear set-state ENG-431 "In Progress"    Move an issue to a state (name in the issue's team, or id)
@@ -1194,9 +1132,11 @@ Automations
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a rule (on every computer when it follows your account)
     $ ade automations toggle <id> --enabled true|false
-    $ ade automations run-on <id> [--device <sync-device-id> --name <computer>]
+    $ ade automations run-on <id> [--device <sync-device-id> --name <computer> | --cloud]
                                                      Choose the one computer that runs a rule that
-                                                     follows your account. Default: this computer
+                                                     follows your account. Default: this computer.
+                                                     --cloud: ADE Cloud watches its schedule or
+                                                     webhook and starts each run on a new computer
     $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
           [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
                                                      Test a rule with an event. preview shows
@@ -1220,8 +1160,9 @@ Automations
     $ ade --role cto automations linear-ingress disconnect
                                                      Remove the Linear webhook (CTO only)
     $ ade automations linear-ingress poll [--text]    Drain queued Linear events now
-    $ ade automations webhook create --preset github [--filter body.action=opened]
-                 [--prompt "…"] [--model <id>] [--in-this-chat | --chat <id>]
+    $ ade automations webhook create --service github --model <id> [--filter body.action=opened]
+                 [--prompt "…"] [--in-this-chat | --chat <id>]
+                 (--model is the chat each event starts; not needed with --in-this-chat / --chat)
                  [--name "…"] [--no-signature] [--any-request] [--confirm <key>]
                                                      One step: a private URL + the rule, then paste steps
     $ ade automations webhook list [--text]          Every webhook automation, its URL and last delivery
@@ -1245,8 +1186,8 @@ Automations
                                                     Create, reuse, or require lane at trigger time;
                                                     pr-branch runs in the trigger PR's own branch
     --lane <id>                                     Target lane (only with --lane-mode reuse)
-    --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
-    --lane-name-template <string>                   Template (only with preset custom)
+    --lane-naming <issue-title|issue-num-title|pr-title-author|custom>
+    --lane-name-template <string>                   Template (only with --lane-naming custom)
     --allow-legacy                                  Pass legacy create-lane action through
                                                     unchanged (default: auto-migrate to laneMode)
 
@@ -1270,7 +1211,12 @@ Agent-focused command-line interface for ADE.
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
     $ ade machines connect <id|name>                Save an account machine on this install
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
+    $ ade devices [--kind ios|android|screen|app] --text
+                                                    Every device this chat can use, on every machine
+    $ ade devices use <kind>@<machine|here> | current
+                                                    Pick the machine this chat's iPhone, Android, screen or app runs on
+    $ ade new chat --mode chat|cli --provider <p> --model <id> --prompt "fix"
+                                                    Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
     $ ade desktop                                   Launch the installed ADE desktop app
     $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
@@ -1289,8 +1235,11 @@ Agent-focused command-line interface for ADE.
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
+    $ ade status                                    Does the ADE brain answer
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade health --text                             This project's problems and their fixes
+    $ ade report-issue [--send] [--open]            Print a redacted diagnostic report; --send hands it to ADE privately,
+                                                    --open then opens a public GitHub issue that holds only its reference
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade reset --all [--dry-run]                   Remove everything ADE put on this computer (hard reset)
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -1302,7 +1251,7 @@ Agent-focused command-line interface for ADE.
     $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
                                                     Send a push to the phones on your ADE account
     $ ade mcp status | on | off | token create | activity
-                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
+                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this machine
     $ ade prs list | create | show | checks          Manage PRs and their GitHub state
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1313,7 +1262,7 @@ Agent-focused command-line interface for ADE.
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
-                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
+                                                    A chat or CLI session on the Work board: file it, snooze it until a deadline
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
                                                     Create, read, and edit Linear issues
     $ ade jira status | connect | projects | list | issue | create | edit
@@ -1333,6 +1282,7 @@ Agent-focused command-line interface for ADE.
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade scene preview <file> --text              Check a ```scene before putting it in a reply
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control | android | floating-android
                                                     Show a surface of this chat to the user
@@ -1340,13 +1290,17 @@ Agent-focused command-line interface for ADE.
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
     $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
+    $ ade harness routes | providers | env | test   Any model in any harness (--via), and your Custom providers
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
     $ ade providers accounts list | add | remove | default
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -1364,6 +1318,8 @@ Agent-focused command-line interface for ADE.
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
+    --role <cto|agent>      Who the call acts as. Agents run as agent; --role cto is for the person's
+                            own terminal, and a few commands (marked CTO only) need it.
 
   Common agent flows:
     $ ade doctor --text
@@ -1523,6 +1479,7 @@ Apple Development
     $ ade apple shutdown                End this chat's simulator session (the device stays on)
     $ ade apple shutdown --force        Force-release a session owned by another chat
     $ ade apple launch --force          Take the simulator over in one step
+    $ ade apple launch --foreground     Also open Simulator.app (stays closed by default; the device shows in ADE)
     $ ade apple actions --text                   List every callable ios_simulator action
 
   ADE discovers Xcode projects from the project root and apps/* folders.
@@ -1542,8 +1499,8 @@ Apple Development
     $ ade apple preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Device sessions:
-    $ ade apple open-device --text      Boot a simulator with no app
-    $ ade apple open-device --no-window Keep the device headless
+    $ ade apple open-device --text      Boot a simulator with no app (headless; shown in ADE)
+    $ ade apple open-device --window    Also open Simulator.app (every booted simulator gets a window)
     $ ade apple device-session --text   Report the tracked device session
     $ ade apple settings --text         Read appearance, text size, a11y
     $ ade apple close-device --text     Release the device session
@@ -1884,14 +1841,21 @@ Android Emulator
   start a second emulator or cut every lane's emulator off adb.
 
   Another machine: --machine <name> runs the command on that machine, with
-  no new lane. Without --lane, the emulator there works for this chat's work
-  copy (a hidden worktree at your commit, made on first use; the commit must
-  be on origin). Every view of this chat then shows it in the Android tool.
-  status and devices make no copy. --lane <id> uses a lane on that machine
+  no new lane. Without --lane, the emulator there runs your code there (ADE
+  puts it there at your commit on first use; the commit must be pushed).
+  Every view of this chat then shows it in the Android tool. status and
+  devices put nothing there. --lane <id> uses a lane on that machine
   instead. Files are written there; a screenshot, a recording or a proof
   bundle is also filed in this chat's proof drawer. install and launch with
-  --gradle or --apk, and test, send your checkout and its uncommitted changes
-  first (an APK that git ignores does not travel: use --gradle).
+  --gradle or --apk, test and preview make your code there match this
+  checkout first, uncommitted changes included (--code as-is uses it as it
+  is, --code fresh throws away changes made there; an APK that git ignores
+  does not travel: use --gradle). A Gradle build or a boot there waits as
+  long as it would here and prints "still running" lines to stderr
+  meanwhile. --clone sets this repo up there first. The emulator's lease is
+  let go when this chat's turn ends (it stays on). ade devices use
+  android@<name> sends every android command there with no flag (ade
+  devices --text lists the emulators you can use).
     $ ade android device-create --profile medium_phone --machine windows --text
     $ ade android tap 540 1200 --machine windows --text
 
@@ -1911,6 +1875,9 @@ Android Emulator
                                      in a terminal on that machine); never restart adb yourself
     ANDROID_NOT_RUNNING              ade android start first
     ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
+    ANDROID_LOW_DISK                 the disk can't hold a new device's data. On ADE Cloud ADE
+                                     grows it itself (start again after the restart), or run
+                                     ade cloud resize --free 8 --reason "..."; elsewhere tell the user
     ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
     ANDROID_BUILD_FAILED             read the Gradle output, fix the build
     ANDROID_SYSTEM_IMAGE_IN_USE      an AVD uses that image; stop its emulator first
@@ -1981,7 +1948,7 @@ App Control
   delay. --session <id> guards a command against a session that has changed.
 
   Capture and proof:
-    $ ade app-control screenshot --text            Capture without filing proof
+    $ ade app-control screenshot --out shot.png    Capture without filing proof (--text alone saves to a temp file)
     $ ade app-control snapshot --text              Screenshot + DOM element refs
     $ ade app-control inspect --x 120 --y 420      Hit-test a point, add nothing to the chat
     $ ade app-control select --x 120 --y 420       Add that element to the chat as context
@@ -2020,6 +1987,50 @@ App Control
     $ ade app-control minimize --text              Minimize the app window
     $ ade app-control drivers --text               Driver availability (cdp, computer_use)
     $ ade app-control actions --text               List every callable app_control action
+
+  Another machine: --machine <name> runs the app on that machine with no lane
+  there. The app runs from your code there (at your commit; the commit must
+  be pushed), and this chat owns the session, as for a lane. launch makes
+  your code there match this checkout first, uncommitted changes included
+  (--code as-is uses it as it is, --code fresh throws away changes made
+  there) and runs in a terminal there; --cwd must be inside this checkout and
+  is the same folder there. status and drivers put nothing there. --lane is
+  refused. proof and a captioned recording are filed in this chat's proof
+  drawer. ade devices use app@<name> sends every app-control command there
+  with no flag. ade shell clean --machine <name> deletes your code there and
+  stops its app.
+    $ ade app-control launch --command "npm run dev" --cwd apps/desktop --machine windows --text
+    $ ade app-control observe --map --machine windows --text
+
+## ade devices --help
+ADE devices
+
+  A device is something an agent drives and watches: an iPhone simulator, an
+  Android emulator, a screen (Mac, Windows or Linux Desktop), an app under App
+  Control. Its source is where it runs: here (this machine) or another machine
+  on your ADE account. A device id is <kind>@<source>: ios@here,
+  "ios@MacBook Pro", "android@Windows PC", screen@build-box. Kinds: ios,
+  android, screen, app.
+
+    $ ade devices --text                       Every device this chat can use, on every machine
+    $ ade devices --kind ios --text            Only iPhones
+    $ ade devices use "ios@MacBook Pro"        This chat's iPhone is on the MacBook from now on
+    $ ade devices use ios@here                 Back to this machine
+    $ ade devices current --text               This chat's choices
+
+  The list reads only: it starts and copies nothing. Each row says what the
+  device is, its state (off, on, in use by a chat) and what it needs first
+  ("Android SDK missing there", "repository missing there: --clone").
+  A machine that did not answer is a row saying so. A machine that cannot run
+  a kind is not listed for it (iPhone simulators run on a Mac).
+
+  After use, the plain commands go there with no other flag: ade apple
+  launch, ade apple screenshot, ade android tap, ade screen open, ade
+  app-control launch all act on that machine's device, and a build sends your
+  code there first. --machine <name> on one command, or --lane, still wins.
+  The choice is kept by this chat (it survives a restart of ADE). ade shell
+  does not follow it: a command on another machine always names --machine.
+  use needs a chat; a terminal with no chat names --machine on each command.
 
 ## ade browser --help
 ADE browser
@@ -2074,9 +2085,12 @@ ADE browser
   prefer this chat's tabs and free ones, close a held tab only when the task
   needs it, and never close a tab the user opened or kept without asking them.
   "close" prints whose tab it closed. When the browser is full, the error lists
-  only your tabs and free agent tabs; ask the user about the rest. A deleted or
-  archived lane frees its tabs (they stay open). An agent's tab is not brought
-  back after ADE restarts; a tab the user opened or kept keeps its id.
+  only your tabs and free agent tabs; ask the user about the rest. Agent tabs
+  clean themselves up: a chat's tabs close 15 minutes after it goes idle, and
+  at once when it ends or its lane is archived or deleted; a tab the user
+  clicked, typed in, navigated or kept is never closed by ADE. An agent's tab
+  is not brought back after ADE restarts; a tab the user opened or kept keeps
+  its id.
 
   Which machine. "status" prints the route: the browser "open" uses (the
   computer the user sends this chat's messages from, else this machine) and
@@ -2107,7 +2121,7 @@ ADE browser
   --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
-    $ ade browser status --text           Every tab on every machine, owners, and the route
+    $ ade browser status --text           Every tab on every machine, owners, and the route (alias: tabs)
     $ ade browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
     $ ade browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade browser panel --text            Open the Work sidebar Browser panel
@@ -2145,9 +2159,28 @@ ADE browser
   attached to this machine…" when nobody answered inside 5 seconds. All three
   exit 0: the approval one means "asked, not yet loaded" — the page opens when
   they click Allow, so do not re-issue the open to retry it. Page actions
-  (observe/click/fill/screenshot) are not forwarded and still fail here.
+  (observe/click/fill/signin/screenshot) are not forwarded and still fail here.
 
-  Login handoff (you cannot sign in; a person must):
+  Signing in with Passwords:
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --account me@example.com --text
+  Sign in to the open page's site with a login saved in Passwords. ADE types the
+  username and password into the page itself; you never see the password. With
+  no saved login for the site, the person is asked in this chat (the secure
+  sign-in card): they save one and ADE fills it, or they choose to type it into
+  the page themselves (then run `ade browser handoff` to wait for them).
+  Never ask for a password in chat. --site <host> is only a check that the tab
+  is on the site you expect; the site is always the tab's own page.
+
+    $ ade browser signup --tab <tab-id> --text
+    $ ade browser signup --tab <tab-id> --account me@example.com --text
+  Creating an account: fill the email/username yourself, then run signup on
+  the sign-up form. ADE makes a strong password, types it into the password
+  (and confirm) boxes, and saves the login once the form holds all of it.
+  You never see it. Submit the form yourself; later sign-ins use `ade browser signin`.
+  --account names the username when the form has none filled in.
+
+  Login handoff (when you cannot sign in; a person must):
     $ ade browser handoff --tab <id> --reason "sign in to staging" --text
     $ ade browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
     $ ade browser handoff --tab <id> --reason "corp SSO" --no-wait
@@ -2181,6 +2214,9 @@ ADE browser
     $ ade browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
     $ ade browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
     $ ade browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --site example.com --text
+    $ ade browser signup --tab <tab-id> --text
     $ ade browser clear-field --tab <tab-id> --selector "input[name=q]"
     $ ade browser press --tab <tab-id> --selector "input[name=q]" Enter
     $ ade browser type --tab <tab-id> "hello"
@@ -2262,6 +2298,9 @@ ADE browser
     --handle <ref>       Click/fill/press/wait via a saved observation element handle.
     --value <text>       Explicit value for browser fill, including an empty string,
                          or the text for browser clipboard write.
+    --site <host>        Browser signin: check that the open tab is on this host.
+    --account <username>
+                         Browser signin: which saved login to use.
     --html <markup>      HTML flavor for browser clipboard write.
     --image <path>       Image file for browser clipboard write. Absolute path.
     --map, --ui-map      Add a numbered visual element map image to observations.
@@ -2320,151 +2359,13 @@ ADE browser
                          On panel/switch, claims only when passed explicitly.
 
 ## ade settings --help
-Agent-focused command-line interface for ADE.
+ADE settings
 
-  ADE CLI commands operate through the machine ADE brain by default.
-  The brain is the always-on ADE process for this machine: it owns the project
-  catalog, sync endpoint, and execution authority for the channel.
+  Find where an ADE setting or page is, as a link the chat shows as a chip.
+  Changing a setting is the person's, in the app.
 
-    $ ade help <command...>                         Display help for a command
-    $ ade connect [--status]                        Link this machine to your ADE account
-    $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
-    $ ade login [--headless] [--max-wait <seconds>] Sign in to your ADE account
-    $ ade logout                                    Sign out of the ADE account
-    $ ade auth status                               Show ADE account sign-in status
-    $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
-    $ ade machines list                             List machines from the ADE account directory
-    $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
-    $ ade machines connect <id|name>                Save an account machine on this install
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
-    $ ade desktop                                   Launch the installed ADE desktop app
-    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
-                                                     or Linux Desktop)
-    $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
-    $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
-                                                     Build a shareable deeplink (copies to clipboard)
-    $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
-    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
-    $ ade brain start | stop | status               Manage the background ADE brain
-    $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
-    $ ade runtime run --socket <path> --profile embedded
-                                                    Run a guest runtime for an external embedder (ADE SDK):
-                                                    personal chats only, no automations, sync off
-    $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
-    $ ade init [path]                               Register a project with this machine brain
-    $ ade projects list                             List projects registered on this machine
-    $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
-    $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
-    $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
-    $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
-    $ ade reset --all [--dry-run]                   Remove everything ADE put on this computer (hard reset)
-    $ ade lanes list | show | create | child        Work with lanes and lane stacks
-    $ ade git status | commit | push | stash        Run ADE-aware git operations
-    $ ade operations status | wait                  Poll operation/test/chat/run status
-    $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
-    $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
-    $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
-                                                    Send a push to the phones on your ADE account
-    $ ade mcp status | on | off | token create | activity
-                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
-    $ ade prs list | create | show | checks          Manage PRs and their GitHub state
-    $ ade shell start | write | resize | close      Launch and control tracked shell sessions
-    $ ade terminal list | resume | read | write | signal
-                                                    Control an attached session terminal
-    $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
-    $ ade chat list | create | send | ask | note | interrupt
-                                                    Work with ADE agent chats
-    $ ade drafts list | create | schedule | update | delete | now | show
-                                                    Drafts and scheduled sends
-    $ ade session show | move | snooze | wake | clear-woke
-                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
-    $ ade linear create | edit | comment | set-state | assign | issue | graphql
-                                                    Create, read, and edit Linear issues
-    $ ade jira status | connect | projects | list | issue | create | edit
-                                                    Connect to Jira Cloud and manage issues
-    $ ade issue list | view | comment | state | create | open-url
-                                                    Read and update issues across trackers
-    $ ade github issue list | view | create | edit | comment | close
-                                                    Create, read, and edit GitHub issues
-    $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
-    $ ade automations list | create | run | runs    Manage automation rules
-    $ ade tests list | run | stop | runs | logs     Run configured test suites
-    $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
-    $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
-    $ ade android status | create | start | tap    Drive this lane's Android emulator
-    $ ade app-control launch | observe | click | record
-                                                    Drive this lane's Electron app, record it, file proof
-    $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade browser attach | detach                  The user's own browser, only when they ask
-    $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
-    $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
-        | app-control | floating-app-control | android | floating-android
-                                                    Show a surface of this chat to the user
-    $ ade usage limits --text                       What's left of each subscription, per account
-    $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
-    $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
-    $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
-    $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
-    $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
-    $ ade providers accounts list | add | remove | default
-                                                    Manage this machine's Claude/Codex logins
-    $ ade proxy status | start | stop | login | logout
-                                                    Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
-    $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
-    $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
-    $ ade update status | check | install | dismiss Read auto-update state and drive install
-    $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
-    $ ade actions list | describe | run | status | wait  Escape hatch for every ADE service action
-    $ ade cursor cloud agents | runs | artifacts | repos | models | me
-                                                    Drive Cursor Cloud agents via @cursor/sdk
-
-  Global options:
-    --project-root <path>   ADE project root. Inside a lane worktree, this resolves to the parent project.
-    --workspace-root <path> Lane/worktree to treat as the active workspace.
-    --headless              Skip the machine brain and run an in-process ADE runtime.
-    --socket                Require a live ADE endpoint; fail instead of falling back to headless.
-    --json                  Print machine-readable JSON. This is the default output mode.
-    --text                  Print a compact human-readable summary when a formatter exists.
-    --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
-
-  Common agent flows:
-    $ ade doctor --text
-    $ ade lanes list --text
-    $ ade lanes create --name fix-login --description "Repair login redirect"
-    $ ade git status --lane <lane> --text
-    $ ade git status --full --lane <lane> --text
-    $ ade git sync --lane <lane> --rebase --base main
-    $ ade git stage --lane <lane> src/index.ts
-    $ ade git commit --lane <lane> -m "Fix login redirect"
-    $ ade prs create --lane <lane> --base main --draft
-    $ ade prs checks <pr-id-or-number-or-url> --text
-    $ ade proof record --seconds 20
-    $ ade apple apps --text
-    $ ade apple launch --target <id> --text
-    $ ade app-control launch --command "pnpm dev" --text
-    $ ade browser open http://localhost:5173 --new-tab --text
-    $ ade terminal read --chat-session <owner-session-id> --text
-    $ ade terminal read --pty <pty-id> --text
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-
-  Generic ADE action JSON contract:
-    Object-shaped call:
-      $ ade actions run git.push --input-json '{"laneId":"lane-1","setUpstream":true}'
-      $ ade actions run git.push --arg laneId=lane-1 --arg setUpstream=true
-    JSON value fields:
-      $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
-    Multi-parameter service call:
-      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
-    $ ade actions list --text
-    $ ade actions list --domain pr --text
-    $ ade actions run <domain.action> --input-json '{"key":"value"}'
-
-  Start with: ade doctor --text
+    $ ade settings find <words> --text              Matching settings and pages, with links
+    $ ade settings actions --text                   Raw settings service actions
 
 ## ade update --help
 Auto-update

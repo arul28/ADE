@@ -15,6 +15,7 @@ import {
   json,
   parseLimit,
   parseSequenceCursor,
+  readBodyWithinLimit,
   readBoolean,
   readNested,
   readString,
@@ -29,6 +30,7 @@ import { authenticateAccount, hasValidBearerAccountToken, readBearerToken } from
 import { handleLinearAgentRequest } from "./linearAgent";
 import {
   handleCustomHookDelivery,
+  handleCustomHookForward,
   handleCustomHookRegister,
   handleCustomHookSubscription,
   handleAckCustomHookEvents,
@@ -1437,8 +1439,8 @@ async function handleGitHubWebhook(request: Request, env: RelayEnv, projectId: s
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
 
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_GITHUB_WEBHOOK_BODY_BYTES) {
+  const body = await readBodyWithinLimit(request, MAX_GITHUB_WEBHOOK_BODY_BYTES);
+  if (!body) {
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
   const verified = await verifyGitHubSignature(webhookSecret, body, signature);
@@ -2115,6 +2117,7 @@ export async function handleRequest(request: Request, env: RelayEnv, ctx?: Execu
 
   if (url.pathname === "/account/integrations") return await handleAccountIntegrations(request, env);
   if (url.pathname === "/hooks/register") return await handleCustomHookRegister(request, env);
+  if (url.pathname === "/hooks/forward") return await handleCustomHookForward(request, env, ctx);
   if (url.pathname === "/hooks/events") return await handleListCustomHookEvents(request, env);
   if (url.pathname === "/hooks/ack") return await handleAckCustomHookEvents(request, env);
   if (url.pathname === "/hooks/subscribe") return await handleCustomHookSubscription(request, env);

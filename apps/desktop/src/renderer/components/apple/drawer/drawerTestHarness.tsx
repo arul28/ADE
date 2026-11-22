@@ -106,8 +106,11 @@ export function makeActions(overrides: Partial<AppleDrawerActions> = {}): AppleD
   };
 }
 
+/** The device's machine: the drawer always acts on one. */
+export const DRAWER_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
 export function makeCtx(overrides: Partial<AppleDrawerContext> = {}): AppleDrawerContext {
-  const pinRef: MutableRefObject<OpenProjectBinding | null> = { current: null };
+  const pinRef: MutableRefObject<OpenProjectBinding> = { current: DRAWER_PIN };
   return {
     scope: { laneId: "lane-1", deviceUdid: "UDID-1", chatSessionId: null },
     device: DEVICE,

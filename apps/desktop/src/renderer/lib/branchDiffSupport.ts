@@ -28,7 +28,9 @@ const supportByLane = new Map<string, Promise<boolean>>();
  * whose base cannot be resolved still supports the mode: its diff shows that
  * error, which is the useful thing to see.
  */
-export function hostSupportsBranchDiff(laneId: string, pin?: OpenProjectBinding | null): Promise<boolean> {
+export function hostSupportsBranchDiff(laneId: string, pin: OpenProjectBinding | null): Promise<boolean> {
+  // No machine with the lane online: nothing to ask, so Branch is not offered.
+  if (!pin) return Promise.resolve(false);
   const key = `${pin?.key ?? ""}\u0000${laneId}`;
   let pending = supportByLane.get(key);
   if (!pending) {

@@ -20,6 +20,7 @@ import { AdeDiffViewer } from "../shared/AdeDiffViewer";
 import { cn } from "../ui/cn";
 import { Dialog } from "../ui/dialog";
 import type { RewindPreviewFile } from "./rewindFilesPreview";
+import { withChatPin } from "./chatMachinePin";
 
 export type RewindFilesConfirmRequest = {
   messageId: string;
@@ -193,7 +194,7 @@ export function RewindFilesConfirmDialog({
     setActiveDiffLoadState("loading");
 
     try {
-      const diff = await window.ade.agentChat.getTurnFileDiff(args, runtimePin);
+      const diff = await withChatPin(runtimePin, (chatPin) => window.ade.agentChat.getTurnFileDiff(args, chatPin));
       if (latestDiffRequestKey.current !== cacheKey) return;
       if (!diff) {
         setActiveDiffLoadState("missing");

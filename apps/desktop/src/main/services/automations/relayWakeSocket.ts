@@ -11,6 +11,8 @@ export type RelayWakeTarget = { url: string; headers: Record<string, string> };
 
 export type RelayWakeSocket = {
   connected: () => boolean;
+  /** Ends a wait for the next attempt and tries now (the caller just made a target possible). */
+  retryNow: () => void;
   stop: () => void;
 };
 
@@ -19,6 +21,12 @@ const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 60_000;
 /** After the relay refuses the caller (401/403), retry rarely: access seldom changes on its own. */
 const REFUSED_RETRY_MS = 10 * 60_000;
+/**
+ * With nothing to subscribe to (no rule wants the events, no hook, signed
+ * out), ask again this rarely. Nothing is lost while waiting: the caller's own
+ * poll still runs, and a caller that adds a target calls `retryNow`.
+ */
+const NO_TARGET_RETRY_MS = 2 * 60_000;
 
 /** Full-jitter exponential backoff for relay reconnects. */
 export function computeRelayReconnectBackoffMs(
@@ -53,11 +61,16 @@ export function createRelayWakeSocket(args: {
   let refused = false;
   let retryTimer: NodeJS.Timeout | null = null;
 
-  const scheduleRetry = (): void => {
+  const scheduleRetry = (options: { noTarget?: boolean } = {}): void => {
     if (halted || retryTimer) return;
-    const delay = refused ? REFUSED_RETRY_MS : computeRelayReconnectBackoffMs(attempt);
+    const delay = refused
+      ? REFUSED_RETRY_MS
+      : options.noTarget
+        ? NO_TARGET_RETRY_MS
+        : computeRelayReconnectBackoffMs(attempt);
     refused = false;
-    attempt += 1;
+    // A missing target is not a failed connect: the backoff does not grow.
+    if (!options.noTarget) attempt += 1;
     retryTimer = setTimeout(() => {
       retryTimer = null;
       void connect();
@@ -70,7 +83,7 @@ export function createRelayWakeSocket(args: {
     const target = await args.resolveTarget().catch(() => null);
     if (halted || socket) return;
     if (!target) {
-      scheduleRetry();
+      scheduleRetry({ noTarget: true });
       return;
     }
     let next: WebSocket;
@@ -123,6 +136,12 @@ export function createRelayWakeSocket(args: {
   void connect();
   return {
     connected: () => isConnected,
+    retryNow: () => {
+      if (halted || socket || !retryTimer) return;
+      clearTimeout(retryTimer);
+      retryTimer = null;
+      void connect();
+    },
     stop: () => {
       halted = true;
       if (retryTimer) clearTimeout(retryTimer);

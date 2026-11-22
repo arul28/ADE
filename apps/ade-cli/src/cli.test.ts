@@ -427,11 +427,15 @@ describe("ADE CLI", () => {
       machineOnly: true,
       machineAutoStart: true,
       connectRole: "cto",
-      steps: [{
-        method: "account.call",
-        params: { action: "listMachines", args: {} },
-      }],
     });
+    // The account's list, then an optional ADE Cloud read that marks which
+    // machines are ADE Cloud computers (a signed-out or cloudless account
+    // still lists its machines).
+    expect(machines.steps[0]).toMatchObject({
+      method: "account.call",
+      params: { action: "listMachines", args: {} },
+    });
+    expect(machines.steps.slice(1).every((step) => step.method === "cloud.call" && step.optional === true)).toBe(true);
     expect(shouldAutoRegisterProjectForPlan(machines)).toBe(false);
     const rename = expectExecutePlan(buildCliPlan([
       "machines",
@@ -983,15 +987,6 @@ describe("ADE CLI", () => {
     expect(windowsPath.command).toEqual(["lanes", "list"]);
   });
 
-  it("shows help for bare ade invocations", () => {
-    expect(buildCliPlan([])).toEqual({
-      kind: "help",
-      text: expect.stringContaining(
-        "Agent-focused command-line interface for ADE",
-      ),
-    });
-  });
-
   it("names the import roots this platform actually has in proof help", () => {
     // `resolveTempImportRoots` adds `/tmp` only off Windows and `$TMPDIR` is
     // not the Windows spelling, so unconditional POSIX guidance sends a Windows
@@ -1002,11 +997,6 @@ describe("ADE CLI", () => {
     expect(plan.text).toContain("$TMPDIR");
     expect(plan.text).toContain("%TEMP%");
     expect(plan.text).toContain("not a root on\n  Windows");
-  });
-
-  it("keeps global help on the help surface", () => {
-    const plan = buildCliPlan(["--help"]);
-    expect(plan.kind).toBe("help");
   });
 
   it("hides internal Automations commands when disabled", () => {
@@ -2100,6 +2090,18 @@ describe("ADE CLI", () => {
         },
       ],
     });
+    // `ade projects retry` takes an id by flag or bare, or a path.
+    for (const [args, params] of [
+      [["--id", "project_abc"], { projectId: "project_abc" }],
+      [["--project-id", "project_abc"], { projectId: "project_abc" }],
+      [["project_abc"], { projectId: "project_abc" }],
+      [["--path", "/tmp/repo"], { rootPath: path.resolve("/tmp/repo") }],
+    ] as const) {
+      expect(buildCliPlan(["projects", "retry", ...args])).toMatchObject({
+        label: "projects retry",
+        steps: [{ key: "result", method: "projects.retryOpen", params }],
+      });
+    }
     expect(buildCliPlan(["projects", "inspect", "/tmp/worktree"])).toEqual({
       kind: "execute",
       label: "projects inspect",
@@ -2828,7 +2830,7 @@ describe("ADE CLI", () => {
 
   it("removes the sync relay command and keeps security commands", () => {
     expect(() => buildCliPlan(["sync", "relay"])).toThrow(
-      "Unsupported sync command: relay",
+      "Unknown sync command 'relay'",
     );
     expect(expectExecutePlan(buildCliPlan(["sync", "security"])).steps).toEqual([
       { key: "result", method: "sync.getRequireDpop" },
@@ -3235,15 +3237,14 @@ describe("ADE CLI", () => {
           { name: "ACCOUNT_TOKEN", valueLength: 8, storage: "account", updatedAt: "2026-09-17T12:00:00.000Z" },
           { name: "LOCAL_TOKEN", valueLength: 5, storage: "device", updatedAt: "2026-09-17T12:01:00.000Z" },
         ],
-        storage: { path: "/repo/.ade/secrets/project-secrets.v1.enc" },
+        storage: { path: "Passwords & Secrets", encrypted: true, scope: "project" },
       },
       { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
       "project-secrets",
     );
-    expect(listText).toContain("where");
-    expect(listText).toContain("account");
-    expect(listText).toContain("device");
-    expect(listText).toContain("Local cache:");
+    // Each row says where the secret lives: synced, or this computer only.
+    expect(listText.split("\n").find((line) => line.startsWith("ACCOUNT_TOKEN"))).toContain("every computer");
+    expect(listText.split("\n").find((line) => line.startsWith("LOCAL_TOKEN"))).toContain("this computer");
 
     const remove = expectExecutePlan(buildCliPlan(["secrets", "rm", "TOKEN"]));
     expect(remove.steps[0]?.params).toEqual({
@@ -3746,7 +3747,7 @@ describe("ADE CLI", () => {
     try {
       const file = path.join(dir, "brief.md");
       fs.writeFileSync(file, content, "utf8");
-      const argv = ["new", "chat", "--mode", "chat", "--lane", "lane-1", "--provider", "codex", "--prompt-file", file, ...extra];
+      const argv = ["new", "chat", "--mode", "chat", "--lane", "lane-1", "--provider", "codex", "--model", "openai/gpt-5.6-sol", "--prompt-file", file, ...extra];
       if (error) {
         expect(() => buildCliPlan(argv)).toThrow(error);
         return;
@@ -3886,6 +3887,8 @@ describe("ADE CLI", () => {
         "lane-1",
         "--provider",
         "codex",
+        "--model",
+        "openai/gpt-5.6-sol",
         "--prompt",
         "Fix login",
       ]);
@@ -3962,6 +3965,8 @@ describe("ADE CLI", () => {
       "lane-1",
       "--provider",
       "droid",
+      "--model",
+      "droid-default",
       "--permissions",
       "default",
       "--droid-permission-mode",
@@ -3997,7 +4002,12 @@ describe("ADE CLI", () => {
     }
   });
 
-  it("adds a valid --type to new chat createSession args and rejects invalid values", () => {
+  it.each([
+    { flags: ["--no-report"], spawnKind: "peer" },
+    { flags: ["--type", "peer"], spawnKind: "peer" },
+    { flags: ["--type", "subagent"], spawnKind: "subagent" },
+    { flags: [], spawnKind: "subagent" },
+  ])("maps $flags on a new chat with a parent to spawnKind $spawnKind", ({ flags, spawnKind }) => {
     const plan = buildCliPlan([
       "new",
       "chat",
@@ -4009,8 +4019,7 @@ describe("ADE CLI", () => {
       "codex",
       "--model",
       "openai/gpt-5.5",
-      "--type",
-      "peer",
+      ...flags,
       "--parent",
       "parent-session-1",
     ]);
@@ -4020,9 +4029,16 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "chat",
         action: "createSession",
-        args: { spawnKind: "peer" },
+        args: { spawnKind },
       },
     });
+  });
+
+  it("rejects an invalid --type and --no-report with --type subagent", () => {
+    expect(() => buildCliPlan([
+      "new", "chat", "--mode", "chat", "--lane", "lane-1",
+      "--no-report", "--type", "subagent", "--parent", "parent-session-1",
+    ])).toThrow(/--no-report cannot be combined with --type subagent/);
 
     expect(() => buildCliPlan([
       "new",
@@ -4033,7 +4049,7 @@ describe("ADE CLI", () => {
       "lane-1",
       "--type",
       "manager",
-    ])).toThrow(/--type must be subagent or peer/);
+    ])).toThrow(/--type must be subagent\. Use --no-report/);
   });
 
 
@@ -4067,15 +4083,11 @@ describe("ADE CLI", () => {
   });
 
   it.each([
-    { surface: "chat create", args: ["chat", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"], accepts: true },
-    { surface: "chat launch", args: ["chat", "launch", "prompt", "--provider", "antigravity", "--print-config"], accepts: true },
-    { surface: "terminal launch", args: ["shell", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"], accepts: false },
-  ])("validates Antigravity as a chat-only provider on $surface", ({ args, accepts }) => {
-    if (accepts) {
-      expect(() => buildCliPlan(args)).not.toThrow();
-    } else {
-      expect(() => buildCliPlan(args)).toThrow(/provider must be one of/);
-    }
+    { surface: "chat create", args: ["chat", "create", "--lane", "lane-1", "--provider", "antigravity", "--model", "gemini-3-pro", "--print-config"] },
+    { surface: "chat launch", args: ["chat", "launch", "prompt", "--provider", "antigravity", "--model", "gemini-3-pro", "--print-config"] },
+    { surface: "terminal launch", args: ["shell", "create", "--lane", "lane-1", "--provider", "antigravity", "--model", "gemini-3-pro", "--print-config"] },
+  ])("accepts Antigravity as a provider on $surface", ({ args }) => {
+    expect(() => buildCliPlan(args)).not.toThrow();
   });
 
   it("accepts a mis-cased provider when starting a CLI session", () => {
@@ -4086,6 +4098,8 @@ describe("ADE CLI", () => {
       "lane-1",
       "--provider",
       "CODEX",
+      "--model",
+      "openai/gpt-5.6-sol",
     ]);
     const executePlan = expectExecutePlan(plan);
     expect(executePlan.steps[0]?.params).toMatchObject({
@@ -4220,7 +4234,7 @@ describe("ADE CLI", () => {
         "spawnKind=bogus",
         "--print-config",
       ]),
-    ).toThrow(/--type must be subagent or peer/);
+    ).toThrow(/--type must be subagent\. Use --no-report/);
   });
 
   // The permission mode is checked against the *merged* profile, so a mode the
@@ -4284,6 +4298,8 @@ describe("ADE CLI", () => {
       "--no-parent",
       "--arg",
       "provider=codex",
+      "--model",
+      "openai/gpt-5.6-sol",
       "--print-config",
     ]);
     const launch = (expectStaticPlan(plan).value as { launch: Record<string, unknown> }).launch;
@@ -4376,6 +4392,8 @@ describe("ADE CLI", () => {
       "claude",
       "--arg",
       "instanceId=  ",
+      "--model",
+      "claude-opus-5-5",
       "--print-config",
     ]);
     expect((expectStaticPlan(plan).value as { input: Record<string, unknown> }).input)
@@ -4390,6 +4408,8 @@ describe("ADE CLI", () => {
       "create",
       "--lane",
       "lane-1",
+      "--model",
+      "claude-opus-5-5",
       "--print-config",
     ]);
     expect((expectStaticPlan(plan).value as { input: Record<string, unknown> }).input)
@@ -4410,6 +4430,8 @@ describe("ADE CLI", () => {
       "work",
       "--arg",
       "provider=",
+      "--model",
+      "claude-opus-5-5",
       "--print-config",
     ]);
     expect((expectStaticPlan(plan).value as { input: Record<string, unknown> }).input)
@@ -4424,6 +4446,8 @@ describe("ADE CLI", () => {
       "lane-1",
       "--arg",
       "provider=",
+      "--model",
+      "openai/gpt-5.6-sol",
       "--print-config",
     ]);
     expect((expectStaticPlan(plan).value as { launch: Record<string, unknown> }).launch.provider)
@@ -4444,6 +4468,8 @@ describe("ADE CLI", () => {
       "work",
       "--arg",
       "instanceId=",
+      "--model",
+      "cursor/auto",
       "--print-config",
     ]);
     const input = (expectStaticPlan(plan).value as { input: Record<string, unknown> }).input;
@@ -4459,7 +4485,7 @@ describe("ADE CLI", () => {
       "lane-1",
       "--print-config",
       "--input-json",
-      JSON.stringify({ provider: "CODEX" }),
+      JSON.stringify({ provider: "CODEX", model: "openai/gpt-5.6-sol" }),
     ]);
     expect(plan).toMatchObject({ value: { launch: { provider: "codex" } } });
   });
@@ -4473,6 +4499,8 @@ describe("ADE CLI", () => {
         "lane-1",
         "--provider",
         provider,
+        "--model",
+        `${provider}/default`,
       ]);
       expect(plan.kind).toBe("execute");
     }
@@ -4485,6 +4513,8 @@ describe("ADE CLI", () => {
       "cli",
       "--lane",
       "lane-1",
+      "--model",
+      "openai/gpt-5.6-sol",
       "--prompt",
       "Fix the tests",
     ]);
@@ -4735,6 +4765,7 @@ describe("ADE CLI", () => {
         "--mode", "cli",
         "--lane", "lane-1",
         "--provider", "codex",
+        "--model", "openai/gpt-5.6-sol",
         "--type", "peer",
         "--print-config",
       ]);
@@ -4752,6 +4783,7 @@ describe("ADE CLI", () => {
         "--mode", "cli",
         "--lane", "lane-1",
         "--provider", "codex",
+        "--model", "openai/gpt-5.6-sol",
         "--no-parent",
         "--print-config",
       ]);
@@ -4769,6 +4801,7 @@ describe("ADE CLI", () => {
         "--auto-create-lane",
         "--lane-name", "spawn-target",
         "--provider", "codex",
+        "--model", "openai/gpt-5.6-sol",
         "--parent", "parent-session-1",
         "--type", "subagent",
         "--print-config",
@@ -4839,6 +4872,8 @@ describe("ADE CLI", () => {
       "Claude",
       "--instance",
       "work",
+      "--model",
+      "claude-opus-5-5",
       "--print-config",
     ]);
     expect(expectStaticPlan(plan).value).toMatchObject({
@@ -4918,6 +4953,8 @@ describe("ADE CLI", () => {
       "chat_attach",
       "--include-in-pr",
       "--close-on-merge",
+      "--model",
+      "claude-opus-5-5",
       "--print-config",
     ]);
 
@@ -5491,7 +5528,7 @@ describe("ADE CLI", () => {
       const previous = process.env.ADE_CHAT_SESSION_ID;
       delete process.env.ADE_CHAT_SESSION_ID;
       try {
-        expect(() => buildCliPlan(["session", "wake"])).toThrow("sessionId is required.");
+        expect(() => buildCliPlan(["session", "wake"])).toThrow(/session id/);
       } finally {
         if (previous !== undefined) process.env.ADE_CHAT_SESSION_ID = previous;
       }
@@ -5910,7 +5947,7 @@ describe("ADE CLI", () => {
   it("rejects incomplete or unknown chat recovery requests", () => {
     expect(() => buildCliPlan([
       "chat", "recover", "chat-1", "--action", "wait",
-    ])).toThrow(/turnId/);
+    ])).toThrow(/turn id/);
     expect(() => buildCliPlan([
       "chat", "recover", "chat-1", "--turn", "turn-1", "--action", "replace",
     ])).toThrow(/wait, nudge, retry, or resume/);
@@ -6258,34 +6295,15 @@ describe("ADE CLI", () => {
     }
   });
 
-  it("filters the typed chat model inventory by provider", () => {
-    const executePlan = expectExecutePlan(buildCliPlan([
-      "chat",
-      "models",
-      "--provider",
-      "codex",
-    ]));
+  it.each([
+    ["filters by provider", ["chat", "models", "--provider", "codex"], { provider: "codex" }],
+    ["requests the complete inventory when provider is omitted", ["chat", "models"], {}],
+  ])("builds chat models: %s", (_name, argv, args) => {
+    const executePlan = expectExecutePlan(buildCliPlan(argv));
 
     expect(executePlan.label).toBe("chat models");
     expect(executePlan.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "chat",
-        action: "getAvailableModels",
-        args: { provider: "codex" },
-      },
-    });
-  });
-
-  it("requests the complete typed chat model inventory when provider is omitted", () => {
-    const executePlan = expectExecutePlan(buildCliPlan(["chat", "models"]));
-
-    expect(executePlan.label).toBe("chat models");
-    expect(executePlan.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "chat",
-        action: "getAvailableModels",
-        args: {},
-      },
+      arguments: { domain: "chat", action: "getAvailableModels", args },
     });
   });
 
@@ -6684,23 +6702,24 @@ describe("ADE CLI", () => {
     expect(parsed.chat?.message.text).toBe("fix the flaky test");
   });
 
-  it("chat launch generates fresh ids, defaults to codex, and validates its inputs", () => {
-    const first = buildCliPlan(["chat", "launch", "--prompt", "hello"]);
-    const second = buildCliPlan(["chat", "launch", "--prompt", "hello"]);
+  it("chat launch generates fresh ids, defaults to codex, and validates its inputs (a model is required)", () => {
+    const model = ["--model", "openai/gpt-5.6-sol"];
+    const first = buildCliPlan(["chat", "launch", "--prompt", "hello", ...model]);
+    const second = buildCliPlan(["chat", "launch", "--prompt", "hello", ...model]);
     if (first.kind !== "chat-launch" || second.kind !== "chat-launch") throw new Error("expected chat-launch");
     // No lane flags: the brain applies the saved defaults and names the lane.
     expect(first.launchArgs.laneConfig).toBeUndefined();
-    const existing = buildCliPlan(["chat", "launch", "hello", "--existing-branch", "origin/topic"]);
+    const existing = buildCliPlan(["chat", "launch", "hello", "--existing-branch", "origin/topic", ...model]);
     if (existing.kind !== "chat-launch") throw new Error("expected chat-launch");
     expect(existing.launchArgs.laneConfig).toEqual({ mode: "existing", branchRef: "origin/topic" });
-    const partial = buildCliPlan(["chat", "launch", "hello", "--on", "local"]);
+    const partial = buildCliPlan(["chat", "launch", "hello", "--on", "local", ...model]);
     if (partial.kind !== "chat-launch") throw new Error("expected chat-launch");
     // A partial start is completed from the saved defaults at launch time.
     expect(partial.startOverrides).toEqual({ on: "local" });
     expect(partial.launchArgs.laneConfig).toBeUndefined();
-    expect(() => buildCliPlan(["chat", "launch", "hello", "--existing-branch", "topic", "--from", "main"])).toThrow(/cannot be combined/);
-    expect(() => buildCliPlan(["chat", "launch", "hello", "--base", "main"])).toThrow(/Unsupported/);
-    const auto = buildCliPlan(["new", "chat", "--auto-create-lane", "--existing-branch", "topic", "--no-parent"]);
+    expect(() => buildCliPlan(["chat", "launch", "hello", "--existing-branch", "topic", "--from", "main", ...model])).toThrow(/cannot be combined/);
+    expect(() => buildCliPlan(["chat", "launch", "hello", "--base", "main", ...model])).toThrow(/Unsupported/);
+    const auto = buildCliPlan(["new", "chat", "--auto-create-lane", "--existing-branch", "topic", "--no-parent", ...model]);
     if (auto.kind !== "execute") throw new Error("expected execute");
     const create = auto.steps[0]?.params;
     expect(typeof create === "function" ? create({}) : create).toMatchObject({ name: "import_lane", arguments: { branchRef: "topic" } });
@@ -6708,9 +6727,13 @@ describe("ADE CLI", () => {
     expect(first.launchArgs.launchId).not.toBe(second.launchArgs.launchId);
     expect((first.launchArgs.chat as { create: { provider: string } }).create.provider).toBe("codex");
     expect(() => buildCliPlan(["chat", "launch"])).toThrow(/prompt/);
-    expect(() => buildCliPlan(["chat", "launch", "hi", "--launch-id", "nope"])).toThrow(/--launch-id must be a UUID/);
-    expect(() => buildCliPlan(["chat", "launch", "hi", "--provider", "shell"])).toThrow();
-    const dryRun = buildCliPlan(["chat", "launch", "hi", "--print-config"]);
+    // ADE never picks the model; the check runs on the merged plan, so the
+    // --arg escape hatch counts too.
+    expect(() => buildCliPlan(["chat", "launch", "hi"])).toThrow(/Pass --model/);
+    expect(buildCliPlan(["chat", "launch", "hi", "--arg", "chat.create.model=openai/gpt-5.6-sol"]).kind).toBe("chat-launch");
+    expect(() => buildCliPlan(["chat", "launch", "hi", "--launch-id", "nope", ...model])).toThrow(/--launch-id must be a UUID/);
+    expect(() => buildCliPlan(["chat", "launch", "hi", "--provider", "shell", ...model])).toThrow();
+    const dryRun = buildCliPlan(["chat", "launch", "hi", "--print-config", ...model]);
     expect(dryRun.kind).toBe("static");
   });
 
@@ -6736,7 +6759,7 @@ describe("ADE CLI", () => {
       error: /disagree/,
     },
   ])("chat launch $label", ({ args, error, provider }) => {
-    const build = () => buildCliPlan(["chat", "launch", "prompt", "--print-config", ...args]);
+    const build = () => buildCliPlan(["chat", "launch", "prompt", "--model", "gemini-3-pro", "--print-config", ...args]);
     if (error) {
       expect(build).toThrow(error);
       return;
@@ -7394,7 +7417,7 @@ describe("ADE CLI", () => {
       "--personal",
       "--provider",
       "codex",
-    ])).toThrow(/model is required/);
+    ])).toThrow(/Pass --model/);
     expect(() => buildCliPlan([
       "chat",
       "action",
@@ -7941,7 +7964,8 @@ describe("ADE CLI", () => {
           method: "account.call",
           params: {
             action: "startDeviceLogin",
-            args: { projectRoot: expect.any(String), ignoreEnvCredential: true },
+            // A headless sign-in keeps trying an account directory it can't reach yet (a fresh cloud computer).
+            args: { projectRoot: expect.any(String), ignoreEnvCredential: true, retryUnreachableForMs: 45_000 },
           },
         },
         {
@@ -8474,7 +8498,7 @@ describe("ADE CLI", () => {
 
   it("requires a chat session id for chat show", () => {
     expect(() => buildCliPlan(["chat", "show"])).toThrow(
-      /sessionId is required/,
+      /session id/,
     );
   });
 
@@ -8492,7 +8516,7 @@ describe("ADE CLI", () => {
       },
     });
     expect(() => buildCliPlan(["chat", "slash"])).toThrow(
-      /sessionId is required/,
+      /session id/,
     );
   });
 
@@ -9033,14 +9057,6 @@ describe("ADE CLI", () => {
     const needsYou = expectExecutePlan(buildCliPlan(["drafts", "list", "--needs-you"]));
     expect(needsYou.shapeResult?.({ result: { domain: "chat", action: "listDrafts", result: entries } }))
       .toEqual([entries[1]]);
-    const byMachine = expectExecutePlan(buildCliPlan(["drafts", "list", "--machine", "studio"]));
-    expect(byMachine.shapeResult?.({
-      result: {
-        domain: "chat",
-        action: "listDrafts",
-        result: [{ ...entries[0], targetMachineKey: "studio" }, entries[1]],
-      },
-    })).toEqual([{ ...entries[0], targetMachineKey: "studio" }]);
 
     const create = expectExecutePlan(buildCliPlan([
       "drafts",
@@ -11658,6 +11674,8 @@ describe("ADE CLI", () => {
       "--linear-issue-json",
       '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
       "--start-chat",
+      "--model",
+      "claude-opus-5-5",
     ];
     withEnv({ ADE_CHAT_SESSION_ID: "parent-chat-1" }, () => {
       const plan = expectExecutePlan(buildCliPlan(baseArgs));
@@ -11690,10 +11708,14 @@ describe("ADE CLI", () => {
       "--linear-issue-json",
       '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
       "--start-chat",
+      "--model",
+      "claude-opus-5-5",
     ];
     expect(() => buildCliPlan([...baseArgs, "--provider", "bogus"])).toThrow(
       /provider must be one of/,
     );
+    // ADE never picks the child chat's model.
+    expect(() => buildCliPlan([...baseArgs.slice(0, -2), "--provider", "claude"])).toThrow(/Pass --model/);
     // A chat is never a shell session, the same way `ade chat create` refuses one.
     expect(() => buildCliPlan([...baseArgs, "--provider", "shell"])).toThrow(
       /provider must be one of/,
@@ -11785,6 +11807,8 @@ describe("ADE CLI", () => {
       "lane-1",
       "--from-linear-issue",
       "ENG-431",
+      "--model",
+      "claude-opus-5-5",
     ]);
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
@@ -11812,6 +11836,8 @@ describe("ADE CLI", () => {
       "lane-1",
       "--from-linear-issue",
       "ENG-431",
+      "--model",
+      "claude-opus-5-5",
       "--no-kickoff",
     ]));
     expect(noKickoffPlan.steps).toHaveLength(3);
@@ -12095,71 +12121,6 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("shows focused ios-sim help for subcommand help flags", () => {
-    const renderHelp = buildCliPlan(["ios-sim", "preview-render", "--help"]);
-    expect(renderHelp.kind).toBe("help");
-    if (renderHelp.kind !== "help") return;
-    expect(renderHelp.text).toContain("iOS Simulator: preview-render");
-    expect(renderHelp.text).toContain("--source, --file <p>");
-    expect(renderHelp.text).toContain("--index <n>");
-    expect(renderHelp.text).toContain("final command agents should run");
-
-    const aliasHelp = buildCliPlan(["help", "ios", "snapshot"]);
-    expect(aliasHelp.kind).toBe("help");
-    if (aliasHelp.kind !== "help") return;
-    expect(aliasHelp.text).toContain("iOS Simulator: snapshot");
-    expect(aliasHelp.text).toContain("ADEInspector/accessibility");
-
-    const targetHelp = buildCliPlan([
-      "ios-sim",
-      "launch",
-      "--target",
-      "preview-target",
-      "--help",
-    ]);
-    expect(targetHelp.kind).toBe("help");
-    if (targetHelp.kind !== "help") return;
-    expect(targetHelp.text).toContain("iOS Simulator: launch");
-    expect(targetHelp.text).toContain("--target, --target-id <id>");
-
-    const nestedHelp = buildCliPlan(["ios-sim", "help", "select"]);
-    expect(nestedHelp.kind).toBe("help");
-    if (nestedHelp.kind !== "help") return;
-    expect(nestedHelp.text).toContain("iOS Simulator: select");
-    expect(nestedHelp.text).toContain("emits a drawer selection event");
-
-    const typeHelp = buildCliPlan(["ios-sim", "type", "--help"]);
-    expect(typeHelp.kind).toBe("help");
-    if (typeHelp.kind !== "help") return;
-    expect(typeHelp.text).toContain("iOS Simulator: type");
-    expect(typeHelp.text).toContain("--value, --message <v>");
-
-    // `claim` is implemented and listed in the top-level help, so asking for
-    // its help must not answer "unknown subcommand".
-    const claimHelp = buildCliPlan(["ios-sim", "claim", "--help"]);
-    expect(claimHelp.kind).toBe("help");
-    if (claimHelp.kind !== "help") return;
-    expect(claimHelp.text).toContain("iOS Simulator: claim");
-    expect(claimHelp.text).not.toContain("Unknown Apple device subcommand");
-    expect(claimHelp.text).not.toContain("Unknown iOS simulator subcommand");
-
-    // `stop` powers the device off and is no longer a `shutdown` alias, so it
-    // has its own page; `device-detach` is listed in the top-level help too.
-    for (const [sub, heading] of [
-      ["stop", "Apple device: stop"],
-      ["power-off", "Apple device: stop"],
-      ["device-detach", "Apple device: device-detach"],
-    ] as const) {
-      const help = buildCliPlan(["apple", sub, "--help"]);
-      if (help.kind !== "help") throw new Error(`expected help for apple ${sub}`);
-      expect(help.text).toContain(heading);
-      expect(help.text).not.toContain("Unknown Apple device subcommand");
-    }
-    const shutdownHelp = buildCliPlan(["apple", "shutdown", "--help"]);
-    if (shutdownHelp.kind !== "help") throw new Error("expected help");
-    expect(shutdownHelp.text).not.toMatch(/Aliases: stop/);
-  });
-
   it("rejects live-start and --backend; stream-start has no backend flag", () => {
     expect(() => buildCliPlan(["apple", "live-start"])).toThrow(
       /live-start is gone; use stream-start/,
@@ -12214,6 +12175,8 @@ describe("ADE CLI", () => {
       "codex",
       "--lane",
       "lane-1",
+      "--model",
+      "openai/gpt-5.6-sol",
       "--permission-mode",
       "edit",
       "--message",
@@ -12244,6 +12207,8 @@ describe("ADE CLI", () => {
         "codex",
         "--lane",
         "lane-1",
+        "--model",
+        "openai/gpt-5.6-sol",
       ]));
       expect(plan.steps[0]?.params).toMatchObject({
         name: "start_cli_session",
@@ -12265,6 +12230,8 @@ describe("ADE CLI", () => {
         "subagent",
         "--permission-mode",
         "plan",
+        "--model",
+        "openai/gpt-5.6-sol",
       ]));
       expect(
         (explicitMode.steps[0]?.params as { arguments: Record<string, unknown> }).arguments.permissionMode,
@@ -12324,7 +12291,7 @@ describe("ADE CLI", () => {
         "--permission-mode",
         "edit",
       ]),
-    ).toThrow("provider is required");
+    ).toThrow(/Pass a provider/);
   });
 
   it("finds a start-cli provider after value-taking options", () => {
@@ -12335,6 +12302,8 @@ describe("ADE CLI", () => {
       "lane-1",
       "--permission-mode",
       "edit",
+      "--model",
+      "openai/gpt-5.6-sol",
       "codex",
     ]);
     expect(plan.kind).toBe("execute");
@@ -12357,6 +12326,8 @@ describe("ADE CLI", () => {
       "lane-1",
       "--initial-input",
       "hello agent",
+      "--model",
+      "openai/gpt-5.6-sol",
       "codex",
     ]);
     expect(plan.kind).toBe("execute");
@@ -12378,6 +12349,8 @@ describe("ADE CLI", () => {
       "claude",
       "--lane",
       "lane-1",
+      "--model",
+      "claude-opus-5-5",
       "--permission-mode",
       "auto",
     ]);
@@ -12404,6 +12377,8 @@ describe("ADE CLI", () => {
       "work",
       "--credential",
       "openrouter",
+      "--model",
+      "openai/gpt-5.6-sol",
     ]));
     expect(accountPlan.steps[0]?.params).toMatchObject({
       name: "start_cli_session",
@@ -12413,18 +12388,22 @@ describe("ADE CLI", () => {
       },
     });
 
-    const presetPlan = expectExecutePlan(buildCliPlan([
-      "shell",
-      "start-cli",
-      "claude",
-      "--lane",
-      "lane-1",
-      "--preset",
-      "hp_opus_work",
-    ]));
-    expect(presetPlan.steps[0]?.params).toMatchObject({
-      name: "start_cli_session",
-      arguments: { presetId: "hp_opus_work" },
+    withSavedCustomProviders([OPUS_WORK_PROVIDER], () => {
+      const presetPlan = expectExecutePlan(buildCliPlan([
+        "shell",
+        "start-cli",
+        "claude",
+        "--lane",
+        "lane-1",
+        "--custom-provider",
+        "Opus work",
+        "--model",
+        "claude-opus-5-5",
+      ]));
+      expect(presetPlan.steps[0]?.params).toMatchObject({
+        name: "start_cli_session",
+        arguments: { presetId: "hp_opus_work" },
+      });
     });
   });
 
@@ -12435,6 +12414,8 @@ describe("ADE CLI", () => {
       "codex",
       "--lane",
       "lane-1",
+      "--model",
+      "openai/gpt-5.6-sol",
       "--",
       "--instance",
       "literal prompt",
@@ -12465,11 +12446,11 @@ describe("ADE CLI", () => {
       "codex",
       "--lane",
       "lane-1",
-      "--preset",
-      "hp_1",
+      "--via",
+      "opencode-go",
       "--credential",
       "openrouter",
-    ])).toThrow(/two different brains/);
+    ])).toThrow(/Pass at most one/);
   });
 
   it("accepts --provider on shell start as the CLI-session launcher", () => {
@@ -12480,6 +12461,8 @@ describe("ADE CLI", () => {
       "claude",
       "--lane",
       "lane-1",
+      "--model",
+      "claude-opus-5-5",
     ]);
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
@@ -12823,7 +12806,7 @@ describe("ADE CLI", () => {
     ).toThrow(/--lane is only valid with --lane-mode reuse/);
   });
 
-  it("automations create rejects --lane-name-preset with --lane-mode reuse", () => {
+  it("automations create rejects --lane-naming with --lane-mode reuse", () => {
     expect(() =>
       buildCliPlan([
         "automations",
@@ -12832,13 +12815,13 @@ describe("ADE CLI", () => {
         "id: r1\n",
         "--lane-mode",
         "reuse",
-        "--lane-name-preset",
+        "--lane-naming",
         "issue-title",
       ]),
-    ).toThrow(/--lane-name-preset is only valid with --lane-mode create/);
+    ).toThrow(/--lane-naming is only valid with --lane-mode create/);
   });
 
-  it("automations create rejects --lane-name-template with non-custom preset", () => {
+  it("automations create rejects --lane-name-template with non-custom lane naming", () => {
     expect(() =>
       buildCliPlan([
         "automations",
@@ -12847,13 +12830,13 @@ describe("ADE CLI", () => {
         "id: r1\n",
         "--lane-mode",
         "create",
-        "--lane-name-preset",
+        "--lane-naming",
         "issue-title",
         "--lane-name-template",
         "{{trigger.issue.title}}",
       ]),
     ).toThrow(
-      /--lane-name-template is only valid with --lane-name-preset custom/,
+      /--lane-name-template is only valid with --lane-naming custom/,
     );
   });
 
@@ -13569,12 +13552,14 @@ describe("ADE CLI", () => {
     };
   };
 
-  it("ios-sim open-device --no-window sends openWindow false", () => {
-    const withWindow = iosSimActionArgs(["ios-sim", "open-device"]);
-    expect(withWindow.domain).toBe("ios_simulator");
-    expect(withWindow.action).toBe("openDevice");
-    // Absent means "let the service decide", so the key must not appear at all.
-    expect(withWindow.args).not.toHaveProperty("openWindow");
+  it("ios-sim open-device is headless unless --window", () => {
+    const plain = iosSimActionArgs(["ios-sim", "open-device"]);
+    expect(plain.domain).toBe("ios_simulator");
+    expect(plain.action).toBe("openDevice");
+    // Sent as false, so an older brain that opened Simulator.app unless told
+    // not to stays headless too.
+    expect(plain.args).toMatchObject({ openWindow: false });
+    expect(iosSimActionArgs(["ios-sim", "open-device", "--window"]).args).toMatchObject({ openWindow: true });
 
     const headless = iosSimActionArgs([
       "ios-sim",
@@ -14290,6 +14275,8 @@ describe("ADE CLI", () => {
       "codex",
       "--lane",
       "lane-1",
+      "--model",
+      "openai/gpt-5.6-sol",
       "--message",
       "hello",
       "--",
@@ -16374,8 +16361,8 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("usage stats forwards preset, scope, range, and force to usage.getAdeUsageStats", () => {
-    const plan = buildCliPlan(["usage", "stats", "--preset", "7d", "--scope", "account", "--force"]);
+  it("usage stats forwards range, scope, since/until, and force to usage.getAdeUsageStats", () => {
+    const plan = buildCliPlan(["usage", "stats", "--range", "7d", "--scope", "account", "--force"]);
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
     expect(plan.label).toBe("usage stats");
@@ -16421,8 +16408,8 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["usage", "stats", "--scope", "galaxy"])).toThrow(
       /--scope must be one of account, machine, project/i,
     );
-    expect(() => buildCliPlan(["usage", "stats", "--preset", "decade"])).toThrow(
-      /--preset must be one of today, 7d, 30d, year, all/i,
+    expect(() => buildCliPlan(["usage", "stats", "--range", "decade"])).toThrow(
+      /--range must be one of today, 7d, 30d, year, all/i,
     );
     expect(() => buildCliPlan(["usage", "stats", "--by", "lane", "--limit", "abc"])).toThrow(/--limit must be a positive whole number/);
     expect(() => buildCliPlan(["usage", "stats", "--by", "lane", "--limit", "0"])).toThrow(/--limit must be a positive whole number/);
@@ -16716,14 +16703,6 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("shows help for ade history", () => {
-    const plan = buildCliPlan(["history", "--help"]);
-    expect(plan.kind).toBe("help");
-    if (plan.kind !== "help") return;
-    expect(plan.text).toContain("ade history list");
-    expect(plan.text).toContain("ade history export");
-  });
-
   it("attaches a rendered lane graph when the plan has the lanes visualizer", () => {
     const connection = {
       mode: "headless" as const,
@@ -16827,9 +16806,15 @@ describe("describeLastFailureForStartupLog", () => {
 });
 
 describe("monitorBrainSocketOwnership", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   const flush = async (): Promise<void> => {
     // The monitor floors its poll interval at 250ms; outlast one tick.
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await vi.advanceTimersByTimeAsync(400);
   };
   const socketPath = "/tmp/ade-ownership/ade.sock";
 
@@ -17090,7 +17075,7 @@ describe("ade proxy", () => {
   });
 
   it("validates sign-in provider and logout id", () => {
-    expect(() => buildCliPlan(["proxy", "login"])).toThrow(/provider is required/i);
+    expect(() => buildCliPlan(["proxy", "login"])).toThrow(/Pass --provider claude or --provider codex/);
     expect(() => buildCliPlan(["proxy", "login", "--provider", "openai"])).toThrow(/claude or codex/);
     expect(() => buildCliPlan(["proxy", "logout"])).toThrow(/login id is required/i);
   });
@@ -17443,9 +17428,26 @@ describe("--machine targeting", () => {
     for (const screen of ["screen", "mac-desktop", "windows-desktop"]) {
       expect(extractMachineTargeting(parseCliArgs([screen, "status", "--machine", "Studio"])).options.machine).toBe("Studio");
     }
+    // A send for a chat on another machine is made on that machine, which fires it.
+    const draft = extractMachineTargeting(parseCliArgs(["drafts", "schedule", "d1", "--in", "1h", "--target", "c1", "--machine", "Studio"]));
+    expect(draft.options.machine).toBe("Studio");
+    expect(draft.command).not.toContain("--machine");
     // A command whose own --machine means something else keeps its flag.
-    expect(extractMachineTargeting(parseCliArgs(["drafts", "list", "--machine", "Studio"])).options.machine)
+    expect(extractMachineTargeting(parseCliArgs(["machines", "rename", "--machine", "Studio", "New"])).options.machine)
       .toBeUndefined();
+    // A move's --machine names its destination: the move runs here and its
+    // plan carries the machine, instead of being sent to that machine bare.
+    for (const sub of ["move", "handoff"]) {
+      const move = extractMachineTargeting(parseCliArgs(["chat", sub, "chat-1", "--machine", "Studio"]));
+      expect(move.options.machine).toBeUndefined();
+      expect(move.command).toEqual(["chat", sub, "chat-1", "--machine", "Studio"]);
+    }
+    const movePlan = expectExecutePlan(buildCliPlan(
+      extractMachineTargeting(parseCliArgs(["chat", "move", "chat-1", "--machine", "Studio"])).command,
+    ));
+    expect(JSON.stringify(movePlan.steps)).toContain("\"Studio\"");
+    expect(() => extractMachineTargeting(parseCliArgs(["chat", "move", "--status", "b-1", "--machine", "Studio"])))
+      .toThrow(/names the destination of a move/);
     // A value that happens to read `--machine` is a value, not targeting.
     const secret = extractMachineTargeting(parseCliArgs(["secrets", "set", "TOKEN", "--value", "--machine"]));
     expect(secret.command).toEqual(["secrets", "set", "TOKEN", "--value", "--machine"]);
@@ -17465,6 +17467,7 @@ describe("--instance threads a provider account into chat launches", () => {
       "chat", "create",
       "--lane", "lane-1",
       "--provider", "claude",
+      "--model", "claude-opus-5-5",
       "--instance", "work",
       "--print-config",
     ]));
@@ -17475,6 +17478,7 @@ describe("--instance threads a provider account into chat launches", () => {
       "--mode", "chat",
       "--lane", "lane-1",
       "--provider", "claude",
+      "--model", "claude-opus-5-5",
       "--instance", "work",
       "--print-config",
     ]));
@@ -17485,6 +17489,7 @@ describe("--instance threads a provider account into chat launches", () => {
       "--mode", "cli",
       "--lane", "lane-1",
       "--provider", "codex",
+      "--model", "openai/gpt-5.6-sol",
       "--instance", "work",
       "--print-config",
     ]));
@@ -17525,6 +17530,7 @@ describe("--instance threads a provider account into chat launches", () => {
       "chat", "create",
       "--lane", "lane-1",
       "--provider", "claude",
+      "--model", "claude-opus-5-5",
       "--print-config",
     ]));
     expect((create.value as { input: Record<string, unknown> }).input)
@@ -17532,41 +17538,60 @@ describe("--instance threads a provider account into chat launches", () => {
   });
 });
 
-describe("--preset and --credential thread a harness brain into chat launches", () => {
-  it("carries presetId into chat create and both ade new chat modes", () => {
-    const create = expectStaticPlan(buildCliPlan([
-      "chat", "create",
-      "--lane", "lane-1",
-      "--provider", "claude",
-      "--preset", "hp_opus_work",
-      "--no-parent",
-      "--print-config",
-    ]));
-    expect((create.value as { input: Record<string, unknown> }).input.presetId).toBe("hp_opus_work");
+/** A saved Custom provider, as Settings › Providers › Custom providers stores it. */
+const OPUS_WORK_PROVIDER = {
+  id: "hp_opus_work",
+  name: "Opus work",
+  harness: "claude",
+  source: { kind: "account", provider: "claude", instanceId: "work" },
+  model: "claude-opus-5-5",
+};
 
-    const chatMode = expectStaticPlan(buildCliPlan([
-      "new", "chat",
-      "--mode", "chat",
-      "--lane", "lane-1",
-      "--provider", "claude",
-      "--preset", "hp_opus_work",
-      "--no-parent",
-      "--print-config",
-    ]));
-    expect((chatMode.value as { launch: Record<string, unknown> }).launch.presetId).toBe("hp_opus_work");
+/** Runs `fn` with this machine's account settings cache holding `presets`. */
+function withSavedCustomProviders(presets: Record<string, unknown>[], fn: (adeHome: string) => void): void {
+  const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-custom-providers-"));
+  try {
+    fs.writeFileSync(path.join(adeHome, "account-settings.json"), JSON.stringify({
+      settings: { "all\u0000harnessPresets": { value: presets } },
+    }));
+    withEnv({ ADE_HOME: adeHome, ADE_CHAT_SESSION_ID: undefined }, () => fn(adeHome));
+  } finally {
+    fs.rmSync(adeHome, { recursive: true, force: true });
+  }
+}
 
-    // CLI mode sends the same id; the locked gate for grok/cursor/copilot/kimi
-    // is applied by the runtime that owns the lane, not by argument parsing.
-    const cliMode = expectStaticPlan(buildCliPlan([
-      "new", "chat",
-      "--mode", "cli",
-      "--lane", "lane-1",
-      "--provider", "codex",
-      "--preset", "hp_opus_work",
-      "--no-parent",
-      "--print-config",
-    ]));
-    expect((cliMode.value as { launch: Record<string, unknown> }).launch.presetId).toBe("hp_opus_work");
+describe("--custom-provider and --credential thread a harness brain into chat launches", () => {
+  it("carries a Custom provider's id into chat create and both ade new chat modes", () => {
+    withSavedCustomProviders([OPUS_WORK_PROVIDER], () => {
+      const pick = ["--custom-provider", "Opus work", "--model", "claude-opus-5-5", "--no-parent", "--print-config"];
+      const create = expectStaticPlan(buildCliPlan(["chat", "create", "--lane", "lane-1", "--provider", "claude", ...pick]));
+      expect((create.value as { input: Record<string, unknown> }).input.presetId).toBe("hp_opus_work");
+
+      const chatMode = expectStaticPlan(buildCliPlan(["new", "chat", "--mode", "chat", "--lane", "lane-1", ...pick]));
+      expect((chatMode.value as { launch: Record<string, unknown> }).launch).toMatchObject({
+        presetId: "hp_opus_work",
+        provider: "claude",
+      });
+
+      // CLI mode sends the same id; the locked gate for grok/cursor/copilot/kimi
+      // is applied by the runtime that owns the lane, not by argument parsing.
+      const cliMode = expectStaticPlan(buildCliPlan(["new", "chat", "--mode", "cli", "--lane", "lane-1", ...pick]));
+      expect((cliMode.value as { launch: Record<string, unknown> }).launch.presetId).toBe("hp_opus_work");
+
+      // A Custom provider runs one model and one harness; the old flag is gone.
+      expect(() => buildCliPlan([
+        "chat", "create", "--lane", "lane-1", "--custom-provider", "Opus work",
+        "--model", "openai/gpt-5.6-sol", "--no-parent",
+      ])).toThrow(/runs claude-opus-5-5, not openai\/gpt-5\.6-sol/);
+      expect(() => buildCliPlan([
+        "chat", "create", "--lane", "lane-1", "--provider", "codex", "--custom-provider", "Opus work",
+        "--model", "claude-opus-5-5", "--no-parent",
+      ])).toThrow(/--provider claude/);
+      expect(() => buildCliPlan([
+        "chat", "create", "--lane", "lane-1", "--provider", "claude", "--preset", "hp_opus_work",
+        "--model", "claude-opus-5-5", "--no-parent",
+      ])).toThrow(/--preset is gone/);
+    });
   });
 
   it("carries credentialId for a key with no preset around it", () => {
@@ -17574,6 +17599,7 @@ describe("--preset and --credential thread a harness brain into chat launches", 
       "chat", "create",
       "--lane", "lane-1",
       "--provider", "claude",
+      "--model", "claude-opus-5-5",
       "--credential", "openrouter",
       "--no-parent",
       "--print-config",
@@ -17618,32 +17644,34 @@ describe("--preset and --credential thread a harness brain into chat launches", 
     }
   });
 
-  it("omits a gated CLI preset env and model override from print-config", () => {
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-gated-preview-"));
-    try {
-      withEnv({ ADE_HOME: adeHome, ADE_CHAT_SESSION_ID: undefined }, () => {
-        const value = expectStaticPlan(buildCliPlan([
-          "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "grok",
-          "--preset", "hp_grok", "--model", "user/model", "--no-parent", "--print-config",
-        ])).value as { launch: Record<string, unknown> };
-        expect(value.launch.model).toBe("user/model");
-        expect(value.launch.modelId).toBe("user/model");
-        expect(value.launch).not.toHaveProperty("env");
-      });
-    } finally {
-      fs.rmSync(adeHome, { recursive: true, force: true });
-    }
+  it("omits a gated CLI Custom provider's env from print-config", () => {
+    withSavedCustomProviders([{
+      id: "hp_grok",
+      name: "Grok",
+      harness: "grok",
+      source: { kind: "subscription", provider: "grok" },
+      model: "user/model",
+    }], () => {
+      const value = expectStaticPlan(buildCliPlan([
+        "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "grok",
+        "--custom-provider", "hp_grok", "--model", "user/model", "--no-parent", "--print-config",
+      ])).value as { launch: Record<string, unknown> };
+      expect(value.launch.presetId).toBe("hp_grok");
+      expect(value.launch.model).toBe("user/model");
+      expect(value.launch.modelId).toBe("user/model");
+      expect(value.launch).not.toHaveProperty("env");
+    });
   });
 
-  it("refuses both at once rather than guessing which brain was meant", () => {
+  it("refuses a Custom provider and a key at once rather than guessing which brain was meant", () => {
     expect(() => buildCliPlan([
-      "chat", "create", "--lane", "lane-1", "--provider", "claude",
-      "--preset", "hp_1", "--credential", "openrouter", "--no-parent",
-    ])).toThrow(/two different brains/);
+      "chat", "create", "--lane", "lane-1", "--provider", "claude", "--model", "claude-opus-5-5",
+      "--custom-provider", "Opus work", "--credential", "openrouter", "--no-parent",
+    ])).toThrow(/Pass at most one/);
     expect(() => buildCliPlan([
-      "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "claude",
-      "--preset", "hp_1", "--credential", "openrouter",
-    ])).toThrow(/two different brains/);
+      "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "claude", "--model", "claude-opus-5-5",
+      "--custom-provider", "Opus work", "--credential", "openrouter",
+    ])).toThrow(/Pass at most one/);
   });
 
   it("omits both entirely when no brain is named", () => {
@@ -17651,6 +17679,7 @@ describe("--preset and --credential thread a harness brain into chat launches", 
       "chat", "create",
       "--lane", "lane-1",
       "--provider", "claude",
+      "--model", "claude-opus-5-5",
       "--no-parent",
       "--print-config",
     ]));
@@ -17659,7 +17688,7 @@ describe("--preset and --credential thread a harness brain into chat launches", 
     expect(input).not.toHaveProperty("credentialId");
   });
 
-  it("shows the same resolved preset env and model override in chat and CLI dry-runs", () => {
+  it("shows the same resolved Custom provider env and model in chat and CLI dry-runs", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-preview-home-"));
     const providerHome = path.join(adeHome, "provider-homes", "claude", "work");
     const preset = {
@@ -17700,11 +17729,11 @@ describe("--preset and --credential thread a harness brain into chat launches", 
       withEnv({ ADE_HOME: adeHome, ADE_CHAT_SESSION_ID: undefined }, () => {
         const chat = expectStaticPlan(buildCliPlan([
           "chat", "create", "--lane", "lane-1", "--provider", "claude",
-          "--preset", "hp_preview", "--model", "user/model", "--no-parent", "--print-config",
+          "--custom-provider", "Preview", "--model", "gateway/claude-fable", "--no-parent", "--print-config",
         ])).value as { resolved: Record<string, unknown> };
         const cli = expectStaticPlan(buildCliPlan([
           "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "claude",
-          "--preset", "hp_preview", "--model", "user/model", "--no-parent", "--print-config",
+          "--custom-provider", "Preview", "--model", "gateway/claude-fable", "--no-parent", "--print-config",
         ])).value as { launch: Record<string, unknown> };
 
         expect(chat.resolved.model).toBe("gateway/claude-fable");
@@ -17754,7 +17783,7 @@ describe("tracked CLI session titles follow the merged provider", () => {
     expect(
       argumentsOf([
         "shell", "start-cli", "shell", "--lane", "lane-1", "--no-parent",
-        "--arg", "provider=codex",
+        "--arg", "provider=codex", "--model", "openai/gpt-5.6-sol",
       ]).title,
     ).toBe("Codex");
   });
@@ -17768,7 +17797,7 @@ describe("tracked CLI session titles follow the merged provider", () => {
     expect(
       argumentsOf([
         "new", "chat", "--mode", "cli", "--lane", "lane-1", "--provider", "shell",
-        "--no-parent", "--arg", "provider=codex",
+        "--no-parent", "--arg", "provider=codex", "--model", "openai/gpt-5.6-sol",
       ]).title,
     ).toBe("Codex");
   });
@@ -17777,7 +17806,7 @@ describe("tracked CLI session titles follow the merged provider", () => {
     expect(
       argumentsOf([
         "shell", "start-cli", "shell", "--lane", "lane-1", "--title", "Deploy box",
-        "--no-parent", "--arg", "provider=codex",
+        "--no-parent", "--arg", "provider=codex", "--model", "openai/gpt-5.6-sol",
       ]).title,
     ).toBe("Deploy box");
     expect(

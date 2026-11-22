@@ -6,6 +6,7 @@ import {
 } from "../../../shared/claudePluginUi";
 import { showToast } from "../app/toast/toastStore";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * What Claude mods draw per chat, as last reported by the chat's host.
@@ -46,7 +47,7 @@ function refreshClaudeModUi(sessionId: string, pin: OpenProjectBinding | null | 
   const api = claudeModUiApi();
   if (!api) return;
   const startedAt = writeVersion.get(sessionId) ?? 0;
-  void api.get({ sessionId }, pin ?? null)
+  void withChatPin(pin ?? null, (chatPin) => api.get({ sessionId }, chatPin))
     .then((snapshot) => {
       if (snapshot && (writeVersion.get(sessionId) ?? 0) === startedAt) setClaudeModUi(sessionId, snapshot);
     })
@@ -75,6 +76,8 @@ export function useClaudeModUi(
   const pinKey = pin?.key ?? null;
   useEffect(() => {
     const api = typeof window === "undefined" ? undefined : window.ade?.agentChat;
+    // No known machine: no feed and no read.
+    if (!pin) return undefined;
     const unsubscribe = api?.onEvent?.((envelope) => {
       // Only the chat on screen: another chat's toast here would name no chat.
       if (envelope.sessionId !== sessionId || envelope.event.type !== "session_meta_updated") return;
@@ -93,7 +96,7 @@ export function useClaudeModUi(
           durationMs: toast.timeoutMs,
         });
       }
-    }, pin ?? null);
+    }, pin);
     refreshClaudeModUi(sessionId, pin);
     return unsubscribe;
     // The pin object is rebuilt on most renders; its key names the machine.

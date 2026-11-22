@@ -1,4 +1,6 @@
 import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isAccountAnsweredPin } from "../../../shared/adeCloud/binding";
+import { CloudGitAsOf } from "../adeCloud/CloudGitAsOf";
 import type { LaneDiffMode } from "../../../shared/types";
 import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, CheckCircle, DotsThree, Folder, GitBranch, GitCommit, GitMerge, Minus, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
@@ -9,7 +11,13 @@ import {
 } from "../../state/appStore";
 import { trackPendingLaneCreate } from "../../lib/pendingLaneCreates";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
-import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
+import {
+  requestCrossMachineLanesForMachine,
+  selectOtherMachineBranchStates,
+  useLanesForPin,
+  usePinTargetsTab,
+} from "../../state/crossMachineLanes";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { plainLaneStartBranch } from "../../../shared/laneStart";
 import { laneCompareBase, laneRebaseLine, type LaneRebaseLine } from "./laneRebaseNeeds";
@@ -232,7 +240,43 @@ function TruncatedChangesNotice({ total, noun, onShowAll }: { total: number; nou
   );
 }
 
-export function LaneGitActionsPane({
+type LaneGitActionsPaneOnMachineProps = React.ComponentProps<typeof LaneGitActionsPaneOnMachine>;
+
+/**
+ * The Git pane of one lane. `runtimePin` is the machine the lane lives on;
+ * every git, diff and file call goes there. Null: the lane has no machine
+ * online, so the pane shows that and calls nothing.
+ */
+export function LaneGitActionsPane(
+  props: Omit<LaneGitActionsPaneOnMachineProps, "runtimePin"> & { runtimePin: OpenProjectBinding | null },
+) {
+  if (!props.runtimePin) {
+    return (
+      <div
+        data-testid="lane-git-no-computer"
+        className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center text-sm"
+        style={{ color: COLORS.textMuted }}
+      >
+        <span style={{ color: COLORS.textSecondary }}>No computer with this lane is online.</span>
+        <span className="text-xs">Its git actions come back when that computer connects.</span>
+      </div>
+    );
+  }
+  // A lane whose ADE Cloud computer is at rest: the account answers from the summary it saved.
+  if (isAccountAnsweredPin(props.runtimePin)) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <CloudGitAsOf pin={props.runtimePin} laneId={props.laneId} />
+        <div className="min-h-0 flex-1">
+          <LaneGitActionsPaneOnMachine {...props} runtimePin={props.runtimePin} />
+        </div>
+      </div>
+    );
+  }
+  return <LaneGitActionsPaneOnMachine {...props} runtimePin={props.runtimePin} />;
+}
+
+function LaneGitActionsPaneOnMachine({
   laneId,
   active = true,
   rebaseLine,
@@ -249,7 +293,7 @@ export function LaneGitActionsPane({
   currentMachineName,
   currentMachineId,
   currentMachineHeadSha = null,
-  runtimePin = null,
+  runtimePin,
 }: {
   laneId: string | null;
   active?: boolean;
@@ -292,13 +336,11 @@ export function LaneGitActionsPane({
   /** This machine's head commit, when a caller knows it. Unknown is fine. */
   currentMachineHeadSha?: string | null;
   /**
-   * Machine this lane actually lives on. `null` (the default, and every
-   * pre-existing call site) means the tab's bound machine. When set, every
-   * git/diff read and write is routed there instead, and the panel's cached
-   * state is keyed on the pin so a tab switch never shows another machine's
-   * changes.
+   * The machine this lane lives on. Every git/diff read and write goes there,
+   * and the panel's cached state is keyed on it so a tab switch never shows
+   * another machine's changes.
    */
-  runtimePin?: OpenProjectBinding | null;
+  runtimePin: OpenProjectBinding;
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
@@ -311,7 +353,7 @@ export function LaneGitActionsPane({
   const crossMachineLanesByMachineId = useAppStore((s) => s.crossMachineLanesByMachineId ?? EMPTY_CROSS_MACHINE_LANES);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
-  const pin = runtimePin ?? null;
+  const pin = runtimePin;
   // Lane ids are only unique per machine, so a pinned panel gets its own cache
   // namespace. Always key through `projectStateKeyForBinding` of the effective
   // session machine: local stays on the checkout path across a bound→pinned
@@ -328,6 +370,7 @@ export function LaneGitActionsPane({
   // machine, so falling back there can match a different machine's lane and
   // drive git on the wrong checkout.
   const pinnedMachineLanes = useLanesForPin(pin);
+  const pinTargetsTab = usePinTargetsTab(pin);
   const pinnedLanes: LaneSummary[] = pinnedMachineLanes ?? lanes;
 
   const lane = useMemo(() => pinnedLanes.find((entry) => entry.id === laneId) ?? null, [pinnedLanes, laneId]);
@@ -528,12 +571,15 @@ export function LaneGitActionsPane({
   const refreshLaneGitState = useCallback(async (targetLaneId: string | null) => {
     await Promise.all([
       refreshChanges(targetLaneId),
-      // The global lane store belongs to the tab's bound machine. Refreshing it
-      // after a foreign lane's git action would be work for the wrong machine.
-      pin ? Promise.resolve() : refreshLanes({ includeStatus: true, includeSnapshots: false }),
+      // The global lane store belongs to the tab's bound machine. A foreign
+      // lane's row lives in the union instead, so ask for that machine's next
+      // (shared, coalesced) lane read. Without it the lane header kept the
+      // old dirty and ahead counts until the slow foreign cadence came round.
+      pinTargetsTab ? refreshLanes({ includeStatus: true, includeSnapshots: false }) : Promise.resolve(),
       refreshGitMeta(targetLaneId),
     ]);
-  }, [pin, refreshChanges, refreshGitMeta, refreshLanes]);
+    if (!pinTargetsTab && pin) requestCrossMachineLanesForMachine(machineIdForBinding(pin));
+  }, [pin, pinTargetsTab, refreshChanges, refreshGitMeta, refreshLanes]);
 
   const refreshAll = async (options?: { fetchRemote?: boolean }, targetLaneId: string | null = laneId) => {
     if (targetLaneId && options?.fetchRemote) {
@@ -1051,9 +1097,11 @@ export function LaneGitActionsPane({
           tone: "warning",
         });
       }
-      if (pin) {
-        // The new lane lives on the lane's machine, not in this tab's lane
-        // list or Lanes page, so stay here; it appears in that machine's list.
+      // The tab may have moved to another project while the lane was made.
+      const stillOnStartingTab = selectActiveProjectStateKey(useAppStore.getState()) === tabScopeKey;
+      if (!pinTargetsTab || !stillOnStartingTab) {
+        // The new lane is not in this tab's lane list or Lanes page now, so
+        // stay here; it appears in its own machine's list.
         patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
           busyAction: null,
           notice: warned ? null : `Created ${created.name} with a copy of these changes.`,
@@ -1085,6 +1133,8 @@ export function LaneGitActionsPane({
     laneId,
     navigate,
     pin,
+    pinTargetsTab,
+    tabScopeKey,
     lane?.branchRef,
     projectStateKey,
     refreshLanes,

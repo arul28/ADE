@@ -84,41 +84,26 @@ describe("buildComputerUseDirective", () => {
     // 2026-09-23: a plain "record opening Safari" quit the user's own Safari
     // with ⌘Q to get a "clean" start.
     const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }))!;
-    expect(result).toMatch(/Never close, quit, hide, minimize or reset an app or window you did not open/);
+    expect(result).toMatch(/never close, quit or hide an app you did not open/);
   });
 
-  // Screen guidance has a separate epoch-scoped directive. This block keeps
-  // proof capture host-specific without repeating the lane-screen announcement.
+  // The full manual (surfaces, browser profiles, proof commands, `--real-screen`)
+  // lives in ade-computer-use and ade-proof-artifacts; this block only what must
+  // hold before an agent opens them. What it must never lose is the fence around
+  // the user's own screen, and it must not name a host: a Windows brain's agent
+  // was once told it had a macOS screen.
   it.each([
-    { host: "Mac", options: { macDesktopAvailable: true }, proof: "`ade screen proof`", wrongHost: /Windows/ },
-    { host: "Windows", options: { windowsDesktopAvailable: true }, proof: "`ade screen proof`", wrongHost: /macOS|mac-desktop|Mac Desktop/ },
-  ])("keeps $host proof capture host-specific and fences the real-screen tools", ({ options, proof, wrongHost }) => {
+    { host: "Mac", options: { macDesktopAvailable: true } },
+    { host: "Windows", options: { windowsDesktopAvailable: true } },
+  ])("keeps the user's-screen fence and the skill pointer for a $host lane", ({ options }) => {
     const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), options)!;
-    expect(result).toContain(proof);
-    expect(result).not.toMatch(/This lane (?:can start its own private|has a private) (?:macOS|Windows) screen/);
-    expect(result).not.toMatch(wrongHost);
-    // The manual is the skill; the block names it before the first action.
     expect(result).toContain("**ade-computer-use**");
-    // Tools outside `ade` drive the user's real screen: only on request.
-    expect(result).toMatch(/`mcp__computer_use`[^\n]*drive the user's real screen/);
-    // Proof of desktop work is the lane screen. The user's screen is an explicit flag.
-    expect(result).toMatch(/capture the lane's screen/);
-    expect(result).toMatch(/--real-screen/);
-    expect(result).not.toMatch(/`ade proof capture` and `ade proof record` are refused/);
-  });
-
-  it("leaves lane-screen instructions to the epoch-scoped screen directive", () => {
-    const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), {
-      macDesktopAvailable: true,
-    })!;
-    expect(result).not.toMatch(/This lane (?:can start its own private|has a private) (?:macOS|Windows) screen/);
-  });
-
-  it("says nothing about a lane screen on a host that cannot give one", () => {
-    const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }))!;
-    expect(result).not.toContain("Mac Desktop");
-    expect(result).toMatch(/`ade proof capture` and `ade proof record` are refused/);
-    expect(result).toMatch(/--real-screen/);
+    expect(result).toMatch(/never close, quit or hide an app you did not open/);
+    expect(result).toContain("`@oai/sky`");
+    expect(result).toMatch(/only when asked/);
+    // No host name and no lane-screen claim: the lane screen has its own
+    // epoch-scoped directive.
+    expect(result).not.toMatch(/Windows|macOS|Mac Desktop|private screen/);
   });
 
   it("emits no directive when no artifact broker is attached", () => {
@@ -131,18 +116,23 @@ describe("buildComputerUseDirective", () => {
     expect(buildComputerUseDirective(null)).toBeNull();
   });
 
-  it("still describes the local fallback when it is the only capability", () => {
+  it("keeps the real-screen rules when the local fallback is the only capability", () => {
     const result = buildComputerUseDirective(
       makeBackendStatus({ ghostOs: false, agentBrowser: false, localFallback: true }),
     );
     expect(result).not.toBeNull();
     expect(result).toContain("Computer Use");
-    expect(result).toContain("get_computer_use_backend_status");
-    expect(result).toMatch(/\bnot exposed\b/i);
-    expect(result).toContain("Respect the backend the user requested");
     expect(result).toContain("mcp__computer_use");
-    expect(result).toContain("do not bootstrap `@oai/sky`");
-    expect(result).toContain("does not passively ingest");
+    expect(result).toContain("`@oai/sky`");
+    // With no external backend there is no backend status to read, so the
+    // directive does not send the agent looking for one.
+    expect(result).not.toContain("get_computer_use_backend_status");
+  });
+
+  it("asks for the requested backend's status only when an external backend exists", () => {
+    const result = buildComputerUseDirective(makeBackendStatus({ ghostOs: true }))!;
+    expect(result).toContain("get_computer_use_backend_status");
+    expect(result).toContain("Respect the backend the user requested");
   });
 
   it("gives one rendering one fingerprint, and a changed capability set a new one", () => {
@@ -168,21 +158,14 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("ghost_annotate");
   });
 
-  it("includes ADE Local fallback section when local fallback is enabled", () => {
-    const status = makeBackendStatus({ localFallback: true });
-    const result = buildComputerUseDirective(status);
-    expect(result).toContain("ADE Local (Fallback)");
-    expect(result).toContain("Proof Capture");
-  });
-
-  it("always includes Proof Capture section when directive is non-null", () => {
+  it("always names the skill that carries the proof workflow instead of inlining it", () => {
     const status = makeBackendStatus({ ghostOs: true });
     const result = buildComputerUseDirective(status);
-    expect(result).toContain("Proof Capture");
-    expect(result).toContain("ade proof");
-    expect(result).toContain("ingest_computer_use_artifacts");
-    expect(result).toContain("capture visual proof first");
-    expect(result).toMatch(/\bsupporting diagnostics\b/i);
+    expect(result).toContain("**ade-computer-use**");
+    // The proof commands, the `cite:` rule and `--real-screen` live in
+    // ade-computer-use and ade-proof-artifacts; the `## ADE` image line points
+    // at the proof skill on every prompt.
+    expect(result).not.toContain("ingest_computer_use_artifacts");
   });
 });
 

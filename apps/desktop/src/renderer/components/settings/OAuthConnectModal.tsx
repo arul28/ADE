@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle, Copy, Info } from "@phosphor-icons/react";
 import type {
   OpenCodeProviderAuthMethod,
   OpenCodeProviderAuthPrompt,
@@ -12,8 +11,16 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { Dialog, type DialogAction } from "../ui/dialog";
-import { Banner } from "../ui/notice";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { providerBrand, providerThemeVars } from "./providers/providerBrand";
+import { formatSignInFailureReport } from "./providers/providerDiagnosticsReport";
+import {
+  SignInAccountNote,
+  SignInCodePanel,
+  SignInFailure,
+  SignInSteps,
+  useEnterOpensSignInPage,
+} from "./providers/signInSheetParts";
 
 const CODE_PATTERN = /[A-Z0-9]{4,}-[A-Z0-9]{4,}/;
 const OPEN_TARGET_STORAGE_KEY = "ade.opencode.oauthOpenTarget";
@@ -162,6 +169,9 @@ export function OAuthConnectModal({
   const visiblePrompts = prompts.filter((prompt) => promptVisible(prompt, inputs));
   const deviceCode = extractDeviceCode(startResult?.instructions);
   const host = extractHost(startResult?.url);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  // Enter opens the sign-in page (and copies the code) while ADE waits.
+  useEnterOpensSignInPage(rootRef, phase === "waiting" ? startResult?.url ?? null : null, deviceCode, openExternalUrl);
 
   // Tracks whether a backend flow is in flight so unmount can cancel it —
   // in-modal close paths cancel explicitly, but a parent unmount (nav away,
@@ -257,17 +267,6 @@ export function OAuthConnectModal({
     onClose();
   };
 
-  const copyCode = async () => {
-    const text = deviceCode ?? startResult?.instructions ?? "";
-    if (!text) return;
-    await copyText(text, "code");
-  };
-
-  const copyUrl = async () => {
-    if (!startResult?.url) return;
-    await copyText(startResult.url, "url");
-  };
-
   const labelStyle: React.CSSProperties = {
     fontSize: 10,
     fontFamily: MONO_FONT,
@@ -319,28 +318,7 @@ export function OAuthConnectModal({
           },
         ]
       : phase === "waiting"
-        ? [
-            ...(startResult?.url
-              ? [{
-                  label: isCopied("url") ? "Link copied" : "Copy link",
-                  icon: isCopied("url") ? <CheckCircle size={13} weight="fill" /> : <Copy size={13} weight="bold" />,
-                  onClick: () => void copyUrl(),
-                  variant: "secondary" as const,
-                }]
-              : []),
-            ...(deviceCode || startResult?.instructions
-              ? [{
-                  label: isCopied("code") ? "Code copied" : "Copy code",
-                  icon: isCopied("code") ? <CheckCircle size={13} weight="fill" /> : <Copy size={13} weight="bold" />,
-                  onClick: () => void copyCode(),
-                  variant: "secondary" as const,
-                }]
-              : []),
-            ...(startResult?.url
-              ? [{ label: "System browser", onClick: () => openExternalUrl(startResult.url), variant: "secondary" as const }]
-              : []),
-            cancelAction,
-          ]
+        ? [cancelAction]
         : [
             { label: "Close", onClick: () => void handleCancel(), variant: "secondary" },
             { label: "Try again", onClick: resetToForm, variant: "solid" },
@@ -362,10 +340,24 @@ export function OAuthConnectModal({
       maxHeight="85vh"
       preventAutoFocus
       bodyStyle={{ display: "flex", flexDirection: "column", gap: 14 }}
+      panelStyle={providerThemeVars(providerBrand("opencode"))}
       actions={footerActions}
     >
+      <div className="ade-sis" data-compact="true" ref={rootRef} style={{ gap: 14 }}>
       {phase === "error" ? (
-        <Banner layout="inline" model={{ id: "oauth-connect-error", tone: "error", title: errorMessage ?? "" }} />
+        <SignInFailure
+          title={errorMessage ?? "Sign-in failed."}
+          report={formatSignInFailureReport({
+            provider: `opencode/${providerId}`,
+            providerLabel: `OpenCode: ${providerName}`,
+            place: "the computer this page shows",
+            stage: startResult?.url ? "after the sign-in page opened" : "before the sign-in page opened",
+            title: errorMessage ?? "Sign-in failed.",
+            detail: null,
+            output: startResult?.instructions ?? null,
+            secrets: [deviceCode, startResult?.url],
+          })}
+        />
       ) : null}
 
       {phase === "form" || phase === "starting" ? (
@@ -437,6 +429,7 @@ export function OAuthConnectModal({
             </select>
           </label>
 
+          <SignInAccountNote providerLabel={providerName} expectedAccount={null} />
           <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
             OpenCode completes sign-in on the machine running the runtime. This dialog closes automatically after approval.
           </div>
@@ -445,108 +438,74 @@ export function OAuthConnectModal({
 
       {phase === "waiting" ? (
         <>
-          <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, lineHeight: 1.5 }}>
-            {waitingHint}
-          </div>
+          <SignInAccountNote providerLabel={providerName} expectedAccount={null} />
+          <SignInSteps stage="waiting">
+            <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary, lineHeight: 1.5 }}>
+              {waitingHint}
+            </div>
 
-          {deviceCode ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span style={labelStyle}>Enter this code</span>
-              <div
+            <SignInCodePanel
+              url={startResult?.url ?? null}
+              deviceCode={deviceCode}
+              open={openExternalUrl}
+              hint={deviceCode ? "Check that the page shows this code, then approve." : null}
+            />
+
+            {!deviceCode && startResult?.instructions ? (
+              <code
                 style={{
-                  fontSize: 26,
+                  display: "block",
+                  fontSize: 11,
                   fontFamily: MONO_FONT,
-                  letterSpacing: "6px",
-                  fontWeight: 700,
-                  color: COLORS.textPrimary,
+                  color: COLORS.textSecondary,
                   background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)",
                   border: `1px solid ${COLORS.border}`,
-                  padding: "12px 14px",
-                  textAlign: "center",
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  overflowWrap: "anywhere",
+                  whiteSpace: "pre-wrap",
                 }}
               >
-                {deviceCode}
-              </div>
-            </div>
-          ) : startResult?.instructions ? (
-            <code
-              style={{
-                display: "block",
-                fontSize: 11,
-                fontFamily: MONO_FONT,
-                color: COLORS.textSecondary,
-                background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)",
-                border: `1px solid ${COLORS.border}`,
-                padding: "10px 12px",
-                overflowWrap: "anywhere",
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {startResult.instructions}
-            </code>
-          ) : null}
-
-          {startResult?.url ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <span style={labelStyle}>Sign-in link</span>
-                <button
-                  type="button"
-                  style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 12 }), border: "none" }}
-                  onClick={() => setShowFullUrl((v) => !v)}
-                >
-                  {showFullUrl ? "Hide" : "View full link"}
-                </button>
-              </div>
-              {showFullUrl ? (
-                <code
-                  style={{
-                    display: "block",
-                    fontSize: 11,
-                    fontFamily: MONO_FONT,
-                    color: COLORS.textSecondary,
-                    background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)",
-                    border: `1px solid ${COLORS.border}`,
-                    padding: "10px 12px",
-                    overflowWrap: "anywhere",
-                    wordBreak: "break-all",
-                  }}
-                >
-                  {startResult.url}
-                </code>
-              ) : null}
-            </div>
-          ) : null}
-
-          <ol style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
-            <li style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-              Approve the request in the sign-in page.
-            </li>
-            {deviceCode ? (
-              <li style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                Confirm the code above matches.
-              </li>
+                {startResult.instructions}
+              </code>
             ) : null}
-            <li style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-              Return here — this closes automatically once approved.
-            </li>
-          </ol>
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              fontSize: 11,
-              fontFamily: MONO_FONT,
-              color: COLORS.info,
-            }}
-          >
-            <Info size={14} weight="fill" />
-            Waiting for approval…
-          </div>
+            {startResult?.url ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <span style={labelStyle}>Sign-in link</span>
+                  <button
+                    type="button"
+                    style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 12 }), border: "none" }}
+                    onClick={() => setShowFullUrl((v) => !v)}
+                  >
+                    {showFullUrl ? "Hide" : "View full link"}
+                  </button>
+                </div>
+                {showFullUrl ? (
+                  <code
+                    style={{
+                      display: "block",
+                      fontSize: 11,
+                      fontFamily: MONO_FONT,
+                      color: COLORS.textSecondary,
+                      background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)",
+                      border: `1px solid ${COLORS.border}`,
+                      borderRadius: 8,
+                      padding: "10px 12px",
+                      overflowWrap: "anywhere",
+                      wordBreak: "break-all",
+                    }}
+                  >
+                    {startResult.url}
+                  </code>
+                ) : null}
+              </div>
+            ) : null}
+          </SignInSteps>
         </>
       ) : null}
+      </div>
     </Dialog>
   );
 }

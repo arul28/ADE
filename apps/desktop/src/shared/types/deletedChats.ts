@@ -25,7 +25,23 @@ export type DeletedChat = {
   createdAt: string | null;
   lastActiveAt: string | null;
   deletedAt: string;
+  /**
+   * `cli`: a deleted agent CLI terminal (Claude Code, Codex, …). Reopen
+   * relaunches the CLI in its lane instead of opening a chat. Absent (a chat)
+   * on older hosts.
+   */
+  kind?: DeletedSessionKind;
+  /** CLI only: the terminal's tool type (`claude`, `codex`, `cursor-cli`, …). */
+  toolType?: string | null;
+  /**
+   * CLI only: Reopen resumes the CLI's own conversation. False when ADE never
+   * learned the conversation id or the agent no longer has it; Reopen then
+   * starts a fresh CLI in the lane and says so.
+   */
+  resumable?: boolean;
 };
+
+export type DeletedSessionKind = "chat" | "cli";
 
 export type DeletedChatListArgs = {
   /** Text to match against the title and lane name. */
@@ -49,11 +65,21 @@ export type DeletedChatReopenArgs = {
 };
 
 export type DeletedChatReopenResult = {
+  /** The reopened chat, or for a CLI the terminal session it relaunched in. */
   chatSessionId: string;
   laneId: string;
-  /** `continue`: picks up the same conversation. `copy`: a copy in another lane. */
-  mode: "continue" | "copy";
-  chatSummary: AgentChatSessionSummary;
+  /**
+   * `continue`: picks up the same conversation. `copy`: a copy in another
+   * lane. `fresh` (CLI only): ADE could not resume the CLI's conversation, so
+   * a new CLI started in the lane.
+   */
+  mode: "continue" | "copy" | "fresh";
+  /** Absent for a CLI, which reopens as a terminal session, not a chat. */
+  chatSummary?: AgentChatSessionSummary;
+  /** `cli` when a deleted agent CLI was relaunched. Absent for a chat. */
+  kind?: DeletedSessionKind;
+  /** CLI only: why the CLI started fresh, said to the person. */
+  notice?: string | null;
 };
 
 export type DeletedChatRemoveArgs = {

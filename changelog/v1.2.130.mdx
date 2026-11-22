@@ -1,43 +1,106 @@
 ---
 title: "v1.2.130"
-description: "Release notes for ADE v1.2.130 - November 10, 2026"
+description: "Release notes for ADE v1.2.130 - November 18, 2026"
 ---
 
-ADE 1.2.130 brings the desktop app to Linux, adds a schedule that changes ADE's whole look by time of day, and lets outside bots drive ADE over MCP.
+ADE 1.2.130 makes ADE Cloud one machine that every account has, so ADE works with no computer of your own. Each cloud lane gets its own computer, and its work is saved before the computer rests. This release also adds the Linux desktop app, Passwords for agents, a CTO that remembers, and one project tab that shows every computer's work.
 
 ## New
 
-- ADE has a desktop app for Linux, as a `.deb` and an AppImage for x64 and ARM, on Ubuntu 22.04, Debian 12 or newer (#2137, #2150).
-- Settings › Appearance has a Schedule that changes the theme, background and fonts by time of day (#2153).
-- Claude Fable 5.2 leads the Claude list, and the CLI, MCP and agents name models by their full names (#2148).
-- Outside bots can drive ADE over MCP, with chat ids that resolve, events and webhooks, full chat start, files and readable proof (#2145).
-- File links in chats open the file, PRs get writing help, and settled chats can release their lanes (#2147).
-- New lanes are created in the background, so you can keep working while one is set up (#2149).
-- The MCP catalogue has 23 more servers, including Zapier, Make, Todoist and Airtable (#2159).
+- ADE Cloud is one machine that every signed-in account has, in every machine list and every "Run on" menu on desktop, web and iPhone, so ADE works fully with no computer of your own (#2332, #2319, #2139, #2135, #2310).
+- Pick ADE Cloud, send a message, and ADE makes a computer for that lane; you can also start cloud work from the web, the iPhone and the CLI (#2173, #2201, #2255, #2314, #2321, #2308).
+- ADE Cloud saves each lane's work before its computer rests, so cleanups never wake a computer, and a new computer gets that work back (#2340, #2343).
+- ADE Cloud plans are Free, Plus, Pro and Max, with extra hours, extra disk, idle cleanup and a question before a downgrade removes anything (#2164, #2234, #2230).
+- The ADE Cloud page is redesigned, with a Stripe return page, a visible approval when a computer joins, an invite card and cost alerts (#2241, #2177).
+- ADE desktop runs on Linux, with AppImage and .deb releases (#2137, #2150, #2278).
+- Passwords holds logins, codes, passkeys and secrets that agents use but never see; it is on by default and your old Secrets move in without a prompt (#2237, #2259).
+- The CTO is one agent per project that remembers across model switches, shows what it is doing, and lives on a machine you choose (#2295, #2301).
+- A project tab is the repository and shows the lanes, chats, CLI sessions and shells of every connected computer at once (#2205, #2247, #2216, #2218, #2219, #2229, #2185).
+- Any computer can use any other: an agent can reach another machine's screen, App Control and long builds, and the Tools pane is redesigned around real tool tiles (#2238, #2252, #2257, #2258).
+- You sign in to a provider once per account, and the sign-in follows you to every computer and to ADE Cloud, with one sign-in sheet and a card above the prompt box (#2171, #2172, #2341).
+- Antigravity runs on Google's `agy` CLI, with terminals and sign-in from any computer (#2195).
+- Phones and ADE Web can update your other machines, with Update and Update all (#2330).
+- Lane sharing is simpler: a guest uses the real chat, and an invite opens the lane in one step (#2236, #2220, #2165).
+- Automation rules follow your ADE account, and one computer runs each rule (#2161).
+- GPT-6.2 models, a newer Codex, and Implement a plan in a new chat are in Work (#2335, #2127).
+- Claude Fable 5.2 leads the Claude list, and requests name models by their full name (#2148, #2126).
+- Cursor chats support /compact and recover after a crash (#2130).
+- The MCP catalogue has 23 more servers, and outside bots can drive ADE through MCP (#2159, #2145).
+- File links open, ADE helps write PRs, and you can release settled chats to save memory (#2147, #2149).
+- GitHub access follows your ADE account on every computer (#2197, #2203, #2208).
+- ADE can switch between light and dark mode on a schedule (#2153).
+- CLI sessions work like chats, the CLI box takes @ mentions, and agent CLI sessions reopen after ADE stops without warning (#2200, #2226, #2217).
+- A chat with an active PR watch reads Shipping, not Done (#2142).
+- GitHub reminders and lane labels in Work help you find what needs you (#2138).
+- ADE Web has its own sign-in page, opens chat links faster, shows a Connections panel and CLI terminals, and keeps your project across restarts (#2313, #2231, #2167, #2242).
+- Sessions from Claude and Codex account homes, and from Droid, Grok, Kimi and Pi folders, can be imported (#2233, #2239).
+- Agents can read, preview, list and watch any terminal and read any session's transcript (#2272, #2276, #2277).
 
 ## Improved
 
-- A chat with an active PR watch reads Shipping instead of Done (#2142).
-- Short `ade` commands start faster (#2143).
-- Cursor is on SDK 1.3.1, with `/compact` and chats that recover after a crash (#2130).
-- Claude is on 0.3.319 and automations no longer wait on a card, and Codex is on 0.167.0 (#2126, #2127).
-- Work groups show each session's lane, including sessions on other machines (#2138).
-- GitHub setup reminders stay dismissed per repository, and Settings can bring them back (#2138).
+- An agent asks before it removes a computer, and What's new seen state follows your account (#2223).
+- New users get a short tour inside their first project, and What's new, tips and surveys share one quiet budget that follows your account across devices (#2350).
+- ADE starts faster, idles quieter, starts short commands sooner, and lets you type in a new chat sooner (#2302, #2309, #2327, #2143, #2166).
+- ADE works on a slow or dropping link to another machine, and deleting a lane there works on a slow link (#2325, #2323).
+- A chat cut by a cloud computer's restart continues at once, and a turn cut by Sleep reads Stopped (#2324, #2347).
+- Cloud setup no longer freezes, grows the disk for a heavy repo, moves to Medium when memory runs out, and names the computer after the lane (#2317, #2260, #2266, #2261, #2267, #2270, #2279).
+- Chats continue after a brain crash, and chats end when ADE's background service stops (#2224, #2328).
+- A project on a slow drive no longer makes ADE restart in a loop (#2184, #2212).
+- Every launch names its model, and a cloud launch with no model takes the provider's default (#2299, #2298).
+- Codex runs shell commands and reaches the network in cloud computers and in every chat mode (#2271, #2274, #2297).
+- `gh` works on cloud computers, and `gh` says ADE's token was unreachable instead of asking you to run `gh auth login` (#2273, #2286).
+- The browser looks like Chrome, its cards never freeze the page, and remote tabs are viewable (#2215).
+- Idle simulators free memory when the computer runs short, and no Simulator window pops up (#2246, #2252).
+- The CLI names cloud computers, `shell --wait` ends, and lanes show their machine (#2346).
+- Cloud machines work in the web app with lanes, files, terminals, true states and Wake (#2110, #2109).
+- Cloud lane lists, Droid sign-in and the Settings link work, and ADE Cloud images build again (#2349).
 
 ## Fixed
 
-- Chats come back on their own after an update, and failed connections leave a trail (#2133).
-- Deleting a lane keeps its unsaved work, and the Storage rules page is clearer (#2115).
-- Git, PR and chat reliability fixes across ADE (#2144).
-- Agent tool safety, storage cleanup and lost chat messages are fixed (#2141).
-- Open Sentry and PostHog issues are fixed, including Codex approvals, Windows updates and iOS launch (#2154).
-- Image paste into a remote shell works (#2149).
-- Import menu dropdowns stay above the dialog (#2155).
-- Quick commands on cloud machines keep their output, and cloud machines work in the web app (#2109, #2110).
-- `ade` no longer opens another ADE install's home as a project, such as a Windows profile seen from WSL (#2157, #2160).
-- The color picker stays inside the window (#2156).
+- Chats come back on their own after an update, and a failed connection leaves a trail (#2133).
+- Retry on a failed turn finds its message as soon as the row shows (#2263).
+- A project opened on purpose is a copy in a hidden folder, never in a tool's folder (#2211).
+- A test brain can't hold your chat, and the brain rides out an overloaded Mac (#2227).
+- A short list of small fixes: dropdowns, GitHub sign-in text, usage banked on another machine, corner cards and the sync port (#2155, #2250, #2243, #2221, #2214).
+- Open Sentry and PostHog issues are fixed before launch, including Codex approvals, Windows updates, a hung drive, Kimi noise, action-call crashes and a missing ADE Cloud project id (#2154, #2176, #2342, #2343, #2240, #2180).
+- Pre-launch hardening covers webhooks, cloud reads and the spend cap (#2338).
+- A computer move keeps each agent's own session (#2345).
+- ADE never recreates a deleted project's folder, and a missing or non-Git folder shows its own screen (#2348).
+- A deleted computer leaves the account's machine list, and a launch whose computer was deleted ends instead of reading as running (#2322, #2320, #2294).
+- Deleting a lane also deletes its saved chats, and a batch delete never loses a lane's unsaved work (#2308, #2115).
+- A row's detail card no longer opens over the composer you are typing into (#2337).
+- Queued messages wait for the running turn, and web and phone launches join (#2321).
+- A turn started on another machine shows live after a wake, and a cloud computer with no saved chat wakes on send (#2290).
+- Launch options and OpenCode sessions stay on the right machine (#2305).
+- A chat's work on other machines survives a restart, and archiving a lane cleans it up (#2275, #2252).
+- A review request toast stays dismissed (#2183).
+- CLI background agents keep the row working, and the shortcuts for new chat and What's new never take your typing (#2222).
+- ADE's PATH survives Debian login shells, and ADE starts on older Linux (#2278, #2150).
+- Clone works on Windows, remote machines work over SSH, and chat history loads (#2176).
+- Lane and chat reliability fixes cover Git, PRs, agent tool safety, storage cleanup and lost chat messages (#2141, #2144).
+- A send that wakes a cloud computer reaches the right project, and a clone keeps its computer awake (#2162, #2151).
+- A second clone joins the first, and the app knows its cloud computers without the Connections pane (#2156).
+- ADE never opens another install's home as a project (#2157, #2160).
+- ADE Web offers only the cloud lane changes it can make, and new cloud lanes start on the stable image once it is ready (#2351).
+- Freeing a cloud lane's computer shows its progress, size cards say how far each disk grows, and a deleted cloud computer's sign-in reads ADE Cloud (#2354).
+- A freed cloud lane whose branch never reached GitHub starts again on a new computer, and a message waiting for that computer shows once (#2355).
+- A chat's error stays on that chat instead of following you to the next chat you open (#2356).
+- A file sent to a resting cloud chat reaches its computer, also when the chat moves to a new computer (#2357).
+- A freed cloud lane that gets a new computer brings its chats back with it (#2358).
+- More small fixes: a transcript that didn't load can be reported, a lost reply no longer breaks a machine's pairing, Manage lane works on a local lane, agent terminal previews are plain text, custom harness thinking levels follow their model, a prompt with no topic gets a plain lane name, and cloud resizes, retries and Settle report correctly (#2344, #2334, #2228, #2288, #2179, #2296, #2291, #2293, #2251, #2209, #2312).
 
-## Linux
+## iOS
 
-- The AppImage updates itself, and the `.deb` links the new download. On Ubuntu 24.04 and newer, use the `.deb` (#2137).
-- A failed tool download no longer fails a Linux build, and a build that needs too new a system can't ship (#2150).
+- The Hub lists your account's projects, removes them like the desktop, and shows one line after a crash (#2225, #2202).
+- Account projects work on the iPhone, with GitHub, Use for new lanes and Publish to GitHub (#2204, #2210, #2245).
+- You can open CLI sessions on any computer, and Settings and Account match the desktop (#2168).
+- The Hub header sits beside the clock on a Duo, and an invite card and code box are on the phone (#2175).
+- A port sweep learns which computer answers before the pairing secret goes there, and sign-out clears the rest (#2292).
+- A live drop after backgrounding is a breadcrumb, not a Sentry issue (#2303).
+- ADE Cloud works on the iPhone: start a cloud chat with images, send text and images to a sleeping lane, manage a lane's computer and delete a lane (#2353).
+- A project card opens on a connected computer before it wakes a cloud copy, and a deleted computer's project opens on a copy that still exists (#2353).
+- Typing in the CLI message box stays fast while the CLI prints (#2326).
+
+## Windows
+
+- The `gh` shim keeps its PATH and environment, replaces files atomically with a retry, and Git Credential Manager never prompts in agent sessions (#2206).

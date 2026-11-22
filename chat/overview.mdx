@@ -14,7 +14,7 @@ Agent chat is ADE's interactive coding surface. You open a chat in a lane, descr
 
 Every chat binds to a lane — a git worktree and branch — and that worktree is the agent's boundary. The lane's branch and working directory are injected into the agent's context, so it always knows where it is. File edits and mutating commands stay inside the lane's worktree; the agent can read outside it for context when it needs to, but it writes only inside the lane unless ADE relaunches it elsewhere.
 
-Because work is isolated per lane, several agents can run in the same repository at once without writing over each other or your primary checkout.
+Because work is isolated per lane, several agents can run in the same repository at once without writing over each other or your main checkout.
 
 ## Start a chat or a CLI session
 

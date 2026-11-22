@@ -243,6 +243,10 @@ enum WorkChatInputAttachmentState: Equatable {
   case loading
   case ready
   case failed(String)
+  /// The bytes are here but the background upload failed: a tap uploads them
+  /// again. Its own case, so retry never depends on the message's wording;
+  /// the tile shows `workChatAttachmentUploadFailedMessage`.
+  case uploadFailed
 }
 
 struct WorkChatInputAttachment: Identifiable {
@@ -290,9 +294,19 @@ struct WorkChatInputAttachment: Identifiable {
     return false
   }
 
+  /// A background upload that failed, with the bytes still here to try again.
+  var isUploadFailed: Bool {
+    if case .uploadFailed = state { return uploadData != nil }
+    return false
+  }
+
+  /// What the tile says went wrong; display only.
   var errorMessage: String? {
-    if case .failed(let message) = state { return message }
-    return nil
+    switch state {
+    case .failed(let message): return message
+    case .uploadFailed: return workChatAttachmentUploadFailedMessage
+    case .loading, .ready: return nil
+    }
   }
 }
 
@@ -477,6 +491,18 @@ func workChatStageAttachmentOnHost(
 }
 
 @MainActor
+/// The staged files' bytes for a message the account holds (a sleeping ADE
+/// Cloud chat). A file restored from a saved draft has no bytes on the phone.
+func workChatCloudQueuedFiles(_ attachments: [WorkChatInputAttachment]) throws -> [CloudQueuedFile] {
+  try workChatInputReadyAttachments(attachments).map { attachment in
+    guard let data = attachment.uploadData ?? attachment.image?.jpegData(compressionQuality: 0.85) else {
+      throw NSError(domain: "ADE", code: 47, userInfo: [NSLocalizedDescriptionKey: "\(attachment.filename) isn't on this phone anymore. Attach it again."])
+    }
+    let contentType = attachment.uploadData == nil ? "image/jpeg" : attachment.mimeType
+    return CloudQueuedFile(name: attachment.filename, contentType: contentType, data: data)
+  }
+}
+
 func workChatSaveInputAttachments(
   _ attachments: [WorkChatInputAttachment],
   syncService: SyncService,
@@ -639,22 +665,45 @@ private func workChatRenderedJPEGImage(_ image: UIImage, maxDimension: CGFloat) 
   }
 }
 
+/// The images-only photo picker filter, read off the main thread.
+///
+/// PhotosUI sets up `PHPickerFilter.images` once, the first time anything
+/// reads it. Read in a view body on the main thread, that setup held the app
+/// for 11-12 seconds (Sentry 7840398384). A picker asks for it here when it is
+/// about to open and opens once it has it; after the first read it is instant.
+enum ADEPhotoPickerFilter {
+  private static let imagesTask = Task.detached(priority: .userInitiated) { PHPickerFilter.images }
+
+  static func images() async -> PHPickerFilter {
+    await imagesTask.value
+  }
+}
+
 private struct WorkChatAttachmentPickerModifier: ViewModifier {
   @Binding var isPresented: Bool
   @Binding var attachments: [WorkChatInputAttachment]
   let onDismiss: () -> Void
 
   @State private var pickerItems: [PhotosPickerItem] = []
+  /// Nil until the first open asks for it; the picker shows once it is set.
+  @State private var imageFilter: PHPickerFilter?
 
   func body(content: Content) -> some View {
     content
       .photosPicker(
-        isPresented: $isPresented,
+        isPresented: Binding(
+          get: { isPresented && imageFilter != nil },
+          set: { isPresented = $0 }
+        ),
         selection: $pickerItems,
         maxSelectionCount: max(1, workChatInputAttachmentLimit - attachments.count),
-        matching: .images,
+        matching: imageFilter,
         preferredItemEncoding: .automatic
       )
+      .task(id: isPresented) {
+        guard isPresented, imageFilter == nil else { return }
+        imageFilter = await ADEPhotoPickerFilter.images()
+      }
       .onChange(of: pickerItems) { _, newItems in
         guard !newItems.isEmpty else { return }
         pickerItems = []
@@ -678,16 +727,31 @@ private struct WorkChatAttachmentPickerModifier: ViewModifier {
         state: .loading
       ))
       do {
-        guard let data = try await item.loadTransferable(type: Data.self),
-              let image = UIImage(data: data) else {
+        guard let data = try await item.loadTransferable(type: Data.self) else {
           markAttachment(id: id, failed: "This image could not be read.")
           continue
         }
-        guard let attachment = workChatInputAttachment(from: image, filename: fallbackName, id: id) else {
+        // Decoding a full camera photo and re-encoding it as JPEG (up to five
+        // qualities per size) takes seconds; keep it off the main thread.
+        let encoded = await Task.detached(priority: .userInitiated) { () -> WorkChatEncodedPickedImage in
+          guard let image = UIImage(data: data) else { return .unreadable }
+          guard let encoded = workChatJPEGDataForUpload(image) else { return .tooLarge }
+          return .ready(image: encoded.image, data: encoded.data)
+        }.value
+        switch encoded {
+        case .unreadable:
+          markAttachment(id: id, failed: "This image could not be read.")
+        case .tooLarge:
           markAttachment(id: id, failed: "This image is too large to upload.")
-          continue
+        case .ready(let image, let data):
+          replaceAttachment(id: id, with: WorkChatInputAttachment(
+            id: id,
+            image: image,
+            uploadData: data,
+            filename: fallbackName,
+            state: .ready
+          ))
         }
-        replaceAttachment(id: id, with: attachment)
       } catch is CancellationError {
         attachments.removeAll { $0.id == id }
       } catch {
@@ -710,6 +774,12 @@ private struct WorkChatAttachmentPickerModifier: ViewModifier {
     guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
     attachments[index].state = .failed(message)
   }
+}
+
+private enum WorkChatEncodedPickedImage: Sendable {
+  case unreadable
+  case tooLarge
+  case ready(image: UIImage, data: Data)
 }
 
 extension View {
@@ -765,6 +835,21 @@ struct WorkChatInputAttachmentTray: View {
 
   var body: some View {
     trayContent
+      // A background upload that failed shows on its tile right away, not at send.
+      .onReceive(NotificationCenter.default.publisher(for: .workComposerAttachmentUploadFailed)) { note in
+        guard let id = note.userInfo?["id"] as? UUID,
+              let index = attachments.firstIndex(where: { $0.id == id }),
+              attachments[index].isReady,
+              attachments[index].hostRef == nil
+        else { return }
+        attachments[index].state = .uploadFailed
+      }
+      // An upload that failed while this chat was not on screen posted a
+      // notification nobody heard, and the draft kept the tile `.ready`. The
+      // tracker still holds that failure, so a restored tile shows it with Retry.
+      .onChange(of: attachments.map(\.id), initial: true) { _, _ in
+        markStoredUploadFailures()
+      }
       .onChange(of: openRequest?.wrappedValue) { _, requested in
         guard let requested else { return }
         openRequest?.wrappedValue = nil
@@ -829,7 +914,11 @@ struct WorkChatInputAttachmentTray: View {
         HStack(spacing: 8) {
           ForEach(attachments) { attachment in
             WorkChatInputAttachmentThumb(attachment: attachment) {
-              open(attachment)
+              if canRetryUpload(attachment) {
+                retryUpload(attachment)
+              } else {
+                open(attachment)
+              }
             } onRemove: {
               attachments.removeAll { $0.id == attachment.id }
             }
@@ -843,6 +932,28 @@ struct WorkChatInputAttachmentTray: View {
       .accessibilityElement(children: .contain)
       .accessibilityLabel(attachmentCountLabel)
     }
+  }
+
+  /// A tile whose background upload failed still holds its bytes: a tap
+  /// uploads it again (the composer's upload task starts once it is `.ready`).
+  private func canRetryUpload(_ attachment: WorkChatInputAttachment) -> Bool {
+    attachment.isUploadFailed
+  }
+
+  private func markStoredUploadFailures() {
+    let uploads = WorkComposerAttachmentUploads.shared
+    for index in attachments.indices
+    where attachments[index].isReady
+      && attachments[index].hostRef == nil
+      && uploads.failure(for: attachments[index].id) != nil {
+      attachments[index].state = .uploadFailed
+    }
+  }
+
+  private func retryUpload(_ attachment: WorkChatInputAttachment) {
+    guard let index = attachments.firstIndex(where: { $0.id == attachment.id }) else { return }
+    WorkComposerAttachmentUploads.shared.retry(attachment.id)
+    attachments[index].state = .ready
   }
 
   /// Images keep the existing full-screen image sheet; documents and videos get
@@ -935,6 +1046,12 @@ private struct WorkChatInputAttachmentThumb: View {
               .scaledToFill()
               .frame(width: side, height: side)
               .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+              .opacity(attachment.errorMessage == nil ? 1 : 0.45)
+            if attachment.errorMessage != nil {
+              Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(ADEColor.warning)
+            }
           } else if attachment.kind != .image, attachment.errorMessage == nil, !attachment.isLoading {
             documentFace
           } else {
@@ -995,7 +1112,7 @@ private struct WorkChatInputAttachmentThumb: View {
       Image(systemName: "photo")
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.textSecondary)
-    case .failed:
+    case .failed, .uploadFailed:
       Image(systemName: "photo.badge.exclamationmark")
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.warning)
@@ -1010,6 +1127,8 @@ private struct WorkChatInputAttachmentThumb: View {
       return "Open attached image"
     case .failed(let message):
       return "Image failed. \(message)"
+    case .uploadFailed:
+      return "Image failed. \(workChatAttachmentUploadFailedMessage)"
     }
   }
 }
@@ -1223,7 +1342,7 @@ private struct WorkChatAttachmentChip: View {
           Image(systemName: loadFailed ? "photo.badge.exclamationmark" : "photo")
             .font(.system(size: 18, weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.82))
-          Text(loadFailed ? "On desktop" : (isUploading ? "Sending" : "Image"))
+          Text(loadFailed ? "No preview" : (isUploading ? "Sending" : "Image"))
             .font(.system(size: 9, weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.72))
             .lineLimit(1)
@@ -1334,6 +1453,16 @@ private struct WorkChatAttachmentChip: View {
         loadFailed = true
         return
       }
+    }
+
+    // The chat's own machine first: a chat on an ADE Cloud computer or a
+    // second computer keeps its files there, not on the focused machine.
+    if let chatSessionId, !chatSessionId.isEmpty,
+       let dataUrl = try? await syncService.chatScopedImageDataUrl(sessionId: chatSessionId, path: attachment.path),
+       let image = WorkChatAttachmentImagePreview.image(fromDataUrl: dataUrl, maxPixelSize: maxPixelSize) {
+      previewImage = image
+      loadFailed = false
+      return
     }
 
     guard let laneId, !laneId.isEmpty else {

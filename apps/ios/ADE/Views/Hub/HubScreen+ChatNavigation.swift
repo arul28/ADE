@@ -484,3 +484,27 @@ private struct HubChatBackBar: View {
     .padding(.vertical, 10)
   }
 }
+
+/// Identifies a chat opened from the hub, carrying enough context to activate
+/// the right project and render the chat over the hub.
+struct HubChatTarget: Identifiable, Equatable {
+  let id = UUID().uuidString
+  let project: MobileProjectSummary
+  let lane: RemoteRosterLane?
+  let chat: RemoteRosterChat
+  /// Set when the chat lives on another paired machine: it opens through that
+  /// machine's roster connection and never activates the project.
+  var machineKey: String? = nil
+}
+
+/// While a chat opened from the hub is presented, keep the presenter mounted
+/// but collapse its expensive roster/list tree. `fullScreenCover` keeps the
+/// presenting hierarchy alive; leaving the whole hub underneath chat detail
+/// makes roster updates diff both screens during streaming and scrolling.
+struct HubCoverParkingSurface: View {
+  var body: some View {
+    ADEColor.pageBackground
+      .ignoresSafeArea()
+      .accessibilityHidden(true)
+  }
+}

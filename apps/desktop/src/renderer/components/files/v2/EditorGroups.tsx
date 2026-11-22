@@ -7,6 +7,7 @@ import type { MonacoModelRegistry } from "../monacoModelRegistry";
 import type { EditorTab, GroupsState } from "./editorGroupsStore";
 import { EditorGroup } from "./EditorGroup";
 import type { PinnedFilesApi } from "./pinnedFilesApi";
+import type { OpenProjectBinding } from "../../../../shared/types/core";
 import type { FilesTabScope } from "./filesTabScope";
 import type { EditorThemeMode } from "./viewers/types";
 
@@ -17,6 +18,11 @@ export type TabWorkspaceContext = {
   rootPath: string;
   laneId: string | null;
   canRevealInFinder: boolean;
+  /**
+   * The copy a path action names: this computer for a folder opened from its
+   * Finder, else the copy Files reads. A remote copy gets the clear refusal.
+   */
+  pathPin: OpenProjectBinding;
 };
 
 export type EditorGroupsProps = {

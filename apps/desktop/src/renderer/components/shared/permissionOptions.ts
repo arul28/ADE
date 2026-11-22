@@ -38,6 +38,8 @@ const ACP_PERMISSION_FAMILIES: ReadonlySet<string> = new Set([
   "moonshot",
   "xai",
   "github-copilot",
+  // agy 1.5 has `plan` and `auto`; Full access is ADE answering each request.
+  "antigravity",
 ]);
 
 export function resolvePersistentIdentityGuardedPermissionMode(opts: {
@@ -156,9 +158,9 @@ export function getPermissionOptions(opts: {
         value: "default",
         label: "Default permissions",
         shortDesc: "Codex's default permission preset",
-        detail: "Workspace-write sandbox with approval policy set to on-request. Codex can read, edit, and run commands in the workspace; it asks before editing outside the workspace or accessing network.",
-        allows: ["File reads", "File writes & patches inside the workspace", "Shell commands in workspace-write sandbox"],
-        gates: ["Edits outside the workspace", "Network access"],
+        detail: "Workspace-write sandbox with approval policy set to on-request. Codex can read, edit, and run commands in the workspace, and its commands can reach the network; it asks before editing outside the workspace.",
+        allows: ["File reads", "File writes & patches inside the workspace", "Shell commands in workspace-write sandbox", "Network access"],
+        gates: ["Edits outside the workspace"],
         safety: "semi-auto",
       },
       {
@@ -166,17 +168,17 @@ export function getPermissionOptions(opts: {
         label: "Edit mode",
         shortDesc: "Auto-approve trusted workspace changes",
         detail: "Workspace-write sandbox with approval policy set to untrusted. Codex can read, edit, and run trusted workspace commands; untrusted operations still ask before running.",
-        allows: ["File reads", "Trusted file writes & patches inside the workspace", "Trusted shell commands in workspace-write sandbox"],
-        gates: ["Untrusted operations", "Edits outside the workspace", "Network access"],
+        allows: ["File reads", "Trusted file writes & patches inside the workspace", "Trusted shell commands in workspace-write sandbox", "Network access"],
+        gates: ["Untrusted operations", "Edits outside the workspace"],
         safety: "semi-auto",
       },
       {
         value: "plan",
         label: "Plan mode",
         shortDesc: "Safe read-only browsing",
-        detail: "Read-only sandbox with approval policy set to on-request. Codex can read files and answer questions, but needs approval to make edits, run commands, or access network.",
-        allows: ["File exploration", "Code search", "Plan generation"],
-        gates: ["File writes & patches", "Shell commands", "Network access"],
+        detail: "Read-only sandbox with approval policy set to on-request. Codex can read files and answer questions, and in a chat its commands reach the network; it needs approval to make edits or run commands that write.",
+        allows: ["File exploration", "Code search", "Plan generation", "Network access"],
+        gates: ["File writes & patches", "Shell commands that write"],
         safety: "safe",
       },
       {
@@ -378,44 +380,9 @@ export function getPermissionOptions(opts: {
     ];
   }
 
-  // Antigravity: the ACP ladder without Plan. The agent has no read-only mode
-  // (planning is its own `/plan` command), so offering Plan would promise a
-  // guarantee it cannot keep.
-  if (opts.isCliWrapped && normalizePermissionFamily(opts.family) === "antigravity") {
-    return [
-      {
-        value: "default",
-        label: "Ask",
-        shortDesc: "Prompts before each write or command",
-        detail: "Antigravity asks permission for every file change and every shell command. Use its /plan command to plan first.",
-        allows: ["File reads", "Code search"],
-        gates: ["File writes & edits", "Shell commands", "Web access"],
-        safety: "safe",
-      },
-      {
-        value: "edit",
-        label: "Accept edits",
-        shortDesc: "File edits auto-approved; commands still ask",
-        detail: "Antigravity edits files without asking, and still pauses before running shell commands.",
-        allows: ["File reads", "File writes & edits", "Code search"],
-        gates: ["Shell commands", "Web access"],
-        safety: "semi-auto",
-      },
-      {
-        value: "full-auto",
-        label: "Full access",
-        shortDesc: "Every request approved without asking",
-        detail: "Nothing prompts. Questions with fixed choices still need one of the offered answers.",
-        allows: ["Everything"],
-        warning: "⚠ Only use in isolated or disposable working copies.",
-        safety: "danger",
-      },
-    ];
-  }
-
-  // ACP providers (Qwen, Kimi, Grok, GitHub Copilot)
+  // ACP providers (Qwen, Kimi, Grok, GitHub Copilot, Antigravity)
   //
-  // One arm for all four. ADE writes an abstract posture and each dialect maps
+  // One arm for all of them. ADE writes an abstract posture and each dialect maps
   // it to its own native flags at the launch boundary, so the labels describe
   // what the user gets rather than any one vendor's vocabulary. The ladder
   // matches `AgentChatAcpPermissionMode`; `edit` and `full-auto` are ADE's
@@ -502,62 +469,6 @@ export function getPermissionOptions(opts: {
   ];
 }
 
-export function safetyBadgeLabel(safety: SafetyLevel): string {
-  switch (safety) {
-    case "safe": return "SAFE";
-    case "semi-auto": return "SEMI-AUTO";
-    case "full-auto": return "FULL-AUTO";
-    case "danger": return "DANGER";
-    case "custom": return "CUSTOM";
-  }
-}
-
-export function safetyColorHex(safety: SafetyLevel): string {
-  switch (safety) {
-    case "safe": return "#22C55E";
-    case "semi-auto": return "#F59E0B";
-    case "full-auto":
-    case "danger": return "#EF4444";
-    case "custom": return "#8B5CF6";
-  }
-}
-
-/** Tailwind-based color classes — used by chat composer hover pane. */
-export function safetyColors(safety: SafetyLevel) {
-  switch (safety) {
-    case "safe":
-      return {
-        border: "border-l-emerald-500/60",
-        badge: "text-emerald-400/70",
-        activeBg: "bg-accent/15 ring-1 ring-accent/25",
-      };
-    case "semi-auto":
-      return {
-        border: "border-l-amber-400/60",
-        badge: "text-amber-400/70",
-        activeBg: "bg-amber-500/10 ring-1 ring-amber-400/20",
-      };
-    case "full-auto":
-      return {
-        border: "border-l-red-400/60",
-        badge: "text-red-400/70",
-        activeBg: "bg-red-500/8 ring-1 ring-red-500/20",
-      };
-    case "danger":
-      return {
-        border: "border-l-red-500/70",
-        badge: "text-red-400/80",
-        activeBg: "bg-red-500/8 ring-1 ring-red-500/20",
-      };
-    case "custom":
-      return {
-        border: "border-l-violet-500/60",
-        badge: "text-violet-400/70",
-        activeBg: "bg-accent/15 ring-1 ring-accent/25",
-      };
-  }
-}
-
 export type PermissionFamilyKey = "claude" | "codex" | "cursor" | "droid" | "muse" | "acp" | "opencode";
 
 /**
@@ -583,20 +494,7 @@ export function familyToPermissionKey(
     if (family === "openai") return "codex";
     if (family === "factory") return "droid";
     if (family === "muse") return "muse";
-    if (ACP_PERMISSION_FAMILIES.has(family) || family === "antigravity") return "acp";
+    if (ACP_PERMISSION_FAMILIES.has(family)) return "acp";
   }
   return "opencode";
-}
-
-/** Human-readable label for a permission family key */
-export function permissionFamilyLabel(key: PermissionFamilyKey): string {
-  switch (key) {
-    case "claude": return "Claude Code workers";
-    case "codex": return "Codex workers";
-    case "cursor": return "Cursor workers";
-    case "droid": return "Droid workers";
-    case "muse": return "Muse workers";
-    case "acp": return "Qwen, Kimi, Grok and Copilot workers";
-    case "opencode": return "OpenCode workers";
-  }
 }

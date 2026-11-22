@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useAutoDismiss } from "../../lib/useAutoDismiss";
 import { useNavigate } from "react-router-dom";
 import * as Popover from "@radix-ui/react-popover";
 import {
@@ -15,7 +16,8 @@ import {
   Clock,
   Export,
 } from "@phosphor-icons/react";
-import type { ExportHistoryResult, GitConflictState } from "../../../shared/types";
+import type { ExportHistoryResult, GitConflictState, OpenProjectBinding } from "../../../shared/types";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { useAppStore } from "../../state/appStore";
 import {
   foreignLaneKey,
@@ -24,6 +26,8 @@ import {
   useAllMachineLanes,
 } from "../../state/laneMachineRouting";
 import { HistoryLanePicker, type HistoryLanePickerGroup } from "./HistoryLanePicker";
+import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
+import { ADE_CLOUD_NAME, isAccountAnsweredPin } from "../../../shared/adeCloud/binding";
 import type { HistorySurface } from "./timelineTypes";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
@@ -107,14 +111,19 @@ function isHistoryExportResult(value: unknown): value is ExportHistoryResult {
 export function TimelineToolbar({
   onCommitGitActionComplete,
   commitListControls = true,
+  lanePin = null,
 }: {
   onCommitGitActionComplete?: () => void;
+  /** The focused lane's machine. Null: the lane cannot be reached, so its git actions do nothing. */
+  lanePin?: OpenProjectBinding | null;
   /** False while a commit's changes fill the page: search, scope, fold and columns do nothing there. */
   commitListControls?: boolean;
 } = {}) {
   const lanes = useAppStore((s) => s.lanes ?? []);
   const laneStatusStale = useAppStore((s) => s.laneStatusStale);
-  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  // Export reads the tab machine's history.
+  const tabPin = useTabCopyPin();
+  const [exportNotice, setExportNotice] = useAutoDismiss<string | null>(null, 5000);
   /* ── Store ─────────────────────────────────────────────────── */
   const surface = useTimelineStore((s) => s.surface);
   const setSurface = useTimelineStore((s) => s.setSurface);
@@ -183,7 +192,10 @@ export function TimelineToolbar({
     const exportFn = window.ade?.history?.exportOperations;
     if (typeof exportFn !== "function") {
       setExportNotice("Export unavailable (headless)");
-      window.setTimeout(() => setExportNotice(null), 4000);
+      return;
+    }
+    if (!tabPin) {
+      setExportNotice("No computer with this project is online.");
       return;
     }
     let chosenLimit = 500;
@@ -199,7 +211,6 @@ export function TimelineToolbar({
       const parsed = Number.parseInt(trimmed, 10);
       if (!Number.isFinite(parsed) || parsed <= 0) {
         setExportNotice("Invalid export limit; must be a positive integer");
-        window.setTimeout(() => setExportNotice(null), 4000);
         return;
       }
       chosenLimit = Math.min(10000, Math.max(1, parsed));
@@ -211,22 +222,19 @@ export function TimelineToolbar({
         // Export reads this machine's history; a lane on another machine is not in it.
         ...(focusLaneId && !focusLaneMachineId ? { laneId: focusLaneId } : {}),
         ...(filters.statuses.length === 1 ? { status: filters.statuses[0] } : {}),
-      });
+      }, tabPin);
       if (!isHistoryExportResult(result)) {
         setExportNotice("Export unavailable (headless)");
-        window.setTimeout(() => setExportNotice(null), 4000);
         return;
       }
       if (result.cancelled) return;
       setExportNotice(`Exported ${result.rowCount} rows to ${result.savedPath}`);
-      window.setTimeout(() => setExportNotice(null), 5000);
     } catch (err) {
       setExportNotice(
         `Export failed: ${extractError(err)}`,
       );
-      window.setTimeout(() => setExportNotice(null), 5000);
     }
-  }, [focusLaneId, focusLaneMachineId, filters.statuses]);
+  }, [focusLaneId, focusLaneMachineId, filters.statuses, setExportNotice, tabPin]);
 
   /* ── Render ────────────────────────────────────────────────── */
   const showActivityControls = surface === "activity";
@@ -242,6 +250,7 @@ export function TimelineToolbar({
   // bare id on the tab's machine, `machineId:laneId` elsewhere.
   const allMachineLanes = useAllMachineLanes(surface === "commits");
   const multiMachine = shouldShowMachineChips(allMachineLanes.machines.length);
+  const machineLabelFor = useMachineLabelForMachine();
   const laneGroups = useMemo<HistoryLanePickerGroup[]>(() => {
     if (!multiMachine) {
       return [{
@@ -251,17 +260,28 @@ export function TimelineToolbar({
         options: lanes.map((lane) => ({ value: lane.id, lane })),
       }];
     }
-    return allMachineLanes.machines
-      .map((machine) => ({
+    const groups: HistoryLanePickerGroup[] = [];
+    for (const machine of allMachineLanes.machines) {
+      const options = allMachineLanes.lanes
+        .filter((row) => row.machineId === machine.machineId)
+        .map((row) => ({ value: row.key, lane: row.lane }));
+      if (options.length === 0) continue;
+      const group: HistoryLanePickerGroup = {
         key: machine.machineId,
-        machineName: machine.machineName,
-        disabledReason: machine.isActiveBinding ? null : machineBlockedReason(machine),
-        options: allMachineLanes.lanes
-          .filter((row) => row.machineId === machine.machineId)
-          .map((row) => ({ value: row.key, lane: row.lane })),
-      }))
-      .filter((group) => group.options.length > 0);
-  }, [allMachineLanes, lanes, multiMachine]);
+        machineName: machineLabelFor({ machineId: machine.machineId, binding: machine.binding, name: machine.machineName }),
+        // A resting ADE Cloud lane reads from the account, so it is never blocked.
+        disabledReason: machine.isActiveBinding || isAccountAnsweredPin(machine.pin) ? null : machineBlockedReason(machine),
+        options,
+      };
+      // ADE Cloud is one machine: its readable lane computers share one group.
+      const cloudGroup = group.machineName === ADE_CLOUD_NAME && group.disabledReason == null
+        ? groups.find((other) => other.machineName === ADE_CLOUD_NAME && other.disabledReason == null)
+        : undefined;
+      if (cloudGroup) cloudGroup.options = [...cloudGroup.options, ...options];
+      else groups.push(group);
+    }
+    return groups;
+  }, [allMachineLanes, lanes, machineLabelFor, multiMachine]);
   const laneSelectValue = focusLaneId
     ? focusLaneMachineId ? foreignLaneKey(focusLaneMachineId, focusLaneId) : focusLaneId
     : "";
@@ -322,11 +342,13 @@ export function TimelineToolbar({
             ) : null}
             <CommitFetchButton
               laneId={focusLaneMachineId ? null : focusLaneId}
+              pin={lanePin}
               disabledReason={focusLaneMachineId ? "Fetch runs on the lane's own machine" : focusLane && !focusLaneHasWorktree ? "Lane worktree is missing" : null}
               onFetched={() => onCommitGitActionComplete?.()}
             />
             {focusLaneMachineId ? null : <LaneGitActionsMenu
               laneId={focusLaneId}
+              pin={lanePin}
               laneName={focusLane?.name ?? null}
               laneHasWorktree={focusLaneHasWorktree}
               onComplete={onCommitGitActionComplete}
@@ -602,11 +624,13 @@ export function TimelineToolbar({
 
 function LaneGitActionsMenu({
   laneId,
+  pin,
   laneName,
   laneHasWorktree,
   onComplete,
 }: {
   laneId: string | null;
+  pin: OpenProjectBinding | null;
   laneName: string | null;
   laneHasWorktree: boolean;
   onComplete?: () => void;
@@ -614,21 +638,21 @@ function LaneGitActionsMenu({
   const navigate = useNavigate();
   const [runningAction, setRunningAction] = useState<HistoryLaneActionId | null>(null);
   const [conflictState, setConflictState] = useState<GitConflictState | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useAutoDismiss<string | null>(null, 3500);
+  const [error, setError] = useAutoDismiss<string | null>(null, 5000);
   const actions = buildHistoryLaneActions({ hasLane: Boolean(laneId) && laneHasWorktree, conflictState });
 
   const refreshConflictState = useCallback(async () => {
-    if (!laneId) {
+    if (!laneId || !pin) {
       setConflictState(null);
       return;
     }
     try {
-      setConflictState(await window.ade.git.getConflictState(laneId));
+      setConflictState(await window.ade.git.getConflictState(laneId, pin));
     } catch {
       setConflictState(null);
     }
-  }, [laneId]);
+  }, [laneId, pin]);
 
   useEffect(() => {
     void refreshConflictState();
@@ -641,21 +665,20 @@ function LaneGitActionsMenu({
 
   const run = useCallback(
     async (actionId: HistoryLaneActionId) => {
-      if (!laneId) return;
+      if (!laneId || !pin) return;
       setRunningAction(actionId);
       setError(null);
       try {
         await runHistoryLaneAction({
           actionId,
           laneId,
+          pin,
           laneName,
           onNotice: (message) => {
             setNotice(message);
-            window.setTimeout(() => setNotice(null), 3500);
           },
           onError: (message) => {
             setError(message);
-            window.setTimeout(() => setError(null), 5000);
           },
           onComplete: handleComplete,
           navigate: (path) => navigate(path),
@@ -663,12 +686,11 @@ function LaneGitActionsMenu({
       } catch (err) {
         const message = extractError(err);
         setError(message);
-        window.setTimeout(() => setError(null), 5000);
       } finally {
         setRunningAction(null);
       }
     },
-    [handleComplete, laneId, laneName, navigate],
+    [handleComplete, laneId, laneName, navigate, pin, setError, setNotice],
   );
   const actionGroups = groupHistoryLaneActions(actions);
 

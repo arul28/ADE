@@ -8,6 +8,9 @@ import { nextScheduledWakeDeadlineMs, scheduledWakeState } from "../../../shared
 import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { workFilterMachineId } from "../../state/workFilterMachine";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import {
   PROVIDER_TOOL_TYPE,
   type ExternalSessionImportResult,
@@ -30,6 +33,7 @@ import {
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { runFirstLoadWithRetry } from "../../lib/firstLoadRetry";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
+import { ensureRootFullAccessFor } from "../chat/rootFullAccessPrompt";
 import {
   canonicalInputFromSummary,
   effectiveSessionFilingBuckets,
@@ -38,6 +42,12 @@ import {
 } from "../../lib/terminalAttention";
 import type { CanonicalStatusBucket } from "../../../shared/sessionCanonicalState";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
+import {
+  LAUNCH_URL_OPEN_PARAM,
+  launchMayOpenItsSession,
+  noteNewDraftRequested,
+  takeLaunchUrlOpenAllowed,
+} from "../../lib/draftLaunchJobs";
 import { boundMachineLanePrs, laneHasAnyPr, useLanePrsByLaneId } from "./useLanePrs";
 import { applyWorkLaneManualMove, type WorkLaneSortMode } from "./workLaneOrder";
 import { EMPTY_WORK_SEEN_AT, stampWorkSeenAt } from "./workLaneFocus";
@@ -68,7 +78,7 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
-import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
+import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, unionSlotIdForBinding, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
@@ -94,6 +104,12 @@ const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;
 /** Upper bound on the single snooze-expiry timer (setTimeout overflows past ~24.8 days). */
 const SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 const STOPPED_RUNTIME_GUARD_TTL_MS = 12_000;
+/**
+ * How long an open row this page has not seen yet stays open after the project
+ * opens. Another computer's rows arrive after the tab's own list (a connect, a
+ * saved chat list), so a reload must not close the chat that was open there.
+ */
+const UNSEEN_OPEN_ROW_GRACE_MS = 30_000;
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_LANE_SESSION_ORDER: Record<string, string[]> = {};
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -242,6 +258,9 @@ export type WorkBoardBuckets = Record<WorkBoardColumn, TerminalSessionSummary[]>
 
 import type { WorkBoardWaitingReason } from "../../../shared/types/chat";
 import { lanePrWaitingReason } from "../../../shared/sessionCanonicalState";
+import { useTabCopyPin } from "../../state/repositoryScope";
+import { useRemoteTargetReconnecting } from "../../state/projectMachines";
+import { noChatMachineError } from "../chat/chatMachinePin";
 
 export type { WorkBoardWaitingReason };
 export { lanePrWaitingReason };
@@ -728,6 +747,30 @@ const LOCAL_RUNNING_SESSION_REFRESH_INTERVAL_MS = 30_000;
 const REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS = 60_000;
 
 /**
+ * Whether a row keeps the safety-net reload above running.
+ *
+ * A chat's row stays `running` until the chat ends, also while it rests, so
+ * "any row running" kept the reload going every 30 s in every project with a
+ * chat. A resting chat changes only through pushes this list already takes:
+ * a turn start or end, an answer, a rename or a PR watch (agent-chat events),
+ * and a settle verdict, a wake or a status note (`sessions.onChanged`). So a
+ * chat counts only while its turn runs or waits on the person, or while its
+ * background work runs: that work drains with no push this list takes, and
+ * the reload is what shows the drain.
+ *
+ * A chat row the host could not match to its chat (no
+ * `activeBackgroundTaskCount`, see `fallbackUnprojectedChatSession`) still
+ * counts: its state is a guess until a reload brings the real one. Terminal
+ * rows (shells and CLI agents) count while they run, as before.
+ */
+function sessionKeepsBackstopRefresh(session: TerminalSessionSummary): boolean {
+  if (session.status !== "running") return false;
+  if (!isChatToolType(session.toolType)) return true;
+  if (typeof session.activeBackgroundTaskCount !== "number") return true;
+  return session.runtimeState !== "idle" || session.activeBackgroundTaskCount > 0;
+}
+
+/**
  * Whether an installation uses the Work Focus view and its Focus grid. Emitted
  * at the two setters every entry point goes through, only when a mode turns
  * on. Coarse and closed: the mode and nothing else, never a lane, chat, count
@@ -755,6 +798,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const remoteTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
   const activeBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
+  // The host roster is the tab copy's roster: its reads and feeds name that
+  // copy. No copy: no read, and the list shows its empty state.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
+  // The tab's machine dropped and ADE is dialing it again: its last rows stay.
+  const tabMachineReconnecting = useRemoteTargetReconnecting(remoteTargetId);
+  const tabMachineReconnectingRef = useRef(tabMachineReconnecting);
+  tabMachineReconnectingRef.current = tabMachineReconnecting;
+  const tabCopyPinKey = tabCopyPin?.key ?? null;
   const lanes = useAppStore((s) => s.lanes);
   const focusSession = useAppStore((s) => s.focusSession);
   const selectLane = useAppStore((s) => s.selectLane);
@@ -839,7 +892,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (!binding || bindingKey === activeChatLaunchBindingKey || !crossMachineBindingKeys.has(bindingKey)) continue;
       if (foreignLaunchRefreshRequestedRef.current.has(snapshot.launchId)) continue;
       foreignLaunchRefreshRequestedRef.current.add(snapshot.launchId);
-      requestCrossMachineLanesForMachine(machineIdForBinding(binding));
+      requestCrossMachineLanesForMachine(unionSlotIdForBinding(binding));
     }
   }, [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys]);
   // Once the roster has listed a launch's real chat, its stand-in never bridges
@@ -1241,6 +1294,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   const showDraftKind = useCallback(
     (nextKind: WorkDraftKind) => {
+      // A send still on its way from the new-chat box must not open its chat
+      // over the draft asked for now (`launchMayOpenItsSession`).
+      noteNewDraftRequested(projectStateKey);
       setProjectViewState((prev) => ({
         ...prev,
         draftKind: nextKind,
@@ -1252,7 +1308,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         workSidebarOpen: false,
       }));
     },
-    [setProjectViewState],
+    [projectStateKey, setProjectViewState],
   );
 
   const setDraftLaneId = useCallback(
@@ -1613,7 +1669,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const stripUrlFilterParams = useCallback(() => {
     if (!isWorkRoute) return;
     const nextParams = new URLSearchParams(searchParams);
-    for (const key of ["laneId", "lane", "status", "sessionId", "event", "offset"]) {
+    for (const key of ["laneId", "lane", "status", "sessionId", "event", "offset", LAUNCH_URL_OPEN_PARAM]) {
       nextParams.delete(key);
     }
     // Use URLSearchParams.toString() as the stable comparison anchor: if stripping
@@ -1760,6 +1816,24 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       hasAuthoritativeSessionsRef.current = false;
       return;
     }
+    const hostPin = tabCopyPinRef.current;
+    if (!hostPin) {
+      // No address for the tab's computer (it is offline, or the tab is just
+      // coming back to the front): an empty list here is not the computer's
+      // answer, so it must not close the chats the tab has open.
+      hasAuthoritativeSessionsRef.current = false;
+      if (tabMachineReconnectingRef.current && hasLoadedOnceRef.current) {
+        // A dropped link that ADE is bringing back: the rows it last sent stay
+        // on screen, and nothing asks the machine until its address returns
+        // (the pin change refreshes the list then). A Disconnect or a removed
+        // machine is not "reconnecting" and clears below.
+        setLoading(false);
+        return;
+      }
+      setHostSessions([]);
+      setLoading(false);
+      return;
+    }
     const showLoading = options.showLoading ?? true;
     if (refreshInFlightRef.current) {
       if (refreshQueuedRef.current) {
@@ -1797,6 +1871,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           options.force || awaitingHostRow
             ? { force: true }
             : undefined,
+          hostPin,
         )
       ).filter((session) => !session.archivedAt);
       if (projectRootRef.current !== requestedProjectRoot) {
@@ -1957,7 +2032,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // If we already have cached sessions, treat this as a "loaded" state so the
     // upcoming refresh runs silently in the background (no spinner).
     hasLoadedOnceRef.current = cachedSessions != null;
-    hasRunningSessionsRef.current = (cachedSessions ?? []).some((s) => s.status === "running");
+    hasRunningSessionsRef.current = (cachedSessions ?? []).some(sessionKeepsBackstopRefresh);
     laneRecoveryRefreshKeyRef.current = null;
     appliedQuerySessionIdRef.current = null;
     appliedUrlFilterKeyRef.current = null;
@@ -1980,12 +2055,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // During a project switch, `sessions` can still be the previous project's list
     // for one render; mirroring it into the new project's cache poisons warm reload.
     if (pendingProjectSwitchRef.current != null) return;
-    appStore.setState((prev) => ({
-      sessionsCacheByProject: {
-        ...prev.sessionsCacheByProject,
-        [projectStateKey]: hostSessions,
-      },
-    }));
+    appStore.setState((prev) => (prev.sessionsCacheByProject[projectStateKey] === hostSessions
+      ? prev
+      : {
+          sessionsCacheByProject: {
+            ...prev.sessionsCacheByProject,
+            [projectStateKey]: hostSessions,
+          },
+        }));
   }, [appStore, hostSessions, projectStateKey]);
 
   useEffect(() => {
@@ -2024,7 +2101,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       load: (attempt) => refresh({ showLoading: attempt === 1 && isInitialLoad, force: isInitialLoad || attempt > 1 }),
       onRetryingChange: setFirstLoadRetrying,
     });
-  }, [isWorkRoute, projectRoot, projectStateKey, refresh, remoteTargetId]);
+  }, [isWorkRoute, projectRoot, projectStateKey, refresh, remoteTargetId, tabCopyPinKey, tabMachineReconnecting]);
 
   // Held under CTO or History, the list is on screen in the sidebar even though
   // Work is not: load it once, or it reads "No sessions" when the app opens
@@ -2055,7 +2132,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // Refresh scheduling is active-binding-only; foreign slices have their own
     // cross-machine sync cadence and must not drive this project's IPC polling.
     sessionsRef.current = hostSessions;
-    hasRunningSessionsRef.current = hostSessions.some((s) => s.status === "running");
+    hasRunningSessionsRef.current = hostSessions.some(sessionKeepsBackstopRefresh);
   }, [hostSessions]);
 
   useEffect(() => {
@@ -2164,6 +2241,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     if (!session) return;
 
     appliedQuerySessionIdRef.current = applyKey;
+    // A launch's open that a new draft has overtaken (`noteLaunchUrlOpen`):
+    // the draft keeps the screen, and the chat stays a row in the list.
+    if (searchParams.get(LAUNCH_URL_OPEN_PARAM) === "1" && !takeLaunchUrlOpenAllowed(session.id)) {
+      stripUrlFilterParams();
+      return;
+    }
     // Deeplink anchors (?event=<seq> for chat, ?offset=<bytes> for terminal
     // scrollback) are handed off one-shot to the session's content surface.
     setPendingSessionAnchor(session.id, {
@@ -2190,15 +2273,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         selectedItemId: session.id,
       };
     });
-  }, [focusSession, isWorkRoute, searchParams, selectLaneForActiveTab, sessionsById, setProjectViewState]);
+  }, [focusSession, isWorkRoute, searchParams, selectLaneForActiveTab, sessionsById, setProjectViewState, stripUrlFilterParams]);
 
   useEffect(() => {
-    if (!isWorkRoute) return;
+    const hostPin = tabCopyPinRef.current;
+    if (!isWorkRoute || !hostPin) return;
     const unsubExit = window.ade.pty.onExit((event) => {
       const currentProjectRoot = projectRootRef.current;
       if (event.projectRoot && event.projectRoot !== currentProjectRoot) return;
       markSessionListDirtyOrRefresh(120);
-    });
+    }, hostPin);
     const intervalMs = isRemoteProject
       ? REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS
       : LOCAL_RUNNING_SESSION_REFRESH_INTERVAL_MS;
@@ -2215,24 +2299,26 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       }
       clearInterval(t);
     };
-  }, [isRemoteProject, isWorkRoute, markSessionListDirtyOrRefresh, projectRoot, scheduleBackgroundRefresh]);
+  }, [isRemoteProject, isWorkRoute, markSessionListDirtyOrRefresh, projectRoot, scheduleBackgroundRefresh, tabCopyPinKey]);
 
   useEffect(() => {
-    if (!isWorkRoute) return;
+    const hostPin = tabCopyPinRef.current;
+    if (!isWorkRoute || !hostPin) return;
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
       if (!shouldRefreshSessionListForChatEvent(payload)) return;
       markSessionListDirtyOrRefresh(220);
-    });
+    }, hostPin);
     return unsubscribe;
-  }, [isWorkRoute, markSessionListDirtyOrRefresh]);
+  }, [isWorkRoute, markSessionListDirtyOrRefresh, tabCopyPinKey]);
 
   useEffect(() => {
-    if (!isWorkRoute) return;
+    const hostPin = tabCopyPinRef.current;
+    if (!isWorkRoute || !hostPin) return;
     const unsubscribe = window.ade.sessions.onChanged(() => {
       markSessionListDirtyOrRefresh(80);
-    });
+    }, hostPin);
     return unsubscribe;
-  }, [isWorkRoute, markSessionListDirtyOrRefresh]);
+  }, [isWorkRoute, markSessionListDirtyOrRefresh, tabCopyPinKey]);
 
   useEffect(() => {
     return () => {
@@ -2275,7 +2361,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       return {
         ...prev,
         openItemIds: nextOpen,
-        ...(toDraft ? { activeItemId: null, selectedItemId: null, draftKind: detail.kind } : {}),
+        // A lane launch has no draft of its own (it starts nothing): the chat draft.
+        ...(toDraft ? { activeItemId: null, selectedItemId: null, draftKind: detail.kind === "cli" ? "cli" as const : "chat" as const } : {}),
       };
     });
   }), [setProjectViewState]);
@@ -2345,9 +2432,13 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
    * With no chips set this returns `filtered` BY REFERENCE, so every downstream
    * memo stays referentially stable and the feature costs nothing when unused.
    */
+  const adeCloudIndex = useAdeCloudLaneComputers();
   const chipFiltered = useMemo(() => {
     if (isWorkSessionFilterEmpty(workSessionFilters)) return filtered;
-    const activeMachineId = machineIdForBinding(projectBinding);
+    // Every ADE Cloud computer is one "ADE Cloud" machine choice, as in the pane's filter options.
+    const filterMachineIdOf = (binding: OpenProjectBinding | null | undefined): string =>
+      workFilterMachineId(machineIdForBinding(binding ?? null), binding, adeCloudIndex);
+    const activeMachineId = filterMachineIdOf(projectBinding);
     // A pending-launch stand-in for a chat whose lane lives on another machine
     // is listed in this active-binding roster (that machine's slice does not
     // have its chat yet), so the machine filter must judge it by its OWN
@@ -2358,7 +2449,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const source of chatLaunchRowSources) {
       const sessionId = source.snapshot.sessionId;
       if (!sessionId || !source.binding || source.bindingKey === activeChatLaunchBindingKey) continue;
-      launchMachineIdBySessionId.set(sessionId, machineIdForBinding(source.binding));
+      launchMachineIdBySessionId.set(sessionId, filterMachineIdOf(source.binding));
     }
     const ctx = {
       nowMs: Date.now(),
@@ -2377,6 +2468,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }));
   }, [
     activeChatLaunchBindingKey,
+    adeCloudIndex,
     chatLaunchRowSources,
     effectiveFilingBuckets,
     filtered,
@@ -2479,6 +2571,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     () => (selectedSessionId ? sessionsById.get(selectedSessionId) ?? null : null),
     [selectedSessionId, sessionsById],
   );
+  // Rows this page has listed since the project opened. Until the grace ends,
+  // an open row never listed yet is still loading, not gone.
+  const seenSessionIdsRef = useRef(new Set<string>());
+  const [unseenOpenRowGraceOver, setUnseenOpenRowGraceOver] = useState(false);
+  useEffect(() => {
+    seenSessionIdsRef.current = new Set();
+    setUnseenOpenRowGraceOver(false);
+    const timer = window.setTimeout(() => setUnseenOpenRowGraceOver(true), UNSEEN_OPEN_ROW_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [projectStateKey]);
   const canPruneSessionIndex = useCallback(
     () => pendingProjectSwitchRef.current == null && hasAuthoritativeSessionsRef.current,
     [],
@@ -2508,8 +2610,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const sessionId of knownLaunchSessionIds) {
       validIds.add(sessionId);
     }
+    const seen = seenSessionIdsRef.current;
+    for (const sessionId of sessionsById.keys()) seen.add(sessionId);
 
     setProjectViewState((prev) => {
+      if (!unseenOpenRowGraceOver) {
+        for (const id of prev.openItemIds) if (!seen.has(id)) validIds.add(id);
+        if (prev.selectedItemId && !seen.has(prev.selectedItemId)) validIds.add(prev.selectedItemId);
+      }
       const nextOpen = prev.openItemIds.filter((id) => validIds.has(id));
       const userIsViewingDraft = prev.activeItemId == null && prev.selectedItemId == null;
       const nextActive =
@@ -2540,7 +2648,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         selectedItemId: nextSelected,
       };
     });
-  }, [knownLaunchSessionIds, projectStateKey, sessionsById, setProjectViewState]);
+  }, [knownLaunchSessionIds, projectStateKey, sessionsById, setProjectViewState, unseenOpenRowGraceOver]);
 
   const rememberStoppedRuntime = (ptyId: string, sessionId: string | undefined, endedAt: string) => {
     if (!sessionId) return;
@@ -2601,9 +2709,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       let disposeError: unknown = null;
       try {
         const disposeArgs = { ptyId, ...(sessionId ? { sessionId } : {}) };
-        const result = pin
-          ? await window.ade.pty.dispose(disposeArgs, pin)
-          : await window.ade.pty.dispose(disposeArgs);
+        // No machine for the session: the stop cannot reach it.
+        if (!pin) throw noChatMachineError();
+        const result = await window.ade.pty.dispose(disposeArgs, pin);
         if (result?.disposed === false) {
           if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
             forgetStoppedRuntime(sessionId);
@@ -2660,7 +2768,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           throw new Error("This lane lives on Cursor Cloud, which has no shell. Open the agent on cursor.com to take over its desktop.");
         }
         if (cloud === "devin") {
-          const chats = await window.ade.agentChat.list({ laneId: args.laneId }).catch(() => []);
+          const lanePin = args.pin ?? machineRouter.pinForSession({ laneId: args.laneId });
+          const chats = lanePin
+            ? await window.ade.agentChat.list({ laneId: args.laneId }, lanePin).catch(() => [])
+            : [];
           const latest = chats
             .filter((chat) => Boolean(chat.devinSessionId))
             .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt))[0];
@@ -2674,6 +2785,22 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             args: ["ssh", normalizeDevinCloudSessionId(latest.devinSessionId), "-o", "StrictHostKeyChecking=accept-new"],
           };
         }
+      }
+      // The lane's machine starts the shell. A lane with no known machine has
+      // nowhere to start it.
+      const createPin = args.pin ?? machineRouter.pinForSession({ laneId: args.laneId });
+      if (!createPin) throw noChatMachineError();
+      // Claude Code exits at once when told to skip permissions as root. On a
+      // root machine that hasn't allowed it, ask once for the machine; a no
+      // starts the terminal in Accept edits instead of a dead one.
+      const claudeFullAccess = args.runtimeCliLaunch
+        ? args.runtimeCliLaunch.provider === "claude" && args.runtimeCliLaunch.permissionMode === "full-auto"
+        : args.profile === "claude" && args.permissionMode === "full-auto"
+          && args.startupCommand === undefined && args.command === undefined && args.args === undefined;
+      if (claudeFullAccess && !(await ensureRootFullAccessFor(createPin))) {
+        args = args.runtimeCliLaunch
+          ? { ...args, runtimeCliLaunch: { ...args.runtimeCliLaunch, permissionMode: "edit" } }
+          : { ...args, permissionMode: "edit" };
       }
       // resolveLaunchFields preserves caller intent: any caller-supplied
       // startupCommand/command/args is used as-is, never mixed with defaults
@@ -2708,11 +2835,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // syncs. Make sure that copy holds the preset before the spawn, or the
       // CLI starts on the harness's own sign-in and reports the preset gone.
       await ensureHarnessPresetOnBrain(args.runtimeCliLaunch?.presetId, {
-        targetsAnotherMachine: args.pin?.kind === "remote",
+        targetsAnotherMachine: createPin.kind === "remote",
       });
-      const result = args.pin
-        ? await window.ade.pty.create(createArgs, args.pin)
-        : await window.ade.pty.create(createArgs);
+      const result = await window.ade.pty.create(createArgs, createPin);
       machineRouter.rememberSessionPin(result, args.pin);
       if (!canMutatePinnedProjectUi(args.pin)) {
         return result;
@@ -2767,7 +2892,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
       // the new session on their next refresh.
       invalidateSessionListCache();
-      if (args.disposition !== "background") {
+      // A launch sent from the new-chat box does not take the screen from a
+      // draft asked for while it started; it shows in the list instead.
+      if (args.disposition !== "background" && launchMayOpenItsSession(args.newDraftMarkAtSend)) {
         // Lane selection is the active binding's own cursor; pointing it at a
         // lane that lives on another machine selects nothing.
         if (belongsToActiveBinding) selectLane(args.laneId);

@@ -60,12 +60,20 @@ final class MachineConnection {
   private(set) var supportsChatHistoryPageBySequence = false
   /// The host answers `project_set_icon_request`.
   private(set) var supportsProjectIcon = false
-  private(set) var commandDescriptors: [SyncRemoteCommandDescriptor] = []
+  /// The host streams terminals of any open project to this socket
+  /// (`rosterTerminal`), so a terminal opens here without a focus switch.
+  private(set) var supportsRosterTerminal = false
+  private(set) var commandDescriptors: [SyncRemoteCommandDescriptor] = [] {
+    didSet { commandDescriptorsByAction = syncCommandDescriptorIndex(commandDescriptors) }
+  }
+  private var commandDescriptorsByAction: [String: SyncRemoteCommandDescriptor] = [:]
   /// Host display name from the last hello.
   private(set) var hostName: String?
   /// The machine's ADE version from the last hello (`brain.appVersion`). Nil
   /// for an older host. It names the machine's update track (the Beta chip).
   private(set) var hostAppVersion: String?
+  /// See `HostUpdateFacts`; replaced by every hello like `hostAppVersion`.
+  private(set) var hostUpdateFacts: HostUpdateFacts?
 
   /// Called after any change the fleet publishes (phase, roster, name).
   var onChange: (() -> Void)?
@@ -73,7 +81,7 @@ final class MachineConnection {
   private weak var syncService: SyncService?
   private let registry: ChatThreadRegistry
   private var runTask: Task<Void, Never>?
-  private var socket: URLSessionWebSocketTask?
+  private(set) var socket: URLSessionWebSocketTask?
   /// Bumped on every start/stop and every new socket; stale work compares it.
   private var generation: UInt64 = 0
   private var pending: [String: PendingRequest] = [:]
@@ -96,6 +104,11 @@ final class MachineConnection {
   /// to this machine (the Apple device video) resolves against it, never
   /// against the focused machine's address.
   private(set) var liveAddress: String?
+  /// When the current link went live, for the drop report's age.
+  private var liveSinceUptime: TimeInterval?
+  /// The socket this phone closed itself for heartbeat silence. Its close is
+  /// explained, so the drop report skips it.
+  private weak var heartbeatClosedSocket: URLSessionWebSocketTask?
   private var relayReauthorizationTask: Task<Void, Never>?
   /// Sleeping out a backoff delay between failed dials.
   private var waitingToRetry = false
@@ -109,10 +122,28 @@ final class MachineConnection {
   /// report. Kept across sockets so a report can see reconnects.
   private var chatStreamTraces: [String: ChatStreamTrace] = [:]
   private var socketCloseCount = 0
+  /// Terminals opened on this machine. Kept across sockets, like `chatScopes`.
+  var terminalScopes: [String: MachineTerminalScope] = [:]
+  /// The shared terminal stream state: handlers, offsets and queued input.
+  /// It outlives a socket, like `terminalScopes`.
+  private(set) lazy var terminalStream = TerminalStreamClient(hooks: TerminalStreamClientHooks(
+    isLive: { [weak self] in self?.isLive ?? false },
+    generation: { [weak self] in UInt64(self?.socketCloseCount ?? 0) },
+    sendEnvelope: { [weak self] type, sessionId, payload in
+      _ = self?.sendTerminalEnvelope(type: type, sessionId: sessionId, fields: payload)
+    },
+    resubscribe: { [weak self] sessionId, sinceOffset in
+      guard let self else { return }
+      try await self.subscribeTerminalStream(sessionId: sessionId, sinceOffset: sinceOffset)
+    }
+  ), resendsSizeOnSubscribe: true)
 
   private struct PendingRequest {
     let continuation: CheckedContinuation<Any, Error>
     let timeoutTask: Task<Void, Never>
+    /// Runs when the answer arrives, before the next frame is read, so frames
+    /// that follow the answer see its effect.
+    let accept: ((Any) throws -> Void)?
   }
 
   /// App Group key of this machine's offline roster (shared with the focused
@@ -139,6 +170,13 @@ final class MachineConnection {
   var isRunning: Bool { runTask != nil }
 
   func updateProfile(_ profile: HostConnectionProfile) {
+    if self.profile.port != profile.port {
+      // Kept for a later drop report: what changed just before it.
+      CrashReporting.breadcrumb("sync.route", message: "saved port changed", data: [
+        "connection": "fleet",
+        "live": isLive ? "yes" : "no",
+      ])
+    }
     self.profile = profile
   }
 
@@ -168,6 +206,39 @@ final class MachineConnection {
     }
     if clearAttention || !isAttentionPhase, !gaveUp {
       setPhase(.idle)
+    }
+  }
+
+  /// The ping `probeLink` waits on.
+  private var linkProbeTask: Task<Void, Never>?
+
+  /// Checks a link that reads live but may be dead: a request went
+  /// unanswered, or the account says this ADE Cloud computer is asleep. A
+  /// computer put to sleep can leave the relay's half of the pair open, so
+  /// no close comes and heartbeat silence takes minutes. Ping it; with no
+  /// answer in a few seconds, close the link the way heartbeat silence
+  /// does. The run loop dials again with backoff, and an asleep computer
+  /// lists its saved work meanwhile. A machine that answers keeps its link.
+  func probeLink(trigger: String) {
+    guard phase == .live, socket != nil, linkProbeTask == nil else { return }
+    let probeGeneration = generation
+    let sentAt = ProcessInfo.processInfo.systemUptime
+    let timeout = syncService?.transportProbeTimeoutNanoseconds ?? SyncSocketTiming.transportProbeTimeoutNanoseconds
+    send(type: "heartbeat", requestId: nil, payload: [
+      "kind": "ping",
+      "sentAt": ISO8601DateFormatter().string(from: Date()),
+      "dbVersion": 0,
+    ])
+    linkProbeTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: timeout)
+      guard let self else { return }
+      self.linkProbeTask = nil
+      guard !Task.isCancelled, self.generation == probeGeneration, let socket = self.socket,
+            self.lastInboundUptime < sentAt
+      else { return }
+      machineConnectionLog.notice("fleet probe unanswered machine=\(self.machineKey, privacy: .public) trigger=\(trigger, privacy: .public)")
+      self.heartbeatClosedSocket = socket
+      socket.cancel(with: .goingAway, reason: nil)
     }
   }
 
@@ -292,6 +363,11 @@ final class MachineConnection {
     supportsChatLogV2 = featureEnabled("chatLogV2", "chat_log_v2")
     supportsChatHistoryPageBySequence = featureEnabled("chatHistoryPageBySequence", "chat_history_page_by_sequence")
     supportsProjectIcon = featureEnabled("projectIcon", "project_icon")
+    supportsRosterTerminal = featureEnabled("rosterTerminal", "roster_terminal")
+    applyTerminalInputAckFeature(
+      enabled: featureEnabled("terminalInputAck", "terminal_input_ack"),
+      config: features?["terminalInputAck"] as? [String: Any]
+    )
     chunkedEnvelopes = negotiation.chunkedMaxFrameBytes != nil
     maxFrameBytes = negotiation.chunkedMaxFrameBytes ?? syncDefaultMaxFrameBytes
     compressionCodec = negotiation.deflateThresholdBytes != nil ? .deflate : nil
@@ -311,10 +387,12 @@ final class MachineConnection {
     // Every hello replaces it: a machine that moved to an older ADE (no
     // version in the hello) must not keep the last one.
     hostAppVersion = nonEmptyTrimmed((payload["brain"] as? [String: Any])?["appVersion"] as? String)
+    hostUpdateFacts = HostUpdateFacts.fromHello(payload["brain"] as? [String: Any], now: Date())
     chunkAssembler = SyncEnvelopeChunkAssembler()
     socket = result.task
     liveRouteKind = syncConnectionRouteKind(result.address)
     liveAddress = result.address
+    liveSinceUptime = ProcessInfo.processInfo.systemUptime
     lastInboundUptime = ProcessInfo.processInfo.systemUptime
     lastUpdateAt = Date()
     setPhase(.live)
@@ -324,6 +402,7 @@ final class MachineConnection {
     )
     subscribeRoster()
     restoreChatSubscriptions()
+    restoreTerminalSubscriptions()
     // Over the relay the host closes this socket when the account proof in
     // the hello expires (about a minute). Renew it like the focused
     // connection does, or every relay-connected machine drops and redials
@@ -357,6 +436,7 @@ final class MachineConnection {
     for (_, task) in snapshotWatchdogs { task.cancel() }
     snapshotWatchdogs.removeAll()
     pendingSnapshotSessionIds.removeAll()
+    resetTerminalTransportState()
     if let socket {
       socket.cancel(with: .goingAway, reason: reason.data(using: .utf8))
     }
@@ -367,7 +447,7 @@ final class MachineConnection {
     // offline view and the seq for the next socket's `sinceSeq`. A brain that
     // still holds that roster state answers with a delta, any other brain
     // with a full snapshot.
-    let error = NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
+    let error = NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: machineConnectionUnreachableMessage])
     let requests = pending
     pending.removeAll()
     for (_, request) in requests {
@@ -399,6 +479,13 @@ final class MachineConnection {
           machineConnectionLog.notice(
             "fleet socket closed machine=\(self.machineKey, privacy: .public) code=\(task.closeCode.rawValue) reason=\(reason, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
           )
+          if heartbeatClosedSocket !== task { SyncLiveDropReport.report(
+            connection: "fleet",
+            routeKind: liveRouteKind,
+            closeCode: syncWebSocketCloseCode(task),
+            connectionAgeSeconds: liveSinceUptime.map { ProcessInfo.processInfo.systemUptime - $0 },
+            error: error
+          ) }
         }
         return
       }
@@ -486,8 +573,19 @@ final class MachineConnection {
         resolve(requestId: pre.requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
     case "command_result", "chat_history", "chat_tool_result", "file_response", "relay_reauthorize_result",
-         "project_set_icon_result", "roster_chats":
+         "project_set_icon_result", "roster_chats", "terminal_snapshot", "terminal_history",
+         // The project actions Start on and Add project send to a computer
+         // that is not the primary.
+         "project_browse_result", "project_default_parent_dir", "project_open_result",
+         "project_create_result", "project_clone_result", "project_forget_result",
+         "project_list_my_github_repos_result":
       resolve(requestId: pre.requestId, result: .success(payload))
+    case "terminal_data":
+      handleTerminalData(payload)
+    case "terminal_exit":
+      handleTerminalExit(payload)
+    case "terminal_input_ack":
+      if let dict = payload as? [String: Any] { terminalStream.handleAcknowledgement(dict) }
     case "roster_snapshot":
       // Decoded off the main actor: a full roster is large enough to hang the
       // app. The receive loop awaits each frame, so ordering holds.
@@ -508,9 +606,12 @@ final class MachineConnection {
       }
     case "macDesktop.streamEnded":
       syncService?.receiveRemoteMacDesktopEnded(payload, machineKey: machineKey)
+    case "provider_logins_changed":
+      // The account's sign-ins are account-wide: a change seen on any machine reads them again.
+      syncService?.noteProviderLoginsChanged()
     default:
-      // Changesets, catalogs, terminals and anything else are not for a
-      // roster peer. Hosts that know `syncRole: "roster"` never send them.
+      // Changesets, catalogs and anything else are not for a roster peer.
+      // Hosts that know `syncRole: "roster"` never send them.
       break
     }
     lastUpdateAt = Date()
@@ -519,7 +620,7 @@ final class MachineConnection {
   // MARK: - Requests
 
   @discardableResult
-  private func send(type: String, requestId: String?, payload: Any, projectId: String? = nil) -> Bool {
+  func send(type: String, requestId: String?, payload: Any, projectId: String? = nil) -> Bool {
     guard let socket else { return false }
     guard let frames = try? syncEncodeEnvelopeFrames(
       type: type,
@@ -545,29 +646,32 @@ final class MachineConnection {
     return true
   }
 
-  private func request(
+  func request(
     type: String,
     payload: [String: Any],
     requestId: String = UUID().uuidString,
     projectId: String? = nil,
     timeoutNanoseconds: UInt64,
-    timeoutMessage: String
+    timeoutMessage: String,
+    accept: ((Any) throws -> Void)? = nil
   ) async throws -> Any {
     guard socket != nil, phase == .live else {
-      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: machineConnectionUnreachableMessage])
     }
     return try await withCheckedThrowingContinuation { continuation in
       let timeoutTask = Task { @MainActor [weak self] in
         try? await Task.sleep(nanoseconds: timeoutNanoseconds)
         guard !Task.isCancelled else { return }
         self?.resolve(requestId: requestId, result: .failure(SyncRequestTimeout.error(message: timeoutMessage)))
+        // No answer may mean a dead link that reads live (`probeLink`).
+        self?.probeLink(trigger: "request_timeout")
       }
-      pending[requestId] = PendingRequest(continuation: continuation, timeoutTask: timeoutTask)
+      pending[requestId] = PendingRequest(continuation: continuation, timeoutTask: timeoutTask, accept: accept)
       if !send(type: type, requestId: requestId, payload: payload, projectId: projectId) {
         resolve(requestId: requestId, result: .failure(NSError(
           domain: "ADE",
           code: 14,
-          userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."]
+          userInfo: [NSLocalizedDescriptionKey: machineConnectionUnreachableMessage]
         )))
       }
     }
@@ -576,6 +680,14 @@ final class MachineConnection {
   private func resolve(requestId: String?, result: Result<Any, Error>) {
     guard let requestId, let request = pending.removeValue(forKey: requestId) else { return }
     request.timeoutTask.cancel()
+    if case .success(let value) = result, let accept = request.accept {
+      do {
+        try accept(value)
+      } catch {
+        request.continuation.resume(throwing: error)
+        return
+      }
+    }
     request.continuation.resume(with: result)
   }
 
@@ -599,6 +711,43 @@ final class MachineConnection {
         NSLocalizedDescriptionKey: result.message ?? "The machine could not change the icon.",
       ])
     }
+    requestRosterSnapshot()
+  }
+
+  /// Removes a folder's entry from this machine (`project_forget_request`).
+  /// The folder stays on disk. Never queued: it acts on this machine only.
+  func forgetProject(projectId: String, rootPath: String?) async throws {
+    var payload: [String: Any] = ["projectId": projectId]
+    if let rootPath = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rootPath.isEmpty {
+      payload["rootPath"] = rootPath
+    }
+    let raw = try await request(
+      type: "project_forget_request",
+      payload: payload,
+      timeoutNanoseconds: 8_000_000_000,
+      timeoutMessage: "Timed out removing that project."
+    )
+    guard let result = machineConnectionDecode(raw, as: MobileProjectForgetResultPayload.self) else {
+      throw NSError(domain: "ADE", code: mobileProjectForgetUnreadableReplyCode, userInfo: [
+        NSLocalizedDescriptionKey: "The computer sent an unreadable answer.",
+      ])
+    }
+    guard result.ok else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: result.message ?? "The computer could not remove the project.",
+      ])
+    }
+    // Off this machine's roster and its offline cache now, so a link that
+    // drops before the next snapshot does not keep the row; the snapshot
+    // stays the authority.
+    let remaining = rosterProjects.filter { $0.projectId != projectId }
+    if remaining != rosterProjects {
+      rosterProjects = remaining
+      rosterRevision &+= 1
+      schedulePersistRoster()
+      onChange?()
+    }
+    syncService?.noteProjectRemovedFromMachine(projectId: projectId, rootPath: rootPath, profile: profile)
     requestRosterSnapshot()
   }
 
@@ -650,11 +799,11 @@ final class MachineConnection {
   }
 
   func supportsAction(_ action: String) -> Bool {
-    commandDescriptors.contains { $0.action == action }
+    commandDescriptorsByAction[action] != nil
   }
 
   func commandDescriptor(for action: String) -> SyncRemoteCommandDescriptor? {
-    commandDescriptors.first { $0.action == action }
+    commandDescriptorsByAction[action]
   }
 
   // MARK: - Heartbeat
@@ -671,6 +820,7 @@ final class MachineConnection {
           // Nothing (not even a host ping) for three intervals: the path is
           // dead. Close; the run loop reconnects with backoff.
           machineConnectionLog.notice("fleet heartbeat silence machine=\(self.machineKey, privacy: .public)")
+          self.heartbeatClosedSocket = self.socket
           self.socket?.cancel(with: .goingAway, reason: nil)
           return
         }
@@ -877,6 +1027,14 @@ final class MachineConnection {
     return projects.map { $0.excludingIdentityChats() }
   }
 
+  /// Drops a roster save that waits to run. The fleet calls it when the
+  /// account leaves: the account change purges the roster caches, and a save
+  /// that captured the old roster must not write it back.
+  func discardPendingRosterSave() {
+    rosterPersistTask?.cancel()
+    rosterPersistTask = nil
+  }
+
   private func schedulePersistRoster() {
     rosterPersistTask?.cancel()
     guard let key = rosterCacheKey else { return }
@@ -1043,6 +1201,27 @@ final class MachineConnection {
       noteSnapshotDropped(sessionId: sessionId, reason: "notSubscribed", rawEventCount: rawEventCount)
       return
     }
+    // Not a snapshot: the host could not serve this chat. Never apply its
+    // empty `events`, which would read as an empty chat; settle the request
+    // and show the host's reason (Retry asks again).
+    if let unavailable = dict["unavailable"] as? [String: Any] {
+      let code = unavailable["code"] as? String ?? "unknown"
+      let message = (unavailable["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      CrashReporting.breadcrumb("chat.stream", message: "fleet chat_subscribe unavailable", data: [
+        "machine": machineKey,
+        "session": sessionId,
+        "code": code,
+      ])
+      chatStreamTraces[sessionId, default: ChatStreamTrace()].unavailableCode = code
+      pendingSnapshotSessionIds.remove(sessionId)
+      snapshotWatchdogs.removeValue(forKey: sessionId)?.cancel()
+      stalledChatSessionIds.insert(sessionId)
+      if let key = chatThreadKey(sessionId: sessionId) {
+        registry.markSnapshotStalled(key, message: message?.isEmpty == false ? message : nil)
+      }
+      onChange?()
+      return
+    }
     let hostSupportsChatLogV2 = supportsChatLogV2
     let decoded = await Task.detached(priority: .userInitiated) {
       chatThreadDecodeSnapshot(dict, hostSupportsChatLogV2: hostSupportsChatLogV2)
@@ -1145,6 +1324,7 @@ final class MachineConnection {
     }()
     fields["connRoute"] = liveRouteKind.map { String(describing: $0) } ?? "nil"
     fields["connSocketCloses"] = String(socketCloseCount)
+    fields["hostAppVersion"] = hostAppVersion ?? "nil"
     fields["hostChatStreaming"] = String(supportsChatStreaming)
     fields["hostChatLogV2"] = String(supportsChatLogV2)
     fields["subscribed"] = String(chatScopes[sessionId] != nil)
@@ -1233,6 +1413,9 @@ func machineConnectionBackoffNanoseconds(failures: Int, jitter: Double = Double.
   guard index < machineConnectionRetryDelaysSeconds.count else { return nil }
   return UInt64(machineConnectionRetryDelaysSeconds[index] * jitter * 1_000_000_000)
 }
+
+/// The error text when a computer cannot take a request right now.
+let machineConnectionUnreachableMessage = "Can’t reach this computer right now."
 
 func machineConnectionDecode<T: Decodable>(_ payload: Any, as type: T.Type) -> T? {
   guard JSONSerialization.isValidJSONObject(payload),

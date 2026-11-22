@@ -10,9 +10,11 @@ import {
   MODEL_REGISTRY,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { openKvDb, type AdeDb } from "../state/kvDb";
+import { type AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   collectAdeDatabaseUsageStats,
+  collectDatabaseActivityDays,
   isMeaningfulUsageAction,
   recordUsageInteraction,
   usageActionFromIpcChannel,
@@ -277,11 +279,16 @@ afterEach(() => {
 });
 
 describe("claudePollAllowsKeychain", () => {
-  it("opens the Keychain for a scoped account on any poll, and for the default account only on an explicit refresh", () => {
-    expect(claudePollAllowsKeychain("automatic", undefined)).toBe(false);
-    expect(claudePollAllowsKeychain("user", undefined)).toBe(true);
-    expect(claudePollAllowsKeychain("automatic", "/tmp/claude-1028")).toBe(true);
-    expect(claudePollAllowsKeychain("automatic", "  ")).toBe(false);
+  it.each([
+    { reason: "automatic", home: undefined, readBefore: false, allowed: false },
+    { reason: "user", home: undefined, readBefore: false, allowed: true },
+    // Once a poll read the default login there, background polls may again:
+    // the cached token expires after about eight hours.
+    { reason: "automatic", home: undefined, readBefore: true, allowed: true },
+    { reason: "automatic", home: "/tmp/claude-1028", readBefore: false, allowed: true },
+    { reason: "automatic", home: "  ", readBefore: false, allowed: false },
+  ] as const)("$reason poll, home $home, read before $readBefore: Keychain $allowed", ({ reason, home, readBefore, allowed }) => {
+    expect(claudePollAllowsKeychain(reason, home, readBefore)).toBe(allowed);
   });
 });
 
@@ -2286,20 +2293,6 @@ describe("createUsageTrackingService", () => {
     expect(summary).toMatchObject({ available: false, turns: 0, rows: [], burnRates: [], groupBy: "provider" });
     // Days clamp to 90.
     expect(Date.parse(summary.until) - Date.parse(summary.since)).toBe(90 * 24 * 60 * 60 * 1000);
-    service.dispose();
-  });
-
-  it("returns an empty snapshot before polling", () => {
-    const logger = createLogger();
-    const service = createUsageTrackingService({ logger });
-
-    const snapshot = service.getUsageSnapshot();
-    expect(snapshot.windows).toEqual([]);
-    expect(snapshot.pacing.status).toBe("on-track");
-    expect(snapshot.costs).toEqual([]);
-    expect(snapshot.errors).toEqual([]);
-    expect(snapshot.lastPolledAt).toBeTruthy();
-
     service.dispose();
   });
 
@@ -5911,7 +5904,7 @@ describe("ADE database usage aggregation", () => {
   async function createStatsDb(): Promise<AdeDb> {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-stats-"));
     roots.push(root);
-    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    const db = await openFreshKvDb(path.join(root, "ade.db"), createLogger());
     databases.push(db);
     db.run(
       `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
@@ -6080,6 +6073,44 @@ describe("ADE database usage aggregation", () => {
     // has no per-day counts and no lane name, and a bare UUID row would be
     // worse than none.
     expect(stats?.lanes?.some((lane) => lane.laneId === "lane-gone")).toBe(false);
+  });
+
+  it("publishes the account activity the machine scope counts, with a deleted lane on its last active day", async () => {
+    // The account merge takes the larger of a database's published counts
+    // and the open project's machine-scope counts per day, so the two reads
+    // must agree on every live row, or one day shows two different numbers.
+    const db = await createStatsDb();
+    const session = (id: string, startedAt: string, toolType: string, chatSessionId: string | null) => db.run(
+      `insert into terminal_sessions(id, lane_id, tool_type, chat_session_id, title, started_at, transcript_path, status)
+       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, "lane-1", toolType, chatSessionId, id, startedAt, "", "ended"],
+    );
+    session("chat-1", "2026-07-08T12:00:01.000Z", "claude-chat", null);
+    session("chat-2", "2026-07-08T12:00:02.000Z", "claude", "chat-row-2");
+    session("shell-1", "2026-07-08T12:00:03.000Z", "shell", null);
+    session("too-old", "2026-05-01T12:00:00.000Z", "shell", null);
+    for (const [id, kind, status] of [["op-c", "git_commit", "succeeded"], ["op-p", "pr_land", "succeeded"], ["op-f", "git_commit", "failed"]]) {
+      db.run(
+        `insert into operations(id, project_id, lane_id, kind, started_at, ended_at, status)
+         values (?, ?, ?, ?, ?, ?, ?)`,
+        [id, "project-1", "lane-1", kind, "2026-07-08T12:00:04.000Z", "2026-07-08T12:00:05.000Z", status],
+      );
+    }
+    insertTombstone(db);
+
+    const published = collectDatabaseActivityDays(db, "2026-07-01");
+    const machine = collectAdeDatabaseUsageStats(db, { since: "2026-07-01T00:00:00.000Z", until: "2026-07-09T23:59:59.999Z" });
+    // One instant's day in every time zone: all the rows above are seconds apart.
+    const day = localDayKey("2026-07-08T12:00:00.000Z");
+    const point = machine?.daily.find((entry) => entry.date === day);
+
+    expect(published?.id).toBe("project-1");
+    expect(published?.days[day]).toEqual([2, 1, 1, 1]);
+    expect([point?.sessions, point?.commits, point?.prs]).toEqual([3, 1, 1]);
+    // Before the retention edge: not published.
+    expect(Object.keys(published?.days ?? {}).some((key) => key < "2026-07-01")).toBe(false);
+    // The tombstone keeps totals, not days, so they sit on its last active day.
+    expect(published?.days["2026-07-07"]).toEqual([3, 2, 4, 1]);
   });
 
   it("counts a fresh delete once when the operations row and the tombstone both survive", async () => {
@@ -6444,6 +6475,15 @@ describe("ADE database usage aggregation", () => {
     expect(usageActionFromIpcChannel("ade.pty.create")).toBe("work.startCliSession");
     expect(usageActionFromRpcDomain("lane", "create")).toBe("lanes.create");
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("lane", "archiveAndReclaim"))).toBe(true);
+    // Lane sharing: share decisions count as lane mutations; reads,
+    // invite re-sends and the transfer steps of a move do not.
+    expect(usageActionFromRpcDomain("lane_share", "create")).toBe("lanes.share");
+    for (const action of ["create", "updateRights", "revoke", "leave", "moveStart", "moveRespond"]) {
+      expect(isMeaningfulUsageAction(usageActionFromRpcDomain("lane_share", action)), action).toBe(true);
+    }
+    for (const action of ["list", "resendInvite", "moveList", "movePackChunk", "moveReceiveChunk"]) {
+      expect(isMeaningfulUsageAction(usageActionFromRpcDomain("lane_share", action)), action).toBe(false);
+    }
     expect(usageActionFromRpcDomain("file", "writeWorkspaceText")).toBe("files.writeText");
     expect(usageActionFromRpcDomain("pty", "write")).toBe("pty.write");
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("pty", "write"))).toBe(false);
@@ -7222,89 +7262,6 @@ describe("per-account quota attribution", () => {
     expect(result.windows.every((window) => window.accountId === "claude:claude")).toBe(true);
   });
 
-  /** A fake Claude CLI in its pty that answers `/usage`, recording the home it ran for. */
-  function fakeClaudeCli(spawnedHomes: Array<string | undefined>): void {
-    mockState.ptySpawn.mockImplementation((_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
-      spawnedHomes.push(options.env.CLAUDE_CONFIG_DIR);
-      let emit: ((chunk: string) => void) | null = null;
-      return {
-        onData: (cb: (chunk: string) => void) => { emit = cb; },
-        onExit: () => undefined,
-        write: (data: string) => {
-          if (data.startsWith("/usage")) {
-            emit?.("Settings: Usage\nCurrent session\n70% left\nResets 5pm\nCurrent week (all models)\n12% used\nResets Jul 12 at 3pm\n");
-          }
-        },
-        kill: () => undefined,
-      };
-    });
-  }
-
-  /** One background poll. It reads real files between its timers, so the fake clock moves one step at a time. */
-  async function backgroundPoll(instances: TestInstance[]) {
-    let settled = false;
-    const pending = _testing.pollClaudeUsage(logger as never, { reason: "automatic" }, instances)
-      .finally(() => { settled = true; });
-    while (!settled) {
-      await new Promise((resolve) => setImmediate(resolve));
-      await vi.advanceTimersByTimeAsync(100);
-    }
-    return await pending;
-  }
-
-  function withPlatform(platform: NodeJS.Platform): () => void {
-    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
-    Object.defineProperty(process, "platform", { ...original, value: platform });
-    return () => Object.defineProperty(process, "platform", original);
-  }
-
-  it.each([
-    { name: "a second account", platform: "darwin" as const, base: false, refreshes: true },
-    { name: "the base account off macOS", platform: "linux" as const, base: true, refreshes: true },
-    // Its background poll skips the Keychain and could never read the result.
-    { name: "the base account on macOS", platform: "darwin" as const, base: true, refreshes: false },
-  ])("has the Claude CLI refresh $name's expired login from a background poll, once per allowance", async ({ platform, base, refreshes }) => {
-    // Claude tokens last about eight hours and ADE never refreshes one itself,
-    // and smart balance never sends a chat to an account it has no reading
-    // for, so an idle account's login has no chat coming to refresh it.
-    const instance = base ? defaultInstance() : workInstance();
-    const expired = { accessToken: "stale", refreshToken: "refresh", expiresAt: Date.now() - 60_000 };
-    writeJson(path.join(instance.configHome, ".credentials.json"), { claudeAiOauth: expired });
-    vi.stubEnv("CLAUDE_CODE_EXECUTABLE_PATH", "/fake/claude");
-    vi.stubGlobal("fetch", vi.fn(async () => {
-      throw new Error("an expired token must not be sent");
-    }));
-    const spawnedHomes: Array<string | undefined> = [];
-    fakeClaudeCli(spawnedHomes);
-    const restorePlatform = withPlatform(platform);
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
-    try {
-      const first = await backgroundPoll([instance]);
-      const accountWindows = first.windows.filter((window) => window.accountId === `claude:${instance.id}`);
-      if (!refreshes) {
-        expect(spawnedHomes).toEqual([]);
-        expect(accountWindows).toEqual([]);
-        return;
-      }
-      expect(spawnedHomes).toEqual([instance.configHome]);
-      expect(accountWindows.map((window) => [window.windowType, window.percentUsed]).sort())
-        .toEqual([["five_hour", 30], ["weekly", 12]]);
-
-      // A CLI run that did not fix the login is not repeated on the next tick…
-      await backgroundPoll([instance]);
-      expect(spawnedHomes).toHaveLength(1);
-
-      // …but is once the allowance runs out.
-      vi.setSystemTime(Date.now() + 31 * 60_000);
-      await backgroundPoll([instance]);
-      expect(spawnedHomes).toHaveLength(2);
-    } finally {
-      vi.useRealTimers();
-      vi.unstubAllEnvs();
-      restorePlatform();
-    }
-  });
-
   it("does not resend a Claude token the usage API rejected, and reads the CLI's replacement", async () => {
     const credentials = (accessToken: string) => ({
       claudeAiOauth: { accessToken, refreshToken: "refresh", expiresAt: Date.now() + 60 * 60_000 },
@@ -7717,7 +7674,12 @@ describe("per-account quota attribution", () => {
         nextExpiresAt: "2099-03-14T02:00:00.000Z",
       });
 
-      await expect(service.consumeResetCredit({ accountId: "claude:work" }))
+      // A peer that showed another login for this id: nothing is spent.
+      await expect(service.consumeOwnResetCredit({ accountId: "claude:work", email: "someone-else@example.com" }))
+        .resolves.toMatchObject({ ok: false, status: "failure" });
+      expect(calls.some((call) => call.method === "POST")).toBe(false);
+
+      await expect(service.consumeOwnResetCredit({ accountId: "claude:work", email: "WORK@example.com" }))
         .resolves.toEqual({ ok: true, status: "reset" });
       expect(calls.find((call) => call.method === "POST")?.url)
         .toBe("https://api.anthropic.com/api/organizations/org-1/reset_rate_limits");

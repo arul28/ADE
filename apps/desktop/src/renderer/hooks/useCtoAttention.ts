@@ -1,7 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { CtoAttentionState } from "../../shared/types";
 import { shouldRefreshSessionListForChatEvent } from "../lib/chatSessionEvents";
-import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
+import { selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore } from "../state/appStore";
+import { cachedCtoHomeResolution, subscribeCtoHomeResolution, type CtoHomeResolution } from "../state/ctoHome";
+import { useStableBinding } from "../state/laneMachineRouting";
+import { useTabCopyPin } from "../state/repositoryScope";
 
 const IDLE: CtoAttentionState = { status: "idle", awaitingInput: false, since: null };
 // Each probe is a full identity-session scan on the host, so the safety read
@@ -28,9 +31,25 @@ export function useCtoAttention(): void {
   const showWelcome = useAppStore((state) => state.showWelcome);
   const setCtoAttention = useAppStore((state) => state.setCtoAttention);
   const trackedProjectRoot = showWelcome ? null : currentProjectRoot;
+  // The CTO lives on its home machine (C-home). Use the home the CTO page
+  // resolved; before the page has resolved one, the tab's copy, as before.
+  // An unreachable home, or no copy online, probes nothing.
+  const scopeKey = useAppStore(selectActiveProjectStateKey);
+  const tabCopyPin = useTabCopyPin();
+  const [resolution, setResolution] = useState<CtoHomeResolution | null>(() => cachedCtoHomeResolution(scopeKey));
+  useEffect(() => {
+    setResolution(cachedCtoHomeResolution(scopeKey));
+    return subscribeCtoHomeResolution((changed) => {
+      if (changed === scopeKey) setResolution(cachedCtoHomeResolution(changed));
+    });
+  }, [scopeKey]);
+  const probePin = useStableBinding(
+    resolution ? (resolution.status === "resolved" ? resolution.pin : null) : tabCopyPin,
+  );
+  const probePinKey = probePin?.key ?? null;
 
   useEffect(() => {
-    if (!trackedProjectRoot) {
+    if (!trackedProjectRoot || !probePin) {
       setCtoAttention(IDLE);
       return;
     }
@@ -55,7 +74,7 @@ export function useCtoAttention(): void {
       }
       inFlight = true;
       try {
-        const next = await window.ade?.cto?.getAttention?.();
+        const next = await window.ade?.cto?.getAttention?.(probePin);
         if (cancelled || !next) return;
         if (next.status === "unknown") return;
         const key = attentionKey(next);
@@ -114,7 +133,7 @@ export function useCtoAttention(): void {
       if (!shouldRefreshSessionListForChatEvent(event)) return;
       unchangedReads = 0;
       schedule();
-    });
+    }, probePin);
     const onFocus = () => {
       unchangedReads = 0;
       schedule(0);
@@ -138,5 +157,7 @@ export function useCtoAttention(): void {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [trackedProjectRoot, setCtoAttention]);
+    // The pin is held by key (useStableBinding).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackedProjectRoot, setCtoAttention, probePinKey]);
 }

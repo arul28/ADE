@@ -21,7 +21,13 @@ enum CrashReporting {
   static func start() {
     guard !didStart else { return }
     let environment = ProcessInfo.processInfo.environment
-    if ProductAnalytics.isTruthyFlag(environment["ADE_SENTRY_DISABLED"]) || !ProductAnalytics.shared.isEnabled {
+    // A Debug run turns analytics off. `ADE_SENTRY_DEV=1` still reports, as it
+    // did before that. `DO_NOT_TRACK` turns both off.
+    if ProductAnalytics.isTruthyFlag(environment["DO_NOT_TRACK"])
+      || ProductAnalytics.isTruthyFlag(environment["ADE_SENTRY_DISABLED"]) {
+      return
+    }
+    if !ProductAnalytics.shared.isEnabled && !ProductAnalytics.isTruthyFlag(environment["ADE_SENTRY_DEV"]) {
       return
     }
     #if DEBUG
@@ -64,6 +70,10 @@ enum CrashReporting {
       options.enableReportNonFullyBlockingAppHangs = false
       options.enableWatchdogTerminationTracking = true
       options.enableLogs = true
+      // A build below its minimum sends no logs and starts no traces either
+      // (see `beforeSend`). A nil from the sampler means "use the rate below".
+      options.beforeSendLog = { log in PhoneUpdateGateFlag.isBlocked ? nil : log }
+      options.tracesSampler = { _ in PhoneUpdateGateFlag.isBlocked ? NSNumber(value: 0) : nil }
       options.tracesSampleRate = 0.05
       options.tracePropagationTargets = firstPartyTargets
       options.enableCaptureFailedRequests = true
@@ -75,7 +85,10 @@ enum CrashReporting {
       options.beforeBreadcrumb = { crumb in ADECrashScrubber.scrub(crumb) }
       // The budget decides first, on the raw event; the scrubber only cleans.
       options.beforeSend = { event in
-        if isIdleRunLoopAppHang(event) || isNoiseHang(event) { return nil }
+        // A build below its minimum is no longer supported: nobody fixes
+        // what it reports (`ClientUpdateGate.swift`).
+        if PhoneUpdateGateFlag.isBlocked { return nil }
+        if isIdleRunLoopAppHang(event) || isNoiseHang(event) || isAccessibilityLoadAppHang(event) { return nil }
         groupAppHang(event)
         guard ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event)) else { return nil }
         let scrubbed = ADECrashScrubber.scrub(event)
@@ -87,14 +100,21 @@ enum CrashReporting {
       }
     }
     // The tags every ADE Sentry project carries (`sentryCommonTags` in
-    // `shared/sentry/config.ts`). No `is_internal`: a phone has no team-install
-    // marker. The OS is Sentry's own `os` tag. `machine_id` is this app on this
-    // phone, the value PostHog events carry (`DirectPostHogProductAnalyticsSink.machineID`).
+    // `shared/sentry/config.ts`). `is_internal` is set for Apple's review farm
+    // only; a person's phone has no team-install marker. The OS is Sentry's
+    // own `os` tag. `machine_id` is this app on this phone, the value PostHog
+    // events carry (`DirectPostHogProductAnalyticsSink.machineID`).
+    let reportEnvironment = sentryEnvironment(isDevelopmentRun: isDevelopmentRun, releaseChannel: distribution.releaseChannel)
     SentrySDK.configureScope { scope in
       scope.setTag(value: "ios", key: "surface")
       scope.setTag(value: "ios", key: "client")
       scope.setTag(value: isDevelopmentRun ? "development" : distribution.releaseChannel, key: "release_channel")
+      scope.setTag(value: reportEnvironment, key: "environment")
       scope.setTag(value: distribution.rawValue, key: "distribution")
+      if let review = ADEAnalyticsReviewContext.current {
+        scope.setTag(value: review.rawValue, key: "review_context")
+        scope.setTag(value: "true", key: "is_internal")
+      }
       if let machineID = DirectPostHogProductAnalyticsSink.machineID {
         scope.setTag(value: machineID, key: "machine_id")
       }
@@ -240,6 +260,21 @@ enum CrashReporting {
     })
   }
 
+  /// A non-fatal app hang inside iOS loading its accessibility settings bundle
+  /// (an accessibility setting changed; Apple's review devices do it on
+  /// launch), with no ADE code in the run loop: the system's work, not ours
+  /// (ADE-IOS-25). A watchdog kill is always kept.
+  private static func isAccessibilityLoadAppHang(_ event: Sentry.Event) -> Bool {
+    guard event.level != .fatal, let exception = event.exceptions?.last,
+          let type = exception.type, type.contains("App Hang"), !type.hasPrefix("Fatal") else { return false }
+    let stacktrace = exception.stacktrace
+      ?? event.threads?.first(where: { $0.current?.boolValue == true })?.stacktrace
+    guard let frames = stacktrace?.frames else { return false }
+    return ADEAppHangStack.isAccessibilityLoad(frames.map {
+      ADEAppHangStack.Frame(package: $0.package, inApp: $0.inApp?.boolValue == true)
+    })
+  }
+
   /// A hang report that is not a freeze someone saw: see `ADEHangReportFilter`.
   private static func isNoiseHang(_ event: Sentry.Event) -> Bool {
     guard let exception = event.exceptions?.last else { return false }
@@ -258,22 +293,50 @@ enum CrashReporting {
   /// the main thread was: the innermost ADE function when the phone named
   /// one, else the library it was blocked in (SQLite, SwiftUI, …), so hangs
   /// with different causes stay apart.
+  ///
+  /// The OS's own hang reports (MetricKit's `MXHangDiagnostic`) get the same
+  /// treatment: their title carries the duration ("hangDuration:2.4 sec"), so
+  /// each one opened its own issue. They group as `mx_hang` plus the same site.
   private static func groupAppHang(_ event: Sentry.Event) {
-    guard let exception = event.exceptions?.last,
-          let type = exception.type, type.contains("App Hang") else { return }
+    guard let exception = event.exceptions?.last, let type = exception.type else { return }
+    let isMetricKitHang = type == "MXHangDiagnostic"
+    guard isMetricKitHang || type.contains("App Hang") else { return }
+    // A MetricKit report may mark no thread as current; its first thread with
+    // frames is then the hung one (MetricKit lists the main thread first).
     let stacktrace = exception.stacktrace
       ?? event.threads?.first(where: { $0.current?.boolValue == true })?.stacktrace
+      ?? (isMetricKitHang ? event.threads?.first(where: { $0.stacktrace?.frames.isEmpty == false })?.stacktrace : nil)
     let frames = stacktrace?.frames ?? []
     let site = innermostAppFunction(frames) ?? innermostBlockingLibrary(frames)
-    event.fingerprint = ["ios", "app_hang", type] + (site.map { [$0] } ?? [])
+    let kind = isMetricKitHang ? ["ios", "mx_hang"] : ["ios", "app_hang", type]
+    event.fingerprint = kind + (site.map { [$0] } ?? [])
+    // A MetricKit report arrives a day later, so this launch's publish counts
+    // say nothing about it.
+    if isMetricKitHang { return }
     // What fed the main thread before the hang. Many hangs hold no ADE frame
     // at all: the stack is SwiftUI working through view updates (ADE-IOS-27,
     // 8 seconds after launch) and says nothing about which state kept
     // changing. The publish counts and the app's age do.
-    if let hang = ADEHangContext.shared.snapshot(at: event.timestamp) {
+    if var hang = ADEHangContext.shared.snapshot(at: event.timestamp) {
+      // A phone in Low Power Mode or running hot is slowed down: a 4 s SwiftUI
+      // update with no ADE frame on a throttled CPU (ADE-IOS-2M came at 5%
+      // battery) reads differently from one on a cool, charged phone.
+      let process = ProcessInfo.processInfo
+      hang["low_power_mode"] = process.isLowPowerModeEnabled
+      hang["thermal_state"] = thermalStateName(process.thermalState)
       var context = event.context ?? [:]
       context["ade_hang"] = hang
       event.context = context
+    }
+  }
+
+  private static func thermalStateName(_ state: ProcessInfo.ThermalState) -> String {
+    switch state {
+    case .nominal: return "nominal"
+    case .fair: return "fair"
+    case .serious: return "serious"
+    case .critical: return "critical"
+    @unknown default: return "unknown"
     }
   }
 
@@ -424,6 +487,26 @@ enum ADEAppHangStack {
   }
 
   private static let idleRunLoopLibraries: Set<String> = ["CoreFoundation", "libsystem_kernel.dylib"]
+
+  /// True when the run loop is busy in iOS's own accessibility loading (its
+  /// settings bundle, ADE-IOS-25, or `AXBinaryMonitor` scanning the images
+  /// loaded at launch, ADE-IOS-2X) and no ADE code runs inside the run loop.
+  /// Accessibility reading ADE's views (SwiftUI below the accessibility
+  /// frame, as when VoiceOver walks a large list) is ours, and is kept.
+  static func isAccessibilityLoad(_ frames: [Frame]) -> Bool {
+    guard let runLoopEntry = frames.firstIndex(where: { library($0) == "GraphicsServices" }) else { return false }
+    let insideRunLoop = frames[frames.index(after: runLoopEntry)...]
+    guard !insideRunLoop.contains(where: \.inApp),
+          let loader = insideRunLoop.firstIndex(where: { accessibilityLoaderLibraries.contains(library($0)) }) else {
+      return false
+    }
+    return !frames[loader...].contains { viewLibraries.contains(library($0)) }
+  }
+
+  private static let accessibilityLoaderLibraries: Set<String> = [
+    "libAccessibility.dylib", "AccessibilitySettingsLoader", "AXCoreUtilities",
+  ]
+  private static let viewLibraries: Set<String> = ["SwiftUI", "SwiftUICore", "AttributeGraph"]
 
   private static func library(_ frame: Frame) -> String {
     guard let package = frame.package else { return "" }

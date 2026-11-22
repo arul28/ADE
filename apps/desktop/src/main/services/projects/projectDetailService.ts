@@ -265,7 +265,8 @@ async function readWorktreeSummary(args: {
   };
 }
 
-async function listLaneWorktreeRoots(rootPath: string): Promise<Array<{ rootPath: string; name: string }>> {
+/** The lane folders of a project: `.ade/worktrees/*` and every lane worktree outside it. */
+export async function listLaneWorktreeRoots(rootPath: string): Promise<Array<{ rootPath: string; name: string }>> {
   const worktreesPath = path.join(rootPath, ".ade", "worktrees");
   const byKey = new Map<string, { rootPath: string; name: string }>();
   try {

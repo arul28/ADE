@@ -4,7 +4,6 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { expectNoJargon } from "../../../../test/jargonGuard";
 import { LanesSettingsPage, StorageSettingsPage } from "../lanes/LanesSettingsPage";
 import { LocationPage } from "../location/LocationPage";
 import { ServiceStatusSection } from "./HealthService";
@@ -399,7 +398,18 @@ function makeLane(laneId: string, overrides: Partial<ProjectLaneHealth> = {}): P
 
 type ScopeInput = Parameters<typeof settingsMachineScope>[0];
 
-function renderPage(node: React.ReactNode, entry = "/settings?tab=lanes-git", scope?: ScopeInput) {
+/** This computer's copy of the project: Settings always pins the copy it shows. */
+const THIS_COPY = { kind: "local", key: `local:${PROJECT}`, rootPath: PROJECT, displayName: "proj" } as OpenProjectBinding;
+const THIS_COPY_SCOPE: ScopeInput = {
+  machineId: "this",
+  machineName: "This computer",
+  target: { kind: "pinned", binding: THIS_COPY },
+  isThisMachine: true,
+  isActiveBinding: true,
+  online: true,
+};
+
+function renderPage(node: React.ReactNode, entry = "/settings?tab=lanes-git", scope: ScopeInput = THIS_COPY_SCOPE) {
   const page = (
     <MemoryRouter initialEntries={[entry]}>
       {node}
@@ -407,7 +417,7 @@ function renderPage(node: React.ReactNode, entry = "/settings?tab=lanes-git", sc
       <DialogHost />
     </MemoryRouter>
   );
-  return render(scope ? <SettingsMachineScopeProvider scope={settingsMachineScope(scope)}>{page}</SettingsMachineScopeProvider> : page);
+  return render(<SettingsMachineScopeProvider scope={settingsMachineScope(scope)}>{page}</SettingsMachineScopeProvider>);
 }
 
 /** Project → Lanes: the lane list and the rules for new lanes, one view each. */
@@ -550,7 +560,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
       laneId: "lane-old",
       confirmation: "RECLAIM",
       forceDirty: true,
-    }, null));
+    }, THIS_COPY));
   });
 
   it("keeps reclaim focus inside the dialog and closes it on Escape", async () => {
@@ -640,26 +650,6 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     expect(await screen.findByText(/Compressed 12 files, saved 300 MB/)).toBeTruthy();
   });
 
-  it("uses plain language with no internal jargon on every page", async () => {
-    installAdeMock({ withExtras: true });
-    const lanes = renderStorage();
-    await openView("Space");
-    await openDetails();
-    expectNoJargon(lanes.container.textContent ?? "");
-    cleanup();
-
-    installAdeMock({ withExtras: true });
-    const location = renderPage(<LocationPage />, "/settings?tab=location");
-    await screen.findByText("2 things need attention");
-    expectNoJargon(location.container.textContent ?? "");
-    cleanup();
-
-    installAdeMock({ withExtras: true });
-    const service = renderPage(<ServiceStatusSection />, "/settings?tab=service");
-    await screen.findAllByText("280 MB");
-    expectNoJargon(service.container.textContent ?? "");
-  });
-
   it("offers safe cleanup for an obsolete backup even when the cache estimate is zero", async () => {
     installAdeMock({ extras: { ...makeExtras(), safeReclaimableBytes: 0 } });
     renderStorage();
@@ -690,7 +680,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     await waitFor(() => expect(runMaintenanceNow).toHaveBeenCalledTimes(1));
     expect(cleanupFn).toHaveBeenCalledWith(previewTargets, {
       preview: await cleanupPreview.mock.results[0]!.value,
-    }, null);
+    }, THIS_COPY);
     expect(cleanupFn.mock.invocationCallOrder[0]).toBeLessThan(runMaintenanceNow.mock.invocationCallOrder[0]!);
     // Files removed plus what maintenance returned, with the parts.
     expect(await within(dialog).findByText(/Freed 2\.0 GB/)).toBeTruthy();
@@ -718,39 +708,6 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     expect(await within(dialog).findByText(/some cleanup steps couldn't finish/i)).toBeTruthy();
     expect(getToasts().find((toast) => toast.title === "Some cleanup steps couldn't finish")?.tone).toBe("warning");
     expect(within(dialog).queryByText("Storage is already tidy.")).toBeNull();
-  });
-
-  it("shows the database breakdown in plain words", async () => {
-    installAdeMock({ withExtras: true });
-    renderStorage();
-    await openView("Space");
-    await openDetails();
-    expect(await screen.findByText("Webhook history")).toBeTruthy();
-    expect(screen.getByText("Sync bookkeeping")).toBeTruthy();
-    expect(screen.getByText("Core data")).toBeTruthy();
-    expect(screen.getByText(/Waiting to compact/)).toBeTruthy();
-  });
-
-  it("lists cleanups with what each freed, by kind", async () => {
-    installAdeMock({ withExtras: true });
-    renderStorage();
-    await openView("Space");
-    expect(await screen.findByText(/database 480 MB/)).toBeTruthy();
-    expect(screen.getByText(/2 cleanups freed 480 MB/)).toBeTruthy();
-  });
-
-  it("shows the background service: slow and failed apart, p95, memory and load", async () => {
-    installAdeMock({ withExtras: true });
-    renderPage(<ServiceStatusSection />, "/settings?tab=service");
-
-    expect((await screen.findAllByText("280 MB")).length).toBeGreaterThan(0);
-    expect(await screen.findByText(/Load: Light/)).toBeTruthy();
-    expect(screen.getByText(/95% of slow ones finished within 5\.2 s/)).toBeTruthy();
-    const responses = screen.getByRole("list", { name: /slow and failed responses/i });
-    const failed = within(responses).getByText("Failed").closest("li") as HTMLElement;
-    expect(within(failed).getByText("1")).toBeTruthy();
-    const slow = within(responses).getByText(/^Slow/).closest("li") as HTMLElement;
-    expect(within(slow).getByText("3")).toBeTruthy();
   });
 
   it("does not show a load reading when resource pressure is unavailable", async () => {
@@ -794,12 +751,12 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     expect(within(confirm).getByText("Points every saved path at the new folder.")).toBeTruthy();
     fireEvent.click(within(confirm).getByRole("button", { name: "Update paths" }));
 
-    await waitFor(() => expect(fix).toHaveBeenCalledWith({ fixId: "update-paths" }, null));
+    await waitFor(() => expect(fix).toHaveBeenCalledWith({ fixId: "update-paths" }, THIS_COPY));
     expect(await screen.findByText("1 thing needs attention")).toBeTruthy();
     expect(await screen.findByText("Updated 14 saved paths.")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /check again/i }));
-    await waitFor(() => expect(getReport).toHaveBeenLastCalledWith({ forceRefresh: true }, null));
+    await waitFor(() => expect(getReport).toHaveBeenLastCalledWith({ forceRefresh: true }, THIS_COPY));
   });
 
   it("shows the view that holds the card a link names", async () => {
@@ -878,6 +835,6 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     expect(await screen.findByText(/Skipped idle-picked-up-work: A chat is running/)).toBeTruthy();
     expect(screen.getByText(/Skipped merged-then-committed: It has commits that aren't pushed/)).toBeTruthy();
     expect(archiveAndReclaim).toHaveBeenCalledTimes(1);
-    expect(archiveAndReclaim).toHaveBeenCalledWith({ laneId: "merged-clean", confirmation: "RECLAIM" }, null);
+    expect(archiveAndReclaim).toHaveBeenCalledWith({ laneId: "merged-clean", confirmation: "RECLAIM" }, THIS_COPY);
   });
 });

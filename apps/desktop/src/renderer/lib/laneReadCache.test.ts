@@ -6,6 +6,10 @@ import {
   listLaneSnapshotsCoalesced,
   listLanesCoalesced,
 } from "./laneReadCache";
+import type { OpenProjectBinding } from "../../shared/types";
+
+/** The project's copy on one machine. */
+const PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
 
 const lanesList = vi.fn();
 const listSnapshots = vi.fn();
@@ -45,8 +49,8 @@ describe("laneReadCache", () => {
     const request = deferred<any[]>();
     lanesList.mockReturnValueOnce(request.promise);
 
-    const first = listLanesCoalesced({ includeArchived: false, includeStatus: false }, { projectRoot: "/repo" });
-    const second = listLanesCoalesced({ includeStatus: false }, { projectRoot: "/repo" });
+    const first = listLanesCoalesced({ includeArchived: false, includeStatus: false }, { projectRoot: "/repo", pin: PIN });
+    const second = listLanesCoalesced({ includeStatus: false }, { projectRoot: "/repo", pin: PIN });
 
     expect(lanesList).toHaveBeenCalledTimes(1);
     request.resolve([{ id: "lane-1" }]);
@@ -60,9 +64,13 @@ describe("laneReadCache", () => {
       .mockResolvedValueOnce([{ id: "lane-1" }])
       .mockResolvedValueOnce([{ id: "lane-2" }]);
 
-    await expect(listLanesCoalesced({ includeStatus: false }, { projectRoot: "/repo" })).resolves.toEqual([{ id: "lane-1" }]);
-    await expect(listLanesCoalesced({ includeStatus: false }, { projectRoot: "/repo" })).resolves.toEqual([{ id: "lane-2" }]);
+    await expect(listLanesCoalesced({ includeStatus: false }, { projectRoot: "/repo", pin: PIN })).resolves.toEqual([{ id: "lane-1" }]);
+    await expect(listLanesCoalesced({ includeStatus: false }, { projectRoot: "/repo", pin: PIN })).resolves.toEqual([{ id: "lane-2" }]);
 
+    expect(lanesList).toHaveBeenCalledTimes(2);
+
+    // No machine online: nothing to ask, nothing listed.
+    await expect(listLanesCoalesced({ includeStatus: false }, { projectRoot: "/repo", pin: null })).resolves.toEqual([]);
     expect(lanesList).toHaveBeenCalledTimes(2);
   });
 
@@ -73,8 +81,8 @@ describe("laneReadCache", () => {
       .mockReturnValueOnce(fast.promise)
       .mockReturnValueOnce(decorated.promise);
 
-    const first = listLaneSnapshotsCoalesced({ includeStatus: false }, { projectRoot: "/repo" });
-    const second = listLaneSnapshotsCoalesced({ includeStatus: true }, { projectRoot: "/repo" });
+    const first = listLaneSnapshotsCoalesced({ includeStatus: false }, { projectRoot: "/repo", pin: PIN });
+    const second = listLaneSnapshotsCoalesced({ includeStatus: true }, { projectRoot: "/repo", pin: PIN });
 
     expect(listSnapshots).toHaveBeenCalledTimes(2);
     fast.resolve([{ lane: { id: "fast" } }]);
@@ -88,8 +96,8 @@ describe("laneReadCache", () => {
     const request = deferred<any>();
     keybindingsGet.mockReturnValueOnce(request.promise);
 
-    const first = getKeybindingsCoalesced({ projectRoot: "/repo" });
-    const second = getKeybindingsCoalesced({ projectRoot: "/repo" });
+    const first = getKeybindingsCoalesced({ projectRoot: "/repo", pin: PIN });
+    const second = getKeybindingsCoalesced({ projectRoot: "/repo", pin: PIN });
 
     expect(keybindingsGet).toHaveBeenCalledTimes(1);
     request.resolve({ definitions: [], overrides: [] });
@@ -109,12 +117,12 @@ describe("laneReadCache", () => {
 
     const firstRead = listLaneSnapshotsCoalesced(
       { includeArchived: false, includeStatus: true },
-      { projectRoot: "/repo" },
+      { projectRoot: "/repo", pin: PIN },
     );
     invalidateLaneReadCache();
     const secondRead = listLaneSnapshotsCoalesced(
       { includeArchived: false, includeStatus: true },
-      { projectRoot: "/repo" },
+      { projectRoot: "/repo", pin: PIN },
     );
 
     expect(listSnapshots).toHaveBeenCalledTimes(2);

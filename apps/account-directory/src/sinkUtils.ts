@@ -53,6 +53,8 @@ function ipv6Groups(address: string): number[] | null {
  * One IPv6 customer is routinely handed a whole /64, so keying on the full
  * address would give a single machine 2^64 fresh quotas. An IPv4 address, and
  * anything that is not an address (`unknown-client`), is returned unchanged.
+ * Keep in step with apps/webhook-relay/src/shared.ts, which has the same
+ * parser for its own Worker.
  */
 export function quotaAddress(address: string): string {
   const groups = ipv6Groups(address);
@@ -65,6 +67,24 @@ export async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+/**
+ * The id every ADE client identifies an account with (`identifyAccount` in
+ * productAnalyticsService.ts and ProductAnalytics.swift; the reconcile script
+ * `scripts/analytics/reconcile-signups.mjs` copies it). Keep them in step.
+ */
+export async function accountDistinctId(userId: string): Promise<string> {
+  return `ade_user_${(await sha256Hex(`ade-product-analytics-account-v1:${userId}`)).slice(0, 32)}`;
+}
+
+/** A stable v4-shaped uuid from a seed string, so a retried event keeps one uuid. */
+export async function uuidFromSeed(seed: string): Promise<string> {
+  const chars = (await sha256Hex(seed)).slice(0, 32).split("");
+  chars[12] = "4";
+  chars[16] = "8";
+  const value = chars.join("");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
 export function utcDayKey(nowMs: number): string {
@@ -149,4 +169,37 @@ export async function readBoundedBody(
     offset += chunk.byteLength;
   }
   return { ok: true, text: new TextDecoder().decode(joined) };
+}
+
+/** A JSON object body; `{}` for an empty body, null when it is too big or isn't an object. */
+export async function readBoundedJson(
+  request: Request,
+  maxBytes: number,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const read = await readBoundedBody(request, maxBytes);
+    if (!read.ok) return null;
+    if (!read.text) return {};
+    const value = JSON.parse(read.text) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A form body read through the same streamed cap as `readBoundedBody`. The
+ * body is text (urlencoded or multipart), so the decoded text is parsed again
+ * as a request; `content-length` is dropped because the new body is shorter.
+ */
+export async function readBoundedFormData(request: Request, maxBytes: number): Promise<FormData | null> {
+  const read = await readBoundedBody(request, maxBytes);
+  if (!read.ok) return null;
+  try {
+    const headers = new Headers(request.headers);
+    headers.delete("content-length");
+    return await new Request(request.url, { method: "POST", headers, body: read.text }).formData();
+  } catch {
+    return null;
+  }
 }

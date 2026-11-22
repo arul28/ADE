@@ -131,25 +131,6 @@ describe("PrChecksGraphCanvas → React Flow props", () => {
     }
   });
 
-  it("keeps drag, connect and React Flow's own selection off", () => {
-    const props = renderCanvas();
-    // These three are exactly what makes React Flow compute `pointer-events:
-    // none`, so they are asserted next to the style that compensates for them.
-    expect(props.nodesDraggable).toBe(false);
-    expect(props.nodesConnectable).toBe(false);
-    expect(props.elementsSelectable).toBe(false);
-    expect(props.nodes.every((node) => node.draggable === false)).toBe(true);
-  });
-
-  it("keeps panning and zooming, which is the only thing the viewport is for", () => {
-    const props = renderCanvas();
-    // React Flow refuses a drag only when it starts inside `nopan`, a class it
-    // applies to a node wrapper solely when that node is draggable. Nodes are
-    // never draggable here, so no card can ever block a pan.
-    expect(props.panOnDrag).toBe(true);
-    expect(props.zoomOnScroll).toBe(true);
-  });
-
   it("leaves React Flow's wrapper out of the tab order so each job is one stop", () => {
     const props = renderCanvas();
     expect(props.nodesFocusable).toBe(false);

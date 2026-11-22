@@ -1,6 +1,7 @@
 import { githubReminderKey, resetGithubReminders, migrateGithubReminder, useBannerDismissals } from "../../lib/bannerDismiss";
+import { showToast } from "../app/toast/toastStore";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
 import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types";
 import {
@@ -58,7 +59,9 @@ function issueAccessHint(access: GitHubIssueWriteAccess): string {
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./IntegrationsSettings.css";
 import { Banner } from "../ui/notice";
+import { confirmDialog } from "../ui/dialog";
 import { extractError } from "../../lib/format";
+import { requirePin } from "../../state/repositoryScope";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -105,6 +108,11 @@ function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): 
       return "GitHub CLI";
     case "pat":
       return "Personal access token";
+    case "account_gh":
+      // Short enough for the hero's "Reads with" cell.
+      return "GitHub CLI from account";
+    case "account_app":
+      return "ADE for GitHub, from your ADE account";
     case "environment":
       return "Environment token";
     default:
@@ -112,15 +120,30 @@ function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): 
   }
 }
 
-/** Where a sign-in comes from, in a few words. */
-function credentialSourceDetail(source: GitHubStatus["authSource"] | undefined): string {
+/** Where a sign-in comes from, in a few words: one line beside the controls. */
+function credentialSourceDetail(
+  source: GitHubCredentialState["source"],
+  account: GitHubStatus["accountCredentials"] | undefined,
+  accountApp?: GitHubStatus["accountApp"],
+): string {
   switch (source) {
     case "app":
       return "ADE's GitHub app";
     case "gh":
       return "Your gh auth login";
     case "pat":
-      return "Saved in ADE on this machine";
+      return account?.patFromAccount ? "From your ADE account" : "Saved in ADE on this machine";
+    case "account_gh":
+      return "Signed in with gh on another computer";
+    case "account_app": {
+      const login = accountApp?.githubLogin ? ` as @${accountApp.githubLogin}` : "";
+      const grant = accountApp?.repoGrant ?? null;
+      // Writes go through it only where the installation on the owner accepted them.
+      if (grant && grant.installed && !grant.canWrite) {
+        return `Connected to your ADE account${login}. Reads only on ${grant.owner} until an owner approves the new permissions`;
+      }
+      return `Connected to your ADE account${login}`;
+    }
     case "environment":
       return "GITHUB_TOKEN or GH_TOKEN variable";
     default:
@@ -128,11 +151,64 @@ function credentialSourceDetail(source: GitHubStatus["authSource"] | undefined):
   }
 }
 
+type AccountLineAction = "remove-gh" | "share-gh" | "remove-pat";
+
+/**
+ * How a sign-in row relates to the ADE account, as a line under the row (it
+ * wraps, so a fix is never cut off), with the one action that changes it and,
+ * for a broken account copy, the command to run where it came from.
+ * Null when the row has nothing to do with the account.
+ */
+function accountLine(
+  credential: GitHubCredentialState,
+  account: GitHubStatus["accountCredentials"] | null,
+  patTokenStored: boolean,
+  /** The active credential's scopes lack what ADE needs. */
+  missingScopes: boolean,
+): { note: string; command?: string; action: AccountLineAction } | null {
+  if (!account) return null;
+  switch (credential.source) {
+    case "gh":
+      if (account.ghSharedFromHere) {
+        return { note: "Shared with your ADE account, so your other computers can use it.", action: "remove-gh" };
+      }
+      if (account.ghRemovedFromAccount && credential.available) {
+        return { note: "Not shared with your ADE account.", action: "share-gh" };
+      }
+      return null;
+    case "pat":
+      return patTokenStored && account.patFromAccount
+        ? { note: "Pasted on another computer.", action: "remove-pat" }
+        : null;
+    case "account_gh":
+      // The fix for this copy is on the computer it came from, not here.
+      if (credential.failure?.kind === "invalid_token") {
+        return {
+          note: "GitHub refused it. Sign in with gh again on the computer it came from:",
+          command: GH_AUTH_LOGIN_COMMAND,
+          action: "remove-gh",
+        };
+      }
+      if (credential.failure?.kind === "permission_denied" || (missingScopes && credential.activeFor.length > 0)) {
+        return {
+          note: "It is missing scopes ADE needs. Add them on the computer it came from:",
+          command: GH_AUTH_REFRESH_COMMAND,
+          action: "remove-gh",
+        };
+      }
+      return { note: "Shared with this computer through your ADE account.", action: "remove-gh" };
+    default:
+      return null;
+  }
+}
+
 function credentialSourceIcon(source: GitHubStatus["authSource"] | undefined) {
   switch (source) {
     case "app":
+    case "account_app":
       return <WebhooksLogo size={15} weight="duotone" />;
     case "gh":
+    case "account_gh":
       return <TerminalWindow size={15} weight="duotone" />;
     case "pat":
       return <Key size={15} weight="duotone" />;
@@ -193,9 +269,10 @@ export function GitHubSection() {
   const issueTopBar = useIssueTopBarPreferences();
   const { repo: issueRepo } = useProjectGitHubRepo();
   const issueAccess = useGitHubIssueWriteAccess(issueRepo);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  // A failed status read left every row on "…" and the credential ladder
+  // offering sign-in to a person who is already signed in. Say it failed.
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
   const [showPatSetup, setShowPatSetup] = useState(false);
@@ -208,17 +285,32 @@ export function GitHubSection() {
   // with the install panel on this same page, which is where it is disconnected.
   const { appAuth } = useGithubAppUserAuth(pin);
 
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const statusRequestRef = useRef(0);
+  const readStatus = useCallback((force = false): Promise<void> => {
+    // Switching machines while a read is in flight must not land the old
+    // machine's answer (or clear the new machine's real error). A person's
+    // retry forces past the credential/status caches.
+    const request = ++statusRequestRef.current;
+    return window.ade.github
+      .getStatus(force ? { forceRefresh: true } : undefined, pinRef.current)
+      .then((status) => {
+        if (statusRequestRef.current !== request) return;
+        setGithubStatus(status);
+        setStatusError(null);
+      })
+      .catch((error: unknown) => {
+        if (statusRequestRef.current !== request) return;
+        setStatusError(error instanceof Error ? error.message : String(error));
+      });
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-
-    window.ade.github
-      .getStatus(undefined, pin)
-      .then((status) => {
-        if (!cancelled) setGithubStatus(status);
-      })
-      .catch(() => {});
-    window.ade.projectConfig
-      .get(pin)
+    readStatus();
+    Promise.resolve()
+      .then(() => window.ade.projectConfig.get(requirePin(pin)))
       .then((snapshot) => {
         if (cancelled) return;
         setTranscriptGistsEnabled(snapshot.effective.github?.prTranscriptGists?.enabled === true);
@@ -228,47 +320,34 @@ export function GitHubSection() {
     return () => {
       cancelled = true;
     };
-  }, [pin]);
+  }, [pin, readStatus]);
 
   // A credential can change while this page stays open (gh logs out, a token
   // is saved elsewhere), so read the status again when ADE comes back to the
   // front and when any surface reports a change. The reads are cached in the
   // main process for 30 seconds, so this costs little.
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
   useEffect(() => {
-    let cancelled = false;
-    const reload = () => {
-      window.ade.github
-        .getStatus(undefined, pinRef.current)
-        .then((status) => {
-          if (!cancelled) setGithubStatus(status);
-        })
-        .catch(() => {});
-    };
+    const reload = () => { void readStatus(); };
     const onVisibility = () => {
       if (document.visibilityState === "visible") reload();
     };
     window.addEventListener("focus", reload);
     document.addEventListener("visibilitychange", onVisibility);
-    const offStatus = window.ade.github.onStatusChanged?.(() => reload()) ?? (() => {});
+    const offStatus = window.ade.github.onStatusChanged?.(() => reload(), pinRef.current) ?? (() => {});
     return () => {
-      cancelled = true;
       window.removeEventListener("focus", reload);
       document.removeEventListener("visibilitychange", onVisibility);
       offStatus();
     };
-  }, [pin?.key]);
+  }, [pin?.key, readStatus]);
 
   const handleSaveToken = () => {
     const token = githubTokenDraft.trim();
     if (!token) {
-      setActionError("Paste a token first.");
+      showToast({ tone: "error", title: "Paste a token first", report: false });
       return;
     }
     setGithubBusy(true);
-    setActionError(null);
-    setSaveNotice(null);
     window.ade.github
       .setToken(token, pin)
       .then((status) => {
@@ -277,38 +356,73 @@ export function GitHubSection() {
         const verification = describeGithubPatVerification(status);
         if (verification.verified) {
           setShowPatSetup(false);
-          setSaveNotice(verification.message);
+          showToast({ tone: "success", title: verification.message });
           return;
         }
-        setActionError(verification.message);
+        // Only a token GitHub refused is "not accepted"; a paused or failed check is not the token's fault.
+        const failureKind = status.credentialVerification.failure?.kind;
+        const rejected = failureKind === "invalid_token" || failureKind === "permission_denied";
+        showToast({
+          tone: rejected ? "error" : "warning",
+          title: rejected ? "GitHub token not accepted" : "Token saved, not verified yet",
+          message: verification.message,
+        });
       })
-      .catch((err) => setActionError(extractError(err)))
+      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: extractError(err) }))
       .finally(() => setGithubBusy(false));
   };
 
   const handleClearToken = () => {
     setGithubBusy(true);
-    setActionError(null);
-    setSaveNotice(null);
     window.ade.github
       .clearToken(pin)
       .then((status) => {
         setGithubStatus(status);
         setShowPatSetup(false);
-        setSaveNotice(status.authSource === "gh" ? "Token removed. ADE is using your GitHub CLI sign-in." : "Token removed.");
+        showToast({ tone: "success", title: "Token removed", message: status.authSource === "gh" ? "ADE is using your GitHub CLI sign-in." : undefined });
       })
-      .catch((err) => setActionError(extractError(err)))
+      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: extractError(err) }))
       .finally(() => setGithubBusy(false));
+  };
+
+  // Takes the gh login off the ADE account (every computer drops its copy), or
+  // shares this computer's gh login with it again. This computer's own gh
+  // login is never touched.
+  const setGhAccountSharing = window.ade.github.setGhAccountSharing;
+  const handleGhAccountSharing = async (enabled: boolean) => {
+    if (!setGhAccountSharing) return;
+    if (!enabled) {
+      const confirmed = await confirmDialog({
+        title: "Remove the GitHub CLI sign-in from your ADE account?",
+        message: "Every computer that uses it through your account stops, ADE Cloud computers too. A gh sign-in made on a computer stays on that computer.",
+        confirmLabel: "Remove from my account",
+        destructive: true,
+      });
+      if (!confirmed) return;
+    }
+    setGithubBusy(true);
+    setGhAccountSharing({ enabled }, pin)
+      .then((status) => {
+        setGithubStatus(status);
+        showToast({ tone: "success", title: enabled ? "Shared with your ADE account" : "Removed from your ADE account" });
+      })
+      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: extractError(err) }))
+      .finally(() => setGithubBusy(false));
+  };
+
+  const handleRemovePatFromAccount = async () => {
+    const confirmed = await confirmDialog({
+      title: "Remove the token from your ADE account?",
+      message: "It is removed from this computer and from your other computers. A token pasted on another computer stays there.",
+      confirmLabel: "Remove from my account",
+      destructive: true,
+    });
+    if (confirmed) handleClearToken();
   };
 
   const handleRefreshStatus = () => {
     setGithubBusy(true);
-    setActionError(null);
-    window.ade.github
-      .getStatus({ forceRefresh: true }, pin)
-      .then((status) => setGithubStatus(status))
-      .catch((err) => setActionError(extractError(err)))
-      .finally(() => setGithubBusy(false));
+    void readStatus(true).finally(() => setGithubBusy(false));
   };
 
   const tokenAuthenticated = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
@@ -319,7 +433,10 @@ export function GitHubSection() {
   const authFailure = githubStatus?.authFailure ?? null;
   const authFailurePresentation = githubStatus ? describeGithubAuthFailure(githubStatus) : null;
   const credentialFallback = githubStatus?.credentialFallback ?? null;
-  const credentialStates = githubStatus?.credentialStates ?? [];
+  // The account's gh copy is a row only while this computer keeps one.
+  const credentialStates = (githubStatus?.credentialStates ?? [])
+    .filter((credential) => (credential.source !== "account_gh" && credential.source !== "account_app") || credential.available);
+  const accountCredentials = githubStatus?.accountCredentials ?? null;
   // An older remote runtime reports no credential chain. The token row still
   // has to be there, since it is where a token is added, replaced or removed.
   const signInRows: GitHubCredentialState[] = githubStatus && !credentialStates.some((credential) => credential.source === "pat")
@@ -571,11 +688,23 @@ export function GitHubSection() {
       />
 
       <div className="ade-ig-alerts">
-        {saveNotice ? (
-          <Banner layout="inline" model={{ id: "github-save-notice", tone: "success", title: saveNotice }} />
-        ) : null}
-        {actionError ? (
-          <Banner layout="inline" model={{ id: "github-action-error", tone: "error", title: actionError }} />
+        {statusError ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-status-error",
+              tone: "warning",
+              title: "ADE couldn't read GitHub's status on this computer",
+              detail: statusError,
+              actions: [{
+                label: "Retry",
+                onClick: () => {
+                  setStatusError(null);
+                  void readStatus(true);
+                },
+              }],
+            }}
+          />
         ) : null}
         {credentialStoreUnreadable ? (
           <Banner
@@ -738,17 +867,20 @@ export function GitHubSection() {
               const badge = credentialStateBadge(credential, outage != null, appAccount);
               const isPat = credential.source === "pat";
               const active = credential.activeFor.length > 0;
+              const account = accountLine(credential, accountCredentials, githubStatus?.patTokenStored === true, hasMissingScopes);
+              // An older runtime has no gh sharing action; its account line has no button.
+              const accountAction = account && (account.action === "remove-pat" || setGhAccountSharing) ? account.action : null;
               return (
                 <div key={credential.source} className="ade-ig-method" data-active={active ? "true" : undefined}>
                   <span className="ade-ig-method-icon" aria-hidden>{credentialSourceIcon(credential.source)}</span>
                   <span className="ade-ig-method-name">
                     <b>{credentialSourceLabel(credential.source)}</b>
                     <small>
-                      {credential.source === "app" ? "Reads only · set up on the right" : credentialSourceDetail(credential.source)}
+                      {credential.source === "app" ? "Reads only · set up on the right" : credentialSourceDetail(credential.source, accountCredentials, githubStatus?.accountApp)}
                     </small>
                   </span>
                   <span className="ade-ig-method-side">
-                    {isPat && githubStatus?.patTokenStored ? (
+                    {isPat && githubStatus?.patTokenStored && !accountCredentials?.patFromAccount ? (
                       <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={githubBusy} onClick={handleClearToken}>
                         Remove
                       </button>
@@ -760,6 +892,29 @@ export function GitHubSection() {
                     ) : null}
                     {tag(badge.tone, badge.label)}
                   </span>
+                  {account ? (
+                    <div className="ade-ig-method-extra">
+                      <p className="ade-ig-note ade-ig-account-line">
+                        <span>{account.note}</span>
+                        {accountAction ? (
+                          <button
+                            type="button"
+                            className="ade-modern-btn"
+                            data-variant={accountAction === "share-gh" ? undefined : "ghost"}
+                            data-size="sm"
+                            disabled={githubBusy}
+                            onClick={() => {
+                              if (accountAction === "remove-pat") void handleRemovePatFromAccount();
+                              else void handleGhAccountSharing(accountAction === "share-gh");
+                            }}
+                          >
+                            {accountAction === "share-gh" ? "Share with my account" : "Remove from my account"}
+                          </button>
+                        ) : null}
+                      </p>
+                      {account.command ? <code className="ade-int-command" style={{ marginTop: 0 }}>{account.command}</code> : null}
+                    </div>
+                  ) : null}
                   {isPat && showPatSetup ? tokenForm : null}
                   {credential.source === activeWriteSource && !(isPat && showPatSetup) ? scopeChips : null}
                 </div>
@@ -768,7 +923,7 @@ export function GitHubSection() {
           </div>
         </IntegrationCard>
 
-        <GitHubAppInstallPanel pin={pin} />
+        <GitHubAppInstallPanel pin={pin} accountApp={githubStatus?.accountApp ?? null} onAccountAppChanged={handleRefreshStatus} />
       </IntegrationColumns>
     </IntegrationPage>
   );

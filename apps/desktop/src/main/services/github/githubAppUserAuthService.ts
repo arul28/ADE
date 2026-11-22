@@ -54,6 +54,19 @@ const REFRESH_BACKOFF_MAX_MS = 60 * 60_000;
 const LEASE_POLL_INTERVAL_MS = 250;
 /** Bounds the wait for a peer's refresh at roughly three seconds. */
 const LEASE_POLL_MAX_ATTEMPTS = 12;
+/**
+ * How long a hand-over to the ADE account may take. Below the lease, so the
+ * record is deleted (or the lease released) while this process still holds it.
+ */
+const HAND_OVER_TIMEOUT_MS = 40_000;
+
+/**
+ * `handed_over`: the account took the record (or it was retired) and it is
+ * deleted here. `kept`: the record stays. `missing`: nothing stored.
+ * `not_renewable`: the record cannot be renewed, so there is nothing to hand
+ * over. `held`: another process or a refresh holds the lease; try later.
+ */
+export type AppUserAuthHandOverOutcome = "handed_over" | "kept" | "missing" | "not_renewable" | "held";
 
 export type GitHubAppUserAuthCredentialStore = {
   getSync(key: string): string | null | undefined;
@@ -123,6 +136,13 @@ type StoreCoordinator = {
    * in its place.
    */
   unpersisted: { spentRefreshToken: string; record: GitHubAppUserTokenRecord } | null;
+  /**
+   * Set while this process hands the stored record to the ADE account
+   * (`handOverToAccount`). The on-disk lease names this process, so a refresh
+   * started here meanwhile would pass the lease check and POST the refresh
+   * token the account directory now holds.
+   */
+  handingOver: boolean;
 };
 
 const storeCoordinators = new Map<string, StoreCoordinator>();
@@ -160,6 +180,7 @@ function coordinatorFor(identity: string): StoreCoordinator {
       leaseHolderId: randomUUID(),
       peerLeaseUntilMs: 0,
       unpersisted: null,
+      handingOver: false,
     };
     storeCoordinators.set(identity, coordinator);
   }
@@ -331,6 +352,7 @@ export function createGitHubAppUserAuthService(args: {
   clearAuth(): GitHubAppUserAuthStatus;
   getStoredTokenForHealth(): string | null;
   getValidTokenForRelay(): Promise<string>;
+  handOverToAccount(handOver: (record: GitHubAppUserTokenRecord & { refreshToken: string }) => Promise<"delete" | "keep">): Promise<AppUserAuthHandOverOutcome>;
   auditLog: GitHubRelayAuthAuditLog;
 } {
   const now = args.now ?? (() => Date.now());
@@ -542,8 +564,9 @@ export function createGitHubAppUserAuthService(args: {
       const verdict = judgeStoredAuth(stored, nowMs);
       if (verdict.outcome !== "refreshable") return decline(verdict);
       if (
-        leaseActive(stored.refresh.leaseUntil, nowMs)
-        && stored.refresh.leaseHolder !== leaseHolderId
+        (leaseActive(stored.refresh.leaseUntil, nowMs)
+        && stored.refresh.leaseHolder !== leaseHolderId)
+        || coordinatorFor(storeIdentity).handingOver
       ) {
         // No failure travels with this one: a peer holding the lease is ADE
         // renewing the credential, and GitHub has said nothing about it.
@@ -1067,6 +1090,94 @@ export function createGitHubAppUserAuthService(args: {
     return appUserAuthStatus();
   };
 
+  /**
+   * Hands the stored record to the ADE account (`POST /github/app/adopt`)
+   * under the on-disk refresh lease, so no ADE process on this machine (an
+   * older one included) POSTs the refresh token while the account directory
+   * takes it.
+   *
+   * `handOver` answers `delete` when the account holds the chain now, or when
+   * this record was retired: the record is deleted under the same lease, and
+   * only when it is still the record that was handed over. `keep` releases
+   * the lease and leaves the record as it was.
+   */
+  const handOverToAccount = async (
+    handOver: (record: UsableRefreshRecord) => Promise<"delete" | "keep">,
+  ): Promise<AppUserAuthHandOverOutcome> => {
+    const coordinator = coordinatorFor(storeIdentity);
+    if (coordinator.inFlight || coordinator.handingOver) return "held";
+    type Attempt = { outcome: "missing" | "not_renewable" | "held" } | { outcome: "acquired"; record: UsableRefreshRecord };
+    let attempt: Attempt;
+    try {
+      attempt = updateStoredAuth<Attempt>((stored) => {
+        const nowMs = now();
+        const token = stored.token;
+        if (!token?.accessToken) return { next: undefined, result: { outcome: "missing" } };
+        if (stored.refresh.dead || !hasUsableRefreshToken(token, nowMs)) {
+          return { next: undefined, result: { outcome: "not_renewable" } };
+        }
+        if (leaseActive(stored.refresh.leaseUntil, nowMs) && stored.refresh.leaseHolder !== coordinator.leaseHolderId) {
+          return { next: undefined, result: { outcome: "held" } };
+        }
+        const leaseUntil = new Date(nowMs + REFRESH_LEASE_MS).toISOString();
+        return {
+          next: { token, refresh: { ...stored.refresh, leaseUntil, leaseHolder: coordinator.leaseHolderId } },
+          result: { outcome: "acquired", record: token },
+        };
+      });
+    } catch {
+      return "held";
+    }
+    if (attempt.outcome !== "acquired") return attempt.outcome;
+    const record = attempt.record;
+    coordinator.handingOver = true;
+    let decision: "delete" | "keep" = "keep";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      decision = await Promise.race([
+        handOver(record),
+        new Promise<"keep">((resolve) => {
+          timer = setTimeout(() => resolve("keep"), HAND_OVER_TIMEOUT_MS);
+          timer.unref?.();
+        }),
+      ]);
+    } catch {
+      decision = "keep";
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    try {
+      if (decision === "delete") {
+        let deleted = false;
+        updateStoredAuth<void>((stored) => {
+          if (
+            !stored.token
+            || stored.token.refreshToken !== record.refreshToken
+            || stored.refresh.leaseHolder !== coordinator.leaseHolderId
+          ) {
+            return { next: undefined, result: undefined };
+          }
+          deleted = true;
+          return { next: null, result: undefined };
+        });
+        if (deleted) {
+          authEpoch += 1;
+          coordinator.unpersisted = null;
+          deviceFlow.clearSessions();
+          return "handed_over";
+        }
+        return "kept";
+      }
+      releaseRefreshLeaseQuietly();
+      return "kept";
+    } catch {
+      releaseRefreshLeaseQuietly();
+      return "kept";
+    } finally {
+      coordinator.handingOver = false;
+    }
+  };
+
   return {
     getAuthStatus: appUserAuthStatus,
     startDeviceAuth: deviceFlow.startDeviceAuth,
@@ -1074,6 +1185,7 @@ export function createGitHubAppUserAuthService(args: {
     clearAuth,
     getStoredTokenForHealth: () => readAppUserTokenRecord()?.accessToken ?? null,
     getValidTokenForRelay: getValidAppUserTokenForRelay,
+    handOverToAccount,
     auditLog,
   };
 }

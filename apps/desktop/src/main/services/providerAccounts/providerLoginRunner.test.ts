@@ -6,6 +6,7 @@ import {
   createProviderLoginRunner,
   type ProviderLoginRunnerDeps,
 } from "./providerLoginRunner";
+import { LOGIN_CODE_ENTER_DELAY_MS } from "../shared/cliLoginPty";
 
 /**
  * node-pty is native and loaded through `createRequire` inside the runner, so
@@ -208,6 +209,20 @@ describe("providerLoginRunner", () => {
     expect(runner.status(login.loginId).url).toBe("https://claude.ai/auth?code=abc123");
   });
 
+  // Claude Code places each word of its prompt at a column (`ESC[nG`), as
+  // captured from the pinned CLI; the words must still read apart.
+  it.each([
+    ["with plain spaces", "Paste code here if prompted > "],
+    ["with column jumps", "\u001b[2GPaste\u001b[8Gcode\u001b[13Ghere\u001b[18Gif\u001b[21Gprompted\u001b[30G>"],
+  ])("offers the paste box for a code prompt drawn %s", (_shape, prompt) => {
+    const { runner, ptys } = makeRunner();
+    const login = runner.start("work");
+
+    ptys[0]?.emitData(prompt);
+
+    expect(runner.status(login.loginId).awaitingCode).toBe(true);
+  });
+
   it("adds the device flag and reads the one-time code for a codex device sign-in", () => {
     const { runner, ptys } = makeRunner();
     const login = runner.start("codex-work", { deviceAuth: true });
@@ -219,6 +234,7 @@ describe("providerLoginRunner", () => {
   });
 
   it("redacts a pasted code from the sign-in output the sheet shows", () => {
+    vi.useFakeTimers();
     const { runner, ptys } = makeRunner();
     const login = runner.start("work");
 
@@ -226,7 +242,11 @@ describe("providerLoginRunner", () => {
     expect(runner.status(login.loginId).awaitingCode).toBe(true);
 
     runner.submitCode(login.loginId, "abc12345");
-    expect(ptys[0]?.writes.at(-1)).toBe("abc12345\r");
+    // The code, then Enter on its own: in one write a TUI takes both as a paste.
+    expect(ptys[0]?.writes.at(-1)).toBe("abc12345");
+    expect(runner.status(login.loginId).checkingCode).toBe(true);
+    vi.advanceTimersByTime(LOGIN_CODE_ENTER_DELAY_MS);
+    expect(ptys[0]?.writes.at(-1)).toBe("\r");
 
     ptys[0]?.emitData("abc12345\r\n");
     // The answered prompt is still on screen; it does not ask again.

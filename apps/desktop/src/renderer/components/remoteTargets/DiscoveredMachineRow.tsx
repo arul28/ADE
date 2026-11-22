@@ -38,14 +38,7 @@ export function DiscoveredMachineRow({
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <div style={{ ...machineRowStyle, opacity: unavailable ? 0.62 : 1 }}>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "auto minmax(0,1fr) auto",
-            gap: 12,
-            alignItems: "center",
-          }}
-        >
+        <div className="ade-cx-row-grid">
           <span className="ade-cx-found-icon" aria-hidden>
             <WifiHigh size={17} weight="bold" />
           </span>
@@ -57,14 +50,7 @@ export function DiscoveredMachineRow({
                 : "Found on your network · ready to pair"}
             </div>
           </div>
-          <div
-            style={{
-              display: "flex",
-              gap: 8,
-              flexWrap: "wrap",
-              justifyContent: "flex-end",
-            }}
-          >
+          <div className="ade-cx-row-actions" style={{ gap: 8, flexWrap: "wrap" }}>
             {!unavailable ? (
               <>
                 <button

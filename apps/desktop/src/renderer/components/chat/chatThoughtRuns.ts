@@ -1,10 +1,11 @@
 import { mergeReasoningTextFragments } from "../../../shared/chatActivityPhase";
+import { isRestartResumeScheduleId } from "../../../shared/chatAutoResume";
 import { isInlineCardSpawnNotice } from "../../../shared/chatSubagents";
 import { CLAUDE_SESSION_QUOTA_CARD_VARIANT } from "../../../shared/claudeSessionQuota";
 import { isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import { isLegacyProviderRetryNotice } from "../../../shared/providerRetryPresentation";
 import { parseTimestampMs } from "../../../shared/timestamps";
-import type { AgentChatEvent } from "../../../shared/types/chat";
+import { CTO_CONTEXT_REFRESHED_STATUS, type AgentChatEvent } from "../../../shared/types/chat";
 import type { ChatTranscriptGroupedEnvelope, RenderReasoningEvent } from "./chatTranscriptRows";
 
 // Thought runs: Thought rows that end up next to each other on screen drawn as
@@ -34,6 +35,11 @@ export type TranscriptRowDrawContext = {
   staleInterruptReceipts?: ReadonlySet<string>;
   /** A usage limit is live: the composer pill owns the quota card's story. */
   usageLimitResumeActive?: boolean;
+  /**
+   * The CTO's own thread. It hides the plumbing: its quiet context refreshes
+   * and the "approaching plan limit" warning (the usage ring says the same).
+   */
+  ctoSurface?: boolean;
 };
 
 const SYSTEM_NOTICE_STATUSES_WITH_OWN_ROW = new Set([
@@ -58,6 +64,9 @@ export function transcriptEventDrawsNothing(
     case "user_message": {
       // Queued steers live in the composer's staging area only.
       if (event.deliveryState === "queued" && event.steerId) return true;
+      // The resume after a restart: the restart notice already says the agent
+      // continues. The agent still reads the message.
+      if (isRestartResumeScheduleId(event.metadata?.scheduledWake?.scheduleId)) return true;
       // A subagent's or peer's report: the spawn_wake_divider row above it
       // already says who came back and what it said. Same test as the
       // divider's (chatTranscriptRows), so a report never loses both.
@@ -87,6 +96,10 @@ export function transcriptEventDrawsNothing(
         && event.turnStatus !== "interrupted"
         && !(event.message ?? "").trim().length;
     case "system_notice": {
+      if (context?.ctoSurface && event.status === CTO_CONTEXT_REFRESHED_STATUS) return true;
+      // Only the "Approaching … plan limit" heads-up (the usage ring shows it).
+      // A reset credit, a continue or a limit hit keeps its row.
+      if (context?.ctoSurface && event.noticeKind === "rate_limit" && /^approaching\b/i.test((event.message ?? "").trim())) return true;
       if (event.noticeKind === "info" && event.status === "subagent_spawned") return isInlineCardSpawnNotice(event);
       if (event.status === "model_switched") return false;
       if (event.noticeKind === "info" && SYSTEM_NOTICE_STATUSES_WITH_OWN_ROW.has(event.status ?? "")) return false;

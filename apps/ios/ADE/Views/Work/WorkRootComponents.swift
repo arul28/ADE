@@ -400,9 +400,6 @@ struct WorkSidebarSectionHeader: View {
                   .truncationMode(.middle)
               }
             }
-            if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
-              WorkRemoteLaneGlyph()
-            }
           }
 
           // Beside the name, not in the trailing cluster: there it sat next to
@@ -628,6 +625,13 @@ struct WorkSidebarSectionHeader: View {
 struct WorkSessionLaneMenuActions {
   var colorAvailable: Bool = false
   var manageAvailable: Bool = false
+  /// Per lane: it lives on an ADE Cloud computer that is asleep. Such a lane
+  /// has no colour row (it needs the computer), and "Manage lane" becomes
+  /// "Manage computer" (account actions, no wake).
+  var restsOnCloud: (LaneSummary) -> Bool = { _ in false }
+  /// Per lane: its ADE Cloud computer still exists (a saved-only lane's was
+  /// deleted, so it has nothing to manage).
+  var hasCloudComputer: (LaneSummary) -> Bool = { _ in false }
   var onStartChat: (LaneSummary) -> Void = { _ in }
   var onToggleWorkPin: (LaneSummary) -> Void = { _ in }
   var isWorkPinned: (LaneSummary) -> Bool = { _ in false }
@@ -691,7 +695,8 @@ struct WorkLaneContextMenuContent: View {
     } label: {
       Label("Copy", systemImage: "doc.on.doc")
     }
-    if actions.colorAvailable {
+    let resting = actions.restsOnCloud(lane)
+    if actions.colorAvailable, !resting {
       Menu {
         ForEach(LaneColorPalette.entries) { entry in
           Button {
@@ -712,7 +717,15 @@ struct WorkLaneContextMenuContent: View {
         Label("Color", systemImage: "paintpalette")
       }
     }
-    if actions.manageAvailable {
+    if resting {
+      if actions.hasCloudComputer(lane) {
+        Button {
+          actions.onManage(lane)
+        } label: {
+          Label("Manage computer", systemImage: "slider.horizontal.3")
+        }
+      }
+    } else if actions.manageAvailable {
       Button {
         actions.onManage(lane)
       } label: {
@@ -732,6 +745,8 @@ struct WorkSessionListRow: View {
   let chatSummary: AgentChatSessionSummary?
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
+  /// The computer it runs on: named in the long-press menu, never on the row.
+  var machineName: String? = nil
   var compact: Bool = false
   /// The parent's one mark for its nested subagents (count + worst state).
   /// Nil when nothing nests under this row.
@@ -744,8 +759,6 @@ struct WorkSessionListRow: View {
   var boardCard = false
   /// A row in the Duo's sessions column (see `WorkSessionRow.duoRow`).
   var duoRow = false
-  /// The machine a row from another machine lives on, for the Duo's meta line.
-  var machineName: String? = nil
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -782,6 +795,8 @@ struct WorkSessionListRow: View {
   var onDemoteToPeer: (TerminalSessionSummary) -> Void = { _ in }
   /// Promote a peer chat back to a subagent so it reports to its parent again.
   var onPromoteToSubagent: (TerminalSessionSummary) -> Void = { _ in }
+  /// The parent chat's title, for "Stop reports to …" / "Report back to …".
+  var parentChatTitle: String? = nil
   /// The host advertises `chat.setSpawnKind`. Older hosts have
   /// `chat.updateSession` but cannot apply spawn-kind writes.
   var spawnKindUpdateAvailable: Bool = false
@@ -976,8 +991,7 @@ struct WorkSessionListRow: View {
           showsLaneIdentity: showsLaneIdentity,
           waitingOnSubagent: waitingOnSubagent,
           boardCard: boardCard,
-          duoRow: duoRow,
-          machineName: machineName
+          duoRow: duoRow
         )
         .equatable()
       }
@@ -1305,14 +1319,20 @@ struct WorkSessionListRow: View {
           Button {
             onPromoteToSubagent(session)
           } label: {
-            Label("Promote to subagent", systemImage: "arrow.up.backward.and.arrow.down.forward")
+            Label(
+              workReportingMenuLabel(.reportBack, parentTitle: parentChatTitle),
+              systemImage: "arrow.up.backward.and.arrow.down.forward"
+            )
           }
         }
         if canDemoteToPeer {
           Button {
             onDemoteToPeer(session)
           } label: {
-            Label("Demote to peer", systemImage: "arrow.down.forward.and.arrow.up.backward")
+            Label(
+              workReportingMenuLabel(.stopReports, parentTitle: parentChatTitle),
+              systemImage: "arrow.down.forward.and.arrow.up.backward"
+            )
           }
         }
       }
@@ -1329,11 +1349,21 @@ struct WorkSessionListRow: View {
       } label: {
         Label("Go to lane", systemImage: "arrow.triangle.branch")
       }
-      if let lane, let laneMenu, laneMenu.manageAvailable {
-        Button {
-          laneMenu.onManage(lane)
-        } label: {
-          Label("Manage lane", systemImage: "slider.horizontal.3")
+      if let lane, let laneMenu {
+        if laneMenu.restsOnCloud(lane) {
+          if laneMenu.hasCloudComputer(lane) {
+            Button {
+              laneMenu.onManage(lane)
+            } label: {
+              Label("Manage computer", systemImage: "slider.horizontal.3")
+            }
+          }
+        } else if laneMenu.manageAvailable {
+          Button {
+            laneMenu.onManage(lane)
+          } label: {
+            Label("Manage lane", systemImage: "slider.horizontal.3")
+          }
         }
       }
       if let pullRequest {
@@ -1418,6 +1448,13 @@ struct WorkSessionActionsMenuContent: View {
 
   var body: some View {
     let status = normalizedWorkChatSessionStatus(session: row.session, summary: row.chatSummary)
+    if let machineName = row.machineName {
+      // Not an action: where the session runs, at the top of its menu.
+      Section {
+        Label("On \(machineName)", systemImage: "desktopcomputer")
+          .accessibilityLabel("Runs on \(machineName)")
+      }
+    }
     row.nameMenuSection
     row.fileMenuSection(includesSelect: includesSelect)
     row.lifecycleMenuSection(status: status)
@@ -2213,7 +2250,8 @@ struct WorkHeaderOverflowMenu: View {
     }
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
-    .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud, ADE Cloud and Settings")
+    // Only the entries this menu shows: ADE Cloud is named only for an account that has it.
+    .accessibilityHint(showsCloud ? "Activity, Linear, GitHub Issues, Cursor Cloud, ADE Cloud and Settings" : "Activity, Linear, GitHub Issues, Cursor Cloud and Settings")
   }
 
   private var phoneLabel: some View {
@@ -2291,7 +2329,7 @@ struct WorkFilterMenu: View {
             }
             if !selectedMachines.isEmpty {
               Divider()
-              Button("Show all machines") {
+              Button("Show all computers") {
                 withAnimation(.snappy(duration: 0.18)) { machineFilter = "" }
               }
             }
@@ -2330,17 +2368,6 @@ struct WorkFilterMenu: View {
   private func laneMenuTitle(_ lane: LaneSummary) -> String {
     guard let machine = workRemoteLaneMachineName(lane.id, options: machineOptions) else { return lane.name }
     return "\(lane.name) — \(machine)"
-  }
-}
-
-/// Marks a lane that lives on another machine, after its name: two machines'
-/// lanes can share a name, and the machine never goes in the title.
-struct WorkRemoteLaneGlyph: View {
-  var body: some View {
-    Image(systemName: "desktopcomputer")
-      .font(.system(size: 9, weight: .medium))
-      .foregroundStyle(ADEColor.textMuted.opacity(0.8))
-      .accessibilityLabel("On another machine")
   }
 }
 

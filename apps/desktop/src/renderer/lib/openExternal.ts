@@ -281,10 +281,14 @@ export function refreshLinkOpenMode(force = false): Promise<void> {
   const projectKey = linkOpenModeProjectKey;
   if (!projectKey) return Promise.resolve();
   if (linkOpenModeLoad && !force) return linkOpenModeLoad;
+  // How links open is a setting of this computer's copy (Settings saves it
+  // there). A tab on another computer keeps the default and reads nothing.
+  const pin = windowRuntimeBinding?.kind === "local" ? windowRuntimeBinding : null;
+  if (!pin) return Promise.resolve();
   const config = typeof window !== "undefined" ? window.ade?.projectConfig : undefined;
   if (!config) return Promise.resolve();
   linkOpenModeLoad = config
-    .get()
+    .get(pin)
     .then((snapshot) => {
       // A project switched while this read ran: its answer is not this one's.
       if (linkOpenModeProjectKey !== projectKey) return;

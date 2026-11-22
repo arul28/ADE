@@ -2,6 +2,7 @@ import type { ComponentProps } from "react";
 import { AndroidLogo, DeviceMobile } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
+import { Spinner } from "../ui/Spinner";
 import { DeviceLoadingCard } from "../device/DeviceLoadingCard";
 import { DeviceNoticeStrip } from "../device/DeviceStatusStrip";
 
@@ -21,9 +22,12 @@ export function AndroidPaneMessage({
   title,
   description,
   action,
+  busy = false,
 }: {
   title: string;
   description: string | null;
+  /** The pane is still reading: the title gets the device tools' spinner. */
+  busy?: boolean;
   /** One quiet way on from the card ("Choose another device"). */
   action?: { label: string; onClick: () => void } | null;
 }) {
@@ -31,7 +35,14 @@ export function AndroidPaneMessage({
     <div data-android-pane-message="" className="ade-tool-picker-static flex size-full items-center justify-center px-6 py-10">
       <div className="ade-tool-card flex w-full min-w-0 max-w-sm flex-col items-center gap-2 p-6 text-center">
         <AndroidLogo size={28} aria-hidden="true" className="text-muted-fg/60" />
-        <p className="min-w-0 break-words font-sans text-sm font-medium leading-5 text-fg">{title}</p>
+        <p
+          className={cn("min-w-0 break-words font-sans text-sm font-medium leading-5 text-fg", busy && "inline-flex items-center gap-2")}
+          role={busy ? "status" : undefined}
+          aria-live={busy ? "polite" : undefined}
+        >
+          {busy ? <Spinner /> : null}
+          {title}
+        </p>
         {description ? <p className="min-w-0 break-words font-sans text-xs leading-5 text-muted-fg">{description}</p> : null}
         {action ? (
           <Button variant="outline" size="sm" casing="sentence" className="mt-2" onClick={action.onClick}>

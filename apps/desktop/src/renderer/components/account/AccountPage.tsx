@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
@@ -7,10 +7,12 @@ import {
   Check,
   CircleNotch,
   Copy,
+  DotsThree,
   GithubLogo,
   IdentificationCard,
   Question,
   SignOut,
+  Trash,
   UserCircle,
   WarningCircle,
   X,
@@ -51,6 +53,11 @@ import { AnotherDeviceSignInPanel } from "./AnotherDeviceSignInPanel";
 import { useSignInFlow } from "./useSignInFlow";
 import { Banner } from "../ui/notice";
 import { AdeWordmark } from "../ui/AdeWordmark";
+import { useCloudAccount } from "../../state/cloudAccountStore";
+import { AccountInviteFact } from "../settings/cloudDashboard/CloudInvite";
+import { ContextMenu, type ContextMenuState } from "../ui/ContextMenu";
+import { promptDialog } from "../ui/dialog";
+import { showToast } from "../app/toast/toastStore";
 
 export { describeThisComputerMissing } from "./YourMacsCard";
 
@@ -58,7 +65,35 @@ const REPO_BRIDGE_DISMISS_KEY = "ade.account.repoBridgeDismissed.v1";
 
 type AccountBridge = {
   signOut: () => Promise<AdeAccountStatus>;
+  deleteAccount: () => Promise<AdeAccountStatus>;
 };
+
+/**
+ * "Delete account": asks for the word "delete", saying what goes and what
+ * stays. Resolves true once it was typed.
+ */
+async function confirmAccountDeletion(): Promise<boolean> {
+  const answer = await promptDialog({
+    title: "Delete your ADE account?",
+    message: (
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <span>This deletes your account for good. It cannot be undone. These go with it:</span>
+        <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 2 }}>
+          <li>Your ADE Cloud computers and the work saved on them</li>
+          <li>Your saved chats</li>
+          <li>Your Passwords &amp; Secrets vault</li>
+          <li>Your project list</li>
+        </ul>
+        <span>Local projects on this computer stay here. Type <strong>delete</strong> to confirm.</span>
+      </div>
+    ),
+    placeholder: "delete",
+    confirmLabel: "Delete account",
+    tone: "error",
+    validate: (value) => (value.trim().toLowerCase() === "delete" ? null : "Type delete to confirm."),
+  });
+  return answer !== null && answer.trim().toLowerCase() === "delete";
+}
 
 function accountBridge(): Partial<AccountBridge> | undefined {
   return (window.ade as typeof window.ade & { account?: Partial<AccountBridge> }).account;
@@ -366,6 +401,8 @@ function AccountDetailsSection({
   onConnectGithub,
   onSignOut,
   signingOut,
+  onDeleteAccount,
+  deleting,
 }: {
   status: AdeAccountStatus;
   providerCaption: string | null;
@@ -374,8 +411,18 @@ function AccountDetailsSection({
   onConnectGithub: () => void;
   onSignOut: () => void;
   signingOut: boolean;
+  /** Absent where the account cannot be deleted from here. */
+  onDeleteAccount?: () => void;
+  deleting?: boolean;
 }) {
   const [confirming, setConfirming] = useState(false);
+  // The danger zone: "Delete account" in a menu, out of the way.
+  const [menu, setMenu] = useState<ContextMenuState>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  // ADE Cloud's account (null without access), for the invite box.
+  const cloudAccount = useCloudAccount();
+  const [searchParams] = useSearchParams();
+  const inviteParam = searchParams.get("invite");
   return (
     <ModernSection
       group="Account"
@@ -401,6 +448,7 @@ function AccountDetailsSection({
             </dd>
           </div>
         ) : null}
+        <AccountInviteFact account={cloudAccount} inviteParam={inviteParam} />
         {showRepoBridge ? (
           <div className="ade-acct-fact">
             <dt><GithubLogo size={13} weight="fill" />GitHub</dt>
@@ -418,6 +466,7 @@ function AccountDetailsSection({
       </dl>
       <div className="ade-acct-signout">
         <span className="ade-acct-fact-note">Signing out only affects this computer. Your other computers and phones stay signed in.</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
         <button
           type="button"
           className="ade-acct-btn"
@@ -428,7 +477,44 @@ function AccountDetailsSection({
           {signingOut ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : <SignOut size={13} weight="bold" />}
           Sign out of this computer
         </button>
+        {onDeleteAccount ? (
+          <SmartTooltip content={{ label: "More account options", description: "Delete your ADE account." }}>
+            <button
+              ref={menuButtonRef}
+              type="button"
+              className="ade-acct-btn ade-acct-icon-btn"
+              data-variant="ghost"
+              aria-label="More account options"
+              aria-haspopup="menu"
+              aria-expanded={menu != null}
+              disabled={deleting}
+              onClick={() => {
+                const rect = menuButtonRef.current?.getBoundingClientRect();
+                setMenu(rect ? { x: rect.left, y: rect.bottom + 4 } : null);
+              }}
+            >
+              {deleting ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : <DotsThree size={14} weight="bold" />}
+            </button>
+          </SmartTooltip>
+        ) : null}
+        </span>
       </div>
+      {onDeleteAccount ? (
+        <ContextMenu
+          menu={menu}
+          onClose={() => setMenu(null)}
+          label="Account options"
+          portal
+          entries={[{
+            kind: "item",
+            key: "delete-account",
+            label: "Delete account…",
+            icon: Trash,
+            danger: true,
+            onSelect: onDeleteAccount,
+          }]}
+        />
+      ) : null}
       {confirming ? (
         <ConfirmSheet
           title="Sign out of ADE?"
@@ -513,6 +599,32 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
     }
   }, []);
 
+  const [deleting, setDeleting] = useState(false);
+  const canDeleteAccount = typeof accountBridge()?.deleteAccount === "function";
+  const handleDeleteAccount = useCallback(async () => {
+    const api = accountBridge();
+    if (!api?.deleteAccount || !(await confirmAccountDeletion())) return;
+    setDeleting(true);
+    try {
+      const next = await api.deleteAccount();
+      publishAccountStatus(next);
+      showToast({
+        tone: "success",
+        title: "Your ADE account is deleted",
+        message: "You are signed out. Local projects on this computer stay here.",
+      });
+    } catch (err) {
+      showToast({
+        tone: "error",
+        title: "Your account was not deleted",
+        message: err instanceof Error ? err.message : "Try again.",
+        report: { surface: "account_delete", code: "account_delete_failed" },
+      });
+    } finally {
+      setDeleting(false);
+    }
+  }, []);
+
   const dismissRepoBridge = useCallback(() => {
     writeDismissed(REPO_BRIDGE_DISMISS_KEY);
     setRepoBridgeDismissed(true);
@@ -565,6 +677,8 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
         onConnectGithub={() => navigate(settingsRouteFor("integrations.github"))}
         onSignOut={() => void handleSignOut()}
         signingOut={signingOut}
+        onDeleteAccount={canDeleteAccount ? () => void handleDeleteAccount() : undefined}
+        deleting={deleting}
       />
       {signOutError ? (
         <Banner

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ArchiveSummary } from "../../../shared/types/archive";
 import { useArchiveReminderBanner } from "./useArchiveReminderBanner";
 import { useAppBanner } from "../ui/notice/appBannerStore";
+import { useAppStore } from "../../state/appStore";
 
 /**
  * The weekly archive reminder. Its one non-obvious rule is a race: a summary
@@ -39,6 +40,7 @@ function lastBannerModel(): unknown {
 
 afterEach(() => {
   cleanup();
+  useAppStore.setState({ projectBinding: null });
   vi.useRealTimers();
   vi.mocked(useAppBanner).mockClear();
 });
@@ -60,6 +62,8 @@ describe("useArchiveReminderBanner", () => {
     const pending: Array<(value: ArchiveSummary) => void> = [];
     const summary = vi.fn(() => new Promise<ArchiveSummary>((resolve) => { pending.push(resolve); }));
     (window as any).ade = { archive: { summary } };
+    // The tab's copy: its archive is summarized there.
+    useAppStore.setState({ projectBinding: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } });
 
     render(<Harness />);
 

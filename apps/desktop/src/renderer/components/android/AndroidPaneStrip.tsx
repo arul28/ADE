@@ -1,10 +1,14 @@
+import type { ReactNode } from "react";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import type { AndroidLaneDeviceStatus, AndroidSdkStatus } from "../../../shared/types/androidEmulator";
 import type { NoticeAction } from "../ui/notice";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { showToast } from "../app/toast/toastStore";
 import type { Device3DFailure } from "../device/Device3DView";
 import { DeviceErrorStrip } from "../device/DeviceStatusStrip";
+import { androidLowDiskSentence } from "../../../shared/androidDisk";
 import { AndroidDeviceNoticeStrip } from "./AndroidDeviceStatus";
+import type { AndroidCloudNeed } from "./AndroidCloudComputerNotice";
 import {
   ANDROID_LOW_MEMORY_RISK,
   androidRailVisible,
@@ -13,12 +17,15 @@ import {
   type AndroidPaneState,
 } from "./androidDeviceState";
 
+/** The emulator's machine: its pin, and its name when it is not this one. */
+type AndroidPaneMachine = { remote: boolean; name: string | null; pin: OpenProjectBinding };
+
 /**
  * Opens an emulator's log. The log is a file on the emulator's machine: on
  * another machine it cannot be opened from here, so its path goes to the
  * clipboard instead.
  */
-function openAndroidLog(path: string, machine: { remote: boolean; name: string | null }, onError: (error: AndroidErrorDescription) => void): void {
+function openAndroidLog(path: string, machine: AndroidPaneMachine, onError: (error: AndroidErrorDescription) => void): void {
   if (machine.remote) {
     void window.ade?.app?.writeClipboardText?.(path);
     showToast({
@@ -29,7 +36,7 @@ function openAndroidLog(path: string, machine: { remote: boolean; name: string |
     });
     return;
   }
-  void window.ade?.app?.openPath?.(path).catch((caught: unknown) => onError(describeAndroidError(caught)));
+  void window.ade?.app?.openPath?.(path, machine.pin).catch((caught: unknown) => onError(describeAndroidError(caught)));
 }
 
 /**
@@ -73,6 +80,8 @@ export function AndroidPaneStrip({
   onRetry3D,
   onDismiss3D,
   onDismissAcceleration,
+  cloudNeedsFullComputer,
+  renderCloudNotice,
 }: {
   error: AndroidErrorDescription | null;
   paneState: AndroidPaneState;
@@ -85,7 +94,7 @@ export function AndroidPaneStrip({
   /** The pane may offer "Choose another device". */
   canChoose: boolean;
   /** The emulator's machine: another machine's log path is copied, not opened. */
-  machine: { remote: boolean; name: string | null };
+  machine: AndroidPaneMachine;
   /** adb refused the failed start after ADE had restarted the adb server: a new restart does not help. */
   adbRestartedAlready: boolean;
   onDismissError: () => void;
@@ -99,6 +108,14 @@ export function AndroidPaneStrip({
   onRetry3D: () => void;
   onDismiss3D: () => void;
   onDismissAcceleration: () => void;
+  /** The machine is an ADE Cloud computer that can't run the emulator at all. */
+  cloudNeedsFullComputer: boolean;
+  /**
+   * The machine is an ADE Cloud computer: the notice for what it lacks, in
+   * place of "no emulator acceleration" (when `cloudNeedsFullComputer`) or a
+   * start refused for disk, with its dismiss. Null on every other machine.
+   */
+  renderCloudNotice: ((need: AndroidCloudNeed, onDismiss: (() => void) | undefined) => ReactNode) | null;
 }) {
   const restartAdb = () => {
     void confirmAdbRestart(machine.name).then((confirmed) => {
@@ -113,6 +130,27 @@ export function AndroidPaneStrip({
         sentence={`${error.sentence} ${ANDROID_LOW_MEMORY_RISK}`}
         actions={[{ label: "Start anyway", onClick: onStartAnyway }]}
         onDismiss={onDismissError}
+      />
+    );
+  }
+  if (error?.code === "ANDROID_NO_ACCELERATION" && renderCloudNotice && cloudNeedsFullComputer) {
+    // A cloud computer has no KVM to turn on: what it is and the way to a
+    // full computer, not a BIOS hint and not an error to report.
+    return renderCloudNotice({ kind: "full-computer" }, onDismissError);
+  }
+  // A first start the disk can't hold: a refused start, or a boot that ended in it.
+  const errorDisk = error?.disk ?? null;
+  const lowDisk = errorDisk ?? (paneState === "crashed" && lane?.error ? describeAndroidError(lane.error).disk ?? null : null);
+  if (lowDisk) {
+    // A refusal can be dismissed; a crash stays until the next start.
+    const dismiss = errorDisk ? onDismissError : undefined;
+    if (renderCloudNotice) return renderCloudNotice({ kind: "disk", ...lowDisk }, dismiss);
+    return (
+      <AndroidDeviceNoticeStrip
+        tone="warning"
+        sentence={`${androidLowDiskSentence(lowDisk.neededMb, lowDisk.freeMb)} Free some space on this machine's disk, then start it again.`}
+        actions={errorDisk ? [] : [{ label: "Start", onClick: onStart }]}
+        onDismiss={dismiss}
       />
     );
   }
@@ -187,6 +225,7 @@ export function AndroidPaneStrip({
     );
   }
   if (acceleration && !acceleration.usable && !accelerationDismissed && paneState !== "setup" && paneState !== "unsupported") {
+    if (renderCloudNotice && cloudNeedsFullComputer) return renderCloudNotice({ kind: "full-computer" }, onDismissAcceleration);
     return (
       <AndroidDeviceNoticeStrip
         tone="warning"

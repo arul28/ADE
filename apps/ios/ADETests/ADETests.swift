@@ -507,11 +507,11 @@ final class ADETests: XCTestCase {
 
   func testImportProviderLabelsCoverEveryProvider() {
     XCTAssertEqual(
-      ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot", "factory"]
+      ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot", "antigravity", "factory"]
         .map(workExternalSessionProviderName),
-      ["Claude", "Codex", "Cursor", "Droid", "OpenCode", "Pi", "Muse", "Qwen", "Kimi", "Grok", "Copilot", "Droid"]
+      ["Claude", "Codex", "Cursor", "Droid", "OpenCode", "Pi", "Muse", "Qwen", "Kimi", "Grok", "Copilot", "Antigravity", "Droid"]
     )
-    XCTAssertEqual(Set(workProviderImportRules.keys).count, 11)
+    XCTAssertEqual(Set(workProviderImportRules.keys).count, 12)
   }
 
   /// Hardcoded copy of `PROVIDER_IMPORT_RULES` in
@@ -529,12 +529,13 @@ final class ADETests: XCTestCase {
       "kimi": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
       "grok": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
       "copilot": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .none),
+      "antigravity": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
     ]
     XCTAssertEqual(Set(workProviderImportRules.keys), Set(expected.keys))
     for (provider, rules) in expected {
       XCTAssertEqual(workProviderImportRules[provider], rules, provider)
     }
-    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot"])
+    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot", "antigravity"])
   }
 
   func testImportPlanContinuesNativeChatProvidersAtLaneRootOnly() {
@@ -582,7 +583,7 @@ final class ADETests: XCTestCase {
   }
 
   func testImportScanProvidersSkipAcpProvidersOnOlderHost() {
-    XCTAssertEqual(workImportScanProviders(hostKnowsAcpProviders: true).count, 11)
+    XCTAssertEqual(workImportScanProviders(hostKnowsAcpProviders: true).count, 12)
     XCTAssertEqual(
       workImportScanProviders(hostKnowsAcpProviders: false),
       ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse"]
@@ -3844,6 +3845,64 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.activeHostProfile?.discoveredLanAddresses, ["10.0.0.9"], "A new address is a move, not noise.")
   }
 
+  // Several ADE installs on one computer (ADE, ADE Beta, a dev home) share its
+  // addresses and name, each on its own port. Matching an advertisement by
+  // address took another install's port: the phone dialed the wrong ADE on
+  // Wi-Fi, was refused, and fell back to the relay.
+  @MainActor
+  func testDiscoveryMatchesTheSavedInstallByDeviceIdNotSharedAddress() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let beta = HostConnectionProfile(
+      hostIdentity: "studio-beta-id",
+      hostName: "Mac Studio",
+      port: 8793,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "studio-beta-id",
+      lastSuccessfulAddress: "192.168.1.113",
+      savedAddressCandidates: ["192.168.1.113"],
+      discoveredLanAddresses: ["192.168.1.113"],
+      tailscaleAddress: nil
+    )
+    service.installSavedProfileForTesting(beta, token: "beta-secret", makeActive: true)
+    func advertisement(id: String, port: Int, identified: Bool = true) -> DiscoveredSyncHost {
+      DiscoveredSyncHost(
+        id: id,
+        serviceName: "ADE Sync Mac Studio \(port)",
+        hostName: "Mac Studio",
+        hostIdentity: identified ? id : nil,
+        port: port,
+        addresses: ["192.168.1.113"],
+        tailscaleAddress: nil,
+        runtimeKind: "daemon",
+        runtimeVersion: "1.0.0",
+        projectIds: [],
+        projectNames: [],
+        projectCount: 0,
+        lastResolvedAt: "2026-05-10T10:00:00.000Z"
+      )
+    }
+
+    service.applyDiscoveredHostsForTesting([
+      advertisement(id: "studio-stable-id", port: 8787),
+      advertisement(id: "studio-beta-id", port: 8794),
+    ])
+
+    XCTAssertEqual(service.activeHostProfile?.port, 8794, "The saved install follows its own advertisement.")
+    let attempts = try service.endpointAttemptPlan(for: try XCTUnwrap(service.activeHostProfile), preferLiveCandidatesOnly: true)
+    let lan = attempts.filter { $0.address == "192.168.1.113" }
+    XCTAssertEqual(lan.first?.port, 8794, "The first Wi-Fi dial goes to this install's port.")
+    XCTAssertFalse(lan.contains { $0.port == 8787 }, "Never another install's live port.")
+
+    // An older brain that sends no identity, on the shared address but
+    // another port, is another install: the saved one keeps its own port.
+    service.applyDiscoveredHostsForTesting([advertisement(id: "studio-anonymous", port: 8787, identified: false)])
+    XCTAssertEqual(service.activeHostProfile?.port, 8794, "An address match alone never moves the saved install to another port.")
+  }
+
   @MainActor
   func testUserDisconnectedPrimaryListsAsAvailable() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -3877,6 +3936,124 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(row.isConnectedSet)
     XCTAssertFalse(service.primaryIsAttached)
     XCTAssertEqual(service.focusedMachineKey, "machine:studio-id", "The pairing is kept; only the connection is off.")
+  }
+
+  /// Privacy: the ADE Cloud computers, saved chats and wake messages of the
+  /// last account never reach the next one, also across a relaunch.
+  @MainActor
+  func testAccountChangeDropsTheLastAccountsCloudComputersAndSavedChats() throws {
+    let defaultsKey = SyncService.cloudMachineFleetKeysDefaultsKey
+    UserDefaults.standard.set(["machine:old-cloud"], forKey: defaultsKey)
+    defer { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let fleet = MachineFleet()
+    fleet.attach(service)
+    service.cloudSavedChats = [try JSONDecoder().decode(CloudSavedChatRow.self, from: Data("""
+      {"machineKey": "old-cloud-key", "chatId": "chat-1", "title": "Old account chat",
+       "projectKey": "github.com/octocat/hello-world", "updatedAt": 1}
+      """.utf8))]
+    service.cloudServerInstances = [CloudServerInstance(
+      id: "box-1", name: "Old Cloud", status: "asleep", pastDue: false,
+      metadata: ["ade_machine_key": "old-cloud-key"]
+    )]
+    service.recordCloudWakeFailure(fleetKey: "machine:old-cloud", message: "Old Cloud did not answer.")
+    XCTAssertTrue(service.cloudMachineFleetKeys.contains("machine:old-cloud"))
+
+    fleet.reset()
+
+    XCTAssertTrue(service.cloudSavedChats.isEmpty)
+    XCTAssertTrue(service.cloudServerInstances.isEmpty)
+    XCTAssertTrue(service.cloudMachineFleetKeys.isEmpty)
+    XCTAssertTrue(service.cloudWakeFailures.isEmpty)
+    // A wake of the last account that fails after the change stays dropped.
+    service.recordCloudWakeFailure(fleetKey: "machine:old-cloud", message: "Old Cloud did not answer.")
+    XCTAssertTrue(service.cloudWakeFailures.isEmpty)
+    XCTAssertTrue(fleet.restingCloudMachines.isEmpty)
+    XCTAssertEqual(UserDefaults.standard.stringArray(forKey: defaultsKey) ?? [], [], "A relaunch must not bring the old account's cloud computers back.")
+  }
+
+  /// No lost or doubled message: a message ADE Cloud holds for an asleep
+  /// chat is drawn from the send until the chat's own message (same send
+  /// id) shows, never missing between the server's "delivered" and the
+  /// transcript, never again after, and never from a first read that finds
+  /// it delivered already.
+  @MainActor
+  func testCloudHeldMessageStaysDrawnUntilTheTranscriptShowsItThenNeverAgain() throws {
+    func held(_ state: String, id: String = "send-1") throws -> CloudChatQueuedMessage {
+      try JSONDecoder().decode(CloudChatQueuedMessage.self, from: Data(#"""
+        {"messageId":"\#(id)","seq":1,"state":"\#(state)","text":"Run the tests again.","createdAt":1763424000000}
+        """#.utf8))
+    }
+    let store = AccountCloudStore()
+    func drawn(_ store: AccountCloudStore) -> [String] {
+      store.threadMessages(machineKey: "mk-cloud", chatId: "chat-1").map(\.messageId)
+    }
+    for state in ["queued", "sending", "delivered"] {
+      store.applyQueuedRead([try held(state)], machineKey: "mk-cloud", chatId: "chat-1")
+      XCTAssertEqual(drawn(store), ["send-1"], "Drawn while \(state), before the transcript shows it.")
+    }
+
+    // The same words sent before this message are not this message.
+    let earlier = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2025-11-17T23:50:00.000Z",
+      sequence: 3,
+      event: .userMessage(text: "Run the tests again.", attachments: nil, turnId: "t1", steerId: nil, deliveryState: nil, processed: nil)
+    )
+    XCTAssertTrue(cloudHeldMessagesShown(store.threadMessages(machineKey: "mk-cloud", chatId: "chat-1"), in: [earlier]).messageIds.isEmpty)
+
+    // The chat's own message, as the woken computer writes it.
+    let wire = #"{"sessionId":"chat-1","timestamp":"2025-11-18T00:00:40.000Z","sequence":9,"event":{"type":"user_message","text":"Run the tests again.","clientSendId":"send-1"}}"#
+    let delivered = makeWorkChatEnvelope(from: try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(wire.utf8)))
+    let shown = cloudHeldMessagesShown(store.threadMessages(machineKey: "mk-cloud", chatId: "chat-1"), in: [earlier, delivered])
+    XCTAssertEqual(shown.messageIds, ["send-1"])
+    store.retireFromThread(shown)
+    XCTAssertEqual(drawn(store), [])
+    store.applyQueuedRead([try held("delivered")], machineKey: "mk-cloud", chatId: "chat-1")
+    XCTAssertEqual(drawn(store), [], "A later read must not draw it a second time.")
+
+    let fresh = AccountCloudStore()
+    fresh.applyQueuedRead([try held("delivered")], machineKey: "mk-cloud", chatId: "chat-1")
+    XCTAssertEqual(drawn(fresh), [], "Delivered before the phone looked: the transcript already has it.")
+
+    // An older computer writes no send id: its message, written after the
+    // hold, matches by text, one transcript message per held message.
+    func unkeyed(_ sequence: Int) -> WorkChatEnvelope {
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2025-11-18T00:00:4\(sequence).000Z",
+        sequence: sequence,
+        event: .userMessage(text: "Run the tests again.", attachments: nil, turnId: "t2", steerId: nil, deliveryState: nil, processed: nil)
+      )
+    }
+    let twins = [try held("delivered", id: "send-2"), try held("sending", id: "send-3")]
+    XCTAssertEqual(cloudHeldMessagesShown([twins[0]], in: [earlier, unkeyed(1)]).messageIds, ["send-2"])
+    XCTAssertEqual(cloudHeldMessagesShown(twins, in: [earlier, unkeyed(1)]).messageIds.count, 1, "One transcript message retires one of two identical held messages.")
+    XCTAssertEqual(cloudHeldMessagesShown(twins, in: [earlier, unkeyed(1), unkeyed(2)]).messageIds, ["send-2", "send-3"])
+    // A minute before the hold is another message, even within clock slack of old.
+    let justBefore = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2025-11-17T23:59:00.000Z",
+      sequence: 4,
+      event: .userMessage(text: "Run the tests again.", attachments: nil, turnId: "t1", steerId: nil, deliveryState: nil, processed: nil)
+    )
+    XCTAssertTrue(cloudHeldMessagesShown(twins, in: [justBefore]).messageIds.isEmpty, "Words sent before the hold are not the held message.")
+    // Across reads too: the transcript message one held message took never
+    // retires its identical twin on a later read.
+    let rows = AccountCloudStore()
+    let firstRead = cloudHeldMessagesShown(twins, in: [unkeyed(1)], textMatchedRows: rows.textMatchedTranscriptRows)
+    XCTAssertEqual(firstRead.messageIds.count, 1)
+    rows.retireFromThread(firstRead)
+    let twin = twins.filter { !firstRead.messageIds.contains($0.messageId) }
+    XCTAssertTrue(
+      cloudHeldMessagesShown(twin, in: [unkeyed(1)], textMatchedRows: rows.textMatchedTranscriptRows).messageIds.isEmpty,
+      "One transcript message retires one held message, ever."
+    )
+    // A message still queued (or waiting for a sign-in) is not in the chat
+    // yet: the same words in the transcript are another message.
+    for state in ["queued", "waiting_for_sign_in"] {
+      XCTAssertTrue(cloudHeldMessagesShown([try held(state, id: "send-4")], in: [unkeyed(1)]).messageIds.isEmpty, "Never retired by text while \(state).")
+    }
   }
 
   @MainActor
@@ -4015,6 +4192,80 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.savedProfilesForTesting().map(\.hostIdentity), ["current-account-mac"])
     XCTAssertFalse(service.hasCredentialForTesting(previousOwner))
     XCTAssertTrue(service.hasCredentialForTesting(currentOwner))
+  }
+
+  /// When an account leaves this phone, none of its rows stay in the local
+  /// copy (lists, Activity, widgets), also after a relaunch. A computer still
+  /// paired by code stays paired and syncs again from the start.
+  @MainActor
+  func testAccountLeavingResetsLocalCopyAndKeepsCodePairedComputer() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    for (id, root) in [("project_studio", "/demo/studio/hello-world"), ("project_cloud", "/demo/cloud/hello-world")] {
+      try database.upsertMobileProjectCache(MobileProjectSummary(
+        id: id, displayName: "hello-world", rootPath: root, defaultBaseRef: "main",
+        lastOpenedAt: nil, laneCount: 0, isAvailable: true, isCached: true
+      ))
+    }
+    service.refreshProjectCatalog()
+    XCTAssertEqual(Set(service.projects.map(\.id)), ["project_studio", "project_cloud"])
+
+    // Demo Studio is paired by code; Demo Cloud was reached through the account.
+    let studio = HostConnectionProfile(
+      hostIdentity: "studio-device",
+      hostName: "Demo Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 42,
+      lastHostDeviceId: "studio-device",
+      lastSuccessfulAddress: "192.168.1.2",
+      savedAddressCandidates: ["192.168.1.2"],
+      discoveredLanAddresses: ["192.168.1.2"],
+      tailscaleAddress: nil
+    )
+    let cloud = HostConnectionProfile(
+      hostIdentity: "cloud-device",
+      hostName: "Demo Cloud",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 17,
+      lastHostDeviceId: "cloud-device",
+      lastSuccessfulAddress: "wss://relay.ade.app/connect/cloud-device",
+      savedAddressCandidates: [],
+      discoveredLanAddresses: [],
+      tailscaleAddress: nil,
+      savedRelayCandidates: ["wss://relay.ade.app/connect/cloud-device"],
+      accountOwnerId: "user_1",
+      relayAccountOwnerId: "user_1"
+    )
+    service.installSavedProfileForTesting(studio, token: "studio-secret")
+    service.installSavedProfileForTesting(cloud, token: "cloud-secret")
+    // Writes that began before the account left: a changeset batch of its
+    // connection and a project row, both still waiting for the database.
+    let epochBeforeLeave = database.replicaEpoch
+    let formerChanges = database.exportChangesSince(version: 0)
+    let formerProject = MobileProjectSummary(
+      id: "project_cloud", displayName: "hello-world", rootPath: "/demo/cloud/hello-world", defaultBaseRef: "main",
+      lastOpenedAt: nil, laneCount: 0, isAvailable: true, isCached: true
+    )
+
+    service.removeAccountOwnedPairings(ownerId: "user_1")
+
+    XCTAssertThrowsError(try database.applyChanges(formerChanges, replicaEpoch: epochBeforeLeave))
+    XCTAssertThrowsError(try database.upsertMobileProjectCache(formerProject, replicaEpoch: epochBeforeLeave))
+    XCTAssertEqual(database.listMobileProjects().map(\.id), [])
+    XCTAssertEqual(service.projects.map(\.id), [])
+    XCTAssertEqual(SyncService(database: makeProjectLaneForeignKeyDatabase(baseURL: baseURL)).projects.map(\.id), [])
+    let remaining = service.savedProfilesForTesting()
+    XCTAssertEqual(remaining.map(\.hostIdentity), ["studio-device"])
+    XCTAssertEqual(remaining.first?.lastRemoteDbVersion, 0)
+    XCTAssertTrue(service.hasCredentialForTesting(studio))
+    XCTAssertFalse(service.hasCredentialForTesting(cloud))
   }
 
   @MainActor
@@ -7074,34 +7325,26 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  /// Remove… sends each folder's removal on the link of the computer that
+  /// holds it, never on the focused machine's link. A removed folder's saved
+  /// row stays off the phone's list (the machine never deletes it) until the
+  /// machine lists the folder again.
   @MainActor
-  func testSyncServiceForgetProjectHidesCachedAndRemoteRowsByRoot() throws {
-    let activeProjectIdKey = "ade.sync.activeProjectId"
-    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
-    let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
-    let profileKey = "ade.sync.hostProfile"
-    let profilesKey = "ade.sync.hostProfiles"
-    let hiddenProjectsKey = "ade.sync.hiddenProjects"
-    let hostHiddenProjectsKey = "\(hiddenProjectsKey).host-1"
-    UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
-    UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
-    UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
-    UserDefaults.standard.removeObject(forKey: profileKey)
-    UserDefaults.standard.removeObject(forKey: profilesKey)
-    UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
-    UserDefaults.standard.removeObject(forKey: hostHiddenProjectsKey)
-    defer {
-      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
-      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
-      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
-      UserDefaults.standard.removeObject(forKey: profileKey)
-      UserDefaults.standard.removeObject(forKey: profilesKey)
-      UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
-      UserDefaults.standard.removeObject(forKey: hostHiddenProjectsKey)
-    }
+  func testHubRemovalGoesOnlyToTheCopysComputerAndKeepsTheSavedRowOff() async throws {
+    let keys = [
+      "ade.sync.activeProjectId",
+      "ade.sync.activeProjectRootPath",
+      "ade.sync.activeProjectHostIdentity",
+      "ade.sync.hostProfile",
+      "ade.sync.hostProfiles",
+      "ade.sync.hiddenProjects",
+      "ade.sync.hiddenProjects.host-1",
+      "ade.sync.removedFromHostProjects.host-1",
+    ]
+    keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
+    defer { keys.forEach { UserDefaults.standard.removeObject(forKey: $0) } }
 
-    let baseURL = makeTemporaryDirectory()
-    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
     try database.executeSqlForTesting("""
       insert into projects (
@@ -7109,68 +7352,80 @@ final class ADETests: XCTestCase {
       ) values
         ('db-project', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
     """)
-
+    let hello: ([[String: Any]]) -> [String: Any] = { projects in
+      [
+        "brain": ["deviceId": "host-1", "deviceName": "Mac Studio"],
+        "features": ["projectCatalog": true],
+        "projects": projects,
+      ]
+    }
     let service = SyncService(database: database)
-    try service.applyHelloPayloadForTesting([
-      "brain": [
-        "deviceId": "host-1",
-        "deviceName": "Mac Studio",
-      ],
-      "features": [
-        "projectCatalog": true,
-      ],
-      "projects": [],
-    ])
-    let cachedProject = try XCTUnwrap(service.projects.first(where: { $0.id == "db-project" }))
-    service.setActiveProjectForTesting(projectId: cachedProject.id, rootPath: cachedProject.rootPath)
-    XCTAssertEqual(service.activeProjectId, "db-project")
+    try service.applyHelloPayloadForTesting(hello([]))
+    service.setActiveProjectForTesting(projectId: "db-project", rootPath: "/tmp/project-one")
+    service.configureConnectedTransportForTesting()
+    service.beginOutboundEnvelopeCaptureForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false, suspendAutoReconnect: true)
+      database.close()
+    }
+    let focused = try XCTUnwrap(service.focusedMachineKey)
+    func copy(on phoneKey: String?) -> HubRemovalCopy {
+      HubRemovalCopy(computerKey: "mk-any", computerName: "A computer", phoneKey: phoneKey, projectId: "db-project", rootPath: "/tmp/project-one")
+    }
 
-    let registryProject = MobileProjectSummary(
-      id: "registry-project",
-      displayName: "Project One",
-      rootPath: "/tmp/project-one/",
-      defaultBaseRef: "main",
-      lastOpenedAt: "2026-04-22T02:00:00.000Z",
-      laneCount: 2,
-      isAvailable: true,
-      isCached: false
-    )
-    service.seedRemoteProjectCatalogForTesting([registryProject])
-    XCTAssertTrue(service.projects.contains { $0.id == "db-project" || $0.id == "registry-project" })
+    // Another computer with no live link, and a copy with no link at all:
+    // refused as unreachable, and nothing goes out on the focused link.
+    for phoneKey in ["machine:mini-id", nil] as [String?] {
+      do {
+        try await hubRemoveCopy(copy(on: phoneKey), sync: service, fleet: MachineFleet())
+        XCTFail("A copy on \(phoneKey ?? "no link") must not be removed through the focused machine.")
+      } catch {
+        XCTAssertEqual((error as NSError).code, 14)
+      }
+    }
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "project_forget_request"), 0)
+    XCTAssertTrue(service.projects.contains { $0.id == "db-project" })
 
-    service.forgetProject(cachedProject)
-
+    // The focused computer's copy goes out on the focused link.
+    let removal = Task { try await hubRemoveCopy(copy(on: focused), sync: service, fleet: MachineFleet()) }
+    var requestId: String?
+    for _ in 0..<1_000 where requestId == nil {
+      await Task.yield()
+      requestId = service.capturedOutboundRequestIdsForTesting(type: "project_forget_request").first
+    }
+    let sent = try XCTUnwrap(requestId, "project_forget_request never went out")
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "project_forget_request"), 1)
+    service.completeCapturedRequestForTesting(requestId: sent, result: ["ok": true])
+    try await removal.value
     XCTAssertNil(service.activeProjectId)
-    XCTAssertNil(service.activeProjectRootPath)
-    XCTAssertTrue(service.shouldShowProjectHub)
     XCTAssertFalse(service.projects.contains { $0.id == "db-project" })
-    XCTAssertFalse(service.projects.contains { $0.id == "registry-project" })
-    XCTAssertNil(UserDefaults.standard.stringArray(forKey: hiddenProjectsKey))
-    XCTAssertEqual(
-      UserDefaults.standard.stringArray(forKey: hostHiddenProjectsKey),
-      ["id:db-project", "root:/tmp/project-one"]
-    )
 
-    service.seedRemoteProjectCatalogForTesting([
-      MobileProjectSummary(
-        id: "registry-project",
-        displayName: "Project One",
-        rootPath: "/tmp/project-one/",
-        defaultBaseRef: "main",
-        lastOpenedAt: "2026-04-22T03:00:00.000Z",
-        laneCount: 3,
-        isAvailable: true,
-        isCached: false
-      ),
-    ])
+    // The saved row is still in the database; it stays off after a refresh
+    // and after the app starts again.
+    service.refreshProjectCatalog()
     XCTAssertFalse(service.projects.contains { $0.id == "db-project" })
-    XCTAssertFalse(service.projects.contains { $0.id == "registry-project" })
+    let relaunched = SyncService(database: database)
+    try relaunched.applyHelloPayloadForTesting(hello([]))
+    XCTAssertFalse(relaunched.projects.contains { $0.id == "db-project" })
 
-    service.disconnect(clearCredentials: false, suspendAutoReconnect: true)
-    service.selectProject(registryProject)
-    XCTAssertNil(UserDefaults.standard.stringArray(forKey: hostHiddenProjectsKey))
-
-    database.close()
+    // Added back on the computer: its catalog lists the folder, so it shows.
+    try service.applyHelloPayloadForTesting(hello([[
+      "id": "db-project",
+      "displayName": "Project One",
+      "rootPath": "/tmp/project-one",
+      "defaultBaseRef": "main",
+      "lastOpenedAt": "2026-04-22T02:00:00.000Z",
+      "laneCount": 1,
+      "isAvailable": true,
+      "isCached": false,
+    ]]))
+    XCTAssertTrue(service.projects.contains { $0.id == "db-project" })
+    // The mark is gone too: after the next start the saved row shows even
+    // before the catalog lists the folder.
+    let restarted = SyncService(database: database)
+    try restarted.applyHelloPayloadForTesting(hello([]))
+    XCTAssertTrue(restarted.projects.contains { $0.id == "db-project" })
   }
 
   @MainActor
@@ -14551,7 +14806,11 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(opencode.interruptContinues)
     XCTAssertEqual(opencode.agentLabel, "OpenCode")
 
-    for provider in ["droid", "pi", ""] {
+    let pi = WorkActiveSendCapability.forProvider("pi")
+    XCTAssertEqual(pi.modes, [.inline, .queue])
+    XCTAssertFalse(pi.interruptContinues)
+
+    for provider in ["droid", ""] {
       let capability = WorkActiveSendCapability.forProvider(provider)
       XCTAssertEqual(capability.modes, [.queue], "expected queue-only for \(provider)")
       XCTAssertEqual(capability.atomicDispatchModes, [], "expected no atomic dispatch for \(provider)")
@@ -14564,11 +14823,11 @@ final class ADETests: XCTestCase {
   /// and OpenCode is eligible through its inbox, so a list derived from either
   /// atomic mode would get a provider wrong.
   func testCtoLiveRedirectProvidersMirrorDesktopContract() {
-    XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor", "opencode"])
-    for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent", "opencode"] {
+    XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor", "opencode", "copilot"])
+    for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent", "opencode", "copilot"] {
       XCTAssertTrue(providerSupportsLiveRedirect(provider), "expected \(provider) to be CTO-eligible")
     }
-    for provider in ["droid", "pi", "qwen", "kimi", "grok", "copilot", ""] {
+    for provider in ["droid", "qwen", "kimi", "grok", ""] {
       XCTAssertFalse(providerSupportsLiveRedirect(provider), "expected \(provider) to be rejected")
     }
     XCTAssertFalse(WorkActiveSendCapability.forProvider("codex").modes.contains(.interrupt))
@@ -16138,16 +16397,21 @@ final class ADETests: XCTestCase {
 
   // MARK: - Scheduled work partitioning + background lifecycle
 
+  @MainActor
   func testScheduledWorkExcludesBackgroundTaskFromScheduleAndTimelineCard() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","title":"Nightly","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"bg-1","kind":"background_task","status":"running","title":"npm run build","prompt":"cd /repo && npm run build","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"scheduled_work_update","id":"update-resume:chat-1","kind":"wakeup","status":"scheduled","reason":"Resume after ADE restart","turnId":"turn-1"}}
     """
 
     let transcript = parseWorkChatTranscript(raw)
     let snapshots = buildWorkScheduledWorkSnapshots(from: transcript)
-    // Schedule section excludes background_task.
+    // Schedule section excludes background_task and the restart resume.
     XCTAssertEqual(workChatInfoScheduleItems(snapshots).map(\.kind), ["cron"])
+    // The restart transcript, saved and live: only the ordinary wake is listed.
+    XCTAssertEqual(workChatInfoScheduleItems(buildWorkScheduledWorkSnapshots(from: WorkRestartResumePreviewData.savedTranscript)).map(\.id), ["wake-ci"])
+    XCTAssertEqual(workChatInfoScheduleItems(buildWorkScheduledWorkSnapshots(from: WorkRestartResumePreviewData.liveTranscript)).map(\.id), ["wake-ci"])
     // Background section carries exactly the background_task.
     XCTAssertEqual(workChatInfoBackgroundItems(snapshots).map(\.id), ["bg-1"])
 
@@ -18128,6 +18392,11 @@ final class ADETests: XCTestCase {
 
   @MainActor
   func testSyncActiveSessionsKeepsFailedChatsForAttentionDrawer() throws {
+    // A user pause left by another test would unlist the focused computer,
+    // and its rows with it (the lists rule Activity follows).
+    let pausedKey = "ade.sync.autoReconnectPausedByUser"
+    UserDefaults.standard.removeObject(forKey: pausedKey)
+    defer { UserDefaults.standard.removeObject(forKey: pausedKey) }
     let baseURL = makeTemporaryDirectory()
     let database = makeTerminalSessionSyncDatabase(baseURL: baseURL)
     XCTAssertNil(database.initializationError)
@@ -18297,7 +18566,8 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "settled-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "stale-running-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "completed-chat" }))
-    XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "failed-shell" }))
+    // A shell counts as the Hub counts it: a failed one is listed, as failed.
+    XCTAssertEqual(service.activeSessions.first(where: { $0.sessionId == "failed-shell" })?.status, "failed")
 
     // A follow-up ask can change only its copy/item id. The active-session
     // signature must still publish that content-only delta to the drawer.
@@ -18854,35 +19124,47 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(plain.supportsCodexFastMode)
   }
 
-  func testCtoMemoryDecodesFullPayload() throws {
+  func testCtoMemoryDecodesV2PayloadAndIgnoresV1Keys() throws {
     let payload: [String: Any] = [
       "memory": "- Prefers monochrome UI\n- Ships mac-only releases",
-      "threadState": "Goal: finish CTO revamp. Open loop: iOS build.",
-      "dailyLog": "09:12 reviewed onboarding card",
-      "dailyLogDate": "2026-07-04",
+      "memoryBytes": 46,
+      "memoryLimitBytes": 4096,
+      "userNotes": "- Short answers",
+      "userNotesLimitBytes": 2048,
+      "memoryHash": "abc",
+      "userNotesHash": "def",
+      "openWork": [
+        ["id": "ow-1", "text": "Land the fix", "createdAt": "2026-11-14T09:00:00Z", "doneAt": NSNull(), "addedBy": "cto"],
+        ["id": "ow-2", "text": "Ship it", "createdAt": "2026-11-14T09:00:00Z", "doneAt": "2026-11-14T10:00:00Z", "addedBy": "user"],
+      ],
+      // An older host's v1 keys still decode as noise.
+      "threadState": "",
+      "dailyLog": "",
+      "projectBrief": NSNull(),
       "updatedAt": "2026-07-04T12:00:00.000Z",
     ]
     let data = try JSONSerialization.data(withJSONObject: payload)
     let memory = try JSONDecoder().decode(CtoMemory.self, from: data)
 
-    XCTAssertTrue(memory.memory.contains("monochrome"))
-    XCTAssertTrue(memory.threadState.contains("Open loop"))
-    XCTAssertEqual(memory.dailyLogDate, "2026-07-04")
-    XCTAssertEqual(memory.updatedAt, "2026-07-04T12:00:00.000Z")
-    XCTAssertNil(memory.projectBrief)
+    XCTAssertEqual(memory.noteLines, ["Prefers monochrome UI", "Ships mac-only releases"])
+    XCTAssertEqual(memory.memoryLimitBytes, 4096)
+    XCTAssertEqual(memory.userNotesLimitBytes, 2048)
+    XCTAssertEqual(memory.memoryHash, "abc")
+    XCTAssertEqual(memory.userNotesHash, "def")
+    XCTAssertEqual(memory.openWork?.map(\.isDone), [false, true])
     XCTAssertFalse(memory.isEmpty)
   }
 
   func testCtoMemoryDecodesPartialAndEmptyPayload() throws {
     // A host that only returns `memory` (missing/null other fields) must still
-    // decode — the tolerant model defaults the rest to empty strings.
-    let partial: [String: Any] = ["memory": "just one fact", "threadState": NSNull()]
+    // decode — every v2 field is optional.
+    let partial: [String: Any] = ["memory": "just one fact", "userNotes": NSNull(), "openWork": NSNull()]
     let partialData = try JSONSerialization.data(withJSONObject: partial)
     let partialMemory = try JSONDecoder().decode(CtoMemory.self, from: partialData)
     XCTAssertEqual(partialMemory.memory, "just one fact")
-    XCTAssertEqual(partialMemory.threadState, "")
-    XCTAssertEqual(partialMemory.dailyLog, "")
-    XCTAssertNil(partialMemory.updatedAt)
+    XCTAssertNil(partialMemory.userNotes)
+    XCTAssertNil(partialMemory.openWork)
+    XCTAssertNil(partialMemory.memoryHash)
     XCTAssertFalse(partialMemory.isEmpty)
 
     let emptyData = try JSONSerialization.data(withJSONObject: [String: Any]())
@@ -19052,10 +19334,10 @@ final class ADETests: XCTestCase {
       .thread
     )
 
-    // No identity yet: the offline case stays on the spinner (the top bar owns
-    // the connection dot); a reachable host surfaces the failure.
+    // No identity yet: an unreachable machine is the asleep "offline" state;
+    // a reachable host surfaces the failure.
     XCTAssertEqual(ctoRootContent(identity: nil, loadError: nil, hostUnreachable: false), .loading)
-    XCTAssertEqual(ctoRootContent(identity: nil, loadError: "boom", hostUnreachable: true), .loading)
+    XCTAssertEqual(ctoRootContent(identity: nil, loadError: "boom", hostUnreachable: true), .offline)
     XCTAssertEqual(
       ctoRootContent(identity: nil, loadError: "boom", hostUnreachable: false),
       .loadError("boom")
@@ -19360,10 +19642,10 @@ final class ADETests: XCTestCase {
       ["steer", "interrupt_retry_same_thread"]
     )
     XCTAssertEqual(
-      workCodexRecoveryActionLabel(for: "restart_resume_thread"),
-      "Restart & resume"
+      workQuietTurnActionLabel(for: "restart_resume_thread"),
+      "Restart Codex"
     )
-    XCTAssertEqual(workCodexRecoveryActionLabel(for: "wait"), "Keep waiting")
+    XCTAssertEqual(workQuietTurnActionLabel(for: "wait"), "Keep waiting")
 
     let raw = #"{"sessionId":"chat-parent","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"codex_turn_stalled","turnId":"turn-child","threadId":"thread-child","reason":"no_output","message":"Codex accepted the turn but has not streamed output yet.","recoveryOptions":["wait","steer","interrupt_retry_same_thread","restart_resume_thread"],"sourceSessionId":"chat-child","automaticRecoveryAttempted":true}}"#
     guard case .codexTurnStalled(_, let parsedOptions, let parsedTurnId, let parsedSourceSessionId, let parsedContext) = parseWorkChatTranscript(raw).first?.event else {
@@ -20818,17 +21100,19 @@ final class ADETests: XCTestCase {
       .first(where: { $0.key == "openai" })?
       .models
 
-    XCTAssertEqual(codexModels?.prefix(8).map(\.id), [
-      "gpt-6.1-sol",
-      "gpt-6-astra",
+    XCTAssertEqual(codexModels?.prefix(10).map(\.id), [
+      "gpt-6.2-sol",
+      "gpt-6.2-astra",
       "gpt-6.1-terra",
       "gpt-6-sol",
       "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-luna",
       "gpt-5.5",
+      "gpt-6.1-sol",
+      "gpt-6-astra",
     ])
-    XCTAssertEqual(workDefaultCatalogModelId(provider: "codex"), "gpt-6.1-sol")
+    XCTAssertEqual(workDefaultCatalogModelId(provider: "codex"), "gpt-6.2-sol")
 
     let astra = codexModels?.first(where: { $0.id == "gpt-6-astra" })
     XCTAssertEqual(astra?.displayName, "GPT-6 Astra")
@@ -20857,8 +21141,8 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(luna?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(luna?.defaultReasoningEffort, "medium")
 
-    XCTAssertTrue(workModelIdsEquivalent("astra", "openai/gpt-6-astra"))
-    XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-6.1-sol"))
+    XCTAssertTrue(workModelIdsEquivalent("astra", "openai/gpt-6.2-astra"))
+    XCTAssertTrue(workModelIdsEquivalent("sol", "openai/gpt-6.2-sol"))
     XCTAssertFalse(workModelIdsEquivalent("sol", "openai/gpt-6-sol"))
     XCTAssertFalse(workModelIdsEquivalent("sol", "openai/gpt-5.6-sol"))
     XCTAssertTrue(workModelIdsEquivalent("terra", "gpt-6.1-terra"))
@@ -20876,7 +21160,7 @@ final class ADETests: XCTestCase {
   func testWorkModelCatalogResolvesGPT6SolLunaAndOpus55() {
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-sol"), "GPT-6 Sol")
     XCTAssertEqual(workKnownModelDisplayName("gpt-6-sol"), "GPT-6 Sol")
-    XCTAssertEqual(workKnownModelDisplayName("sol"), "GPT-6.1 Sol")
+    XCTAssertEqual(workKnownModelDisplayName("sol"), "GPT-6.2 Sol")
     XCTAssertEqual(workKnownModelDisplayName("gpt-5.6-sol"), "GPT-5.6 Sol")
     XCTAssertEqual(workKnownModelDisplayName("openai/gpt-6-luna"), "GPT-6 Luna")
     XCTAssertEqual(workKnownModelDisplayName("luna"), "GPT-6 Luna")
@@ -20944,8 +21228,13 @@ final class ADETests: XCTestCase {
     // Retired Haiku 4.5 ids resolve to Haiku 5.5, which now carries reasoning tiers.
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-haiku-4-5"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-haiku-5-5"), ["low", "medium", "high", "xhigh", "max"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "astra"), ["low", "medium", "high", "xhigh", "max"])
+    // The bare aliases name the current generation, which reaches Ultra.
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "astra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-6.2-astra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-6.2-sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    // An older explicit id keeps the tiers it always had.
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-6-astra"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.6-terra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.6-luna"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.3-codex-spark"), ["low", "medium", "high", "xhigh"])
@@ -21166,7 +21455,7 @@ final class ADETests: XCTestCase {
       currentProvider: "codex"
     ).first?.providers.first?.models
 
-    XCTAssertEqual(models?.map(\.id), ["gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"])
+    XCTAssertEqual(models?.map(\.id), ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5", "gpt-6.1-sol", "gpt-6-astra"])
     XCTAssertEqual(models?.first?.defaultReasoningEffort, "low")
     XCTAssertEqual(models?.first?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(models?.first(where: { $0.id == "gpt-5.6-sol" })?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max", "ultra"])
@@ -21208,7 +21497,7 @@ final class ADETests: XCTestCase {
     let flatListWithAstra = try JSONDecoder().decode([AgentChatModelInfo].self, from: flatListWithAstraData)
     XCTAssertEqual(
       workPrioritizeGPT56ChatModels(flatListWithAstra, provider: "codex").map(\.id),
-      ["gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+      ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-6.1-sol", "gpt-6-astra"]
     )
     XCTAssertEqual(workPrioritizeGPT56ChatModels(flatList, provider: "claude").map(\.id), flatList.map(\.id))
   }
@@ -27101,6 +27390,50 @@ final class TerminalSessionInputStatusTests: XCTestCase {
   }
 }
 
+@MainActor
+final class TerminalMessageDraftTests: XCTestCase {
+  /// A resend of the same text after a lost answer keeps its id, so the host
+  /// types the message once; changed text is a new message with a new id, and
+  /// so is the same words typed again or already held by the host.
+  func testResendKeepsItsIdAndChangedTextGetsANewOne() {
+    let draft = TerminalMessageDraft()
+
+    let firstId = draft.clientMessageId(for: "run the tests")
+    XCTAssertEqual(draft.clientMessageId(for: "run the tests"), firstId)
+
+    // The same words, typed again while the answer is out, are a new message.
+    draft.text = "run the tests"
+    XCTAssertNotEqual(draft.clientMessageId(for: "run the tests"), firstId)
+    XCTAssertNotEqual(draft.clientMessageId(for: "run the tests twice"), firstId)
+
+    // Once the host has it, the same words are a new message again.
+    draft.markSent(notice: nil)
+    XCTAssertNotEqual(draft.clientMessageId(for: "run the tests twice"), firstId)
+  }
+
+  /// An answer must not wipe a draft the user changed while the send was out,
+  /// including when the new text reads exactly the same.
+  func testAnAnswerKeepsADraftEditedWhileItWasOut() {
+    let draft = TerminalMessageDraft()
+    draft.text = "yes"
+    _ = draft.clientMessageId(for: "yes")
+
+    // Replaced with the same words while the answer is out: still a draft.
+    draft.text = ""
+    draft.text = "yes"
+    draft.markSent(notice: nil)
+    XCTAssertEqual(draft.text, "yes")
+
+    // A draft nobody touched is cleared, and the answer's notice is shown.
+    let untouched = TerminalMessageDraft()
+    untouched.text = "yes"
+    _ = untouched.clientMessageId(for: "yes")
+    untouched.markSent(notice: "Queued.")
+    XCTAssertEqual(untouched.text, "")
+    XCTAssertEqual(untouched.notice, "Queued.")
+  }
+}
+
 // MARK: - Linear pane
 
 private enum LinearTestError: Error { case launchFailed }
@@ -28570,6 +28903,70 @@ final class WorkChatTranscriptSelfSizingTests: XCTestCase {
     controller.collectionView.layoutIfNeeded()
     for frame in frames(controller).prefix(12) {
       XCTAssertEqual(frame.height, 60 + 14, accuracy: 0.5)
+    }
+  }
+}
+
+/// Runs once for the whole test bundle (`NSPrincipalClass`). Before each
+/// test it clears the saved choices that decide whether the focused computer's
+/// work is listed. Many tests end with `disconnect()`, which saves a user
+/// pause; a later test in any order would then see an unlisted computer and
+/// no rows.
+@objc(ADETestDefaultsObserver)
+final class ADETestDefaultsObserver: NSObject, XCTestObservation {
+  static let listingGateKeys = [
+    "ade.sync.autoReconnectPausedByUser",
+    "ade.sync.autoReconnectPauseSource",
+    "ade.fleet.userDisconnectedMachineKeys.v1",
+  ]
+
+  override init() {
+    super.init()
+    XCTestObservationCenter.shared.addTestObserver(self)
+  }
+
+  func testCaseWillStart(_ testCase: XCTestCase) {
+    for key in Self.listingGateKeys {
+      UserDefaults.standard.removeObject(forKey: key)
+    }
+  }
+}
+
+/// A lane moved off ADE Cloud deletes its computer and saved chats only when
+/// the batch record proves everything arrived. Each case goes through the
+/// record's decoding, as the brain's answer does, then the check; a record
+/// the phone can't read never allows a delete.
+final class LaneMoveComputerDeleteGateTests: XCTestCase {
+  private let lane = #"{"id":"l1","kind":"lane","state":"continued","destinationLaneId":"lane-dest"}"#
+  private let chat = #"{"id":"c1","kind":"chat","state":"continued","sourceSessionId":"s1","destinationSessionId":"chat-dest"}"#
+
+  private func allowsDelete(state: String, items: [String]) -> Bool {
+    let json = #"{"batchId":"b1","state":"\#(state)","machineKey":"studio","machineName":"Mac Studio","items":[\#(items.joined(separator: ","))]}"#
+    guard let record = try? JSONDecoder().decode(LaneMoveBatchRecord.self, from: Data(json.utf8)) else { return false }
+    return laneMoveBatchAllowsComputerDelete(record)
+  }
+
+  func testDeleteOnlyWhenEverythingArrived() {
+    let cases: [(name: String, state: String, items: [String], allowed: Bool)] = [
+      ("completed, all continued", "completed", [lane, chat], true),
+      ("partial", "partial", [lane, chat], false),
+      ("cancelled", "cancelled", [lane, chat], false),
+      ("still running", "running", [lane, chat], false),
+      ("chat continued without its new chat", "completed",
+       [lane, #"{"id":"c1","kind":"chat","state":"continued","sourceSessionId":"s1","destinationSessionId":null}"#], false),
+      ("lane continued without its new lane", "completed",
+       [#"{"id":"l1","kind":"lane","state":"continued","destinationLaneId":" "}"#, chat], false),
+      ("no lane item", "completed", [chat], false),
+      ("no items", "completed", [], false),
+      ("an item unknown", "completed",
+       [lane, chat, #"{"id":"c2","kind":"chat","state":"unknown","sourceSessionId":"s2","destinationSessionId":"chat-dest-2"}"#], false),
+      ("an item of a kind the phone does not know", "completed",
+       [lane, chat, #"{"id":"x1","kind":"files","state":"continued"}"#], false),
+      // Dropping an unreadable item would leave the rest looking complete.
+      ("an item the phone can't read", "completed", [lane, chat, #"{"id":"c2","kind":"chat"}"#], false),
+    ]
+    for entry in cases {
+      XCTAssertEqual(allowsDelete(state: entry.state, items: entry.items), entry.allowed, entry.name)
     }
   }
 }

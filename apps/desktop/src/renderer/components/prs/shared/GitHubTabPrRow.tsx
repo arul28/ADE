@@ -3,7 +3,6 @@ import { ChatText, CheckCircle, CircleDashed, XCircle } from "@phosphor-icons/re
 
 import type { GitHubPrListItem, PrFile, PrSummary } from "../../../../shared/types/prs";
 import type { OpenProjectBinding } from "../../../../shared/types";
-import { pinArg } from "../../../state/laneMachineRouting";
 import { PrRowChangeStat } from "./PrChangeSplit";
 import { COLORS, MONO_FONT, SANS_FONT, toneText, fgTint } from "../../lanes/laneDesignTokens";
 import { LaneIcon } from "../../ui/vcsIcons";
@@ -19,7 +18,7 @@ import "./prListRow.css";
 import { PrActionsContextMenu, type PrActionsTarget } from "./PrActionsMenu";
 import { syntheticUnmappedPrId } from "../tabs/githubTabModel";
 import { MachineChip } from "../../shared/MachineChip";
-import { PrRuntimePinProvider, foreignLinkForItem, usePrMachineIndexContext } from "../state/prMachines";
+import { PrRuntimePinProvider, foreignLinkForItem, usePrMachineIndexContext, usePrRuntimePin } from "../state/prMachines";
 import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
 import { PrLabelPill } from "./PrLabelPill";
 
@@ -216,24 +215,31 @@ function PrRowDiffStat({
   item,
   ownerPr,
   ownerPin,
+  readerPin,
   additions,
   deletions,
 }: {
   item: GitHubPrListItem;
   ownerPr: PrSummary | null;
+  /** The machine that holds `ownerPr`. */
   ownerPin: OpenProjectBinding | null;
+  /** The machine that reads GitHub for the repository. */
+  readerPin: OpenProjectBinding | null;
   additions: number | null;
   deletions: number | null;
 }) {
-  const loadFiles = (): Promise<PrFile[]> => (
-    ownerPr && !ownerPr.unmapped
-      ? window.ade.prs.getFiles(ownerPr.id, ...pinArg(ownerPin))
-      : window.ade.prs.getFilesByGithub({
+  const loadFiles = (): Promise<PrFile[]> => {
+    if (ownerPr && !ownerPr.unmapped) {
+      return ownerPin ? window.ade.prs.getFiles(ownerPr.id, ownerPin) : Promise.resolve([]);
+    }
+    return readerPin
+      ? window.ade.prs.getFilesByGithub({
         repoOwner: item.repoOwner,
         repoName: item.repoName,
         githubPrNumber: item.githubPrNumber,
-      })
-  );
+      }, readerPin)
+      : Promise.resolve([]);
+  };
   return (
     <PrRowChangeStat
       additions={additions}
@@ -386,6 +392,8 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
   // A reachable owner machine answers for its PR: its row backs the menu and
   // the CI/review signals, and every menu call carries its pin.
   const foreignPin = foreign?.machine.online ? foreign.machine.pin : null;
+  // The PR list's machine: it holds `linkedPr` and reads GitHub for the repository.
+  const readerPin = usePrRuntimePin();
   const ownerPr: PrSummary | null = linkedPr ?? (foreignPin ? foreign!.pr : null);
   const review = terminal ? null : reviewIndicator(ownerPr);
   const labels = item.labels ?? [];
@@ -409,7 +417,7 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
     chatSessionIds: ownerPr?.chatSessionIds,
   }), [foreign, foreignPin, item, linkedPr, ownerPr]);
   return (
-    <PrRuntimePinProvider value={foreignPin ?? null}>
+    <PrRuntimePinProvider value={foreignPin ?? readerPin}>
     <PrActionsContextMenu
       pr={actionTarget}
       // The owner's row is refreshed through the union, not the tab's PR list.
@@ -544,7 +552,8 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
         <PrRowDiffStat
           item={item}
           ownerPr={ownerPr}
-          ownerPin={linkedPr ? null : foreignPin}
+          ownerPin={linkedPr ? readerPin : foreignPin}
+          readerPin={readerPin}
           additions={linkedPr?.additions ?? item.additions ?? null}
           deletions={linkedPr?.deletions ?? item.deletions ?? null}
         />

@@ -43,6 +43,7 @@ import { sumCostSplitsOrNull } from "../../../shared/usageCostSplit";
 import { UsageBreakdown } from "./UsageBreakdown";
 import { UsageModelDetailDialog } from "./UsageModelDetailDialog";
 import { formatUpdatedAge } from "../usage/usageWindowFormat";
+import { useUsageMachineName } from "../usage/usageMachineNames";
 import { SettingsColumn } from "./primitives";
 import "../usage/usageSurfaces.css";
 import { Banner } from "../ui/notice";
@@ -583,6 +584,8 @@ function ChartCostUnavailable({
  * and when is what keeps the total honest.
  */
 function MachineList({ machines }: { machines: readonly AdeUsageMachineContribution[] }) {
+  // The same machine names the usage rows show.
+  const machineName = useUsageMachineName();
   // The clock lives here, not on the page, so ageing one relative timestamp
   // re-renders only these rows — never the 365-column chart above them.
   const [nowMs, setNowMs] = React.useState(() => Date.now());
@@ -599,7 +602,7 @@ function MachineList({ machines }: { machines: readonly AdeUsageMachineContribut
             <span aria-hidden className="text-muted-fg">
               {platformGlyph(machine.platform)}
             </span>
-            <span className="truncate">{machine.label.trim() || machine.machineKey}</span>
+            <span className="truncate">{machineName(machine.machineKey, machine.label.trim() || machine.machineKey)}</span>
             {machine.state === "deduped" && machine.dedupedAgainstMachineKey ? (
               <span className="usage-card-sub truncate">
                 counted once with {machine.dedupedAgainstMachineKey}
@@ -924,6 +927,11 @@ export function AdeUsageSection() {
 
   const noStats = loading || !stats;
   const footnote = costFootnote(stats?.providers ?? [], stats?.pricingUpdatedAt);
+  // On the account scope the host leaves both fields out when no machine
+  // reports its counts, and the card says so instead of showing 0. When some
+  // machine runs an ADE too old to report them, the count is a floor ("12+").
+  const sessionsKnown = summary != null && (summary.chatSessions != null || summary.terminalSessions != null);
+  const sessionsPartial = sessionsKnown && summary?.sessionCountsPartial === true;
   const sessions = (summary?.chatSessions ?? 0) + (summary?.terminalSessions ?? 0);
   // Some ledgers count cache reads inside input, others beside it (Anthropic
   // reports them separately, so cached can exceed "input" many times over).
@@ -1091,9 +1099,13 @@ export function AdeUsageSection() {
                 />
                 <Metric
                   label="Sessions"
-                  value={summary ? formatWhole(sessions) : "—"}
-                  detail={summary ? `${formatCompact(summary.chatSessions ?? 0)} chats · ${formatCompact(summary.terminalSessions ?? 0)} shells` : ""}
-                  trend={trendSessions.some((value) => value > 0) ? (
+                  value={sessionsKnown ? `${formatWhole(sessions)}${sessionsPartial ? "+" : ""}` : "—"}
+                  detail={!summary
+                    ? ""
+                    : sessionsKnown
+                    ? `${formatCompact(summary.chatSessions ?? 0)} chats · ${formatCompact(summary.terminalSessions ?? 0)} shells${sessionsPartial ? " · not every machine" : ""}`
+                    : "Not counted for all machines"}
+                  trend={sessionsKnown && trendSessions.some((value) => value > 0) ? (
                     <>
                       <UsageSparkline values={trendSessions} label="Daily sessions, last 14 days" />
                       <DeltaTag delta={periodDelta(trendSessions)} title={trendTitle} />

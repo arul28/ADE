@@ -245,8 +245,15 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
     unauthorizedPauseMs = Math.min(unauthorizedPauseMs * 2, UNAUTHORIZED_MAX_PAUSE_MS);
   };
 
+  // Best-effort: it runs in the failure paths, and a project database that
+  // stopped answering (a hung drive) would throw again from inside the catch
+  // and leave the poll's promise rejected with nobody awaiting it.
   const setLastError = (message: string | null): void => {
-    deps.db.setJson(CURSOR_CLOUD_RELAY_LAST_ERROR_REF, message);
+    try {
+      deps.db.setJson(CURSOR_CLOUD_RELAY_LAST_ERROR_REF, message);
+    } catch (error) {
+      deps.logger.warn("automations.cursor_cloud_relay_last_error_write_failed", { error: errorMessage(error) });
+    }
   };
 
   const getStatus = (): CursorCloudIngressStatus => {

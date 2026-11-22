@@ -32,44 +32,88 @@ export class CloudProviderError extends Error {
 
 export const TRY_AGAIN_CODE = "try_again";
 
+const BUSY_CHANGING_STATE = "The computer is busy changing state. Try again in a moment.";
+
+/**
+ * ADE's own sentence for each provider error code it words itself: these
+ * say more than the provider would, so a refusal with one of them never shows
+ * the provider's text (`cloudRefusalMessage`).
+ */
+const OWN_SENTENCES: Readonly<Record<string, string>> = {
+  invalid_api_key: "ADE Cloud refused this request. Try again in a moment.",
+  ip_not_allowed: "ADE Cloud refused this request. Try again in a moment.",
+  instance_limit_reached: "ADE Cloud is at capacity right now. Try again in a few minutes.",
+  insufficient_balance: "ADE Cloud can't start this computer right now. Try again in a few minutes.",
+  instance_suspended: "ADE Cloud can't start this computer right now. Try again in a few minutes.",
+  tier_limit: "ADE Cloud can't start this computer right now. Try again in a few minutes.",
+  no_capacity: "ADE Cloud has no room for this size right now. Try again in a few minutes or pick another size.",
+  capacity_unavailable: "ADE Cloud has no room for this size right now. Try again in a few minutes or pick another size.",
+  not_found: "ADE Cloud has no such computer.",
+  rate_limited: "ADE Cloud is limiting requests right now. Try again in a minute.",
+  [TRY_AGAIN_CODE]: BUSY_CHANGING_STATE,
+  wake_failed: BUSY_CHANGING_STATE,
+  wake_timeout: BUSY_CHANGING_STATE,
+  container_unreachable: BUSY_CHANGING_STATE,
+  upstream_unreachable: BUSY_CHANGING_STATE,
+  host_mesh_not_ready: BUSY_CHANGING_STATE,
+  provisioning_failed: "ADE Cloud could not start the computer.",
+  timeout: "ADE Cloud did not answer in time. Try again.",
+  network: "Could not reach ADE Cloud. Try again.",
+};
+
 /** The sentence a person reads for a provider error code. */
 export function cloudErrorMessage(code: string, status: number): string {
-  switch (code) {
-    case "invalid_api_key":
-    case "ip_not_allowed":
-      return "ADE Cloud refused this request. Try again in a moment.";
-    case "instance_limit_reached":
-      return "ADE Cloud is at capacity right now. Try again in a few minutes.";
-    case "insufficient_balance":
-    case "instance_suspended":
-    case "tier_limit":
-      return "ADE Cloud can't start this computer right now. Try again in a few minutes.";
-    case "no_capacity":
-    case "capacity_unavailable":
-      return "ADE Cloud has no room for this size right now. Try again in a few minutes or pick another size.";
-    case "not_found":
-      return "ADE Cloud has no such computer.";
-    case "rate_limited":
-      return "ADE Cloud is limiting requests right now. Try again in a minute.";
-    case TRY_AGAIN_CODE:
-    case "wake_failed":
-    case "wake_timeout":
-    case "container_unreachable":
-    case "upstream_unreachable":
-    case "host_mesh_not_ready":
-      return "The computer is busy changing state. Try again in a moment.";
-    case "provisioning_failed":
-      return "ADE Cloud could not start the computer.";
-    case "invalid_request":
-      return "ADE Cloud couldn't do that with this computer right now.";
-    case "timeout":
-      return "ADE Cloud did not answer in time. Try again.";
-    case "network":
-      return "Could not reach ADE Cloud. Try again.";
-    default:
-      if (status >= 500) return "ADE Cloud is having trouble right now. Try again in a moment.";
-      return `ADE Cloud answered with an error (${status}).`;
-  }
+  if (Object.hasOwn(OWN_SENTENCES, code)) return OWN_SENTENCES[code]!;
+  // The provider's catch-all: its own text says which cause (`cloudRefusalMessage`); this is the fallback.
+  if (code === "invalid_request") return "ADE Cloud couldn't do that with this computer right now.";
+  if (status >= 500) return "ADE Cloud is having trouble right now. Try again in a moment.";
+  return `ADE Cloud answered with an error (${status}).`;
+}
+
+/**
+ * The provider's own explanation (`{error: {code, message}}`), made safe to
+ * show: one line, no links, no key- or token-like strings, no IP addresses or
+ * internal host and node names, the provider named as ADE Cloud, at most 240
+ * characters. Null when nothing readable is left.
+ */
+function providerErrorDetail(body: unknown): string | null {
+  const record = body && typeof body === "object" ? body as Record<string, unknown> : null;
+  const error = record?.error;
+  const raw = error && typeof error === "object" ? (error as Record<string, unknown>).message : record?.message;
+  if (typeof raw !== "string") return null;
+  const cleaned = raw
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    // A link goes with the words that point at it ("See https://…").
+    .replace(/\s*\b(?:see|visit|read)\s+(?:the\s+docs\s+(?:at\s+)?)?https?:\/\/\S+/gi, "")
+    .replace(/\bhttps?:\/\/\S+/gi, "")
+    .replace(/\bBearer\s+\S+/gi, "")
+    .replace(/[A-Za-z0-9_+/=-]{32,}/g, "…")
+    // IPv4 (with an optional port or prefix), then IPv6: at least three groups and a `::` or a 3-4 digit group, so a clock time (12:30:45) or `a:b:c` stays.
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+|\/\d+)?\b/g, "…")
+    .replace(/(?<![\w:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:])/gi, (match) => (/::/.test(match) || /(?:^|:)[0-9a-f]{3,4}(?=:|$)/i.test(match) ? "…" : match))
+    // Host and node names: dotted names (`node-3.internal`, `ip-10-0-0-1.ec2.internal`) and node-style ids.
+    .replace(/\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.(?:internal|local|lan|cluster|svc|compute|ec2|corp|intra|net|io|com|cloud|app)\b(?::\d+)?/gi, "…")
+    .replace(/\b(?:node|host|worker|ip)-[a-z0-9-]*\d[a-z0-9-]*\b/gi, "…")
+    .replace(/\bagent\s?37\b/gi, "ADE Cloud")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!/[A-Za-z]{3}/.test(cleaned)) return null;
+  const clipped = cleaned.length > 240 ? `${cleaned.slice(0, 239)}…` : cleaned;
+  return /[.!?…]$/.test(clipped) ? clipped : `${clipped}.`;
+}
+
+/**
+ * The sentence for a refused request: ADE's own for the codes it words
+ * itself, else the provider's own explanation after ADE's "couldn't". The
+ * provider's `invalid_request` covers many causes (a lifecycle action in the
+ * wrong state, a shape it doesn't take), and one fixed sentence hid which.
+ */
+export function cloudRefusalMessage(code: string, status: number, body: unknown): string {
+  // A refusal of ADE's own key, or the provider's own trouble, is ADE's to word: neither is the person's to act on.
+  const refusal = status >= 400 && status < 500 && status !== 401 && status !== 403;
+  if (Object.hasOwn(OWN_SENTENCES, code) || !refusal) return cloudErrorMessage(code, status);
+  const detail = providerErrorDetail(body);
+  return detail ? `ADE Cloud couldn't do that. ${detail}` : cloudErrorMessage(code, status);
 }
 
 /** Both envelopes: `{error: {code}}` on the API and `{error: "code"}` on transport errors. */
@@ -172,6 +216,37 @@ export type CloudBilling = {
 
 export type CloudEvent = { type: string; at: number };
 
+type Pressure = "healthy" | "pressure" | "critical";
+
+/** The provider's health readout of a computer's container (`GET .../logs`); null fields when it has none. */
+export type CloudInstanceHealth = {
+  running: boolean;
+  /** Boots beyond its first start; wakes from sleep count too. */
+  restartCount: number | null;
+  oomSuspected: boolean;
+  memory: Pressure | null;
+};
+
+/** The newest point of each series (`GET .../metrics`), in bytes, with the configured limits. */
+export type CloudInstanceMetrics = {
+  diskBytes: { value: number; at: number } | null;
+  memoryBytes: { value: number; at: number } | null;
+  limits: { diskBytes: number | null; memoryBytes: number | null };
+};
+
+const pressureOf = (value: unknown): Pressure | null =>
+  value === "healthy" || value === "pressure" || value === "critical" ? value : null;
+
+/** The last `[unixSeconds, value]` pair of a series, in ms, or null. */
+function lastPoint(series: unknown): { value: number; at: number } | null {
+  if (!Array.isArray(series) || series.length === 0) return null;
+  const point = series[series.length - 1] as unknown;
+  if (!Array.isArray(point)) return null;
+  const at = num(point[0]);
+  const value = num(point[1]);
+  return at != null && value != null ? { value, at: at * 1000 } : null;
+}
+
 export type CloudProvider = ReturnType<typeof createCloudProvider>;
 
 export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetch) {
@@ -213,7 +288,7 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
     }
     if (!response.ok) {
       const code = readErrorCode(body) ?? (response.status === 401 ? "invalid_api_key" : `http_${response.status}`);
-      throw new CloudProviderError(cloudErrorMessage(code, response.status), code, response.status);
+      throw new CloudProviderError(cloudRefusalMessage(code, response.status, body), code, response.status);
     }
     return body;
   }
@@ -330,6 +405,15 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
       await api("PATCH", instancePath(id), { metadata });
     },
 
+    /**
+     * Where the computer may connect out: the whole internet or nothing (DNS
+     * too). Applies within seconds with no restart. A `503 try_again` means the
+     * policy is saved and lands within two minutes; the caller may send it again.
+     */
+    async setNetworkPolicy(id: string, policy: "allow-all" | "deny-all"): Promise<void> {
+      await api("PATCH", instancePath(id), { network: policy });
+    },
+
     /** How long each instance was awake over a window; deleted instances stay in it. */
     async usage(window: { from: string; to?: string }): Promise<CloudUsageWindow> {
       const query = new URLSearchParams({ from: window.from, ...(window.to ? { to: window.to } : {}) });
@@ -376,6 +460,39 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
         if (error instanceof CloudProviderError && error.status === 404) return false;
         throw error;
       }
+    },
+
+    /**
+     * The container's health readout, from its logs endpoint with one line of
+     * log (the readout is what ADE reads). Works in any state and never wakes
+     * a sleeping computer. Null when there is no container.
+     */
+    async instanceHealth(id: string): Promise<CloudInstanceHealth | null> {
+      const body = await request(`${SANDBOX_BASE_URL}/instances/${encodeURIComponent(id)}/logs?tail=1`, {
+        method: "GET",
+        headers: { "x-agent37-key": key },
+      }) as Record<string, unknown> | null;
+      const health = body?.health && typeof body.health === "object" ? body.health as Record<string, unknown> : null;
+      if (!health) return null;
+      const verdict = health.resource_verdict && typeof health.resource_verdict === "object" ? health.resource_verdict as Record<string, unknown> : null;
+      return {
+        running: health.running === true,
+        restartCount: num(health.restart_count),
+        oomSuspected: health.oom_suspected === true,
+        memory: pressureOf(verdict?.memory),
+      };
+    },
+
+    /** The last hour of CPU, memory and disk (one point a minute); only the newest points are kept. Never wakes it. */
+    async instanceMetrics(id: string): Promise<CloudInstanceMetrics> {
+      const body = await api("GET", `${instancePath(id, "metrics")}?hours=1`) as Record<string, unknown> | null;
+      const series = body?.series && typeof body.series === "object" ? body.series as Record<string, unknown> : {};
+      const limits = body?.limits && typeof body.limits === "object" ? body.limits as Record<string, unknown> : {};
+      return {
+        diskBytes: lastPoint(series.disk_bytes),
+        memoryBytes: lastPoint(series.memory_bytes),
+        limits: { diskBytes: num(limits.disk_bytes), memoryBytes: num(limits.memory_bytes) },
+      };
     },
 
     /** Runs `sh -c command`. A non-zero exit is a result, not an error. Exec wakes a sleeping computer. */

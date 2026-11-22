@@ -27,7 +27,7 @@ provider list — and appear as the first tab of every model picker.
 | Harness | One of `claude`, `codex`, `opencode`, `droid`, `pi`, `qwen`, `kimi`, `grok`, `copilot`, `cursor`. |
 | Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id; a sign-in there that is measured as a subscription-only login routes only inside OpenCode), or `subscription` (older presets: a Claude or Codex subscription in another harness, now served by the provider's default account). An `account` in a harness that is not its own (a Codex account in Droid) runs through ADE's proxy on that account's own login. |
 | Model | A model id. The wizard reads the same live catalog the composer's picker uses, so a runtime-discovered provider (Cursor, OpenCode, Pi, the ACP providers) lists its real models. Free text survives for exactly two cases: a key pointing at a custom OpenAI-compatible endpoint that declares no models of its own, and a first-class key provider that neither the static registry nor the catalog can enumerate (OpenRouter, Google, DeepSeek, Mistral, Groq, Together). |
-| Effort | The model's thinking tier, when it offers tiers. |
+| Effort | The **source model's** thinking-tier ladder, when it offers one. The preset stores that ladder; the editor and every launch filter it to the levels the harness can send, and an older preset with no saved ladder resolves the source's from the runtime catalog. The composer starts at the preset's level and can override it for one chat. |
 | Subagents | A model id, or `Same as main`, and — where the harness takes one — its own thinking level. |
 | Subagent naming | Per-role pins for the types the harness exposes by name (Explore, Plan, general-purpose), each with its own level where the harness takes one. A role that follows the subagents takes their model and level. |
 | Name, accent, logo | The identity a preset is recognised by. The logo is the ADE mark, a provider mark, an uploaded image, or a generated one, kept as a small icon so the list fits the one setting it syncs as. |
@@ -172,10 +172,9 @@ account has run them yet:
 | Devin | `credentials.toml` (`windsurf_api_key`) under the XDG data home, or `%APPDATA%` / `%LOCALAPPDATA%` on Windows | `devin`, as `session_token` | None: the token does not expire. |
 | Muse | `<XDG config>/muse/auth.json` `providers` | `meta`, as `api_key` (or `dca_token` for a `dca:` value) | None: a minted key does not expire. |
 
-Antigravity is not lent. Its ACP agent stores only a refresh token (no access
-token), so lending it would hand the proxy the long-lived credential, and
-Google has suspended accounts that used Antigravity's sign-in through other
-clients.
+Antigravity is not lent. Lending it would hand the proxy the CLI's long-lived
+refresh token, and Google has suspended accounts that used Antigravity's
+sign-in through other clients.
 
 On macOS, a Codex login kept in the Keychain (`cli_auth_credentials_store =
 "keyring"` or `"auto"`) is not read: Codex creates the item so only Codex may
@@ -236,10 +235,13 @@ harness — in one click, which is the entire point of saving one.
 
 Selecting a preset sets the composer's thinking level to the preset's, and the
 launch carries that level: a preset saved at High launches at High even when
-the previous pick was on Low. An ordinary model pick still reconciles the level
-against the new model, because there the old level belonged to a model the user
-just left; the composer's own control keeps working either way, so changing the
-level after the pick wins.
+the previous pick was on Low. The menu shows the **source model's** saved ladder
+— DeepSeek's Low/High/Max, not Claude Code's six levels — filtered to the levels
+the harness can send, so an unsupported `none` or `ultra` is neither offered nor
+sent. An ordinary model pick still reconciles the level against the new model,
+because there the old level belonged to a model the user just left; the
+composer's own control keeps working either way, so changing the level after the
+pick wins.
 
 **Switching an open chat.** The picker works the same on a chat that is already
 running. The pick shows on the trigger at once and applies with the next send:
@@ -354,7 +356,14 @@ Its
 private config home lives under `provider-homes/route/<hash>/`, outside the
 preset namespace the orphan pruner sweeps. Route homes idle for 30 days are
 removed, and removing any key removes them all (they are rebuilt on the next
-launch), because a Droid route home holds its key.
+launch), because a Droid route home holds its key. A launch of a route marks
+its own home as in use before the prune runs, so the launch never removes the
+home it is about to use.
+
+A CLI session started on a preset or a route lives in that home, and Import
+lists it from there (see
+[Where the other CLIs' sessions live](../terminals-and-sessions/external-session-import.md#where-the-other-clis-sessions-live)).
+Removing a route home also removes the CLI sessions in it.
 
 ## Launching on a preset
 
@@ -370,20 +379,33 @@ way through a second id, `credentialId`: the key's declared `models[]` appear
 under that provider in the picker in their own section, and choosing one goes
 through the same resolver.
 
-`ade` takes both:
+Agent-facing text calls a preset a **Custom provider** (the Settings section
+is Providers › Custom providers); "preset" survives only in code and wire
+fields. `ade` names one by its name or id, and the model is always passed too:
 
 ```bash
-ade chat create --lane <lane> --preset <preset-id>
-ade new chat --mode cli --lane <lane> --provider claude --preset <preset-id>
-ade chat create --lane <lane> --provider claude --credential <credential-id>
+ade harness providers --text      # each Custom provider, with the flags to launch it
+ade chat create --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
+ade new chat --mode cli --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
+ade chat create --lane <lane> --provider claude --credential <credential-id> --model <id>
 ```
 
-`--preset` and `--credential` are mutually exclusive. `--via <source>` with
-`--provider` and `--model` builds an ad-hoc route id (`ade harness routes
---text` lists what each harness can reach; `ade harness test` checks one). Agents discover what
-exists through `ade chat models`, `ade providers accounts list`, or the
-`harnessPresets[]` and `providerAccounts[]` arrays on `ai.getStatus`; the
-`ade-harnesses` skill teaches the whole flow.
+The CLI resolves the name against the account's Custom providers
+(`customProviderRef.ts`: id first, then name ignoring case; two with one name
+are refused with their ids) and sends `presetId`. `--model` must be that
+Custom provider's model, and `--provider`, when given, its harness; either
+mismatch is refused with the right value named. The old `--preset` flag is
+refused with the new spelling. `--via`, `--custom-provider` and
+`--credential` are mutually exclusive: each says where the model runs.
+`--via <source>` with `--provider` and `--model` builds an ad-hoc route id
+(`ade harness routes --text` lists what each harness can reach; `ade harness
+test` checks one). The `ade-harnesses` skill teaches the whole flow.
+
+Every launch from an agent, a script or ADE MCP names its model
+(`launchModelRule.ts`): the CLI, the MCP `chat_start` tool and the RPC
+agent guard (`assertLaunchModelNamed`) refuse a launch with none. The app's own
+composer always sends one; internal callers (automations, side chats, forks)
+keep their service-level defaults.
 
 ### What each source does to the environment
 
@@ -482,7 +504,7 @@ as unavailable with the reason, so the choice cannot be made and then ignored.
 
 ### Running one outside ADE
 
-`ade harness env <preset-id|route-id> --text` prints the launch's exports
+`ade harness env "<Custom provider name>"|<id>|<route-id> --text` prints the launch's exports
 (zsh/bash, or `--shell pwsh`) for `eval`, and the Copy launcher button builds
 the matching `claude --model …` / `codex -m …` command. The output contains the
 provider token and is never written anywhere by ADE.

@@ -1,10 +1,8 @@
+import { type GcToolsOptions, type GcToolsResult, gcTools } from "./gc";
 import {
   type EnsureToolsOptions,
-  type GcToolsOptions,
-  type GcToolsResult,
   type ToolResolution,
   ensureTools,
-  gcTools,
   listPinnedTools,
 } from "./install";
 import { isToolError } from "./errors";
@@ -28,7 +26,8 @@ export type BackgroundToolsFetchDeps = {
 /**
  * Populate the pinned agent-tools cache in the background at brain startup,
  * with the tools this machine uses (`selectDemandedAgentTools`). The others are
- * fetched by `pinnedToolDownload` when a chat or a status refresh needs them.
+ * fetched by `pinnedToolDownload` when a chat, a task or a terminal runs them;
+ * a status refresh never downloads one.
  *
  * Deliberately not awaited by the caller. These are 100-300 MB downloads and
  * the brain must be answering RPC immediately; a machine with a cold cache

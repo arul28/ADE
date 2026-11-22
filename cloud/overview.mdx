@@ -1,0 +1,76 @@
+---
+title: "ADE Cloud"
+description: "ADE Cloud is a machine every account has: work with no computer of your own, see what it uses, and manage your plan."
+icon: "cloud"
+---
+
+ADE Cloud is one machine that every ADE account always has. You don't need a computer of your own: sign in on the web or the iPhone, connect GitHub, pick a repository, and work. ADE Cloud shows in every machine list and every **Run on** menu, next to any computers you have.
+
+Each cloud lane gets its own computer underneath. The lane, its chats and its terminals run there, so your laptop can sleep while agents keep working, and you can follow along from the desktop app, the web app or your phone. You never manage these computers: one sleeps when nothing runs on it and wakes when you or an agent send it work.
+
+## Reading and doing
+
+- **Reading never wakes a computer.** Saved chats, CLI sessions and shells (the last 5,000 lines), the lane's branch and changed files, files and history from GitHub, pull requests, the CTO, automations, Linear and Jira come from your account or from GitHub.
+- **Doing wakes it.** Sending a message, running a command, opening a changed file or a Git action wakes the lane's computer. The screen never waits: you can leave, and the action finishes when the computer is up.
+- **A message to an asleep chat** waits on ADE's server and is delivered once, even if you close the tab.
+- **Work is saved before a computer rests.** ADE saves each lane's work (its branch and changes, and its chats) to your account before the computer sleeps. So cleanups never wake a computer, and a new computer gets that work back.
+- **If ADE refuses to wake a computer** (out of hours, too many awake, over your plan's disk), the chat shows why. You can still read everything.
+- **Commits** on a cloud computer use your GitHub noreply address, unless you set your own Git identity.
+
+Your API keys, Passwords and secrets, provider sign-ins, launch defaults and quick slots follow your account to ADE Cloud. Moving an existing lane or chat onto ADE Cloud is not available yet.
+
+## Start a lane on ADE Cloud
+
+<Steps>
+  <Step title="Open a new chat">
+    In the ADE app, start a new chat as you would for any lane.
+  </Step>
+  <Step title="Pick ADE Cloud under Run on">
+    Choose a size. Small is enough for most work; Large and X-Large are full computers for heavier work, such as an Android emulator.
+  </Step>
+  <Step title="Send the first message">
+    ADE makes the computer, gets the repository from GitHub, sets the lane up and starts the agent there. The lane starts from the pushed copy of its branch, so push what the agent needs first.
+  </Step>
+</Steps>
+
+From a terminal, or from an agent in an ADE chat:
+
+```bash
+ade chat create --machine cloud --prompt "Fix the flaky login test"
+```
+
+Add `--size small|medium|large|xlarge` to pick a size; without it ADE uses the size you saved for new lanes. An agent asks you in its chat before it starts a cloud lane, unless you let agents do it alone in **Settings › ADE Cloud › What agents may do**.
+
+<Tip>
+`ade cloud status` shows your plan, the hours left, the disk in use, every cloud lane, and whether a new lane can start right now.
+</Tip>
+
+## Hours and disk
+
+- **Hours.** Each plan has hours for the month. A Small computer uses one hour per hour awake; bigger sizes use more. A computer that sleeps uses none.
+- **Disk.** Your plan's disk is shared by all your computers at one time. It is not a monthly amount.
+- **Extra hours and extra disk.** On a paid plan you can turn them on in **Settings › ADE Cloud**, with a monthly limit for extra disk. You pay for them only while they are on.
+- **Unused computers** are cleaned up after a while: 3 days idle on the Free plan, 10 days on a paid plan. ADE warns you first, in the lane's chats, with **Keep it**. It pushes the lane's work to its branch and saves each chat. The lane stays, and **New computer** makes a new computer on the same branch that continues the same chat.
+
+## Free a lane's computer
+
+You can free a lane's computer yourself to give disk back. Open **Settings › ADE Cloud** and pick **Free up space**, or open **Manage lane** for the lane and pick **Free computer**.
+
+1. ADE pushes the lane's work to GitHub.
+2. ADE removes the computer. This can take a few minutes, and a toast shows the progress.
+3. The lane, its branch and its chats stay.
+
+A lane with no computer shows in Work and in Lanes, with **New computer**. It makes a new computer on the same branch, and the lane's chats come back with it. A message you send to that lane also makes a new computer. If the branch never reached GitHub, the new computer starts it again from the repository's default branch and says so.
+
+**Delete the lane** is different: it removes the lane, its computer and its chats.
+
+The plans are Free ($0), Plus ($5 a month), Pro ($20) and Max ($50). A bigger plan has more hours and more disk. See [the plans and what each includes](https://ade-app.dev/pricing).
+
+## Manage your plan and billing
+
+Open **Settings › ADE Cloud** in the ADE app:
+
+- **The plan cards** move you between plans. A bigger plan applies at once; a smaller one waits for the end of the period. If a smaller plan has less disk than you use now, ADE asks which computers to free before it changes the plan.
+- **Manage billing** opens Stripe's billing page, where you change your card, see invoices and cancel. A cancelled plan stays until the end of the period you paid for.
+
+After you buy a plan, the page Stripe returns you to has an **Open ADE** button that takes you straight to **Settings › ADE Cloud**, where the new plan shows within a moment.

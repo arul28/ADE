@@ -158,7 +158,7 @@ import {
 import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
 import { setBounded } from "../../../shared/boundedMap";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
-import { carryExpected, markExpected } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected, markExpected } from "../../../shared/expectedError";
 import { isOfflineFetchError } from "../../../shared/sentry/expectedFailure";
 import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
 import { formatMergeError as formatMergeErrorMessage, shouldAttemptAdminMergeForRestError } from "./resolverUtils";
@@ -876,6 +876,8 @@ function latestReviewStatesByUser(reviews: readonly PrReview[]): Map<string, str
 function computeReviewStatus(args: {
   reviewDecision?: PrReviewDecision;
   verdictUnavailable?: { previousStatus: string | null | undefined };
+  /** The reviews list could not be read this time, so an empty list proves nothing. */
+  reviewsUnavailable?: boolean;
   requestedReviewers: string[];
   requestedTeams?: string[];
   reviewStatesByUser: Map<string, string>;
@@ -887,7 +889,23 @@ function computeReviewStatus(args: {
   if (args.verdictUnavailable) {
     const stillApproved = Array.from(args.reviewStatesByUser.values()).includes("APPROVED");
     if (args.verdictUnavailable.previousStatus === "approved" && stillApproved) return "approved";
-    return args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0 ? "requested" : "none";
+    // A blocking verdict outranks a pending request while the reviews read
+    // could not say whether it ended. Keep it until a read that worked shows
+    // no visible changes-requested, so the status cannot flip
+    // changes_requested → requested → changes_requested on the wire.
+    if (args.verdictUnavailable.previousStatus === "changes_requested" && args.reviewsUnavailable) {
+      return "changes_requested";
+    }
+    // A reviewer named in the REST payload is current evidence, even with no
+    // verdict, so an explicit request still overrides a saved `none`. No
+    // verdict and no request means keep the last real status: a branch that
+    // requires a review but names no reviewer flipped to `none` on every failed
+    // read and back to `requested` on the next good one, re-announcing the same
+    // review request each time.
+    if (args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0) return "requested";
+    const previous = args.verdictUnavailable.previousStatus;
+    if (previous === "requested" || previous === "none") return previous;
+    return "none";
   }
   for (const state of args.reviewStatesByUser.values()) {
     if (state === "APPROVED") return "approved";
@@ -1415,6 +1433,8 @@ export function createPrService({
    * its provenance back), just not in live lane state.
    */
   const LIVE_PR_ROWS = "detached_at is null";
+  /** One GitHub PR's key in `pull_requests` and `github_pr_projections`: owner, repo and number. */
+  const GITHUB_PR_KEY_SQL = "lower(repo_owner) || '/' || lower(repo_name) || '#' || github_pr_number";
   let mediaResolver: ReturnType<typeof createGithubMediaResolver> | null = null;
   const chatLinks = createPrChatLinkStore({
     db,
@@ -2288,28 +2308,39 @@ export function createPrService({
     return !activeRepoKey || repoRefKey({ owner: row.repo_owner, name: row.repo_name }) === activeRepoKey;
   };
 
-  const listUnmappedGithubProjectionRowsForDisplay = (): GitHubPrProjectionRow[] =>
-    db.all<GitHubPrProjectionRow>(
+  /**
+   * The GitHub PRs no live lane row speaks for. Two plain reads joined here:
+   * the same `not exists` in SQL compared every projection with every PR
+   * through `lower()`, about 250 ms on a project with 1,000 PRs, and the
+   * account lane index ran it once per lane.
+   */
+  const listUnmappedGithubProjectionRowsForDisplay = (): GitHubPrProjectionRow[] => {
+    const mappedKeys = new Set(
+      db.all<{ key: string }>(
+        `
+          select ${GITHUB_PR_KEY_SQL} as key
+            from pull_requests
+           -- A detached row no longer speaks for this PR, so it must not
+           -- suppress the projection fallback — otherwise a lane recreated on
+           -- the same branch shows no PR at all.
+           where project_id = ? and ${LIVE_PR_ROWS}
+        `,
+        [projectId],
+      ).map((row) => row.key),
+    );
+    return db.all<GitHubPrProjectionRow & { mapped_key: string }>(
       `
-        select ${GITHUB_PROJECTION_COLUMNS}
-          from github_pr_projections projection
-         where projection.project_id = ?
-           and not exists (
-             select 1
-               from pull_requests mapped
-              where mapped.project_id = projection.project_id
-                and lower(mapped.repo_owner) = lower(projection.repo_owner)
-                and lower(mapped.repo_name) = lower(projection.repo_name)
-                and mapped.github_pr_number = projection.github_pr_number
-                -- A detached row no longer speaks for this PR, so it must not
-                -- suppress the projection fallback — otherwise a lane recreated on
-                -- the same branch shows no PR at all.
-                and mapped.${LIVE_PR_ROWS}
-           )
-         order by projection.updated_at desc, projection.created_at desc
+        select ${GITHUB_PROJECTION_COLUMNS},
+               ${GITHUB_PR_KEY_SQL} as mapped_key
+          from github_pr_projections
+         where project_id = ?
+         order by updated_at desc, created_at desc
       `,
       [projectId],
-    );
+    )
+      .filter((row) => !mappedKeys.has(row.mapped_key))
+      .map(({ mapped_key: _mappedKey, ...row }) => row);
+  };
 
   const selectLanePrDisplayCandidate = (args: {
     laneId: string;
@@ -2332,7 +2363,11 @@ export function createPrService({
     return [...mappedCandidates, ...projectionCandidates].sort(compareLanePrDisplayCandidates)[0] ?? null;
   };
 
-  const getDisplayCandidateForCurrentLaneBranch = (laneId: string): LanePrDisplayCandidate | null => {
+  /** `projectionRows`: a caller that asks for many lanes reads them once. */
+  const getDisplayCandidateForCurrentLaneBranch = (
+    laneId: string,
+    projectionRows: () => GitHubPrProjectionRow[] = listUnmappedGithubProjectionRowsForDisplay,
+  ): LanePrDisplayCandidate | null => {
     const lane = getLanePrLookupRow(laneId);
     if (!lane || lane.archived_at) return null;
     const mappedRows = allPrRows(
@@ -2343,8 +2378,35 @@ export function createPrService({
       laneId,
       lane,
       mappedRows,
-      projectionRows: listUnmappedGithubProjectionRowsForDisplay(),
+      projectionRows: projectionRows(),
     });
+  };
+
+  const getForLane = (
+    laneId: string,
+    projectionRows?: () => GitHubPrProjectionRow[],
+  ): PrSummary | null => {
+    const current = getDisplayCandidateForCurrentLaneBranch(laneId, projectionRows)?.summary ?? null;
+    if (current) return withGithubStackMembership(current);
+
+    // The single-value bridge is still used by older chat/web clients. Keep
+    // it honest for a lane that moved on: when there is no current-branch PR,
+    // return the newest retained lane-history row so those clients do not
+    // silently lose the lane's PR badge altogether.
+    const lane = getLanePrLookupRow(laneId);
+    if (!lane || lane.archived_at || !normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""))) {
+      return null;
+    }
+    // ...but a primary lane back on its base branch has no PR to hand out —
+    // not even as history. It cannot be deleted, so returning "the newest
+    // retained row" here is what pinned an old merged PR to `main` on every
+    // consumer of this bridge (lane links, Linear cards, proof owners).
+    if (laneRowIsOnBaseBranch(lane)) return null;
+    const previous = getRowForLane(laneId);
+    const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
+    const previousBranch = normalizeBranchName(branchNameFromRef(previous?.head_branch ?? ""));
+    if (!previous || !previousBranch || previousBranch === laneBranch) return null;
+    return withGithubStackMembership(rowToSummary(previous));
   };
 
   const getActiveRowForCurrentLaneBranch = (laneId: string): PullRequestRow | null => {
@@ -3426,6 +3488,8 @@ export function createPrService({
       lane: LaneSummary;
       state: PrSummary["state"];
       isOpen: boolean;
+      /** The live row this PR already has, if any (it is not a new row). */
+      existingRow: PullRequestRow | null;
     };
     const bestByLane = new Map<string, BackfillCandidate>();
     for (const rawPr of rawPulls) {
@@ -3451,10 +3515,27 @@ export function createPrService({
         !prev
         || (isOpen && !prev.isOpen)
         || (isOpen === prev.isOpen && prNumber > prev.prNumber);
-      if (better) bestByLane.set(lane.id, { rawPr, prNumber, headBranch, lane, state, isOpen });
+      if (better) {
+        bestByLane.set(lane.id, {
+          rawPr,
+          prNumber,
+          headBranch,
+          lane,
+          state,
+          isOpen,
+          existingRow: existingRepoRow,
+        });
+      }
     }
 
-    for (const { rawPr, prNumber, headBranch, lane, state } of bestByLane.values()) {
+    const createdIds: string[] = [];
+    for (const { rawPr, prNumber, headBranch, lane, state, existingRow } of bestByLane.values()) {
+      // This is a lane-mapping backfill, not a status read. A row that is
+      // already tracked keeps its live verdicts: the pull list this walks only
+      // carries state and branch, so writing its defaults here reset a checked,
+      // reviewed PR to `none`. The poller then saw the PR move back to
+      // `requested` and announced the same review request again on every sweep
+      // — the notice a person could not keep dismissed.
       const summary: PrSummary = {
         id: randomUUID(),
         laneId: lane.id,
@@ -3468,13 +3549,13 @@ export function createPrService({
         state,
         baseBranch: asString(rawPr?.base?.ref) || branchNameFromRef(lane.baseRef),
         headBranch,
-        checksStatus: "none",
-        checksReason: null,
-        checksMissingRequired: [],
-        reviewStatus: "none",
+        checksStatus: (existingRow?.checks_status as PrChecksStatus | null) ?? "none",
+        checksReason: existingRow?.checks_reason ?? null,
+        checksMissingRequired: parseMissingRequired(existingRow?.checks_missing_required),
+        reviewStatus: (existingRow?.review_status as PrReviewStatus | null) ?? "none",
         additions: Number(rawPr?.additions ?? 0),
         deletions: Number(rawPr?.deletions ?? 0),
-        lastSyncedAt: nowIso(),
+        lastSyncedAt: existingRow?.last_synced_at ?? nowIso(),
         createdAt: asString(rawPr?.created_at) || nowIso(),
         updatedAt: asString(rawPr?.updated_at) || nowIso(),
         mergedAt: asString(rawPr?.merged_at) || null,
@@ -3488,10 +3569,14 @@ export function createPrService({
         laneId: lane.id,
       });
       backfilledIds.push(prId);
+      // Only a row this sweep actually created needs a hot-refresh window. An
+      // already-tracked row is on its normal staleness schedule; marking it hot
+      // on every snapshot re-armed the poller (and another live fetch) forever.
+      if (!existingRow) createdIds.push(prId);
     }
 
-    if (backfilledIds.length > 0) {
-      markHotRefresh(backfilledIds, { invalidateGithubSnapshot: false });
+    if (createdIds.length > 0) {
+      markHotRefresh(createdIds, { invalidateGithubSnapshot: false });
     }
     return backfilledIds.length;
   };
@@ -5646,11 +5731,12 @@ export function createPrService({
     const requestedTeams = Array.isArray(pr?.requested_teams) ? pr.requested_teams.map((team: any) => asString(team?.slug)).filter(Boolean) : [];
 
     let checkRunsFetchFailed = false;
+    let reviewsFetchFailed = false;
     const [combinedStatus, checkRuns, reviews, compare, visibility] = shouldFetchLiveStatus
       ? await Promise.all([
           headSha ? bestEffort("refreshOne.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
           headSha ? bestEffort("refreshOne.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
-          bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), []),
+          bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), [], () => { reviewsFetchFailed = true; }),
           baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
           fetchPrVisibility(repo, Number(row.github_pr_number)),
         ])
@@ -5690,6 +5776,7 @@ export function createPrService({
       ? computeReviewStatus({
         reviewDecision: visibility.reviewDecision,
         ...(visibility.verdictKnown ? {} : { verdictUnavailable: { previousStatus: row.review_status } }),
+        reviewsUnavailable: reviewsFetchFailed,
         requestedReviewers,
         requestedTeams,
         reviewStatesByUser,
@@ -6044,10 +6131,11 @@ export function createPrService({
     const mergeConflicts = mergeConflictsFromPull(pr);
 
     let checkRunsFetchFailed = false;
+    let reviewsFetchFailed = false;
     const [combinedStatus, checkRuns, reviews, compare, mergeState] = await Promise.all([
       restHeadSha ? bestEffort("computeStatus.fetchCombinedStatus", fetchCombinedStatus(repo, restHeadSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
       restHeadSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, restHeadSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
-      bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), []),
+      bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), [], () => { reviewsFetchFailed = true; }),
       baseSha && restHeadSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, restHeadSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
       readCache.whileQuiet(
         repo,
@@ -6082,6 +6170,7 @@ export function createPrService({
     const reviewStatus = computeReviewStatus({
       reviewDecision: mergeState ? mergeState.reviewDecision : visibility?.reviewDecision,
       ...(visibility?.verdictKnown === false ? { verdictUnavailable: { previousStatus: getRowById(prId)?.review_status } } : {}),
+      reviewsUnavailable: reviewsFetchFailed,
       requestedReviewers,
       requestedTeams,
       reviewStatesByUser,
@@ -7888,7 +7977,9 @@ export function createPrService({
         .filter(Boolean),
     );
     if (primaryBranches.has(normalizeBranchName(branchName))) {
-      throw new Error(`Refusing to clean up protected branch "${branchName}".`);
+      // A safety guard the person hits from the merged-PR card: the branch is
+      // a primary lane's. An answer, not a defect.
+      throw new AdeExpectedError(`Refusing to clean up protected branch "${branchName}".`, "user");
     }
 
     const result: CleanupPrBranchResult = {
@@ -8313,6 +8404,10 @@ export function createPrService({
     // A merge is a GitHub API call. It never needed a local row, so this
     // resolves a synthetic `gh:owner/repo#num` id too. Only the *local*
     // bookkeeping below stays conditional on `row`.
+    // An action caller can send no arguments; a merge needs to know which PR.
+    if (typeof args?.prId !== "string" || !args.prId.trim()) {
+      throw new AdeExpectedError("invalid_argument: pr.land needs a prId.", "user");
+    }
     const target = resolvePrTarget(args.prId);
     const { repo, prNumber, row } = target;
 
@@ -10347,27 +10442,14 @@ export function createPrService({
     },
 
     getForLane(laneId: string): PrSummary | null {
-      const current = getDisplayCandidateForCurrentLaneBranch(laneId)?.summary ?? null;
-      if (current) return withGithubStackMembership(current);
+      return getForLane(laneId);
+    },
 
-      // The single-value bridge is still used by older chat/web clients. Keep
-      // it honest for a lane that moved on: when there is no current-branch PR,
-      // return the newest retained lane-history row so those clients do not
-      // silently lose the lane's PR badge altogether.
-      const lane = getLanePrLookupRow(laneId);
-      if (!lane || lane.archived_at || !normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""))) {
-        return null;
-      }
-      // ...but a primary lane back on its base branch has no PR to hand out —
-      // not even as history. It cannot be deleted, so returning "the newest
-      // retained row" here is what pinned an old merged PR to `main` on every
-      // consumer of this bridge (lane links, Linear cards, proof owners).
-      if (laneRowIsOnBaseBranch(lane)) return null;
-      const previous = getRowForLane(laneId);
-      const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
-      const previousBranch = normalizeBranchName(branchNameFromRef(previous?.head_branch ?? ""));
-      if (!previous || !previousBranch || previousBranch === laneBranch) return null;
-      return withGithubStackMembership(rowToSummary(previous));
+    /** `getForLane` for many lanes, with one read of the GitHub PR list. */
+    getForLanes(laneIds: readonly string[]): Map<string, PrSummary | null> {
+      let projectionRows: GitHubPrProjectionRow[] | null = null;
+      const readOnce = () => (projectionRows ??= listUnmappedGithubProjectionRowsForDisplay());
+      return new Map(laneIds.map((laneId) => [laneId, getForLane(laneId, readOnce)] as const));
     },
 
     listAll(args: { laneId?: string } = {}): PrSummary[] {

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildAdeGitignore } from "../../../shared/adeLayout";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   CTO_LIVE_STATE_MAX_CHARS,
   CTO_STATIC_CONTEXT_TITLE,
@@ -28,30 +28,13 @@ async function createStateFixture() {
   const adeDir = path.join(root, ".ade");
   fs.mkdirSync(adeDir, { recursive: true });
   const dbPath = path.join(adeDir, "ade.db");
-  const db = await openKvDb(dbPath, createLogger());
+  const db = await openFreshKvDb(dbPath, createLogger());
   const projectId = "project-test";
   return { root, adeDir, db, projectId };
 }
 
-/**
- * A `terminal_sessions` row is all `countUserTurns` needs — it looks the
- * transcript path up by session id.
- */
-function insertTranscriptSession(
-  db: Awaited<ReturnType<typeof openKvDb>>,
-  sessionId: string,
-  transcriptPath: string,
-): void {
-  db.run(
-    `insert into terminal_sessions(
-      id, lane_id, tracked, pinned, manually_named, title, started_at, transcript_path, status
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [sessionId, "lane-test", 1, 0, 0, "CTO", "2026-03-05T10:00:00.000Z", transcriptPath, "ended"],
-  );
-}
-
 describe("ctoStateService", () => {
-  it("creates default CTO identity and current context when absent", async () => {
+  it("creates default CTO identity when absent", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,
@@ -64,7 +47,6 @@ describe("ctoStateService", () => {
     expect(snapshot.identity.version).toBeGreaterThanOrEqual(1);
 
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "identity.yaml"))).toBe(true);
-    expect(fs.existsSync(path.join(fixture.adeDir, "cto", "CURRENT.md"))).toBe(true);
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "sessions.jsonl"))).toBe(false);
     expect(buildAdeGitignore()).not.toContain("!cto/identity.yaml");
     expect(buildAdeGitignore()).not.toContain("cto/CURRENT.md");
@@ -242,106 +224,6 @@ describe("ctoStateService", () => {
     fixture.db.close();
   });
 
-  it("keeps session log integrity and backfills DB from jsonl", async () => {
-    const fixture = await createStateFixture();
-    const service = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-
-    const entry = await service.appendSessionLog({
-      sessionId: "session-1",
-      summary: "First CTO session",
-      startedAt: "2026-03-05T10:00:00.000Z",
-      endedAt: "2026-03-05T10:05:00.000Z",
-      provider: "codex",
-      modelId: "openai/gpt-5.3-codex",
-      capabilityMode: "full_tooling",
-    });
-    expect(entry.sessionId).toBe("session-1");
-    expect(service.getSessionLogs(10).length).toBe(1);
-
-    fixture.db.run(`delete from cto_session_logs where project_id = ? and session_id = ?`, [fixture.projectId, "session-1"]);
-    const afterDelete = fixture.db.get<{ count: number }>(
-      `select count(*) as count from cto_session_logs where project_id = ? and session_id = ?`,
-      [fixture.projectId, "session-1"]
-    );
-    expect(Number(afterDelete?.count ?? 0)).toBe(0);
-
-    const recovered = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-    const logs = recovered.getSessionLogs(10);
-    expect(logs.length).toBe(1);
-    expect(logs[0]?.summary).toBe("First CTO session");
-
-    fixture.db.close();
-  });
-
-  it("normalizes legacy full_mcp session logs as full tooling", async () => {
-    const fixture = await createStateFixture();
-    const ctoDir = path.join(fixture.adeDir, "cto");
-    fs.mkdirSync(ctoDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(ctoDir, "sessions.jsonl"),
-      `${JSON.stringify({
-        sessionId: "legacy-session",
-        summary: "Legacy CTO session",
-        startedAt: "2026-03-05T10:00:00.000Z",
-        endedAt: "2026-03-05T10:05:00.000Z",
-        provider: "codex",
-        modelId: "openai/gpt-5.3-codex",
-        capabilityMode: "full_mcp",
-        createdAt: "2026-03-05T10:06:00.000Z",
-      })}\n`,
-      "utf8"
-    );
-
-    const service = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-
-    expect(service.getSessionLogs(10)[0]?.capabilityMode).toBe("full_tooling");
-
-    fixture.db.close();
-  });
-
-  it("generates current context docs from recent CTO sessions", async () => {
-    const fixture = await createStateFixture();
-    const service = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-
-    await service.appendSessionLog({
-      sessionId: "session-mobile",
-      summary: "Investigated navigation regressions and proposed a stack-level fix.",
-      startedAt: "2026-05-22T00:00:00.000Z",
-      endedAt: "2026-05-22T00:10:00.000Z",
-      provider: "codex",
-      modelId: "gpt-5.5",
-      capabilityMode: "full_tooling",
-    });
-
-    service.syncDerivedContextDoc();
-
-    const currentDoc = fs.readFileSync(path.join(fixture.adeDir, "cto", "CURRENT.md"), "utf8");
-    expect(currentDoc).toContain("Recent CTO sessions");
-    expect(currentDoc).toContain("navigation regressions");
-
-    const reconstruction = service.buildReconstructionContext(10);
-    expect(reconstruction).toContain("Current working context");
-    expect(reconstruction).toContain("navigation regressions");
-
-    fixture.db.close();
-  });
-
   it("preserves onboarding state and the prompt extension across reloads", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({
@@ -382,11 +264,10 @@ describe("ctoStateService", () => {
     // per-user overlay to fall back on, so it has to carry the tone rules.
     expect(preview.sections[0]?.content).toContain("How you speak:");
     expect(preview.sections[0]?.content).toContain("Helping with ADE itself:");
-    expect(preview.sections[1]?.content).toContain("Immutable doctrine");
-    expect(preview.sections[1]?.content).toContain("Do not write ephemeral turn-by-turn status");
-    // Memory section: teaches persistent memory + saveMemory/searchMemory usage
-    expect(preview.sections[2]?.content).toContain("persistent memory");
-    expect(preview.sections[2]?.content).toContain("saveMemory");
+    expect(preview.sections[1]?.content).toContain("readHistory");
+    // Memory section: teaches the notes and open-work tools
+    expect(preview.sections[2]?.content).toContain("remember");
+    expect(preview.sections[2]?.content).toContain("trackWork");
     // Knowledge section: ADE architecture, chat vs terminal disambiguation, task routing, model selection
     expect(preview.sections[3]?.content).toContain("ADE Architecture");
     expect(preview.sections[3]?.content).toContain("spawnChat");
@@ -407,10 +288,10 @@ describe("ctoStateService", () => {
     // per-turn reconstruction context used to repeat it verbatim, and since the
     // chat service concatenates the two, every CTO user turn carried ~10 KB of
     // the same architecture doc twice.
-    const reconstruction = service.buildReconstructionContext(8);
+    const reconstruction = service.buildReconstructionContext();
     expect(reconstruction).not.toContain("ADE Architecture");
     expect(reconstruction).not.toContain("ADE Operational Knowledge");
-    expect(reconstruction).toContain("CTO Identity");
+    expect(reconstruction).toContain("CTO Context");
 
     fixture.db.close();
   });
@@ -439,7 +320,7 @@ describe("ctoStateService", () => {
     expect(staticSection.body.length).toBeGreaterThan(10_000);
 
     // The volatile half repeats none of it.
-    const volatileSection = service.buildReconstructionContext(8);
+    const volatileSection = service.buildReconstructionContext();
     expect(volatileSection).toContain("CTO Context");
     expect(volatileSection).not.toContain("Immutable ADE doctrine");
     expect(volatileSection).not.toContain("ADE Architecture");
@@ -584,10 +465,10 @@ describe("ctoStateService", () => {
 
     // Nothing is injected until a turn asks for a refresh: the block is
     // per-turn state, not boot state.
-    expect(service.buildReconstructionContext(8)).not.toContain("Live project state");
+    expect(service.buildReconstructionContext()).not.toContain("Live project state");
 
     await service.refreshLiveState();
-    const context = service.buildReconstructionContext(8);
+    const context = service.buildReconstructionContext();
 
     expect(context).toContain("Live project state (captured");
     expect(context).toContain("feature/some-reasonably-long-lane-name-0");
@@ -623,7 +504,7 @@ describe("ctoStateService", () => {
     });
 
     await service.refreshLiveState();
-    const context = service.buildReconstructionContext(8);
+    const context = service.buildReconstructionContext();
     expect(context).toContain("Unavailable this turn: lanes.");
     // The rest of the block still rendered.
     expect(context).toContain("Open PRs (1)");
@@ -794,209 +675,6 @@ describe("ctoStateService", () => {
     for (const row of rows) {
       expect(row).toContain("l".repeat(40));
     }
-
-    fixture.db.close();
-  });
-  /**
-   * The count is what the History row prints, so a line that merely QUOTES a
-   * user envelope must not inflate it.
-   */
-  it("counts only real user_message envelopes, not lines that quote the marker", async () => {
-    const fixture = await createStateFixture();
-    const transcriptPath = path.join(fixture.root, "transcript-quoted.jsonl");
-    fs.writeFileSync(
-      transcriptPath,
-      [
-        JSON.stringify({ type: "assistant_message", text: "hello" }),
-        // Nested, so the marker appears verbatim in the serialized line — the
-        // cheap pre-filter matches it and only the parse rejects it.
-        JSON.stringify({ type: "tool_result", payload: { type: "user_message", text: "quoted" } }),
-        // Not JSON at all, but carries the marker.
-        'raw log spew "type":"user_message" from a tool',
-        // Last line, deliberately without a trailing newline.
-        JSON.stringify({ type: "user_message", text: "the only real turn" }),
-      ].join("\n"),
-      "utf8"
-    );
-    insertTranscriptSession(fixture.db, "session-quoted", transcriptPath);
-
-    const service = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-    const entry = await service.appendSessionLog({
-      sessionId: "session-quoted",
-      summary: "Quoted marker session",
-      startedAt: "2026-03-05T10:00:00.000Z",
-      endedAt: "2026-03-05T10:05:00.000Z",
-      provider: "codex",
-      modelId: "openai/gpt-5.3-codex",
-      capabilityMode: "full_tooling",
-    });
-
-    expect(entry.turnCount).toBe(1);
-
-    fixture.db.close();
-  });
-
-  it("reports no turn count for a transcript past the size cap", async () => {
-    const fixture = await createStateFixture();
-    const transcriptPath = path.join(fixture.root, "transcript-huge.jsonl");
-    fs.writeFileSync(transcriptPath, "", "utf8");
-    // Sparse: the cap is checked from stat(), so no bytes need to be written.
-    fs.truncateSync(transcriptPath, 33 * 1024 * 1024);
-    insertTranscriptSession(fixture.db, "session-huge", transcriptPath);
-
-    const service = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-    const entry = await service.appendSessionLog({
-      sessionId: "session-huge",
-      summary: "Oversized transcript session",
-      startedAt: "2026-03-05T10:00:00.000Z",
-      endedAt: "2026-03-05T10:05:00.000Z",
-      provider: "codex",
-      modelId: "openai/gpt-5.3-codex",
-      capabilityMode: "full_tooling",
-    });
-
-    expect(entry.turnCount).toBeNull();
-
-    fixture.db.close();
-  });
-
-  it("reports no turn count when the transcript is missing", async () => {
-    const fixture = await createStateFixture();
-    insertTranscriptSession(fixture.db, "session-gone", path.join(fixture.root, "nope.jsonl"));
-
-    const service = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-    const entry = await service.appendSessionLog({
-      sessionId: "session-gone",
-      summary: "Missing transcript session",
-      startedAt: "2026-03-05T10:00:00.000Z",
-      endedAt: "2026-03-05T10:05:00.000Z",
-      provider: "codex",
-      modelId: "openai/gpt-5.3-codex",
-      capabilityMode: "full_tooling",
-    });
-
-    expect(entry.turnCount).toBeNull();
-
-    fixture.db.close();
-  });
-
-  /**
-   * `getSessionLogs` reads the DB for which entries exist and the file for how
-   * many turns each one had. The file half is now handed over by the reconcile
-   * rather than re-read; the count must still arrive.
-   */
-  it("surfaces turnCount from the reconciled session log file", async () => {
-    const fixture = await createStateFixture();
-    const transcriptPath = path.join(fixture.root, "transcript-turns.jsonl");
-    fs.writeFileSync(
-      transcriptPath,
-      [
-        JSON.stringify({ type: "user_message", text: "one" }),
-        JSON.stringify({ type: "assistant_message", text: "..." }),
-        JSON.stringify({ type: "user_message", text: "two" }),
-        "",
-      ].join("\n"),
-      "utf8"
-    );
-    insertTranscriptSession(fixture.db, "session-turns", transcriptPath);
-
-    const service = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-    await service.appendSessionLog({
-      sessionId: "session-turns",
-      summary: "Two turn session",
-      startedAt: "2026-03-05T10:00:00.000Z",
-      endedAt: "2026-03-05T10:05:00.000Z",
-      provider: "codex",
-      modelId: "openai/gpt-5.3-codex",
-      capabilityMode: "full_tooling",
-    });
-
-    expect(service.getSessionLogs(10)[0]?.turnCount).toBe(2);
-
-    // A fresh service re-reads both halves from disk; the count lives only in
-    // the file, so this is the path that proves it was not lost.
-    const reloaded = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-    expect(reloaded.getSessionLogs(10)[0]?.turnCount).toBe(2);
-
-    fixture.db.close();
-  });
-
-  /**
-   * The legacy fields were removed from `CtoIdentity`, and the first load of an
-   * older project rewrote identity.yaml without them. The text has to survive
-   * that, and it has to survive it exactly once.
-   */
-  it("folds legacy identity constraints and personality into the prompt extension once", async () => {
-    const fixture = await createStateFixture();
-    const ctoDir = path.join(fixture.adeDir, "cto");
-    fs.mkdirSync(ctoDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(ctoDir, "identity.yaml"),
-      [
-        'name: "CTO"',
-        "version: 7",
-        'persona: "Legacy identity"',
-        'systemPromptExtension: "Original extension text."',
-        'personality: "professional"',
-        "communicationStyle:",
-        '  verbosity: "concise"',
-        '  proactivity: "high"',
-        "constraints:",
-        '  - "Never force-push main."',
-        '  - "Ask before deleting a lane."',
-        "modelPreferences: null",
-        'updatedAt: "2026-03-05T13:00:00.000Z"',
-        "",
-      ].join("\n"),
-      "utf8"
-    );
-
-    const service = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-    const extension = service.getIdentity().systemPromptExtension ?? "";
-    expect(extension).toContain("Original extension text.");
-    expect(extension).toContain("Never force-push main.");
-    expect(extension).toContain("Ask before deleting a lane.");
-    expect(extension).toContain("professional");
-    expect(extension).toContain("concise");
-
-    // The rewritten identity.yaml no longer carries the legacy keys...
-    const rewritten = fs.readFileSync(path.join(ctoDir, "identity.yaml"), "utf8");
-    expect(rewritten).not.toContain("constraints:");
-    expect(rewritten).toContain("Never force-push main.");
-
-    // ...so a second load reads its own output and must not append again.
-    const reloaded = createCtoStateService({
-      db: fixture.db,
-      projectId: fixture.projectId,
-      adeDir: fixture.adeDir,
-    });
-    const secondExtension = reloaded.getIdentity().systemPromptExtension ?? "";
-    expect(secondExtension).toBe(extension);
-    expect(secondExtension.split("Carried over from an earlier CTO identity:").length).toBe(2);
 
     fixture.db.close();
   });

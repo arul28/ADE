@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { dismissClaudeModsOffer, isClaudeModsOfferDismissed } from "./claudeModUiPrefs";
+import type { OpenProjectBinding } from "../../../shared/types";
 
 /**
  * Whether a chat has a mod installed. The plugin list is the chat's own (its
@@ -12,10 +13,10 @@ import { dismissClaudeModsOffer, isClaudeModsOfferDismissed } from "./claudeModU
  */
 const hasModsBySession = new Map<string, Promise<boolean>>();
 
-function findInstalledMods(sessionId: string): Promise<boolean> {
+function findInstalledMods(sessionId: string, pin: OpenProjectBinding): Promise<boolean> {
   let found = hasModsBySession.get(sessionId);
   if (!found) {
-    found = window.ade.agentChat.listClaudePlugins({ sessionId })
+    found = window.ade.agentChat.listClaudePlugins({ sessionId }, pin)
       .then((plugins) => plugins.some((plugin) => plugin.isMod === true))
       .catch(() => {
         // An older host cannot say. Ask again when the chat opens next.
@@ -34,19 +35,20 @@ function findInstalledMods(sessionId: string): Promise<boolean> {
  * pinned to another runtime: the setting and the plugins read here are this
  * project's).
  */
-export function useClaudeModsPrompt(sessionId: string | null): void {
+export function useClaudeModsPrompt(sessionId: string | null, pin: OpenProjectBinding | null): void {
   const navigate = useNavigate();
   const [offer, setOffer] = useState(false);
 
   useEffect(() => {
     setOffer(false);
-    if (!sessionId || isClaudeModsOfferDismissed()) return;
+    // The chat's machine reads its plugins. No machine: no offer.
+    if (!sessionId || !pin || isClaudeModsOfferDismissed()) return;
     let cancelled = false;
     void (async () => {
-      const config = await window.ade.projectConfig.get();
+      const config = await window.ade.projectConfig.get(pin);
       if (cancelled || config.effective.ai?.chat?.claudePluginUiEnabled === true) return;
       // The plugin list is read only while there is an offer to make.
-      const hasMods = await findInstalledMods(sessionId);
+      const hasMods = await findInstalledMods(sessionId, pin);
       if (!cancelled) setOffer(hasMods);
     })().catch(() => {
       // The configuration did not load; no offer.
@@ -54,7 +56,9 @@ export function useClaudeModsPrompt(sessionId: string | null): void {
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+    // Keyed on the pin's key: a rebuilt pin for the same machine asks nothing again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, pin?.key]);
 
   const dismiss = () => {
     dismissClaudeModsOffer();

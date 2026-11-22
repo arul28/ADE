@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QUESTION_DECLINED_MODEL_MESSAGE } from "../../desktop/src/shared/pendingInputAnswers";
 import {
   createAdeRpcRequestHandler,
+  createCtoActionCaller,
   _resetGlobalAskUserRateLimit,
   resolveComputerUseOwners,
 } from "./adeRpcServer";
@@ -16,6 +17,8 @@ import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agent
 import { buildTrackedCliSessionActivityGuidance } from "../../desktop/src/shared/cliLaunch";
 import { MAC_DESKTOP_USER_CLI_HOLDER_ID } from "../../desktop/src/shared/types/macDesktop";
 import { getSessionInputOrigin } from "../../desktop/src/main/services/chat/sessionInputOrigins";
+import { noteExternalChatTurn } from "../../desktop/src/main/services/chat/externalChats";
+import { isRemoteWorkLaneId } from "../../desktop/src/shared/types/remoteWork";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -109,6 +112,7 @@ function createRuntime() {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     productAnalyticsService: {
       capture: vi.fn(() => ({ accepted: true, reason: "accepted" })),
+      captureInternal: vi.fn(() => ({ accepted: true, reason: "accepted" })),
       identifyAccount: vi.fn(() => ({ accepted: true, reason: "accepted" })),
       resetAccountIdentity: vi.fn(() => true),
       getStatus: vi.fn(() => ({ configured: true, enabled: true, effective: true })),
@@ -480,6 +484,8 @@ function createRuntime() {
       addComment: vi.fn(async ({ body }: { body: string }) => ({ id: "comment-new", body })),
     },
     agentChatService: {
+      // null: no balanced account is picked, so the CLI runs on the machine's own login.
+      pickNewCliSessionAccount: vi.fn(() => null),
       listSessions: vi.fn(async () => [
         {
           sessionId: "chat-1",
@@ -638,13 +644,8 @@ function createRuntime() {
     } as any,
     fileService: null,
     ctoMemoryService: {
-      appendMemoryFact: vi.fn((fact: string, _tags?: unknown) => ({ saved: true, fact })),
-      searchMemory: vi.fn(() => [{ file: "MEMORY.md", date: null, line: 1, snippet: "a fact" }]),
       getSnapshot: vi.fn(() => ({
-        memory: "# CTO Durable Memory\n\n## Facts\n\n- a fact",
-        threadState: "# CTO Thread State\n\nrolling summary",
-        dailyLog: "",
-        dailyLogDate: "2026-07-04",
+        memory: "- a fact\n",
         updatedAt: "2026-07-04T09:00:00.000Z",
       })),
     } as any,
@@ -890,6 +891,12 @@ function applyDrainFilter<T extends { events: Array<{ category: string }> }>(
   const filter = options?.filter as ((event: { category: string }) => boolean) | undefined;
   return filter ? { ...result, events: result.events.filter(filter) } : result;
 }
+
+
+/** The workspace-write network flag as a launch preview spells it: POSIX shells single-quote `key=value`, cmd double-quotes it. */
+const NETWORK_FLAG_PREVIEW = process.platform === "win32"
+  ? "\"sandbox_workspace_write.network_access=true\""
+  : "'sandbox_workspace_write.network_access=true'";
 
 describe("adeRpcServer", () => {
   it("does not report a green rollup to agents when only third-party bots reported", async () => {
@@ -2091,6 +2098,8 @@ describe("adeRpcServer", () => {
 
       // Self-reporting, billing, and prompts or schedules that arrive as the
       // user's stay on the caller's own chat.
+      (runtime.agentChatService as any).getDeviceSources = vi.fn();
+      (runtime.agentChatService as any).setDeviceSource = vi.fn();
       for (const [domain, action] of [
         ["chat", "sendMessage"],
         ["chat", "createScheduledWork"],
@@ -2098,6 +2107,9 @@ describe("adeRpcServer", () => {
         ["chat", "setScheduledWorkPaused"],
         ["chat", "resumeUsageLimitNow"],
         ["session", "setSessionStatusNote"],
+        // `ade devices use|current`: a chat picks and reads only its own device sources.
+        ["chat", "getDeviceSources"],
+        ["chat", "setDeviceSource"],
       ] as const) {
         const denied = await callTool(handler, "run_ade_action", {
           domain,
@@ -2107,6 +2119,7 @@ describe("adeRpcServer", () => {
         expect(denied.isError, action).toBe(true);
         expect(JSON.stringify(denied), action).toContain("chat access is limited to the caller's own chat session");
       }
+      expect((runtime.agentChatService as any).setDeviceSource).not.toHaveBeenCalled();
 
       // A wake wait wakes its caller: a bound agent may only ask for itself.
       const otherWake = await callTool(handler, "run_ade_action", {
@@ -2247,9 +2260,9 @@ describe("adeRpcServer", () => {
     expect(names).toEqual(
       expect.arrayContaining([
         "get_cto_state",
-        "saveMemory",
-        "searchMemory",
-        "readMemory",
+        "remember",
+        "forget",
+        "readHistory",
         "listChats",
         "spawnChat",
         "getChatStatus",
@@ -2269,29 +2282,6 @@ describe("adeRpcServer", () => {
     expect(names).not.toContain("spawn_worker");
     expect(names).not.toContain("listLinearWorkflows");
     expect(names).not.toContain("getLinearSyncDashboard");
-  });
-
-  it("dispatches CTO memory tools through ctoMemoryService", async () => {
-    const { runtime } = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "cto-1", role: "cto" });
-
-    const saved = await callTool(handler, "saveMemory", { fact: "Prefer sentence case." });
-    // An untagged save passes null tags and the default kind/pin options.
-    expect((runtime.ctoMemoryService as any).appendMemoryFact).toHaveBeenCalledWith(
-      "Prefer sentence case.",
-      null,
-      { kind: null, pin: false },
-    );
-    expect(saved.structuredContent).toEqual(
-      expect.objectContaining({ success: true, saved: true, file: "MEMORY.md" }),
-    );
-
-    const read = await callTool(handler, "readMemory", {});
-    expect((runtime.ctoMemoryService as any).getSnapshot).toHaveBeenCalled();
-    expect(read.structuredContent).toEqual(
-      expect.objectContaining({ success: true, memory: expect.stringContaining("a fact") }),
-    );
   });
 
   it("stamps who is calling on chat actions so an agent cannot pose as the user or the CTO", async () => {
@@ -2340,6 +2330,7 @@ describe("adeRpcServer", () => {
     const result = await callTool(handler, "spawnChat", {
       laneId: "lane-1",
       title: "Fresh work chat",
+      modelId: "openai/gpt-5.5",
       openInUi: true,
     });
 
@@ -2966,10 +2957,13 @@ describe("adeRpcServer", () => {
     const launchText = createCall.args?.at(-1) ?? createCall.startupCommand ?? "";
     expect(launchText).toContain("CLI controls ADE state");
     expect(launchText).toContain("PRs, proof, apps");
-    expect(launchText).toContain("clean up started processes");
+    expect(launchText).toContain("Stop processes you start");
     expect(launchText).toContain("ade chat note");
     expect(launchText).toContain("ade chat ask");
-    expect(launchText).toContain("You cannot settle or unsettle a session");
+    // Settling, the note's 72-character cut and the un-settle command are
+    // manual detail in ade-cli-control-plane; the launch text keeps the index
+    // that names it, so the rule is one skill away.
+    expect(launchText).toContain("`ade-cli-control-plane`");
     expect(launchText).toContain("Implement API wiring");
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
@@ -2994,6 +2988,7 @@ describe("adeRpcServer", () => {
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "codex",
+        model: "openai/gpt-5.5",
         permissionMode,
         prompt: "Check the Codex launch flags",
       });
@@ -3002,12 +2997,12 @@ describe("adeRpcServer", () => {
     expect(response?.isError).toBeUndefined();
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
     const launchText = createCall.args?.join(" ") ?? createCall.startupCommand ?? "";
-    expect(launchText).toContain("--sandbox workspace-write --ask-for-approval on-request");
+    expect(launchText).toContain("--sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request");
     expect(launchText).toContain("ade chat note");
     expect(launchText).toContain("ade chat ask");
-    expect(launchText).toContain("You cannot settle or unsettle a session");
+    expect(launchText).toContain("`ade-cli-control-plane`");
     expect(launchText).not.toContain("--full-auto");
-    expect(createCall.startupCommand).toContain("--sandbox workspace-write --ask-for-approval on-request");
+    expect(createCall.startupCommand).toContain(`--sandbox workspace-write -c ${NETWORK_FLAG_PREVIEW} --ask-for-approval on-request`);
     expect(createCall.startupCommand).not.toContain("--full-auto");
   });
 
@@ -3102,6 +3097,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       permissionMode: "edit",
       initialInput: "run the checks",
     });
@@ -3200,6 +3196,7 @@ describe("adeRpcServer", () => {
         return await callTool(handler, "start_cli_session", {
           laneId: "lane-1",
           provider: "codex",
+          model: "openai/gpt-5.5",
           permissionMode: "default",
           presetId: "preset-from-request",
         });
@@ -3237,6 +3234,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "droid",
+      model: "droid/claude-opus-4-5",
       permissionMode: "default",
       droidPermissionMode: "agi",
     });
@@ -3284,6 +3282,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "  parent-session-1  ",
       spawnKind: "peer",
     });
@@ -3326,6 +3325,7 @@ describe("adeRpcServer", () => {
     const allowed = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "chat-agent",
       spawnKind: "subagent",
     });
@@ -3335,6 +3335,7 @@ describe("adeRpcServer", () => {
     const otherLane = await callTool(handler, "start_cli_session", {
       laneId: "lane-2",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "chat-agent",
       spawnKind: "subagent",
     });
@@ -3345,6 +3346,7 @@ describe("adeRpcServer", () => {
     const foreignParent = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "other-chat",
       spawnKind: "subagent",
     });
@@ -3417,7 +3419,7 @@ describe("adeRpcServer", () => {
     expect(notifyParentOfCliChildSpawn).toHaveBeenLastCalledWith("session-1", { resumed: true });
   });
 
-  it("lane-filters CLI children for an agent and denies a transcript from another lane", async () => {
+  it("lane-filters CLI children for an agent and reads a transcript from any lane", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
       if (sessionId === "chat-agent") return { id: sessionId, laneId: "lane-1" };
@@ -3455,13 +3457,14 @@ describe("adeRpcServer", () => {
     });
     expect(deniedList.isError).toBe(true);
 
-    const deniedRead = await callTool(handler, "run_ade_action", {
+    // Reading is open: any caller reads any session, another lane's CLI too.
+    const foreignRead = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "readTranscript",
       args: { sessionId: "cli-foreign" },
     });
-    expect(deniedRead.isError).toBe(true);
-    expect(getChatTranscript).not.toHaveBeenCalled();
+    expect(foreignRead.isError).toBeUndefined();
+    expect(getChatTranscript).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "cli-foreign" }));
 
     const allowedRead = await callTool(handler, "run_ade_action", {
       domain: "chat",
@@ -3482,6 +3485,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
     });
 
     expect(response?.isError).toBeUndefined();
@@ -3497,6 +3501,7 @@ describe("adeRpcServer", () => {
     const legacyNone = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "parent-session-1",
       spawnKind: "none",
     });
@@ -3507,6 +3512,7 @@ describe("adeRpcServer", () => {
     const missingType = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "parent-session-1",
     });
     expect(missingType?.isError).toBeUndefined();
@@ -3537,6 +3543,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       cols: 999,
       rows: 999,
     });
@@ -3549,14 +3556,25 @@ describe("adeRpcServer", () => {
         startupCommand: expect.stringContaining("codex --no-alt-screen"),
       }),
     );
+    // Nothing configured: the CLI starts at full access, where a chat
+    // launched the same way starts.
     const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
-    expect(createCall?.args).toEqual(expect.arrayContaining([
+    expect(createCall?.args).toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(createCall?.args).not.toContain("workspace-write");
+
+    // The project's CLI permission setting wins over that default.
+    (fixture.runtime as any).projectConfigService = {
+      get: () => ({ effective: { ai: { permissions: { cli: { mode: "edit" } } } } }),
+    };
+    await callTool(handler, "start_cli_session", { laneId: "lane-1", provider: "codex", model: "openai/gpt-5.5" });
+    const editCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(editCall?.args).toEqual(expect.arrayContaining([
       "--sandbox",
       "workspace-write",
       "--ask-for-approval",
       "on-request",
     ]));
-    expect(response.structuredContent.startupCommand).not.toContain("--full-auto");
+    expect(editCall?.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
   });
 
   it("starts shell CLI sessions without reading user shell startup files", async () => {
@@ -3607,6 +3625,7 @@ describe("adeRpcServer", () => {
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "codex",
+        model: "openai/gpt-5.5",
         prompt: "Check the mobile CLI path",
       });
     });
@@ -3617,7 +3636,7 @@ describe("adeRpcServer", () => {
       args?: string[];
       startupCommand?: string;
     };
-    expect(createCall.startupCommand).toContain("codex --sandbox workspace-write --ask-for-approval on-request");
+    expect(createCall.startupCommand).toContain(`--sandbox workspace-write -c ${NETWORK_FLAG_PREVIEW} --ask-for-approval on-request`);
     expect(createCall.command).toBe(codexPath);
     expect(createCall.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]));
     expect(response.structuredContent.startupCommand).not.toContain("--full-auto");
@@ -3713,6 +3732,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
+      model: "claude-fable-5-2",
       permissionMode: "auto",
     });
 
@@ -3742,6 +3762,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
+      model: "claude-fable-5-2",
       permissionMode: "default",
       initialInput: "hello?",
     });
@@ -3774,6 +3795,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "cursor",
+      model: "cursor/auto",
       initialInput: "fix failing tests",
     });
 
@@ -3801,6 +3823,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
+      model: "claude-fable-5-2",
       permissionMode: "default",
     });
 
@@ -3940,6 +3963,7 @@ describe("adeRpcServer", () => {
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "codex",
+        model: "openai/gpt-5.5",
         prompt: "Implement API wiring",
         runId: "run-1",
         attemptId: "attempt-win-fallback",
@@ -4026,6 +4050,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "spawn_agent", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       permissionMode: "plan",
       runId: "run-123",
       stepId: "step-abc",
@@ -4592,8 +4617,8 @@ describe("adeRpcServer", () => {
         readable: true,
       }]),
       get: vi.fn(() => "sk-test"),
-      set: vi.fn(() => true),
-      remove: vi.fn(() => true),
+      trySet: vi.fn(() => "queued" as const),
+      tryRemove: vi.fn(() => "queued" as const),
       sync: vi.fn(async () => undefined),
     };
     (fixture.runtime as any).accountSettingsStore = accountSettingsStore;
@@ -4667,7 +4692,7 @@ describe("adeRpcServer", () => {
     });
     expect(vaultSet?.isError).toBeUndefined();
     expect(vaultSet.structuredContent.result).toBe(true);
-    expect(accountVaultStore.set).toHaveBeenCalledWith(
+    expect(accountVaultStore.trySet).toHaveBeenCalledWith(
       "all",
       "provider_api_key",
       "openai",
@@ -5396,7 +5421,7 @@ describe("adeRpcServer", () => {
     }
   });
 
-  it("scopes PTY and terminal ADE actions to the caller's lane or chat", async () => {
+  it("scopes PTY and terminal writes to the caller's lane or chat, and lets it read any terminal", async () => {
     const fixture = createRuntime();
     const clearAsk = vi.fn((sessionId: string) => ({ cleared: sessionId === "chat-2" }));
     (fixture.runtime.agentChatService as any).clearAsk = clearAsk;
@@ -5519,20 +5544,80 @@ describe("adeRpcServer", () => {
       chatSessionId: "chat-1",
     });
 
-    // A watch wakes the chat that armed it: an agent may arm one only for its
-    // own chat, on a terminal it may read, and always as the agent.
+    // Reading is open: any terminal, another lane's included.
+    const foreignTerminalRead = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "read",
+      args: { terminalId: "terminal-2" },
+    });
+    expect(foreignTerminalRead?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.readTerminal).toHaveBeenCalledWith(expect.objectContaining({ terminalId: "terminal-2" }));
+    // An agent's preview carries the screen as text, not the desktop's styled cell grid.
+    const cell = { text: "x", fg: null, bg: null, fgMode: "default", bgMode: "default" };
+    const gridPreview = () => ({
+      terminalId: "terminal-2",
+      source: "snapshot",
+      snapshot: {
+        cols: 3, rows: 3, serialized: "$ ok", screenSerialized: "$ ok",
+        visibleRows: [{ text: "$ ok  ", cells: [cell, cell, cell] }, { text: "", cells: [cell] }, { text: "   ", cells: [cell] }],
+      },
+    });
+    (fixture.runtime.ptyService.previewTerminal as ReturnType<typeof vi.fn>).mockResolvedValueOnce(gridPreview());
+    const foreignPreview = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "preview",
+      args: { terminalId: "terminal-2" },
+    });
+    expect(foreignPreview?.isError).toBeUndefined();
+    const previewSnapshot = (foreignPreview.structuredContent.result as { snapshot: Record<string, unknown> }).snapshot;
+    expect(previewSnapshot.screenText).toBe("$ ok");
+    expect(previewSnapshot).not.toHaveProperty("visibleRows");
+    // Whatever its role: a CTO agent reads text too, while a person's desktop keeps the grid.
+    for (const [clientName, identity, asText] of [
+      ["ade-cto-remote", { callerId: "cto-1", role: "cto" }, true],
+      ["ade-desktop-local", { role: "cto" }, false],
+    ] as const) {
+      const other = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(other, identity, { clientName });
+      (fixture.runtime.ptyService.previewTerminal as ReturnType<typeof vi.fn>).mockResolvedValueOnce(gridPreview());
+      const preview = await callTool(other, "run_ade_action", { domain: "terminal", action: "preview", args: { terminalId: "terminal-2" } });
+      const snapshot = (preview.structuredContent.result as { snapshot: Record<string, unknown> }).snapshot;
+      expect(snapshot.screenText).toBe(asText ? "$ ok" : undefined);
+      expect("visibleRows" in snapshot).toBe(!asText);
+    }
+
+    // A list that names a chat shows that chat's shells, one a chat on another
+    // machine owns here included; the caller's default list still leaves those out.
+    const remoteShell = { id: "terminal-remote", laneId: "lane-2", chatSessionId: "remote:mac-mini:chat-9" };
+    (fixture.runtime.ptyService.listTerminals as ReturnType<typeof vi.fn>).mockImplementation(() => [ownTerminal, remoteShell]);
+    const namedList = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "list",
+      args: { chatSessionId: "remote:mac-mini:chat-9", includeArchived: true },
+    });
+    expect(namedList?.isError).toBeUndefined();
+    expect(namedList.result).toEqual(expect.arrayContaining([expect.objectContaining({ id: "terminal-remote" })]));
+    const defaultList = await callTool(handler, "run_ade_action", { domain: "terminal", action: "list", args: {} });
+    expect(defaultList.result).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: "terminal-remote" })]));
+
+    // A watch wakes the chat that armed it: an agent arms one only for its own
+    // chat, always as the agent, on any terminal (watching is reading).
     const watch = vi.fn(async (args: unknown) => ({ watchId: "watch-1", ...(args as object) }));
     (fixture.runtime as any).terminalWatchService = { watch, unwatch: vi.fn(), listWatches: vi.fn(() => []) };
-    for (const args of [
-      { terminalId: "terminal-2", match: "error" },
-      { chatSessionId: "chat-2", terminalId: "terminal-1", match: "error" },
-      // An allowed pty id does not carry another chat's terminal id.
-      { ptyId: "pty-1", terminalId: "terminal-2", match: "error" },
-    ]) {
-      const deniedWatch = await callTool(handler, "run_ade_action", { domain: "terminal", action: "watch", args });
-      expect(deniedWatch.isError).toBe(true);
-    }
+    const deniedWatch = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "watch",
+      args: { chatSessionId: "chat-2", terminalId: "terminal-1", match: "error" },
+    });
+    expect(deniedWatch.isError).toBe(true);
     expect(watch).not.toHaveBeenCalled();
+    const foreignWatch = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "watch",
+      args: { terminalId: "terminal-2", match: "error" },
+    });
+    expect(foreignWatch?.isError).toBeUndefined();
+    expect(watch).toHaveBeenLastCalledWith(expect.objectContaining({ chatSessionId: "chat-1", terminalId: "terminal-2", armedBy: "agent" }));
     const ownWatch = await callTool(handler, "run_ade_action", {
       domain: "terminal",
       action: "watch",
@@ -6285,20 +6370,30 @@ describe("adeRpcServer", () => {
     expect(deviceDeleteInstalled).toHaveBeenCalledTimes(1);
   });
 
-  it("user-only verbs go to the desktop's own client names and to no other caller", async () => {
+  // Lane sharing: changing a share, sending its invite again and moving a
+  // chat are the owner's, at the desktop of this machine or a paired one,
+  // never an agent's or a brain's.
+  it.each<[string, string, string]>([
+    ["deleting a simulator", "ios_simulator", "deviceDeleteInstalled"],
+    ["changing a lane share's rights", "lane_share", "updateRights"],
+    ["sending a lane share invite again", "lane_share", "resendInvite"],
+    ["moving a chat to the other person of a share", "lane_share", "moveStart"],
+    ["sharing this computer's gh sign-in with the account", "github", "setGhAccountSharing"],
+  ])("user-only verbs (%s) go to the desktop's own client names and to no other caller", async (_label, domain, action) => {
     const fixture = createRuntime();
-    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
-    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled };
+    const verb = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled: verb };
+    fixture.runtime.githubService = { ...fixture.runtime.githubService, setGhAccountSharing: verb } as any;
+    fixture.runtime.syncService = {
+      getLaneShareService: () => ({ updateRights: verb, resendInvite: verb }),
+      getLaneShareMoveService: () => ({ start: verb }),
+    };
     const tryDelete = async (identity: Record<string, unknown> | undefined, params: Record<string, unknown>) => {
       const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
       await initialize(handler, identity, params);
-      deviceDeleteInstalled.mockClear();
-      const result = await callTool(handler, "run_ade_action", {
-        domain: "ios_simulator",
-        action: "deviceDeleteInstalled",
-        args: { udid: "SIM-1" },
-      });
-      return result?.isError !== true && deviceDeleteInstalled.mock.calls.length === 1;
+      verb.mockClear();
+      const result = await callTool(handler, "run_ade_action", { domain, action, args: { udid: "SIM-1" } });
+      return result?.isError !== true && verb.mock.calls.length === 1;
     };
 
     // The local picker and a paired or SSH remote runtime's picker.
@@ -6318,6 +6413,85 @@ describe("adeRpcServer", () => {
       { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" },
       { clientInfo: { name: "ade-desktop-local" } },
     )).toBe(false);
+    // Another machine's CTO or agent, over the paired channel.
+    for (const name of ["ade-cto-remote", "ade-agent-remote"]) {
+      expect(await tryDelete({ callerId: `${name}:1`, role: "cto" }, { clientInfo: { name } })).toBe(false);
+    }
+  });
+
+  // An agent may list lane shares, make a Watch share and stop one; the host
+  // service holds it to that. Who is an agent comes from the session.
+  it("stamps who calls a lane share action from the session, never from its arguments", async () => {
+    const fixture = createRuntime();
+    const calls: Array<[string, unknown]> = [];
+    const record = (name: string) => vi.fn(async (_args: unknown, caller?: unknown) => {
+      calls.push([name, caller]);
+      return { ok: true };
+    });
+    const set = vi.fn(() => true);
+    fixture.runtime.syncService = {
+      getLaneShareService: () => ({ create: record("create"), list: record("list"), revoke: record("revoke"), updateRights: record("updateRights") }),
+      getLaneShareMoveService: () => ({ start: record("moveStart") }),
+    };
+    fixture.runtime.accountSettingsStore = { set, remove: vi.fn(() => true), get: vi.fn(), list: vi.fn(() => []), deletedKeys: vi.fn(() => []), sync: vi.fn() };
+    const connect = async (identity: Record<string, unknown>, params: Record<string, unknown>) => {
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, identity, params);
+      return handler;
+    };
+    const forged = { laneId: "lane-a", receiverEmail: "guest@example.com", callerClass: "person", createdBy: "person", confirmHighRisk: true };
+    const callerOf = async (handler: Awaited<ReturnType<typeof connect>>, action: string, extra: Record<string, unknown> = {}) => {
+      calls.length = 0;
+      const result = await callTool(handler, "run_ade_action", { domain: "lane_share", action, args: forged, ...extra });
+      return result?.isError === true ? "refused" : calls[0]?.[1];
+    };
+
+    // The `ade` CLI (a person's terminal, an agent's shell, ADE MCP), with or without the operator role.
+    for (const role of ["cto", "agent"]) {
+      const cli = await connect({ callerId: "ade-cli:4242", role }, { clientInfo: { name: "ade-cli" } });
+      for (const action of ["create", "revoke"]) expect(await callerOf(cli, action)).toBe("agent");
+      expect(await callerOf(cli, "list")).not.toBe("refused");
+      expect(await callerOf(cli, "updateRights")).toBe("refused");
+      expect(await callerOf(cli, "moveStart")).toBe("refused");
+      // Positional arguments would skip the stamp.
+      expect(await callerOf(cli, "create", { argsList: [forged] })).toBe("refused");
+      const listed = await callTool(cli, "list_ade_actions", { domain: "lane_share" });
+      const names = (listed.structuredContent?.actions ?? listed.actions ?? []).map((entry: any) => entry.action);
+      expect(names.sort()).toEqual(["create", "list", "revoke"]);
+      // A person's default rights for a new share stay the person's.
+      const defaults = await callTool(cli, "run_ade_action", {
+        domain: "account_settings",
+        action: "set",
+        argsList: ["all", "laneShare.defaultRights", { preset: "collaborate" }],
+      });
+      expect(defaults.isError).toBe(true);
+    }
+    expect(set).not.toHaveBeenCalled();
+    // ADE MCP runs the CLI as role agent for a read-only connection and as cto
+    // for full access: the read-only one lists and is refused the rest.
+    const readOnlyMcp = await connect({ callerId: "ade-cli:4243", role: "agent", remoteMcpConnectionId: "conn-read" }, { clientInfo: { name: "ade-cli" } });
+    for (const action of ["create", "revoke"]) expect(await callerOf(readOnlyMcp, action)).toBe("refused");
+    expect(await callerOf(readOnlyMcp, "list")).not.toBe("refused");
+    const fullMcp = await connect({ callerId: "ade-cli:4244", role: "cto", remoteMcpConnectionId: "conn-full" }, { clientInfo: { name: "ade-cli" } });
+    expect(await callerOf(fullMcp, "create")).toBe("agent");
+    // An agent in a chat, and another machine's brain.
+    const chatAgent = await connect({ callerId: "agent-a", role: "agent", chatSessionId: "chat-a" }, { clientInfo: { name: "ade-desktop-local" } });
+    expect(await callerOf(chatAgent, "create")).toBe("agent");
+    const remoteBrain = await connect({ callerId: "ade-agent-remote:1", role: "cto" }, { clientInfo: { name: "ade-agent-remote" } });
+    expect(await callerOf(remoteBrain, "create")).toBe("agent");
+
+    // The desktop of this machine, and a paired desktop that calls with a pin.
+    for (const name of ["ade-desktop-local", "ade-desktop-remote"]) {
+      const desktop = await connect({ callerId: `${name}:77`, role: "cto" }, { clientInfo: { name } });
+      expect(await callerOf(desktop, "create")).toBe("person");
+      expect(await callerOf(desktop, "updateRights")).toBe("person");
+      const defaults = await callTool(desktop, "run_ade_action", {
+        domain: "account_settings",
+        action: "set",
+        argsList: ["all", "laneShare.defaultRights", { preset: "collaborate" }],
+      });
+      expect(defaults?.isError).toBeUndefined();
+    }
   });
 
   it("denies work_tools reads to an agent-shaped caller with no resolvable lane", async () => {
@@ -6366,7 +6540,7 @@ describe("adeRpcServer", () => {
     expect(getLaneState).not.toHaveBeenCalled();
   });
 
-  it("lets an elevated agent-shaped caller read every lane's pane but never write the active tool", async () => {
+  it("lets an elevated agent-shaped caller read every lane's pane but never write the active tool or watch and drive a tab", async () => {
     // The CTO carve-out on `work_tools` is a READ carve-out. `setActiveTool` is
     // the domain's one write and it belongs to the human at the desktop, so the
     // carve-out must not smuggle it through — it used to, by skipping the
@@ -6380,7 +6554,17 @@ describe("adeRpcServer", () => {
     const getLaneState = vi.fn(async (args: unknown) => args);
     const readObservationPreview = vi.fn(async (args: unknown) => args);
     const setActiveTool = vi.fn(() => ({ ok: true }));
-    fixture.runtime.workToolsStateService = { getLaneState, setActiveTool, readObservationPreview };
+    // Watching and driving a tab on another machine skip every ownership and
+    // access check agent browser commands keep: person-only, CTO included.
+    const readBrowserTabFrame = vi.fn(async () => ({ tabId: "tab-1", frame: null }));
+    const sendBrowserTabInput = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.workToolsStateService = {
+      getLaneState,
+      setActiveTool,
+      readObservationPreview,
+      readBrowserTabFrame,
+      sendBrowserTabInput,
+    };
 
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { callerId: "cto-run", role: "cto", runId: "run-1", stepId: "step-1" });
@@ -6402,10 +6586,25 @@ describe("adeRpcServer", () => {
     expect(write.isError).toBe(true);
     expect(setActiveTool).not.toHaveBeenCalled();
 
+    const watch = await callTool(handler, "run_ade_action", {
+      domain: "work_tools",
+      action: "readBrowserTabFrame",
+      args: { tabId: "tab-1" },
+    });
+    const drive = await callTool(handler, "run_ade_action", {
+      domain: "work_tools",
+      action: "sendBrowserTabInput",
+      args: { tabId: "tab-1", event: { type: "text", text: "hi" } },
+    });
+    expect(watch.isError).toBe(true);
+    expect(drive.isError).toBe(true);
+    expect(readBrowserTabFrame).not.toHaveBeenCalled();
+    expect(sendBrowserTabInput).not.toHaveBeenCalled();
+
     // The human's own desktop is elevated too but carries no run/step/chat
     // identity, so it is still a user client and still owns the write.
     const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" }, { clientName: "ade-desktop-local" });
     const humanWrite = await callTool(desktop, "run_ade_action", {
       domain: "work_tools",
       action: "setActiveTool",
@@ -6413,6 +6612,13 @@ describe("adeRpcServer", () => {
     });
     expect(humanWrite?.isError).toBeUndefined();
     expect(setActiveTool).toHaveBeenCalledWith({ laneId: "lane-b", tool: "browser" });
+    const humanDrive = await callTool(desktop, "run_ade_action", {
+      domain: "work_tools",
+      action: "sendBrowserTabInput",
+      args: { tabId: "tab-1", event: { type: "text", text: "hi" } },
+    });
+    expect(humanDrive?.isError).toBeUndefined();
+    expect(sendBrowserTabInput).toHaveBeenCalledTimes(1);
   });
 
   it("pins mac_desktop to the caller's own chat session and lane", async () => {
@@ -7050,7 +7256,7 @@ describe("adeRpcServer", () => {
             ...(callerRoot ? { callerRoot } : {}),
           });
       };
-      return { click, launch, screenshot, getStatus, noteAgentAppControlActivity, lane1Root, connect };
+      return { fixture, click, launch, screenshot, getStatus, noteAgentAppControlActivity, lane1Root, connect };
     }
 
     it.each([
@@ -7117,6 +7323,93 @@ describe("adeRpcServer", () => {
       expect(click).toHaveBeenCalledWith({ x: 1, y: 1, laneId: "lane-3", chatSessionId: "chat-b" });
       expect(noteAgentAppControlActivity).not.toHaveBeenCalled();
     });
+
+    it("binds a chat on another machine to its work copy's lane, and makes no copy for a read or a refusal", async () => {
+      // `ade app-control … --machine` / `ade screen … --machine`: the caller has
+      // no lane here; the copy of its code here stands in for one.
+      const { fixture, click, getStatus, connect } = await setup();
+      const remoteChat = { callerId: "agent-remote", role: "agent", chatSessionId: "remote:peer-1:chat-9" };
+      const remoteWork = { head: "a".repeat(40), fetchRef: "main" };
+      const copies = path.join(fixture.runtime.projectRoot, ".ade", "remote-work");
+      const call = await connect(remoteChat);
+
+      // Another lane here is refused.
+      const otherLane = await call("click", { x: 1, y: 1, laneId: "lane-2", remoteWork });
+      expect(otherLane?.isError).toBe(true);
+      expect(JSON.stringify(otherLane)).toContain("--lane lane-2 was refused");
+      expect(click).not.toHaveBeenCalled();
+
+      // A lane-free read with no copy here names no lane.
+      expect((await call("getStatus", { remoteWork }))?.isError).toBeUndefined();
+      expect(getStatus.mock.calls.at(-1)?.[0]).not.toHaveProperty("laneId");
+      // An acting call before the copy exists acts on the copy's lane, as the calling chat.
+      expect((await call("click", { x: 1, y: 1, remoteWork }))?.isError).toBeUndefined();
+      const clicked = click.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      expect(isRemoteWorkLaneId(clicked.laneId as string)).toBe(true);
+      expect(clicked.chatSessionId).toBe("remote:peer-1:chat-9");
+      expect(fs.existsSync(copies)).toBe(false);
+
+      // A chat on this machine cannot take a copy's lane by sending `remoteWork`.
+      const local = await connect({ callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+      expect((await local("click", { x: 1, y: 1, remoteWork }))?.isError).toBe(true);
+      expect(click).toHaveBeenCalledTimes(1);
+
+      // The screen: asks a person answers with a card in a chat here, and the
+      // person-only viewing actions, are refused.
+      const requestInputLease = vi.fn(async (args: unknown) => args);
+      const startStream = vi.fn(async () => ({ token: "secret" }));
+      const screenStatus = vi.fn(async () => ({ supported: true, running: true }));
+      fixture.runtime.macDesktopService = { getStatus: screenStatus, requestInputLease, startStream } as any;
+      const screen = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(screen, remoteChat);
+      for (const action of ["requestInputLease", "startStream"]) {
+        const refused = await callTool(screen, "run_ade_action", { domain: "mac_desktop", action, args: { remoteWork } });
+        expect(refused?.isError, action).toBe(true);
+      }
+      expect(requestInputLease).not.toHaveBeenCalled();
+      expect(startStream).not.toHaveBeenCalled();
+      expect(fs.existsSync(copies)).toBe(false);
+    });
+  });
+
+  it("lets go of what a chat on another machine holds here at its turn end, unless a newer turn of it already called", async () => {
+    // Its brain sends the release without waiting, so it can land after the
+    // chat's next turn already claimed something here.
+    const fixture = createRuntime();
+    const owner = "remote:peer-1:chat-release";
+    const iosRelease = vi.fn(async (_owner: string, _options: unknown) => ({ released: true }));
+    const desktopRelease = vi.fn(async (_owner: string) => ({ released: true }));
+    fixture.runtime.iosSimulatorService = { releaseIfOwnedBy: iosRelease } as any;
+    fixture.runtime.macDesktopService = { releaseIfOwnedBy: desktopRelease } as any;
+    fixture.runtime.androidEmulatorService = null as any;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-remote", role: "agent", chatSessionId: owner });
+    const release = async (turnId: string) => (await callTool(handler, "release_remote_work_devices", { turnId })).structuredContent;
+    const turn1 = "2026-11-13T10:00:00.000Z";
+    const turn2 = "2026-11-13T10:05:00.000Z";
+    const turn3 = "2026-11-13T10:09:00.000Z";
+
+    // Turn 2 already called here: turn 1's late release frees nothing.
+    noteExternalChatTurn(owner, turn2);
+    expect(await release(turn1)).toEqual({ released: [], skipped: "newer_turn" });
+    // A late call from turn 1 does not make turn 1 current again.
+    noteExternalChatTurn(owner, turn1);
+    expect(await release(turn1)).toMatchObject({ skipped: "newer_turn" });
+    expect(iosRelease).not.toHaveBeenCalled();
+    expect(desktopRelease).not.toHaveBeenCalled();
+
+    // Turn 2's own end releases that chat's claims only; the simulator stays on.
+    expect(await release(turn2)).toEqual({ released: ["simulator", "desktop"] });
+    expect(iosRelease).toHaveBeenCalledWith(owner, { keepRunning: true });
+    expect(desktopRelease).toHaveBeenCalledWith(owner);
+
+    // Turn 3 calls here while turn 2's release is under way: the rest is kept.
+    iosRelease.mockImplementationOnce(async () => {
+      noteExternalChatTurn(owner, turn3);
+      return { released: true };
+    });
+    expect(await release(turn2)).toEqual({ released: ["simulator"] });
+    expect(desktopRelease).toHaveBeenCalledTimes(1);
   });
 
   it("strips a caller-supplied callerLaneId from work_tools reads", async () => {
@@ -9010,6 +9303,37 @@ describe("ADE Cloud actions over the brain", () => {
         const updated = fetchStub.mock.calls.some(([url]) => String(url).endsWith("/inst0000/update"));
         expect(updated).toBe(reachesServer);
         if (!enabled) expect(fetchStub.mock.calls.every(([url]) => String(url).endsWith("/cloud/access"))).toBe(true);
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // The CTO thread speaks for the person on spends and deletes, but a computer
+  // that is no new lane's is never its call: it is an agent there, with nobody to ask here.
+  it("the CTO thread makes no computer as the person", async () => {
+    const { runtime } = createRuntime();
+    (runtime as any).accountAuthService = { getStatus: () => ({ signedIn: true, userId: "user-cto-make" }), getAccessToken: vi.fn(async () => "account-token") };
+    const create = vi.fn(async () => ({ instanceId: "inst_new" }));
+    (runtime as any).getCloudDesktop = () => ({ create, copy: create, move: create });
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+      if (path === "/cloud/access") return reply({ enabled: true });
+      if (path === "/cloud/account") return reply(account);
+      if (path === "/cloud/instances" && (init?.method ?? "GET") === "GET") return reply({ data: [box] });
+      return new Response("{}", { status: 404 });
+    }));
+    try {
+      // A brain's role ceiling is the CTO's (the desktop's own brain).
+      await withEnv({ ADE_ACCOUNT_DIRECTORY_URL: "https://directory.test", ADE_DEFAULT_ROLE: "cto" }, async () => {
+        // The CTO's generic action tool on its home machine (`runMachineAction`).
+        const callAsCto = await createCtoActionCaller({ runtime, serverVersion: "test" });
+
+        const response = await callAsCto("run_ade_action", { domain: "cloud", action: "create", args: { kind: "vm", shape: "4x8" } });
+
+        expect(JSON.stringify(response)).toMatch(/Agents don't make ADE Cloud computers/);
+        expect(create).not.toHaveBeenCalled();
       });
     } finally {
       vi.unstubAllGlobals();

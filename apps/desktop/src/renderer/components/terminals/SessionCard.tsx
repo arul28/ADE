@@ -1,4 +1,5 @@
 import React from "react";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import {
   Alarm,
@@ -32,7 +33,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import { isMachineMarkerShown, type CrossMachineLaneMarker } from "../../state/crossMachineLanes";
+import type { CrossMachineLaneMarker } from "../../state/crossMachineLanes";
 import {
   canonicalInputFromSummary,
   sanitizeTerminalInlineText,
@@ -120,6 +121,9 @@ import {
   SESSION_TONE_TEXT_CLASS,
   formatFutureDuration,
   sessionElapsedAnchor,
+  WAKING_STATUS_PRESENTATION,
+  sessionTurnLive,
+  wakingSessionView,
 } from "../../../shared/sessionStatusPresentation";
 import { LaneNamingLabel, NamingPendingLabel } from "./LaneNamingLabel";
 import {
@@ -484,6 +488,7 @@ const SUBAGENT_MARK_STATUS_GLYPH: Record<NestedSubagentStatus, React.ReactNode> 
   running: <CircleNotch size={8} weight="bold" aria-hidden />,
 };
 
+
 /** The launch's moving status line, isolated so progress ticks re-render only this text. */
 function ChatLaunchStatusText({ launchId }: { launchId: string }) {
   const text = useChatLaunchStatusLine(launchId);
@@ -493,7 +498,7 @@ function ChatLaunchStatusText({ launchId }: { launchId: string }) {
 // The list rebuilds each card's handlers on every render (session updates,
 // timers); with them proxied a card re-renders only when what it shows changes.
 export const SessionCard = memoWithLatestHandlers(function SessionCard({
-  session,
+  session: sessionProp,
   lane,
   isSelected,
   isMultiSelected,
@@ -506,6 +511,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   liveChildrenCount = 0,
   parentSessionTitle = null,
   disabledReason = null,
+  readOnly = false,
   disabledBusy = true,
   runtimePin = null,
   deltaEnabled = true,
@@ -523,10 +529,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   laneCloud = null,
   laneAppControl = false,
   laneBrowserTabs = 0,
-  suppressMachineChip = false,
   suppressStatusLabel = false,
   subagentMark = null,
   subagentBusy = false,
+  laneNote = null,
+  laneNoteTitle = null,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
@@ -556,6 +563,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   parentSessionTitle?: string | null;
   /** When present, blocks interaction while the owning lane is being removed. */
   disabledReason?: string | null;
+  /**
+   * The row's machine is reconnecting: the row still opens to read what it
+   * last sent, but its menu and actions wait for the machine.
+   */
+  readOnly?: boolean;
   /** Busy rows spin; rows blocked on an unresolved binding show a machine glyph. */
   disabledBusy?: boolean;
   /** Runtime that owns this session when it differs from the active project. */
@@ -596,12 +608,8 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
    */
   lanePrForeign?: boolean;
   /**
-   * The machine this row's lane lives on, when that is not the Mac you're
-   * sitting at. Resolved once by the cross-machine union and handed down, so a
-   * card and the lane header above it can never disagree about where work is.
-   *
-   * Set for the singleton/headerless form, where this card IS the lane header.
-   * Foreign cards under a real header get `suppressMachineChip` instead.
+   * The machine this row's lane lives on, from the cross-machine union. The
+   * row itself shows no machine: only its hover card names it.
    */
   machineMarker?: CrossMachineLaneMarker | null;
   /**
@@ -622,12 +630,6 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   laneAppControl?: boolean;
   /** Browser tabs an agent of the card's lane owns. Shown like `laneAppleDevice`. */
   laneBrowserTabs?: number;
-  /**
-   * The lane header above already names the machine, so the row's own chip
-   * would just repeat it. Set by SessionListPane for children of a lane group
-   * whose header renders a machine marker.
-   */
-  suppressMachineChip?: boolean;
   /**
    * Drop the status WORD from the row face, keeping the slot's hover actions.
    *
@@ -650,7 +652,23 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   subagentMark?: NestedSubagentMark | null;
   /** A nested subagent still keeps this chat busy, so a finished row reads Waiting. */
   subagentBusy?: boolean;
+  /**
+   * One quiet word about the lane's ADE Cloud computer ("Computer deleted",
+   * "Deleting soon"), shown after the lane name with `showLaneIdentity`; the
+   * lane header shows it elsewhere. `laneNoteTitle` is its tooltip.
+   */
+  laneNote?: string | null;
+  laneNoteTitle?: string | null;
 }) {
+  // Set while a send wakes this chat's sleeping cloud computer: when the wake
+  // started (ISO). A string per card, so a mark on another row re-renders nothing here.
+  const markedWakingSince = useRootAppStore((state) => state.cloudWakingSinceBySessionId[sessionProp.id] ?? null);
+  // The live turn wins: the mark can outlast the turn's start by one store update.
+  const wakingSince = markedWakingSince && !sessionTurnLive(sessionProp) ? markedWakingSince : null;
+  const session = React.useMemo(
+    () => (wakingSince ? wakingSessionView(sessionProp, wakingSince) : sessionProp),
+    [sessionProp, wakingSince],
+  );
   const navigate = useNavigate();
   // Hover INTENT, not hover: a one-second rest on the row, cancelled by any
   // pointer-leave or scroll. See `SessionHoverCard` for why this is not a
@@ -669,10 +687,16 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  // The Cursor sign-in of the machine the session runs on: the row's machine,
+  // else the tab's machine.
+  const statusPin = runtimePin ?? projectBinding;
+  const statusPinRef = React.useRef(statusPin);
+  statusPinRef.current = statusPin;
+  const statusPinKey = statusPin?.key ?? null;
   const hasCursorCloudAgent = Boolean(session.cursorCloudAgentId?.trim());
   const [cursorCloudConnected, setCursorCloudConnected] = React.useState(() => {
     if (!hasCursorCloudAgent) return false;
-    return peekAiStatusCached(activeProjectRoot, projectBinding)?.providerConnections?.cursor?.authAvailable === true;
+    return peekAiStatusCached(activeProjectRoot, statusPin)?.providerConnections?.cursor?.authAvailable === true;
   });
 
   React.useEffect(() => {
@@ -681,8 +705,9 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       return undefined;
     }
     let cancelled = false;
+    const pin = statusPinRef.current;
     const applyCached = () => {
-      const cached = peekAiStatusCached(activeProjectRoot, projectBinding);
+      const cached = peekAiStatusCached(activeProjectRoot, pin);
       if (!cancelled) {
         setCursorCloudConnected(cached?.providerConnections?.cursor?.authAvailable === true);
       }
@@ -693,7 +718,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     }
     void getAiStatusCached({
       projectRoot: activeProjectRoot,
-      pin: projectBinding,
+      pin,
     }).then((status) => {
       if (!cancelled) setCursorCloudConnected(status.providerConnections?.cursor?.authAvailable === true);
     }).catch(() => undefined);
@@ -712,10 +737,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onCacheChange);
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onCacheChange);
     };
-  }, [activeProjectRoot, hasCursorCloudAgent, projectBinding]);
+  }, [activeProjectRoot, hasCursorCloudAgent, statusPinKey]);
   const delta = useSessionDelta(
     session.id,
     deltaEnabled && (!isRemoteProject || isSelected),
+    runtimePin,
   );
   const primaryText = primarySessionLabel(session);
   const settled = canonicalPhase === "settled";
@@ -731,7 +757,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   // stall bar or its wake turns overdue.
   const statusClockSessions = React.useMemo(() => [session], [session]);
   const statusClockMs = useTurnStallClock(statusClockSessions);
-  const presentation = sessionStatusDisplay(sessionAttentionInput, {
+  const presentation = wakingSince ? WAKING_STATUS_PRESENTATION : sessionStatusDisplay(sessionAttentionInput, {
     snoozed,
     woke: !snoozed && Boolean(wokeMarker),
     snoozeWakeLabel: snoozed ? snoozeWakeLabel(session.snoozedUntil) : null,
@@ -830,12 +856,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
      Identity, never status. Filled in this priority order and joined by `·`;
      whatever applies, applies, and everything truncates under `min-w-0`:
 
-       1. cross-machine marker (unless `suppressMachineChip`)
-       2. pin glyph
-       3. lane identity (singleton rows only, `showLaneIdentity`)
-       4. lineage — a Subagent/Peer badge, for sessions with a parent
-       5. branch — ONLY when it differs from the lane's own branch
-       6. the diff chips, else the last-activity time — the FLOOR. Every rule
+       1. pin glyph
+       2. lane identity (singleton rows only, `showLaneIdentity`)
+       3. lineage — the Subagent badge, for a chat that reports to a parent
+       4. branch — ONLY when it differs from the lane's own branch
+       5. the diff chips, else the last-activity time — the FLOOR. Every rule
           above can miss, and an empty slot reads as broken rather than minimal.
 
      A singleton lane's PR sits at the right edge of line 2, directly beneath
@@ -857,14 +882,10 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
      ALWAYS muted with `BranchIcon`. Colour is the only thing that tells the two
      concepts apart at a glance, so a muted lane name or an accented branch is a
      bug, not a style choice. */
-  /* Two different facts, and they must not be conflated:
-     - `machineName` is WHICH machine, for the hover card. Any row that knows its
-       runtime can answer it, including one on this very computer.
-     - `machineMarker` is whether that machine is ELSEWHERE. Only the union
-       resolver decides that, and it is the sole gate on the glyph below.
-     Deriving the glyph from `machineName` would badge this computer's own lanes
-     whenever the tab was bound elsewhere — they carry a local `runtimePin` and
-     are perfectly named, they are just not somewhere else. */
+  /* WHICH machine the work is on, for the hover card. The row face shows no
+     machine at all: a tab lists every computer's work as one list, and the
+     machine is named only where it is asked for (this hover card, the open
+     chat's composer, and the picker that starts new work). */
   const machineName = machineMarker?.machineName
     ?? (runtimePin
       ? runtimePin.kind === "remote"
@@ -888,41 +909,6 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   // Compared on the normalised refs, never the display labels: `ade/a` and `a`
   // are the same branch to git and would otherwise read as a difference.
   const branchDiffersFromLane = Boolean(branchName) && branchName !== laneBranchName;
-
-  /* The machine glyph, pinned to line 1's RIGHT cluster next to the status —
-     not into `whereParts` on the left, where it used to sit.
-
-     Two reasons it moved. It is the one part of line 1 whose width is fixed, so
-     on the left it pushed the elastic lane name around by a constant; and a run
-     of singleton cards down the sidebar aligns its glyphs in a single column.
-
-     Deliberately an inline element rather than `LaneMachineMarker`: that
-     component wraps itself in its own SmartTooltip with a focusable trigger, and
-     this row already owns a hover card and a click target. The visual identity
-     matches it — a dimmed tower in a neutral pill — and the name is carried by
-     the hover card's machine row rather than inline, per the glyph-only rule.
-
-     Offline only (`isMachineMarkerShown`). An online machine's session just works wherever it lives —
-     the connection dot in the top bar already says the machines are linked —
-     so badging every other machine's row was noise, and relative to the tab's
-     binding it even badged this computer's own sessions. The glyph survives
-     only where it explains something: rows that went quiet and can't act. */
-  const machineGlyph = machineMarker && isMachineMarkerShown(machineMarker) && !suppressMachineChip ? (
-    <span
-      data-session-machine={machineMarker.machineName}
-      data-machine-id={machineMarker.machineId}
-      data-machine-online="false"
-      /* Same attribute `LaneMachineMarker` exposes, on purpose: a badge can live
-         on a lane header OR on the card standing in for one, and "is this row
-         badged" must be a single selector rather than two that drift. */
-      data-machine-marker-mode="glyph"
-      role="img"
-      aria-label={`On ${machineMarker.machineName}, offline`}
-      className="inline-flex shrink-0 items-center rounded-full border border-fg/[0.08] bg-fg/[0.03] px-1 py-px leading-none"
-    >
-      <DesktopTower size={10} weight="duotone" className="shrink-0 text-muted-fg/45" aria-hidden />
-    </span>
-  ) : null;
 
   const cloudName = laneCloud === "devin" ? "Devin Cloud" : laneCloud === "cursor" ? "Cursor Cloud" : null;
   const cloudGlyph = cloudName ? (
@@ -969,7 +955,8 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       <GitHubStackBadge key="github-stack" stack={githubStack} compact bare />,
     );
   }
-  const inlineLaneName = lane?.name ?? session.laneName;
+  // The main checkout reads "Main checkout", never its stored name "Primary".
+  const inlineLaneName = lane ? laneDisplayName(lane) : session.laneName;
   if (showLaneIdentity && inlineLaneName) {
     whereParts.push(
       <span
@@ -999,23 +986,33 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         ) : null}
       </span>,
     );
+    if (laneNote) {
+      whereParts.push(
+        <span
+          key="lane-note"
+          className="shrink-0 whitespace-nowrap text-[10px] font-medium text-muted-fg/55"
+          title={laneNoteTitle ?? undefined}
+          data-testid="session-card-lane-note"
+        >
+          {laneNote}
+        </span>,
+      );
+    }
   }
   /* Lineage takes the slot the branch used to occupy. In a lane where three of
      four sessions were spawned by the fourth, "this is a spawned agent" is the
      fact that tells the rows apart — and until now it lived only in a small
      glyph next to the provider mark and in the hover card.
 
-     It names ADE's OWN spawn primitive (Subagent / Peer) rather than the
-     parent's title. The parent is very often not in the visible list, so the
-     title branch degraded to the literal string "another chat" for most real
-     users — a label that says nothing. `spawnKind` is projected onto every
-     summary, so it is always known locally and always specific.
+     Only a subagent (a chat that reports back) gets a chip. A chat started by
+     another chat that does not report back looks like any other chat: its
+     hover card says "Started by <parent>", and the context menu opens the
+     parent from the keyboard.
 
      The chip is also the keyboard path to the parent thread. The hover card
-     repeats that action for pointer users, but a hover-only action would make
-     lineage navigation undiscoverable to keyboard and assistive-tech users. */
+     repeats that action for pointer users. */
   if (isCtoChild) {
-    /* A CTO child REPLACES the Subagent/Peer chip rather than sitting beside
+    /* A CTO child REPLACES the Subagent chip rather than sitting beside
        it. Both answer "who spawned this", and the CTO answer is strictly more
        specific — "Subagent · CTO" spends two chips on one fact, on the line
        that is already the most crowded in the card.
@@ -1033,7 +1030,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         data-session-parent-identity="cto"
         aria-label="Open the CTO"
         title={ctoChipTitle}
-        // Same neutral pill as the Subagent/Peer chip below — lineage is
+        // Same neutral pill as the Subagent chip below — lineage is
         // identity, and identity never spends a status hue.
         className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
         onClick={(event) => {
@@ -1046,14 +1043,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         <span className="truncate">CTO</span>
       </button>,
     );
-  } else if (session.orchestrationParentSessionId) {
-    const lineageLabel =
-      session.spawnKind === "subagent"
-        ? "Subagent"
-        : session.spawnKind === "peer"
-          ? "Peer"
-          // No spawn kind recorded: "Spawned" is the honest floor.
-          : "Spawned";
+  } else if (session.orchestrationParentSessionId && session.spawnKind === "subagent") {
     whereParts.push(
       <button
         type="button"
@@ -1076,7 +1066,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
           color={chatSubagentColor(session.id)}
           size={10}
         />
-        <span className="truncate">{lineageLabel}</span>
+        <span className="truncate">Subagent</span>
       </button>,
     );
   }
@@ -1167,7 +1157,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     value: (
       <span style={laneAccent ? { color: toneText(laneAccent) } : undefined}>
         <LaneNamingLabel
-          laneName={lane?.name ?? session.laneName}
+          laneName={lane ? laneDisplayName(lane) : session.laneName}
           naming={namingLane}
         />
       </span>
@@ -1253,10 +1243,10 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
           size={12}
         />
       ),
-      // "From <parent>": only the parent's title truncates, never the label.
+      // "Started by <parent>": only the parent's title truncates, never the label.
       value: (
         <span>
-          <span className="text-muted-fg/60">From </span>
+          <span className="text-muted-fg/60">Started by </span>
           <span className="text-fg/90">{parentSessionTitle ?? "another chat"}</span>
         </span>
       ),
@@ -1265,14 +1255,13 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       testId: "session-hover-parent-thread",
     });
   }
-  // A CTO child's spawn kind is suppressed for the same reason its chip
-  // replaces the Subagent/Peer pill: "Spawned by the CTO" already said it, more
-  // specifically, one row above.
-  if (session.spawnKind && !isCtoChild) {
+  // A subagent says it reports back. A chat that does not report back has the
+  // "Started by" line only. A CTO child's "Spawned by the CTO" already said it.
+  if (session.spawnKind === "subagent" && !isCtoChild) {
     hoverRows.push({
       id: "spawn",
       icon: <TreeStructure size={13} className="text-muted-fg/60" />,
-      value: session.spawnKind === "subagent" ? "Subagent" : "Peer",
+      value: "Subagent",
     });
   }
   if (liveChildrenCount > 0) {
@@ -1394,7 +1383,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       timestampLabel={suppressStatusLabel ? "" : relativeTimeCompact(session.endedAt ?? session.startedAt)}
       snoozed={snoozed}
       settled={settled}
-      actionsEnabled={!disabledReason}
+      actionsEnabled={!disabledReason && !readOnly}
       compact={compact}
       runtimePin={runtimePin}
       clockMs={statusClockMs}
@@ -1412,7 +1401,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         sessionId={session.id}
         runtimePin={runtimePin}
         canStop={isChatToolType(session.toolType) || isTrackedAgentCliToolType(session.toolType)}
-        disabled={Boolean(disabledReason)}
+        disabled={Boolean(disabledReason) || readOnly}
         size={11}
       />
       <SideChatBadge mainSessionId={session.id} rowSideChatSessionId={session.sideChatSessionId ?? null} size={11} />
@@ -1560,7 +1549,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         <Brain size={11} weight="duotone" />
       </button>
     );
-  } else if (session.orchestrationParentSessionId) {
+  } else if (session.orchestrationParentSessionId && session.spawnKind === "subagent") {
     compactLineageGlyph = (
       <button
         type="button"
@@ -1649,6 +1638,19 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         // Only the row itself — a key pressed inside a nested control (settle,
         // snooze, a preview link) belongs to that control.
         if (event.target !== event.currentTarget) return;
+        if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+          // The keyboard way to the row's menu, and so to "Open <parent>":
+          // the hover card is pointer-only.
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: rect.left + 16,
+            clientY: rect.bottom,
+          }));
+          return;
+        }
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         event.currentTarget.click();
@@ -1668,7 +1670,6 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
           {/* Compact rows have no line 1, so this is their only seat for it —
               same precedent as `compactLineageGlyph` directly above. */}
           {cloudGlyph}
-          {machineGlyph}
           {gridIndicator}
           {indicatorGlyph}
           {statusSlot}
@@ -1688,7 +1689,6 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
             ))}
             {browserPresenceGlyph}
             {cloudGlyph}
-            {machineGlyph}
             {gridIndicator}
             {indicatorGlyph}
             {statusSlot}
@@ -1832,7 +1832,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
          row's own interactions are untouched. */
       {...hoverCard.triggerProps}
       onContextMenu={
-        disabledReason
+        disabledReason || readOnly
           ? undefined
           : (event) => {
             // The context menu is the other thing that opens next to this row;

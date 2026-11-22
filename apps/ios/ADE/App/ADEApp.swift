@@ -28,6 +28,9 @@ struct ADEApp: App {
   /// Pending sign-in of another computer awaiting approval on this phone.
   /// Driven by `.adeDeviceSignInRequested` notifications from `DeepLinkRouter`.
   @State private var deviceSignInRequest: DeviceSignInRequest?
+  /// A lane link to a lane ADE Cloud kept without a computer.
+  /// Driven by `.adeKeptLaneRequested` notifications from `DeepLinkRouter`.
+  @State private var keptLaneTarget: KeptLaneLinkTarget?
 
   @MainActor
   init() {
@@ -36,6 +39,9 @@ struct ADEApp: App {
     ProductAnalytics.shared.configure()
     // Then crash reporting, so a crash later in launch is still captured.
     CrashReporting.start()
+    // The launch update gate's cover: from the first scene on, a phone below
+    // its minimum shows only "Update ADE to keep working".
+    PhoneUpdateGateWindows.shared.start()
     // Before `SyncService` creates a device id, which marks an install as one that ran before.
     ADEColorSchemeChoice.seedDefaultIfNeeded()
     ADEIntentCommandRegistry.register(ADESyncIntentBridge.shared)
@@ -96,6 +102,10 @@ struct ADEApp: App {
           await appUpdateAdvisor.checkForUpdates()
         }
         .task {
+          // The first read of the minimum, then every 3 hours in front.
+          ClientUpdateGateStore.shared.appBecameActive()
+        }
+        .task {
           guard !didBootstrapSync else { return }
           didBootstrapSync = true
           // A hang report names what kept publishing (`ADEHangContext`).
@@ -118,6 +128,9 @@ struct ADEApp: App {
           CrashReporting.breadcrumb("launch", message: "recent chats warmed")
           // Every other paired machine gets its light roster connection.
           machineFleet.attach(syncService)
+          // Lane moves the last app run left unfinished go on: their reads,
+          // and the ADE Cloud computer's delete once a move is checked.
+          LaneMoveRuns.shared.resume(sync: syncService)
           // The live state, not `scenePhase`: this task captured the phase it
           // started with (inactive at launch), and the move to active usually
           // lands during the awaits above. The stale read paused every roster
@@ -125,7 +138,13 @@ struct ADEApp: App {
           machineFleet.setAppActive(UIApplication.shared.applicationState == .active)
           await syncService.handleForegroundTransition()
         }
-        .onChange(of: scenePhase) { _, newPhase in
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+          // A launch in the background (a silent push) never reports a move to
+          // .background: stamp leaving it, so a socket iOS suspended meanwhile
+          // reads as suspended, not as a live drop.
+          if oldPhase == .background, newPhase != .background {
+            SyncLiveDropReport.noteAppBackgrounded()
+          }
           if newPhase == .background {
             didEnterBackground = true
             // Stamp the suspension so the next foreground can tell a glance at
@@ -133,10 +152,12 @@ struct ADEApp: App {
             // sockets without a close event, so the gap is the only evidence
             // available about whether the connection is still real.
             syncService.handleBackgroundTransition()
+            SyncLiveDropReport.noteAppBackgrounded()
             // Roster connections to other machines close in the background;
             // push and Activity cover "needs you" meanwhile.
             machineFleet.setAppActive(false)
             accountService.stopAttentionPolling()
+            ClientUpdateGateStore.shared.appEnteredBackground()
             ProductAnalytics.shared.flush()
             // Reclaim draft-attachment directories no live key names. Preview
             // copies are NOT dropped here: backgrounding does not dismiss a
@@ -162,11 +183,14 @@ struct ADEApp: App {
           Task { await PushNotificationService.shared.refreshAccountMutedSessions() }
           Task { await accountService.updateAttentionAppForeground(true) }
           Task { await appUpdateAdvisor.checkForUpdates() }
+          ClientUpdateGateStore.shared.appBecameActive()
           // Defense-in-depth: drain intent commands queued by an extension
           // process while the bridge wasn't reachable (cold launch drains via
           // register(); this covers warm foregrounds).
           Task { await ADEIntentCommandRegistry.drainPendingCommands() }
           Task { await accountService.refreshAttentionSnapshot() }
+          // The account's project list: the changes since the last read.
+          AccountProjectStore.shared.refreshOnForeground()
           guard didBootstrapSync else { return }
           let now = Date()
           guard now.timeIntervalSince(lastActivationSyncAt) > 1.0 else { return }
@@ -202,6 +226,15 @@ struct ADEApp: App {
             sendToMacTarget = nil
           }
           .environmentObject(syncService)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .adeKeptLaneRequested)) { note in
+          guard let laneId = note.userInfo?["laneId"] as? String else { return }
+          keptLaneTarget = KeptLaneLinkTarget(laneId: laneId)
+        }
+        .sheet(item: $keptLaneTarget) { target in
+          KeptLaneLinkSheet(laneId: target.laneId) {
+            keptLaneTarget = nil
+          }
         }
         .onReceive(NotificationCenter.default.publisher(for: .adeDeviceSignInRequested)) { note in
           guard let raw = note.userInfo?["url"] as? String, let url = URL(string: raw) else { return }
@@ -258,6 +291,12 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
     case .retryPrChecks: mapped = .retryPrChecks
     }
     guard let sync = SyncService.shared else { return }
+    // A phone below its minimum does nothing from a notification or Live
+    // Activity button either: the cover is the only thing it can do.
+    guard !ClientUpdateGateStore.shared.isPhoneBlocked else {
+      CrashReporting.breadcrumb("update_gate", message: "intent command dropped while blocked")
+      return
+    }
     // An account push names the machine that asked. Approve or deny THAT
     // machine's request, never whichever host happens to be focused: connect to
     // it first, and send nothing if it cannot be reached.

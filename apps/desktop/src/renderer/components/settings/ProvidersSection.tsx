@@ -9,8 +9,10 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AgentChatModelCatalogRefreshProvider,
   AiConfig,
   AiApiKeyVerificationResult,
+  AiProviderSignInCheck,
   AiSettingsStatus,
   ProjectConfigSnapshot,
   CursorSdkAuthEvent,
@@ -20,6 +22,8 @@ import type {
   AcpProviderDiagnostics,
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
+import { MODEL_CATALOG_REFRESH_PROVIDERS } from "../../../shared/types/chat";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
 import { toggleDisabledProvider } from "../../../shared/providerEnablement";
 import {
@@ -29,9 +33,11 @@ import {
 } from "../../../shared/modelRegistry";
 import { CaretDown } from "@phosphor-icons/react";
 import { providerBrand } from "./providers/providerBrand";
-import { ToolLogo } from "../terminals/ToolLogos";
-import { DevinMark } from "../shared/ProviderLogos";
+import { ProviderTileView, providerListMark } from "./providers/ProviderTileView";
+import { connectionKeyFor, providerSignIn } from "./providers/providerSignInCommands";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { refreshRuntimeCatalogsForMachine } from "../shared/ModelPicker/sharedCatalogFetch";
+import { checkProviderSignIn } from "../../lib/providerSignInCheck";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
 import {
@@ -47,31 +53,18 @@ import { setUsageHeaderVisible, useUsageHeaderPreferences } from "../usage/usage
 import { availableProviderDescriptors, providerDescriptor, providerStatusFor } from "./providers/descriptors";
 import { useProviderAccountCounts } from "./providers/accounts/useProviderInstances";
 import { ProviderDetailPage } from "./providers/ProviderDetailPage";
-import { ProviderSignInModal } from "./providers/ProviderSignInModal";
-import { useSettingsMachineScope } from "./SettingsMachineScope";
-import { acpLoginCommand, acpProviderLabel } from "./providers/acpProviders";
-import type { TerminalToolType } from "../../../shared/types";
-import type { AiProviderConnections } from "../../../shared/types/config";
-import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
+import type { CursorSignInOutcome } from "./providers/ProviderSignInSheet";
+import { CliSignInSheet, agentCliSignInSupported } from "./providers/CliSignInSheet";
+import { TerminalSignInSheet } from "./providers/TerminalSignInSheet";
+import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
+import { useSettingsProjectPin, withProjectSettingsBound } from "./ProjectCopyScope";
+import { PROJECT_AI_CONFIG_ACTION, isMachineScopePin, machineScopeActionAllowed } from "../../../shared/machineScope";
+import { AdeCloudProvidersView } from "./providers/cloud/AdeCloudProvidersView";
+import { acpLoginCommand } from "./providers/acpProviders";
+import { isAgentCliLoginProvider, type AgentCliLoginProvider } from "../../../shared/types";
 
-/**
- * The terminal sign-in for a provider: the ACP CLIs' own login commands, and
- * Muse's `muse login`. Muse's runs as a `muse` terminal so the PTY host swaps
- * in that machine's pinned binary (ADE never runs a `muse` from PATH).
- */
-function providerSignIn(id: SettingsProviderId): { command: string; label: string; toolType: TerminalToolType } | null {
-  if (id === "muse") return { command: MUSE_LOGIN_COMMAND, label: PROVIDER_DISPLAY_NAME.muse, toolType: "muse" };
-  const command = acpLoginCommand(id);
-  return command ? { command, label: acpProviderLabel(id) ?? id, toolType: "shell" } : null;
-}
-
-/** The connection row a provider's sign-in writes. OpenCode has none of its own; its providers are inside it. */
-function connectionKeyFor(id: SettingsProviderId): keyof AiProviderConnections | null {
-  return id === "opencode" ? null : id;
-}
 import {
   AlertBanner,
-  PreviewChip,
   normalizeProviderVersion,
   prettifyProviderId,
 } from "./providers/providerUi";
@@ -84,6 +77,7 @@ import type {
   SettingsProviderId,
 } from "./providers/types";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { requirePin } from "../../state/repositoryScope";
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
 // Providers that have a tile of their own on this page. OpenCode's inventory
@@ -163,9 +157,14 @@ function ProviderCard({
   // missing sign-in is a plain status on the tile: the provider's own message
   // can be a terminal command ("Run: codex login"), which belongs on its page.
   const healthy = status.state === "connected";
+  // The chip already says "Not signed in" or "Unknown"; the fact line says
+  // the account or what is wrong, never the chip again.
   const problem = status.errorLine
-    ?? (healthy ? null : status.state === "sign-in" ? "Not signed in" : status.message);
+    ?? (healthy || status.state === "sign-in" || status.state === "unknown" ? null : status.message);
   const metaParts = [
+    // The signed-in account first: it is the half of "Signed in" the chip
+    // has no room for.
+    ...(healthy && status.account ? [status.account] : []),
     // Only when there is more than one: "1 account" is noise on every tile.
     ...(accountCount && accountCount > 1 ? [`${accountCount} accounts`] : []),
     ...(showModelCount ? [`${models.length} model${models.length === 1 ? "" : "s"}`] : []),
@@ -177,7 +176,9 @@ function ProviderCard({
     ? null
     : problem ?? (metaParts.length > 0 ? metaParts.join(" · ") : healthy ? descriptor.credentialLine?.(ctx) ?? "Signed in" : null);
 
-  const signInCommand = providerSignIn(descriptor.id)?.command ?? null;
+  // The providers whose login ADE runs open the sign-in sheet from the tile;
+  // the rest (accounts, keys, their own pages) open the provider's page.
+  const opensSheet = providerSignIn(descriptor.id) !== null || isAgentCliLoginProvider(descriptor.id);
   // A provider that is not set up is one whose pinned copy is not on this
   // machine yet: start (or retry) its download there and open the page,
   // which shows the progress.
@@ -186,11 +187,12 @@ function ProviderCard({
     void window.ade?.ai?.pinnedToolDownload?.({ provider: descriptor.id }, pin).catch(() => undefined);
     onOpen();
   };
-  const action = status.state === "sign-in"
+  // "Unknown" offers the same sign-in: signing in again is the way to know.
+  const action = status.state === "sign-in" || status.state === "unknown"
     ? {
       label: "Sign in",
       aria: `Sign in to ${descriptor.label}`,
-      run: () => (signInCommand ? ctx.actions.openSignInTerminal(descriptor.id) : onOpen()),
+      run: () => (opensSheet ? ctx.actions.openSignIn(descriptor.id) : onOpen()),
     }
     : status.state === "not-installed"
       ? { label: "Download", aria: `Download ${descriptor.label} for this machine`, run: startDownload }
@@ -200,38 +202,17 @@ function ProviderCard({
   const brand = providerBrand(descriptor.id);
 
   return (
-    <div
-      className="ade-pvl-tile"
-      data-state={status.state}
+    <ProviderTileView
+      descriptor={descriptor}
+      state={status.state}
+      chipLabel={status.label}
+      chipTone={PROVIDER_TAG_TONE[status.state]}
+      facts={fact ? [{ text: fact }] : []}
+      accent={brand.neutral ? "var(--color-fg)" : brand.accent}
       hidden={hidden}
-      style={{ "--pvl-accent": brand.neutral ? "var(--color-fg)" : brand.accent } as React.CSSProperties}
-    >
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={`Open ${descriptor.label} settings`}
-        className="ade-pvl-open"
-      >
-        <span className="ade-pvl-logo" aria-hidden>{providerListMark(descriptor, 30)}</span>
-        <span className="ade-pvl-id">
-          <span className="ade-pvl-name-row">
-            <span className="ade-pvl-name" data-testid={`provider-tile-name-${descriptor.id}`}>
-              {descriptor.label}
-            </span>
-            {descriptor.preview ? <PreviewChip /> : null}
-          </span>
-          {fact ? <span className="ade-pvl-fact" title={fact}>{fact}</span> : null}
-        </span>
-        <span className="kit-tag ade-pvl-chip" data-tone={PROVIDER_TAG_TONE[status.state]}>
-          {status.label}
-        </span>
-      </button>
-      {action ? (
-        <button type="button" className="ade-pvl-action" aria-label={action.aria} onClick={action.run}>
-          {action.label}
-        </button>
-      ) : null}
-    </div>
+      onOpen={onOpen}
+      action={action ? { kind: "button", ...action } : null}
+    />
   );
 }
 
@@ -239,6 +220,7 @@ const PROVIDER_TAG_TONE: Record<ProviderDescriptorState, string | undefined> = {
   checking: undefined,
   connected: "ok",
   "sign-in": "warn",
+  unknown: undefined,
   attention: "crit",
   "not-installed": undefined,
   disabled: undefined,
@@ -246,35 +228,15 @@ const PROVIDER_TAG_TONE: Record<ProviderDescriptorState, string | undefined> = {
 
 type ProviderDescriptorState = ReturnType<typeof providerStatusFor>["state"];
 
-/**
- * The provider's mark with no box around it, for the list: the bare glyph in
- * its maker's colour (`ToolLogo`'s provider-mark look). The default logos are
- * app-icon avatars — a filled square or circle — which read as a box in a box
- * at this size. Devin's tool logo is its boxed app icon, so it takes the bare
- * Cognition glyph; a provider with no bare mark keeps its own logo.
- */
-// Muse and Pi are left out: their own logos are already bare images (Meta's
-// mark, the Pi glyph), and their masked provider-marks draw as a solid square.
-const BARE_MARK_TOOLS: ReadonlySet<string> = new Set([
-  "claude", "codex", "cursor", "droid", "copilot", "opencode", "qwen", "kimi", "grok",
-]);
-
-function providerListMark(descriptor: ProviderDescriptor, size: number): React.ReactNode {
-  if (descriptor.id === "devin") return <DevinMark size={size} />;
-  if (BARE_MARK_TOOLS.has(descriptor.id)) {
-    return <ToolLogo toolType={descriptor.id as TerminalToolType} size={size} appearance="provider-mark" />;
-  }
-  return descriptor.logo(size);
-}
-
 /** The order inside the one list: what works, then what asks for something, then the rest. */
 const STATE_ORDER: Record<ProviderDescriptorState, number> = {
   connected: 0,
   attention: 1,
   "sign-in": 2,
-  checking: 3,
-  "not-installed": 4,
-  disabled: 5,
+  unknown: 3,
+  checking: 4,
+  "not-installed": 5,
+  disabled: 6,
 };
 const UNSET_STATES: ReadonlySet<ProviderDescriptorState> = new Set(["not-installed", "disabled"]);
 
@@ -347,7 +309,7 @@ function providerSummary(descriptors: ProviderDescriptor[], ctx: ProvidersViewCo
   if (ctx.status == null) return `${descriptors.length} coding agents — checking…`;
   const states = descriptors.map((descriptor) => providerStatusFor(descriptor, ctx).state);
   const ready = states.filter((state) => state === "connected").length;
-  const asking = states.filter((state) => state === "sign-in" || state === "attention").length;
+  const asking = states.filter((state) => state === "sign-in" || state === "unknown" || state === "attention").length;
   return [
     `${descriptors.length} coding agents`,
     [`${ready} ready`, asking > 0 ? `${asking} need${asking === 1 ? "s" : ""} you` : null].filter(Boolean).join(", "),
@@ -377,25 +339,61 @@ function buildLocalProviderDrafts(
   ) as Record<LocalProviderFamily, LocalProviderDraft>;
 }
 
-export function ProvidersSection({
-  forceRefreshOnMount = false,
-  providerParam = null,
-  onProviderChange,
-  harnessesParam = false,
-}: {
-  forceRefreshOnMount?: boolean;
+type ProvidersSectionProps = {
   /** `?provider=<id>` — which provider's page to show, if any. */
   providerParam?: string | null;
   /** Lets the settings shell keep the URL in step with the sub-view. */
   onProviderChange?: (providerId: string | null) => void;
   /** `#ai-harnesses` — scroll the Custom section into view on mount. */
   harnessesParam?: boolean;
-} = {}) {
+};
+
+const CATALOG_REFRESH_PROVIDERS: ReadonlySet<string> = new Set<AgentChatModelCatalogRefreshProvider>(MODEL_CATALOG_REFRESH_PROVIDERS);
+
+function catalogRefreshProviderOf(provider: SettingsProviderId | undefined): AgentChatModelCatalogRefreshProvider | undefined {
+  return provider && CATALOG_REFRESH_PROVIDERS.has(provider) ? provider as AgentChatModelCatalogRefreshProvider : undefined;
+}
+
+function toastActionError(title: string, err: unknown): void {
+  showToast({ tone: "error", title, message: err instanceof Error ? err.message : String(err) });
+}
+
+/**
+ * Settings › Providers for the place the title picker names: one machine, or
+ * ADE Cloud. Two components, so switching place never changes a component's
+ * hooks (the machine scope stays This computer's on ADE Cloud, so nothing
+ * above remounts).
+ */
+export function ProvidersSection(props: ProvidersSectionProps = {}) {
+  const place = useProvidersPlace();
+  if (place.kind === "ade-cloud") return <AdeCloudProvidersView providerParam={props.providerParam ?? null} onProviderChange={props.onProviderChange} />;
+  return <MachineProvidersSection {...props} />;
+}
+
+function MachineProvidersSection({
+  providerParam = null,
+  onProviderChange,
+  harnessesParam = false,
+}: ProvidersSectionProps) {
   const usageHeaderPreferences = useUsageHeaderPreferences();
   // The machine whose providers this page shows. Every runtime call below
   // carries `pin` (null = the tab's binding); the page is
   // remounted per machine, so a pin never changes under a live closure.
-  const { pin } = useSettingsMachineScope();
+  const { pin, isThisMachine, machineName } = useSettingsMachineScope();
+  // The project's AI config on this machine (disabled providers, local model
+  // servers, custom slugs) is the one part of the page that is the project's:
+  // it goes to this repository's copy there, never the machine route (which
+  // does not answer `PROJECT_AI_CONFIG_ACTION`). Everything else is the
+  // computer's, on `pin`. Null with no copy there: nothing to edit.
+  const projectPin = useSettingsProjectPin();
+  const projectPinKey = projectPin?.key ?? null;
+  const projectConfigEditable = projectPin != null
+    && (!isMachineScopePin(projectPin)
+      || machineScopeActionAllowed(PROJECT_AI_CONFIG_ACTION.domain, PROJECT_AI_CONFIG_ACTION.action));
+  // The project's copy is read and written under a bound: its folder can sit
+  // on a drive that stops answering, and the rest of the page must not wait.
+  const projectCall = useCallback(<T,>(call: Promise<T>): Promise<T> =>
+    withProjectSettingsBound(call, machineName, isThisMachine), [isThisMachine, machineName]);
   // Claude and Codex can hold several local logins; the row says how many so
   // the count is visible without opening the page.
   const accountCounts = useProviderAccountCounts();
@@ -408,7 +406,6 @@ export function ProvidersSection({
   const [localProviderDrafts, setLocalProviderDrafts] = useState<Record<LocalProviderFamily, LocalProviderDraft>>(() =>
     buildLocalProviderDrafts(null, null),
   );
-  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dismissedApiKeyStoreWarning, setDismissedApiKeyStoreWarning] = useState<string | null>(null);
   const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
@@ -431,7 +428,12 @@ export function ProvidersSection({
   const [acpDiagnosticsBusy, setAcpDiagnosticsBusy] = useState<AcpSettingsProviderId | null>(null);
   const [acpDoctorBusy, setAcpDoctorBusy] = useState<AcpSettingsProviderId | null>(null);
   const [acpDiagnosticsError, setAcpDiagnosticsError] = useState<Partial<Record<AcpSettingsProviderId, string>>>({});
-  const [signInProvider, setSignInProvider] = useState<SettingsProviderId | null>(null);
+  /** The sign-in sheet the tiles and the terminal fallbacks open: the headless CLI login, or a terminal. */
+  const [signInRequest, setSignInRequest] = useState<
+    { kind: "cli"; provider: AgentCliLoginProvider; expectedAccount: string | null } | { kind: "terminal"; provider: SettingsProviderId } | null
+  >(null);
+  const [signInChecks, setSignInChecks] = useState<Partial<Record<SettingsProviderId, AiProviderSignInCheck>>>({});
+  const [signInCheckBusy, setSignInCheckBusy] = useState<SettingsProviderId | null>(null);
   // Which provider's page is open. Seeded and re-seeded from `?provider=`, but
   // owned here so the section works standalone (and in tests) without a router
   // that writes search params.
@@ -462,49 +464,80 @@ export function ProvidersSection({
     onProviderChange?.(next);
   }, [onProviderChange]);
 
-  const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus | null> => {
+  /**
+   * `refreshProvider`: the one provider whose sign-in changed. The chat model
+   * lists then re-read only that provider's, not every provider's (a full
+   * refresh starts several provider processes).
+   */
+  const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean; refreshProvider?: SettingsProviderId }): Promise<AiSettingsStatus | null> => {
     if (!options?.silent) {
       setLoading(true);
       if (!statusKnownRef.current) setStatusLoadError(null);
     }
     setError(null);
-    try {
-      const [nextStatus, nextStoredProviders, nextProjectConfig, nextCursorAuth] = await Promise.all([
-        window.ade.ai.getStatus({
-          force: options?.force === true,
-          refreshOpenCodeInventory: options?.refreshOpenCodeInventory === true,
-        }, pin),
-        window.ade.ai.listApiKeys(pin),
-        window.ade.projectConfig.get(pin),
-        window.ade.ai.cursorAuthStatus(pin).catch(() => null),
-      ]);
-      statusKnownRef.current = true;
-      setStatusLoadError(null);
-      setStatus(nextStatus as AiSettingsStatus);
-      setProjectConfigSnapshot(nextProjectConfig);
-      if (nextCursorAuth) {
-        setCursorAuth(nextCursorAuth);
-        if (nextCursorAuth.loginInProgress) {
+    const reportError = (err: unknown) => setError(err instanceof Error ? err.message : String(err));
+    // Four separate reads, each shown when it lands: the tiles wait only on
+    // the status, never on the config, the key list or Cursor's sign-in.
+    const statusRead = window.ade.ai.getStatus({
+      force: options?.force === true,
+      refreshOpenCodeInventory: options?.refreshOpenCodeInventory === true,
+    }, pin).then(
+      (next) => {
+        statusKnownRef.current = true;
+        setStatusLoadError(null);
+        setStatus(next as AiSettingsStatus);
+        return next as AiSettingsStatus;
+      },
+      (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!statusKnownRef.current) setStatusLoadError(message);
+        setError(message);
+        return null;
+      },
+    ).finally(() => {
+      if (!options?.silent) setLoading(false);
+    });
+    const configRead = Promise.resolve().then(() => (
+      projectConfigEditable ? projectCall(window.ade.projectConfig.get(requirePin(projectPin))) : null
+    )).then(
+      (next) => {
+        setProjectConfigSnapshot(next);
+        return next;
+      },
+      (err: unknown) => {
+        reportError(err);
+        return null;
+      },
+    );
+    const keysRead = window.ade.ai.listApiKeys(pin).then(
+      (next) => setStoredProviders(next.map((entry) => entry.trim().toLowerCase()).filter(Boolean)),
+      reportError,
+    );
+    const cursorRead = window.ade.ai.cursorAuthStatus(pin).then(
+      (next) => {
+        if (!next) return;
+        setCursorAuth(next);
+        if (next.loginInProgress) {
           setCursorLoginBusy(true);
-          if (nextCursorAuth.loginUrl) setCursorLoginUrl(nextCursorAuth.loginUrl);
+          if (next.loginUrl) setCursorLoginUrl(next.loginUrl);
         }
-      }
-      if (editingLocalProvider == null && savingLocalProvider == null) {
-        setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus as AiSettingsStatus));
-      }
-      setStoredProviders(nextStoredProviders.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
-      return nextStatus as AiSettingsStatus;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (!statusKnownRef.current) setStatusLoadError(message);
-      setError(message);
-      return null;
-    } finally {
-      if (!options?.silent) {
-        setLoading(false);
-      }
+      },
+      () => undefined,
+    );
+    const [nextStatus, nextProjectConfig] = await Promise.all([statusRead, configRead, keysRead, cursorRead]);
+    if (nextStatus && nextProjectConfig && editingLocalProvider == null && savingLocalProvider == null) {
+      setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus));
     }
-  }, [editingLocalProvider, pin, savingLocalProvider]);
+    // A forced read follows a change on this machine (a setup, a key, a
+    // sign-in, a refresh). The chat's "@" menu and model picker hold their own
+    // copy of this machine's model list, so read those again too, in the
+    // background. An OpenCode inventory read re-probes OpenCode there as well.
+    if (nextStatus && (options?.force || options?.refreshOpenCodeInventory)) {
+      const catalogProvider = options.refreshOpenCodeInventory ? "opencode" : catalogRefreshProviderOf(options.refreshProvider);
+      void refreshRuntimeCatalogsForMachine(pin, catalogProvider ? { refreshProvider: catalogProvider } : undefined);
+    }
+    return nextStatus;
+  }, [editingLocalProvider, pin, projectCall, projectConfigEditable, projectPin, savingLocalProvider]);
 
   const loadAuthMethods = useCallback(async () => {
     try {
@@ -519,30 +552,25 @@ export function ProvidersSection({
   }, [pin]);
 
   useEffect(() => {
-    // Cold paint is disk auth only. OpenCode inventory is a spawn and shares
-    // the 30s runtime budget; OpenCode's Re-check still refreshes it.
-    void (async () => {
-      const next = await refreshStatus({ force: forceRefreshOnMount });
-      void loadAuthMethods();
-      // No cached OpenCode catalog (first run, or a cache from an older
-      // layout): without one probe the provider list is only the fallback
-      // names, and providers such as OpenCode Console cannot be found.
-      if (next?.opencodeBinaryInstalled && !next.opencodeProviders?.length) {
-        await refreshStatus({ force: true, refreshOpenCodeInventory: true, silent: true });
-        void loadAuthMethods();
-      }
-    })();
+    // Cold paint is the plain status read: saved logins off disk and the
+    // caches the main process already holds. It starts no CLI, agent or
+    // server, so the page draws without waiting on any of them.
+    void refreshStatus();
+    void loadAuthMethods();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [forceRefreshOnMount]);
+  }, []);
 
   useEffect(() => {
     if (slugsSeededRef.current) return;
-    const persisted = status?.customModelSlugs;
+    // The project's own list, which is what a save writes; the machine
+    // route's status carries no project's.
+    const persisted = projectConfigSnapshot?.effective.ai?.customModelSlugs
+      ?? (projectConfigEditable ? undefined : status?.customModelSlugs);
     if (!persisted) return;
     slugsSeededRef.current = true;
     // Never clobber text the user typed while the initial probe was loading.
     setCustomModelSlugs((current) => (current === "" && persisted.length ? persisted.join(", ") : current));
-  }, [status?.customModelSlugs]);
+  }, [projectConfigEditable, projectConfigSnapshot?.effective.ai?.customModelSlugs, status?.customModelSlugs]);
 
   // The Cursor status feed re-subscribes only when the machine changes.
   // Re-subscribing when `refreshStatus` changes identity would re-anchor a
@@ -558,11 +586,14 @@ export function ProvidersSection({
         if (event.state === "success" || event.state === "logged-out" || event.state === "cancelled") {
           setCursorLoginUrl(null);
         }
-        void refreshStatusRef.current({ force: true, refreshOpenCodeInventory: true, silent: true });
+        // Cursor's sign-in says nothing about OpenCode's providers, so this
+        // reads the saved logins again and leaves OpenCode's server alone;
+        // only Cursor's rows in the chat model lists are read again.
+        void refreshStatusRef.current({ force: true, silent: true, refreshProvider: "cursor" });
       }
-      if (event.state === "error" && event.error) setError(event.error);
+      if (event.state === "error" && event.error) showToast({ tone: "error", title: "Cursor sign-in failed", message: event.error });
       if (event.state === "success") {
-        setNotice(event.email ? `Signed in as ${event.email}.` : "Signed in with Cursor.");
+        showToast({ tone: "success", title: event.email ? `Signed in as ${event.email}` : "Signed in with Cursor" });
       }
     }, pin);
     return unsubscribe;
@@ -572,7 +603,9 @@ export function ProvidersSection({
     // A convenience refresh when this machine's chats change model state.
     // Another machine's chat feed is not subscribed here; its status refreshes
     // on open and on every action instead.
-    if (pin) return undefined;
+    // This computer's own chats, through its copy of the project.
+    const chatPin = isThisMachine && projectPin?.kind === "local" ? projectPin : null;
+    if (!chatPin) return undefined;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
       if (!shouldRefreshAiStatusForChatEvent(envelope)) return;
       if (pendingRefreshTimerRef.current != null) return;
@@ -580,7 +613,7 @@ export function ProvidersSection({
         pendingRefreshTimerRef.current = null;
         void refreshStatus({ silent: true });
       }, 120);
-    });
+    }, chatPin);
     return () => {
       unsubscribe();
       if (pendingRefreshTimerRef.current != null) {
@@ -588,7 +621,9 @@ export function ProvidersSection({
         pendingRefreshTimerRef.current = null;
       }
     };
-  }, [pin, refreshStatus]);
+    // `projectPinKey` carries the copy's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isThisMachine, projectPinKey, refreshStatus]);
 
   const detectedAuth = useMemo(() => status?.detectedAuth ?? [], [status?.detectedAuth]);
   // Keep provider tiles neutral while the status payload is unavailable. A
@@ -641,28 +676,49 @@ export function ProvidersSection({
     });
   }, [detectedAuth, status?.availableModelIds, status?.runtimeConnections]);
 
-  const apiKeyStoreWarning = useMemo(() => {
+  const apiKeyStoreNotice = useMemo((): { tone: "warning" | "info"; message: string } | null => {
+    const warning = (message: string) => ({ tone: "warning" as const, message });
     if (status?.apiKeyStore?.legacyPlaintextDetected) {
-      return "Legacy plaintext API keys were detected in .ade/secrets/api-keys.json. ADE now uses encrypted safeStorage, and plaintext keys are no longer loaded. Re-enter any keys you still need.";
+      return warning("Legacy plaintext API keys were detected in .ade/secrets/api-keys.json. ADE now uses encrypted safeStorage, and plaintext keys are no longer loaded. Re-enter any keys you still need.");
     }
     if (status?.apiKeyStore?.macosKeychainError) {
-      return status.apiKeyStore.macosKeychainError;
+      return warning(status.apiKeyStore.macosKeychainError);
+    }
+    // Until the OS credential store answers, ADE has not tried to read the
+    // keys yet, so neither failure message below would be true.
+    if (status?.apiKeyStore?.secureStorageChecking) {
+      return {
+        tone: "info",
+        message: "ADE is waiting for the system keychain. Your saved API keys show here after you answer its prompt.",
+      };
     }
     if (status?.apiKeyStore?.decryptionFailed) {
       if (status.apiKeyStore.macosKeychainAvailable) {
-        return "An older encrypted API key file could not be decrypted from this app identity. New keys are stored in macOS Keychain; re-enter any missing keys.";
+        return warning("An older encrypted API key file could not be decrypted from this app identity. New keys are stored in macOS Keychain; re-enter any missing keys.");
       }
-      return "Encrypted API keys exist but could not be decrypted on this machine. Re-enter the affected keys to continue using them.";
+      return warning("Encrypted API keys exist but could not be decrypted on this machine. Re-enter the affected keys to continue using them.");
     }
     if (status?.apiKeyStore?.secureStorageAvailable === false) {
-      return "OS secure storage is unavailable, so ADE cannot persist API keys locally right now.";
+      return warning("OS secure storage is unavailable, so ADE cannot persist API keys locally right now.");
     }
     return null;
   }, [status?.apiKeyStore]);
-  const visibleApiKeyStoreWarning =
-    apiKeyStoreWarning && dismissedApiKeyStoreWarning !== apiKeyStoreWarning
-      ? apiKeyStoreWarning
+  const visibleApiKeyStoreNotice =
+    apiKeyStoreNotice && dismissedApiKeyStoreWarning !== apiKeyStoreNotice.message
+      ? apiKeyStoreNotice
       : null;
+  // The keychain prompt takes focus from this window, and answering it gives
+  // focus back. Read the status again then, so the keys show without a manual
+  // refresh. The listener exists only while the check waits.
+  const secureStorageChecking = status?.apiKeyStore?.secureStorageChecking === true;
+  useEffect(() => {
+    if (!secureStorageChecking) return undefined;
+    const onFocus = () => {
+      void refreshStatusRef.current({ force: true, silent: true });
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [secureStorageChecking]);
 
   // Unified OpenCode provider catalog: inventory + auth methods + known API key rows.
   const openCodeCatalog = useMemo((): OpenCodeProviderDetail[] => {
@@ -788,8 +844,6 @@ export function ProvidersSection({
   }, []);
 
   const deleteApiKey = useCallback(async (provider: string, options?: { alsoOpenCode?: boolean }) => {
-    setError(null);
-    setNotice(null);
     try {
       if (options?.alsoOpenCode) {
         const result = await window.ade.ai.clearOpencodeProviderKey({ providerId: provider }, pin);
@@ -802,7 +856,7 @@ export function ProvidersSection({
       const label =
         API_KEY_PROVIDERS.find((row) => row.provider === provider)?.label
         ?? (provider === KIMI_PROVIDER_ID ? "Kimi for Coding" : prettifyProviderId(provider));
-      setNotice(`${label} disconnected.`);
+      showToast({ tone: "success", title: `${label} disconnected` });
       setVerificationByProvider((prev) => {
         const next = { ...prev };
         delete next[provider];
@@ -810,15 +864,13 @@ export function ProvidersSection({
       });
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't disconnect", err);
       // Re-throw so nested modals (detail overlay) can show the failure in-dialog.
       throw err instanceof Error ? err : new Error(String(err));
     }
   }, [pin, refreshStatus]);
 
   const verifyApiKey = useCallback(async (provider: string) => {
-    setError(null);
-    setNotice(null);
     setVerifyingProvider(provider);
     setVerificationByProvider((prev) => {
       const next = { ...prev };
@@ -832,41 +884,53 @@ export function ProvidersSection({
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
       setVerificationByProvider((prev) => ({ ...prev, [provider]: result }));
       if (result.ok) {
-        setNotice(`${provider} connection verified.`);
+        showToast({ tone: "success", title: `${provider} connection verified` });
       } else {
-        setError(result.message || `${provider} verification failed.`);
+        showToast({ tone: "error", title: `${provider} verification failed`, message: result.message || undefined });
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't verify the key", err);
     } finally {
       setVerifyingProvider(null);
     }
   }, [pin, refreshStatus]);
 
-  const loginWithCursor = useCallback(async () => {
-    setError(null);
-    setNotice(null);
+  const loginWithCursor = useCallback(async (): Promise<CursorSignInOutcome> => {
     setCursorLoginBusy(true);
     try {
       const result = await window.ade.ai.cursorAuthLogin(pin);
       if (!result.ok) {
-        setError(result.error || "Cursor sign-in failed.");
-        return;
+        showToast({ tone: "error", title: "Cursor sign-in failed", message: result.error || undefined });
+        return { ok: false, error: result.error || "Cursor sign-in failed." };
       }
       setVerifyingProvider("cursor");
       invalidateAiDiscoveryCache();
+      // The key check is Cursor's sign-in check: it asks Cursor itself.
       const verification = await window.ade.ai.verifyApiKey("cursor", pin);
       invalidateAiDiscoveryCache();
-      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
+      await refreshStatus({ force: true, refreshProvider: "cursor" });
       setVerificationByProvider((prev) => ({ ...prev, cursor: verification }));
+      setSignInChecks((prev) => ({
+        ...prev,
+        cursor: {
+          provider: "cursor",
+          state: verification.ok ? "signed-in" : "unknown",
+          reason: verification.ok ? null : verification.message || null,
+          account: result.email ?? null,
+          checkedAt: verification.verifiedAt,
+        },
+      }));
       if (verification.ok) {
-        setNotice(result.email ? `Signed in as ${result.email}.` : "Cursor connection verified.");
+        showToast({ tone: "success", title: result.email ? `Signed in as ${result.email}` : "Cursor connection verified" });
         setCursorLoginUrl(null);
-      } else {
-        setError(verification.message || "Cursor verification failed.");
+        return { ok: true, email: result.email ?? null };
       }
+      showToast({ tone: "error", title: "Cursor verification failed", message: verification.message || undefined });
+      return { ok: false, error: verification.message || "Cursor verification failed." };
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      showToast({ tone: "error", title: "Cursor sign-in failed", message });
+      return { ok: false, error: message };
     } finally {
       setCursorLoginBusy(false);
       setVerifyingProvider(null);
@@ -874,24 +938,27 @@ export function ProvidersSection({
   }, [pin, refreshStatus]);
 
   const logoutCursor = useCallback(async () => {
-    setError(null);
-    setNotice(null);
     try {
       const result = await window.ade.ai.cursorAuthLogout(pin);
       if (!result.ok) {
-        setError(result.error || "Cursor sign-out failed.");
+        showToast({ tone: "error", title: "Cursor sign-out failed", message: result.error || undefined });
         return;
       }
       invalidateAiDiscoveryCache();
-      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
+      await refreshStatus({ force: true, refreshProvider: "cursor" });
       setVerificationByProvider((prev) => {
         const next = { ...prev };
         delete next.cursor;
         return next;
       });
-      setNotice("Signed out of Cursor.");
+      setSignInChecks((prev) => {
+        const next = { ...prev };
+        delete next.cursor;
+        return next;
+      });
+      showToast({ tone: "success", title: "Signed out of Cursor" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't sign out of Cursor", err);
     }
   }, [pin, refreshStatus]);
 
@@ -899,7 +966,7 @@ export function ProvidersSection({
     try {
       await window.ade.ai.cursorAuthCancel(pin);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't cancel Cursor sign-in", err);
     } finally {
       setCursorLoginBusy(false);
     }
@@ -911,7 +978,7 @@ export function ProvidersSection({
       await window.ade.ai.refreshModelsDev(pin);
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't refresh the model catalog", err);
     } finally {
       setRefreshingCatalog(false);
     }
@@ -919,7 +986,12 @@ export function ProvidersSection({
 
   const handleSubscriptionConnected = useCallback(async (providerId: string, providerName: string) => {
     const before = status?.availableModelIds?.length ?? 0;
-    const next = await refreshStatus({ force: true, refreshOpenCodeInventory: true });
+    // OpenCode's own sign-in check asks its server for the provider list again
+    // on the page's machine (what the inventory refresh here did), drops the
+    // renderer's caches, and records the verdict; the read after it is fresh.
+    const check = await checkProviderSignIn("opencode", pin);
+    setSignInChecks((prev) => ({ ...prev, opencode: check }));
+    const next = await refreshStatus({ force: true });
     void loadAuthMethods();
     const after = next?.availableModelIds?.length ?? before;
     const modelCount =
@@ -930,26 +1002,24 @@ export function ProvidersSection({
       title: `${providerName} connected`,
       message: `${modelCount} model${modelCount === 1 ? "" : "s"} added`,
     });
-  }, [status?.availableModelIds, refreshStatus, loadAuthMethods]);
+  }, [status?.availableModelIds, refreshStatus, loadAuthMethods, pin]);
 
   const saveCustomModelSlugs = useCallback(async () => {
     const slugs = customModelSlugs.split(",").map((s) => s.trim()).filter(Boolean);
     setSavingAdvanced(true);
-    setError(null);
-    setNotice(null);
     try {
-      await window.ade.ai.updateConfig({
+      await projectCall(window.ade.ai.updateConfig({
         customModelSlugs: slugs,
-      }, pin);
+      }, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
-      setNotice("Custom model slugs saved.");
+      showToast({ tone: "success", title: "Custom model slugs saved" });
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't save custom model slugs", err);
     } finally {
       setSavingAdvanced(false);
     }
-  }, [pin, customModelSlugs, refreshStatus]);
+  }, [projectCall, projectPin, customModelSlugs, refreshStatus]);
 
   const updateLocalProviderDraft = useCallback((
     provider: LocalProviderFamily,
@@ -966,8 +1036,6 @@ export function ProvidersSection({
 
   const beginEditingLocalRuntime = useCallback((provider: LocalProviderFamily) => {
     setEditingLocalProvider(provider);
-    setError(null);
-    setNotice(null);
   }, []);
 
   const cancelEditingLocalRuntime = useCallback(() => {
@@ -979,10 +1047,8 @@ export function ProvidersSection({
     const draft = localProviderDrafts[provider];
     if (!draft) return;
     setSavingLocalProvider(provider);
-    setError(null);
-    setNotice(null);
     try {
-      await window.ade.ai.updateConfig({
+      await projectCall(window.ade.ai.updateConfig({
         localProviders: {
           [provider]: {
             enabled: draft.enabled,
@@ -991,17 +1057,17 @@ export function ProvidersSection({
             preferredModelId: draft.preferredModelId.trim() || null,
           },
         } as AiConfig["localProviders"],
-      }, pin);
+      }, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
-      setNotice(`${LOCAL_PROVIDER_LABELS[provider]} settings saved.`);
+      showToast({ tone: "success", title: `${LOCAL_PROVIDER_LABELS[provider]} settings saved` });
       setEditingLocalProvider(null);
       await refreshStatus({ force: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't save settings", err);
     } finally {
       setSavingLocalProvider(null);
     }
-  }, [pin, localProviderDrafts, refreshStatus]);
+  }, [projectCall, projectPin, localProviderDrafts, refreshStatus]);
 
   const disabledProviders = useMemo(
     () => new Set((projectConfigSnapshot?.effective.ai?.disabledProviders ?? []).map((id) => id.toLowerCase())),
@@ -1014,28 +1080,29 @@ export function ProvidersSection({
   ) => {
     const descriptor = providerDescriptor(provider);
     setSavingDisabledFor(provider);
-    setError(null);
-    setNotice(null);
     try {
       // The whole authoritative list, not a delta: `mergeAiConfig` replaces
       // this field, so a patch carrying only the change could never re-enable
       // anything.
-      await window.ade.ai.updateConfig({
+      await projectCall(window.ade.ai.updateConfig({
         disabledProviders: toggleDisabledProvider(
           projectConfigSnapshot?.effective.ai ?? null,
           provider,
           disabled,
         ),
-      } as Partial<AiConfig>, pin);
+      } as Partial<AiConfig>, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
-      setNotice(`${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}.`);
+      showToast({ tone: "success", title: `${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}` });
       await refreshStatus({ force: false, silent: true });
+      // The project's copy owns the switch, and its chats' model lists drop or
+      // regain the provider.
+      void refreshRuntimeCatalogsForMachine(projectPin);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't update the provider", err);
     } finally {
       setSavingDisabledFor(null);
     }
-  }, [pin, projectConfigSnapshot, refreshStatus]);
+  }, [projectCall, projectPin, projectConfigSnapshot, refreshStatus]);
 
   const loadAcpDiagnostics = useCallback(async (provider: AcpSettingsProviderId) => {
     const read = window.ade.ai.acpProviderDiagnostics;
@@ -1060,14 +1127,35 @@ export function ProvidersSection({
   }, [pin]);
 
   const runAcpDoctor = useCallback(async (provider: AcpSettingsProviderId) => {
+    // The person's own action (`ai.runAcpProviderDoctor`): it wakes a sleeping
+    // cloud computer, which the page-open read (a background write) never does.
+    const runDoctor = window.ade.ai.runAcpProviderDoctor;
     const read = window.ade.ai.acpProviderDiagnostics;
-    if (!isAdeAvailable(read)) {
+    if (!isAdeAvailable(runDoctor) && !isAdeAvailable(read)) {
       setAcpDiagnosticsError((prev) => ({ ...prev, [provider]: "This window cannot run provider diagnostics." }));
       return;
     }
     setAcpDoctorBusy(provider);
     try {
-      const result = await read({ provider, runDoctor: true }, pin);
+      let result;
+      if (isAdeAvailable(runDoctor)) {
+        try {
+          result = await runDoctor({ provider }, pin);
+        } catch (error) {
+          // A machine on an older ADE has no `runAcpProviderDoctor`: the old
+          // doctor run still works there (it just doesn't wake a sleeping one).
+          // Only the runtime's own "no such action" answer for this one action
+          // (`Action 'ai.runAcpProviderDoctor' is not callable.`, `Unknown ADE action: …`).
+          const message = error instanceof Error ? error.message : String(error);
+          const unknownAction = message.includes("ai.runAcpProviderDoctor")
+            && (isUnsupportedAdeActionError(error) || message.includes("Unknown ADE action: ai.runAcpProviderDoctor"));
+          if (!isAdeAvailable(read) || !unknownAction) throw error;
+          console.warn("[providers] doctor fell back to the older diagnostics action", { provider, message });
+          result = await read({ provider, runDoctor: true }, pin);
+        }
+      } else {
+        result = await read!({ provider, runDoctor: true }, pin);
+      }
       setAcpDiagnostics((prev) => ({ ...prev, [provider]: result }));
       setAcpDiagnosticsError((prev) => {
         const next = { ...prev };
@@ -1084,14 +1172,60 @@ export function ProvidersSection({
     }
   }, [pin]);
 
-  const openSignInTerminal = useCallback((provider: SettingsProviderId) => {
-    if (!providerSignIn(provider)) return;
-    setSignInProvider(provider);
-  }, []);
+  const openSignIn = useCallback((provider: SettingsProviderId) => {
+    if (isAgentCliLoginProvider(provider) && agentCliSignInSupported()) {
+      setSignInRequest({
+        kind: "cli",
+        provider,
+        // The account the machine named before this sign-in, if it names one.
+        expectedAccount: status?.providerConnections?.[provider]?.accountEmail ?? null,
+      });
+      return;
+    }
+    if (providerSignIn(provider)) setSignInRequest({ kind: "terminal", provider });
+  }, [status?.providerConnections]);
 
+  // Runs only on a click (Re-check) or right after a sign-in, never on a
+  // timer: the check can start the provider's CLI or agent.
+  const verifySignIn = useCallback(async (provider: SettingsProviderId): Promise<AiProviderSignInCheck> => {
+    setSignInCheckBusy(provider);
+    try {
+      const check = await checkProviderSignIn(provider, pin);
+      setSignInChecks((prev) => ({ ...prev, [provider]: check }));
+      await refreshStatus({ force: true, silent: true, refreshProvider: provider });
+      return check;
+    } finally {
+      setSignInCheckBusy((current) => (current === provider ? null : current));
+    }
+  }, [pin, refreshStatus]);
+
+  // No OpenCode catalog cached yet (first run, or a cache from an older
+  // layout): the provider list is only the fallback names until OpenCode's
+  // server is asked once. That starts a server, so only its page asks.
+  const openCodeColdProbeRef = useRef(false);
+  const openCodePageOpen = selectedProviderId === "opencode";
+  const openCodeCatalogCold = Boolean(status?.opencodeBinaryInstalled && !status.opencodeProviders?.length);
+  useEffect(() => {
+    if (!openCodePageOpen || !openCodeCatalogCold || openCodeColdProbeRef.current) return;
+    openCodeColdProbeRef.current = true;
+    void refreshStatus({ refreshOpenCodeInventory: true, silent: true }).then(() => loadAuthMethods());
+  }, [loadAuthMethods, openCodeCatalogCold, openCodePageOpen, refreshStatus]);
+
+  // What the project's copy saves is read from it: the machine route's status
+  // carries the machine scope's own (empty) lists, and a write is a whole
+  // list, so it may only be built from the project's.
+  const projectConfigLoaded = projectConfigEditable && projectConfigSnapshot != null;
+  const viewStatus = useMemo((): AiSettingsStatus | null => {
+    if (!status || !projectConfigLoaded || !isMachineScopePin(pin)) return status;
+    const ai = projectConfigSnapshot?.effective.ai;
+    return { ...status, customProviders: ai?.customProviders ?? [], customModelSlugs: ai?.customModelSlugs ?? [] };
+  }, [pin, projectConfigLoaded, projectConfigSnapshot, status]);
   const ctx = useMemo((): ProvidersViewContext => ({
-    status,
+    status: viewStatus,
     projectConfigSnapshot,
+    projectConfigEditable: projectConfigLoaded,
+    projectPin,
+    machineName,
     loading,
     statusLoadError,
     isInitialCheckInFlight,
@@ -1123,11 +1257,12 @@ export function ProvidersSection({
     acpDiagnosticsBusy,
     acpDoctorBusy,
     acpDiagnosticsError,
+    signInChecks,
+    signInCheckBusy,
     actions: {
       refreshStatus,
       loadAuthMethods,
-      setError,
-      setNotice,
+      setError: (message) => { if (message) showToast({ tone: "error", title: "Something went wrong", message }); },
       deleteApiKey,
       verifyApiKey,
       loginWithCursor,
@@ -1145,9 +1280,11 @@ export function ProvidersSection({
       setProviderDisabled,
       loadAcpDiagnostics,
       runAcpDoctor,
-      openSignInTerminal,
+      openSignIn,
+      verifySignIn,
     },
   }), [
+    projectConfigLoaded, projectPin, machineName,
     apiKeySources, authMethods, authMethodsError, beginEditingLocalRuntime, cancelCursorLogin,
     cancelEditingLocalRuntime, connectedOpenCodeProviders, cursorAuth, cursorLoginBusy,
     cursorLoginUrl, customModelSlugs, deleteApiKey,
@@ -1157,10 +1294,11 @@ export function ProvidersSection({
     projectConfigSnapshot, providerSearch, refreshStatus, refreshingCatalog,
     saveCustomModelSlugs, saveLocalProvider, savingAdvanced,
     savingLocalProvider, searchableOpenCodeProviders,
-    status, statusLoadError, storedProviders, updateLocalProviderDraft,
+    viewStatus, statusLoadError, storedProviders, updateLocalProviderDraft,
     verificationByProvider, verifyApiKey, verifyingProvider,
     disabledProviders, savingDisabledFor, setProviderDisabled, acpDiagnostics, acpDiagnosticsBusy,
-    acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignInTerminal,
+    acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignIn,
+    signInChecks, signInCheckBusy, verifySignIn,
   ]);
 
   const descriptors = useMemo(() => availableProviderDescriptors(), []);
@@ -1179,25 +1317,21 @@ export function ProvidersSection({
     void loadAcpDiagnostics(selectedAcpProvider);
   }, [acpDiagnostics, loadAcpDiagnostics, selectedAcpProvider]);
 
-  const signIn = signInProvider ? providerSignIn(signInProvider) : null;
+  const terminalSignIn = signInRequest?.kind === "terminal" ? providerSignIn(signInRequest.provider) : null;
 
   return (
     // The `ai-providers` anchor lives on the section below. This wrapper is
     // layout only — giving it the id too would put the anchor in the DOM twice.
     <div className={selectedDescriptor ? "ade-pv-detail" : "ade-pv-page"}>
-      {notice && (
-        <AlertBanner tone="success" message={notice} onDismiss={() => setNotice(null)} />
-      )}
-
       {error && (
         <AlertBanner tone="error" message={error} onDismiss={() => setError(null)} />
       )}
 
-      {visibleApiKeyStoreWarning && (
+      {visibleApiKeyStoreNotice && (
         <AlertBanner
-          tone="warning"
-          message={visibleApiKeyStoreWarning}
-          onDismiss={() => setDismissedApiKeyStoreWarning(visibleApiKeyStoreWarning)}
+          tone={visibleApiKeyStoreNotice.tone}
+          message={visibleApiKeyStoreNotice.message}
+          onDismiss={() => setDismissedApiKeyStoreWarning(visibleApiKeyStoreNotice.message)}
         />
       )}
 
@@ -1234,28 +1368,48 @@ export function ProvidersSection({
 
       {selectedDescriptor ? null : <CustomProvidersSection status={status} storedProviders={storedProviders} />}
 
-      {signInProvider && signIn ? (
-        <ProviderSignInModal
-          runtimePin={pin}
-          providerId={signInProvider}
-          providerLabel={signIn.label}
-          command={signIn.command}
-          toolType={signIn.toolType}
+      {signInRequest?.kind === "cli" ? (
+        <CliSignInSheet
+          provider={signInRequest.provider}
+          providerLabel={providerDescriptor(signInRequest.provider)?.label ?? signInRequest.provider}
+          pin={pin}
+          isThisMachine={isThisMachine}
+          machineName={machineName}
+          expectedAccount={signInRequest.expectedAccount}
+          onClose={(changed, signedIn) => {
+            const provider = signInRequest.provider;
+            setSignInRequest(null);
+            if (!changed) return;
+            // The "login changed" path and the provider's own check, or only a fresh read.
+            void (signedIn ? verifySignIn(provider) : refreshStatus({ force: true, silent: true, refreshProvider: provider }));
+          }}
+        />
+      ) : null}
+
+      {signInRequest?.kind === "terminal" && terminalSignIn ? (
+        <TerminalSignInSheet
+          pin={pin}
+          isThisMachine={isThisMachine}
+          machineName={machineName}
+          providerId={signInRequest.provider}
+          providerLabel={terminalSignIn.label}
+          command={terminalSignIn.command}
+          toolType={terminalSignIn.toolType}
           onClose={() => {
-            setSignInProvider(null);
+            setSignInRequest(null);
             void refreshStatus({ force: true, silent: true });
           }}
           onSignedIn={() => {
-            setNotice(`Signed in to ${signIn.label}.`);
-            invalidateAiDiscoveryCache();
+            showToast({ tone: "success", title: `Signed in to ${terminalSignIn.label}` });
+            // The "login changed" path, then the provider's own check.
+            void verifySignIn(signInRequest.provider);
           }}
           checkSignedIn={async () => {
-            const next = await refreshStatus({ force: true, silent: true });
-            // `authAvailable` is the disk credential the login just wrote —
-            // that is the moment worth closing on. `runtimeAvailable` also
-            // waits on the protocol probe, which is right for the tile and too
-            // slow for a dialog someone is watching.
-            const key = connectionKeyFor(signInProvider);
+            // Polled while the sheet is open, so only the status read, which
+            // reads the saved login off disk. `authAvailable` is the credential
+            // the login just wrote: the moment worth closing on.
+            const next = await window.ade.ai.getStatus({ force: true }, pin).catch(() => null);
+            const key = connectionKeyFor(signInRequest.provider);
             return key !== null && next?.providerConnections?.[key]?.authAvailable === true;
           }}
         />
@@ -1282,7 +1436,7 @@ export function ProvidersSection({
               delete next[detailProvider.id];
               return next;
             });
-            setNotice(`${detailProvider.name} key saved.`);
+            showToast({ tone: "success", title: `${detailProvider.name} key saved` });
             await refreshStatus({ force: true, refreshOpenCodeInventory: true });
           }}
           onDeleteKey={async () => {

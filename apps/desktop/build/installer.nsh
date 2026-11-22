@@ -67,6 +67,86 @@
   ${Loop}
 !macroend
 
+; Replaces the end of electron-builder's handleUninstallResult (installUtil.nsh),
+; which runs after the old uninstaller has been tried five times. Its failure
+; box, "$(uninstallFailed): $R0", has no /SD answer, so a silent update shows it
+; anyway and waits for a click. Nobody is there to click when the update was
+; started from another machine or the phone: on 2026-11-18 a PC sat on that
+; hidden box for two hours, with ADE closed and its background service removed,
+; and dropped off the relay. The old uninstaller fails when it cannot rename a
+; file out of $INSTDIR, which a process outside the folder can cause by holding
+; one open (there it was a dev brain with resources\app.asar open).
+;
+; Same outcome as the default, answered: say why, leave the old install in
+; place (the uninstaller already put its files back), exit with code 2. A silent
+; update also reopens that old ADE, which puts its background service back, so
+; the machine comes back online on the old version and can retry later.
+;
+; That reopen must not meet a live "Updating ADE" window first. The window is
+; the INSTALLED release's script (ADE copies it before starting this installer),
+; and while it beats a non-failed heartbeat the old ADE takes any launch as a
+; hand-launch mid-install, brings the window forward and exits
+; (deferToRunningWindowsInstall). A window from before the watchdog never opens
+; ADE itself, so the machine would stay offline. ADE_RELEASE_UPDATE_WINDOW
+; closes each live window through its own cancel file (progress-args.json names
+; the run), which every released script honors and which removes its heartbeat,
+; and stops it after 5s if it is still up. Only a window beating in the last 30s
+; counts, so a stale heartbeat whose pid now names another PowerShell is
+; skipped; a heartbeat it cannot read is skipped too, and so is a window for
+; another install (Stable and Beta share %LOCALAPPDATA%\ADE): its appExe must be
+; this install's exe, which rides in ADE_RELEASE_APP_EXE. A window for an install
+; the person quit into is left alone and answers 1: they closed ADE themselves,
+; so it is not reopened, the same rule the watchdog follows. Unless they opened
+; ADE again during the install: that launch left launch-requested.json beside
+; the window (deferToRunningWindowsInstall), and then the window is closed and
+; ADE reopened.
+!define ADE_RELEASE_UPDATE_WINDOW `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$r=0;foreach($$d in @(Get-ChildItem -Directory -LiteralPath (Join-Path $$env:LOCALAPPDATA ADE) -Filter update-progress-* -EA 0)){try{$$f=$$d.FullName+[char]92;$$b=[IO.File]::ReadAllText($$f+'progress.json')|ConvertFrom-Json;$$a=[IO.File]::ReadAllText($$f+'progress-args.json')|ConvertFrom-Json;if([IO.Path]::GetFullPath($$a.appExe) -ne [IO.Path]::GetFullPath($$env:ADE_RELEASE_APP_EXE)){continue};$$p=Get-Process -Id ([int]$$b.pid) -EA 0;if(!$$p -or $$p.ProcessName -ne 'powershell' -or ([DateTimeOffset]::UtcNow-[DateTimeOffset]$$b.updatedAt).TotalSeconds -gt 30){continue};if($$a.quitInstall -and !(Test-Path -LiteralPath ($$f+'launch-requested.json'))){$$r=1;continue};[IO.File]::WriteAllText($$f+'progress.json.cancel',[string]$$a.runId);if(!$$p.WaitForExit(5000)){Stop-Process -Id $$p.Id -Force -EA 0}}catch{continue}};exit $$r"`
+!macro adeHandleUninstallResult
+  ${If} ${Errors}
+    DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`
+    Return
+  ${EndIf}
+  ${If} $R0 != 0
+    DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
+    ; Name what kept the old files in place (ade-update-holders.ps1), before ADE
+    ; reopens and opens files there itself. The brain reports it to other
+    ; machines; nothing here changes the outcome.
+    StrCpy $1 "stable"
+    ${If} "${PRODUCT_NAME}" == "ADE Alpha"
+      StrCpy $1 "alpha"
+    ${ElseIf} "${PRODUCT_NAME}" == "ADE Beta"
+      StrCpy $1 "beta"
+    ${EndIf}
+    InitPluginsDir
+    File "/oname=$PLUGINSDIR\ade-update-holders.ps1" "${BUILD_RESOURCES_DIR}\ade-update-holders.ps1"
+    DetailPrint "Looking for what kept the old ADE files in use..."
+    ; Bounded: nothing may hold a silent update that nobody is watching.
+    nsExec::Exec /TIMEOUT=60000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\ade-update-holders.ps1" -InstallDir "$INSTDIR" -PackageChannel "$1" -TargetVersion "${VERSION}"'
+    Pop $1
+    MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0" /SD IDOK
+    ${If} ${isUpdated}
+    ${AndIf} ${Silent}
+      System::Call 'kernel32::SetEnvironmentVariable(t "ADE_RELEASE_APP_EXE", t "$INSTDIR\${APP_EXECUTABLE_FILENAME}")i'
+      nsExec::Exec `${ADE_RELEASE_UPDATE_WINDOW}`
+      Pop $0
+      ${If} $0 == 1
+        DetailPrint "The update ran on quit: leaving ADE closed."
+      ${Else}
+        DetailPrint "Reopening the installed ADE so its background service comes back."
+        Exec '"$INSTDIR\${APP_EXECUTABLE_FILENAME}"'
+      ${EndIf}
+    ${EndIf}
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+!macroend
+!macro customUnInstallCheck
+  !insertmacro adeHandleUninstallResult
+!macroend
+!macro customUnInstallCheckCurrentUser
+  !insertmacro adeHandleUninstallResult
+!macroend
+
 !macro customInit
   Var /GLOBAL adeHadPreviousInstall
   StrCpy $adeHadPreviousInstall "0"
@@ -170,7 +250,7 @@
   Pop $0
   ${If} $0 != 0
     DetailPrint "Step 2 of 2 failed with exit code $0."
-    MessageBox MB_ICONSTOP|MB_OK "ADE could not remove its background service or terminal command. Close ADE and try uninstalling again.$\r$\n$\r$\nThe cleanup step exited with code $0."
+    MessageBox MB_ICONSTOP|MB_OK "ADE could not remove its background service or terminal command. Close ADE and try uninstalling again.$\r$\n$\r$\nThe cleanup step exited with code $0." /SD IDOK
     Abort
   ${EndIf}
   DetailPrint "Step 2 of 2 done."

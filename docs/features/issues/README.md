@@ -1,9 +1,8 @@
 # Issues: opening an issue where you are
 
 Clicking an issue anywhere in ADE shows the issue itself, rendered natively,
-without leaving the page you are on. It used to open the whole Linear browser and
-search for the identifier, which covered the chat and made "show me this ticket"
-a search.
+without leaving the page you are on. It does not open the whole Linear browser
+or search for the identifier.
 
 Linear, GitHub and Jira issues open natively and are editable in place:
 status and the other properties through pickers, the title and description
@@ -120,24 +119,33 @@ clickable.
 
 ## Jira
 
-Settings → Integrations → Jira connects this machine to one Jira Cloud site
-with an Atlassian API token. The site URL, the account email and the token are
-stored in the machine's encrypted credential store under `jira.siteUrl`,
-`jira.email` and `jira.apiToken`. The token is never logged and never sent back
-to a client. The site URL must be `https://`; plain `http://` is accepted only
-for a loopback host, so the test server below works. Jira URLs use
-`/browse/KEY-123`.
+Settings → Integrations → Jira connects the project to one Jira Cloud site
+with an Atlassian API token. Each project keeps its own connection, encrypted
+in `<project>/.ade/secrets` (`jira.siteUrl`, `jira.email`, `jira.apiToken`;
+`jiraCredentialService.ts`).
+
+- The connection follows the project to every computer on the account through
+  the account vault: scope `repo:<host>/<owner>/<repo>`, kind `integration`,
+  key `jira`. ADE Cloud computers use it too.
+- A project with no remote keeps its connection on that computer, and the
+  status says so.
+- A project with no connection of its own adopts the computer's older
+  machine-wide connection on first read.
+
+The token is never logged and never sent back to a client. The site URL must
+be `https://`; plain `http://` is accepted only for a loopback host, so the
+test server below works. Jira URLs use `/browse/KEY-123`.
 
 The project binding is `issueTrackers.jira.projectKeys` in this project's
 `.ade/local.yaml`. It is the one place ADE reads Jira project keys from: the
 pane's default project filter, the create form's default project, and whether a
-bare `KEY-123` in agent prose is a Jira chip. The shared `ade.yaml` is no longer
-read.
+bare `KEY-123` in agent prose is a Jira chip. The shared `ade.yaml` is not
+read for Jira.
 
 The runtime exposes Jira as `window.ade.jira` (runtime-only; see
 [ARCHITECTURE](../../ARCHITECTURE.md)). Its actions are in the `jira` action
 domain. Connecting and disconnecting are CTO-only, because the credential is
-machine-wide.
+a secret that no agent may hold.
 
 The Jira viewer edits the title and Markdown description inline. Its property
 box changes status through the workflow transitions Jira offers, and edits
@@ -172,6 +180,53 @@ an agent: `status`, `connect` (CTO role; the token comes from stdin with
 `list` (paged; pass the returned cursor to `--cursor`), `issue`, `create`,
 `edit`, `comment`, `transition`, `assign`, `label` and `unlabel`. Add `--text`
 for a readable answer; the default is JSON.
+
+## With no computer: reads through the account
+
+The web Jira pane and a desktop tab bound to ADE Cloud read Jira through the
+ADE account server when no computer answers. The server uses the project's
+vault connection with the caller's bearer, and never stores, logs or returns
+the token. Linear works the same way
+([Linear](../linear-integration/README.md#with-no-computer)).
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /cloud/integrations/jira/search` | `{ origin, jql, fields?, maxResults?, nextPageToken? }` | `{ siteUrl, issues, nextPageToken }` (≤ 100 a page, 50 by default) |
+| `POST /cloud/integrations/jira/issue` | `{ origin, key }` | `{ siteUrl, issue }`, with comments |
+
+- `origin` (the project's git origin) picks the vault scope.
+- Calls go only to `https://<site>.atlassian.net`; any other site answers
+  `jira_site_unsupported` (409).
+- Reads only. Linear and Jira together allow 30 requests a minute per account
+  (`rate_limited`, 429). `jira_not_connected` (409) means no connection or a
+  refused one; `integration_failed` (502) means Jira failed or timed out.
+- An older server answers `404`, and the client keeps its old behavior.
+
+### What the app shows with no computer
+
+`shared/adeCloud/integrationReads.ts` answers the Linear and Jira reads for an
+ADE Cloud tab and on the web when no computer answers. Main and the renderer
+map issues the same way (`shared/linearIssueNormalize.ts`,
+`shared/jiraIssueMapping.ts`).
+
+- Linear: the connection status, the quick view, issue search (a custom view
+  filter, or an identifier), projects, the picker data, custom views, one
+  issue and its comments.
+- Jira: the connection status, issue lists, one issue (read-only permissions)
+  and its comments.
+- A refusal is an expected error with the server's sentence, never "Report…".
+  The status read turns `linear_not_connected`, `linear_needs_renewal`,
+  `linear_renewing` and an unsupported Jira site into `connected: false` with
+  that sentence.
+- Writes (an edit, a comment, a state change, a new issue) are not answered.
+  They need a computer, and the caller refuses them with its sentence.
+- A `404` or `null` from an older server gives `handled: false`, so the
+  caller keeps the computer path.
+- The web command names map through `ADE_CLOUD_INTEGRATION_WEB_COMMANDS`.
+- The top-bar Linear button (`LinearQuickViewButton.tsx`) runs no
+  disconnected-retry poll on an ADE Cloud tab. It checks the connection only
+  when the tab opens, the window gets focus, or Settings says the connection
+  changed, so an idle tab sends no requests to the account server.
 
 ## Creating issues
 
@@ -382,6 +437,15 @@ Issues tab and the sheet. Turning Linear off is signing out.
   the machine credential store).
 - `apps/desktop/scripts/fake-jira-server.mjs` — the test server (see "Testing
   without a Jira site").
+- `apps/account-directory/src/cloud/integrations.ts` — the account server's
+  Linear and Jira reads (`jiraSiteOrigin` is the site guard); the types are
+  in `cloud/contract.ts` (`CLOUD_EDGE_PATHS`, `CLOUD_INTEGRATION_ERROR_CODES`).
+- `apps/desktop/src/shared/adeCloud/integrationReads.ts`,
+  `shared/linearIssueNormalize.ts` and `shared/jiraIssueMapping.ts` — the
+  client side of those reads, and the issue mappers main and the renderer
+  share.
+- `apps/desktop/src/renderer/components/app/LinearQuickViewButton.tsx` — the
+  top-bar Linear button; no retry poll on an ADE Cloud tab.
 - `apps/ade-cli/src/cliIssue.ts` — `ade issue`; `apps/ade-cli/src/cliJira.ts` —
   `ade jira`.
 - `apps/desktop/src/main/services/chat/agentChatService.ts` —
@@ -482,7 +546,7 @@ Issues tab and the sheet. Turning Linear off is signing out.
   the number first and refuses a pull request.
 - `apps/desktop/src/renderer/lib/linearLaunchRequests.ts` — the viewer asks the
   top-bar Linear host to launch; the launch modal and runner keep one owner.
-- `apps/desktop/src/renderer/lib/linearIssueQuickViewNavigation.ts` — now only
+- `apps/desktop/src/renderer/lib/linearIssueQuickViewNavigation.ts` — only
   "open the Linear pane" (the Issues tool's empty state, the sheet's "All
   issues").
 - `apps/desktop/src/renderer/lib/issueDrag.ts` — the drag payload for dropping
@@ -509,11 +573,11 @@ Issues tab and the sheet. Turning Linear off is signing out.
 - **Failures say what fixes them.** A failed read asks the Linear connection
   once: no project open, Linear not connected, issue not returned, or a request
   error each get their own words and action.
-- **Detaching from a sent message** used to live in the Linear details modal a
-  sent chip opened. The chip opens the viewer now, so its × detaches.
+- **Detaching from a sent message** is the sent chip's ×; the chip opens the
+  viewer.
 - **Comments over the runtime** take the issue id as a scalar (`{ arg }` in
-  preload), like `fetchIssueById`. Passing `{ args }` handed the tracker an
-  object and every runtime comment read failed.
+  preload), like `fetchIssueById`. Passing `{ args }` hands the tracker an
+  object and every runtime comment read fails.
 
 ## A plain `#123`
 

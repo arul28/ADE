@@ -1,3 +1,4 @@
+import { laneDisplayName, PRIMARY_LANE_DISPLAY_NAME } from "../../../../shared/laneDisplayName";
 import React from "react";
 import { Archive, ArrowClockwise, ArrowSquareOut, CaretDown, CheckCircle, PushPin } from "@phosphor-icons/react";
 import type { ProjectLaneHealth } from "../../../../shared/types/projectHealth";
@@ -18,6 +19,7 @@ import {
   sortLanes,
   type LaneFilter,
 } from "./laneListModel";
+import { requirePin } from "../../../state/repositoryScope";
 
 const ARCHIVE_TOAST_ID = "settings-lanes-archive";
 /** Rows shown before "Show N more". */
@@ -122,20 +124,20 @@ export function LaneList({
       // The merged-PR exception reads the lane's git state, so read it again
       // now: a lane can have picked up commits since the list was drawn. When
       // the fresh read fails, no lane gets the exception.
-      const fresh = await window.ade.projectHealth.getReport({ forceRefresh: true }, pin)
+      const fresh = await (pin ? window.ade.projectHealth.getReport({ forceRefresh: true }, pin) : Promise.reject(new Error("no copy")))
         .then((report) => new Map((report.lanes ?? []).map((lane) => [lane.laneId, lane])))
         .catch(() => null);
       // One at a time, each checked again right before it goes: a lane may
       // have picked up changes or a running chat since the list was read.
       for (const lane of selectedLanes) {
         try {
-          const risk = await window.ade.lanes.getReclaimRisk({ laneId: lane.laneId }, pin);
+          const risk = await window.ade.lanes.getReclaimRisk({ laneId: lane.laneId }, requirePin(pin));
           const skipReason = laneBulkArchiveSkipReason(fresh?.get(lane.laneId) ?? { ...lane, pr: null }, risk);
           if (skipReason) {
             skipped.push(`${lane.name}: ${skipReason}`);
             continue;
           }
-          const result = await window.ade.lanes.archiveAndReclaim({ laneId: lane.laneId, confirmation: "RECLAIM" }, pin);
+          const result = await window.ade.lanes.archiveAndReclaim({ laneId: lane.laneId, confirmation: "RECLAIM" }, requirePin(pin));
           freed += result.reclaimedBytes;
           archived.push(lane.name);
         } catch (err) {
@@ -291,7 +293,7 @@ function LaneRow({
       <div className="ade-lanes-row-main">
         <span className="ade-lanes-check">
           {primary ? (
-            <PushPin size={13} weight="fill" aria-label="Primary lane" />
+            <PushPin size={13} weight="fill" aria-label={PRIMARY_LANE_DISPLAY_NAME} />
           ) : (
             <input
               type="checkbox"
@@ -310,7 +312,7 @@ function LaneRow({
           aria-controls={detailsId}
           onClick={onToggleOpen}
         >
-          <span className="ade-lanes-name" title={lane.name}>{lane.name}</span>
+          <span className="ade-lanes-name" title={laneDisplayName(lane)}>{laneDisplayName(lane)}</span>
           <span className="kit-tag" data-tone={pill.tone}>{pill.label}</span>
           {lane.runningSessions > 0 ? (
             <span className="kit-tag ade-lanes-running"><span className="kit-dot" data-state="accent" aria-hidden />Running</span>

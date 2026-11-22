@@ -253,8 +253,8 @@ describe("createAgentChatService", () => {
       const stored = new Map<string, string>();
       let failNextSave = true;
       const projectSecrets = {
-        list: () => ({ secrets: [...stored.keys()].map((name) => ({ name })) }) as never,
-        set: ({ name, value }: { name: string; value: string }) => {
+        listFresh: async () => ({ secrets: [...stored.keys()].map((name) => ({ name })) }) as never,
+        set: async ({ name, value }: { name: string; value: string }) => {
           if (failNextSave) {
             failNextSave = false;
             throw new Error("the secrets store is locked");
@@ -291,6 +291,52 @@ describe("createAgentChatService", () => {
       await expect(resultPromise).resolves.toEqual({ name: "STRIPE_KEY", saved: true, replaced: false });
       expect(stored.get("STRIPE_KEY")).toBe("  whsec_kept_exactly  ");
       expect(JSON.stringify(events)).not.toContain("whsec_kept_exactly");
+    });
+
+    it.each(["chat", "terminal CLI"] as const)("closes a card only the person can answer when the %s is archived, so the agent stops waiting", async (kind) => {
+      const { service, sessionService } = createService();
+      // A terminal CLI's card marks the row for attention in the sessions table.
+      Object.assign(sessionService, { requestAttention: vi.fn(), clearAttentionRequest: vi.fn() });
+      const sessionId = kind === "chat"
+        ? (await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" })).id
+        : "cli-archived";
+      if (kind === "terminal CLI") sessionService.create({ sessionId, laneId: "lane-1", ptyId: "pty-cli", toolType: "claude" });
+      const saved: string[] = [];
+      const projectSecrets = {
+        listFresh: async () => ({ secrets: [] }) as never,
+        set: async ({ name }: { name: string }) => {
+          saved.push(name);
+          return { name } as never;
+        },
+      };
+      const outcome = requestProjectSecretFromUser(
+        { requestChatInput: service.requestChatInput, projectSecrets },
+        { chatSessionId: sessionId, name: "STRIPE_KEY", reason: "Verifies Stripe deliveries" },
+      );
+      await vi.waitFor(() => expect(service.listPendingInputs({ sessionId }).requests).toHaveLength(1));
+
+      await service.archiveSession({ sessionId });
+
+      await expect(outcome).resolves.toMatchObject({ saved: false, declined: true });
+      expect(saved).toEqual([]);
+      expect(service.listPendingInputs({ sessionId }).requests).toHaveLength(0);
+    });
+
+    it("keeps a tracked CLI's consent card for the person: the user-only rule covers CLI cards", async () => {
+      const { service, sessionService } = createService();
+      // A Claude Code CLI running in a terminal asks for a secret from its shell.
+      sessionService.create({ sessionId: "cli-asking", laneId: "lane-1", ptyId: "pty-cli", toolType: "claude" });
+      const projectSecrets = { listFresh: async () => ({ secrets: [] }) as never, set: async () => ({ name: "STRIPE_KEY" }) as never };
+      void requestProjectSecretFromUser(
+        { requestChatInput: service.requestChatInput, projectSecrets },
+        { chatSessionId: "cli-asking", name: "STRIPE_KEY", reason: "Verifies Stripe deliveries" },
+      ).catch(() => undefined);
+      await vi.waitFor(() => expect(service.listPendingInputs({ sessionId: "cli-asking" }).requests).toHaveLength(1));
+      const card = service.listPendingInputs({ sessionId: "cli-asking" }).requests[0]!;
+
+      // The RPC server refuses an agent's answer when this says true.
+      expect(service.isUserOnlyPendingInput({ sessionId: "cli-asking", itemId: card.itemId ?? card.requestId })).toBe(true);
+      expect(service.isUserOnlyPendingInput({ sessionId: "cli-asking", itemId: "not-a-card" })).toBe(false);
     });
 
     it("replaces blank question text with the body rather than publishing an empty prompt", async () => {

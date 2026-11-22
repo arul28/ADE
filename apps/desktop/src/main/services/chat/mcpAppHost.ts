@@ -143,6 +143,35 @@ function previewArguments(args: Record<string, unknown>): string {
   return text.length > 1_200 ? `${text.slice(0, 1_200)}\n… (${text.length - 1_200} more characters)` : text;
 }
 
+/** How many entries of one declared origin list ADE did not keep (bad shape, or past the cap). */
+function droppedCount(declared: unknown, kept: readonly string[]): number {
+  return Array.isArray(declared) ? Math.max(0, declared.length - kept.length) : 0;
+}
+
+/**
+ * Origins the page's own `<script src>` and `<link href>` tags load from that
+ * its policy does not allow. Diagnostics only: such a page is blocked from its
+ * own code and never answers, and this is the line that says why.
+ */
+function undeclaredPageOrigins(html: string, resourceDomains: readonly string[]): string[] {
+  // `:443` is the port an https origin has anyway; CSP matches it either way.
+  const bare = (origin: string) => origin.replace(/:443$/, "");
+  const declared = resourceDomains.map(bare);
+  const allowed = (origin: string) => declared.some((entry) => entry === origin
+    || (entry.startsWith("https://*.") && origin.endsWith(entry.slice("https://*".length))));
+  const out = new Set<string>();
+  // `[^<>]` keeps one attempt inside one tag, so a page full of unclosed
+  // `<script ` costs one pass, not one pass per tag. The white space before
+  // the name keeps `data-src` from standing in for `src`.
+  const tag = /<(?:script|link)\b[^<>]*?\s(?:src|href)\s*=\s*["']?(https:\/\/[a-z0-9.-]+(?::\d+)?)/gi;
+  for (const match of html.slice(0, 200_000).matchAll(tag)) {
+    const origin = bare(match[1]!.toLowerCase());
+    if (!allowed(origin)) out.add(origin);
+    if (out.size >= 8) break;
+  }
+  return [...out];
+}
+
 /** A provider error as a refusal. "Not running" stays the one plain sentence it is. */
 function failure(error: unknown, what: string): McpAppRequestResult {
   const text = errorText(error);
@@ -287,6 +316,16 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
       connectDomains: csp.connectDomains,
       resourceDomains: csp.resourceDomains,
     });
+    const declared = asRecord(ui?.csp);
+    const gaps = {
+      droppedConnectDomains: droppedCount(declared?.connectDomains, csp.connectDomains),
+      droppedResourceDomains: droppedCount(declared?.resourceDomains, csp.resourceDomains),
+      undeclaredPageOrigins: undeclaredPageOrigins(html, csp.resourceDomains),
+    };
+    if (gaps.droppedConnectDomains || gaps.droppedResourceDomains || gaps.undeclaredPageOrigins.length) {
+      // Info, so it stays in the local log: it names a third party's origins.
+      deps.log("info", "agent_chat.mcp_app_csp_gaps", { sessionId, server, resourceUri, ...gaps });
+    }
     const title = descriptor?.title?.trim() || toolName;
     deps.emitCard(sessionId, {
       cardId: mcpAppCardId(itemId),

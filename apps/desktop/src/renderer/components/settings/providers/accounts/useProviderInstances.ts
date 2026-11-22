@@ -20,7 +20,7 @@ import {
 } from "../../../../../shared/types/providerInstances";
 import { providerActionMessage } from "../providerErrorMessage";
 import type { OpenProjectBinding } from "../../../../../shared/types";
-import { useSettingsMachineScope } from "../../SettingsMachineScope";
+import { useSettingsReadPin } from "../../ProjectCopyScope";
 
 type ProviderInstancesBridge = NonNullable<Window["ade"]["providerInstances"]>;
 
@@ -68,7 +68,7 @@ export type ProviderInstancesState = {
 };
 
 export function useProviderInstances(provider: ProviderInstanceProvider): ProviderInstancesState {
-  const { pin } = useSettingsMachineScope();
+  const pin = useSettingsReadPin();
   const [instances, setInstances] = useState<ProviderInstance[]>([]);
   const [settings, setSettings] = useState<ProviderInstanceSettings>(DEFAULT_PROVIDER_INSTANCE_SETTINGS);
   const [loading, setLoading] = useState(true);
@@ -143,7 +143,7 @@ export function useProviderInstances(provider: ProviderInstanceProvider): Provid
  * and a per-row read would be ten round trips for two answers.
  */
 export function useProviderAccountCounts(): Partial<Record<ProviderInstanceProvider, number>> {
-  const { pin } = useSettingsMachineScope();
+  const pin = useSettingsReadPin();
   const [counts, setCounts] = useState<Partial<Record<ProviderInstanceProvider, number>>>({});
 
   useEffect(() => {
@@ -184,7 +184,7 @@ export function useDefaultProviderInstance(provider: ProviderInstanceProvider): 
   bridgeMissing: boolean;
   reload: () => Promise<void>;
 } {
-  const { pin } = useSettingsMachineScope();
+  const pin = useSettingsReadPin();
   const [instance, setInstance] = useState<ProviderInstance | null>(null);
   const [bridgeMissing, setBridgeMissing] = useState(false);
   const aliveRef = useRef(true);

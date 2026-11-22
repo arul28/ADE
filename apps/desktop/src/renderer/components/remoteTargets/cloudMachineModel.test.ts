@@ -18,7 +18,6 @@ function box(instanceId: string, machineKey: string | null): CloudMachine {
     failure: null,
     machineKey,
     createdAtMs: null,
-    ready: null,
     sleep: { state: "auto" },
     diskFull: null,
   };

@@ -13,9 +13,15 @@ entry point calls the same `chat` action, `startCrossMachineHandoff`:
 - the desktop modal and the session menu's **Hand off › Another machine ▸**
   (including **Quick brief to <machine>**, which uses the chat's current model
   and settings);
-- `ade chat handoff <session> --machine <name> …`, so an agent can move its own
+- `ade chat handoff <session> --to <name> …` (`--machine` is a hidden alias), so an agent can move its own
   chat ("wrap up and continue this on the Mac mini");
 - the phone, through the sync remote command `chat.startCrossMachineHandoff`.
+
+The pickers on desktop, web and iOS offer the account's own computers only.
+`getCrossMachineHandoffOptions` still lists ADE Cloud computers (clients that
+read the full list keep it); the UI drops them and shows one disabled
+**ADE Cloud** row: "ADE Cloud can't take a moved lane yet. Pick one of your
+computers."
 
 The brain reaches the destination over its agents' paired connection (the same
 path as `ade … --machine`), and the destination applies its own action policy to
@@ -310,7 +316,7 @@ remain ordinary hard failures.
 
 ## Batch moves
 
-`ade chat move --machine <name> <session> [<session>…]` moves a set of active
+`ade chat move --to <name> <session> [<session>…]` (`--machine` is a hidden alias) moves a set of active
 Work chats to one destination. `--all` selects every non-archived, non-settled
 Work chat owned by this project brain. Selected chats include their descendants
 by default; `--no-descendants` limits the batch to the named chats. The source
@@ -502,6 +508,50 @@ re-verifies strict ancestry, and refuses a lane already at the expected commit.
 The source-side decoder correspondingly rejects a `behindBy` that is not a
 positive integer, so a zero-distance offer the destination would refuse can
 never render.
+
+## Continue on a new ADE Cloud computer
+
+A chat or CLI whose ADE Cloud computer was deleted continues on a new computer
+in the same row (fork-continue). There is no source brain: the old computer
+saved a fork capsule to the account server at each rest save (the idle step,
+`prepare-stop`, `ade cloud save-for-rest`), and the new computer reads it from
+there. This capsule holds only the provider's history
+(`prepareCloudRestCapsule`): no Git check, no `gitBundle`, and empty
+`source.headSha` and `source.originUrl`. The lane's code comes from the lane
+backup, and the restore reads no Git facts from the capsule. It is refused
+while a turn runs, and it leaves a CLI running. The server side is in
+[ADE Cloud](../ade-cloud/README.md#continue-a-chat-whose-computer-is-gone-fork-continue).
+
+The new brain (`apps/ade-cli/src/services/cloudChats/cloudChatRestore.ts`)
+makes the lane, then:
+
+1. Moves the saved copy to its own machine key. A failed move stops the
+   continue before the restore, so a retry finds the copy again.
+2. Holds the chat's uploads, restores it, then goes on from the server's last
+   part.
+3. Restores the chat or CLI under its SAME id, through the move destination
+   code below:
+
+| Provider | Chat | CLI |
+|---|---|---|
+| Claude | Fork capsule (`materializeCrossMachineFork`) | Claude Code: CLI capsule, resumed with `launchMovedCli` |
+| Codex | Fork capsule (a `.jsonl.zst` rollout replays) | Codex CLI: CLI capsule, resumed with `launchMovedCli` |
+| OpenCode | Fork capsule (`session.import`) | Starts fresh |
+| Cursor, Droid, Pi, Muse, Qwen, Kimi, Grok, Copilot, Devin, Antigravity | Replays the saved transcript | Starts fresh |
+
+- A chat's saved transcript becomes its history, each event once
+  (`restoreSavedCloudChat`). A chat with no usable capsule replays that
+  transcript at its next turn. Running the restore again skips the events it
+  already has.
+- A CLI with a capsule for the same provider gets its conversation back
+  (`placeCliConversation`), resumes under the same session id, and then gets
+  the message typed in. Every other CLI starts fresh under the same session id
+  with an info line and the message as its first prompt
+  (`restoreSavedCloudCli`).
+- The server marks a CLI continue with `continueChat.kind: "cli"`. Without the
+  kind (an older server), the brain tries a saved chat first, then a CLI.
+- The CLI's old session copy stays under the old machine key. The new computer
+  saves a new copy at its next rest.
 
 ## Idempotency and recovery
 

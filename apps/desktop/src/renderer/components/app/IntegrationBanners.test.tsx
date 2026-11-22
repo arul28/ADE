@@ -10,6 +10,7 @@ import type {
 import { IntegrationBanners, type IntegrationBannersProps } from "./IntegrationBanners";
 import { AppBannerHost } from "../ui/notice";
 import { resetAppBannersForTests } from "../ui/notice/appBannerStore";
+import { useAppStore } from "../../state/appStore";
 
 /** The registrar plus the one host that draws what it registers. */
 function Harness(props: IntegrationBannersProps) {
@@ -115,6 +116,7 @@ function baseProps(overrides: Partial<IntegrationBannersProps> = {}): Integratio
     currentProjectRoot: "/project/a",
     githubStatus: null,
     hasAnyAiProvider: true,
+    freeModelsReady: false,
     aiStatusLoaded: true,
     relayHealth: null,
     navigate: vi.fn() as unknown as IntegrationBannersProps["navigate"],
@@ -145,11 +147,16 @@ describe("IntegrationBanners", () => {
   beforeEach(() => {
     cleanup();
     window.localStorage.clear();
+    // The tab's copy: the GitHub App status is read there.
+    useAppStore.setState({
+      projectBinding: { kind: "local", key: "local:/project/a", rootPath: "/project/a", displayName: "a" },
+    });
   });
 
   afterEach(() => {
     cleanup();
     resetAppBannersForTests();
+    useAppStore.setState({ projectBinding: null });
   });
 
   it("caps at two banners and collapses the rest behind an expandable row", async () => {

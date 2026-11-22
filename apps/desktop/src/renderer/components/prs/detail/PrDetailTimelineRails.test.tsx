@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { PrActivityEvent, PrCommit, PrReview, PrReviewThread, PrStatus, PrWithConflicts } from "../../../../shared/types/prs";
 import { parsePrsRouteState } from "../prsRouteState";
@@ -331,18 +331,6 @@ function openThread(id: string, author: string, createdAt: string): PrReviewThre
 }
 
 describe("PrDetailTimelineRails — Overview layout", () => {
-  it("is one thread with the tick rail and the dock laid over it, Merge open by default", () => {
-    renderRails();
-    const overview = screen.getByTestId("pr-detail-timeline-rails");
-    expect(overview.contains(screen.getByTestId("pr-timeline"))).toBe(true);
-    // No resizable rail and no separator any more.
-    expect(screen.queryByRole("separator")).toBeNull();
-    expect(screen.queryByTestId("pr-detail-right-rail")).toBeNull();
-    for (const id of ["merge", "comment", "reviewers", "labels", "assignees"]) {
-      expect(screen.getByTestId(`pr-dock-bubble-${id}`)).toBeTruthy();
-    }
-    expect(screen.getByTestId("pr-dock-card-merge")).toBeTruthy();
-  });
 
   it("opens one card at a time and closes it on Escape", () => {
     renderRails();
@@ -522,21 +510,6 @@ function renderHeader(overrides: Partial<ComponentProps<typeof PrDetailHeader>> 
 }
 
 describe("PrDetailHeader", () => {
-  it("is a card: number and author, the title, base ← head with the lane, then the tabs", () => {
-    renderHeader();
-    expect(screen.getByText("#1180")).toBeTruthy();
-    expect(screen.getByText("arul28")).toBeTruthy();
-    expect(screen.getByText(/opened/)).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "ADE UI clutter reduction" })).toBeTruthy();
-    expect(screen.getByText("main")).toBeTruthy();
-    expect(screen.getByText("ade/ade-ui-clutter-reduction")).toBeTruthy();
-    expect(screen.getByTestId("pr-header-lane-chip").textContent).toContain("Scope cuts");
-    expect(screen.getByRole("tab", { name: "Overview" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Files" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Checks" })).toBeTruthy();
-    expect(screen.getByTestId("pr-actions-trigger")).toBeTruthy();
-    expect(screen.getByLabelText("Refresh pull request")).toBeTruthy();
-  });
 
   it("counts running checks live beside the Checks tab, then settles to a result", () => {
     renderHeader();

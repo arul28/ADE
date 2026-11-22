@@ -1,3 +1,6 @@
+import { cacheScopePin } from "./tabBindingKey";
+import { NO_PROJECT_COMPUTER_ONLINE } from "./requirePin";
+
 type ProjectConfigSnapshot = Awaited<ReturnType<typeof window.ade.projectConfig.get>>;
 type OpenProjectBinding = import("../../shared/types/core").OpenProjectBinding;
 
@@ -14,17 +17,21 @@ function getProjectRootKey(projectRoot: string | null | undefined, pin?: OpenPro
   return projectRoot?.trim() || pin?.rootPath?.trim() || "__no_project__";
 }
 
-function getCacheKey(projectRoot: string | null | undefined, pin?: OpenProjectBinding | null): string {
-  const rootKey = getProjectRootKey(projectRoot, pin);
+function getCacheKey(projectRoot: string | null | undefined, rawPin?: OpenProjectBinding | null): string {
+  const rootKey = getProjectRootKey(projectRoot, rawPin);
+  const pin = cacheScopePin(rawPin);
   return pin?.key ? `${rootKey}::pin:${pin.key}` : rootKey;
 }
 
-export async function getProjectConfigCached(args?: {
+/** `pin`: the copy whose config to read. Null: none is online, so the read fails. */
+export async function getProjectConfigCached(args: {
   projectRoot?: string | null;
-  pin?: OpenProjectBinding | null;
+  pin: OpenProjectBinding | null;
   force?: boolean;
   ttlMs?: number;
 }): Promise<ProjectConfigSnapshot> {
+  const pin = args.pin;
+  if (!pin) throw new Error(NO_PROJECT_COMPUTER_ONLINE);
   const ttlMs = args?.ttlMs ?? DEFAULT_TTL_MS;
   const key = getCacheKey(args?.projectRoot, args?.pin);
   const now = Date.now();
@@ -39,7 +46,7 @@ export async function getProjectConfigCached(args?: {
     }
   }
 
-  const promise = window.ade.projectConfig.get(args?.pin ?? undefined).then((value) => {
+  const promise = window.ade.projectConfig.get(pin).then((value) => {
     configCache.set(key, {
       value,
       expiresAt: Date.now() + ttlMs,

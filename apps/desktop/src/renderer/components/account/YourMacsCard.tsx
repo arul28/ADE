@@ -67,6 +67,9 @@ import { RoutePills } from "./MachineRoutes";
 import { routesAvailable, useMachineRoutesControl } from "./useMachineRoutes";
 import type { AccountThisComputer } from "./AccountHero";
 import { machineRouteItems } from "./machineRouteModel";
+import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
+import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import "./accountPage.css";
 
 /** The quiet heading over one column of a machine's expanded inventory. */
@@ -163,9 +166,9 @@ const MACHINES_REFRESH_MS = 30_000;
 const YOUR_COMPUTERS_SETTINGS_ANCHOR = "account-computers";
 /**
  * The ADE iPhone app holds live connections to at most this many computers at
- * once (the one in focus plus three). Keep in step with the iOS fleet limit.
+ * once. Keep in step with the iOS fleet limit (`MachineFleet.liveMachineLimit`).
  */
-const MOBILE_LIVE_MACHINE_LIMIT = 4;
+const MOBILE_LIVE_MACHINE_LIMIT = 8;
 const ACCOUNT_MENU_WIDTH = 200;
 
 type AccountBridge = {
@@ -623,14 +626,23 @@ export function YourMacsCard({
     };
   }, []);
 
+  // ADE Cloud's computers are one machine here: one ADE Cloud row, never a row per computer.
+  const cloudIndex = useAdeCloudLaneComputers();
+  const adeCloudShown = useAdeCloudEnabled();
   const machines = useMemo(() => {
-    const list = [...(result?.machines ?? [])];
+    const list = (result?.machines ?? []).filter((machine) =>
+      !isAdeCloudComputer({ machineKey: machine.machineKey, hostname: machine.name }, cloudIndex));
     // Pin this computer first; keep directory order otherwise.
     return list.sort((a, b) => (isThisMac(b) ? 1 : 0) - (isThisMac(a) ? 1 : 0));
-  }, [result?.machines, isThisMac]);
+  }, [result?.machines, isThisMac, cloudIndex]);
+
+  const ownWebMachines = useMemo(
+    () => webMachines.filter((machine) => !isAdeCloudComputer({ machineKey: machine.accountMachine?.machineKey ?? null, hostname: machine.accountMachine?.name ?? null }, cloudIndex)),
+    [cloudIndex, webMachines],
+  );
 
   const rows = useMemo<ComputerDisplayRow[]>(() => {
-    if (usingWorkspaceRoster) return webMachines.map(displayRowFromWebMachine);
+    if (usingWorkspaceRoster) return ownWebMachines.map(displayRowFromWebMachine);
     return machines.map((machine) =>
       displayRowFromAccountMachine(
         machine,
@@ -638,7 +650,7 @@ export function YourMacsCard({
         isMachineConnected(machine, connectedIds),
       ),
     );
-  }, [connectedIds, isThisMac, machines, usingWorkspaceRoster, webMachines]);
+  }, [connectedIds, isThisMac, machines, ownWebMachines, usingWorkspaceRoster]);
 
   const reloadMachines = useCallback(() => {
     invalidateAccountMachines();
@@ -834,7 +846,7 @@ export function YourMacsCard({
   let summary: string;
   if (usingWorkspaceRoster) {
     if (workspace.directoryLoading && webMachines.length === 0) summary = "Checking your computers…";
-    else if (workspace.account.state === "signed_in") summary = webMachineRosterSummary(webMachines);
+    else if (workspace.account.state === "signed_in") summary = webMachineRosterSummary(ownWebMachines);
     else if (workspace.account.state === "unconfigured") summary = "The account directory isn't set up yet";
     else if (workspace.account.state === "signed_out" || workspace.account.state === "auth_expired") {
       summary = "Sign in to see your computers";
@@ -1070,7 +1082,7 @@ export function YourMacsCard({
       ) : null}
       </div>
 
-      {rows.length > 0 || directoryOffline ? (
+      {rows.length > 0 || directoryOffline || adeCloudShown ? (
         <ModernRows>
           {rows.map((row) => {
             const machine = row.accountMachine;
@@ -1226,8 +1238,32 @@ export function YourMacsCard({
             );
           })}
 
+          {adeCloudShown ? (
+            // One row for all of ADE Cloud: its computers, plan and hours live in ADE Cloud settings.
+            <div className="ade-acct-machine">
+              <div className="ade-acct-machine-row">
+                <span className="ade-acct-caret-spacer" />
+                <span className="ade-acct-glyph" aria-hidden>
+                  <MachineAvatar
+                    colorKey={ADE_CLOUD_MACHINE_ID}
+                    name={ADE_CLOUD_NAME}
+                    platform={machinePlatform(null, "linux")}
+                    formFactor={machineFormFactor({ name: ADE_CLOUD_NAME })}
+                    size={32}
+                  />
+                </span>
+                <div className="ade-acct-machine-body">
+                  <div className="ade-acct-machine-title">
+                    <span className="ade-acct-machine-name">{ADE_CLOUD_NAME}</span>
+                  </div>
+                  <div className="ade-acct-machine-status">Its computers start when a lane needs one. Manage it in ADE Cloud settings.</div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           {directoryOffline ? (
-            <div className="ade-acct-footnote" style={rows.length === 0 ? { borderTop: 0 } : undefined}>
+            <div className="ade-acct-footnote" style={rows.length === 0 && !adeCloudShown ? { borderTop: 0 } : undefined}>
               <span>
                 {webMode
                   ? "Use the machine menu above to switch computers."

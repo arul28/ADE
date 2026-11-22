@@ -18,6 +18,7 @@ import { LinearStateIcon } from "../lanes/linearBrand";
 import { LinearConflictBadge } from "./LinearIssueBrowserRows";
 import { LinearIssueView } from "../issues/LinearIssueView";
 import type { BrowserIssue, LinearIssueEdit } from "./linearIssueBrowserModel";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 
 function openIssueUrl(url: string | null | undefined): void {
   if (url) void window.ade?.app?.openExternal?.(url);
@@ -101,6 +102,8 @@ export function LinearIssueDetails({
   onOpenIssue?: (ref: LinearIssueRef) => void;
   loadingIssueId: string | null;
 }) {
+  // Comments go to Linear through the reader copy's machine.
+  const linearPin = useActiveRepositoryReader();
   if (!issue) {
     return (
       <aside className="grid min-h-0 place-items-center overflow-hidden px-4 py-8 text-center text-[12px] text-muted-fg/55">
@@ -123,9 +126,9 @@ export function LinearIssueDetails({
           branchName={branchName}
           onSaveTitle={onEdit ? async (title) => onEdit(issue, { title }) : undefined}
           onSaveDescription={onEdit ? async (description) => onEdit(issue, { description }) : undefined}
-          onComment={typeof window.ade?.cto?.createLinearIssueComment === "function"
+          onComment={typeof window.ade?.cto?.createLinearIssueComment === "function" && linearPin
             ? async (body) => {
-              await window.ade.cto?.createLinearIssueComment({ issueId: issue.id, body });
+              await window.ade.cto?.createLinearIssueComment({ issueId: issue.id, body }, linearPin);
             }
             : undefined}
           aboveTitle={(

@@ -23,10 +23,8 @@ import {
   SANS_FONT,
   SECTION_LABEL_STYLE,
   outlineButton,
-  primaryButton,
 } from "../lanes/laneDesignTokens";
 import { openExternalUrl } from "../../lib/openExternal";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { ArrowsClockwise } from "@phosphor-icons/react";
 import {
   ConnectedTag,
@@ -46,6 +44,9 @@ import {
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
+import { providerBrand, providerThemeVars } from "./providers/providerBrand";
+import { formatSignInFailureReport } from "./providers/providerDiagnosticsReport";
+import { SignInAccountNote, SignInCodePanel, SignInFailure, SignInSteps, SignInSuccess } from "./providers/signInSheetParts";
 
 export function getPiTone(
   connection: AiProviderConnectionStatus | null | undefined,
@@ -419,105 +420,101 @@ function PiSignInFlowCard({
   onCancel: () => void;
   onRetry: (outcome: PiSignInOutcome) => void;
 }) {
-  const { copy, copied } = useCopyToClipboard();
   const prompt = flow?.prompt ?? null;
   const choiceOptions = piChoiceOptions(prompt);
   const link = flow?.link ?? null;
   const userCode = link?.userCode ?? null;
   const verifyUrl = link?.url ?? link?.verificationUri ?? null;
+  const stage = verifyUrl || userCode || prompt ? "waiting" : "starting";
+  const failureReport = outcome?.state === "error"
+    ? formatSignInFailureReport({
+        provider: `pi/${outcome.providerId}`,
+        providerLabel: `Pi: ${providerName(outcome.providerId)}`,
+        place: "the computer this page shows",
+        stage: "after the sign-in started",
+        title: "Sign-in did not complete.",
+        detail: outcome.error ?? null,
+        output: null,
+      })
+    : null;
 
   return (
-    <>
+    <div className="ade-sis" data-compact="true" style={providerThemeVars(providerBrand("pi"))}>
       {flow ? (
-        <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ fontSize: 11, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textPrimary }}>
-            Signing in to {providerName(flow.providerId)}
+        <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: 12, display: "flex", flexDirection: "column", gap: 12, borderRadius: 10 }}>
+          <div style={{ fontSize: 12.5, fontFamily: SANS_FONT, fontWeight: 650, color: COLORS.textPrimary }}>
+            Sign in to {providerName(flow.providerId)}
           </div>
-          <div role="status" aria-live="polite" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            {flow.progress ?? "Waiting for Pi…"}
-          </div>
+          <SignInAccountNote providerLabel={providerName(flow.providerId)} expectedAccount={null} />
+          <SignInSteps
+            stage={stage}
+            approveLabel={verifyUrl || userCode ? undefined : "Answer Pi's question"}
+            startHint={flow.progress ?? "Waiting for Pi…"}
+          >
+            {flow.progress && stage === "waiting" ? (
+              <span role="status" aria-live="polite" className="ade-sis-hint">{flow.progress}</span>
+            ) : null}
+            <SignInCodePanel url={verifyUrl} deviceCode={userCode} open={openExternalUrl} />
 
-          {userCode ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>Code</span>
-              <code style={{ fontSize: 16, fontFamily: MONO_FONT, letterSpacing: "2px", color: COLORS.textPrimary, background: `${COLORS.textDim}12`, border: `1px solid ${COLORS.border}`, padding: "4px 10px" }}>
-                {userCode}
-              </code>
-              <button type="button" style={outlineButton({ height: 26 })} onClick={() => void copy(userCode)}>
-                {copied ? "Copied" : "Copy code"}
-              </button>
-            </div>
-          ) : null}
-
-          {verifyUrl ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <code style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, overflowWrap: "anywhere", wordBreak: "break-all", minWidth: 0 }}>
-                {verifyUrl}
-              </code>
-              <button type="button" style={outlineButton({ height: 26 })} onClick={() => openExternalUrl(verifyUrl)}>
-                Open
-              </button>
-            </div>
-          ) : null}
-
-          {prompt ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {/* A label may only point at a form control, so the choice
-                  branch names its button group instead of borrowing htmlFor. */}
-              <label
-                id={promptLabelId}
-                {...(choiceOptions.length ? {} : { htmlFor: promptFieldId })}
-                style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, lineHeight: 1.5 }}
-              >
-                {prompt.message}
-              </label>
-              {choiceOptions.length ? (
-                <div role="group" aria-labelledby={promptLabelId} style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {choiceOptions.map((option, index) => (
-                    <button
-                      key={option.value}
-                      ref={index === 0 ? firstChoiceRef : undefined}
-                      type="button"
-                      style={outlineButton({ height: "auto", minHeight: 28, padding: "6px 10px", flexDirection: "column", alignItems: "flex-start", justifyContent: "center", gap: 2, textAlign: "left" })}
-                      onClick={() => onAnswer(option.value)}
-                    >
-                      <span>{option.label}</span>
-                      {option.description ? (
-                        <span style={{ fontSize: 10, fontFamily: MONO_FONT, fontWeight: 400, color: COLORS.textDim }}>
-                          {option.description}
-                        </span>
-                      ) : null}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <form
-                  style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    onAnswer(promptValue);
-                  }}
+            {prompt ? (
+              <div className="ade-sis-paste">
+                {/* A label may only point at a form control, so the choice
+                    branch names its button group instead of borrowing htmlFor. */}
+                <label
+                  id={promptLabelId}
+                  className="ade-sis-paste-label"
+                  {...(choiceOptions.length ? {} : { htmlFor: promptFieldId })}
                 >
-                  <input
-                    id={promptFieldId}
-                    ref={promptInputRef}
-                    type={prompt.kind === "secret" ? "password" : "text"}
-                    value={promptValue}
-                    placeholder={prompt.placeholder}
-                    autoComplete="off"
-                    onChange={(event) => onPromptValueChange(event.target.value)}
-                    style={{ flex: "1 1 220px", minWidth: 0, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
-                  />
-                  <button type="submit" style={primaryButton({ height: 28 })} disabled={!promptValue.trim()}>
-                    Continue
-                  </button>
-                </form>
-              )}
-            </div>
-          ) : null}
+                  {prompt.message}
+                </label>
+                {choiceOptions.length ? (
+                  <div role="group" aria-labelledby={promptLabelId} style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {choiceOptions.map((option, index) => (
+                      <button
+                        key={option.value}
+                        ref={index === 0 ? firstChoiceRef : undefined}
+                        type="button"
+                        style={outlineButton({ height: "auto", minHeight: 28, padding: "6px 10px", flexDirection: "column", alignItems: "flex-start", justifyContent: "center", gap: 2, textAlign: "left" })}
+                        onClick={() => onAnswer(option.value)}
+                      >
+                        <span>{option.label}</span>
+                        {option.description ? (
+                          <span style={{ fontSize: 10, fontFamily: MONO_FONT, fontWeight: 400, color: COLORS.textDim }}>
+                            {option.description}
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <form
+                    className="ade-sis-paste-row"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      onAnswer(promptValue);
+                    }}
+                  >
+                    <input
+                      id={promptFieldId}
+                      ref={promptInputRef}
+                      className="ade-sis-input"
+                      type={prompt.kind === "secret" ? "password" : "text"}
+                      value={promptValue}
+                      placeholder={prompt.placeholder}
+                      autoComplete="off"
+                      onChange={(event) => onPromptValueChange(event.target.value)}
+                    />
+                    <button type="submit" className="ade-sis-button" data-primary="true" disabled={!promptValue.trim()}>
+                      Continue
+                    </button>
+                  </form>
+                )}
+              </div>
+            ) : null}
+          </SignInSteps>
 
           <div>
-            <button type="button" style={outlineButton({ height: 26 })} onClick={onCancel}>Cancel</button>
+            <button type="button" className="ade-sis-button" onClick={onCancel}>Cancel</button>
           </div>
         </div>
       ) : null}
@@ -529,42 +526,34 @@ function PiSignInFlowCard({
           alert back to polite. */}
       <div
         role={outcome?.state === "error" ? "alert" : "status"}
-        style={
-          outcome
-            ? {
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                flexWrap: "wrap",
-                fontSize: 10,
-                fontFamily: MONO_FONT,
-                lineHeight: 1.5,
-                color: outcome.state === "ok" ? COLORS.success : outcome.state === "cancelled" ? COLORS.textMuted : COLORS.danger,
-              }
-            : { position: "absolute", width: 0, height: 0, overflow: "hidden" }
-        }
+        style={outcome ? { display: "flex", flexDirection: "column", gap: 8 } : { position: "absolute", width: 0, height: 0, overflow: "hidden" }}
       >
-        {outcome ? (
-          <span>
-            {outcome.state === "ok"
-              ? `Signed in to ${providerName(outcome.providerId)}.`
-              : outcome.state === "cancelled"
-                ? "Sign-in cancelled."
-                : `${providerName(outcome.providerId)}: ${outcome.error ?? "Sign-in did not finish."}`}
-          </span>
-        ) : null}
-        {outcome?.state === "error" ? (
-          <button
-            ref={retryButtonRef}
-            type="button"
-            style={outlineButton({ height: 24, fontSize: 12 })}
-            onClick={() => onRetry(outcome)}
+        {outcome?.state === "ok" ? (
+          <SignInSuccess account={null} providerLabel={providerName(outcome.providerId)} live={false} />
+        ) : outcome?.state === "cancelled" ? (
+          <SignInFailure title="The sign-in was stopped." report={null} tone="neutral" live={false} />
+        ) : outcome?.state === "error" ? (
+          <SignInFailure
+            title="Sign-in did not complete."
+            detail={`${providerName(outcome.providerId)}: ${outcome.error ?? "the sign-in stopped."}`}
+            report={failureReport}
+            live={false}
           >
-            Try again
-          </button>
+            <span className="ade-sis-actions" style={{ marginTop: 3 }}>
+              <button
+                ref={retryButtonRef}
+                type="button"
+                className="ade-sis-button"
+                data-primary="true"
+                onClick={() => onRetry(outcome)}
+              >
+                Try again
+              </button>
+            </span>
+          </SignInFailure>
         ) : null}
       </div>
-    </>
+    </div>
   );
 }
 

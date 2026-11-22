@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 
 import type { AiSettingsStatus, CloudAgentProvider } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
+import { useTabCopyPin } from "../../../state/repositoryScope";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -121,18 +122,26 @@ export function CloudAgentsQuickViewButton({
   const openRef = useRef(open);
   openRef.current = open;
 
-  const readStatus = useCallback(() => window.ade.ai.getStatus(), []);
+  // The provider sign-in that matters is the one on the tab copy's machine,
+  // where the panel lists and launches agents.
+  const tabCopyPin = useTabCopyPin();
+  const readStatus = useCallback(
+    () => (tabCopyPin ? window.ade.ai.getStatus(undefined, tabCopyPin) : Promise.reject(new Error("No computer with this project is online."))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tabCopyPin?.key],
+  );
 
   const loadVisibility = useCallback(
     (force = false) => readVisibilityCached({
       brand,
       cacheKey: activeProjectVisibilityKey,
-      reader: typeof window !== "undefined" && typeof window.ade?.ai?.getStatus === "function"
+      reader: typeof window !== "undefined" && typeof window.ade?.ai?.getStatus === "function" && tabCopyPin
         ? readStatus
         : undefined,
       force,
     }),
-    [activeProjectVisibilityKey, brand, readStatus],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeProjectVisibilityKey, brand, readStatus, tabCopyPin?.key],
   );
 
   const shouldAutoCheckVisibility = Boolean(activeProjectRoot);

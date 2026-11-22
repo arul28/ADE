@@ -1,3 +1,10 @@
+import {
+  isMachineScopeRootPath,
+  isMachineScopeOlderBrainError,
+  MACHINE_SCOPE_PROJECT_ID,
+  MACHINE_SCOPE_ROOT_PATH,
+  THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE,
+} from "../../../shared/machineScope";
 import { appControlFrameDemandParams, type AppControlFrameDemand } from "../../../shared/appControlFrameDemand";
 import { readWindowsProcessImages } from "../android/androidEmulatorImage";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -18,6 +25,7 @@ import {
   isRuntimeProtocolCompatible,
   parseRuntimeLastWedge,
   parseRuntimePublishHealth,
+  parseRuntimeUnplannedRestart,
 } from "../../../shared/adeRuntimeProtocol";
 import type {
   RemoteRuntimeActionRequest,
@@ -56,7 +64,11 @@ import {
 import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/runtimeRpcClient";
 import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
-import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
+import {
+  getRuntimeServiceStatus,
+  getRuntimeServiceStatusAsync,
+  type ServiceManagerStatusResult,
+} from "../../../../../ade-cli/src/serviceManager";
 import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME, isPidAlive } from "../../../../../ade-cli/src/serviceManager/common";
 import { readWindowsServicePidRecord } from "../../../../../ade-cli/src/serviceManager/installWindows";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
@@ -73,7 +85,8 @@ import {
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { runtimeActionReplyError } from "../../../shared/runtimeActionReplyError";
-import { expectedErrorKind } from "../../../shared/expectedError";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
+import { codedError, parseCodedErrorMessage, PROJECT_FOLDER_TOO_SLOW_CODE } from "../../../shared/codedError";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
@@ -88,6 +101,15 @@ import { callerReportsFailureParam, isInCapturedIpcCall } from "../../sentry/ipc
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
+/** The machine scope as a project record, so the per-root calls reach it unchanged. */
+const MACHINE_SCOPE_PROJECT_RECORD: RemoteRuntimeProjectRecord = {
+  projectId: MACHINE_SCOPE_PROJECT_ID,
+  rootPath: MACHINE_SCOPE_ROOT_PATH,
+  displayName: "This computer",
+  addedAt: 0,
+  lastOpenedAt: 0,
+  gitOriginUrl: null,
+};
 const SLOW_ACTION_THRESHOLD_MS = 500;
 /**
  * A slow action that keeps being slow (a status poll every few seconds) says
@@ -583,9 +605,10 @@ export function parseRuntimeServiceStatusJson(stdout: string): ServiceManagerSta
 /**
  * Service-health probe that never blocks the Electron main thread.
  *
- * On macOS and Linux the in-process probe is a single `launchctl`/`systemctl`
- * call (tens of milliseconds), so it stays exactly as it was — same code, same
- * timing, no extra process. On Windows the same probe costs two
+ * On macOS the in-process probe runs its `launchctl` reads with `execFile`
+ * (the sync reads cost about 13 ms of main thread, inside the first window's
+ * wait for its session at launch). On Linux it is a single `systemctl` call,
+ * so it stays exactly as it was. On Windows the same probe costs two
  * `powershell.exe -Command Get-ScheduledTask` spawns; measured on a Windows 11
  * host that is 1,045-1,089 ms each, and `spawnSync` blocks the main thread —
  * which stalls the window message pump, so window drags and unrelated clicks
@@ -593,7 +616,7 @@ export function parseRuntimeServiceStatusJson(stdout: string): ServiceManagerSta
  * executes the identical `getRuntimeServiceStatus()` code path.
  */
 export async function defaultQueryServiceStatusAsync(): Promise<ServiceManagerStatusResult> {
-  if (process.platform !== "win32") return getRuntimeServiceStatus();
+  if (process.platform !== "win32") return await getRuntimeServiceStatusAsync();
   const cliPath = resolveCliScriptPath();
   const stdout = await new Promise<string | null>((resolve) => {
     let child: ChildProcess;
@@ -769,6 +792,13 @@ type LocalRuntimeConnectionStats = {
   projectReregistrations: number;
 };
 
+function readsChatCreateAndSendCapability(initializeResult: unknown): boolean {
+  if (!initializeResult || typeof initializeResult !== "object") return false;
+  const capabilities = (initializeResult as { capabilities?: unknown }).capabilities;
+  return Boolean(capabilities && typeof capabilities === "object"
+    && (capabilities as { chatCreateAndSend?: unknown }).chatCreateAndSend === true);
+}
+
 export function readLocalRuntimeInfo(value: unknown): {
   version: string | null;
   buildHash: string | null;
@@ -777,6 +807,7 @@ export function readLocalRuntimeInfo(value: unknown): {
   syncPort: number | null;
   publishHealth: LocalRuntimeStatus["publishHealth"];
   lastWedge: LocalRuntimeStatus["lastWedge"];
+  lastUnplannedRestart: LocalRuntimeStatus["lastUnplannedRestart"];
   minCompatibleProtocol: number | null;
   protocolVersion: number | null;
 } {
@@ -788,6 +819,7 @@ export function readLocalRuntimeInfo(value: unknown): {
     syncPort: null,
     publishHealth: null,
     lastWedge: null,
+    lastUnplannedRestart: null,
     minCompatibleProtocol: null,
     protocolVersion: null,
   } satisfies ReturnType<typeof readLocalRuntimeInfo>;
@@ -830,6 +862,7 @@ export function readLocalRuntimeInfo(value: unknown): {
           }
         : null,
     lastWedge: parseRuntimeLastWedge(info.lastWedge),
+    lastUnplannedRestart: parseRuntimeUnplannedRestart(info.lastUnplannedRestart),
     minCompatibleProtocol:
       typeof minCompatibleProtocol === "number"
       && Number.isInteger(minCompatibleProtocol)
@@ -1246,16 +1279,30 @@ function serviceHealthState(
 
 const APP_CONTROL_FRAME_DEMAND_TIMEOUT_MS = 5_000;
 
+/**
+ * How long a switch back to an already-open project waits for the brain's
+ * refusal check. A healthy brain answers in about a millisecond; a frozen one
+ * is not waited for.
+ */
+const OPEN_TAB_REFUSAL_CHECK_TIMEOUT_MS = 1_500;
+
 export class LocalRuntimeConnectionPool {
   private disposed = false;
   private stopping = false;
   private connection: Promise<LocalRuntimeConnection> | null = null;
   private activeConnection: LocalRuntimeConnection | null = null;
+  /** Folders the brain answered `project_folder_too_slow` for (see `isKnownRefused`). */
+  private readonly refusedRoots = new Set<string>();
   private activeClient: RuntimeRpcClient | null = null;
+  /** Connections whose brain advertised `chatCreateAndSend` in its initialize answer. */
+  private readonly chatCreateAndSendClients = new WeakSet<RuntimeRpcClient>();
   private activeRuntimePid: number | null = null;
   private activeRuntimeSyncPort: number | null = null;
   private activeRuntimePublishHealth: LocalRuntimeStatus["publishHealth"] = null;
   private activeRuntimeLastWedge: LocalRuntimeStatus["lastWedge"] = null;
+  private activeRuntimeLastUnplannedRestart: LocalRuntimeStatus["lastUnplannedRestart"] = null;
+  /** One-shot re-reads after connecting to a brain that just came back from a crash (its counts settle). */
+  private restartFactRefreshTimers: ReturnType<typeof setTimeout>[] = [];
   private ownedRuntimeChild: ChildProcess | null = null;
   /** The endpoint belongs to the child, even after its active connection resets. */
   private ownedRuntimeSocketPath: string | null = null;
@@ -1361,6 +1408,8 @@ export class LocalRuntimeConnectionPool {
   // still connected may serve the long window; see `serviceHealthReadMaxAgeMs`.
   private serviceHealthSteadyClient: RuntimeRpcClient | null = null;
   private runtimeStatusRefreshPromise: Promise<void> | null = null;
+  /** The last status pushed to the windows, serialized; a refresh that matches it pushes nothing. */
+  private lastEmittedRuntimeStatus: string | null = null;
   // Rolling 24 h aggregate of slow (>500 ms) and of failed daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
   private healthSamples: HealthSample[] = [];
@@ -1422,20 +1471,24 @@ export class LocalRuntimeConnectionPool {
    * How old a cached service-health snapshot a read may serve before it probes
    * again. Only `steadyWindowApplies` gets the long window; everything else
    * (disconnected, connecting, an app-owned fallback, an install in flight, a
-   * failed probe, and every read on macOS and Linux) keeps the 2 s window.
+   * failed probe) keeps the 2 s window.
    */
   private serviceHealthReadMaxAgeMs(): number {
     return this.steadyWindowApplies() ? SERVICE_HEALTH_STEADY_MAX_AGE_MS : SERVICE_HEALTH_READ_MAX_AGE_MS;
   }
 
   /**
-   * Whether the cached snapshot may be read through the long window: Windows,
-   * connected to the brain client the snapshot was taken under, and that brain
-   * is the machine service's own (see `isServiceHealthSteady`).
+   * Whether the cached snapshot may be read through the long window: connected
+   * to the brain client the snapshot was taken under, and that brain is the
+   * machine service's own (see `isServiceHealthSteady`). On every platform: the
+   * macOS and Linux probe is cheaper than Windows', but it is a `spawnSync` on
+   * the main thread, and status polls asked for one every few seconds while
+   * the app sat idle. A brain that goes away clears `activeClient`, which ends
+   * the window, and a surface that shows service health still probes on open
+   * (`refreshServiceHealthForView`).
    */
   private steadyWindowApplies(): boolean {
-    return process.platform === "win32"
-      && this.isServiceHealthSteady()
+    return this.isServiceHealthSteady()
       && this.serviceHealthSteadyClient === this.activeClient;
   }
 
@@ -1474,6 +1527,7 @@ export class LocalRuntimeConnectionPool {
           }
         : null,
       lastWedge: this.activeRuntimeLastWedge ? { ...this.activeRuntimeLastWedge } : null,
+      lastUnplannedRestart: this.activeRuntimeLastUnplannedRestart ? { ...this.activeRuntimeLastUnplannedRestart } : null,
       runtimeMode: this.runtimeMode(),
       appFallback: this.appFallback ? { ...this.appFallback } : null,
       versionSkew: { ...this.versionSkewStatus },
@@ -1485,6 +1539,28 @@ export class LocalRuntimeConnectionPool {
   async getFreshStatus(): Promise<LocalRuntimeStatus> {
     await this.refreshRuntimeDiagnostics();
     return this.getStatus();
+  }
+
+  /**
+   * A brain that came back from a crash counts the chats and CLI sessions it
+   * continued during its first seconds, after this window connected. Two
+   * one-shot re-reads pick up the counts for the restart banner; nothing
+   * polls. Only while the restart is young.
+   */
+  private scheduleRestartFactRefresh(restart: LocalRuntimeStatus["lastUnplannedRestart"]): void {
+    for (const timer of this.restartFactRefreshTimers) clearTimeout(timer);
+    this.restartFactRefreshTimers = [];
+    if (!restart) return;
+    const ageMs = Date.now() - Date.parse(restart.ts);
+    if (!Number.isFinite(ageMs) || ageMs > 3 * 60_000) return;
+    for (const delayMs of [12_000, 45_000]) {
+      const timer = setTimeout(() => {
+        this.restartFactRefreshTimers = this.restartFactRefreshTimers.filter((entry) => entry !== timer);
+        void this.refreshRuntimeDiagnostics();
+      }, delayMs);
+      timer.unref?.();
+      this.restartFactRefreshTimers.push(timer);
+    }
   }
 
   private async refreshRuntimeDiagnostics(): Promise<void> {
@@ -1506,7 +1582,12 @@ export class LocalRuntimeConnectionPool {
         this.activeRuntimeSyncPort = runtimeInfo.syncPort;
         this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
         this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
-        this.emitRuntimeStatusChange();
+        this.activeRuntimeLastUnplannedRestart = runtimeInfo.lastUnplannedRestart;
+        // `app.getInfo` asks for this every 15 s from each window. A status the
+        // same as the last one pushed is not a change: pushing it again would
+        // wake every window's status listeners for nothing. Any other change
+        // since that push (service health, skew, mode) still goes out here.
+        this.emitRuntimeStatusChange({ onlyIfChanged: true });
       } catch (error) {
         this.logger.debug("local_runtime.status_refresh_failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -1521,14 +1602,27 @@ export class LocalRuntimeConnectionPool {
     await refresh;
   }
 
-  private emitRuntimeStatusChange(): void {
+  private emitRuntimeStatusChange(options: { onlyIfChanged?: boolean } = {}): void {
+    const snapshot = this.statusSnapshot();
+    const serialized = JSON.stringify(snapshot);
+    if (options.onlyIfChanged && serialized === this.lastEmittedRuntimeStatus) return;
+    this.lastEmittedRuntimeStatus = serialized;
     try {
-      this.options.onRuntimeStatusChange?.(this.statusSnapshot());
+      this.options.onRuntimeStatusChange?.(snapshot);
     } catch (error) {
       this.logger.warn("local_runtime.status_listener_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Whether the connected brain runs `chat.createSessionAndSend`. False with
+   * no connection or an older brain: the caller then makes two calls.
+   */
+  supportsChatCreateAndSend(): boolean {
+    const client = this.activeClient;
+    return client != null && !client.isClosed() && this.chatCreateAndSendClients.has(client);
   }
 
   getRuntimeProcessIds(): number[] {
@@ -2187,6 +2281,8 @@ export class LocalRuntimeConnectionPool {
     rootPath: string,
     registration: ProjectRegistrationIntent = SYSTEM_PROJECT_REGISTRATION,
   ): Promise<RemoteRuntimeProjectRecord> {
+    // This computer's own settings: the brain's machine scope, never registered.
+    if (isMachineScopeRootPath(rootPath)) return MACHINE_SCOPE_PROJECT_RECORD;
     const normalizedRoot = path.resolve(rootPath);
     while (true) {
       this.assertNotDisposed();
@@ -2319,6 +2415,12 @@ export class LocalRuntimeConnectionPool {
    * of time, not one per poll.
    */
   private dropStaleProjectRecord(rootPath: string, project: RemoteRuntimeProjectRecord, error: unknown): boolean {
+    if (project === MACHINE_SCOPE_PROJECT_RECORD) {
+      // Never registered, so never re-registered. A brain older than this app
+      // looks the scope up as a project: say what to do instead.
+      if (isMachineScopeOlderBrainError(error)) throw markExpected(new Error(THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE), "environment");
+      return false;
+    }
     if (unknownProjectIdInError(error) !== project.projectId) return false;
     // `ensureProject` caches a moved project under its new folder; follow the
     // same redirect so the record dropped is the one that was handed out.
@@ -2365,6 +2467,77 @@ export class LocalRuntimeConnectionPool {
       });
       return await call(fresh);
     }
+  }
+
+  /** The brain's id for a folder this pool registered, without asking the brain. */
+  private knownProjectRef(rootPath: string): { projectId: string } | { rootPath: string } {
+    const normalizedRoot = path.resolve(rootPath);
+    const projectId = this.projectsByRoot.get(normalizedRoot)?.projectId;
+    return projectId ? { projectId } : { rootPath: normalizedRoot };
+  }
+
+  /**
+   * Throws the brain's `project_folder_too_slow` refusal when it refuses this
+   * folder, before this process reads the folder itself (a cold open).
+   *
+   * Sent by path only: a brain from before the method answers a path-only
+   * call at once ("requires projectId") instead of opening the project to
+   * route it. A failed connection propagates, as the registration that
+   * follows would fail the same way, so the brain is dialed once; any other
+   * failure of the call is left to the open that follows.
+   */
+  async assertProjectOpenable(rootPath: string): Promise<void> {
+    const entry = await this.connect();
+    await this.throwOpenRefusal(entry, rootPath, LOCAL_RUNTIME_PROJECT_TIMEOUT_MS);
+  }
+
+  /**
+   * The same check, asking only a brain this pool is already connected to,
+   * briefly, and failing for nothing but the refusal: for a switch, which a
+   * brain frozen on some other folder must not hold up, and before a cold
+   * open reads the folder. True when the brain answered that it may open, so
+   * the open need not ask again.
+   */
+  async assertProjectOpenableIfConnected(rootPath: string): Promise<boolean> {
+    const entry = this.activeConnection;
+    if (!entry) return false;
+    return await this.throwOpenRefusal(entry, rootPath, OPEN_TAB_REFUSAL_CHECK_TIMEOUT_MS);
+  }
+
+  /**
+   * Ask `projects.checkOpen`; rethrow only its `project_folder_too_slow`
+   * refusal. True when the brain answered that the folder may open.
+   */
+  private async throwOpenRefusal(entry: LocalRuntimeConnection, rootPath: string, timeoutMs: number): Promise<boolean> {
+    const root = path.resolve(rootPath);
+    try {
+      await entry.client.call("projects.checkOpen", { rootPath: root }, { timeoutMs });
+      this.refusedRoots.delete(root);
+      return true;
+    } catch (error) {
+      const parsed = parseCodedErrorMessage(error);
+      if (parsed.code !== PROJECT_FOLDER_TOO_SLOW_CODE) return false;
+      this.refusedRoots.add(root);
+      throw markExpected(codedError(parsed.message, PROJECT_FOLDER_TOO_SLOW_CODE), "environment");
+    }
+  }
+
+  /**
+   * Whether the brain refused this folder the last time this process asked
+   * (cleared by an answer that it may open, or a retry). This process's own
+   * readers of a project folder (the recent-projects list) skip it.
+   */
+  isKnownRefused(rootPath: string): boolean {
+    return this.refusedRoots.has(path.resolve(rootPath));
+  }
+
+  /** Forget the brain's refusal of this folder (`projects.retryOpen`), so the next open tries. */
+  async retryProjectOpen(rootPath: string): Promise<void> {
+    const entry = await this.connect();
+    await entry.client.call("projects.retryOpen", this.knownProjectRef(rootPath), {
+      timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
+    });
+    this.refusedRoots.delete(path.resolve(rootPath));
   }
 
   async setProjectCatalogVisibility(
@@ -3040,6 +3213,7 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimeSyncPort = null;
     this.activeRuntimePublishHealth = null;
     this.activeRuntimeLastWedge = null;
+    this.activeRuntimeLastUnplannedRestart = null;
     this.ownedRuntimeChild = null;
     this.ownedRuntimeSocketPath = null;
     disposeOwnedRuntimeChild(ownedChild, ownedSocket);
@@ -3075,6 +3249,7 @@ export class LocalRuntimeConnectionPool {
         this.activeRuntimeSyncPort = null;
         this.activeRuntimePublishHealth = null;
         this.activeRuntimeLastWedge = null;
+        this.activeRuntimeLastUnplannedRestart = null;
       }
       throw error;
     });
@@ -3106,6 +3281,7 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimeSyncPort = null;
     this.activeRuntimePublishHealth = null;
     this.activeRuntimeLastWedge = null;
+    this.activeRuntimeLastUnplannedRestart = null;
     this.projectsByRoot.clear();
     this.staleProjectReregisteredAtByRoot.clear();
     return true;
@@ -3643,8 +3819,15 @@ export class LocalRuntimeConnectionPool {
         // sends the person to a Repair that cannot change the answer.
         recoveryCode = "background_item_blocked";
       } else if (
-        this.serviceInstallStatus.state === "failed"
-        || this.serviceHealthStatus.state === "not_installed"
+        // A service its manager reports as running is installed, even when
+        // the last install attempt failed: the endpoint check below says
+        // whether it answers. "Not installed" there sent the person to a
+        // Repair that had just failed (ADE-DESKTOP-61, Windows).
+        this.serviceHealthStatus.running !== true
+        && (
+          this.serviceInstallStatus.state === "failed"
+          || this.serviceHealthStatus.state === "not_installed"
+        )
       ) {
         recoveryCode = "brain_not_installed";
       } else if (!await probeSocketHasOwner(socketPath)) {
@@ -3661,12 +3844,24 @@ export class LocalRuntimeConnectionPool {
         : "";
       // What the service manager said, so a report shows why no fallback ran.
       const install = this.serviceInstallStatus;
+      // The installer's own reason for a failed install; it used to reach only the log.
+      const installReason = install.state === "failed" && install.message
+        ? ` Installer said: ${install.message.trim().slice(0, 300)}`
+        : "";
       const serviceDetail = ` Service: install ${install.state}${install.failureStep ? ` at ${install.failureStep}` : ""}, `
-        + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`;
-      throw codedRecoveryError(
+        + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`
+        + installReason;
+      const recoveryError = codedRecoveryError(
         `ADE's background service could not open this project. Technical details: ${message}${serviceDetail}${crashLoopDetail}${reportDetail}`,
         recoveryCode,
       );
+      // "Allow in the Background" is off for ADE: a macOS setting the person
+      // changes, which the recovery screen names. Every other code (a service
+      // that runs but does not answer, a failed install, a stale socket) is
+      // not known to be the machine's, so it stays reported.
+      throw recoveryCode === "background_item_blocked" && !crashLooping
+        ? markExpected(recoveryError, "environment")
+        : recoveryError;
     }
 
     const child = this.spawnRuntime(socketPath);
@@ -4162,6 +4357,7 @@ export class LocalRuntimeConnectionPool {
       throw error;
     }
     const runtimeInfo = readLocalRuntimeInfo(initializeResult);
+    if (readsChatCreateAndSendCapability(initializeResult)) this.chatCreateAndSendClients.add(client);
     if (options.expectedPid != null && runtimeInfo.pid !== options.expectedPid) {
       closeRuntimeClient(client);
       throw new Error(
@@ -4192,7 +4388,9 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimeSyncPort = runtimeInfo.syncPort;
     this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
     this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
+    this.activeRuntimeLastUnplannedRestart = runtimeInfo.lastUnplannedRestart;
     this.emitRuntimeStatusChange();
+    this.scheduleRestartFactRefresh(runtimeInfo.lastUnplannedRestart);
     client.onDisconnect((error) => {
       if (this.activeClient !== client && this.activeConnection?.client !== client) return;
       this.logger.warn("local_runtime.disconnected", {
@@ -4207,6 +4405,7 @@ export class LocalRuntimeConnectionPool {
       this.activeRuntimeSyncPort = null;
       this.activeRuntimePublishHealth = null;
       this.activeRuntimeLastWedge = null;
+      this.activeRuntimeLastUnplannedRestart = null;
       this.projectsByRoot.clear();
       this.staleProjectReregisteredAtByRoot.clear();
       this.emitRuntimeStatusChange();
@@ -4336,6 +4535,7 @@ export class LocalRuntimeConnectionPool {
       this.activeRuntimeSyncPort = null;
       this.activeRuntimePublishHealth = null;
       this.activeRuntimeLastWedge = null;
+      this.activeRuntimeLastUnplannedRestart = null;
       this.projectsByRoot.clear();
       this.staleProjectReregisteredAtByRoot.clear();
       if (client) closeRuntimeClient(client);

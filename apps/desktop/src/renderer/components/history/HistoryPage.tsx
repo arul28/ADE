@@ -4,7 +4,6 @@ import { Clock } from "@phosphor-icons/react";
 import { ArrowLeft } from "@phosphor-icons/react";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
-import { cachedCtoHomeResolution } from "../../state/ctoHome";
 import { EmptyState } from "../ui/EmptyState";
 import { Group, Panel } from "react-resizable-panels";
 import { ResizeGutter } from "../ui/ResizeGutter";
@@ -125,7 +124,6 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const setSurface = useTimelineStore((s) => s.setSurface);
   const setHoveredLaneId = useTimelineStore((s) => s.setHoveredLaneId);
   const setMachines = useTimelineStore((s) => s.setMachines);
-  const setCtoRoute = useTimelineStore((s) => s.setCtoRoute);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const machineLoads = useTimelineStore((s) => s.machineLoads);
 
@@ -188,13 +186,14 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     requestLaneStatusRead(moved ? { maxAgeMs: 0 } : undefined);
   }, [active, laneMovedToken, requestLaneStatusRead]);
 
-  // A lane on another machine is read through that machine's pin. Writes
-  // (lane git actions, commit actions) stay with lanes on this tab's machine:
-  // `laneHasWorktree` is false for the others, which is what gates them.
+  // Every lane is read through its own machine's pin, the tab's lanes too.
+  // Writes (lane git actions, commit actions) stay with lanes on this tab's
+  // machine: `laneHasWorktree` is false for the others, which is what gates
+  // them. A lane with no routable machine is not read at all.
   const laneRouter = useMemo(() => createLaneMachineRouter(allMachineLanes), [allMachineLanes]);
-  const focusRoute = focusLaneMachineId ? laneRouter.route(focusLaneId, focusLaneMachineId) : null;
+  const focusRoute = focusLaneId ? laneRouter.route(focusLaneId, focusLaneMachineId) : null;
   const commitPin = useStableBinding(focusRoute?.kind === "pinned" ? focusRoute.pin : null);
-  const focusLaneReadable = !focusLaneMachineId || focusRoute?.kind === "pinned";
+  const focusLaneReadable = commitPin != null;
   const focusRemoteMachineName = focusLaneMachineId
     ? laneRouter.machine(focusLaneMachineId)?.machineName ?? "another machine"
     : null;
@@ -364,16 +363,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
 
   useEffect(() => {
     if (!active || surface === "commits") return;
-    // CTO sessions come from the CTO's home machine. While it is unknown (the
-    // CTO page hasn't resolved it yet) they are read from the tab's machine.
-    const home = cachedCtoHomeResolution(projectStateKey);
-    setCtoRoute(
-      home?.status === "unreachable"
-        ? { skip: true, pin: null }
-        : { skip: false, pin: home?.status === "resolved" ? home.pin : null },
-    );
     void fetchEvents();
-  }, [active, surface, fetchEvents, projectStateKey, setCtoRoute]);
+  }, [active, surface, fetchEvents, projectStateKey]);
 
   // A machine that joins, returns, or comes back online is read right away;
   // the bound machine's own list is never held for it.
@@ -416,7 +407,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     const selectedCommitIsCurrentLane =
       selectedCommit?.sha === selectedCommitSha &&
       selectedCommitLaneId === actionLaneId;
-    if (!active || !actionLaneId || !focusLaneReadable || !selectedCommitSha || selectedCommitIsCurrentLane) {
+    if (!active || !actionLaneId || !commitPin || !selectedCommitSha || selectedCommitIsCurrentLane) {
       if (!selectedCommitSha) {
         setCommitOnLaneHistory(true);
         setSelectedCommitLaneId(null);
@@ -650,7 +641,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const operationsLaneId = commitOwnerLaneId ?? focusLaneId;
   const laneOperationsKey = operationsLaneId ? `${focusLaneMachineId ?? ""}\u0000${operationsLaneId}` : null;
   useEffect(() => {
-    if (!active || surface !== "commits" || !selectedCommitSha || !operationsLaneId || !laneOperationsKey || !focusLaneReadable) return;
+    if (!active || surface !== "commits" || !selectedCommitSha || !operationsLaneId || !laneOperationsKey || !commitPin) return;
     const readKey = `${laneOperationsKey}\u0000${commitRefreshToken}`;
     const reads = laneOperationsReadsRef.current;
     const startedAt = reads.get(readKey);
@@ -860,6 +851,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     <div className="flex h-full min-w-0 flex-col bg-bg">
       <TimelineToolbar
         commitListControls={!diffTarget}
+        lanePin={commitPin}
         onCommitGitActionComplete={() => setCommitRefreshToken((value) => value + 1)}
       />
       {surface === "commits" && diffTarget && focusLaneReadable && actionLaneId ? (

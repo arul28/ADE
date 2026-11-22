@@ -22,7 +22,7 @@ import {
   WindowsLogo,
 } from "@phosphor-icons/react";
 import { AppleLogo } from "../components/ui/appleIcons";
-import type { KeybindingsSnapshot, LaneSummary } from "../../shared/types";
+import type { KeybindingsSnapshot, LaneSummary, OpenProjectBinding } from "../../shared/types";
 import {
   QUICK_SLOT_COMMAND_IDS,
   modelProfileMentionToken,
@@ -56,6 +56,7 @@ import {
 } from "../state/appStore";
 import type { QuickSlotComposerTarget } from "./composerTarget";
 import { newModelProfileId, useQuickSlotsStore } from "./quickSlotsStore";
+import { requirePin } from "../state/repositoryScope";
 
 export type QuickSlotAvailability =
   | { ok: true; reason?: undefined }
@@ -66,6 +67,8 @@ export type QuickSlotContext = {
   keybindings: KeybindingsSnapshot | null;
   /** The lane the front surface is about, if any. */
   lane: LaneSummary | null;
+  /** The machine `lane` lives on. Null when there is no lane or its machine is offline. */
+  lanePin: OpenProjectBinding | null;
   /** The composer that claimed the last caret, if one is on screen. */
   composer: QuickSlotComposerTarget | null;
   /** Whether the caret was inside that composer when the panel opened. */
@@ -505,8 +508,8 @@ export const QUICK_SLOT_COMMANDS: readonly QuickSlotCommand[] = [
       }
       try {
         const [prs, snapshot] = await Promise.all([
-          listPrsCoalesced({ projectRoot, pin: state.projectBinding }),
-          getGitHubSnapshotCoalesced({}, { projectRoot }),
+          listPrsCoalesced({ projectRoot, pin: context.lanePin }),
+          getGitHubSnapshotCoalesced({}, { projectRoot, pin: context.lanePin }),
         ]);
         const tag = selectLaneTabPrTag(lane, prs, snapshot?.repoPullRequests ?? []);
         const route = tag ? lanePrTagRoutePath(tag) : null;
@@ -589,9 +592,7 @@ export const QUICK_SLOT_COMMANDS: readonly QuickSlotCommand[] = [
       const toastId = "quick-slot-lane-push";
       showToast({ id: toastId, title: `Pushing ${lane.branchRef || lane.name}…`, durationMs: 0 });
       try {
-        // The lane is from this project's list, so it lives on the machine the
-        // tab is bound to: the unpinned route reaches it.
-        await window.ade.git.push({ laneId: lane.id });
+        await window.ade.git.push({ laneId: lane.id }, requirePin(context.lanePin, "No computer with this lane is online."));
         showToast({ id: toastId, title: "Pushed", message: lane.branchRef || lane.name, tone: "success" });
       } catch (error) {
         showToast({
@@ -620,7 +621,7 @@ export const QUICK_SLOT_COMMANDS: readonly QuickSlotCommand[] = [
         : { ok: false, reason: "This lane has no worktree" };
     },
     run: async (context) => {
-      if (context.lane) await revealLaneWorktree(context.lane.id);
+      if (context.lane) await revealLaneWorktree(context.lane.id, context.lanePin);
     },
   },
   {

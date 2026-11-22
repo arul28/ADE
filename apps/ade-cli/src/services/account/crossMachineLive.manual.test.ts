@@ -184,6 +184,7 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
       const scopeRegistry = {
         get: async () => ({ registryProjectId: record.projectId, record, runtime, dispose: () => {} }),
         getIfBooted: () => Promise.resolve({ registryProjectId: record.projectId, record, runtime, dispose: () => {} }),
+        isOpenBlocked: () => false,
         dispose: async () => {},
         disposeAll: async () => {},
       };

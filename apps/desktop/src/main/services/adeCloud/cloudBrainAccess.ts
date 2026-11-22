@@ -4,6 +4,7 @@
  * with the desktop's own copy of the same rules.
  */
 
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { CloudProvider } from "./cloudProvider";
 import { getCloudProvider, watchCloudAccessForSkills, type CloudAccessDeps } from "./cloudAccess";
@@ -24,7 +25,8 @@ export function createCloudBrainAccess(credentials: CloudAccessDeps) {
       const cloud = await client().catch(() => null);
       if (!cloud) return false;
       const result = await wakeCloudMachineForUse(cloud, { machineKey: machine.machineKey, hostname: machine.name }, { logger: credentials.logger });
-      if (result.state === "refused") throw new Error(result.message);
+      // The server's sentence for any refusal (hours, a block, too many awake): an answer, not a failure.
+      if (result.state === "refused") throw Object.assign(new AdeExpectedError(result.message, "user"), { code: result.code ?? null });
       return result.state === "woken";
     },
   };

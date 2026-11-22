@@ -258,7 +258,7 @@ export function SpotifyDevices() {
           onChange={(event) => {
             const deviceId = event.target.value;
             setBusy(true);
-            void window.ade!.music!.transfer({ deviceId, play: playing }).then(async (result) => {
+            void musicActions.transfer({ deviceId, play: playing }).then(async (result) => {
               if (!result.ok) setError(result.error);
               else await musicActions.refresh();
             }, () => setError("Couldn't switch devices. Try again.")).finally(() => setBusy(false));

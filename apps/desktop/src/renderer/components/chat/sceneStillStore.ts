@@ -124,7 +124,8 @@ async function loadSessionStills(
   if (inFlight) return inFlight;
   const read = (async () => {
     const list = window.ade?.computerUse?.listArtifacts;
-    if (typeof list !== "function") return;
+    // No machine for the chat: no stills to read.
+    if (typeof list !== "function" || !pin) return;
 
     const artifacts = await list(
       {
@@ -264,7 +265,7 @@ export function useSceneStillPreview(still: SceneStill | null | undefined): Scen
     const read = window.ade?.computerUse?.readArtifactPreview;
     // No route is an answer, not a wait: this host cannot read the bytes back
     // at all, so a caller holding a placeholder for one would hold it forever.
-    if (typeof read !== "function") {
+    if (typeof read !== "function" || !scope.pin) {
       setAnswer({ uri, src: null });
       return;
     }

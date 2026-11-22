@@ -56,18 +56,34 @@ export function watchdogLaunchAgentPath(
   );
 }
 
+/** The small check entry the CLI build writes next to `cli.cjs` (`src/watchdogCheckEntry.ts`). */
+export const WATCHDOG_CHECK_ENTRY_FILE = "watchdogCheck.cjs";
+
 /**
- * The brain's own command with `serve` swapped for `runtime watchdog-check`, so
- * the watchdog always runs the exact binary the brain was installed from. A
- * separate script would be one more thing that can go stale across an update.
+ * The brain's own command, run as the watchdog check, so the watchdog always
+ * runs the exact binary and build the brain was installed from. When the
+ * small check entry sits next to the brain's `cli.cjs` (every packaged and
+ * built CLI), it runs that in place of the CLI: launchd starts the check every
+ * minute, and the full CLI costs about 0.3 s of CPU and 235 MB per start.
+ * Otherwise (a source run) `serve` becomes `runtime watchdog-check`.
  */
-export function watchdogCommand(command: AdeServiceCommand): AdeServiceCommand {
+export function watchdogCommand(
+  command: AdeServiceCommand,
+  fileExists: (filePath: string) => boolean = fs.existsSync,
+): AdeServiceCommand {
   const args = [...command.args];
-  const serveIndex = args.lastIndexOf("serve");
-  if (serveIndex >= 0) {
-    args.splice(serveIndex, 1, "runtime", "watchdog-check");
+  const cliIndex = args.findIndex((arg) => path.basename(arg) === "cli.cjs");
+  const checkEntry = cliIndex >= 0 ? path.join(path.dirname(args[cliIndex]!), WATCHDOG_CHECK_ENTRY_FILE) : null;
+  if (checkEntry && fileExists(checkEntry)) {
+    // The entry takes no arguments: whatever followed `cli.cjs` was for `serve`.
+    args.splice(cliIndex, args.length - cliIndex, checkEntry);
   } else {
-    args.push("runtime", "watchdog-check");
+    const serveIndex = args.lastIndexOf("serve");
+    if (serveIndex >= 0) {
+      args.splice(serveIndex, 1, "runtime", "watchdog-check");
+    } else {
+      args.push("runtime", "watchdog-check");
+    }
   }
   return {
     command: command.command,

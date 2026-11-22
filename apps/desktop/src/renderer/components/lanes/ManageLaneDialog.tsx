@@ -1,4 +1,7 @@
-import React, { useEffect, useState } from "react";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
+import React, { useEffect, useRef, useState } from "react";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
+import { requireLanePin } from "./laneMachines";
 import {
   WarningCircle,
   Archive,
@@ -7,7 +10,6 @@ import {
   Palette,
   Terminal,
   ChatCircle,
-  Cpu,
   Eye,
   Cube,
   FolderDashed,
@@ -44,6 +46,9 @@ import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
 import { isImeComposing } from "../../lib/imeComposition";
 import { formatBytes } from "../../../shared/formatting";
+import { CloudLaneComputerPanel } from "../cloudLane/CloudLaneComputerPanel";
+import { KeepChatsCheckbox } from "../cloudLane/deleteCloudLane";
+import type { CloudLaneDeleteOptions } from "../../../shared/cloudLaneLife";
 
 /** Independent delete targets shown as a checklist. */
 export type LaneDeleteSelection = {
@@ -88,7 +93,8 @@ function ManageLaneRenameControls({
   lane: LaneSummary;
   allLanes: LaneSummary[];
   onRenamed?: () => void | Promise<void>;
-  runtimePin?: OpenProjectBinding | null;
+  /** The managed lanes' machine. Null: nothing is sent. */
+  runtimePin: OpenProjectBinding | null | undefined;
   nameColor: string;
 }) {
   const [editing, setEditing] = useState(false);
@@ -118,9 +124,7 @@ function ManageLaneRenameControls({
     setRenameError(null);
     try {
       const args = { laneId: lane.id, emoji };
-      await (runtimePin
-        ? window.ade.lanes.updateAppearance(args, runtimePin)
-        : window.ade.lanes.updateAppearance(args));
+      await window.ade.lanes.updateAppearance(args, requireLanePin(runtimePin));
       await onRenamed?.();
     } catch (error) {
       setRenameError(error instanceof Error ? error.message : "Failed to update lane emoji");
@@ -141,9 +145,7 @@ function ManageLaneRenameControls({
     setRenameError(null);
     try {
       const args = { laneId: lane.id, name: trimmedDraft };
-      await (runtimePin
-        ? window.ade.lanes.rename(args, runtimePin)
-        : window.ade.lanes.rename(args));
+      await window.ade.lanes.rename(args, requireLanePin(runtimePin));
       setEditing(false);
       await onRenamed?.();
     } catch (error) {
@@ -155,14 +157,14 @@ function ManageLaneRenameControls({
 
   if (!canRename) {
     return (
-      <span className={MANAGE_LANE_TITLE_CLASS} style={{ color: nameColor }}>{lane.name}</span>
+      <span className={MANAGE_LANE_TITLE_CLASS} style={{ color: nameColor }}>{laneDisplayName(lane)}</span>
     );
   }
 
   if (!editing) {
     return (
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className={MANAGE_LANE_TITLE_CLASS} style={{ color: nameColor }}>{lane.name}</span>
+        <span className={MANAGE_LANE_TITLE_CLASS} style={{ color: nameColor }}>{laneDisplayName(lane)}</span>
         <button
           type="button"
           aria-label="Rename lane"
@@ -279,7 +281,7 @@ function ManageLaneHeaderDetails({
                 className="shrink-0 text-[11px] leading-none"
                 fallback={<LaneIcon size={11} className="shrink-0 text-muted-fg/60" />}
               />
-              <span className="font-semibold text-fg">{lane.name}</span>
+              <span className="font-semibold text-fg">{laneDisplayName(lane)}</span>
               <BranchIcon size={10} className="shrink-0 text-muted-fg/50" />
               <span className="truncate font-mono text-muted-fg/60">{formatBranchLabel(lane.branchRef)}</span>
               <span className="rounded-md bg-fg/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-fg">
@@ -336,7 +338,7 @@ export function laneActionErrorTone(error: LaneActionError): Pick<BannerModel, "
   return noticeKindModel(error.kind, error.kind === "failure" || error.reportable ? report : undefined);
 }
 
-export type ManageLaneTab = "appearance" | "archive" | "delete";
+export type ManageLaneTab = "computer" | "appearance" | "archive" | "delete";
 
 type ManageLaneTabDef = {
   id: ManageLaneTab;
@@ -444,6 +446,8 @@ export function ManageLaneDialog({
   onAppearanceChanged,
   runtimePin,
   initialTab,
+  cloudLaneIds,
+  resting = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -461,25 +465,50 @@ export function ManageLaneDialog({
   laneActionKind?: "delete" | "archive" | null;
   /** Resolves true when every lane was archived. */
   onArchive: () => Promise<boolean>;
-  onDelete: () => void;
+  /** `keepChats`: an ADE Cloud lane's saved chats stay on ADE Cloud (the Delete tab's box). */
+  onDelete: (options?: CloudLaneDeleteOptions) => void;
   onAppearanceChanged?: () => void | Promise<void>;
-  runtimePin?: OpenProjectBinding | null;
+  /** The managed lanes' machine. Null: nothing is sent. */
+  runtimePin: OpenProjectBinding | null | undefined;
   /** Tab to open on, e.g. "archive" for the sidebar's "Archive all". Defaults to Delete. */
   initialTab?: ManageLaneTab | null;
+  /**
+   * The lanes here that live on their own ADE Cloud computer. A cloud lane
+   * goes with its computer (no worktree or branch to pick, no 30-day copy,
+   * no Force delete): the caller's delete warns once, only when work isn't
+   * on GitHub. The local form applies to the other lanes only.
+   */
+  cloudLaneIds?: ReadonlySet<string> | null;
+  /**
+   * The lane's ADE Cloud computer sleeps: only what the account does without a
+   * wake shows (Computer, Delete). Appearance and Archive need the computer.
+   */
+  resting?: boolean;
 }) {
   const lanes = managedLanes?.length ? managedLanes : managedLane ? [managedLane] : [];
   const isBatch = lanes.length > 1;
   const allPrimary = lanes.length > 0 && lanes.every((l) => l.laneType === "primary");
-  const hasAnyDirty = lanes.some((l) => l.status.dirty);
+  const cloudLanes = cloudLaneIds?.size ? lanes.filter((l) => cloudLaneIds.has(l.id) && l.laneType !== "primary") : [];
+  const localLanes = cloudLanes.length ? lanes.filter((l) => !cloudLaneIds?.has(l.id)) : lanes;
+  const onlyCloud = cloudLanes.length > 0 && localLanes.every((l) => l.laneType === "primary");
+  const hasAnyDirty = localLanes.some((l) => l.status.dirty);
   // A batch never takes a lane's uncommitted work because one box was ticked
   // for the rest: without Force it deletes the clean lanes and skips these.
-  const dirtyLanes = lanes.filter((l) => l.status.dirty && l.laneType !== "primary");
+  const dirtyLanes = localLanes.filter((l) => l.status.dirty && l.laneType !== "primary");
   const skippedDirtyCount = isBatch && !deleteForce ? dirtyLanes.length : 0;
-  const deleteCount = lanesToDelete(lanes, deleteForce).length;
+  const localDeleteCount = lanesToDelete(localLanes, deleteForce).length;
+  const deleteCount = localDeleteCount + cloudLanes.length;
   const singleLane = !isBatch ? lanes[0] ?? null : null;
+  const singleCloud = singleLane != null && cloudLanes.length === 1;
 
   const singleLaneId = singleLane?.id ?? null;
   const singleLaneType = singleLane?.laneType ?? null;
+  // Effects key on the pin's key: a rebuilt pin is the same machine.
+  const runtimePinKey = runtimePin?.key ?? null;
+  const runtimePinRef = useRef(runtimePin);
+  runtimePinRef.current = runtimePin;
+  // Linear is read and written through the repository's reader copy.
+  const linearPin = useActiveRepositoryReader(open);
   const [deleteRisk, setDeleteRisk] = useState<LaneDeleteRisk | null>(null);
   const [reclaimRisk, setReclaimRisk] = useState<LaneReclaimRisk | null>(null);
   const [reclaimConfirm, setReclaimConfirm] = useState("");
@@ -488,6 +517,8 @@ export function ManageLaneDialog({
   const [reclaimError, setReclaimError] = useState<string | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<LaneDeleteProgress | null>(null);
   const [activeTab, setActiveTab] = useState<ManageLaneTab>("delete");
+  // An ADE Cloud lane's saved chats go with it unless this is ticked.
+  const [keepCloudChats, setKeepCloudChats] = useState(false);
   // Archiving a lane whose Linear issue is still open can also cancel the issue.
   const openLinearIssue = singleLane?.linearIssue
     && singleLane.linearIssue.stateType !== "completed"
@@ -504,7 +535,8 @@ export function ManageLaneDialog({
     try {
       const cancel = window.ade?.cto?.cancelLinearIssue;
       if (!cancel) throw new Error("Linear is not available in this window.");
-      const result = await cancel(openLinearIssue.id);
+      if (!linearPin) throw new Error("Connect a computer to cancel the issue in Linear.");
+      const result = await cancel(openLinearIssue.id, linearPin);
       if (result.canceled) showToast({ tone: "success", title: `${openLinearIssue.identifier} canceled in Linear` });
     } catch (err) {
       showToast({
@@ -517,18 +549,21 @@ export function ManageLaneDialog({
 
   const tabDefs = React.useMemo((): ManageLaneTabDef[] => {
     return [
+      // An ADE Cloud lane's computer: size, sleep, free it. First, as it is what a cloud lane is managed for.
+      { id: "computer" as const, label: "Computer", icon: Cloud, show: singleCloud },
       { id: "delete" as const, label: "Delete", icon: Trash, show: true },
-      { id: "appearance" as const, label: "Appearance", icon: Palette, show: !!singleLaneType },
-      { id: "archive" as const, label: "Archive", icon: Archive, show: true },
+      { id: "appearance" as const, label: "Appearance", icon: Palette, show: !!singleLaneType && !resting },
+      { id: "archive" as const, label: "Archive", icon: Archive, show: !resting },
     ]
       .filter((t) => t.show)
       .map(({ show: _, ...tab }) => tab);
-  }, [singleLaneType]);
-  // Manage Lane opens on Delete, the first tab and the action users reach for
-  // most, with nothing ticked (the hosts start with an empty selection and
-  // Force delete off). Callers can pick another tab ("Archive all" opens on Archive).
+  }, [resting, singleCloud, singleLaneType]);
+  // A cloud lane's Manage lane opens on its Computer tab. Any other lane opens
+  // on Delete, with nothing ticked (the hosts start with an empty selection
+  // and Force delete off). Callers can pick another tab ("Archive all" opens on Archive).
   const defaultTab = React.useMemo((): ManageLaneTab => {
     if (initialTab && tabDefs.some((tab) => tab.id === initialTab)) return initialTab;
+    if (tabDefs.some((tab) => tab.id === "computer")) return "computer";
     return tabDefs.some((tab) => tab.id === "delete") ? "delete" : tabDefs[0]?.id ?? "archive";
   }, [initialTab, tabDefs]);
 
@@ -541,26 +576,33 @@ export function ManageLaneDialog({
       setDiscardDirtyConfirmed(false);
       setReclaimError(null);
       setDeleteProgress(null);
+      setKeepCloudChats(false);
       return;
     }
     setActiveTab(defaultTab);
   }, [open, singleLaneId, isBatch, defaultTab]);
 
+  // "Keep its chats" is a choice for one lane: another lane starts unticked.
+  useEffect(() => {
+    setKeepCloudChats(false);
+  }, [singleLaneId]);
+
   // Fetch pre-flight risk for the single-lane case.
   useEffect(() => {
-    if (!open || !singleLaneId || singleLaneType === "primary") {
+    if (!open || !singleLaneId || singleLaneType === "primary" || singleCloud) {
       setDeleteRisk(null);
       return;
     }
     let cancelled = false;
     const getReclaimRisk = window.ade.lanes.getReclaimRisk;
-    const deleteRiskPromise = runtimePin
-      ? window.ade.lanes.getDeleteRisk({ laneId: singleLaneId }, runtimePin)
-      : window.ade.lanes.getDeleteRisk({ laneId: singleLaneId });
+    const pin = runtimePinRef.current;
+    if (!pin) {
+      setDeleteRisk(null);
+      return;
+    }
+    const deleteRiskPromise = window.ade.lanes.getDeleteRisk({ laneId: singleLaneId }, pin);
     const reclaimRiskPromise = typeof getReclaimRisk === "function"
-      ? runtimePin
-        ? getReclaimRisk({ laneId: singleLaneId }, runtimePin)
-        : getReclaimRisk({ laneId: singleLaneId })
+      ? getReclaimRisk({ laneId: singleLaneId }, pin)
       : Promise.resolve(null);
     void Promise.all([
       deleteRiskPromise,
@@ -579,27 +621,29 @@ export function ManageLaneDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, runtimePin, singleLaneId, singleLaneType]);
+  }, [open, runtimePinKey, singleCloud, singleLaneId, singleLaneType]);
 
   // Stream live delete progress for the active lane.
   useEffect(() => {
-    if (!open || !singleLaneId) return;
+    const pin = runtimePinRef.current;
+    if (!open || !singleLaneId || !pin) return;
     const handleDeleteEvent = (event: LaneDeleteEvent) => {
       if (event.progress.laneId !== singleLaneId) return;
       setDeleteProgress(event.progress);
     };
-    const unsubscribe = runtimePin
-      ? window.ade.lanes.onDeleteEvent(handleDeleteEvent, runtimePin)
-      : window.ade.lanes.onDeleteEvent(handleDeleteEvent);
+    const unsubscribe = window.ade.lanes.onDeleteEvent(handleDeleteEvent, pin);
     return () => {
       unsubscribe?.();
     };
-  }, [open, runtimePin, singleLaneId]);
+  }, [open, runtimePinKey, singleLaneId]);
 
-  const hasDeleteSelection = laneDeleteSelectionHasAny(deleteSelection);
+  // Cloud lanes need no pick: the lane and its computer go together.
+  const hasDeleteSelection = onlyCloud || laneDeleteSelectionHasAny(deleteSelection);
   // A lane with uncommitted work only deletes with Force on; say so at the
   // button. A batch deletes its clean lanes without it.
-  const needsForce = isBatch ? deleteCount === 0 && dirtyLanes.length > 0 && !deleteForce : hasAnyDirty && !deleteForce;
+  const needsForce = onlyCloud
+    ? false
+    : isBatch ? deleteCount === 0 && dirtyLanes.length > 0 && !deleteForce : hasAnyDirty && !deleteForce;
   const deleteHint = !hasDeleteSelection
     ? "Pick what to delete"
     : needsForce
@@ -626,9 +670,7 @@ export function ManageLaneDialog({
         confirmation: "RECLAIM" as const,
         ...(reclaimRisk.dirty && discardDirtyConfirmed ? { forceDirty: true } : {}),
       };
-      await (runtimePin
-        ? window.ade.lanes.archiveAndReclaim(args, runtimePin)
-        : window.ade.lanes.archiveAndReclaim(args));
+      await window.ade.lanes.archiveAndReclaim(args, requireLanePin(runtimePin));
       void cancelLinkedIssueIfAsked();
       await onAppearanceChanged?.();
       onOpenChange(false);
@@ -701,7 +743,7 @@ export function ManageLaneDialog({
     : undefined;
   const dialogTitle = isBatch
     ? `${lanes.length} lanes`
-    : singleLane?.name ?? "Lane";
+    : singleLane ? laneDisplayName(singleLane) : "Lane";
   const titleContent = isBatch
     ? (
         <span className={MANAGE_LANE_TITLE_CLASS}>{dialogTitle}</span>
@@ -734,11 +776,23 @@ export function ManageLaneDialog({
         <div className="py-4 text-sm text-muted-fg">Select a lane first.</div>
       ) : allPrimary ? (
         <div className="rounded-lg border border-fg/[0.06] bg-fg/[0.02] px-3 py-3 text-sm text-muted-fg">
-          Primary lane cannot be archived or deleted. Close this dialog or pick another lane.
+          The main checkout cannot be archived or deleted. Close this dialog or pick another lane.
         </div>
       ) : (
         <div className="space-y-4" data-tour="lanes.manageDialog">
           <ManageLaneTabBar tabs={tabDefs} active={activeTab} onChange={setActiveTab} />
+
+          {activeTab === "computer" && singleLane && singleCloud ? (
+            <ManageLaneTabPanel tone="neutral">
+              <CloudLaneComputerPanel
+                pin={runtimePin}
+                laneId={singleLane.id}
+                laneName={singleLane.name}
+                onClose={() => onOpenChange(false)}
+                onDelete={() => setActiveTab("delete")}
+              />
+            </ManageLaneTabPanel>
+          ) : null}
 
           {activeTab === "appearance" && singleLane ? (
             <ManageLaneTabPanel tone="accent">
@@ -879,12 +933,27 @@ export function ManageLaneDialog({
 
           {activeTab === "delete" ? (
             <ManageLaneTabPanel tone="delete">
+              {onlyCloud ? (
+                <>
+                  <CloudLaneDeleteNote count={cloudLanes.length} />
+                  <KeepChatsCheckbox checked={keepCloudChats} disabled={laneActionBusy} onChange={setKeepCloudChats} />
+                </>
+              ) : (
+              <>
               <p className="text-xs text-red-200/70">
                 Stops lane activity and removes what you pick. Work that only this lane holds is kept for {DELETED_LANE_KEEP_DAYS} days in Recently deleted.
                 {!isBatch && reclaimRisk && reclaimRisk.reclaimableBytes > 0 ? (
                   <span className="text-muted-fg/70"> Frees about <strong className="text-fg">{formatBytes(reclaimRisk.reclaimableBytes)}</strong>.</span>
                 ) : null}
               </p>
+              {cloudLanes.length ? (
+                <>
+                  <p className="mt-2 text-xs text-muted-fg/80">
+                    {cloudLanes.map((lane) => lane.name).join(", ")} {cloudLanes.length === 1 ? "is an ADE Cloud lane. It goes" : "are ADE Cloud lanes. They go"} with {cloudLanes.length === 1 ? "its" : "their"} computer and chats; the choices below do not apply. If work there isn&apos;t on GitHub, ADE shows it first.
+                  </p>
+                  <KeepChatsCheckbox checked={keepCloudChats} disabled={laneActionBusy} onChange={setKeepCloudChats} />
+                </>
+              ) : null}
 
               {/* Uncommitted changes are named once, by the header chip; the
                   Force delete row and the button's reason carry the rest. */}
@@ -917,6 +986,8 @@ export function ManageLaneDialog({
                     <span className="block text-muted-fg/50">ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days. Restore it from Settings › Storage › Recently deleted.</span>
                   </span>
                 </label>
+              )}
+              </>
               )}
 
               {deleteProgress ? (
@@ -951,7 +1022,7 @@ export function ManageLaneDialog({
                   casing="sentence"
                   data-tour="lanes.manageDialog.delete"
                   disabled={deleteDisabled}
-                  onClick={onDelete}
+                  onClick={() => onDelete({ keepChats: keepCloudChats })}
                   className={deleteDisabled
                     ? "!border-fg/[0.1] !bg-fg/[0.05] !text-muted-fg disabled:!opacity-100"
                     : "!border-red-600 !bg-red-600 !text-white hover:!bg-red-500"}
@@ -972,6 +1043,25 @@ export function ManageLaneDialog({
         </div>
       )}
     </LaneDialogShell>
+  );
+}
+
+/**
+ * The delete tab for ADE Cloud lanes only: nothing to pick, no 30-day copy
+ * (the computer goes), no Force delete. The delete itself warns once, only
+ * when work on the computer isn't on GitHub.
+ */
+function CloudLaneDeleteNote({ count }: { count: number }) {
+  const one = count === 1;
+  return (
+    <div className="space-y-1.5 text-xs leading-relaxed">
+      <p className="text-red-200/80">
+        {one ? "Deletes the lane, its ADE Cloud computer and its chats." : `Deletes the ${count} lanes, their ADE Cloud computers and their chats.`} Everything on {one ? "that computer" : "those computers"} goes for good.
+      </p>
+      <p className="text-muted-fg/80">
+        If work there isn&apos;t on GitHub, ADE shows it first and offers to push it.
+      </p>
+    </div>
   );
 }
 
@@ -1236,7 +1326,8 @@ function AppearanceSection({
   allLanes: LaneSummary[];
   disabled: boolean;
   onChanged?: () => void | Promise<void>;
-  runtimePin?: OpenProjectBinding | null;
+  /** The managed lanes' machine. Null: nothing is sent. */
+  runtimePin: OpenProjectBinding | null | undefined;
 }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -1256,9 +1347,7 @@ function AppearanceSection({
     setBusy(true);
     try {
       const args = { laneId: lane.id, color: next };
-      await (runtimePin
-        ? window.ade.lanes.updateAppearance(args, runtimePin)
-        : window.ade.lanes.updateAppearance(args));
+      await window.ade.lanes.updateAppearance(args, requireLanePin(runtimePin));
       await onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to set color");
@@ -1272,9 +1361,7 @@ function AppearanceSection({
     setBusy(true);
     try {
       const args = { laneId: lane.id, emoji: next };
-      await (runtimePin
-        ? window.ade.lanes.updateAppearance(args, runtimePin)
-        : window.ade.lanes.updateAppearance(args));
+      await window.ade.lanes.updateAppearance(args, requireLanePin(runtimePin));
       await onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to set emoji");

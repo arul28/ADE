@@ -12,6 +12,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "attention",
   "keep_awake",
   "remote_mcp",
+  "lane_share",
   "lane",
   "proxy",
   "git",
@@ -31,8 +32,11 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "ade_project",
   "project_config",
   "project_secret",
+  "passwords",
+  "messages",
   "integration_connect",
   "cloud",
+  "cloud_phone",
   "mcp_registry",
   "account_settings",
   "account_vault",
@@ -69,6 +73,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "search",
   "external-sessions",
   "provider_instances",
+  "provider_logins",
 ] as const;
 
 export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];

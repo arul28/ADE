@@ -472,6 +472,8 @@ export type ImportBranchLaneArgs = {
    * stops the git checkout while it runs.
    */
   operationId?: string;
+  /** False: never push the branch to make its upstream (a lane from a saved ADE Cloud backup). Default true. */
+  publishUpstream?: boolean;
 };
 
 export type CancelLaneGitWriteArgs = { operationId: string };
@@ -626,6 +628,14 @@ export type DeleteLaneArgs = {
   requireRemoteBranchDelete?: boolean;
   remoteName?: string;
   force?: boolean;
+  /**
+   * Answer once the delete's checks passed (`accepted`), not when it is done;
+   * the delete then finishes on its machine even if the caller is gone. A lane
+   * already deleted answers `alreadyDeleted`, and a lane being deleted answers
+   * `accepted`. A caller over a slow link sends this and follows
+   * `listDeleteProgress`. An older ADE ignores it and answers when done.
+   */
+  background?: boolean;
 };
 
 /**
@@ -643,6 +653,10 @@ export type DeleteLaneResult = {
   leftoverWorktree: LaneDeleteLeftoverWorktree | null;
   /** Work the delete would have lost, kept for restore; null when nothing was at risk. */
   savedWork?: DeletedLaneSnapshot | null;
+  /** A `background` delete that is still running; its progress says when it is done. */
+  accepted?: boolean;
+  /** A `background` delete of a lane that was already gone. */
+  alreadyDeleted?: boolean;
 };
 
 /**
@@ -747,6 +761,8 @@ export type LaneDeleteProgress = {
   leftoverWorktree?: LaneDeleteLeftoverWorktree | null;
   /** Work the delete kept (uncommitted files, unpushed commits); see DeletedLaneSnapshot. */
   savedWork?: DeletedLaneSnapshot | null;
+  /** Why a failed or stopped delete ended; set with that terminal status. */
+  errorMessage?: string;
 };
 
 export type LaneDeleteEvent = {
@@ -812,6 +828,29 @@ export type LaneLifecycleEvent = {
    * has it open, background tabs included.
    */
   autoArchive?: { reason: string; projectRoot?: string };
+};
+
+/**
+ * "Push this branch?" before an ADE Cloud launch: the new computer clones
+ * from GitHub, so the branch the lane starts from must be there
+ * (`lane.cloudStartBranch`). `push` is set when it should be pushed first.
+ */
+export type CloudStartBranchCheck = {
+  /** The plain branch name the lane starts from, or null when it is the project's default branch. */
+  branch: string | null;
+  /** The branch is on the origin remote. */
+  onRemote: boolean;
+  /** Commits on the local branch that no remote has: they stay here unless pushed. */
+  unpushedCommits: number;
+  /** True when the launch should offer "Push this branch?" first. */
+  push: boolean;
+};
+
+export type CloudStartBranchArgs = {
+  /** A new lane's start (`laneConfig.start`), or the project's default start when left out. */
+  start?: LaneStart | null;
+  /** An existing-branch lane's branch (`laneConfig.branchRef`); wins over `start`. */
+  branchRef?: string | null;
 };
 
 export type LaneDeleteRisk = {
@@ -976,6 +1015,12 @@ export type LaneDependencyStatus = {
   defaultTemplateId: string | null;
   templateCount: number;
   checkedAt: string;
+  /**
+   * The main checkout's ignored `.env` files (relative POSIX paths, at most
+   * 20), for the tip that imports one to ADE secrets. Names only. Absent from
+   * an older machine.
+   */
+  envFiles?: string[];
 };
 
 export type GetLaneDependencyStatusArgs = {

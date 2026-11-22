@@ -63,7 +63,10 @@ struct ADEGlassComposerCard<Accessory: View, Field: View, Menu: View, Controls: 
           if !isDictating {
             menu()
             controls()
+            // Below every control: a control that gives way first (priority
+            // -1) still gets the free room before the gap does.
             Spacer(minLength: 0)
+              .layoutPriority(-2)
           }
           trailing()
         }

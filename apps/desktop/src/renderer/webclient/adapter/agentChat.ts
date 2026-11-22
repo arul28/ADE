@@ -1,3 +1,6 @@
+import type { DeletedChatListResult, DeletedChatRemoveResult, DeletedChatReopenResult } from "../../../shared/types/deletedChats";
+import type { AgentCliTypeArgs, AgentCliTypeResult, ExternalSessionDetail } from "../../../shared/types";
+import type { ChatMentionSuggestResult } from "../../../shared/types/chatMentions";
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import type {
@@ -14,6 +17,7 @@ import type {
   AgentChatCrossMachineHandoffOptionsResult,
   AgentChatCrossMachineHandoffRecord,
   AgentChatCrossMachineBatchMoveRecord,
+  AgentChatCrossMachineBatchSourceChangedResult,
   AgentChatResolveCrossMachineBatchMoveApprovalArgs,
   AgentChatPreviewCrossMachineHandoffResult,
   AgentChatModelCatalog,
@@ -21,6 +25,7 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatReloadClaudePluginsResult,
   AgentChatRegenerateSessionMetadataResult,
+  AgentChatRespondToInputResult,
   AgentChatResumeUsageLimitNowResult,
   AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatSwitchAccountResult,
@@ -30,6 +35,8 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionSummary,
   AgentChatSetScheduledWorkPausedResult,
+  AgentChatSetScheduledWorkItemPausedResult,
+  AgentChatRunScheduledWorkNowResult,
   AgentChatSteerResult,
   AutoLaneIdentitySuggestion,
   DraftClaimArgs,
@@ -50,6 +57,7 @@ import { NO_SUBAGENT_CAPABILITY } from "../../../shared/subagentCapabilities";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import type { CommandCallOptions } from "./infra/commandCaller";
 import { requestFileBlob } from "./infra/fileBlob";
+import { noteChatHistorySettled, noteChatHistoryStarted } from "./infra/bootPriority";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
@@ -269,6 +277,14 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         await call("chat.setParallelLaunchState", args, undefined, false);
       },
     },
+    getRootFullAccess: async (pin?: RuntimePinArg) => {
+      guardPin("getRootFullAccess", pin);
+      return await callRequired<{ applies: boolean; allowed: boolean }>("chat.getRootFullAccess", {}, "Chat", true);
+    },
+    setRootFullAccess: async (args: { allowed: boolean }, pin?: RuntimePinArg) => {
+      guardPin("setRootFullAccess", pin);
+      return await callRequiredMutation<{ applies: boolean; allowed: boolean }>("chat.setRootFullAccess", args);
+    },
     fastModePolicy: {
       get: async () => {
         // A required read: an unavailable host must reach the caller's catch and
@@ -395,6 +411,34 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("resolveCrossMachineHandoffApproval", pin);
       return await callRequiredMutation<AgentChatCrossMachineHandoffRecord | null>("chat.resolveCrossMachineHandoffApproval", args);
     },
+    // "Move this lane to": the batch runs on the source brain the pin names.
+    startCrossMachineBatchMove: async (args, pin) => {
+      guardPin("startCrossMachineBatchMove", pin);
+      return await callRequiredMutation<AgentChatCrossMachineBatchMoveRecord>("chat.startCrossMachineBatchMove", args);
+    },
+    getCrossMachineBatchMove: async (args, pin) => {
+      guardPin("getCrossMachineBatchMove", pin);
+      return await callRequiredRead<AgentChatCrossMachineBatchMoveRecord | null>("chat.getCrossMachineBatchMove", args);
+    },
+    crossMachineBatchSourceChanged: async (args, pin) => {
+      guardPin("crossMachineBatchSourceChanged", pin);
+      // Its answer decides a delete: only the host's answer now counts, never a kept one.
+      return await commands.call<AgentChatCrossMachineBatchSourceChangedResult>(
+        "chat.crossMachineBatchSourceChanged",
+        asRecord(args),
+        {
+          fallback: () => {
+            throw new Error("Chat history action 'chat.crossMachineBatchSourceChanged' is unavailable on the connected ADE host.");
+          },
+          authoritative: true,
+          retainLastRead: false,
+        },
+      );
+    },
+    retryCrossMachineBatchMove: async (args, pin) => {
+      guardPin("retryCrossMachineBatchMove", pin);
+      return await callRequiredMutation<AgentChatCrossMachineBatchMoveRecord>("chat.retryCrossMachineBatchMove", args);
+    },
     resolveCrossMachineBatchMoveApproval: async (args: AgentChatResolveCrossMachineBatchMoveApprovalArgs, pin) => {
       guardPin("resolveCrossMachineBatchMoveApproval", pin);
       return await callRequiredMutation<AgentChatCrossMachineBatchMoveRecord>("chat.resolveCrossMachineBatchMoveApproval", args);
@@ -405,8 +449,33 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     send: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("send", pin);
-      await call("chat.send", args, undefined, false);
+      // One id per send (`AgentChatSendArgs.clientSendId`): a retry of a message
+      // the host already wrote is not sent twice.
+      const record = asRecord(args);
+      const stamped = record && typeof record.clientSendId !== "string"
+        ? { ...record, clientSendId: crypto.randomUUID() }
+        : args;
+      await call("chat.send", stamped, undefined, false);
       ensureChatSubscription(stringField(asRecord(args), "sessionId"));
+    },
+    // The Work input box on the web: same contract as the desktop's runtime
+    // action. The box keeps its own queue, so a busy CLI answers `deferred`
+    // unless the caller asked the host to hold the text.
+    typeIntoCli: async (args: AgentCliTypeArgs, pin?: RuntimePinArg): Promise<AgentCliTypeResult> => {
+      guardPin("typeIntoCli", pin);
+      // Typing a line at once is the old desktop terminal's path; ADE Web never had it.
+      if (args.when === "now") throw new Error("ADE Web cannot type a line into a CLI at once. Send it from the CLI input box.");
+      const result = await callRequiredMutation<{ outcome?: AgentCliTypeResult["outcome"]; typedAtOnce?: boolean }>("chat.typeIntoCli", {
+        sessionId: args.sessionId,
+        text: args.text,
+        holdUntilFree: args.holdUntilFree === true,
+        ...(args.clientMessageId ? { clientMessageId: args.clientMessageId } : {}),
+      });
+      const outcome = result?.outcome;
+      if (outcome !== "delivered" && outcome !== "deferred" && outcome !== "held" && outcome !== "ended") {
+        throw new Error("This ADE host cannot type into a CLI session yet. Update ADE on that computer.");
+      }
+      return { outcome, ...(outcome === "delivered" && result?.typedAtOnce === true ? { typedAtOnce: true as const } : {}) };
     },
     steer: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("steer", pin);
@@ -465,6 +534,45 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       // A host without the action must fail loudly, not report "not restarted".
       return await callRequiredMutation("chat.restartSession", args);
     },
+    // Recently deleted chats (Settings, and Reopen on a Work row).
+    listDeleted: async (args, pin) => {
+      guardPin("listDeleted", pin);
+      return await callRequired<DeletedChatListResult>("chat.listDeleted", args ?? {}, "Chat history", true);
+    },
+    getDeletedDetail: async (args, pin) => {
+      guardPin("getDeletedDetail", pin);
+      // A transcript page: not kept as a reconnect answer once the preview closes.
+      return await callLargeRead<ExternalSessionDetail>("chat.getDeletedDetail", args, () => {
+        throw new Error("Chat history action 'chat.getDeletedDetail' is unavailable on the connected ADE host.");
+      });
+    },
+    reopenDeleted: async (args, pin) => {
+      guardPin("reopenDeleted", pin);
+      return await callRequiredMutation<DeletedChatReopenResult>("chat.reopenDeleted", args);
+    },
+    removeDeleted: async (args, pin) => {
+      guardPin("removeDeleted", pin);
+      return await callRequiredMutation<DeletedChatRemoveResult>("chat.removeDeleted", args);
+    },
+    // The ways out of a stuck chat: each recovery button calls the chat's own
+    // machine.
+    recoverTurn: async (args, pin) => {
+      guardPin("recoverTurn", pin);
+      return await callRequiredMutation("chat.recoverTurn", args);
+    },
+    recoverCodexTurn: async (args, pin) => {
+      guardPin("recoverCodexTurn", pin);
+      return await callRequiredMutation("chat.recoverCodexTurn", args);
+    },
+    resolveUnprocessedMessage: async (args, pin) => {
+      guardPin("resolveUnprocessedMessage", pin);
+      return await callRequiredMutation("chat.resolveUnprocessedMessage", args);
+    },
+    // Chats, lanes and terminals for the composer's @ menu.
+    listMentionSuggestions: async (args, pin) => {
+      guardPin("listMentionSuggestions", pin);
+      return await callRequired<ChatMentionSuggestResult>("chat.listMentionSuggestions", args, "Chat", true);
+    },
     stopTask: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("stopTask", pin);
       return await call(
@@ -489,7 +597,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     respondToInput: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("respondToInput", pin);
-      await call("chat.respondToInput", args, undefined, false);
+      return await call<AgentChatRespondToInputResult | void>("chat.respondToInput", args, undefined, false);
     },
     dismissPendingInput: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("dismissPendingInput", pin);
@@ -573,6 +681,18 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         "chat.switchAccount", args, "Chat", false,
       );
     },
+    setScheduledWorkItemPaused: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("setScheduledWorkItemPaused", pin);
+      return await callRequired<AgentChatSetScheduledWorkItemPausedResult>(
+        "chat.setScheduledWorkItemPaused", args, "Scheduled work", false,
+      );
+    },
+    runScheduledWorkNow: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("runScheduledWorkNow", pin);
+      return await callRequired<AgentChatRunScheduledWorkNowResult>(
+        "chat.runScheduledWorkNow", args, "Scheduled work", false,
+      );
+    },
     setScheduledWorkPaused: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("setScheduledWorkPaused", pin);
       return await callRequired<AgentChatSetScheduledWorkPausedResult>(
@@ -582,6 +702,12 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     warmupModel: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("warmupModel", pin);
       await call("chat.warmupModel", args, undefined, false);
+    },
+    // The web client starts the provider on the first send, as before: a host
+    // that predates draft warmups would refuse an unknown command.
+    prewarmDraft: async (_args: unknown, pin?: RuntimePinArg) => {
+      guardPin("prewarmDraft", pin);
+      return { warming: false, reason: "unavailable" as const };
     },
     // No promise to reject: a subscription taking a foreign pin is asking for
     // another machine's event stream, and handing back this machine's stream
@@ -645,6 +771,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("listSubagents", pin);
       return await call("chat.listSubagents", args, []);
     },
+    listPendingInputs: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("listPendingInputs", pin);
+      return await call("chat.listPendingInputs", args, { requests: [] });
+    },
     getSessionCapabilities: async (args, pin) => {
       guardPin("getSessionCapabilities", pin);
       return await call<AgentChatSessionCapabilities>("chat.getSessionCapabilities", args, {
@@ -696,6 +826,9 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       // reads such as list/getSummary are also used for background rows, so this
       // is the adapter's authoritative selected-session signal.
       ensureChatSubscription(stringField(record, "sessionId"), { visible: true });
+      // The heavy startup reads wait for this read, and go once its answer
+      // has painted (bootPriority.ts).
+      noteChatHistoryStarted();
       return await call(
         "chat.getChatEventHistory",
         {
@@ -721,7 +854,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
           sessionFound: false,
           unavailable: true,
         }
-      );
+      ).finally(noteChatHistorySettled);
     },
     getEventHistoryPage: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("getEventHistoryPage", pin);

@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import {
   ArrowClockwise,
+  ArrowCounterClockwise,
   ArrowSquareOut,
   Desktop,
   Prohibit,
@@ -16,6 +17,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
+import { crossMachineMoveLock } from "../../../shared/crossMachineMoveLock";
 import {
   crossMachineContinuation,
   isCrossMachineHandoffActive,
@@ -26,6 +28,11 @@ import { showToast } from "../app/toast/toastStore";
 import { describeTravellingChanges, openChatOnOtherMachine } from "../chat/CrossMachineHandoffBanner";
 import { MENU_ITEM_CLASS, MenuRowIcon, MenuSeparator, MenuSubmenu, MenuSubmenuStatus } from "../ui/MenuSubmenu";
 import { cn } from "../ui/cn";
+import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
+import { adeCloudMoveSource, wakeAdeCloudLane } from "../../state/adeCloudLaneWake";
+import { CloudMark } from "../remoteTargets/cloudBrand";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
+import { ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE, useOwnMoveMachines } from "../chat/crossMachineMoveTargets";
 
 /**
  * Session menu "Hand off ▸ Another machine ▸". The panel paints at once and
@@ -35,6 +42,11 @@ import { cn } from "../ui/cn";
  * which the row says travels); its trailing button opens the full setup with
  * that machine picked. A machine without the repository always opens the full
  * setup, which asks before cloning.
+ *
+ * A tracked agent CLI row (`cli`) moves as a CLI: a click stops it, carries
+ * its conversation file (Claude Code, Codex) or a brief (every other agent)
+ * and starts it in the moved lane there, with its own launch settings. It has
+ * no full setup, so a machine without the repository is not offered.
  */
 
 type OptionsState =
@@ -75,23 +87,30 @@ export function CrossMachineMoveSubmenu({
   busy,
   onClose,
   onOpenFullSetup,
+  cli = false,
 }: {
   session: TerminalSessionSummary;
   binding: OpenProjectBinding | null;
   /** The chat has a turn running: a quick move waits for it to end. */
   busy: boolean;
   onClose: () => void;
-  /** Full setup modal, optionally with a machine preselected (name or key). */
+  /** Full setup modal, optionally with a machine preselected (name or key). Unused for a CLI. */
   onOpenFullSetup: (machine: string | null) => void;
+  /** The row is a tracked agent CLI session, which moves as a CLI. */
+  cli?: boolean;
 }) {
   const [options, setOptions] = useState<OptionsState>({ status: "idle" });
   const requestRef = useRef(0);
 
+  // An ADE Cloud chat whose computer rests or was removed:
+  // the menu never asks that computer, so opening it never dials or wakes one.
+  const cloudSource = adeCloudMoveSource(binding, session.id);
   const load = () => {
+    if (cloudSource) return;
     const request = ++requestRef.current;
     setOptions({ status: "loading" });
-    void window.ade.agentChat
-      .getCrossMachineHandoffOptions({ sourceSessionId: session.id }, binding)
+    void withChatPin(binding, (chatPin) => window.ade.agentChat
+      .getCrossMachineHandoffOptions({ sourceSessionId: session.id }, chatPin))
       .then((result) => {
         if (request === requestRef.current) setOptions({ status: "ready", result });
       })
@@ -101,6 +120,8 @@ export function CrossMachineMoveSubmenu({
   };
 
   const result = options.status === "ready" ? options.result : null;
+  // Own computers only: ADE Cloud shows once, as the disabled row below.
+  const machines = useOwnMoveMachines(result?.machines);
   // The summary and the brain's answer can arrive in either order.
   const record: AgentChatCrossMachineHandoffRecord | null = pickNewerCrossMachineHandoffRecord(
     session.crossMachineHandoff ?? null,
@@ -119,7 +140,7 @@ export function CrossMachineMoveSubmenu({
   const cancelMove = async (outcome: { title: string; message: string }) => {
     onClose();
     try {
-      await window.ade.agentChat.cancelCrossMachineHandoff({ sourceSessionId: session.id }, binding);
+      await withChatPin(binding, (chatPin) => window.ade.agentChat.cancelCrossMachineHandoff({ sourceSessionId: session.id }, chatPin));
       showToast({ tone: "info", ...outcome });
     } catch (error) {
       showToast({ tone: "warning", title: "Couldn't cancel the move", message: errorText(error) });
@@ -129,16 +150,63 @@ export function CrossMachineMoveSubmenu({
   const retryMove = async () => {
     onClose();
     try {
-      await window.ade.agentChat.retryCrossMachineHandoff({ sourceSessionId: session.id }, binding);
+      await withChatPin(binding, (chatPin) => window.ade.agentChat.retryCrossMachineHandoff({ sourceSessionId: session.id }, chatPin));
     } catch (error) {
       showToast({ tone: "warning", title: "Couldn't retry the move", message: errorText(error) });
     }
   };
 
-  const quickBrief = async (machineKey: string, machineName: string) => {
+  /** A CLI keeps its own model and launch settings; its conversation travels when its agent allows. */
+  const moveCli = async (machineKey: string, machineName: string) => {
     onClose();
     try {
-      const summary = await window.ade.agentChat.getSummary({ sessionId: session.id }, binding);
+      const started = await window.ade.agentChat.startCrossMachineHandoff({
+        targetModelId: "",
+        sourceSessionId: session.id,
+        machine: machineKey,
+        mode: "fork",
+        ...(changeCount > 0 ? { includeChanges: true } : {}),
+        ...(busy ? { whenTurnEnds: true } : {}),
+      }, requireChatPin(binding));
+      showToast({
+        tone: "info",
+        title: started.state === "pending"
+          ? `Moving this CLI to ${started.targetMachineName} when this turn ends`
+          : `Moving this CLI to ${started.targetMachineName}`,
+        message: [
+          "It stops here and starts there in the moved lane",
+          started.includeChanges && changesLabel ? `brings ${changesLabel}` : null,
+        ].filter(Boolean).join(" · "),
+      });
+    } catch (error) {
+      showToast({
+        tone: "warning",
+        title: `Couldn't move to ${machineName}`,
+        message: errorText(error),
+        durationMs: 18_000,
+      });
+    }
+  };
+
+  /** A moved CLI comes back here: the move lock lifts and Resume starts it here again. */
+  const workHereInstead = async (handoffId: string) => {
+    onClose();
+    try {
+      await window.ade.agentChat.acknowledgeCrossMachineHandoff({ sourceSessionId: session.id, handoffId }, requireChatPin(binding));
+      showToast({ tone: "info", title: "Working here again", message: "Resume starts this CLI here." });
+    } catch (error) {
+      showToast({ tone: "warning", title: "Couldn't keep it here", message: errorText(error) });
+    }
+  };
+
+  const quickBrief = async (machineKey: string, machineName: string) => {
+    if (cli) {
+      await moveCli(machineKey, machineName);
+      return;
+    }
+    onClose();
+    try {
+      const summary = await withChatPin(binding, (chatPin) => window.ade.agentChat.getSummary({ sessionId: session.id }, chatPin));
       const target = summary ? targetFromSummary(summary) : null;
       if (!target) {
         showToast({
@@ -148,14 +216,14 @@ export function CrossMachineMoveSubmenu({
         });
         return;
       }
-      const started = await window.ade.agentChat.startCrossMachineHandoff({
+      const started = await withChatPin(binding, (chatPin) => window.ade.agentChat.startCrossMachineHandoff({
         ...target,
         sourceSessionId: session.id,
         machine: machineKey,
         mode: "brief",
         ...(changeCount > 0 ? { includeChanges: true } : {}),
         ...(busy ? { whenTurnEnds: true } : {}),
-      }, binding);
+      }, chatPin));
       const model = getModelById(started.targetModelId)?.displayName ?? started.targetModelId;
       // Info, not success: the move has only started; the banner reports how it ends.
       showToast({
@@ -178,11 +246,11 @@ export function CrossMachineMoveSubmenu({
   };
 
   const anyQuickBrief = Boolean(
-    result?.machines.some((machine) => machine.online && !machine.unavailableReason && machine.hasRepository !== false),
+    machines?.some((machine) => machine.online && !machine.unavailableReason && machine.hasRepository !== false),
   );
   const quickBriefHint = anyQuickBrief
     ? [
-      "Quick brief",
+      cli ? "Moves the CLI" : "Quick brief",
       changeCount > 0 && changesLabel ? `brings ${changesLabel}` : null,
       busy ? "after this turn" : null,
     ].filter(Boolean).join(" · ")
@@ -194,6 +262,8 @@ export function CrossMachineMoveSubmenu({
   const unknownTargetSessionId = record?.state === "unknown"
     ? record.targetSessionId ?? continuation?.targetSessionId ?? null
     : null;
+  // A CLI has no chat banner to offer "Work here instead"; the menu does.
+  const cliMoveLock = cli ? crossMachineMoveLock(record) : null;
   return (
     <MenuSubmenu
       label="Another machine"
@@ -274,14 +344,44 @@ export function CrossMachineMoveSubmenu({
                 <MenuRowIcon icon={ArrowSquareOut} />
                 Open on {continuation.targetMachineName}
               </button>
+              {cliMoveLock ? (
+                <button
+                  type="button"
+                  data-testid="session-menu-move-work-here"
+                  className={MENU_ITEM_CLASS}
+                  onClick={() => void workHereInstead(cliMoveLock.handoffId)}
+                >
+                  <MenuRowIcon icon={ArrowCounterClockwise} />
+                  Work here instead
+                </button>
+              ) : null}
               <MenuSeparator />
             </>
           ) : null}
-          {options.status === "idle" || options.status === "loading" ? (
+          {cloudSource === "gone" ? (
+            <MenuSubmenuStatus>This chat's ADE Cloud computer was removed. Send it a message: it continues on a new ADE Cloud computer.</MenuSubmenuStatus>
+          ) : cloudSource === "resting" ? (
+            <>
+              <MenuSubmenuStatus>Your ADE Cloud computer is asleep. Wake it to move this chat.</MenuSubmenuStatus>
+              <button
+                type="button"
+                role="menuitem"
+                className={MENU_ITEM_CLASS}
+                onClick={() => {
+                  onClose();
+                  // A move is doing: wake the computer, then the person picks where to move it.
+                  wakeAdeCloudLane(binding, () => onOpenFullSetup(null));
+                }}
+              >
+                <MenuRowIcon icon={ArrowClockwise} />
+                Wake and move
+              </button>
+            </>
+          ) : options.status === "idle" || options.status === "loading" ? (
             <MenuSubmenuStatus>Finding your machines…</MenuSubmenuStatus>
           ) : options.status === "error" ? (
             <MenuSubmenuStatus>{options.message}</MenuSubmenuStatus>
-          ) : result && result.machines.length === 0 ? (
+          ) : machines && machines.length === 0 ? (
             <MenuSubmenuStatus>No other machines on this account.</MenuSubmenuStatus>
           ) : null}
           {hardBlockers.length ? (
@@ -297,14 +397,17 @@ export function CrossMachineMoveSubmenu({
               {quickBriefHint}
             </div>
           ) : null}
-          {result?.machines.map((machine) => {
-            const available = machine.online && !machine.unavailableReason;
-            // No repository there: the full setup asks before cloning.
+          {machines?.map((machine) => {
+            // No repository there: the full setup asks before cloning. A CLI
+            // has no full setup, so it waits until the project is open there.
             const needsClone = machine.hasRepository === false;
+            const available = machine.online && !machine.unavailableReason && !(cli && needsClone);
             // "Offline since yesterday 6:12 PM" reads as "Offline" in the row;
             // the full reason stays in the tooltip.
-            const reason = machine.unavailableReason ?? "Offline";
-            const state = !available ? compactUnavailableReason(reason)
+            const reason = machine.unavailableReason
+              ?? (machine.online && cli && needsClone ? `Open this project on ${machine.name} first` : "Offline");
+            const state = !available
+              ? (machine.online && !machine.unavailableReason && cli && needsClone ? "no project there" : compactUnavailableReason(reason))
               : needsClone
                 ? "clones the repo"
                 : null;
@@ -313,8 +416,8 @@ export function CrossMachineMoveSubmenu({
                 <button
                   type="button"
                   disabled={!available}
-                  title={available ? (needsClone ? `Set up ${machine.name} first` : `Quick brief to ${machine.name}`) : reason}
-                  aria-label={available ? (needsClone ? `Set up ${machine.name}…` : `Quick brief to ${machine.name}`) : `${machine.name}, ${state}`}
+                  title={available ? (needsClone ? `Set up ${machine.name} first` : `${cli ? "Move to" : "Quick brief to"} ${machine.name}`) : reason}
+                  aria-label={available ? (needsClone ? `Set up ${machine.name}…` : `${cli ? "Move to" : "Quick brief to"} ${machine.name}`) : `${machine.name}, ${state}`}
                   className={cn(MENU_ITEM_CLASS, "min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent")}
                   onClick={() => {
                     if (needsClone) {
@@ -339,7 +442,7 @@ export function CrossMachineMoveSubmenu({
                 </button>
                 {/* Fixed trailing slot, filled or not, so every row's right
                     edge lines up. */}
-                {available ? (
+                {available && !cli ? (
                   <button
                     type="button"
                     className="kit-icon-btn shrink-0"
@@ -358,19 +461,39 @@ export function CrossMachineMoveSubmenu({
               </div>
             );
           })}
-          <MenuSeparator />
-          <button
-            type="button"
-            data-testid="session-menu-move-full-setup"
-            className={MENU_ITEM_CLASS}
-            onClick={() => {
-              onClose();
-              onOpenFullSetup(null);
-            }}
-          >
-            <MenuRowIcon icon={SlidersHorizontal} />
-            More handoff options…
-          </button>
+          {machines ? (
+            <div className="flex items-center gap-0.5" data-testid="session-menu-move-ade-cloud">
+              <button
+                type="button"
+                disabled
+                title={ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE}
+                aria-label={`${ADE_CLOUD_NAME}, unavailable. ${ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE}`}
+                className={cn(MENU_ITEM_CLASS, "min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent")}
+              >
+                <CloudMark size={12} className="shrink-0 text-muted-fg" />
+                <span className="min-w-0 flex-1 truncate">{ADE_CLOUD_NAME}</span>
+                <span className="ml-3 shrink-0 whitespace-nowrap text-[10px] text-muted-fg/60">not yet</span>
+              </button>
+              <span aria-hidden className="kit-icon-btn shrink-0 invisible" />
+            </div>
+          ) : null}
+          {cli ? null : (
+            <>
+              <MenuSeparator />
+              <button
+                type="button"
+                data-testid="session-menu-move-full-setup"
+                className={MENU_ITEM_CLASS}
+                onClick={() => {
+                  onClose();
+                  onOpenFullSetup(null);
+                }}
+              >
+                <MenuRowIcon icon={SlidersHorizontal} />
+                More handoff options…
+              </button>
+            </>
+          )}
         </>
       )}
     </MenuSubmenu>

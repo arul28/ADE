@@ -6,8 +6,9 @@ import {
   type RebaseRunEventPayload,
 } from "../../../../shared/types";
 import { isChatLaunchLane } from "../../../state/chatLaunchStore";
-import { localProjectBindingForRoot, useAppStore } from "../../../state/appStore";
+import { localProjectBindingForRoot } from "../../../state/appStore";
 import { arePathsEqual } from "../../../lib/pathUtils";
+import { useTabCopyPin } from "../../../state/repositoryScope";
 import { READABLE_TOAST_DURATION_MS, showToast } from "./toastStore";
 
 /**
@@ -26,9 +27,16 @@ function namesARealLane(event: LaneLifecycleEvent): boolean {
 }
 
 export function useLaneEventToasts(navigate: NavigateFunction): void {
+  // The toasts follow the lanes of the open copy, as before: its machine is
+  // named on each subscription. (A toast for every copy would need the
+  // copies list at app level; see the B3 report.)
+  const tabPin = useTabCopyPin();
+  const tabPinKey = tabPin?.key ?? null;
   // Lane lifecycle events arrive through both in-process Electron IPC and the
   // runtime event stream. The preload merges those paths for this subscription.
   useEffect(() => {
+    const subscribedPin = tabPin;
+    if (!subscribedPin) return;
     const dispose = window.ade.lanes.onLifecycleEvent(
       (event: LaneLifecycleEvent) => {
         if (event.type === "lanes-invalidated") return;
@@ -62,9 +70,9 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
           // local tab is not on is sent to its folder on this computer. Taken now,
           // so Undo still goes there after a tab switch, and stays unpinned
           // (the tab's own route) while that tab is the same one.
-          const active = useAppStore.getState().projectBinding;
+          const active = subscribedPin;
           const root = event.autoArchive.projectRoot;
-          const origin = root && active?.kind !== "remote" && !(active?.rootPath && arePathsEqual(active.rootPath, root))
+          const origin = root && active.kind !== "remote" && !(active.rootPath && arePathsEqual(active.rootPath, root))
             ? localProjectBindingForRoot(root, root)
             : active;
           const laneId = event.laneId;
@@ -80,9 +88,7 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
             actions: [{
               label: "Undo",
               onClick: () => {
-                const current = useAppStore.getState().projectBinding;
-                const pin = origin && current?.key !== origin.key ? origin : null;
-                void window.ade.lanes.unarchive({ laneId }, pin).catch((err: unknown) => {
+                void window.ade.lanes.unarchive({ laneId }, origin).catch((err: unknown) => {
                   showToast({
                     id: `lane-auto-archived-${laneId}`,
                     title: laneName,
@@ -115,13 +121,18 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
           colorDot: dot,
         });
       },
+      subscribedPin,
     );
     return dispose;
-  }, [navigate]);
+    // `tabPinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigate, tabPinKey]);
 
   // Rebase outcome events can stream multiple progress updates. Only terminal
   // states produce toasts, keyed by run id so repeated terminal updates collapse.
   useEffect(() => {
+    const subscribedPin = tabPin;
+    if (!subscribedPin) return;
     const dispose = window.ade.lanes.rebaseSubscribe(
       (event: RebaseRunEventPayload) => {
         if (event.type !== "rebase-run-updated") return;
@@ -157,7 +168,10 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
           tone: "error",
         });
       },
+      subscribedPin,
     );
     return dispose;
-  }, []);
+    // `tabPinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabPinKey]);
 }

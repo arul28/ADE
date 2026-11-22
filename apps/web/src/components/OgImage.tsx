@@ -2,9 +2,8 @@ import type { CSSProperties } from "react";
 
 /**
  * Social link-preview card, rendered at exactly 1200×630 and screenshotted to
- * /og-image.png. Mirrors the site hero — the competitor equation, the headline,
- * and the desktop + iPhone pair, hand-labelled by the machine each one runs
- * on, minus the install CTAs. /og-video.mp4 animates this same card.
+ * /og-image.png. Mirrors the site hero: the headline and the desktop + iPhone
+ * pair, hand-labelled by the machine each one runs on, minus the install CTAs.
  */
 const rainbow: CSSProperties = {
   background:
@@ -23,18 +22,6 @@ const hand: CSSProperties = {
   fontWeight: 600,
 };
 
-const COMPETITORS = [
-  "claude-code",
-  "codex",
-  "opencode",
-  "t3-code",
-  "cursor",
-  "superset",
-  "conductor",
-  "factory",
-  "paperclip",
-  "github",
-];
 
 export function OgImage() {
   return (
@@ -66,55 +53,20 @@ export function OgImage() {
         }}
       />
 
-      {/* competitor equation — every tool = ADE (ADE much larger) */}
-      <div
-        className="absolute left-1/2 flex -translate-x-1/2 items-center justify-center"
-        style={{ top: 22, gap: 8 }}
-      >
-        {COMPETITORS.map((slug, i) => (
-          <div key={slug} className="flex items-center" style={{ gap: 8 }}>
-            {i > 0 ? (
-              <span className="font-serif" style={{ color: "rgba(239,230,208,0.4)", fontSize: 14 }}>
-                +
-              </span>
-            ) : null}
-            <div
-              className="flex items-center justify-center overflow-hidden"
-              style={{
-                height: 28,
-                width: 28,
-                borderRadius: 7,
-                border: "1px solid rgba(239,230,208,0.16)",
-                background: "rgba(255,255,255,0.045)",
-                padding: 3,
-              }}
-            >
-              <img
-                src={`/images/competitors/${slug}.webp`}
-                alt=""
-                style={{ height: "100%", width: "100%", objectFit: "contain" }}
-              />
-            </div>
-          </div>
-        ))}
-        <span
-          className="font-serif italic"
-          style={{ color: "#a78bfa", fontSize: 26, margin: "0 10px 0 12px" }}
-        >
-          equals
-        </span>
-        <img
-          src="/images/ade-dock-icon.webp"
-          alt="ADE"
-          style={{
-            height: 86,
-            width: 86,
-            borderRadius: "24%",
-            objectFit: "contain",
-            filter: "drop-shadow(0 12px 36px rgba(124,58,237,0.7))",
-          }}
-        />
-      </div>
+      {/* the ADE icon */}
+      <img
+        src="/images/ade-dock-icon.webp"
+        alt="ADE"
+        className="absolute left-1/2 -translate-x-1/2"
+        style={{
+          top: 18,
+          height: 86,
+          width: 86,
+          borderRadius: "24%",
+          objectFit: "contain",
+          filter: "drop-shadow(0 12px 36px rgba(124,58,237,0.7))",
+        }}
+      />
 
       {/* headline */}
       <h1

@@ -1,5 +1,7 @@
 import type { ProjectIcon } from "./core";
-import type { SyncPairingHostIdentity } from "./sync";
+import type { SyncPairingHostIdentity, UpdateBlockHolder } from "./sync";
+
+import type { SlowLinkPreference, SlowLinkStatus } from "../slowLinkMode";
 
 export type RemoteRuntimeTransportKind = "ssh" | "paired";
 
@@ -40,6 +42,8 @@ export type RemoteRuntimeTarget = {
   lastConnectedAt: number | null;
   /** Whether ADE should reconnect this machine automatically on launch. */
   autoConnect?: boolean;
+  /** Slow-connection mode for this machine: "auto" (absent) follows the measured link. */
+  slowLinkMode?: SlowLinkPreference;
   /** @deprecated Retained while migrating pre-autoConnect records. */
   manuallyDisconnectedAt?: number | null;
 };
@@ -107,12 +111,26 @@ export type RemoteRuntimeProjectRecord = {
    */
   exists?: boolean;
   /**
+   * The account project (`ap_…`) this folder is a copy of, for the account
+   * signed in on the host. Absent from older hosts, signed-out hosts, and
+   * folders that are not on the account. `projectId` stays the copy's id.
+   */
+  accountProjectId?: string;
+  /** GitHub's numeric id of the folder's repository, once the host could read it. */
+  githubRepoId?: number;
+  /**
    * The project's icon as resolved on the host machine, inlined as a base64
    * data URL so a connected desktop can render the real project logo in its
    * tab instead of a blank folder. Null/absent when the host can't resolve an
    * icon (older host, no icon file, or an oversized icon dropped from the wire).
    */
   icon?: ProjectIcon | null;
+  /**
+   * Only on the answer of a clone (`projects.clone`): the machine cloned with
+   * this computer's one-shot GitHub header and has no GitHub sign-in of its
+   * own, so its fetch and push won't sign in until GitHub is connected there.
+   */
+  githubSignInMissing?: boolean;
 };
 
 export type RemoteRuntimeUpdateInstallMode = "in_place" | "manual_download" | "runtime_only";
@@ -126,6 +144,14 @@ export type RemoteRuntimeConnectResult = {
    * Null with no app (a headless server); absent from brains before v1.2.126.
    */
   appVersion?: string | null;
+  /**
+   * When the machine's brain started, on this computer's clock (its reported
+   * `startedAgoMs` taken from the time of the handshake). A later value means
+   * the brain restarted. Absent from brains before it (`hostUpdateFacts.ts`).
+   */
+  hostStartedAt?: number | null;
+  /** What kept the machine's last update from installing (from its handshake). */
+  hostUpdateBlock?: RemoteRuntimeUpdateBlock | null;
   updateInstallMode?: RemoteRuntimeUpdateInstallMode;
   downloadUrl?: string | null;
   route?: RemoteRuntimeConnectionRoute;
@@ -136,6 +162,18 @@ export type RemoteRuntimeConnectResult = {
   hostStall?: RemoteRuntimeHostStall | null;
   /** A project folder on the machine was not answering at connect (from its handshake). */
   hostStorageWait?: RemoteRuntimeHostStorageWait | null;
+};
+
+/**
+ * The processes that kept a Windows update from installing: they held files in
+ * the install folder open, so the old version could not be moved aside
+ * (`apps/desktop/build/ade-update-holders.ps1`). `at` is this computer's clock
+ * (the machine sends only an age).
+ */
+export type RemoteRuntimeUpdateBlock = {
+  at: number;
+  targetVersion: string | null;
+  holders: UpdateBlockHolder[];
 };
 
 /**
@@ -229,6 +267,17 @@ export type RemoteRuntimeConnectionAttemptFailure =
   | "capability"
   | "protocol"
   | "unknown";
+
+/**
+ * A connect failure no redial fixes: the machine rejected this device's
+ * pairing or identity (pair it again), or the account would not vouch for
+ * this device (sign in). ADE stops redialing and shows it with its action.
+ */
+export function isPersonFixConnectionFailure(
+  failure: RemoteRuntimeConnectionAttemptFailure | null | undefined,
+): failure is "pairing" | "authentication" | "identity" {
+  return failure === "pairing" || failure === "authentication" || failure === "identity";
+}
 
 export type RemoteRuntimeConnectionAttempt = {
   kind: RemoteRuntimeRouteKind;
@@ -336,6 +385,10 @@ export type RemoteRuntimeConnectionStatus = {
   version: string | null;
   /** See `RemoteRuntimeConnectResult.appVersion`. Live while connected; not persisted. */
   appVersion?: string | null;
+  /** See `RemoteRuntimeConnectResult.hostStartedAt`. Live while connected; not persisted. */
+  hostStartedAt?: number | null;
+  /** See `RemoteRuntimeConnectResult.hostUpdateBlock`. Live while connected; not persisted. */
+  hostUpdateBlock?: RemoteRuntimeUpdateBlock | null;
   updateInstallMode?: RemoteRuntimeUpdateInstallMode;
   downloadUrl?: string | null;
   route?: RemoteRuntimeConnectionRoute;
@@ -348,6 +401,8 @@ export type RemoteRuntimeConnectionStatus = {
   connectedAt: number | null;
   /** See `RemoteRuntimeConnectResult.hostStall`. Cleared by a clean reconnect. */
   hostStall?: RemoteRuntimeHostStall | null;
+  /** Slow-connection mode for this connection (`shared/slowLinkMode.ts`). Absent until measured. */
+  slowLink?: SlowLinkStatus;
   /** Live: set and cleared by the machine's status pushes while connected. */
   hostStorageWait?: RemoteRuntimeHostStorageWait | null;
   /**
@@ -357,6 +412,24 @@ export type RemoteRuntimeConnectionStatus = {
    * trusted) says so in `lastErrorInfo` instead.
    */
   reconnectBlocked?: "disconnected" | null;
+  /**
+   * When the last connection to this machine ended, in this app's run. Null
+   * while it is connected, and before it ever connected here. "Last seen"
+   * counts from this, not from when that connection started.
+   */
+  disconnectedAt?: number | null;
+  /**
+   * ADE Web: this machine is not connected only because the tab already holds
+   * its limit of connections. It is not disconnected and not known offline;
+   * it connects when a connection frees up or when someone opens it.
+   */
+  waitingForSlot?: boolean;
+  /**
+   * Set only while a client shows a dropped connection as `connected` during
+   * its short reconnect window: when the connection dropped. Lists that hide
+   * an unreachable machine count from this time, not from the window's end.
+   */
+  reconnectingSinceMs?: number | null;
   /**
    * Who brings a failed connection back; only set while `state` is "error".
    * `reconnecting`: this app retries on its own. `waiting_for_user`: ADE on
@@ -369,9 +442,16 @@ export type RemoteRuntimeConnectionStatus = {
 
 export type RemoteRuntimeConnectionRecovery = "reconnecting" | "waiting_for_user" | "held_elsewhere";
 
+/** A call named a saved connection this computer doesn't have. Matched by clients that fall back to a saved chat copy. */
+export const REMOTE_TARGET_NOT_FOUND_MESSAGE = "Remote target was not found.";
+
 /** What a call to a machine the person disconnected is told. */
 export const REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE =
   "Remote machine was manually disconnected. Connect again to use this remote project.";
+
+/** What a development ADE says when it would dial a machine the person did not connect in it. */
+export const REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE =
+  "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
 
 export type RemoteRuntimeParsedPairingInput = {
   hostIdentity: SyncPairingHostIdentity;
@@ -441,7 +521,11 @@ export type RemoteRuntimeMachineProjectCapability =
   | "clone"
   | "listMyGitHubRepos"
   /** `projects.setIcon` + `projects.removeIcon`: change a project's icon on the host. */
-  | "setIcon";
+  | "setIcon"
+  /** `projects.inspectRemoval` + `projects.removeCopy`: remove a project, and its folder, on the host. */
+  | "removeCopy"
+  /** `projects.accountList`: the account's projects as the host last read them; `accountProjectId` on `projects.list` rows. */
+  | "accountList";
 
 /** Icon bytes a desktop uploads to the host with `projects.setIcon`. */
 export type RemoteRuntimeProjectIconUpload = {
@@ -456,6 +540,37 @@ export type RemoteRuntimeCapabilities = {
   machineProjects: Partial<Record<RemoteRuntimeMachineProjectCapability, boolean>>;
   /** `chat.sendMessage` recognizes a repeat of a `clientSendId`. Absent on an older brain. */
   clientSendDedupe?: boolean;
+  /**
+   * `chat.typeIntoCli` takes `when: "now"` (typed at once; older desktops'
+   * terminal local line sent it) and recognizes a repeat of a
+   * `clientMessageId` in both modes. Absent on an older brain.
+   */
+  agentCliTypeNow?: boolean;
+  /**
+   * `runtimeEvents.subscribe` and `stream_events` take `ptyDataIds`, and
+   * `runtimeEvents.setPtyDataFilter` changes a subscription's list: the brain
+   * sends only the output of the terminals a window shows. Absent on an older
+   * brain, which sends every terminal's output.
+   */
+  ptyDataFilter?: boolean;
+  /** The brain runs `chat.saveTempAttachmentPart` (a paste in parts). Absent on an older brain. */
+  chatAttachmentParts?: boolean;
+  /** `ade/actions/call` takes `backgroundJob` (a long action followed by id). Absent on an older brain. */
+  backgroundActionJobs?: boolean;
+  /** The brain runs `chat.createSessionAndSend` (a new chat and its first message in one call). Absent on an older brain. */
+  chatCreateAndSend?: boolean;
+  /** The chat launch kinds the brain runs (`CHAT_LAUNCH_KINDS`). Absent on an older brain. */
+  chatLaunchKinds?: string[];
+  /** The brain answers its own settings with no project (`shared/machineScope.ts`). Absent on an older brain. */
+  machineScope?: boolean;
+  /** The domains it answers there (`MACHINE_SCOPE_DOMAINS`). Absent on a brain of the route's first version. */
+  machineScopeDomains?: string[];
+  /**
+   * The machine takes "Update & restart" from this client. Absent: it does (a
+   * desktop's runtime RPC). False only from ADE Web, for a brain that does not
+   * offer `machine.updateAndRestart`.
+   */
+  remoteUpdate?: boolean;
 };
 
 export type RemoteRuntimeHandoffStoragePreflightArgs = {
@@ -548,6 +663,11 @@ export type RemoteRuntimeStreamEventsRequest = {
   limit?: number;
   category?: RemoteRuntimeEventCategory;
   replay?: boolean;
+  /**
+   * Main only: the terminals whose `pty_data` the window shows. Main sets it
+   * from the window's own list; a brain without `ptyDataFilter` never sees it.
+   */
+  ptyDataIds?: string[];
 };
 
 export type RemoteRuntimeStreamEventsResult = {
@@ -676,4 +796,70 @@ export type RemoteRuntimeLocalWorkCheckResult = {
   remoteWorkSummary?: RemoteRuntimeProjectWorkSummary | null;
   matches: RemoteRuntimeLocalWorkMatch[];
   hasDirtyWork: boolean;
+};
+
+/** Which ADE client asked a machine for an update (`machine.updateAndRestart`). */
+export type UpdateRequestClientKind = "desktop" | "ios" | "web" | "cli" | "agent" | "unknown";
+
+export type UpdateRequestedBy = {
+  /** The asking machine's name, as `sanitizeUpdateRequestedBy` leaves it. */
+  machineName?: string | null;
+  clientKind?: UpdateRequestClientKind | null;
+};
+
+const REQUESTED_BY_NAME_CHARS = 48;
+const UPDATE_REQUEST_CLIENT_KINDS: ReadonlySet<string> = new Set<UpdateRequestClientKind>([
+  "desktop",
+  "ios",
+  "web",
+  "cli",
+  "agent",
+  "unknown",
+]);
+
+/**
+ * A machine name safe to log and to put in a prompt: no control, format or
+ * line-separator characters; only letters, digits, spaces and `. _ - ' ’ ( )`;
+ * spaces collapsed; at most 48 characters. Null when nothing is left.
+ */
+export function sanitizeMachineName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
+    .replace(/[^\p{L}\p{N} ._\-'’()]+/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, REQUESTED_BY_NAME_CHARS)
+    .trim();
+  return cleaned || null;
+}
+
+/** Only a known client kind, lower-cased; null for anything else. */
+export function sanitizeUpdateRequestClientKind(value: unknown): UpdateRequestClientKind | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return UPDATE_REQUEST_CLIENT_KINDS.has(raw) ? raw as UpdateRequestClientKind : null;
+}
+
+/**
+ * A `requestedBy` value from the wire, made safe to log and to show. Null
+ * when nothing usable is left.
+ */
+export function sanitizeUpdateRequestedBy(value: unknown): UpdateRequestedBy | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const machineName = sanitizeMachineName(record.machineName);
+  const clientKind = sanitizeUpdateRequestClientKind(record.clientKind);
+  if (!machineName && !clientKind) return null;
+  return { ...(machineName ? { machineName } : {}), ...(clientKind ? { clientKind } : {}) };
+}
+
+/**
+ * A brain's answer to `ping`. `hostFrozenMs`: the brain's own event loop was
+ * frozen for this long while the ping waited (`brainPingReply`), so the round
+ * trip measured the freeze, not the network. Absent on an older brain.
+ */
+export type RuntimePingReply = {
+  pong: true;
+  at: string;
+  hostFrozenMs?: number;
 };

@@ -4,8 +4,10 @@ import type {
   CtoLinearQuickView,
   LaneLinearIssue,
   NormalizedLinearIssue,
+  OpenProjectBinding,
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import {
   consumePendingLinearPaneOpenRequest,
   subscribeLinearPaneOpenRequests,
@@ -41,6 +43,7 @@ import {
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
 import { createBackoffPoller } from "../../lib/backoffPoller";
+import { isAdeCloudBinding } from "../../../shared/adeCloud/binding";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 // A backstop for a connection made outside this window (the CLI, another
@@ -67,29 +70,57 @@ type LinearVisibilityCacheEntry = {
 
 const linearVisibilityCacheByProject = new Map<string, LinearVisibilityCacheEntry>();
 
+type LinearConnectionGetter = (pin: OpenProjectBinding) => Promise<{ connected?: boolean }>;
+const linearConnectionReaders = new WeakMap<LinearConnectionGetter, Map<string, () => Promise<{ connected?: boolean }>>>();
+
+/**
+ * One reader function for each bridge and machine, so the visibility cache
+ * (which drops an entry when its reader changes) keeps its answer across renders.
+ */
+function linearConnectionReader(
+  getStatus: LinearConnectionGetter,
+  pin: OpenProjectBinding,
+): () => Promise<{ connected?: boolean }> {
+  let byKey = linearConnectionReaders.get(getStatus);
+  if (!byKey) {
+    byKey = new Map();
+    linearConnectionReaders.set(getStatus, byKey);
+  }
+  let reader = byKey.get(pin.key);
+  if (!reader) {
+    reader = () => getStatus(pin);
+    byKey.set(pin.key, reader);
+  }
+  return reader;
+}
+
 function readLinearVisibilityCached({
   projectRoot,
+  readerKey,
   reader,
   force = false,
 }: {
   projectRoot: string | null | undefined;
+  /** The Linear reader copy's address key: each machine has its own answer. */
+  readerKey: string | null;
   reader: (() => Promise<{ connected?: boolean }>) | undefined;
   force?: boolean;
 }): Promise<boolean> {
-  if (!projectRoot || !reader) return Promise.resolve(false);
+  if (!projectRoot || !readerKey || !reader) return Promise.resolve(false);
   const now = Date.now();
-  const existing = linearVisibilityCacheByProject.get(projectRoot);
+  const cacheKey = `${projectRoot}\n${readerKey}`;
+  const existing = linearVisibilityCacheByProject.get(cacheKey);
   const entry =
     existing && existing.reader === reader
       ? existing
       : { reader, value: false, checkedAtMs: 0, inFlight: null };
-  linearVisibilityCacheByProject.set(projectRoot, entry);
+  linearVisibilityCacheByProject.set(cacheKey, entry);
 
   if (entry.inFlight) {
     if (!force) return entry.inFlight;
     // A forced read follows a change (a key saved, a connection made); the read
     // in flight may have started before it, so read again once it settles.
-    const retry = () => readLinearVisibilityCached({ projectRoot, reader, force });
+    const retry = () => readLinearVisibilityCached({ projectRoot, readerKey, reader, force });
     return entry.inFlight.then(retry, retry);
   }
   const ttl = entry.value ? VISIBILITY_CONNECTED_CACHE_TTL_MS : VISIBILITY_DISCONNECTED_CACHE_TTL_MS;
@@ -129,6 +160,8 @@ export function LinearQuickViewButton({
 } = {}) {
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  // Linear is the repository's: the reader copy answers the connection check.
+  const linearReaderPin = useActiveRepositoryReader();
   const lanes = useAppStore((s) => s.lanes);
   const [visible, setVisible] = useState(false);
   const topBarPreferences = useIssueTopBarPreferences();
@@ -177,12 +210,15 @@ export function LinearQuickViewButton({
       : VISIBILITY_RETRY_INTERVAL_MS;
 
   const loadVisibility = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
+    const getStatus = window.ade.cto?.getLinearConnectionStatus;
     return readLinearVisibilityCached({
       projectRoot: activeProjectRoot,
-      reader: window.ade.cto?.getLinearConnectionStatus,
+      readerKey: linearReaderPin?.key ?? null,
+      reader: getStatus && linearReaderPin ? linearConnectionReader(getStatus, linearReaderPin) : undefined,
       force: options?.force === true,
     });
-  }, [activeProjectRoot]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProjectRoot, linearReaderPin?.key]);
 
   const openLinearSettings = useCallback(() => {
     window.location.hash = `#${settingsRouteFor("integrations.linear")}`;
@@ -300,8 +336,14 @@ export function LinearQuickViewButton({
 
   // Disconnected retry. The poller backs off while the answer stays "not
   // connected", pauses while the page is hidden, and reads at once on return.
+  // An ADE Cloud tab reads Linear through the account (each check is one
+  // account request and one Linear call, inside a shared per-account limit),
+  // so it checks only when the tab opens, the window gets focus, or Settings
+  // says the connection changed (the effects above). No retry poller.
+  const accountAnswered = isAdeCloudBinding(projectBinding);
   useEffect(() => {
     if (!shouldAutoCheckVisibility) return;
+    if (accountAnswered) return;
     if (visible) return;
     if (!activeProjectRoot) return;
     // A read still in flight when the project changes answers for the old one.
@@ -321,7 +363,7 @@ export function LinearQuickViewButton({
       stopped = true;
       poller.stop();
     };
-  }, [loadVisibility, visible, activeProjectRoot, visibilityRetryIntervalMs, shouldAutoCheckVisibility]);
+  }, [loadVisibility, visible, activeProjectRoot, visibilityRetryIntervalMs, shouldAutoCheckVisibility, accountAnswered]);
 
   const openQuickView = useCallback(() => {
     if (cachedQuickViewRef.current) {

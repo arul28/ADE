@@ -150,11 +150,18 @@ function readRegionMarker(homeDir: string): "mainland-cn" | "global" | undefined
   }
 }
 
-/**
- * The Kimi Code login on this machine, or null when there is none: no token
- * file in the slot Kimi would read, or a login held in the OS keyring.
- */
-export function resolveKimiCodeLogin(args: { env?: NodeJS.ProcessEnv; homeDir?: string } = {}): KimiCodeLogin | null {
+type KimiCodeSlot = {
+  env: NodeJS.ProcessEnv;
+  home: string;
+  storage: "file" | "keyring";
+  expectedKey: string;
+  baseUrl: string | undefined;
+  configured: ManagedProvider | undefined;
+  hasEnvOverride: boolean;
+};
+
+/** The login slot Kimi reads for this environment, and where it keeps it. */
+function resolveKimiCodeSlot(args: { env?: NodeJS.ProcessEnv; homeDir?: string }): KimiCodeSlot {
   const env = args.env ?? process.env;
   const home = kimiCodeConfigHome({ env, homeDir: args.homeDir });
   const envBaseUrl = envValue(env, "KIMI_CODE_BASE_URL");
@@ -171,6 +178,23 @@ export function resolveKimiCodeLogin(args: { env?: NodeJS.ProcessEnv; homeDir?: 
   // is the one this environment maps to; either way the slot is `expectedKey`.
   const configuredRef = configured?.oauth;
   const storage = configuredRef && !hasEnvOverride && configuredRef.key === expectedKey ? configuredRef.storage : "file";
+  return { env, home, storage, expectedKey, baseUrl, configured, hasEnvOverride };
+}
+
+/**
+ * Whether the login Kimi reads here is kept in the OS keyring. ADE reads
+ * files only, so such a login exists but reads as none.
+ */
+export function kimiCodeLoginInKeyring(args: { env?: NodeJS.ProcessEnv; homeDir?: string } = {}): boolean {
+  return resolveKimiCodeSlot(args).storage === "keyring";
+}
+
+/**
+ * The Kimi Code login on this machine, or null when there is none: no token
+ * file in the slot Kimi would read, or a login held in the OS keyring.
+ */
+export function resolveKimiCodeLogin(args: { env?: NodeJS.ProcessEnv; homeDir?: string } = {}): KimiCodeLogin | null {
+  const { env, home, storage, expectedKey, baseUrl, configured, hasEnvOverride } = resolveKimiCodeSlot(args);
   if (storage !== "file") return null;
 
   const fileName = tokenFileName(expectedKey);

@@ -64,6 +64,14 @@ case "$1 $2" in
   "chat note") echo "Noted." ;;
   "chat ask") echo "Question raised on the Work row." ;;
   "lanes rename") echo "Lane renamed." ;;
+  "lanes list"|"lanes show"|"lanes status") echo "eval-lane  main  $CASE_DIR/repo  (this chat)" ;;
+  "prs create"|"prs open") echo "Created PR #42: https://github.com/eval/fixture/pull/42"; echo "ADE: ade://pr/42" ;;
+  "prs body"|"prs edit") echo "Updated the body of PR #42." ;;
+  "prs list"|"prs show"|"prs view"|"prs status") echo "#42  Add math helpers  open  https://github.com/eval/fixture/pull/42" ;;
+  "screen status"|"screen list") echo "Mac Desktop: lane screen running (private display)." ;;
+  "screen start") echo "Started the lane's Mac Desktop screen." ;;
+  "screen screenshot"|"screen proof") shot "Screen screenshot" 6 ;;
+  "screen open"|"screen launch"|"screen click"|"screen type"|"screen observe") echo "Done on the lane screen." ;;
   "drafts "*|"drafts") echo "Draft d-1 scheduled." ;;
   *) case "$1" in
        linear) echo "ENG-12  Login times out after 30s  (Todo)" ;;

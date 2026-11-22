@@ -158,7 +158,7 @@ export function BackgroundServiceSection() {
           <ModernRow
             anchor="quit-confirmation"
             title="Ask before quitting"
-            hint="ADE always warns you when quitting would stop agents."
+            hint="Asks while agents are working. ADE always warns you when quitting would stop agents."
             control={<SettingsToggle checked={ask} onChange={changeAsk} label="Ask before quitting" />}
           />
         ) : null}

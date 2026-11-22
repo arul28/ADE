@@ -78,7 +78,7 @@ export function useAppleLaneDeviceList({
   laneId: string | null;
   sessionId: string | null;
   hidden: boolean;
-  runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
+  runtimePinRef: MutableRefObject<OpenProjectBinding>;
   onError: (cause: unknown) => void;
 }): AppleLaneDeviceList {
   const [status, setStatus] = useState<IosSimulatorStatus | null>(null);

@@ -160,6 +160,8 @@ struct ContentView: View {
       // inner display a two-column window, an inspector column and a
       // three-pane window (Views/Duo/DuoWindows.swift).
       .modifier(DuoWindowPresentations(syncService: syncService, appUpdateAdvisor: appUpdateAdvisor))
+      // A cloud lane's delete and its computer's page, asked from any tab.
+      .cloudLaneActionsHost()
       .sheet(isPresented: syncService.bindings.cursorCloudPanePresented) {
         CursorCloudPaneSheet(syncService: syncService)
           .environmentObject(syncService)
@@ -337,6 +339,11 @@ struct ContentView: View {
         ProjectHostRecoveryScreen()
           .environmentObject(syncService)
       }
+    }
+    // Over everything on this machine's tabs while its ADE is below its
+    // track's minimum. Other machines, the Hub and Settings stay reachable.
+    .overlay {
+      FocusedMachineUpdateGate()
     }
   }
 

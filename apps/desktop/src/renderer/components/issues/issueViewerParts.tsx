@@ -8,6 +8,8 @@ import { showToast } from "../app/toast/toastStore";
 import { Button } from "../ui/Button";
 import { ContextMenu, type ContextMenuEntry, type ContextMenuState } from "../ui/ContextMenu";
 import { Banner } from "../ui/notice";
+import { noticeKindModel } from "../ui/notice/noticeKind";
+import { settingsRouteFor } from "../settings/settingsManifest";
 import { BranchIcon } from "../ui/vcsIcons";
 
 /**
@@ -172,6 +174,30 @@ export function IssueViewerFrame({
       <div className="ade-issue-frame-scroll">{children}</div>
       {dock}
     </section>
+  );
+}
+
+/**
+ * No computer that has the project is online, so no tracker can be asked.
+ * Shown in place of an issue or a list; the surface makes no call meanwhile.
+ */
+export function IssueNoMachineNotice({ url, openLabel, onLeave }: { url?: string | null; openLabel?: string; onLeave?: () => void }) {
+  return (
+    <div className="p-4">
+      <Banner
+        layout="inline"
+        model={{
+          id: "issue-no-machine",
+          ...noticeKindModel("status"),
+          title: "No computer is online",
+          detail: "ADE reads issues through a computer that has this project. Open ADE on one, or connect it.",
+          actions: [
+            { label: "Machines", onClick: () => { onLeave?.(); window.location.hash = `#${settingsRouteFor("machines.list")}`; } },
+            ...(url ? [{ label: openLabel ?? "Open on the web", href: url }] : []),
+          ],
+        }}
+      />
+    </div>
   );
 }
 

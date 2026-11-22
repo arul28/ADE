@@ -1,3 +1,4 @@
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -136,7 +137,9 @@ export function createAndroidComposePreviews(deps: AndroidComposePreviewDeps): A
       dir = resolvePathWithinRoot(root, path.join(root, module));
     } catch (error) {
       if (isPathEscapeError(error)) throw new Error(`${module} is outside the lane's worktree.`);
-      throw new Error(`The lane has no module folder ${module}. Pass --module <folder> (the Gradle module with the @Preview functions).`);
+      // The caller's module name (often the default `app`) is not a folder in
+      // this lane; the message names the flag that fixes it.
+      throw new AdeExpectedError(`The lane has no module folder ${module}. Pass --module <folder> (the Gradle module with the @Preview functions).`, "user");
     }
     if (!["build.gradle", "build.gradle.kts"].some((name) => fs.existsSync(path.join(dir, name)))) {
       throw new Error(`${module} has no build.gradle or build.gradle.kts. Pass --module <folder> (the Gradle module with the @Preview functions).`);

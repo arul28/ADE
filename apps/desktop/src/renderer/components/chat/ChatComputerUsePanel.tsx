@@ -12,6 +12,7 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import { SlowLinkHeldPicture } from "./SlowLinkHeldPicture";
 import React, {
   useCallback,
   useMemo,
@@ -53,6 +54,7 @@ import {
   useArtifactPreview,
 } from "./useArtifactPreview";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { requireChatPin } from "./chatMachinePin";
 
 function kindLabel(kind: string): string {
   return kind.replace(/_/g, " ");
@@ -95,10 +97,12 @@ export function ProofProvenanceLines({ artifact, warningClassName }: {
   );
 }
 
-export function ProofPreviewFailureNotice({ failureText, onRetry }: {
+export function ProofPreviewFailureNotice({ failureText, onRetry, retryLabel = "Retry" }: {
   failureText: string;
   /** Offered when another try can work (a machine that was slow or away). */
   onRetry?: (() => void) | null;
+  /** "Wake" when the try wakes a sleeping cloud computer first. */
+  retryLabel?: "Retry" | "Wake";
 }) {
   return (
     <Banner
@@ -106,7 +110,7 @@ export function ProofPreviewFailureNotice({ failureText, onRetry }: {
         id: "proof-preview-failed",
         tone: "warning",
         title: failureText,
-        ...(onRetry ? { actions: [{ label: "Retry", onClick: onRetry }] } : {}),
+        ...(onRetry ? { actions: [{ label: retryLabel, onClick: onRetry }] } : {}),
       }}
       layout="inline"
     />
@@ -130,6 +134,7 @@ function ArtifactKindIcon({ artifact, size = 14 }: {
 export function ArtifactLightbox({
   artifact,
   preview,
+  placeholder = null,
   failed,
   failureText,
   onMediaError,
@@ -137,6 +142,8 @@ export function ArtifactLightbox({
 }: {
   artifact: ComputerUseArtifactView;
   preview: string;
+  /** The tile's smaller copy, shown at once while `preview` (the original) loads. */
+  placeholder?: string | null;
   failed: boolean;
   failureText: string;
   onMediaError: () => void;
@@ -144,7 +151,7 @@ export function ArtifactLightbox({
 }) {
   const scope = useChatRuntimeScope();
   const readDataUrl = useCallback(
-    () => window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin),
+    async () => window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, requireChatPin(scope.pin)),
     [artifact.uri, scope.pin],
   );
   // A video that plays from main's media server is saved by main, which can
@@ -162,6 +169,7 @@ export function ArtifactLightbox({
   return (
     <MediaLightbox
       src={preview}
+      placeholderSrc={placeholder}
       kind={isImageArtifact(artifact) ? "image" : "video"}
       title={artifact.description?.trim() || artifact.title}
       readDataUrl={externalArtifactUrl(artifact.uri) ? undefined : readDataUrl}
@@ -186,12 +194,16 @@ export function ChatProofArtifactCard({
   const {
     containerRef,
     preview,
+    fullPreview,
     loading,
     failed,
     explanation,
     onMediaError,
     retry,
-  } = useArtifactPreview(artifact, allowLocalArtifactProtocol);
+    retryLabel,
+    held,
+    showHeld,
+  } = useArtifactPreview(artifact, allowLocalArtifactProtocol, { holdOnSlowLink: variant === "timeline" });
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const externalUrl = externalArtifactUrl(artifact.uri);
   const image = isImageArtifact(artifact);
@@ -244,14 +256,16 @@ export function ChatProofArtifactCard({
       </div>
 
       <div className={cn("px-2.5", variant === "timeline" ? "pb-2.5" : "pb-3")}>
-        {loading ? (
+        {held ? (
+          <SlowLinkHeldPicture title={artifact.title} bytes={held.bytes} onShow={showHeld} />
+        ) : loading ? (
           <div className="flex min-h-36 items-center justify-center rounded-xl border border-fg/[0.055] bg-black/18 text-muted-fg/35">
             <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof preview" />
           </div>
         ) : failed ? (
           // Broken proof shrinks. A full-height empty box wastes the most
           // valuable space in a 322px rail to say nothing.
-          <ProofPreviewFailureNotice failureText={failureText} onRetry={retry} />
+          <ProofPreviewFailureNotice failureText={failureText} onRetry={retry} retryLabel={retryLabel} />
         ) : preview && image ? (
           <button
             type="button"
@@ -299,7 +313,8 @@ export function ChatProofArtifactCard({
       {lightboxOpen && preview && (image || video) ? (
         <ArtifactLightbox
           artifact={artifact}
-          preview={preview}
+          preview={fullPreview ?? preview}
+          placeholder={preview}
           failed={failed}
           failureText={failureText}
           onMediaError={onMediaError}
@@ -386,6 +401,7 @@ function DrawerProofTile({
   const {
     containerRef,
     preview,
+    fullPreview,
     loading,
     failed,
     explanation,
@@ -538,7 +554,8 @@ function DrawerProofTile({
       {lightboxOpen && preview && (image || video) ? (
         <ArtifactLightbox
           artifact={artifact}
-          preview={preview}
+          preview={fullPreview ?? preview}
+          placeholder={preview}
           failed={failed}
           failureText={failureText}
           onMediaError={onMediaError}
@@ -716,7 +733,7 @@ export function ChatComputerUsePanel({
   const handleDelete = useCallback(
     (artifact: ComputerUseArtifactView) => {
       void withBusy([artifact.id], async () => {
-        const result = await window.ade.computerUse.deleteArtifacts({ artifactId: artifact.id }, scope.pin);
+        const result = await window.ade.computerUse.deleteArtifacts({ artifactId: artifact.id }, requireChatPin(scope.pin));
         assertArtifactDeletionSucceeded(result);
       });
     },
@@ -725,8 +742,8 @@ export function ChatComputerUsePanel({
 
   const handleRecover = useCallback(
     (artifact: ComputerUseArtifactView) => {
-      void withBusy([artifact.id], () =>
-        window.ade.computerUse.recoverArtifact({ artifactId: artifact.id }, scope.pin),
+      void withBusy([artifact.id], async () =>
+        window.ade.computerUse.recoverArtifact({ artifactId: artifact.id }, requireChatPin(scope.pin)),
       );
     },
     [scope.pin, withBusy],
@@ -736,7 +753,7 @@ export function ChatComputerUsePanel({
     const ids = artifacts.filter((artifact) => isBrokenArtifact(artifact)).map((artifact) => artifact.id);
     if (!ids.length) return;
     void withBusy(ids, async () => {
-      const result = await window.ade.computerUse.deleteArtifacts({ artifactIds: ids }, scope.pin);
+      const result = await window.ade.computerUse.deleteArtifacts({ artifactIds: ids }, requireChatPin(scope.pin));
       assertArtifactDeletionSucceeded(result);
     });
   }, [artifacts, scope.pin, withBusy]);

@@ -35,7 +35,15 @@ import {
   type SuspendGapDetector,
 } from "./suspendGapDetector";
 import { createBrainKeepAwakeService } from "./brainKeepAwakeService";
-import { cloudKeepAwakePaths, createCloudKeepAwake } from "./cloudKeepAwake";
+import { cloudKeepAwakePaths, createCloudKeepAwake, decideCloudBusy, type CloudBusyTerminal } from "./cloudKeepAwake";
+import { createCloudDiskGrower } from "./cloudDiskGrow";
+import { createCloudSetupUpsizer } from "./cloudSetupUpsize";
+import { CloudProviderError } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
+import { cloudDiskGrowStatePath } from "./cloudDiskGuard";
+import { cloudCatalogOf } from "../../../../desktop/src/shared/adeCloud";
+import { prepareCloudComputerToStop } from "./cloudPrepareStop";
+import { CLOUD_COMPUTER_REMOVING_SENTENCE, CLOUD_COMPUTER_SLEEPING_SENTENCE, CLOUD_DELETE_FREEZE_MS, CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS, cloudDeleteFreezeRefusal, liftCloudDeleteFreeze } from "./cloudDeleteFreeze";
+import { cloudChatStoppedForRest } from "../cloudChats/cloudChatUploader";
 
 // The brain's power surface as one contract: reading what the hardware says
 // (machinePowerReader), noticing a suspend nobody announced (suspendGapDetector),
@@ -908,5 +916,373 @@ describe("cloud keep awake", () => {
       keepAwake.dispose();
       fs.rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  // The status menu says when an idle computer sleeps; it must be the check
+  // that really asks. The server sleeps the machine while that ask is still
+  // open, so its answer is lost and times out after the wake: that is a sleep
+  // that worked, not a failed one (a failure would read as a billing leak).
+  it("reports the check that asks to sleep, and tells an ask cut off by the sleep from a failed one", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-idle-sleep-"));
+    const minute = 60_000;
+    let clock = 1_000_000;
+    const facts: Array<{ sleepsAt: number | null; awakeSince: number }> = [];
+    const askedAt: number[] = [];
+    const logged: string[] = [];
+    const keepAwake = createCloudKeepAwake({
+      env: { ADE_CLOUD_INSTANCE_ID: "thisbox001" },
+      adeHome: home,
+      intervalMs: minute,
+      now: () => clock,
+      readBusy: async () => ({ busy: false, reasons: [] }),
+      onIdleFacts: (idle) => facts.push(idle),
+      requestIdleSleep: async () => {
+        askedAt.push(clock);
+        if (askedAt.length === 1) {
+          // The machine sleeps half an hour under the open ask, then the ask times out.
+          clock += 30 * minute;
+          throw new Error("The operation was aborted due to timeout");
+        }
+        throw new Error("502 Bad Gateway");
+      },
+      logger: { info: (event) => logged.push(event), warn: (event) => logged.push(event) },
+    });
+    const tickUntilAsked = async (asks: number) => {
+      for (let i = 0; i < 10 && askedAt.length < asks; i += 1) {
+        await keepAwake.tick();
+        if (askedAt.length < asks) clock += minute;
+      }
+    };
+    try {
+      await keepAwake.tick();
+      const firstPromise = facts.at(-1)?.sleepsAt;
+      clock += minute;
+      await tickUntilAsked(1);
+      expect(askedAt).toEqual([firstPromise]);
+      expect(logged).toContain("cloud.idle_sleep_answer_lost_to_sleep");
+      expect(logged).not.toContain("cloud.idle_sleep_failed");
+
+      // Woken: a fresh stretch awake, and a fresh three minutes.
+      await keepAwake.tick();
+      const woke = facts.at(-1);
+      expect(woke?.awakeSince).toBe(clock);
+      clock += minute;
+      await tickUntilAsked(2);
+      expect(askedAt[1]).toBe(woke?.sleepsAt);
+      expect(askedAt[1]! - askedAt[0]!).toBeGreaterThan(30 * minute);
+      // This ask failed while the machine stayed up: a real failure.
+      expect(logged.filter((event) => event === "cloud.idle_sleep_failed")).toHaveLength(1);
+    } finally {
+      keepAwake.dispose();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("cloud busy terminals", () => {
+  // What a terminal runs decides whether a restart (a disk grow, an update) may cut it. ADE reopens its own agent
+  // CLIs after a restart; a command, or an agent CLI someone started by hand, would be cut. An `ade` command that
+  // waits on its own disk grow is named apart, so that grow doesn't wait on the terminal that asked for it.
+  const now = 10_000_000;
+  const terminal = (patch: Partial<CloudBusyTerminal>): CloudBusyTerminal => ({
+    kind: "shell", state: "running", atPrompt: false, foreground: null, foregroundArgs: null, lastOutputAt: now - 1_000, lastInputAt: 0, ...patch,
+  });
+  it.each<[string, CloudBusyTerminal, string[]]>([
+    ["a shell at its prompt: idle", terminal({ atPrompt: true }), []],
+    ["a quiet command in a shell: a restart would cut it", terminal({ foreground: "sleep", foregroundArgs: ["sleep", "300"] }), ["terminal"]],
+    ["ADE's own agent CLI at work: it continues after a restart", terminal({ kind: "agent_cli", foreground: "claude" }), ["agent_cli"]],
+    ["an agent CLI started by hand in a shell: a restart would cut it", terminal({ foreground: "claude", foregroundArgs: ["claude"] }), ["shell_agent_cli"]],
+    ["`ade cloud resize --free` waiting on its grow", terminal({ foreground: "node", foregroundArgs: ["node", "/home/ade/.ade/bin/cli.cjs", "cloud", "resize", "--free", "8", "--reason", "room"] }), ["disk_grow_command"]],
+    ["`ade android start`, whose first boot grows the disk", terminal({ foreground: "ade", foregroundArgs: ["/usr/local/bin/ade", "android", "start", "--lane", "x"] }), ["disk_grow_command"]],
+    ["`ade cloud resize --request`, which grows nothing itself: a command", terminal({ foreground: "node", foregroundArgs: ["node", "cli.cjs", "cloud", "resize", "--request", "--size", "large"] }), ["terminal"]],
+    ["a command untouched for an hour: idle", terminal({ foreground: "sleep", foregroundArgs: ["sleep", "9999"], lastOutputAt: now - 61 * 60_000 }), []],
+  ])("%s", (_label, busyTerminal, reasons) => {
+    const decided = decideCloudBusy({ chats: [], terminals: [busyTerminal], setupRunning: false, holds: [] }, now);
+
+    expect(decided.reasons).toEqual(reasons);
+    expect(decided.busy).toBe(reasons.length > 0);
+    expect(decided.waitingOnPerson).toBe(false);
+  });
+});
+
+describe("cloud disk grow for a lane setup", () => {
+  const GB = 1024 ** 3;
+  const ENOSPC = "Setup ran out of disk space (no space left on device). Last error: npm error nospc ENOSPC: no space left on device, write";
+  /** The disk as statfs reads it: `free` of `total`, in GB. */
+  const disk = (free: number, total: number) => ({ bsize: 4096, blocks: (total * GB) / 4096, bavail: (free * GB) / 4096 }) as fs.StatsFs;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // Each run: the free space it started with, the lowest it read while it ran, what the disk read when setup said ENOSPC,
+  // the disk's size, and whether the server grows it when asked (default) or refuses (the plan's disk).
+  it.each([
+    ["a disk with room left (a tool's own limit, not the disk)", [[3.5, 3, 3, 8]], [false]],
+    ["a disk that really ran short", [[3.5, 0.2, 0.2, 8]], [true]],
+    ["a disk that ran short, then read roomy again once the failed install cleaned up", [[3.5, 0.1, 3.4, 8]], [true]],
+    ["a second fill that peaked no higher than the first (the disk didn't grow)", [[3.5, 0.2, 0.2, 8], [3.5, 0.3, 3.2, 8]], [true, false]],
+    // Leaves its files behind on failure and frees them in the next run: each run adds about the same, and fills a bigger disk.
+    ["an installer that doesn't clean up, filling 4 GB, then 8, then 12", [[3.5, 0.1, 0.1, 4], [4.1, 0.1, 0.1, 8], [4.1, 0.1, 0.1, 12]], [true, true, true]],
+    // The plan's disk refused the grow; the person made room and pressed Retry: the same fill asks again.
+    ["a grow the server refused, then a Retry that fills the same disk", [[3.5, 0.2, 0.2, 8, "refuses"], [3.5, 0.2, 0.2, 8]], [true, true]],
+    // The rollback itself can't be written on the disk that just filled: it still holds for the Retry.
+    ["a refused grow whose rollback couldn't be saved, then a Retry", [[3.5, 0.2, 0.2, 8, "refuses, disk full"], [3.5, 0.2, 0.2, 8]], [true, true]],
+    // Taking a refused grow back keeps the grow before it: a later fill no higher than that one's peak doesn't grow.
+    ["a grow, a refused grow, then a fill no higher than the first", [[3.5, 0.2, 0.2, 8], [4.1, 0.1, 0.1, 12, "refuses"], [3.5, 0.3, 0.3, 8]], [true, true, false]],
+  ] as Array<[string, Array<[number, number, number, number, ("refuses" | "refuses, disk full" | undefined)?]>, boolean[]]>)("%s", async (_label, runs, grows) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-disk-grow-"));
+    try {
+      vi.useFakeTimers();
+      // The reserve's 4 MB never reaches the test machine's disk.
+      vi.spyOn(fs.promises, "mkdir").mockResolvedValue(undefined);
+      vi.spyOn(fs.promises, "writeFile").mockResolvedValue(undefined);
+      const statfs = vi.spyOn(fs, "statfsSync");
+      let diskGb = 0;
+      let refuse: "refuses" | "refuses, disk full" | undefined;
+      let historyDiskFull = false;
+      const writeFileSync = fs.writeFileSync;
+      vi.spyOn(fs, "writeFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+        if (historyDiskFull && String(file).includes("setup-disk-grows")) throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+        return (writeFileSync as (...args: unknown[]) => void)(file, ...rest);
+      }) as typeof fs.writeFileSync);
+      // The account server: this computer's size, and a grow it starts or refuses. Anything else answers empty.
+      const server = new Proxy({
+        getInstance: async () => ({ resources: { cpu: 2, memory: 4, disk: diskGb }, metadata: {} }),
+        getAccount: async () => { throw new Error("no catalog here"); },
+        resizeInstance: async () => {
+          if (refuse) historyDiskFull = refuse === "refuses, disk full";
+          if (refuse) throw new CloudProviderError("The plan's disk is full.", "disk_limit", 403, { reason: "account_limit" });
+          return "updating";
+        },
+      } as Record<string, unknown>, { get: (target, key) => (key === "then" ? undefined : target[key as string] ?? (async () => ({}))) });
+      const setup = createCloudDiskGrower({ instanceId: "i-1", client: async () => server as never, path: home, adeHome: home }).setupDisk(() => true);
+      const answers: boolean[] = [];
+      for (const [startFree, lowFree, fullFree, total, answerOfServer] of runs) {
+        diskGb = total;
+        refuse = answerOfServer;
+        // The person freed disk before this run: writes land again.
+        historyDiskFull = false;
+        statfs.mockReturnValue(disk(startFree!, total!));
+        setup.setupStarting({ launchId: "launch-1" });
+        // The install runs: the disk reads its low point, then whatever it reads when setup says ENOSPC.
+        statfs.mockReturnValue(disk(lowFree!, total!));
+        vi.advanceTimersByTime(5_000);
+        statfs.mockReturnValue(disk(fullFree!, total!));
+        const answer = setup.diskFull({ launchId: "launch-1", error: ENOSPC });
+        // The launch saved its mark: a grow the server started counts; a refused one doesn't.
+        if (answer.grow) {
+          const room = await setup.makeRoom({ launchId: "launch-1", laneId: "lane-1", signal: new AbortController().signal });
+          // A Retry after a refusal really reaches the server and starts its grow.
+          expect(room?.state).toBe(refuse ? "refused" : "growing");
+        }
+        setup.setupEnded({ launchId: "launch-1" });
+        answers.push(answer.grow);
+      }
+      expect(answers).toEqual(grows);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("a setup that fills the disk after a restart waits on the grow an earlier boot asked for, never asking twice", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-disk-grow-"));
+    const controller = new AbortController();
+    try {
+      vi.spyOn(fs, "statfsSync").mockReturnValue(disk(0.2, 4));
+      // The last boot asked for 8 GB a minute ago; the disk still reads 4.
+      fs.mkdirSync(path.dirname(cloudDiskGrowStatePath(home)), { recursive: true });
+      fs.writeFileSync(cloudDiskGrowStatePath(home), JSON.stringify({ v: 1, state: "growing", toGb: 8, at: Date.now() - 60_000, instanceId: "i-1", fromBytes: 4 * GB }));
+      const client = vi.fn(async () => null);
+      const grower = createCloudDiskGrower({ instanceId: "i-1", client, path: home, adeHome: home });
+
+      const room = await grower.makeRoomForSetup({ stillIdle: () => true, signal: controller.signal });
+
+      expect(room).toMatchObject({ state: "growing", detail: expect.stringContaining("8 GB") });
+      expect(client).not.toHaveBeenCalled();
+    } finally {
+      controller.abort();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("cloud disk grow an agent or the Android emulator asks for", () => {
+  const GB = 1024 ** 3;
+  const disk = (free: number, total: number) => ({ bsize: 4096, blocks: (total * GB) / 4096, bavail: (free * GB) / 4096 }) as fs.StatsFs;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // An X-Large computer with an 8 GB disk and 2.7 GB free asks for 7.2 GB free: a 16 GB disk. No plan limits disk:
+  // up to the size's disk maximum it grows with nothing to ask, however much the account's computers use.
+  it("grows to the smallest step that frees what was asked, with nothing to ask", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-disk-fit-"));
+    try {
+      const statfs = vi.spyOn(fs, "statfsSync").mockReturnValue(disk(2.7, 8));
+      const resized: number[] = [];
+      const client = {
+        getInstance: async () => ({ id: "i-1", type: "vm", resources: { cpu: 4, memory: 16, disk: 8 }, metadata: {} }),
+        getAccount: async () => ({
+          plan: "paid",
+          rules: "paid",
+          planId: "plus",
+          disk: { usedGb: 78, limitGb: null },
+          catalog: cloudCatalogOf(null),
+        }),
+        resizeInstance: async (_id: string, resources: { disk?: number }) => {
+          resized.push(resources.disk ?? 0);
+          // The bigger disk lands (here without the restart that would end the brain).
+          statfs.mockReturnValue(disk(10.5, resources.disk ?? 8));
+          return "running";
+        },
+        patchMetadata: async () => undefined,
+        setInstanceMetadata: async () => undefined,
+      };
+      const grower = createCloudDiskGrower({ instanceId: "i-1", client: async () => client as never, path: home, adeHome: home });
+
+      const result = await grower.growToFit({ needFreeBytes: 7.2 * GB, reason: "Android emulator first boot", origin: "android", stillIdle: () => true });
+
+      expect(result.state).toBe("grown");
+      expect(resized).toEqual([16]);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("cloud setup upsize for a lane setup that ran out of memory", () => {
+  const OUT_OF_MEMORY = "Setup used nearly all of this computer's memory (4 GB), so ADE stopped it before the computer had to restart. Use a bigger size, or make setup use less memory, then retry.";
+
+  // How the launch's record reads its size choice, what the account server answers the ask (a move it starts, its
+  // 409 `size_kept`, a refusal, a lost answer), whether that run's setup moved up, and whether the next run of the
+  // same launch on the same Small may ask again.
+  it.each<[string, "default" | "picked" | "unreadable", "starts" | "kept" | "out_of_hours" | "lost", "growing" | "refused", boolean]>([
+    ["a move the server starts", "default", "starts", "growing", false],
+    ["a lost answer (the move may have happened)", "default", "lost", "growing", false],
+    ["a size the server keeps (picked for the launch)", "unreadable", "kept", "refused", true],
+    ["a size the launch's record says was picked: never asked", "picked", "starts", "refused", true],
+    ["a move refused for hours", "default", "out_of_hours", "refused", true],
+  ])("%s", async (_label, choice, answer, state, asksAgain) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-upsize-"));
+    try {
+      const resizes: unknown[] = [];
+      const server = {
+        getInstance: async () => ({ resources: { cpu: 2, memory: 4, disk: 8 }, metadata: {} }),
+        getAccount: async () => { throw new Error("no catalog here"); },
+        resizeInstance: async (...args: unknown[]) => {
+          resizes.push(args);
+          if (answer === "kept") throw new CloudProviderError("Small was picked for this launch, so ADE didn't move it up.", "size_kept", 409, { reason: "picked" });
+          if (answer === "out_of_hours") throw new CloudProviderError("You're out of hours.", "out_of_hours", 402);
+          if (answer === "lost") throw new CloudProviderError("ADE Cloud did not answer in time. Try again.", "timeout", 0);
+          return "updating";
+        },
+      };
+      const readLaunch = async () => {
+        if (choice === "unreadable") throw new Error("network down");
+        return { request: { sizeChoice: choice } };
+      };
+      const upsizer = createCloudSetupUpsizer({ instanceId: "i-1", client: async () => server as never, adeHome: home, memTotalMb: () => 3_900, readLaunch });
+      const setup = upsizer.setupMemory(() => true);
+      const controller = new AbortController();
+
+      expect(setup.outOfMemory({ launchId: "launch-1", error: OUT_OF_MEMORY })).toEqual({ upsize: true });
+      const room = await setup.moreMemory({ launchId: "launch-1", laneId: "lane-1", signal: controller.signal });
+      controller.abort();
+
+      expect(room?.state).toBe(state);
+      // The move asked for is Medium, for this launch, as the computer's own; a picked size is never asked to move.
+      expect(resizes).toEqual(choice === "picked" ? [] : [["i-1", { cpu: 4, memory: 8 }, { computerIdle: true, origin: "auto", launchId: "launch-1" }]]);
+      if (room?.state === "refused") expect(room.error).toMatch(/^Setup used nearly all of this computer's memory .*\. \S/);
+      // A move that started counts (one step per launch); one that didn't is taken back, so a Retry asks again.
+      expect(createCloudSetupUpsizer({ instanceId: "i-1", client: async () => server as never, adeHome: home, memTotalMb: () => 3_900 })
+        .setupMemory(() => true).outOfMemory({ launchId: "launch-1", error: OUT_OF_MEMORY }).upsize).toBe(asksAgain);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("a computer already bigger than a Small never asks to move", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-upsize-"));
+    try {
+      const client = vi.fn(async () => null);
+      const setup = createCloudSetupUpsizer({ instanceId: "i-1", client, adeHome: home, memTotalMb: () => 7_800 }).setupMemory(() => true);
+      expect(setup.outOfMemory({ launchId: "launch-1", error: OUT_OF_MEMORY })).toEqual({ upsize: false, error: OUT_OF_MEMORY });
+      expect(client).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+// A plan change, an automation end or a project delete removes an awake
+// computer right after its prepare and save. Work that starts between the two
+// is lost with the computer, so the prepare freezes new work, and the freeze
+// must end whenever the server will keep the computer.
+describe("cloud prepare-stop before a delete", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    liftCloudDeleteFreeze();
+  });
+
+  /** One project runtime; `busy` turns are still running when the prepare reads it. */
+  function runtimeWith(args: { busy: () => number; onInterrupt?: () => void }) {
+    return {
+      agentChatService: {
+        interruptRunningTurns: async (options?: { onStopping?: (sessionId: string) => void }) => {
+          options?.onStopping?.("chat-1");
+          args.onInterrupt?.();
+          return 1;
+        },
+        listBusyFacts: () => Array.from({ length: args.busy() }, () => ({ waitingOnPerson: false, lastActivityAt: 0 })),
+      },
+      ptyService: { interruptAgentClis: () => 0 },
+    } as never;
+  }
+
+  // The person's Sleep freezes the same way, so the lanes' backups it saves are all the computer's work when it rests.
+  it.each<[string, { forDelete: boolean; forSleep?: boolean; busy: () => number; timeoutMs: number; saveEndsAfterFreeze?: boolean }, boolean]>([
+    ["confirmed for a delete: frozen until the delete", { forDelete: true, busy: () => 0, timeoutMs: 40_000 }, true],
+    // Work could start once the freeze ran out, so the backups saved before that aren't all its work.
+    ["a Sleep whose rest save ends after its freeze ran out: not frozen", { forDelete: false, forSleep: true, busy: () => 0, timeoutMs: 40_000, saveEndsAfterFreeze: true }, false],
+    ["a turn still runs at the deadline: the server keeps it, so no freeze", { forDelete: true, busy: () => 1, timeoutMs: 1_000 }, false],
+    ["confirmed for the person's Sleep: frozen until it sleeps", { forDelete: false, forSleep: true, busy: () => 0, timeoutMs: 40_000 }, true],
+    ["a Sleep whose turn still runs at the deadline: no freeze, so it rests not saved", { forDelete: false, forSleep: true, busy: () => 1, timeoutMs: 1_000 }, false],
+    ["neither (the 0-hours stop): no freeze", { forDelete: false, busy: () => 0, timeoutMs: 40_000 }, false],
+  ])("%s", async (_label, input, frozen) => {
+    let refusedDuringPrepare: string | null = null;
+    const result = await prepareCloudComputerToStop({
+      runtimes: [runtimeWith({ busy: input.busy, onInterrupt: () => { refusedDuringPrepare = cloudDeleteFreezeRefusal(); } })],
+      timeoutMs: input.timeoutMs,
+      forDelete: input.forDelete,
+      forSleep: input.forSleep,
+      saveForRest: async () => {
+        if (input.saveEndsAfterFreeze) {
+          const late = Date.now() + input.timeoutMs + CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS + 1;
+          vi.spyOn(Date, "now").mockReturnValue(late);
+        }
+        return { sessions: 0, git: 0 };
+      },
+    });
+    const sentence = input.forDelete ? CLOUD_COMPUTER_REMOVING_SENTENCE : input.forSleep ? CLOUD_COMPUTER_SLEEPING_SENTENCE : null;
+
+    expect(result.frozen).toBe(frozen);
+    // From the start of the prepare, so nothing starts between the interrupts and the save.
+    expect(refusedDuringPrepare).toBe(sentence);
+    expect(cloudDeleteFreezeRefusal()).toBe(frozen ? sentence : null);
+    // A computer the server never deletes takes work again on its own.
+    expect(cloudDeleteFreezeRefusal(Date.now() + CLOUD_DELETE_FREEZE_MS + 1)).toBeNull();
+    // The stopped chat's saved row reads Stopped while the computer rests.
+    expect(cloudChatStoppedForRest("chat-1")).toBe(true);
+  });
+
+  it("a prepare that fails part way leaves nothing frozen", async () => {
+    const broken = runtimeWith({ busy: () => { throw new Error("chat service gone"); } });
+
+    await expect(prepareCloudComputerToStop({ runtimes: [broken], timeoutMs: 40_000, forDelete: true })).rejects.toThrow("chat service gone");
+
+    expect(cloudDeleteFreezeRefusal()).toBeNull();
   });
 });

@@ -68,7 +68,7 @@ function failureReason(errorKind: string | null): string {
 }
 
 /** A wait on the install lock that timed out while a live process on this machine still held it. */
-function isLiveLockTimeout(status: PinnedToolStatus): boolean {
+export function isLiveLockTimeout(status: PinnedToolStatus): boolean {
   return status.errorKind === "lock-timeout" && status.lockHolderLive === true;
 }
 
@@ -82,7 +82,7 @@ export function pinnedToolBlocker(label: string, status: PinnedToolStatus): stri
     case "ready":
       return null;
     case "downloading":
-      return `ADE is downloading ${label} for this machine. Refresh when it finishes.`;
+      return `ADE is downloading ${label} for this machine. Chats with it start when it finishes.`;
     case "failed":
       // The install lock outlived this process's wait and names a process on
       // this machine that is still running: another ADE is still installing
@@ -120,12 +120,12 @@ export function pinnedToolPresence(
   tool: string,
   label: string,
   resolvedPath: string | null,
-): { installed: boolean; path: string | null; state: PinnedToolState; blocker: string | null } {
-  if (resolvedPath) return { installed: true, path: resolvedPath, state: "ready", blocker: null };
-  const { state, blocker } = pinnedToolState(tool, label);
+): { installed: boolean; path: string | null; state: PinnedToolState; blocker: string | null; fetchAllowed: boolean } {
+  if (resolvedPath) return { installed: true, path: resolvedPath, state: "ready", blocker: null, fetchAllowed: true };
+  const { state, blocker, status } = pinnedToolState(tool, label);
   // The cache can hold a copy the resolver refused (e.g. not executable);
   // that is not a ready runtime.
-  return { installed: false, path: null, state: state === "ready" ? "missing" : state, blocker };
+  return { installed: false, path: null, state: state === "ready" ? "missing" : state, blocker, fetchAllowed: status.fetchAllowed };
 }
 
 /** How to run ADE's pinned Cursor CLI: an entry plus the arguments before the CLI's own. */
@@ -192,8 +192,21 @@ export async function requirePinnedProviderExecutable<T extends { path: string; 
 ): Promise<T> {
   const tool = pinnedToolForProvider(provider);
   if (tool) await awaitPinnedToolDownload(tool.tool);
+  return requireInstalledPinnedProviderExecutable(provider, resolve);
+}
+
+/**
+ * The same, for a read that only reports (a usage or limits poll): runs ADE's
+ * copy when it is already here and never downloads it. A miss throws the
+ * download state, which the read reports as "not downloaded yet".
+ */
+export function requireInstalledPinnedProviderExecutable<T extends { path: string; source: string }>(
+  provider: string,
+  resolve: () => T,
+): T {
   const resolved = resolve();
   if (resolved.source === "fallback-command" || !resolved.path) {
+    const tool = pinnedToolForProvider(provider);
     throw tool ? pinnedToolNotReadyError(tool.tool, tool.label) : new Error(`ADE has no ${provider} runtime on this machine.`);
   }
   return resolved;
@@ -205,7 +218,7 @@ export async function requirePinnedProviderExecutable<T extends { path: string; 
  * `onStart` runs only when a download is actually awaited. Never rejects: the
  * caller resolves afterwards and reports a miss with {@link pinnedToolNotReadyError}.
  */
-export async function awaitPinnedToolDownload(tool: string, onStart?: () => void): Promise<void> {
+async function awaitPinnedToolDownload(tool: string, onStart?: () => void): Promise<void> {
   const pending = pinnedToolDownload(tool);
   if (!pending) return;
   onStart?.();
@@ -226,7 +239,7 @@ function museToolStatus(status: MuseBinaryStatus): PinnedProviderToolStatus {
   const message = state === "ready"
     ? null
     : state === "downloading"
-      ? `ADE is downloading ${label} for this machine. Refresh when it finishes.`
+      ? `ADE is downloading ${label} for this machine. Chats with it start when it finishes.`
       : state === "failed"
         ? `Couldn't download ${label}: ${failureReason(status.errorKind)}. Retry from Settings > Providers.`
         : state === "unavailable"

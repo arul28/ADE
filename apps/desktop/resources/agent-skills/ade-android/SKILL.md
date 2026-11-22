@@ -1,14 +1,15 @@
 ---
 name: ade-android
-description: Use this skill when you need to see an Android app actually running on an emulator — finding or creating the lane's Android emulator, booting it, building and installing the app with Gradle or an APK, driving it by element query, reading logcat, screenshotting, recording, capturing proof, folding a foldable, rendering Compose previews, running instrumentation tests, or setting up the Android SDK — via `ade android`.
+description: "Android app on an emulator via `ade android`: find or create the lane's emulator, boot it, build and install (Gradle or APK), drive by element query, logcat, screenshots, recordings, proof, foldables, Compose previews, instrumentation tests, Android SDK setup."
 ---
 
 # ADE Android Development
 
 Drive the lane's Android emulator with `"$ADE_CLI_PATH" android <command>`.
-`$ADE_CLI_PATH` is the CLI of the ADE that launched you and already targets
-its brain, so your calls and the desktop's Android tool share one emulator. A
-bare `ade` goes through PATH and can reach a different ADE.
+`$ADE_CLI_PATH` is the CLI of the ADE that launched you, so your calls and the
+desktop's Android tool share one emulator. A bare `ade` goes through PATH and
+can reach a different ADE. Commands below written as `ade …` mean
+`"$ADE_CLI_PATH" …` too.
 
 Each lane has one emulator, on the machine that runs the lane. It works on
 macOS, Windows and Linux. ADE starts it without a window and shows it in the
@@ -61,6 +62,17 @@ Plain `adb shell …` reads (`dumpsys`, `getprop`, `pm list`) are fine, with
   boot can take a minute). `ANDROID_LOW_MEMORY` means the machine is short
   of memory: stop an emulator you no longer need (`android stop`), or tell
   the user. Ask the user before `android start --force`.
+  `ANDROID_LOW_DISK` means the disk has too little free space for a new
+  device's first start (its data partition takes about 7 GB free); the
+  sentence gives both numbers. On an ADE Cloud computer ADE grows the disk
+  itself before it refuses: when the sentence says the disk is growing, the
+  computer restarts and ADE continues your chat; run `android start` again
+  then. When it couldn't grow on its own, grow it yourself with
+  `ade cloud resize --free 8 --reason "Android emulator first boot"` (up to
+  its size's disk maximum it needs no yes). Do
+  not ask the user to press Grow. Elsewhere, tell the user to free space.
+  Never delete project files, build output or caches to make room, and
+  `--force` does not help.
 - `state: booted`: drive it.
 
 ADE stops an emulator it started that nobody has used for 20 minutes
@@ -248,12 +260,13 @@ replacing the lane's one:
 
 ## Another machine
 
-`--machine <name>` runs the command on that machine. Without `--lane`, the
-emulator there works for this chat's work copy (made at your commit, which
-must be on origin). `install`/`launch` with `--gradle` or `--apk` send your
-uncommitted changes first. An APK that git ignores does not travel: use
-`--gradle`. `preview` and `test` send them too. Screenshots, recordings,
-proof bundles and preview images are filed in this chat's proof drawer.
+`ade devices --kind android --text` lists the emulators on the person's
+machines; `ade devices use "android@<machine>"` picks one, then the plain
+`android` commands act on it (`--machine <name>` for one command). It runs
+your code there: `install`/`launch` with `--gradle` or `--apk`, `preview` and
+`test` send your uncommitted changes first. An APK that git ignores does not
+travel: use `--gradle`. Proof lands in this chat's drawer. Flags, long builds,
+turn end and cleanup: ade-computer-use `references/other-machines.md`.
 
 ## The SDK
 
@@ -283,6 +296,6 @@ Each error prints its next step. The common ones:
 | `ANDROID_LANE_DEVICE_BUSY` | the device is in use (a recording, the user's live view, tests, an install, another agent's lease): wait for it, then promote again |
 | `ANDROID_DEVICE_IS_EXTRA` | that AVD is one of the lane's extras: `device-promote --device <avd>` |
 | `ANDROID_SDK_NOT_FOUND` | `android sdk status`, then ask the user to set it up |
-| `ANDROID_NO_ACCELERATION` | on a cloud computer without virtualization: tell the user the message and move to a full computer. Elsewhere: turn on KVM or the Windows Hypervisor Platform |
+| `ANDROID_NO_ACCELERATION` | on a cloud computer without virtualization: tell the user the message, then start a lane on a full computer (`--size large`; the `ade-cloud` skill has the steps). Never make a computer. Elsewhere: turn on KVM or the Windows Hypervisor Platform |
 
 `"$A" android --help` lists every verb and flag.

@@ -1,6 +1,6 @@
 ---
 name: ade-lanes-git
-description: Use this skill when creating, inspecting, syncing, committing, pushing, archiving, or rebasing ADE lanes and lane worktrees through `ade lanes` and `ade git`.
+description: "Create, inspect, sync, commit, push, archive or rebase ADE lanes and lane worktrees (`ade lanes`, `ade git`)."
 ---
 
 # ADE lanes and git
@@ -33,6 +33,19 @@ the user asked for cleanup, or a workflow that owns lane lifecycle requires it.
 Archived lanes are listed by `ade archive list --kind lane --text`. The user
 restores or deletes them in Settings → Archive; see the `ade-cli-control-plane`
 skill for the archive commands.
+
+## Sharing a lane with another person
+
+```bash
+ade lanes share --lane <lane> --text                       # who has access, state, access level, made by
+ade lanes share --lane <lane> --add <email> [--ends 1w]    # a Watch share: they see, they cannot act
+ade lanes share --lane <lane> --remove <email|grant id>
+```
+
+An agent can make only a Watch share: the person sees the lane's chats and
+sessions and cannot send, run or approve anything. The lane's computer
+refuses more rights, and at most 5 shares an hour. To give more rights or
+change a share, ask the user to open the share sheet in the ADE app.
 
 ## Lane templates and dependencies
 

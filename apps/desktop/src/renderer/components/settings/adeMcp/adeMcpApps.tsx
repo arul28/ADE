@@ -11,7 +11,6 @@ import {
   Amp,
   Claude,
   ClaudeCode,
-  Codex,
   Cursor,
   GeminiCLI,
   Goose,
@@ -25,7 +24,7 @@ import {
 import { Command, Key, PlugsConnected, Robot, ShareNetwork } from "@phosphor-icons/react";
 import type { RemoteMcpKnownApp } from "../../../../shared/types/remoteMcp";
 import type { IntegrationHeroBrand } from "../integrations/integrationBrand";
-import { DroidLogo } from "../../shared/ProviderLogos";
+import { CodexAvatarMark, DroidLogo } from "../../shared/ProviderLogos";
 import vscodeLogoSrc from "../../../assets/editor-logos/vscode.svg";
 import zedLogoSrc from "../../../assets/editor-logos/zed.svg";
 
@@ -62,7 +61,7 @@ const LOBE: Partial<Record<RemoteMcpKnownApp, LobeAvatar>> = {
   claude: Claude.Avatar,
   "claude-code": ClaudeCode.Avatar,
   chatgpt: OpenAI.Avatar,
-  codex: Codex.Avatar,
+  codex: CodexAvatarMark,
   grok: Grok.Avatar,
   "grok-bot": Grok.Avatar,
   cursor: Cursor.Avatar,

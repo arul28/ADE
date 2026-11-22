@@ -27,7 +27,7 @@ PostHog symbolicates a Node frame only through its `chunk_id`; the file name pla
 
 ## LLM analytics
 
-Each settled agent turn sends one `$ai_generation` (`captureAgentTurnSettledAnalytics`, `agentTurnProductAnalytics.ts`, from desktop main and the brain): `$ai_provider` (the closed provider list), `$ai_model` (the model id only when it is in ADE's built-in catalog, `MODEL_REGISTRY`; local, custom-endpoint and runtime-discovered models report `other`, because their names are the person's), input, output, cache-read, cache-write and reasoning token counts, `$ai_total_cost_usd` (the provider's billed figure or ADE's list-price estimate), `$ai_latency` (seconds from the turn's start to its end), `$ai_is_error`, `$ai_span_name: "agent_turn"`, `feature` (`chat` or `automations`) and `outcome`. `$ai_trace_id` is the installation-salted session hash, so a chat's turns form one trace. There is no input, output, tool, prompt or system-prompt field to fill. The insert id is derived from the session and turn, so a repeated settle is one event. A failed turn also carries `error_kind`, one of a closed set (`turnFailureKind`, `agentTurnProductAnalytics.ts`): the provider classifier's categories (`permission`, `rate_limit`, `budget`, `busy`, `cli_missing`, `network`) and five more read off the error's own words where the classifier only said `network` or nothing (`timeout`, `server_overloaded` for an overloaded or 5xx provider, `context_too_long`, `model_unavailable`, `process_exited`), else `other`. Only the kind leaves; the words never do. The failed turn's `ade_error` carries the same `error_kind`, so failures can be cut by `$ai_provider` × `error_kind`. Automation turns are `interactive: false`. It has its own allowance (400 a day, 30 a minute per machine), outside the shared ceiling, because PostHog bills LLM events separately (100,000 a month free). Turns past the cap are dropped and counted as `daily_budget` in the next `ade_analytics_budget` rollup; `sent_count` there covers only the shared ceiling.
+Each settled agent turn sends one `$ai_generation` (`captureAgentTurnSettledAnalytics`, `agentTurnProductAnalytics.ts`, from desktop main and the brain): `$ai_provider` (the closed provider list), `$ai_model` (the model id only when it is in ADE's built-in catalog, `MODEL_REGISTRY`; local, custom-endpoint and runtime-discovered models report `other`, because their names are the person's), input, output, cache-read, cache-write and reasoning token counts, `$ai_total_cost_usd` (the provider's billed figure or ADE's list-price estimate), `$ai_latency` (seconds from the turn's start to its end), `$ai_is_error`, `$ai_span_name: "agent_turn"`, `feature` (`chat` or `automations`) and `outcome`. `$ai_trace_id` is the installation-salted session hash, so a chat's turns form one trace. There is no input, output, tool, prompt or system-prompt field to fill. The insert id is derived from the session and turn, so a repeated settle is one event. A failed turn also carries `error_kind`, one of a closed set (`turnFailureKind`, `agentTurnProductAnalytics.ts`): the provider classifier's categories (`permission`, `rate_limit`, `budget`, `busy`, `cli_missing`, `network`) and five more read off the error's own words where the classifier only said `network` or nothing (`timeout`, `server_overloaded` for an overloaded or 5xx provider, `context_too_long`, `model_unavailable`, `process_exited`), else `other`. A sixth, `plan`, is read before the category: the provider is signed in but the plan does not include this (Kimi Code, Cursor Cloud Agents), which the classifier would otherwise file as a sign-in. The words come from `classifyProviderAccountRefusal` (`shared/providerAccountRefusal.ts`), the table provider health also reads: a turn failure that is a refused sign-in sets the provider's health to `auth-failed`, and a plan or model refusal leaves the health as it was and is a Sentry Log (`provider.<provider>.account_refused`), never `runtime-failed`. Only the kind leaves; the words never do. The failed turn's `ade_error` carries the same `error_kind`, so failures can be cut by `$ai_provider` × `error_kind`. Automation turns are `interactive: false`. It has its own allowance (400 a day, 30 a minute per machine), outside the shared ceiling, because PostHog bills LLM events separately (100,000 a month free). Turns past the cap are dropped and counted as `daily_budget` in the next `ade_analytics_budget` rollup; `sent_count` there covers only the shared ceiling.
 
 ## Session replay
 
@@ -60,10 +60,10 @@ Sentry is part of ADE on every surface, with no setting and no notice. The organ
 | `ade-desktop` | Electron main, renderer (over IPC to main), preload, native crashes of every Electron process | `apps/desktop/src/main/sentry/initMain.ts` (called right after `configureDesktopUserDataPath()` in `main.ts`); renderer `src/renderer/sentry/initRenderer.ts` |
 | `ade-brain` | the brain (`ade serve`: desktop-started, background service, remote machine) | `apps/ade-cli/src/sentry/initBrain.ts` (serve path in `cli.ts`) |
 | `ade-web` | hosted web client (Cloudflare Pages) | `apps/desktop/src/renderer/webclient/sentry.ts`, loaded after first paint |
-| `ade-workers` | push-relay, tunnel-relay, webhook-relay, account-directory (tag `worker`) | each Worker's `src/sentry.ts` |
+| `ade-workers` | push-relay, tunnel-relay, webhook-relay, account-directory (tag `worker`); the Passwords key service (`apps/password-key-service`) carries no SDK: it has no address of its own, and the push relay, its only caller, reports each failure to reach it as one issue per cause (`passwords` / `key-service`: `not_configured`, `status_<code>`, `unreachable`, `unreadable`) | each Worker's `src/sentry.ts` |
 | `ade-ios` | the iOS app (not the widgets or App Clip) | `apps/ios/ADE/Services/CrashReporting.swift` |
 
-**When it runs.** Packaged builds only. The Workers report only where their deployed config sets `SENTRY_ENVIRONMENT` to `production` (each `wrangler.jsonc`; account-directory's `env.production`); `wrangler dev`, `npm run dev` and the development account-directory Worker are `development` and send nothing. Account-directory's minute cron checks in to the organization's one included cron monitor, `account-directory-cleanup` (`src/index.ts`); `cronTriggersIntegration` stays off because it would add a billed monitor per trigger. The webhook relay's half-hour Beta timer (`src/betaTimer.ts`) has no monitor; a refused GitHub token throws from `scheduled()` and reaches Sentry as an unhandled error, at most twice an hour. Dev builds, source-checkout brains and tests are silent. **Only a release workflow builds a release**: `.github/workflows/release-core.yml` sets `ADE_RELEASE_BUILD=1` for every job, both `tsup.config.ts` files bake it in (`__ADE_RELEASE_BUILD__`; an Alpha package from `scripts/package-channel.mjs` counts as a release of its own channel), and anything else is a development build wherever it runs or is copied to, whatever its version says: a desktop packaged on a laptop with `npm run dist` (it carries the source version `1.0.0-beta.1` and used to read as a Beta; `main/sentry/releaseBuild.ts`), a brain bundle at `0.0.0`, one the dev launcher built (`ADE_CLI_DEV_BUILD=1`), one copied to `/opt/ade-dev` (`__ADE_UNRELEASED_VERSION__`, `apps/ade-cli/tsup.config.ts`). A brain the dev launcher or `dev-machine.mjs` starts also carries `ADE_DEV_BRAIN=1` and is development even when it runs an installed bundle. The brain decides this once, in `ade-cli/src/sentry/brainBuild.ts` (`brainReportsAsRelease`), for Sentry, its PostHog `release_channel` (the serve path and every project scope) and its automatic diagnostic reports alike, so a dev brain is never production in one and development in another. A development build sends no automatic diagnostic report (`runAutoDiagnosticsSend`'s `devBuild`, logged locally as `diagnostics.auto_send_skipped` with `reason: dev_build`); a person can still send one. `ADE_SENTRY_DEV=1` (web: `?ade_sentry_dev=1`) turns it on for testing the wiring and reports as `development`. `DO_NOT_TRACK` or `ADE_SENTRY_DISABLED` set to `1`, `true` or `yes` turns it off, and so does an analytics or automatic-diagnostics opt-out recorded by an earlier build (`main/sentry/priorOptOut.ts`; on the web client, the stored analytics opt-out). iOS ignores a stored opt-out: only `DO_NOT_TRACK=1` or `ADE_SENTRY_DISABLED=1` in an Xcode launch turns it off. The forked SDK workers (Cursor, Droid, Pi, Copilot, pty host) carry no SDK, because loading one costs hundreds of milliseconds per spawn on Windows; their failures reach the parent process, which reports them (`main/sentry/workerFailures.ts`, and `pty.host_fatal` through the logger).
+**When it runs.** Packaged builds only. The Workers report only where their deployed config sets `SENTRY_ENVIRONMENT` to `production` (each `wrangler.jsonc`; account-directory's `env.production`) and the deploy passes `SENTRY_RELEASE` (`workerSentryEnabled` in each Worker's `src/sentryScrub.ts`): `deploy-web.yml` always does, and a hand `wrangler deploy` must pass `--var SENTRY_RELEASE:ade@<version>` (the release skill's recipe), because an event with no release cannot be told apart from a local experiment; `wrangler dev`, `npm run dev` and the development account-directory Worker are `development` and send nothing. Account-directory's minute cron checks in to the organization's one included cron monitor, `account-directory-cleanup` (`src/index.ts`); `cronTriggersIntegration` stays off because it would add a billed monitor per trigger. The webhook relay's half-hour Beta timer (`src/betaTimer.ts`) has no monitor; a refused GitHub token throws from `scheduled()` and reaches Sentry as an unhandled error, at most twice an hour. Dev builds, source-checkout brains and tests are silent. A CI job, release smoke, or the ADE Cloud template check (`CI`, `GITHUB_ACTIONS`, `ADE_TEMPLATE_CHECK`, and the other workflow variables in `shared/telemetryEnvironment.ts`) never reports, even with `ADE_SENTRY_DEV=1`; the environment would be `ci`. **Only a release workflow builds a release**: `.github/workflows/release-core.yml` sets `ADE_RELEASE_BUILD=1` for every job, both `tsup.config.ts` files bake it in (`__ADE_RELEASE_BUILD__`; an Alpha package from `scripts/package-channel.mjs` counts as a release of its own channel), and anything else is a development build wherever it runs or is copied to, whatever its version says: a desktop packaged on a laptop with `npm run dist` (it carries the source version `1.0.0-beta.1` and used to read as a Beta; `main/sentry/releaseBuild.ts`), a brain bundle at `0.0.0`, one the dev launcher built (`ADE_CLI_DEV_BUILD=1`), one copied to `/opt/ade-dev` (`__ADE_UNRELEASED_VERSION__`, `apps/ade-cli/tsup.config.ts`). A brain the dev launcher or `dev-machine.mjs` starts also carries `ADE_DEV_BRAIN=1` and is development even when it runs an installed bundle. The brain decides this once, in `ade-cli/src/sentry/brainBuild.ts` (`brainReportsAsRelease`), for Sentry, its PostHog `release_channel` (the serve path and every project scope) and its automatic diagnostic reports alike, so a dev brain is never production in one and development in another. A development build sends no automatic diagnostic report (`runAutoDiagnosticsSend`'s `devBuild`, logged locally as `diagnostics.auto_send_skipped` with `reason: dev_build`); a person can still send one. `ADE_SENTRY_DEV=1` (web: `?ade_sentry_dev=1`) turns it on for testing the wiring and reports as `development`. `DO_NOT_TRACK` or `ADE_SENTRY_DISABLED` set to `1`, `true` or `yes` turns it off, and so does an analytics or automatic-diagnostics opt-out recorded by an earlier build (`main/sentry/priorOptOut.ts`; on the web client, the stored analytics opt-out). iOS ignores a stored opt-out: only `DO_NOT_TRACK=1` or `ADE_SENTRY_DISABLED=1` in an Xcode launch turns it off. The forked SDK workers (Cursor, Droid, Pi, Copilot, pty host) carry no SDK, because loading one costs hundreds of milliseconds per spawn on Windows; their failures reach the parent process, which reports them (`main/sentry/workerFailures.ts`, and `pty.host_fatal` through the logger).
 
 **What is sent.** Error messages, stack traces, file paths, ids (lane, chat session, project, account hash), counts, durations, OS, architecture, CPU, memory, locale and timezone, the package channel, and breadcrumbs of what happened before (slow or failed IPC calls with their channel or brain action, provider health changes, warnings from ADE's logger). Native crash minidumps are uploaded. The user is the same pseudonymous id PostHog uses as `distinct_id` (`setSentryUserResolver` in `shared/sentry/capture.ts`, also exported from `eventFilter.ts`): the hashed account when signed in, else the install's random id, and none when product analytics is off.
 
@@ -91,14 +91,22 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 - every failed brain action (`reportFailedAction` in `adeRpcServer.ts`), grouped by its own stack and tagged `runtime.action` (`domain.action` for `run_ade_action`), and internal JSON-RPC error;
 - every `logger.error` line, grouped by the error it carries and by event name when it carries only a message (`shared/sentry/logBridge.ts`), except `window.console` (renderer console output, kept as warn-level logs only: the renderer SDK reports the real errors itself, and the error-level log lines the beta gate reads stay ADE's own). `logger.warn` lines become Sentry Logs and breadcrumbs, not issues. Info and debug never leave the machine, except the release-health lines below;
 - a brain that keeps restarting (`The brain kept restarting`, `ade-cli/src/sentry/brainRestartLoop.ts`), as a warning, reported by the brain itself so it works with no desktop window open. Every service brain (not one the desktop app started, which the app kills outright when it quits, and not a hand-run `ade serve` on the machine endpoint: on macOS its parent must be launchd, on Windows the supervisor whose pid the service's pid record names) records its start in `runtime/brain-starts.json` and marks it stopped when it shuts down in an orderly way (an update, the restart button, a shutdown request). A start counts when the brain before it died without that mark, ran the same build, started since the computer last booted and is gone, or when the build goes back to one an earlier brain in the window left (two installs replacing each other). Three counted starts within 10 minutes are a loop. One report per loop, sent by the first brain that stays up 2 minutes, or by whichever brain is up 5 minutes after the loop was found, so its later restarts are in it; at most once a day per machine (`lastReportedAt` in the same file), with one fingerprint per platform. It carries `desktop-logs.txt.gz` (above) beside the service's own logs;
+- a brain freeze with a named cause (`Brain froze in <function> <file>:<line>`, `ade-cli/src/services/runtime/brainStallProfiler.ts`), as a warning. After a freeze (`brain.event_loop_near_miss`), the brain profiles itself in process for one minute, at most once an hour. A run of busy samples of 2 s or more becomes an issue only when the watchdog saw another freeze start during the profile (a late word on it counts for 10 s after the profile ends). Only runs of 2 s or more choose the cause, and garbage collection can be the cause. The issue is grouped by the deepest ADE frame (`fingerprint: ["brain-stall", <function>, <file>]`; a minified name of under 4 characters groups by the full frame), at most once per cause in a brain's life, with tag `stall_leaf` (the native call it was inside, such as `all` for SQLite or `readFileSync`) and extras `frozenMs`, `runs`, `longestRunMs`, `stack` and `topFrames` (function names and file names only). Every profile also logs warn `brain.stall_profile` (`caught`, `stallsInProfile`, the same fields), and a profile that fails logs warn `brain.stall_profile_failed`. `ADE_DISABLE_STALL_PROFILE=1` turns it off;
 - the first provider health transition into `runtime-failed` for each provider and kind of failure in a process, as a warning (`providerRuntimeHealth.ts`); later ones are Sentry Logs, and the in-app health display shows every one. The kind comes from a closed list matched on the message (`root-refused`, `session-missing`, `turn-active`, `method-missing`, `owned-elsewhere`, `timeout:<ACP method>`, `spawn-failed`, `exited`, else `other`), rides as the `provider.failure` tag, and is part of the fingerprint, so unrelated failures of one provider are separate issues. A Claude failure also carries `extra.stderrTail`: the CLI's last 20 stderr lines (`claudeSubprocessReaper.ts`), each scrubbed with `scrubFreeText` before it is cut, and with any line whose start fell outside the kept buffer dropped, so a secret cut off from the prefix the scrubber knows it by never goes.
-- a failure of ADE Cloud's server work (`cloud.stripe_webhook_failed`, `cloud.stripe_claim_release_failed`, `cloud.meter_report_failed`, `cloud.tick_account_failed`, `cloud.stop_failed`, `cloud.backstop_sleep_failed`, `cloud.delete_inactive_failed`, `cloud.account_delete_failed`: `reportCloudFailure`, `apps/account-directory/src/cloud/store.ts`), one issue per event name with the name as the fingerprint and no account or instance id (those stay in the Worker's own log line), at most one event per name per isolate per hour;
+- a failure of ADE Cloud's server work, every failed provider call and every billing mismatch (`reportCloudFailure`, `apps/account-directory/src/cloud/store.ts`): the Stripe webhook, claim release and both meter reports (`cloud.stripe_webhook_failed`, `cloud.stripe_claim_release_failed`, `cloud.meter_report_failed`, `cloud.disk_meter_report_failed`, `cloud.disk_report_failed`); billing mismatches and setup gaps (`cloud.stripe_unknown_subscription`, `cloud.duplicate_subscription_cancelled`, `cloud.plan_item_missing`, `cloud.plan_change_failed`, `cloud.plan_change_refused` (Stripe refused the switch; the account stays as it was), `cloud.plan_upgrade_declined`, `cloud.plan_change_unconfirmed`, `cloud.plan_change_unsaved`, `cloud.checkout_failed`, `cloud.portal_failed`, `cloud.billing_not_configured`, `cloud.extra_disk_item_failed`, `cloud.extra_disk_not_configured`, `cloud.reconcile_unexplained`, `cloud.disk_meter_unconfirmed` (a disk-day send never confirmed inside Stripe's dedupe window; it is not resent, the owner checks it), `cloud.disk_day_without_subscription`); provider calls (`cloud.provider_call_failed` for a 401, 403, 5xx or no answer, `cloud.no_provider_key`, `cloud.tick_list_failed`, `cloud.billing_read_failed`, `cloud.reconcile_read_failed`, `cloud.prepare_stop_failed`, `cloud.computer_gone`, the template refusals `cloud.create_refused_template`, `cloud.create_refused_no_template_version`, `cloud.update_refused_no_template_version`); and the cron's own work (`cloud.tick_account_failed`, `cloud.stop_failed`, `cloud.backstop_sleep_failed`, `cloud.delete_inactive_check_failed`, `cloud.delete_inactive_failed`, `cloud.delete_events_read_failed`, `cloud.cost_estimate_failed`, `cloud.daily_<step>_failed`, `cloud.account_delete_failed`), and the automatic updates, their rollbacks, the moves and the lane reads (`cloud.auto_update_start_failed`, `cloud.auto_updates_failed`, `cloud.update_check_failed`, `cloud.update_failed_rolling_back`, `cloud.update_failed_no_rollback`, `cloud.update_rollback_failed`, `cloud.update_rollback_unreported`, `cloud.move_end_failed`, `cloud.move_source_left`, `cloud.keep_lane_read_failed`). One issue per event name with the name as the fingerprint and no account or instance id (those stay in the Worker's own log line), at most one event per name per isolate per hour;
+- the account project list's server work, through the same `reportCloudFailure` (tag `area: account_projects`): a failed delete of the account's project rows on Clerk `user.deleted` (`account_project.account_delete_failed`), a failed delete of a removed or replaced machine's copies (`account_project.machine_copies_delete_failed`), and a failed read of the list's cursor for the heartbeat answer (`account_project.heartbeat_cursor_failed`; the heartbeat still succeeds without the field);
+- every machine-membership refusal of the account directory that a person or a client must act on (`directory.register_refused`, `.remove_refused`; `logDirectoryRefusal` in `apps/account-directory/src/logging.ts`; `.supersede_refused` is a console line only, because a kept duplicate row repeats it on every heartbeat and the registration succeeds; so are `register_refused` with `machine_revoked` (a removed machine that keeps registering on its heartbeat) and `pairing_authentication_required` (a re-pair with no fresh sign-in yet), which are the client's own state and which the client shows as "sign in again"), as a warning titled `<event>: <code>`, one issue per event and code, tagged `refusal.code` and `correlation_id`, with the 8-character machine and device prefixes and no account id. Workers Logs keep 10% of requests, so this is the place a refusal is always recorded, within the Worker's budget (`admitEvent`: 5 events per issue and 60 in all per isolate an hour);
+- a failed GitHub sign-in on the account directory (`github_app.sign_in_failed`, `logGithubApp` in `apps/account-directory/src/logging.ts`), as a warning titled `<event>: <kind>`, one issue per kind and GitHub's short OAuth error code, tagged `area: github_app`, `github_app.kind`, `github_app.oauth_error` and `github_app.client`, with only the attempt count and HTTP status as extras. Never the code, state, verifier or a token. Workers Logs keep one request in ten, so this is the one record of GitHub's reason for each failure;
+- a brain that cannot keep its crash-recovery files (`area: brain_restart`): the run record that tells the next brain whether this one stopped unplanned (`run_record_write_failed`, `run_record_stop_failed`, `brainUnplannedRestart.ts`), and the list of projects with a running turn (`live_turns_write_failed`, `liveTurnProjects.ts`, once per process because it writes at each project's first and last turn). Without them a crash shows no banner, or its projects open on first use as before;
 - on iOS, a Live Inspect reply the app cannot decode (`area: live_inspect`, `LiveInspectMarkupModel.fail`): the host and app disagree on the format. Offline machines, timeouts and older hosts are shown to the user and not reported.
+- on iOS, a Hub removal that a computer or the account refused (`area: hub-remove-folder`, `area: hub-remove-account-project`, `run()` in `HubRemoveProjects.swift`). The remove sheet shows the reason on the row. A computer that is offline or never answered, and a signed-out phone, are shown to the user and not reported. One event per refused folder, from a person's tap, so the volume stays at the person's pace.
 - a Linux lane screen that fails on its host (`linux_screen.<kind>`, `linuxDesktop/linuxScreenTelemetry.ts`), as a warning with a fixed description per kind and structured fields only (the helper's error text can carry Xvfb or ffmpeg output, so it stays in the local log), once per kind and detail per process: the helper not starting or exiting with lanes up (`helper_start_failed`, `helper_lost`), `display.create` failing for anything but a caller's mistake (`display_create_failed`), an accessibility bus that would not start (`display_degraded`), a recording whose encoder died (`recording_interrupted`), and an `ade screen setup` that failed or left something missing (`setup_failed`). Each carries the host as tags: `linux.distro`, `linux.distro_version`, `linux.distro_like` (from `/etc/os-release`), `linux.container` and `arch`, because only Ubuntu x64 is exercised by hand. What a host lacks before setup, a sudo that needs a password and a missing window manager are Sentry Logs (`linux_screen.host_report`, `linux_screen.setup_needs_user`, `linux_screen.display_degraded`), searchable by the same fields;
 - a recording whose demo every engine failed to make (`demo_video.all_engines_failed`, tagged `platform`, `arch` and on Linux the distribution, with the failed stage but not the engines' errors, which can carry ffmpeg's stderr), once per process per engine set: the user gets the uncut recording, and nothing else says the demo pipeline is broken on that machine;
 - a Copilot chat failure ADE could have caused (`main/services/chat/copilotSentry.ts`), tagged `provider: copilot`, `copilot.kind` and `copilot.model` and grouped per kind and cause: a `session.error` that is not sign-in, rate limit, quota or an outage (`session_error`, titled by its kind alone and grouped by error type and code, because a provider's message can quote the request; the message and both GitHub request ids are in the scrubbed extra), a failed turn that was not interrupted (`turn_failed`), the SDK worker dying under a live chat (`worker_exited`), the runtime refusing to list or run a slash command (`commands_list_failed`, `command_failed`), a refused model or permission change (`setting_failed`), and a permission or question handler that threw (`handler_failed`). Each sent turn leaves a `copilot` breadcrumb with its model, agent mode, permission level, attachment count and the command name, never the prompt. Its other failures (a lost conversation, a model list or MCP sign-in lookup that failed) are `agent_chat.copilot_*` warn lines, so Sentry Logs only;
 - a Work list (`sessions` or `lanes`) whose first load has failed for 30 seconds while the machine it reads is connected, or is this computer (`Work <surface> list could not load`, `renderer/lib/firstLoadRetry.ts`), once per retry run, grouped per surface and binding kind. It carries the attempts, how long it has been failing, a fixed error class and code (never the message, which can name an address), the connection state and the `correlationId` of the failed dial, so the issue links to that machine's `remote.connect_failed`. A machine that really is offline logs `work.first_load_waiting` instead, and a list that recovers logs `work.first_load_recovered`.
-- on iOS, a chat that is working but draws no messages (`chat.empty_thread.<kind>`, `runEmptyThreadProbe` in `WorkSessionDestinationView.swift`), at most once per time the chat is opened. It carries the chat stream trace from `ChatStreamTrace` (subscribes, history replies applied or dropped and why, live events, socket closes) and the `chat.stream` breadcrumbs, names and counts only.
+- on the hosted web client, ADE's own sign-in card falling back to Clerk's hosted page (`reportUnavailable` in `renderer/webclient/account/useClerkSignIn.ts`), as a warning tagged `area: web_sign_in` and grouped by reason: `load_failed` (Clerk's environment or client request failed, or answered in a shape the card does not read) or `no_sign_in_methods` (the environment lists no method the card shows). A Clerk API change shows up here before people report it. The card's own form errors (a wrong code, a mistyped email) pass `report: false` and log nothing; a sign-in that needs a second factor hands over to Clerk's page without a report, because that is an expected path;
+- on iOS, a live machine connection (the focused one or a fleet roster link) that dropped without a close frame, code 1006 or none (`area: sync_live_drop`, `SyncLiveDropReport` in `SyncRecoveryPolicy.swift`). It carries the connection kind (`focused`, `fleet`), the route kind (`lan`, `tailnet`, `relay`), the close code, an age bucket (`under_10s` … `over_10m`) and the receive error's domain and code with its underlying domain and code, never an address or machine name, at most once per connection and route kind per 10 minutes. A drop on a connection that lived through a trip to the app's background, or that ends while the app is in the background, leaves a `sync.live_drop` breadcrumb instead of an issue: iOS suspends the app and kills its sockets without a close frame, and the failed receive surfaces on the next wake. A saved-port change leaves a `sync.route` breadcrumb (connection kind and whether the link was live), so the report shows whether the computer's sync port moved just before. A drop with a close code (a host or relay closing on purpose) is not reported;
+- on iOS, one chat open whose stream went wrong, from `runEmptyThreadProbe` in `WorkSessionDestinationView.swift`, at most once per time the chat is opened: a chat that is working but draws no messages (`chat.empty_thread.<kind>`), or a live link whose transcript request the machine never answered, where the pane shows "Couldn't load the transcript" (`chat.transcript_unanswered`, plus the load failure text). It carries the chat stream trace from `ChatStreamTrace` (subscribes, history replies applied or dropped and why, live events, socket closes, the host's app version) and the `chat.stream` breadcrumbs, names and counts only.
 
 **Release-health lines.** A few info lines go to Sentry Logs (not issues, not breadcrumbs) so a release shows that it ran and updated cleanly: `app.started` (desktop, once per launch: version, running and selected track, package channel, platform, arch, whether it is the first launch after an update), `brain.started` (the brain, once per start: version, tracks, role, platform, arch), `sync.host_started` (the brain could take connections again), `autoUpdate.update_downloaded`, `autoUpdate.track_switch_started`, `autoUpdate.quit_and_install`, `db.snapshot_written` (the database copy taken before a new version opens it), `startupRecovery.went_back` (a machine left this build from the "ADE could not start" window: from and to version, trigger, databases restored) and `agent_chat.restart_resume_armed` (`RELEASE_HEALTH_EVENTS` in `shared/sentry/logBridge.ts`). They share the Sentry Logs budget below. The release skill's beta gate (`scripts/release-tools/beta-gate.mjs`) reads them, with the issues first seen in a beta and the error-level log lines, before a beta becomes stable.
 
@@ -108,27 +116,32 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 - every error toast (`showToast` with `tone: "error"`), as the log event `toast.<start of title>` (`toastGroupKey`, so a lane or file name in the title does not make one event name per name), with the title and message cut to 300 characters. The failure behind a toast already opened its own issue, with a stack. A toast that names a `report` logs as `toast.<surface>` with its title, `code` and `technicalDetail` only, never its message (which can quote the person's words, such as an unsent prompt); `report: false` logs nothing;
 - every failure notice shown (an error-tone `Banner`, `InlineErrorNotice`, or a notice given a `report`, `ui/notice/NoticeReport.tsx`), once per surface and raw error per renderer, as `notice.shown` with its surface, headline, code and the raw error cut to 300 characters; a `hint`, a `status` given no report (`noticeKind.ts`; a lane delete that left files behind is a `status` that passes one, and logs), or `report: false` logs nothing. Its "Report" action sends the manual diagnostic report (`diagnostics.sendManual`), not a Sentry event (on the hosted web client, the User Feedback note below);
 - a failed connection to another machine, and the other machine's view of it. `remote.connect_failed` and `remote.connect_recovered` (`main/services/remoteRuntime/remoteDialTelemetry.ts`) come from the machine dialing, first failure of an outage and then one an hour, with each route's kind, result, fixed error token and duration but never its address (the hosts are only in the local line in `runtime/desktop-main.jsonl`, which a report's log tail carries like any other line). `sync_host.peer_accepted` and `sync_host.hello_rejected` come from the machine being dialed, through either of its hello handlers, and `sync.host_started` says when it could take connections again. `device_ref` and `peer_device_ref` are `syncDeviceTelemetryRef` hashes that both sides can compute and appear swapped on the other side, so filtering on them shows one connection from both machines;
-- conditions worth counting but not worth an issue, through `forwardSignalToSentry` (`shared/sentry/logBridge.ts`): `ai.provider_status.stale_runtime_snapshot` (the CLI snapshot says a provider's runtime is missing while the tools cache says ready; once per disagreement), `work.machine_read_failed` (a paired machine failed the Work sidebar's reads twice in a row), `remote.reconnect_failed` (the fourth automatic reconnect failure of one outage), `local_runtime.service_repair_attempt` (the desktop repairing or starting the brain service, keyed by reason), and `windows_desktop.background_unavailable` (input on the Windows main desktop to an app the background table lists, keyed by exe, input and fallback, with whether the screen then changed; exe and window class only, never a title or typed text: `macDesktopBackgroundInput.ts`);
+- conditions worth counting but not worth an issue, through `forwardSignalToSentry` (`shared/sentry/logBridge.ts`): `ai.provider_status.stale_runtime_snapshot` (the CLI snapshot says a provider's runtime is missing while the tools cache says ready; once per disagreement), `work.machine_read_failed` (a paired machine failed the Work sidebar's reads twice in a row), `work.machine_read_bridge_missing` (a window has no pinned lane or session list, so it cannot read another machine's lanes at all), `repository.copy_connect_failed` (info: a computer with a copy of the open repository did not join the tab in the background, keyed by reason), `web.sync_own_project_reassert_failed` (warning: ADE Web asked a computer to host the project it shows again, after a restart or another client's switch, and the computer refused or did not answer; keyed by reason), `web.sync_own_project_reassert_skipped` (info: that request came again within 15 s, so it waits for the gap to end; two clients may be showing different projects of one computer), `web.sync_own_project_yielded` (info: after ADE Web asked for its project back, another client moved the computer away again on the same connection, so ADE Web follows the computer instead of moving it again), `web.cloud_saved_chats_read_failed` (info: ADE Web asked a connected computer for an ADE Cloud computer's saved chats and the read failed for a reason other than an older brain; keyed by action), `web.account_settings_relay_failed` (info: an ADE Web account settings call to the push relay failed, and the caller keeps its local copy; method and status only, keyed by method), `remote.reconnect_failed` (the fourth automatic reconnect failure of one outage), `local_runtime.service_repair_attempt` (the desktop repairing or starting the brain service, keyed by reason), and `windows_desktop.background_unavailable` (input on the Windows main desktop to an app the background table lists, keyed by exe, input and fallback, with whether the screen then changed; exe and window class only, never a title or typed text: `macDesktopBackgroundInput.ts`);
+- a project open that took 5 seconds or more, as the warn line `project.open_slow` (one producer, `logSlowProjectOpen` in `projectFilesystemKind.ts`; a Sentry Log and breadcrumb where Sentry runs). The brain's scope registry (`projectScope.ts`) owns the clock of a brain open and logs it to the brain's own log, for failed opens too; `createAdeRuntime` logs it itself, to the project's log, only when no caller passed a clock (a runtime opened outside the brain's registry). Every action on a project waits for its open, so a folder on a network mount shows up as many calls timing out together; this line says which step was slow. It carries `totalMs`, `phases` (`prepare`, `queued` when it waited for a project opening alone, `root_check`, `base_ref`, `db_open`, `services`, `identity`, with milliseconds each), `filesystemKind` (`network`, `fuse`, `local`, `unknown`) and `filesystemType` (the kernel's mount type such as `nfs4`; read from `/proc/self/mountinfo` on Linux only, and only on this slow path), plus `projectId` and `outcome` (`opened`, `failed`) from the brain, or `runtimeProfile` and `hadAdeDb` from a runtime's own line. It never carries the folder path. An open that freezes the event loop cannot log anything itself, so the watchdog worker writes `brain.project_open_stalled` to stderr after 5 s blocked (each opening project's id, step, time in the open and in the step), a near miss (`brain.event_loop_near_miss`) carries the same as `openingProjects` (the step reached when the loop came back), and a kill's breadcrumb does too;
+- a project refused because opening it froze the brain into the freeze guard twice in 15 minutes (a folder on a drive too slow for its database; `projectOpenStrikes.ts`). The next start logs warn `project.open_freeze_killed` (each struck project's id, step, strikes, and `blockedUntil` and `level` once refused), the first refused open of each refusal logs warn `project.open_blocked` (id, `code`, `level`, `blockedUntil`, filesystem kind), `ade projects retry` logs info `project.open_retry`, a successful open that forgot strikes logs info `project.open_strikes_cleared`, and an unreadable or unwritable strikes file logs warn `project.open_strikes_read_failed` / `project.open_strikes_write_failed`. Ids and codes only: the refusal's message names the project for the person reading it, and the sync host loop logs its code, not that message. None is a PostHog event;
+- a brain that dropped under an SSH `ade rpc --stdio` relay, as `remote.brain_connection_lost` (`remoteRuntime/runtimeRpcClient.ts`, grouped by brain state), reported by the desktop because the other machine may have no route to Sentry. It carries the method, `brainState` (`alive`, `exited`, `exited_and_replaced`, `unknown`), the socket's errno, the heartbeat age in seconds and up to six of the brain log's last lines as level, code-defined event name and error code, each re-validated against a fixed shape. It never carries log message text, paths, URLs or names. A remote event read or subscribe that hit its 2-minute ceiling is `remote.event_setup_timed_out`, keyed by the step it was on (`remoteConnectionService.ts`), with the transport, step timings and total; one that was only slow (10 s) is a breadcrumb;
 - a provider going `auth-failed` (signed out is the user's state);
 - a resource-pressure episode on this machine, `machine.resource_pressure` (warn), from the machine brain's five-minute sample (`ade-cli/src/services/runtime/resourcePressureMonitor.ts`, below in [Resource pressure](#resource-pressure)): the kinds that breached, severity, memory, swap and commit numbers, the largest write-ahead log, the brain's own CPU, the Android emulator count, whether a developer's brain ran beside the installed one, ADE's busiest table, and MB per process group (`installed_brainMb`, `dev_brainMb`, `desktopMb`, `android_emulatorMb`, `ios_simulatorMb`, `otherMb`). Numbers and group names only. One per episode; `machine.resource_pressure_ended` (info, local) when 30 healthy minutes close it;
-- expected outcomes of an IPC call or brain action (`EXPECTED_OUTCOME_PATTERNS`, and `EXPECTED_OUTCOME_CODES` for errors that carry their code (`project_data_missing`, `project_moving`, `db_path_changed`, `git_untrusted_folder`, and the project-open answers `storage_read_failed`, `storage_io_failed` and `db_busy`, whose code survives the SQL-statement rewrap and the RPC and IPC hops), in `shared/sentry/expectedFailure.ts`): a lane, chat, worktree or screenshot that no longer exists, a project runtime still connecting, a brain restarting for an update, a project mid-move or mid-switch, a paired machine that is asleep, slow, not sharing the project or whose link dropped, no network (`fetch failed` whose causes are network errors to a non-loopback address; a local service that stops answering is still an issue), a dirty worktree, nothing to commit, a missing base branch or a folder that is not a repository, a provider or GitHub login that lost access, a GitHub 5xx or timeout, a Codex thread another process is writing, the answers a caller gets for bad input (a secret name, a path that is not a file, a message no longer queued, nothing to rewind, Linear not connected, a second live-stream start while one runs), and the answers an agent gets when it drives a browser, desktop or PR wrongly (a bad selector, no matching element, no screen yet, a declined consent card, a debug port nothing listens on, a review thread from another PR). It also holds sign-ins the user fixes in Settings (GitHub, Jira, SSH, Windows), a remote machine the user disconnected, ADE quitting mid-call, a full disk or process table, a chat waiting on the user, a lane screen whose display or window went away (`MAC_DESKTOP_DISPLAY_UNAVAILABLE`), and a Mac with no Xcode. A paired machine's "domain unavailable" or "requires params.projectId" answer is marked `environment` only where it comes back from an older machine (`isPeerVersionGapMessage`, `remoteConnectionPool.ts`); from this machine's own brain it is a defect. The brain names undici's reason in a forwarded `fetch failed` (`fetch failed (ENOTFOUND)`) and marks an offline one `network` on the wire, because the cause chain does not cross RPC. Monaco's `Canceled` (an editor disposed under its own pending work) is dropped when it is the event's own error. They are logged as `ipc.expected.<action>` or `runtime_action.expected.<action>`, and every process's `beforeSend` drops an event whose own error is one of them, whatever path it took (a crash that only quotes one as its cause is kept). Add a pattern there only once Sentry shows a message is a state the user can be in rather than a defect.
+- expected outcomes of an IPC call or brain action (`EXPECTED_OUTCOME_PATTERNS`, and `EXPECTED_OUTCOME_CODES` for errors that carry their code (`project_data_missing`, `project_moving`, `db_path_changed`, `git_untrusted_folder`, and the project-open answers `storage_read_failed`, `storage_io_failed` and `db_busy`, whose code survives the SQL-statement rewrap and the RPC and IPC hops), in `shared/sentry/expectedFailure.ts`): a lane, chat, worktree or screenshot that no longer exists, a project runtime still connecting, a brain restarting for an update, a project mid-move or mid-switch, a paired machine that is asleep, slow, not sharing the project or whose link dropped, no network (`fetch failed` whose causes are network errors to a non-loopback address; a local service that stops answering is still an issue), a dirty worktree, nothing to commit, a missing base branch or a folder that is not a repository, a provider or GitHub login that lost access, a GitHub 5xx or timeout, a Codex thread another process is writing, the answers a caller gets for bad input (a secret name, a path that is not a file, a message no longer queued, nothing to rewind, Linear not connected, a second live-stream start while one runs), and the answers an agent gets when it drives a browser, desktop or PR wrongly (a bad selector, no matching element, no screen yet, a declined consent card, a debug port nothing listens on, a review thread from another PR). It also holds sign-ins the user fixes in Settings (GitHub, Jira, SSH, Windows), a remote machine the user disconnected, ADE quitting mid-call, a full disk or process table, a chat waiting on the user, a lane screen whose display or window went away (`MAC_DESKTOP_DISPLAY_UNAVAILABLE`), and a Mac with no Xcode. A paired machine's "domain unavailable" or "requires params.projectId" answer is marked `environment` only where it comes back from an older machine (`isPeerVersionGapMessage`, `remoteConnectionPool.ts`); from this machine's own brain it is a defect. The brain names undici's reason in a forwarded `fetch failed` (`fetch failed (ENOTFOUND)`) and marks an offline one `network` on the wire, because the cause chain does not cross RPC. Monaco's `Canceled` (an editor disposed under its own pending work) is dropped when it is the event's own error. They are logged as `ipc.expected.<action>` or `runtime_action.expected.<action>`, and every process's `beforeSend` drops an event whose own error is one of them, whatever path it took (a crash that only quotes one as its cause is kept). Add a pattern there only once Sentry shows a message is a state the user can be in rather than a defect. One exception makes a spike of them visible: an expected answer to an action a person asked for, which a Sentry Log alone hid (a "Settle failed — Can't reach …" never reached Issues). A brain action declared `write` in `ADE_ACTION_ACCESS` that the app does not send on its own (not `isBackgroundAdeWrite`, and not one of the writes a screen retries by itself, `SCREEN_RETRIED_WRITES`: stream starts, status and decoration refreshes) carries `initiated: person` on its `ipc.expected.<action>` log, and its third expected failure within an hour in one process, for the same action and kind of failure, becomes a warning issue `<action> keeps failing for a person: <code or error type>` (`reportRepeatedPersonFailure`, `main/sentry/ipcCapture.ts`). It is grouped by action and kind of failure (the runtime-action grouping: an ADE code, or the type and normalized message), so many people hitting one is one issue with a count; it carries the tags `runtime.action`, `error.code` and `ipc.expected_repeat: person` and no message (that can name the person's machine; the Sentry Log beside it has the scrubbed text); and each process sends it at most once a day per action and kind. Warning level keeps it off the high-priority email, and "Archive until escalating" on one such issue keeps it quiet until it spikes again. Reads a screen polls never count.
 - a failed brain action the caller already has the answer to. The brain logs it as `runtime_action.agent.<action>` when an agent's `ade` call failed with anything but a defect (a TypeError and the other JavaScript runtime errors, a database failure, or a machine out of files, memory or I/O stay issues), and as `runtime_action.desktop.<action>` when a desktop window made the call: the desktop reports that failure itself, with its IPC channel (`main/sentry/ipcCallScope.ts`). Calls the desktop's main process makes on its own are still reported by the brain.
 - an IPC timeout whose call spanned a sleep or a pause: Electron reported a wake-up after the call's deadline, or a `suspend` during the call (the timer fires on wake before `resume` arrives), or the wall clock ran 5 s or more ahead of the monotonic clock during the call (where that clock stops in sleep, as on Linux), or the deadline timer fired 5 s or more late while the process spent under a quarter of that lateness on the CPU up to that moment (`ipcTimerFiredWhilePaused`, `main/sentry/ipcHandlerTimeout.ts`). The last rule is the one macOS needs: libuv's clock there is `mach_continuous_time`, which counts sleep, so the gap stays 0, and a dark wake sends no `suspend` or `resume`. It also covers App Nap. Nothing hung; it is logged as `ipc.expected.<channel>` with its duration, `lateMs` and `cpuMs`. A busy main thread burns CPU while its timers wait, so a real stall is still an issue.
 - an IPC call, or a brain call through `RuntimeRpcClient`, whose deadline timer fires 5 s or more late is given 10 s more before it fails (`armDeadline`, `shared/deadlineTimer.ts`): on wake every overdue timer fires before the reply already waiting on the brain's socket is read, and the handler's own fallback deadlines fire at the same moment. A call that answers in that window succeeds, so nothing is reported.
 - the second and later IPC timeouts of one action within 10 s: calls that wait on one thing time out together, so the first is the issue and the rest are logged as `ipc.timeout_repeat.<action>`. Across actions too: a stall times out every call in flight within seconds of each other (`attention.getSnapshot`, `lanes.list`, …), each of which used to open an issue of its own. Every reported timeout carries the tag `ipc.stall_id`; a timeout of another call within 30 s of the last one joins the same stall and is logged as `ipc.timeout_in_stall.<label>` with that `stallId` and the stall's call count, so one stall is one issue and one search for its id lists every call it took down (`main/sentry/ipcCapture.ts`). A reported timeout carries `lateMs` (how late its timer fired), `cpuMs` (CPU the main process spent until the deadline timer fired), `monotonicGapMs`, `sinceSuspendSec`, `sinceResumeSec`, `systemIdleSec` and `windowVisible`, which tell a blocked main thread from a machine that was not running ADE.
 - on the hosted web client, a script chunk that a deploy removed: the host's `/assets/*` worker answers it with a 404 that is never cached (`renderer/webclient/public/_worker.js`), so Chrome says `Failed to fetch dynamically imported module`, Firefox `error loading dynamically imported module`, and Safari `Importing a module script failed`. Before that worker, the host sent the app's `index.html`, and Safari said `'text/html' is not a valid JavaScript MIME type`; a browser can still hold that answer, so the rule matches it too. The page reloads once into the new build (`renderer/lib/staleChunkReload.ts`, at most once a minute through a `sessionStorage` stamp) instead of reporting. The desktop app loads its chunks from its own package and never does this.
 
-**Quota.** Since 2026-10-30 the organization is on a trial plan (`am3_t`) that ends 2026-11-13 14:20 UTC: 1,000,000 errors, 100,000 replays and 10 GB of attachments a month. The budgets below were set for the Team plan's 50,000 errors and 1 GB of attachments, so they keep a paid plan's numbers inside its quota. If the trial ends without an upgrade, the organization goes back to the Developer plan's 5,000 errors. Over the error quota, Sentry drops every error (`error_usage_exceeded`), as it did from 2026-10-26 to 2026-10-30; the beta gate fails while that happens, because a build's error count means nothing then. It has no server-side rate limits, so every process keeps its own budget (`shared/sentry/guardrails.ts`): at most 5 events per fingerprint and 60 in total per hour, and 15 per fingerprint and 150 in total per day, and crashes (`fatal`) on a budget of their own, 10 per fingerprint and 30 per hour (30 and 100 per day), so they never compete with ordinary errors. Attachments have their own 1 GB a month for the organization, of which minidumps used about 100 MB in October 2026: each process attaches files to the first event of an issue each day only, to at most 15 events a day, and to at most 1 MB a day after gzip (`DEFAULT_DIAGNOSTIC_ATTACHMENT_BUDGET`). The files are built only when the budget has room. Contexts and breadcrumbs cost nothing against either quota; Sentry Logs are capped at 20 per log event name and 400 in total per hour, because some warnings repeat every second while a condition lasts. The cap is the backstop, not the fix: a poll or probe that keeps failing on the same cause warns once and logs the repeats at info, which stay on disk, until it succeeds or the cause changes (`automations.github_relay_poll_failed`, `github.token_validation_failed`, `prs.discovery_failed`, `push.publish_undelivered`, `process_registry.heartbeat_failed`). `local_runtime.action_slow` warns once per action per 10 minutes for a call that was only slow (a failed call always warns), with the count it quieted since; `ipc.expected.<label>` logs the same answer on the same call once per 10 minutes; a phone alert the relay fails 20 times is dropped with one `push.publish_undelivered` warn naming `droppedAlerts`. A success is never a warn line (`account.machine_publish_ok`, slow or not, is info). `forwardSignalToSentry` events have a budget of their own per event name, so a noisy one never starves another: 2 per key and 10 in total per hour, 6 per key and 30 in total per day. Expected outcomes (aborted navigations, user cancels, EPIPE, ResizeObserver, and the list above) are dropped. The web client also drops `AdeUnavailableError`, the rejection of a desktop-only `window.ade` member called on web (`webclient/sentry.ts`). The Workers group Cloudflare's own D1 and Durable Object failures into one issue per kind (each carries a fresh `reference`; the kinds live in each Worker's `src/cloudflareTransient.ts`, which match every wording Cloudflare uses for a kind: a storage reset is "storage caused object to be reset" or "storage operation exceeded timeout which caused object to be reset"), and drop Durable Object resets caused by a deploy. A request that hits one is retried where that is safe and otherwise answered `503` with `Retry-After`, logged as `cloudflare_transient` and not sent to Sentry. Traces are sampled at 5% on desktop and brain (Workers 1%, push-relay 0.1%, tunnel frames never); the web client reports errors only, because browser tracing would add about a third to the chunk its cold-load budget counts. No profiling. iOS tags every event with the display layout (`display.family`, `display.edge_bar`, `display.fold`, set by `CrashReporting.setDisplayLayout` on change only, with one `layout` breadcrumb), so an iPhone Duo crash names its posture without an event of its own. It also tags every event with the ADE screen shown last (`screen`, the closed `ADEAnalyticsScreen` names, set by `CrashReporting.setScreen` on change only, with one `screen` breadcrumb, whether analytics is on or off), because an app hang's stack names only system code: none of the 13 hangs in ADE-IOS-1B held an ADE function. iOS keeps session replay for errors only, fully masked, and drops an app hang (fatal or not) whose main thread was idle in its run loop (the app was suspended, not blocked), judged on library names and in-app flags because the phone sends no function names; a hang with real work on the stack is kept, however long it claims to be. It also drops a non-fatal hang whose reported lower bound is over 60 seconds (a suspension, not a freeze; the events seen ran 200 to 23,000 seconds) and a MetricKit `MXHangDiagnostic` under 2 seconds (`ADEHangReportFilter`); a fatal hang and a duration it cannot read are always kept. Hangs group by kind, not by duration or system stack: the fingerprint is the exception type (`App Hang Fully Blocked`, or `Fatal App Hang Fully Blocked` for a watchdog kill) plus the innermost ADE function when the phone named one, else the library the main thread was blocked in (`groupAppHang` in `CrashReporting.swift`), because the SDK puts the hang's length in its title. iOS does not report hangs that did not fully block the main thread; MetricKit reports those from the system.
+**Quota.** Since 2026-10-30 the organization is on a trial plan (`am3_t`) that ends 2026-11-13 14:20 UTC: 1,000,000 errors, 100,000 replays and 10 GB of attachments a month. The budgets below were set for the Team plan's 50,000 errors and 1 GB of attachments, so they keep a paid plan's numbers inside its quota. If the trial ends without an upgrade, the organization goes back to the Developer plan's 5,000 errors. It did: on 2026-11-14 `GET /api/0/customers/ade-app/` names the `Developer` plan. Over the error quota, Sentry drops every error (`error_usage_exceeded`), as it did from 2026-10-26 to 2026-10-30; the beta gate fails while that happens, because a build's error count means nothing then. It has no server-side rate limits, so every process keeps its own budget (`shared/sentry/guardrails.ts`): at most 5 events per fingerprint and 60 in total per hour, and 15 per fingerprint and 150 in total per day, and crashes (`fatal`) on a budget of their own, 10 per fingerprint and 30 per hour (30 and 100 per day), so they never compete with ordinary errors. Attachments have their own 1 GB a month for the organization, of which minidumps used about 100 MB in October 2026: each process attaches files to the first event of an issue each day only, to at most 15 events a day, and to at most 1 MB a day after gzip (`DEFAULT_DIAGNOSTIC_ATTACHMENT_BUDGET`). The files are built only when the budget has room. Contexts and breadcrumbs cost nothing against either quota; Sentry Logs are capped at 20 per log event name and 400 in total per hour, because some warnings repeat every second while a condition lasts. The cap is the backstop, not the fix: a poll or probe that keeps failing on the same cause warns once and logs the repeats at info, which stay on disk, until it succeeds or the cause changes (`automations.github_relay_poll_failed`, `github.token_validation_failed`, `prs.discovery_failed`, `push.publish_undelivered`, `process_registry.heartbeat_failed`). `local_runtime.action_slow` warns once per action per 10 minutes for a call that was only slow (a failed call always warns), with the count it quieted since; `ipc.expected.<label>` logs the same answer on the same call once per 10 minutes; a phone alert the relay fails 20 times is dropped with one `push.publish_undelivered` warn naming `droppedAlerts`. A success is never a warn line (`account.machine_publish_ok`, slow or not, is info). `forwardSignalToSentry` events have a budget of their own per event name, so a noisy one never starves another: 2 per key and 10 in total per hour, 6 per key and 30 in total per day. Expected outcomes (aborted navigations, user cancels, EPIPE, ResizeObserver, and the list above) are dropped. The web client also drops `AdeUnavailableError`, the rejection of a desktop-only `window.ade` member called on web (`webclient/sentry.ts`). The Workers group Cloudflare's own D1 and Durable Object failures into one issue per kind (each carries a fresh `reference`; the kinds live in each Worker's `src/cloudflareTransient.ts`, which match every wording Cloudflare uses for a kind: a storage reset is "storage caused object to be reset" or "storage operation exceeded timeout which caused object to be reset"), and drop Durable Object resets caused by a deploy. A request that hits one is retried where that is safe and otherwise answered `503` with `Retry-After`, logged as `cloudflare_transient` and not sent to Sentry. Traces are sampled at 5% on desktop and brain (Workers 1%, push-relay 0.1%, tunnel frames never); the web client reports errors only, because browser tracing would add about a third to the chunk its cold-load budget counts. No profiling. iOS tags every event with the display layout (`display.family`, `display.edge_bar`, `display.fold`, set by `CrashReporting.setDisplayLayout` on change only, with one `layout` breadcrumb), so an iPhone Duo crash names its posture without an event of its own. It also tags every event with the ADE screen shown last (`screen`, the closed `ADEAnalyticsScreen` names, set by `CrashReporting.setScreen` on change only, with one `screen` breadcrumb, whether analytics is on or off), because an app hang's stack names only system code: none of the 13 hangs in ADE-IOS-1B held an ADE function. iOS keeps session replay for errors only, fully masked, and drops an app hang (fatal or not) whose main thread was idle in its run loop (the app was suspended, not blocked), judged on library names and in-app flags because the phone sends no function names; a hang with real work on the stack is kept, however long it claims to be. It also drops a non-fatal hang whose reported lower bound is over 60 seconds (a suspension, not a freeze; the events seen ran 200 to 23,000 seconds) and a MetricKit `MXHangDiagnostic` under 2 seconds (`ADEHangReportFilter`); a fatal hang and a duration it cannot read are always kept. Hangs group by kind, not by duration or system stack: the fingerprint is the exception type (`App Hang Fully Blocked`, or `Fatal App Hang Fully Blocked` for a watchdog kill) plus the innermost ADE function when the phone named one, else the library the main thread was blocked in (`groupAppHang` in `CrashReporting.swift`), because the SDK puts the hang's length in its title. iOS does not report hangs that did not fully block the main thread; MetricKit reports those from the system.
 
-**Alerts and monitors (Sentry account, not code).** Every project keeps Sentry's default "high priority issue" email. On top of it, three org alerts email the owner: `ADE · Regressions in production (all projects)` (a resolved issue comes back), `ADE · Issue hitting 5+ users in an hour (production)`, and `ADE · Uptime: account directory down`. The plan's one uptime monitor checks `GET /health` on `ade-account-directory-production` every five minutes (`ade-workers`, three failures open an issue), and its one cron monitor is `account-directory-cleanup`, the Worker's scheduled sweep. The sweep sends one closing check-in with `Sentry.captureCheckIn` from the handler's own scope (a tick that hangs shows as missed); never wrap it in `Sentry.withMonitor`, whose isolation-scope fork loses the invocation's `waitUntil`, so Cloudflare cancels the closing check-in and every tick reads as a timeout that reopens the issue. Spike protection is on for every project. Nothing paid is enabled: pay-as-you-go stays at $0, so data over a quota is dropped, never billed, and Seer, profiling and extra monitors stay off. Check the settings with `GET /api/0/organizations/ade-app/workflows/`, `/detectors/` and `GET /api/0/customers/ade-app/` (plan, trial end, on-demand budget).
+**Alerts and monitors (Sentry account, not code).** Every project keeps Sentry's default "high priority issue" email. On top of it, four org alerts email the owner: `ADE · Regressions in production (all projects)` (a resolved issue comes back), `ADE · Issue hitting 5+ users in an hour (production)`, `ADE · Uptime: account directory down`, and `ADE · Spike: a person's action keeps being refused (desktop)` (workflow `6344219`, added 2026-11-14: an `ade-desktop` issue tagged `ipc.expected_repeat: person` with more than 4 events in an hour, beta and production, at most once an hour; each event is one process past its threshold, so that is five or more people or machines blocked on one action). A count of the `initiated:person` logs themselves would need a metric alert, which the Developer plan does not have (`/alert-rules/` answers 404 and creating a detector 405), so the alert counts the issues instead. The plan's one uptime monitor checks `GET /health` on `ade-account-directory-production` every five minutes (`ade-workers`, three failures open an issue), and its one cron monitor is `account-directory-cleanup`, the Worker's scheduled sweep. The sweep sends one closing check-in with `Sentry.captureCheckIn` from the handler's own scope (a tick that hangs shows as missed); never wrap it in `Sentry.withMonitor`, whose isolation-scope fork loses the invocation's `waitUntil`, so Cloudflare cancels the closing check-in and every tick reads as a timeout that reopens the issue. Spike protection is on for every project. Nothing paid is enabled: pay-as-you-go stays at $0, so data over a quota is dropped, never billed, and Seer, profiling and extra monitors stay off. Check the settings with `GET /api/0/organizations/ade-app/workflows/`, `/detectors/` and `GET /api/0/customers/ade-app/` (plan, trial end, on-demand budget).
 
-**Readable stack traces.** Release builds set `ADE_BUILD_SOURCEMAPS=1`, inject Sentry debug ids into the shipped bundles, upload the maps and delete them before packaging or deploy, so no map reaches a user. Releases are named `ade@<version>` from the `v*` tag (deploys from `main` between releases use `git describe`, for example `1.2.102-4-g3137fc9b9`), with a `dist` per artifact (`win-x64`, `mac-arm64`, `linux-x64`, `web`, `worker-<name>`). The standalone runtime (the brain on Linux, and `ade` installs without the desktop app) is a Node SEA: `build-static.mjs` stamps the bundle's debug id and writes a map for the SEA entry, moved down by the require shim's lines, to `dist-static/.sentry/<target>/` (outside the SEA work folder the build removes), and the runtime build job uploads that pair to `ade-brain` with `sentry-release.mjs upload --dir`. Uploads cost storage, not event quota. iOS keeps `<bundle id>@<version>+<build>`, and `scripts/release-tools/upload-ios-dsyms.sh` uploads each archive's dSYMs to Sentry and to PostHog (run by `ios-testflight.sh` and the TestFlight workflows). Uploads need the `SENTRY_AUTH_TOKEN` repository secret and are skipped, never failed, without it. A release's commits are read from the checkout's git history (`set-commits --local`), because the `arul28` GitHub account is linked to another Sentry organization and sharing it needs a Business plan.
+**Readable stack traces.** Release builds set `ADE_BUILD_SOURCEMAPS=1`, inject Sentry debug ids into the shipped bundles, upload the maps and delete them before packaging or deploy, so no map reaches a user. Releases are named `ade@<version>` from the `v*` tag (deploys from `main` between releases use `git describe`, for example `1.2.102-4-g3137fc9b9`), with a `dist` per artifact (`win-x64`, `mac-arm64`, `linux-x64`, `web`, `worker-<name>`). The standalone runtime (the brain on Linux, and `ade` installs without the desktop app) is a Node SEA: `build-static.mjs` stamps the bundle's debug id and writes a map for the SEA entry, moved down by the require shim's lines, to `dist-static/.sentry/<target>/` (outside the SEA work folder the build removes), and the runtime build job uploads that pair to `ade-brain` with `sentry-release.mjs upload --dir`. Uploads cost storage, not event quota. iOS keeps `<bundle id>@<version>+<build>`, and `scripts/release-tools/upload-ios-dsyms.sh` uploads each archive's dSYMs to Sentry and to PostHog (run by `ios-testflight.sh` and the TestFlight workflows). Uploads need the `SENTRY_AUTH_TOKEN` repository secret and are skipped, never failed, without it. A release's commits are read from the checkout's git history (`set-commits --local`, in `release-publish.yml`'s `sentry-commits` job, beside the publish job so it never delays a release going public), because the `arul28` GitHub account is linked to another Sentry organization and sharing it needs a Business plan.
 
 **Tags on every event.** Each client sets the same scope tags (`sentryCommonTags` in `shared/sentry/config.ts`; Swift in `CrashReporting.start`): `surface` (`desktop`, `brain`, `web`, `ios`), `client` (`desktop`, `runtime` for the brain, `web`, `ios`), `release_channel` (`stable`, `beta`, `alpha`, `development`; on iOS the ADE Beta app (`com.ade.ios.beta`) is `beta` and the normal app is `stable` on TestFlight and the App Store alike; iOS's Sentry environment follows it, `production` for `stable`, `beta` for the ADE Beta app and `development` for a debug or simulator run, so a beta's errors never read as the store app's, `CrashReporting.sentryEnvironment`), `is_internal` (`true`/`false`, desktop and brain only, from the same marker PostHog reads; a browser and a phone cannot know), `arch` (desktop and brain) and `machine_id`. `machine_id` is which install on which computer sent the event, the same 16-hex value PostHog events and diagnostic reports carry (`main/services/analytics/machineTelemetryId.ts`): `sha256("ade-telemetry-machine-v1:" + the OS machine identifier + ":" + the ADE home)`, cut to 16 characters. The identifier is the one the account directory's anchor reads (`hardwareAnchor.ts`: `IOPlatformUUID`, `MachineGuid`, `/etc/machine-id`) and never leaves the process; the telemetry domain keeps the hash unrelated to the anchor's. Two ADE homes on one computer (`~/.ade`, Alpha's `~/.ade-alpha`) are two installs; a reinstall into the same home is the same one. It is read once per process off the main thread (one `ioreg` or `reg`, ~13 ms, only where something reports) and set on every event and Sentry Log by `beforeSend`/`beforeSendLog` (`setSentryMachineIdResolver`, `shared/sentry/capture.ts`); events before the read answers, and a VM with no identifier, carry none. The user is the person and spans every machine they own; `machine_id` tells those machines apart. On iOS it is `sha256("ade-telemetry-machine-v1:" + identifierForVendor)`, cut the same way (`DirectPostHogProductAnalyticsSink.machineID`). The OS is Sentry's own `os` tag from each event's OS context. Renderer events carry main's tags, because they travel through main's client. Desktop and brain keep `process`, `os.release` and `package.channel`; the web client keeps `process: web-client` (its `surface` tag was `web-client` before 2026-10-30). The web client's user is the same account hash, computed in the browser from the signed-in account; signed out it has none.
 
-**User Feedback.** Settings › Send a report has an optional note, shown only where main's Sentry client runs (`diagnostics.userFeedbackAvailable`). The note goes to `ade-desktop` as Sentry User Feedback from the desktop main process (`main/sentry/userFeedback.ts`), scrubbed with `scrubString`, at most 2,000 characters, with the same user id, the common tags, `report.surface`, `report.code` and `report.reference` (the R2 report's reference), linked to the newest event that process reported. The R2 report is unchanged and never contains the note; a send the local daily limit refused sends no note either. Feedback skips `beforeSend` and its budget, so the manual-send limit is its only bound. The report describes this computer whatever machine a screen showed, so the note always goes from this app, never through a pin.
+**User Feedback.** Every manual report (the error screens' "Report this error to ADE…" dialog and Settings › Send a report) makes exactly one Sentry User Feedback entry in `ade-desktop` when it is sent, from the desktop main process (`main/sentry/userFeedback.ts`), only where main's Sentry client runs (`diagnostics.userFeedbackAvailable`). The entry is the person's optional note ("What were you doing?"), scrubbed with `scrubString`, at most 2,000 characters, or the fixed line `Report sent with no note.` (`NO_NOTE_FEEDBACK_MESSAGE`) when they wrote none, so the team sees every report that arrived. It carries the same user id, the common tags, `report.surface`, `report.code` and `report.reference` (the R2 report's reference), linked to the newest event that process reported. The R2 report is unchanged and never contains the note. A failed upload with a note still sends the note (with no reference), so a report that arrives on "Try again" has its note: the retry sends the note again only when the earlier entry had no reference, and a different reference is always a new entry. A send the local daily limit refused sends nothing. Feedback skips `beforeSend` and its budget, so the manual-send limit is its only bound. The report describes this computer and this window whatever machine a screen showed, so the entry always goes from this app, never through a pin.
 
-The hosted web client's **Report issue** is User Feedback too, to `ade-web`, from the browser (`renderer/webclient/adapter/diagnostics.ts`): the browser has no logs, and the account directory refuses its upload. Only where the web client's Sentry runs; otherwise the button opens the GitHub issue with the report copied. The note holds the surface, the screen's headline and technical detail through `scrubFreeText`, the code, the web version, the browser's user agent, the path through `scrubString`, and the time, at most 2,000 characters (`SENTRY_FEEDBACK_MAX_CHARS`). It carries `report.surface`, `report.code` and `report.reference` (a random 8-character reference made in the browser), the user id, and the crash event the screen captured as its associated event. The reference is shown only after Sentry answers 2xx for the note (`confirmSentryDelivery`). A browser sends at most 5 a day (`MAX_DIAGNOSTIC_REPORTS_PER_DAY`, in `localStorage`), the same number as the desktop's manual limit. The GitHub issue's title, a public field, goes through `scrubFreeText`.
+The hosted web client's report dialog sends User Feedback too, to `ade-web`, from the browser (`renderer/webclient/adapter/diagnostics.ts`): the browser has no logs, and the account directory refuses its upload. There the report itself is the one feedback entry, with the person's note (scrubbed with `scrubFreeText`) in front of it in the same message, so the note's room is what the report leaves of 2,000 characters; the dialog's preview shows both, exactly as sent. Only where the web client's Sentry runs; otherwise the dialog shows the report with "Copy report" and asks the person to send it to the ADE team privately, with no GitHub link. The report holds the surface, the screen's headline and technical detail through `scrubFreeText`, the code, the web version, the browser's user agent, the path through `scrubString`, and the time, at most 2,000 characters (`SENTRY_FEEDBACK_MAX_CHARS`). It carries `report.surface`, `report.code` and `report.reference` (a random 8-character reference made in the browser), the user id, and the crash event the screen captured as its associated event. The reference is shown only after Sentry answers 2xx for the note (`confirmSentryDelivery`). A browser sends at most 5 a day (`MAX_DIAGNOSTIC_REPORTS_PER_DAY`, in `localStorage`), the same number as the desktop's manual limit.
+
+**The report dialog.** Every error surface's "Report this error to ADE…" control (the error toast's "Report…" pill, banners, the crash boundaries, the recovery screens) opens one dialog (`renderer/components/app/ReportIssueDialog.tsx`) and sends nothing. The dialog says in one sentence that the report goes to the ADE team privately, takes the optional note, and shows a preview of exactly what is sent: the note, then the redacted report text, with its size. Settings › Send a report keeps its own note field and shows the same preview inline. The contract is two steps (`renderer/components/app/reportDraft.ts`, `main/services/diagnostics/autoDiagnosticsService.ts`): `diagnostics.prepareReport(context?)` builds and redacts the report in main, uploads nothing, claims no budget, and answers the text with an opaque one-use id; `diagnostics.sendReport(id, { userMessage })` uploads that prepared text byte for byte and claims the manual budget only then. Main keeps at most 4 prepared reports, each for 10 minutes; Cancel, Esc and leaving Settings drop the id (`diagnostics.discardReport`). A send with an unknown or expired id answers `expired` and uploads nothing: the dialog builds a new report, shows it, and asks for Send again, so no unseen text is ever sent. After a send the dialog shows "Sent. Reference …" with a copy control. One optional action follows: "Open a public GitHub issue", a prefilled new-issue page whose body holds only the reference, the ADE version and channel, the OS family and one line that the private report is with the ADE team (`shared/publicIssueLink.ts`, shared by main, the web client and `ade report-issue --send --open`); never the report, its logs, the raw error, the notice's headline or any id. The old flow, which copied the full report for a paste into the public repository, is gone on every surface.
 
 **iOS error titles.** `CrashReporting.capture` reports a Swift error under its bare type name (`AccountAdoptionRoutesExhaustedError`), as an `NSError` whose domain and description are that name: sentry-cocoa otherwise titled it `String(describing:)`, associated values and all (a machine's name, route labels), behind a module path with a per-build address (`ADE.(unknown context at $10422b9a4)`), so each build and each machine was a new title. The fingerprint is `["ios", area, type name]`; `extra.error_description` keeps the shape (`String(describing:)`, scrubbed, every quoted value replaced by `"<redacted>"`, at most 1,000 characters). A Foundation error keeps its domain and code.
 
@@ -148,6 +161,25 @@ transport recovery sends no PostHog event because it is not a new user decision.
 
 Operational logs use ADE's local logging services and may include bounded diagnostic context appropriate for the local machine. They are for debugging a specific installation and must not be forwarded to PostHog.
 
+A continue message that ADE owes a chat or a CLI session after a restart never
+disappears without a line. Each one carries the session id and a closed reason
+code, and no text from the chat:
+
+- `agent_chat.update_resume_dropped` (`scheduler_unavailable`, `session_missing`,
+  `paused`, `not_armed`), `agent_chat.update_resume_held` and
+  `agent_chat.update_resume_row_reopened` in the brain;
+- `agent_chat.cli_continue_dropped` for a CLI session that was at work
+  (`not_reopenable`, `already_open`, `claimed_elsewhere`, `reopen_capped`,
+  `awaiting_user`, `scheduler_unavailable`, `continue_capped`);
+- `update_resume.not_armed`, `.settled`, `.retries_exhausted` and
+  `.arm_chain_failed` in the desktop's `local-runtime.jsonl`, one per chat and try;
+- `pty.reattach_chat_cli_refused` when a write names a chat that is not a CLI
+  session.
+
+A plan or model refusal from a provider leaves the provider's health as it was
+and writes the Sentry Log `provider.<provider>.account_refused`; a sign-in
+refusal sets `auth-failed`. Neither is a Sentry issue.
+
 When the optional CLI-status decision classifies an idle terminal as errored
 with high confidence, `pty.cli_status_error_detected` records only the session
 id, tool type, and confidence. It does not copy terminal text. The live CLI row
@@ -160,7 +192,7 @@ The machine brain writes the same `{ts, level, event, meta}` JSONL format as the
 
 The desktop main process has a structured logger **from process start**: `apps/desktop/src/main/services/logging/machineLogger.ts` writes `~/.ade/runtime/desktop-main.jsonl` (same format, same `createFileLogger`, same 10 MiB rotation to `desktop-main.1.jsonl`), and `main.ts` opens it in its first executable statement, before the `ade://` claim and the single-instance lock. Its location is chosen for who can *read* it: `resolveMachineAdeLayout` is the resolver `ade report-issue` uses, so a headless report on a machine where the desktop will not start finds the file by construction, and each channel's `ADE_HOME` keeps its own. Electron's `userData` — where `local-runtime.jsonl` and `ade-update.jsonl` still live — is a per-platform, per-productName directory the CLI would have to guess, which is why those two remain desktop-only sources in a report. The app records it as `userDataPath` in `runtime/desktop-app.json`; only the brain's restart loop report reads it there (`desktopLogsAttachment`).
 
-Not everything reaches a structured logger. Lines the runtime prints on its way up go to the background service's **stdout**, which on macOS is `~/.ade/runtime/launchd.out.log` and not the `launchd.err.log` that carries stderr. Both streams are bounded by `runtimeLogMaintenance.ts` and **both** are collected into a diagnostic report; see [Diagnostic reports](features/storage-and-recovery/README.md#diagnostic-reports-report-issue). Early main-process events additionally mirror to `console` through `logMachineEvent`, so a terminal-launched app still shows them and the pathological case — an old plist that boots the whole desktop app as the background service — still leaves them in `launchd.out.log`. That mirror is a second copy, not the record: a bare `console.log` for something the machine log could carry is no longer acceptable, because it is invisible to a Finder-launched app.
+Not everything reaches a structured logger. Lines the runtime prints on its way up go to the background service's **stdout**, which on macOS is `~/.ade/runtime/launchd.out.log` and not the `launchd.err.log` that carries stderr. Both streams are bounded by `runtimeLogMaintenance.ts` and **both** are collected into a diagnostic report; see [Diagnostic reports](features/storage-and-recovery/README.md#diagnostic-reports-the-report-dialog). Early main-process events additionally mirror to `console` through `logMachineEvent`, so a terminal-launched app still shows them and the pathological case — an old plist that boots the whole desktop app as the background service — still leaves them in `launchd.out.log`. That mirror is a second copy, not the record: a bare `console.log` for something the machine log could carry is no longer acceptable, because it is invisible to a Finder-launched app.
 
 Writes are batched onto an async stream, so a caller that is about to end the process (`app.exit`, a force quit, an install handoff escalation) must call `logger.flushSync()` immediately after the line that matters — while it is still queued — or the records explaining the exit die with the process. `flushSync` drains only what is still queued (a batch already handed to an in-flight async flush is not duplicated), skips rotation deliberately, and, like every other log write, never throws.
 
@@ -171,8 +203,8 @@ Not every operational log belongs to the active project. The rule is the **subje
 Account sync against this machine writes local lines only:
 `ai.api_key_removed_by_account` (with the provider name, content-free) when a
 provider key the account reports deleted is dropped here, and
-`project_secret.account_vault_pull` (added, updated and removed counts) when a
-pull changes something. Neither is a PostHog event. A pull
+`project_secret.legacy_moved` (moved and waiting counts) when a project's old
+secrets move into Passwords & Secrets. Neither is a PostHog event. A sync
 is a sync tick, not a person, so it captures nothing — the same reason the
 runtime-workload exemption below does not: an event here would report
 engagement nobody generated. A credential removal the ACCOUNT performed must
@@ -206,7 +238,8 @@ The brain-level project-host recovery path also records
 identifier/type, command or operation identifiers, coarse result/status/state,
 step identifiers/statuses, conflict reason, and an error type; they never copy
 PIDs, socket paths, command lines, raw failure text, or recovery details into
-the log event. They are local operational outcomes, not PostHog events. The one
+the log event. They are local operational outcomes, not PostHog events.
+The one
 product event the repair does send is a single `ade_feature_used`
 (`feature: "connections"`, `action: "sync_host_recovery"`) carrying only
 `outcome` (`success` / `partial` / `failed`, where `partial` is the brain
@@ -214,11 +247,32 @@ restarting and handing the answer to the client's reconnect) and the `mobile` /
 `web` surface. It is captured on the brain, which is the only side that knows
 whether the repair worked, so one repair is one event no matter which client
 asked for it.
+
+The brain's file-backed chat ingress records
+`sync_brain.chat_subscribe_unanswered` when it drops a subscribe it cannot
+serve, which is the machine-side line for a phone showing "Couldn't load the
+transcript": the chat session id, a closed reason (`no_chat_scope` or
+`personal_scope_unavailable`), and the peer's device id, app version, app build
+and bundle identifier, so a report can name the client build that asked. It is
+a local operational line, not a PostHog event.
+
 `brain.suspend_gap` records a sleep the watchdogs would previously have
 mis-reported as an event-loop stall. Sleeps of 2 to 59 seconds are logged as
 `brain.suspend_gap` too, and the watchdog's lines name the `pid` and
 `socketPath` of the brain that wrote them (`brain.recovered_from_wedge` is the
-exception, since it describes the previous process).
+exception, since it describes the previous process). A freeze the machine
+caused (memory pressure, a stuck drive) is waited out instead of killed:
+the worker writes `brain.loop_watchdog_waiting_on_machine` (warn, to stderr:
+cause, blocked time, fault and CPU counts) once per wait and
+`brain.loop_watchdog_machine_wait_ended` (info) when it ends, and every wedge
+record carries a closed `freezeCause` (`self`, `memory`, `drive`). A machine
+brain taking a chat back from a lane's test brain logs
+`agent_chat.runtime_reclaim` (info: session id, whether it was released),
+`agent_chat.runtime_reclaim_failed` (warn, so it reaches Sentry Logs through
+the log bridge) when the other brain did not answer, and the releasing brain
+logs `agent_chat.runtime_released_to_machine_brain`. None is a PostHog event:
+both happen without a person deciding anything, and a restart that does
+follow is already counted by `ade_brain_recovered`.
 `brain.memory_sample` (rss, heap,
 external, uptime; every five minutes) and `brain.memory_restart` /
 `brain.memory_restart_deferred` record the RSS slope and the planned
@@ -333,6 +387,16 @@ nobody generated and would fire on a schedule rather than on use. The nearest
 precedent cuts the same way: the settle-with-residue event exists because a
 human pressed Settle and the stop could not be confirmed. If a future change
 ever makes this reclaim user-initiated, revisit the decision then.
+
+The same reasoning covers the **unattended release** (`brainIdleMemory.ts`:
+while no window, remote client or sync device is connected, a finished chat
+gives its provider process back after 30 s instead of the three-minute
+window). It writes one local line per pass that released something,
+`brain.unattended_agents_released` (info, on the machine log: `released`,
+`kept`), and `agent_chat.unattended_teardown_failed` (warn, `sessionId`, the
+error) when a chat's teardown threw, so a brain that keeps failing to release
+is visible. Each single teardown is already attributable by that chat's own
+`idle_ttl` path. It captures nothing: nobody did anything, the timer fired.
 
 A fresh Codex process's first turn waits up to 1.5 s for its skill list
 (`settleCodexSkillCatalog`). When the list stays short it writes
@@ -453,7 +517,11 @@ desktop (an `ade browser status` tab list, a lane's release) add
 and `built_in_browser.owner_names_failed` (warnings), and the debug lines
 `built_in_browser.list_tabs_local_skipped`,
 `built_in_browser.release_lane_local_skipped` and
-`built_in_browser.machine_name_unavailable`. The desktop adds
+`built_in_browser.machine_name_unavailable`. The desktop's tab lifecycle writes
+`built_in_browser.tab_kept` (tab id, `input` or `keep`),
+`built_in_browser.tab_auto_closed` (tab id, `idle`, `ended`, `lane` or `stale`),
+`built_in_browser.tab_auto_close_failed` and `built_in_browser.tab_sleep_failed`
+(warnings), `built_in_browser.tab_slept` and `built_in_browser.tab_woke`. The desktop adds
 `built_in_browser.action_observation_failed` (warning) when an agent's action
 ran but the observation after it failed, and `built_in_browser.tabs_restore_skipped`
 (collection, agent tabs dropped) at start. The event-loop watchdog
@@ -476,6 +544,41 @@ and turn ids and an error message, never the transcript or the hand-off text.
 None is a PostHog event: each is ADE reacting to a provider or keychain fault,
 with no user action behind it, and the user's own Try again / Start a new chat
 choice goes through the existing recovery path.
+
+Two project-subject clean-ups and the account settings layer write local
+lines only, to the project's `ade-cli.jsonl`. None carries a value:
+
+- `github.saved_header_removed` (warn, the config `keys` only): the brain
+  removed a GitHub sign-in header that an older ADE clone saved in the
+  project's `.git/config`. It runs once per project per brain process
+  (`savedGithubHeaderCleanup.ts`). `github.saved_header_cleanup_failed`
+  (warn, the key and git's exit code, or the error name) is a failed removal.
+- `projectConfig.account_settings_moved` (info, the moved and joined row
+  keys), `projectConfig.account_move_conflict` (info, the row key),
+  `projectConfig.account_settings_saved` (info, row keys),
+  `projectConfig.account_setting_write_refused` (warn, the row key),
+  `projectConfig.account_move_notice_resolved` (info, the row key and the
+  choice), `projectConfig.account_move_failed` (warn, the row key and the
+  error name), `projectConfig.account_mirror_failed` (warn, the error name),
+  `projectConfig.account_store_read_failed` (warn once per process and kind
+  of read, the error name; the file is used instead), and
+  `projectConfig.account_move_state_read_failed`,
+  `projectConfig.account_move_state_write_failed` (warn, the error code).
+- `lanes.new_lane_settings.adopt_failed` (warn, the error name): the old
+  per-computer new-lane choices could not be written to the account.
+- `project_scope.open_hook_failed` (warn, the error name): a project-open
+  hook (the clean-up above) threw; the project still opens.
+  They tell where a project setting came from after it moved to the ADE
+  account (`projectConfigAccountLayer.ts`). A value held on this computer
+  (a credential-shaped key, a folder path, too large) is named by its row
+  key and reason, never by its value.
+
+None is a PostHog event: the clean-up has no user action behind it, and the
+account move runs on its own when the account syncs. The person's answer to
+a notice ("Use this computer's value" or "Keep") is not one either: it comes
+at most once per setting per computer, during the one-time move, so it says
+nothing about how ADE is used afterwards. The local
+`projectConfig.account_move_notice_resolved` line records it.
 
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
@@ -501,7 +604,7 @@ Attached clients and native surfaces:
 Build and operations:
 
 - `apps/desktop/tsup.config.ts` and `apps/ade-cli/tsup.config.ts` validate and compile only the public capture configuration into release artifacts.
-- `apps/ios/Scripts/validate-posthog-project-token.sh`, `.github/workflows/release-core.yml`, and `.github/scripts/ios-testflight-internal-build-bump-asc.sh` validate iOS configuration and pass it through a temporary mode-0600 xcconfig that is deleted after the archive command.
+- `apps/ios/Scripts/validate-posthog-project-token.sh`, `.github/workflows/release-core.yml`, and `scripts/release-tools/ios-testflight-ci.sh` validate iOS configuration and pass it through a temporary mode-0600 xcconfig that is deleted after the archive command.
 - `apps/web/vite.config.ts` rejects non-`phc_` tokens before a public-site build. Vercel Production supplies the two `VITE_` variables; Preview and Development intentionally do not.
 - `scripts/posthog/dashboard-spec.mjs` and `provision.mjs` are the declarative dashboard/insight control plane. They accept the personal management key only in the provisioner process.
 
@@ -565,10 +668,26 @@ adds an event.
   (`scripts/posthog/dashboard-spec.mjs`): `interactive != false`, and, for
   builds before 1.2.128 that send no `interactive`, none of those event
   names, automation runs or automatic feature uses either.
-- `is_internal` — `true` on an ADE team install, marked with
-  `ADE_ANALYTICS_INTERNAL=1` in the environment or an empty
-  `secrets/product-analytics.json.internal` file beside the state file. Read
-  once per process. Desktop `$identify` also sets it on the person.
+- `is_internal` — `true` on the event for an ADE team install
+  (`ADE_ANALYTICS_INTERNAL=1` or an empty
+  `secrets/product-analytics.json.internal` file beside the state file) and
+  for a development runtime that is allowed to send (an unpackaged desktop,
+  `ADE_DEV_BRAIN=1`, or `release_channel: development`). Desktop `$identify`
+  raises the person flag only for the team install, and only ever raises it.
+  A development sign-in does not mark the account: the flag is never lowered,
+  so the person filter would then hide that account's later production use.
+  iOS sets the event property for Apple's review farm (below) and for a debug
+  or simulator run that opted in with `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`.
+  `$identify` carries the same event properties beside `$set`, so a development
+  sign-in is tagged without marking the account. A workflow does not send, so
+  it never needs the flag.
+- `environment` — `production` (stable), `beta`, `alpha`, `development`, or
+  `ci`. The same value Sentry uses. Real installs send the first four;
+  `ci` is what a workflow would send if capture were not already off.
+- `ade_cloud` — `true` when this process is an ADE Cloud computer
+  (`ADE_CLOUD_INSTANCE_ID`). Absent on a laptop. Cloud customers stay in the
+  product counts; the property only separates them from a desktop install.
+  The template check does not send.
 - `release_channel` — `stable`, `beta` (a Beta-track version), `alpha` (an
   Alpha package), `development` (an unpackaged app, a package no release
   workflow built, a source-checkout or dev-launcher brain; see Sentry's "When
@@ -590,6 +709,8 @@ adds an event.
   its projects to the same values. A state file from before the field adopts
   the current id. The raw identifier is never stored or sent. iOS sends the
   phone's own (`identifierForVendor`, hashed).
+
+A count of real product users leaves out `is_internal = true`, `review_context = 'app_review'` and `environment = 'ci'`, and it does not treat `ade_signed_up` or `ade_marketing_*` as a person who used the app. iOS sends no person profile, so the event properties are the filter that reaches the phone. Installs are `uniq(properties.machine_id)`: a reinstall rotates the anonymous distinct id and would otherwise count again. The same filters are on the provisioned dashboards (`scripts/posthog/dashboard-spec.mjs`).
 
 The ADE account sign-in funnel is `ade_feature_used` with
 `feature: "account_sign_in"`, `action: "sign_in"`, `outcome` `started` and
@@ -690,6 +811,238 @@ Worker and a Clerk webhook subscribed to `user.created` and `user.deleted`;
 until then the route answers 503 and records nothing. Volume is one event per
 new or deleted account.
 
+#### ADE Cloud (server-side)
+
+The account-directory Worker records ADE Cloud's product facts itself,
+because it decides every create, grow, refusal and plan change, for every
+client version and for work nobody watches
+(`apps/account-directory/src/cloud/analytics.ts`). Both events go to
+`/i/v0/e/` under `waitUntil` with a two-second timeout; a failure logs
+`cloud.analytics_capture_failed` and never fails a request or a tick. Without
+`POSTHOG_PROJECT_TOKEN` nothing is sent. The distinct id is the account's
+`ade_user_…` hash; every event carries `client: "account"` and
+`$geoip_disable: true`.
+
+- **`ade_cloud_action`**: one per decided action. `action` is `create`,
+  `move`, `copy`, `tier_change`, `grow`, `delete`, `plan_change` or
+  `refused`; `plan` is `free`, `plus`, `pro` or `max`; `origin` is `person`,
+  `agent` (the computer was made by an agent's chat, or an agent deleted it)
+  or `system` (the computer's own disk grower, the idle cleanup); `tier` is
+  `small`, `medium`, `large`, `xlarge` or `other`. A refusal adds `refusal`
+  (`out_of_hours`, `awake_cap`, `computer_limit`, `outside_agent_free`,
+  `tier_limit`, `owner_limit`, `over_plan_limits`; before Pricing v2 also
+  `plan_disk`, `needs_approval`, `extra_off`, `monthly_limit` and
+  `over_plan_disk`) and
+  `refused_action` (`create`, `move`, `copy`, `tier_change`, `grow`, `wake`).
+  The uuid comes from the account, the action, a key (the instance id, hashed
+  and never sent) and a time bucket: one per minute for an action, one per
+  refusal kind per hour for a refusal, so a retry or a grower that asks again
+  stays one event.
+- **`ade_cloud_day`**: one per account with power changes on a UTC day, sent
+  by the daily run for the day before: `wakes`, `sleeps`, `stops`, `starts`
+  (from `cloud_power_log`) and `computers`, each capped at 1,000. The uuid
+  comes from the account and the day.
+- **`ade_cloud_referral`** (`referrals.ts`): `step` is `code_entered` (with
+  `result` `accepted` or `refused` and, refused, `reason`: `invalid_code`,
+  `unknown_code`, `own_code`, `already_referred`, `too_late`,
+  `rate_limited`), `reward_paid` (with `role` `friend` or `referrer`, one each,
+  and `referrer_rewarded`), `reward_refused` (with `reason` `same_computer` or
+  `friend_computer_used`) or `cap_reached` (the referrer's 10th reward). One
+  per account, step, reason and hour.
+- **`ade_cloud_idle_cleanup`** (`idleCleanup.ts`): `step` is `warned`,
+  `emailed` (a follow-up), `saved`, `push_refused` (with `reason`, a closed
+  code such as `push_left_work`, `check_left_work`, `prepare_stop_failed`,
+  `wake_failed`), `deleted` or `kept` (with `how`: `button`, `used`,
+  `hours_back`); `plan` is the account's plan. One per account, step,
+  computer (hashed into the uuid, never sent) and hour. Server log lines:
+  `cloud.idle_cleanup_warned`, `_kept`, `_came_back`, `_held`, `_deleted`;
+  Sentry: `cloud.idle_cleanup_push_refused`, `_save_failed`, `_delete_failed`,
+  `_email_failed`, `_run_failed`, `_account_failed`, `_log_failed`,
+  `_unclaim_failed`, `_report_failed`, `cloud.idle_cleanup_put_back_failed`.
+- **`ade_cloud_free_plan`** (`freePlan.ts`): `step` is `claimed`, `restored`
+  (a refused account claimed a computer of its own), `refused` (the computer
+  already gave another account its free hours), `id_unreadable` or
+  `unclaimed_use` (free hours used with no computer seen: phone or MCP only),
+  with `platform` (`darwin`, `win32`, `linux`) when known. One per account,
+  step and day.
+- **`ade_cloud_phone`** (`phones.ts`): the ADE Cloud iPhone. `step` is
+  `started` (with `plan`, `device`, `minutesLeft` and whether it runs on extra
+  minutes), `ended` (with `reason`, NoMac's end reason, and `billedMinutes`)
+  or `refused` (with `reason`: `paused`, `free_cap`, `phone_free_held`,
+  `phone_minutes_out`, `phone_extra_limit`). One per account, step and phone
+  (hashed into the uuid, never sent); a refusal once per reason and hour. No
+  phone id, label, link or token is sent. Server log lines:
+  `cloud.phone_started`, `cloud.phone_stopped` (with `why`),
+  `cloud.phone_start_refused`, `cloud.extra_phone_on`, `_off`,
+  `cloud.extra_phone_period_settled`; Sentry: `cloud.phone_meter_report_failed`,
+  `cloud.phone_meter_account_failed`, `cloud.phone_meter_period_ahead`,
+  `cloud.phone_check_read_failed`, `cloud.phone_allowance_check_failed`,
+  `cloud.phone_stop_due_failed`, `cloud.phone_stops_failed`,
+  `cloud.nomac_webhook_failed`, `cloud.phone_nomac_credit`,
+  `cloud.extra_phone_item_failed`, `cloud.block_phone_stop_failed`,
+  `cloud.phone_beta_claim_failed` (a new account's tester-email claim
+  failed; the email keeps waiting), `cloud.phone_beta_pending_check_failed`
+  (the owner check's hourly Clerk lookup of waiting tester emails got no
+  answer: the count waiting and the fetch error, no email).
+- **`ade_cloud_safety`** (`blocks.ts`, `safety.ts`, `costReport.ts`,
+  `chats.ts`): `step` is `first_chat` (the account's first saved cloud chat,
+  once), `free_cap_50`, `free_cap_80`, `free_cap_100` (free use passed that
+  share of the owner's cap; owner-wide, distinct id `ade-cloud-server`),
+  `free_cap_refused`, `blocked`, `unblocked`, `card_reused`,
+  `blocked_returned` (a blocked GitHub account or card on a new account),
+  `rate_limited`, `creates_paused` or `signup_burst`. One per account, step,
+  key (hashed into the uuid, never sent) and hour. Server log lines:
+  `cloud.first_chat`, `cloud.free_cap_refused`, `cloud.free_cap_step`,
+  `cloud.block_computer_stopped`, `cloud.account_unblocked`,
+  `cloud.free_unlock_card_refused`, `cloud.stripe_test_event_dropped`. Abuse
+  (`reportCloudAbuse`) is `cloud.abuse.<kind>` in the log, a Sentry error
+  every time (tag `area: cloud-abuse`) and a `cloud_abuse_events` row; kinds:
+  `account_blocked`, `identity_blocked`, `blocked_computer_made`,
+  `card_reused`, `blocked_card_returned`, `blocked_github_returned`,
+  `signup_burst`, `rate_limited`.
+
+Never an instance id, a name, a size in numbers, a price, an amount, a
+message, a Stripe id, an invite code or link, an email, a computer id, or the
+other account in a referral. Volume: a few events per account per active day.
+
+Server log lines for referrals and the free plan: `cloud.referral.code_accepted`,
+`cloud.referral.code_refused` (reason), `cloud.referral.reward_paid`,
+`cloud.referral.reward_refused` (reason), `cloud.referral.cap_reached`,
+`cloud.referral.created_at_fallback` (Clerk had no creation date: the ADE Cloud
+account's is used), `cloud.free_plan.claimed`, `cloud.free_plan.refused`,
+`cloud.free_plan.restored`, `cloud.free_plan.id_unreadable`,
+`cloud.free_plan.dev_key` (no `CLOUD_CHAT_MASTER_KEY`). Sentry, tagged
+`area: cloud-free-plan` or `cloud-referrals`, one issue per name:
+`cloud.free_plan.many_accounts_one_computer`, `cloud.referral.cap_reached_fast`,
+`cloud.referral.many_friends_one_computer`, and the failures
+`cloud.free_plan.settle_failed`, `cloud.referral.reward_failed`,
+`cloud.referral.summary_failed`, `cloud.referral.clerk_read_failed`.
+
+Server log lines (Worker logs only, `logCloud`) for plans and cost:
+`cloud.plan_changed` (from, to),
+`cloud.daily_cost_report` (totals only), `cloud.owner_alert` (an alarm),
+`cloud.owner_limit_unset` (once a day while no limit is set),
+`cloud.owner_limit_reached`, `cloud.owner_cost_step` (the month's estimate
+passed another $50 below the limit: step, estimate, limit; one owner email),
+`cloud.computer_limit_reached` (a create, copy or launch refused at the
+plan's computer limit: plan, limit, total), `cloud.phone_beta_claimed` (an
+iPhone tester email the owner added before it signed up reached its account:
+at the account's first read, or `retried: true` with a count from the owner
+check's hourly Clerk lookup), and
+`cloud.analytics_capture_failed`. Before Pricing v2 there was also
+`cloud.extra_disk_capped`.
+
+#### ADE with no computer: log events
+
+These events serve ADE Cloud with no computer awake (see `docs/ARCHITECTURE.md`
+section 1.1). None of them logs chat text, a secret, a token, a file path, a
+lane name or an email subject; they carry ids, counts and closed codes.
+
+Account directory (`apps/account-directory/src/cloud/`, Worker logs):
+
+- The message queue: `cloud.chat_message_queued`, `cloud.chat_message_launch`,
+  `cloud.chat_message_wake_failed`, `cloud.chat_message_unreadable`,
+  `cloud.chat_message_rate_limited`; the sweep `cloud.chat_messages_swept`,
+  `cloud.chat_messages_sweep_failed`; the moves `cloud.chat_moved` and
+  `cloud.session_moved` (a continued CLI's copy and messages). The
+  follow-ups a person queued on a new chat's launch join that chat's queue
+  once its computer has a machine key: `cloud.launch_messages_carried`
+  (count), `cloud.launch_messages_not_carried` (reason `no_machine_key` or
+  `no_keys`). Sentry, one issue: `cloud.launch_messages_carry_failed` (the
+  error's type name only).
+- Saved copies: `cloud.session_account_full`, `cloud.session_bucket_missing`,
+  `cloud.session_copy_unreadable`, `cloud.git_summary_unreadable`,
+  `cloud.capsule_account_full`, `cloud.capsule_bucket_missing`,
+  `cloud.capsule_committed`, `cloud.capsule_part_unreadable`.
+- Idle cleanup's save step: `cloud.save_for_rest`,
+  `cloud.save_for_rest_unavailable`.
+- Email: `cloud.email_skipped` (warn; reason `no_resend_key`, `no_clerk_key`,
+  `no_recipient` or `no_alert_address`).
+- Timed wakes: `cloud.timed_wake_recorded`, `cloud.timed_wake_record_failed`.
+- The machine list: `directory.cloud_truth_read_failed`.
+- The lane index: `account_lanes.refused`,
+  `account_lanes.machine_lanes_delete_failed`.
+- Vault and account reads: `cloud.vault_item_read_refused`,
+  `cloud.vault_item_read_failed`, `cloud.vault_keys_read_refused`,
+  `cloud.vault_keys_read_failed`, `cloud.vault_read_refused`,
+  `cloud.vault_read_failed`, `cloud.vault_read_too_long`, `cloud.vault_write_*`,
+  `cloud.limits_saved` (field names only), `cloud.cto_copy_unreadable`.
+- Rate limits: `cloud.rate_limited` (bucket: `integrations`, `uploads` or
+  `settings`), once a minute at an account's first refused request.
+- Integrations: `cloud.linear_needs_renewal`,
+  `cloud.linear_query_refused`, `cloud.linear_query_failed`, `cloud.jira_*`.
+- Linear renewal: `cloud.linear_lease_claimed`, `cloud.linear_lease_lost`
+  (reason), `cloud.linear_renewed` (via), `cloud.linear_renewal_superseded`,
+  `cloud.linear_renewal_invalid_grant`, `cloud.linear_renewal_refused`
+  (status), `cloud.linear_renewal_publish_failed`. Sentry:
+  `cloud.linear_renewal_failed`, `cloud.linear_lease_claim_failed`,
+  `cloud.linear_renewal_seal_failed`, `cloud.linear_renewal_cron_failed`.
+- Event wakes: `cloud.event_wakes_set` (instanceId, count), `cloud.event_wake`
+  (userId, instanceId, topicKind, outcome). Sentry: `cloud.event_wake_failed`.
+
+Webhook relay (`apps/webhook-relay/`): `cloud_event_wake_sent`,
+`cloud_event_wake_refused`, `cloud_event_wake_failed`; forwarded custom
+webhooks `hook_forward_refused`, `hook_forward_failed`, `hook_forward_gone`,
+`hook_forward_key_refused`, and `hook_forward_dropped` (Sentry too).
+
+The cloud computer's brain (`apps/ade-cli/src/services/cloudChats/`,
+`services/account/`, `services/github/cloudGitIdentity.ts`):
+
+- Save at rest: `cloud.rest_save`, `cloud.rest_save_git_failed`,
+  `cloud.rest_save_session_failed`, `cloud.rest_save_sessions_read_failed`,
+  `cloud.rest_save_lanes_read_failed`, `cloud.rest_save_chats_failed`,
+  `cloud.rest_save_subagents_failed`, `cloud.rest_save_state_write_failed`,
+  `cloud.rest_save_event_wakes_failed`, `cloud.rest_capsule_failed`,
+  `cloud.rest_capsule_over_cap`, `cloud.idle_rest_save_failed`,
+  `cloud.prepare_stop_rest_save_failed`, `cloud.subagent_copy_failed`.
+- The queue drain: `cloud.chat_queue_drain`, `cloud.chat_queue_drained`,
+  `cloud.chat_queue_read_failed`, `cloud.chat_queue_chat_failed`,
+  `cloud.chat_queue_sign_in_report_failed`, `cloud.chat_queue_retry_scheduled`
+  {attempt, delayMs} (a round that left messages, tried again up to 3 times),
+  `cloud.on_woke_failed`,
+  `cloud.use_report_failed`.
+- Restore after a delete: `cloud.chat_restored` (with `kind: "cli"` for a CLI
+  session), `cloud.restore_capsule_read_failed`,
+  `cloud.restore_capsule_unreadable`, `cloud.restore_move_failed` (with
+  `kind: "cli"` for a CLI's copy),
+  `agent_chat.cloud_restored`, `agent_chat.cloud_restore_capsule_failed`,
+  `agent_chat.cloud_restored_cli`, `agent_chat.cloud_restore_cli_place_failed`,
+  `agent_chat.cloud_restore_cli_mark_failed` (the send id the CLI got could
+  not be saved, so a retry could type the message again),
+  `cloud_boot_launch.chat_continued`.
+- The lane index: `account.lanes_published`, `account.lanes_publish_failed`,
+  `account.lanes_read_failed`, `account.lanes_cache_write_failed`.
+- Git identity: `cloud.git_identity_written`, `cloud.git_identity_failed`,
+  `cloud.git_identity_app_read_failed`, `cloud.git_identity_user_read_failed`.
+
+Desktop main process (`apps/desktop/src/main/services/adeCloud/adeCloudReadIpc.ts`):
+`ade_cloud.account_read_failed` {channel, error class name, status},
+`ade_cloud.account_write_refused` {channel, code, status},
+`ade_cloud.account_write_failed` {channel, error},
+`ade_cloud.account_call_refused` (warn) {call, code, status}: an account call
+(CTO, automations, Linear, Jira and other account data) that the server
+refused; a 404 is not logged. In `cloudSignInStore.ts`:
+`cloud.cloud_key_store_read_failed` (warn) {id, reason},
+`cloud.cloud_key_mirror_failed` (warn) {id} and
+`cloud.cloud_key_unmirror_failed` (warn) {id}, a read, a write or a removal in
+the one API key store that failed (never the key). The account server's
+`/cloud/sign-ins` route logs `cloud.cloud_key_mirror_failed` and
+`cloud.cloud_key_unmirror_failed` {id} too, and then answers 503. The ignored `.env` list logs
+`projects.dotenv_list_failed` (warn) {reason, exitCode or error class name}.
+The agent limits store (`adeCloud/cloudSleep.ts`), used by the desktop IPC and
+the `cloud.write set_limits` action, logs `cloud.agent_limits_server_write_failed`
+(warn) {error} when the account server's `PUT /cloud/limits` fails without a
+refusal (a refusal shows the server's sentence and is not logged), and
+`cloud.agent_limits_local_write_failed` (warn) {error} when this computer's copy
+can't be written. `cloud.agent_limits_set` {unattendedSpend, machinesPerDay,
+onServer} records a desktop save.
+The Linear quick view of a tab with no computer logs
+`ade_cloud.linear_quick_view_part_failed` {part, code} to the console when
+one of its parts fails. The renderer logs
+`[cloud] the action after a wake failed` to the console from
+`renderer/lib/cloudMachineWake.ts`. The web client, the iPhone and the other renderer
+surfaces add no events for this work.
+
 The new product facts reuse `ade_feature_used`; they do not add an event name or
 raise a ceiling. The taxonomy is closed at the producer and again by
 `productAnalyticsPolicy.ts`:
@@ -720,6 +1073,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `chat` | `mcp_server_requested` | `completed` (added), `kept` (already in ADE), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, a key, or the chat |
 | `chat` | `provider_sign_in` | `completed`, `cancelled`, `failed` | coarse provider family (`other` for the CLIs outside it); never the account, link, code, machine, or chat |
 | `chat` | `mcp_server_remove_requested` | `completed` (removed), `cancelled` (kept), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, or the chat |
+| `chat` | `machine_removal_requested` | `completed` (removed), `cancelled` (kept, or the card closed), `failed` (unanswered in time or the request failed) | omitted; never the computer's key, name or platform, the account, or the chat |
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
@@ -727,7 +1081,11 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `mcp_servers` | `sign_in` | `completed`, `cancelled`, `failed` | omitted; never the server's name, its URL, the authorization server, or the token |
 | `ade_mcp` | `server_toggled` | `enabled`, `disabled` | omitted; never the machine, its server URL, or a connection |
 | `ade_mcp` | `app_connected`, `token_created`, `connection_removed` | `completed` | omitted; never the app's name, its redirect host, the access level, a token, or a command it ran |
+| `connections` | `github_cli_shared`, `github_cli_removed` (the person shares this computer's gh sign-in with the account, or takes it off, from Settings › GitHub; the background sync records nothing) | `completed` (the vault accepted it) | omitted; never the login, the account, or an error. Per action, at most one an hour |
+| `connections` | `github_app_connected` (how a connect of the account's ADE GitHub App sign-in ended, read in Settings once the server settles it), `github_app_disconnected` | `completed` (connected, or disconnected), `cancelled` (declined on GitHub or on ADE's confirm page, or the link ran out), `failed` | omitted; never the login, the account, the sign-in id, or an error. Per action and outcome, at most one an hour |
+| `passwords` | `passwords_switched` (Passwords turned on or off on a computer), `logins_imported` (a CSV import), `agent_signed_in` (an agent's `ade browser signin` filled a login), `agent_signed_up` (`ade browser signup` made and saved a password), `secrets_exec` (an agent's `ade secrets exec` ran) | `enabled`, `disabled` (the switch); `completed`, `cancelled` (the person declined, or the page was not one to fill), `failed` (a timed-out `secrets exec` counts as failed; a command's own exit code does not) | omitted; never the site, account, item, command, a count, or an error. Captured once at the brain (surface `api`), after the call settles; per action and outcome, at most one an hour |
 | `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
+| `browser` | `tab_kept` (a person pressed Keep on an agent's tab, or Keep tabs on a chat group), `remote_tab_watched` (picked a tab on another machine to watch; the automatic show of the chat's own tab is not counted), `remote_tab_controlled` (took control of one) | `completed` | omitted; never the URL, title, tab, chat, lane or machine. Per action, at most one a day (`browser:<action>`) |
 | `lanes` | `template_setup_started` | `from_banner`, `from_settings` | omitted; never the lane, template, or machine |
 | `lanes` | `template_suggestion_hidden` | `completed` | omitted; never the lane, template, or machine |
 | `lanes` | `deps_update_started` | `completed`, `failed` | omitted; never the lane, package details, machine, or error |
@@ -738,7 +1096,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `lanes` | `space_freed` | `completed`, `failed` (Free up space on an archived lane in Settings › Archive) | omitted; never the lane, its size, the machine, or the error |
 | `lanes` | `deleted_lane_restored` | `completed`, `failed` (Restore from the notice after a delete, or from Recently deleted; `failed` includes files that did not apply) | omitted; never the lane, branch, machine, or the error |
 | `star_prompt` | `star_prompt_shown`, `star_prompt_clicked`, `star_prompt_dismissed`, `repo_starred` | `prompt_first`, `prompt_second` (which showing of the pill) | omitted; never the GitHub account, a message count, or the machine |
-| `onboarding` | `onboarding_welcome_shown`, `onboarding_sign_in_shown`, `onboarding_agents_shown`, `onboarding_projects_shown`, `onboarding_completed`, `onboarding_skipped` | `opened` (a first-run card came on screen), `completed`, `cancelled` (skipped) | omitted; at most one of each a day per install; never the account, a provider, or a project |
+| `onboarding` | `onboarding_welcome_shown`, `onboarding_sign_in_shown`, `onboarding_agents_shown`, `onboarding_projects_shown`, `onboarding_completed`, `onboarding_skipped`, `onboarding_tour_completed`, `onboarding_tour_skipped` | `opened` (a first-run card came on screen), `completed` (setup, or the in-project tour's finish card), `cancelled` (skipped) | omitted; at most one of each a day per install; never the account, a provider, or a project |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -773,7 +1131,11 @@ the URL is made: the desktop's IPC handler (`desktop`) or the
 at the brain action that owns it. The connect card and the MCP server card do
 the same: `chat/connect_requested` at `integration_connect.request`,
 `chat/mcp_server_requested` at `mcp_registry.request`, and
-`chat/mcp_server_remove_requested` at `mcp_registry.remove`. When an MCP server name
+`chat/mcp_server_remove_requested` at `mcp_registry.remove`. The computer
+removal card (`ade machines remove` from a chat) records
+`chat/machine_removal_requested` once, in the brain's `account.deleteMachine`
+route that raised it; a second chat told that a card is already open
+(`pending_approval`) asked nothing and records nothing. When an MCP server name
 is a built-in integration, the connect card runs instead and records only
 `connect_requested`. Neither carries a name, URL, value, or id;
 both are rare user decisions inside the existing `ade_feature_used` 140-per-day
@@ -816,7 +1178,7 @@ the local session ID before capture. Its volume stays within the existing
 `ade_feature_used` ceilings of 140 events per UTC day and 30 per minute, with
 at most one accepted event per chat session per hour.
 
-The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_renderer_recovered` fires once per lost renderer and is bounded by the recovery budget itself (three reload attempts per rolling 60 seconds, after which the window stays down rather than looping), carrying only `crash_reason` — Electron's closed enum, normalized to `unknown` for any future value — and whether the reload was still allowed, never the window URL or title; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt, and carries `failing_minutes`, `leg`, `code` and, for token-leg failures, a closed `cause` (`status_read_error`, `session_expired`, `session_unreadable`, `no_access_token`, `token_refresh_failed`).
+The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries a bounded `attempt` counter and `handoff_step`, the closed step the quit reached (`none`, `quit_started`, `native_staged`, `quit_escalated_hard_deadline`, `quit_escalated_post_staging`), and `blocked_by`, what held a failed Windows install's files, read from the installer's `runtime/update-blocked.json` when it names that version and was written after that install was asked for (`updateBlockCause` in `shared/updateBlock.ts`: `none` (no report, every other platform), `outside_process` (a program from outside the install folder, the usual cause), `ade_process` (only ADE's own programs), `unknown` (a report that named nothing); no process name or path crosses; the names stay in the installer's file and on the Machines card); `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_renderer_recovered` fires once per lost renderer and is bounded by the recovery budget itself (three reload attempts per rolling 60 seconds, after which the window stays down rather than looping), carrying `crash_reason` — Electron's closed enum, normalized to `unknown` for any future value — whether the reload was still allowed, and closed buckets for what the window held at its last memory snapshot: `heap_mb_bucket` (`under_512`, `512_1024`, `1024_2048`, `2048_3072`, `3072_plus`, from the peak heap that renderer process reported), `heap_pct_bucket` (`under_50`, `50_75`, `75_90`, `90_plus`, that heap against its limit), `duration_bucket` (`under_10s` … `over_2h`, how long the page had been open, measured at the crash from its load), `chat_pane_bucket` (`0`, `1`, `2_5`, `6_plus` open chat panes), `transcript_bucket` (`under_1k`, `1k_5k`, `5k_20k`, `20k_plus` events in the largest loaded transcript, `none` with no chat open) and `replay_active` (whether session replay was recording); the snapshot buckets read `unknown` when no snapshot arrived or the last one is more than two minutes old (snapshots stop while the window is hidden). The worst-case volume is unchanged (still once per lost renderer, inside the same recovery budget). No path, title, URL or message content is sent, and the exact numbers go to Sentry only (on the `window.render_process_gone` line: last and peak heap, heap limit, open panes, largest transcript, replay on from a fresh snapshot, plus seconds open and the snapshot's age). The renderer reports the snapshot over the fire-and-forget IPC `ade.app.reportRendererMemory` one second after load and then on every 30th tick of its existing 1 s event-loop watchdog while the window is visible (`renderer/lib/rendererMemorySnapshot.ts`, no new timer); main keeps one validated record per window (`main/rendererMemoryLedger.ts`) and starts a fresh record (and page clock) on every page load or reload, deleting it on close or crash; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt, and carries `failing_minutes`, `leg`, `code` and, for token-leg failures, a closed `cause` (`status_read_error`, `session_expired`, `session_unreadable`, `no_access_token`, `token_refresh_failed`).
 
 Changing automatic-install preferences records the existing `ade_feature_used`
 event at the update-service owner boundary with `feature: "updates"`,
@@ -851,6 +1213,19 @@ stay in the local `app_bundle_ownership.fix` line. A one-hour deduplication key
 per outcome bounds it to four accepted events per installation per hour, and in
 practice one per affected installation, inside the existing `ade_feature_used`
 ceilings. The check itself and the banner showing capture nothing.
+
+A paired phone or ADE Web pressing **Update & restart** for another machine
+records the same `ade_feature_used` event on the brain that ran the update
+(`cli.ts`, the `machine.updateAndRestart` sync command), with
+`feature: "updates"`, `action: "remote_machine_update"`, the surface of the
+client that asked (`mobile` or `web`), and one closed `outcome`: `completed`
+(the machine accepted and began the update or download) or `failed` (it
+refused or the run failed before the restart). A restart that never comes back
+is in the update log, not here. It carries no version, machine name or step detail; those stay in the
+update log. Callers that join one run fold into one event by the key. A one-hour
+deduplication key per outcome bounds it to two accepted events per installation
+per hour, inside the existing `ade_feature_used` ceilings. Reading what a restart
+would stop (`machine.updateImpact`) records nothing.
 
 Choosing a keep-awake level records the same `ade_feature_used` event at the
 brain keep-awake service's persist boundary — after the choice is written, so a
@@ -1173,7 +1548,7 @@ before budgets. The event-level `ade_feature_used` 140-per-day /
 remains 200. Approval responses, pending input reads, and provider runtime
 polling do not emit this fact.
 
-When a user moves a chat to another Claude or Codex account
+When a user moves a chat or a CLI session to another Claude or Codex account
 (`chat.switchAccount`), the chat service emits `chat/account_switched` with
 `outcome: "completed"` after the thread copy and the account change succeed,
 through its `onAccountSwitched` hook. It carries only the Claude/Codex family:
@@ -1659,38 +2034,41 @@ installation per day. A fix run on another machine goes through that
 machine's runtime, not this IPC handler, and is not counted. The diagnosis itself is not reported: a folder the person moved or
 deleted is their action, not a fault in ADE. The dashboard spec is untouched.
 
-Pressing "Report issue" on any of ADE's error surfaces — the project recovery
-screen, the renderer and page error boundaries, the project transition alert,
-the update banner — sends the redacted report to ADE first, and records the existing
-`ade_feature_used` event at the IPC owner boundary where the outcome is known
-(the `diagnostics.sendManual` handler, only when it carries a surface context)
-with `feature: "connections"`, `action: "issue_report"`, and a coarse `outcome`:
-`success` when ADE received the report, `failed` when it did not. Choosing the
-secondary **Open GitHub issue** link records the same action from the
-`diagnostics.openIssue` handler: `opened` when the prefilled GitHub issue page
-was launched, `failed` when it could not be. That is the whole product question
-— whether the one control on a broken screen gets the report to us — so nothing
-else crosses the boundary: not the surface it was pressed on, not the failure
-code or headline that put the screen there, not the report, its upload
-reference, the clipboard result, the report file path, or the install id the
-report carries. Settings' **Send a report to ADE** (no context) is not counted
-here. A per-outcome one-hour deduplication key bounds a click-loop to at most
-24 accepted events per outcome — 72 across `success`, `opened` and `failed` —
-per installation per UTC day, inside the existing `ade_feature_used`
-140-per-day / 30-per-minute limits and the shared 200-event ceiling; no ceiling
-was raised. The hosted web client records the same event from its diagnostics
-adapter (`renderer/webclient/adapter/diagnostics.ts`, `surface: "web"`, through
-the connected machine's `analytics.capture`): `success` or `failed` when its
-User Feedback send settled, `opened` or `failed` when the GitHub issue tab
-opened or the browser blocked it. It uses the same deduplication keys, which the
-host does not scope by surface, so the desktop and the web client on one machine
-share the 72-a-day bound.
+Reports to ADE use `ade_feature_used` with `feature: "issue_report"` (it was
+`connections` before 2026-11-13), with these coarse actions and nothing else:
+
+- `action: "issue_report"`, recorded at the owner boundary where the outcome is
+  known: the `diagnostics.sendReport` IPC handler on desktop, only for a report
+  from an error screen (Settings' **Send a report to ADE** is not counted), and
+  the web client's diagnostics adapter (`surface: "web"`). `outcome` is
+  `success` when ADE received the report, `failed` when it did not. A send with
+  an expired id uploads nothing and records nothing.
+- `action: "report_dialog"`, from the renderer (`reportDraft.ts`
+  `captureReportEvent`): `opened` when the dialog opens, `completed` when it
+  closes after a send, `cancelled` when it closes with nothing sent.
+- `action: "github_issue"`: `opened` when the public GitHub issue page, offered
+  only after a send, opened, `failed` when it could not.
+- `action: "report_copied"`: "Copy report" where sending is impossible (the web
+  client with Sentry off), `completed` or `failed`.
+
+That is the whole product question — whether the one control on a broken
+screen gets the report to us, and how often people stop at the preview — so
+nothing else crosses the boundary: not the surface it was pressed on, not the
+failure code or headline, not the report, the note, its upload reference, the
+report file path, or the install id the report carries. `issue_report` keeps
+its one-hour deduplication key per outcome; the renderer's actions use a
+six-hour key per action and outcome (`report_dialog:opened` and so on). The
+worst case is 24 accepted events per `issue_report` outcome and 4 per renderer
+action and outcome per installation per UTC day, inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
+ceiling; no ceiling was raised. The deduplication keys are not scoped by
+surface, so the desktop and the web client on one machine share the bounds.
 The dashboard spec is deliberately untouched: no card asks this question yet.
 
 When ADE hits a failure it already classified, it sends that same redacted
 report by itself, and that decision records the same `ade_feature_used` event at
 the owner boundary — the auto-diagnostics service, where the outcome is known —
-with `feature: "connections"`, `action: "auto_sent"`, and one of three coarse
+with `feature: "issue_report"` (`connections` before 2026-11-13), `action: "auto_sent"`, and one of three coarse
 outcomes: `completed` when the upload succeeded, `skipped_budget` when the
 client's own daily ceiling refused it, `failed` when it was attempted and did
 not land (including a `429` from either the per-user or the fleet budget). The
@@ -1719,16 +2097,17 @@ The diagnostic report itself is a **local** artifact and is not analytics. It
 deliberately includes the PostHog `distinct_id` for this installation
 (`productAnalyticsService.getDistinctId()` — the identified account hash when
 signed in, otherwise the random anonymous install token) so a report someone
-files by hand can be matched to the events the installation already sent.
+sends can be matched to the events the installation already sent.
 Nothing flows the other way: no part of a report reaches PostHog, on either
-path. A report the user files is written to disk and copied to the clipboard and
-only they decide where it goes; a report ADE sends by itself goes to the
-diagnostics upload route and nowhere else, and the analytics boundary learns
+path. A report a person sends is shown to them first in the report dialog and
+goes, when they press Send, to the diagnostics upload route; a report ADE sends
+by itself goes there too and nowhere else, and the analytics boundary learns
 only that a send happened and how it ended. Its body is redacted before it is
 written (home directory, project paths, usernames, hostnames and tailnet names,
 emails, credentials and routable IP addresses) — the same bytes on both paths,
-because redaction happens once in the builder — and the GitHub issue title and
-stub body are redacted with the same context. Automatic sending is on by default
+because redaction happens once in the builder. No report text goes to a public
+page: the optional public GitHub issue after a send holds only the reference,
+the version and channel and the OS family. Automatic sending is on by default
 and has no Settings control. It stops under `DO_NOT_TRACK=1` or a persisted
 explicit off, and its flag is separate from analytics' own opt-out. The manual
 "Send a report to ADE" button is always available.
@@ -1779,10 +2158,10 @@ case the in-process latch cannot see, an app or brain restarting inside the
 refusal. Both events reuse the existing `ade_feature_used` 140-per-day /
 30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
 
-Making a cloud box with **New ADE Cloud machine** records `feature:
-"connections"`, `action: "cloud_machine_create"` once per finished create,
-in the desktop IPC handler that runs it (`registerCloudIpc.ts`, where the
-outcome is known): `completed` (the box joined the account), `partial` (signed
+Making a cloud box for the CLI or an agent (`ade cloud create`, over the
+desktop bridge) records `feature: "connections"`, `action:
+"cloud_machine_create"` once per finished create, in the desktop handler that
+runs it (`registerCloudIpc.ts`, where the outcome is known): `completed` (the box joined the account), `partial` (signed
 in, still starting), `cancelled`, or `failed`. The product question is whether
 installations make ADE Cloud machines from ADE at all and how often a create
 fails. No box id, name, size, price, or error travels; those stay in
@@ -1815,20 +2194,37 @@ handler: `plan_checkout` and `plan_portal` when the Stripe page opens,
 whether people buy from ADE and use extra hours. No amount, plan id or Stripe
 identifier travels. A six-hour key per outcome bounds it to 16 accepted events
 per installation per UTC day, inside the existing `ade_feature_used` ceilings.
+`completed` is the "You're on Plus" moment (`cloudPlanMoment.ts`): a purchase
+or a move up landed and ADE said so, once per account, plan and period on this
+computer. It never carries the plan, so "bought" and "moved up" read the same.
 
-Ready machines record `feature: "connections"`, `action: "cloud_ready"`.
-The desktop records `enabled` and `disabled` when a project is turned on or
-off on the ADE Cloud page, `completed` or `failed` when a prepare ends (a
-cancel is neither), and `ready_picker` when the new-chat picker claims one;
-the brain records `ready_cli` when `ade chat create --machine cloud:ready`
-or an agent claims one (`cloud.claim_ready`). The product question is
-whether people keep machines ready, how often preparing one fails, and where
-the chats that take one start. No project, repository, machine, size, setup
-command or error travels; the setup's output stays out of the local log too
-(`cloud.ready_prepare_failed` carries its exit code only). A six-hour key
-per outcome bounds it to 24 accepted events per installation per UTC day,
-inside the existing `ade_feature_used` ceilings. The keeper's pool reads are
-not analytics.
+ADE Cloud lanes record `feature: "connections"` with one coarse outcome
+(`cloudLaneAnalytics.ts`). `cloud_lane_launch`: how a new lane on its
+own computer ends, `completed`, `failed` or `cancelled`, counted once per end
+when the launch host (the desktop's `registerCloudLaneLaunchIpc.ts`, surface
+`desktop`, or the brain's `cloudLaneLaunchBrainHost.ts`, surface `api`) saw it
+move there; a Retry that fixes a failure counts the failure, then the
+completion. `cloud_lane_freed`: Keep the lane and free its computer, `completed` or
+`failed`. `cloud_lane_deleted`: a person deleted a lane and its computer:
+`completed` (its saved chats went too), `kept` (they ticked "Keep its chats"),
+`partial` (ADE couldn't delete all its chats or saved work) or `failed`; it
+tells whether deleting the chats is the right default. Both come from the
+desktop's buttons (surface `desktop`) and from `ade cloud lanes delete` and
+`free` (`cloudLaneVerbs.ts`, surface `api`), once per action that ran; a card
+that was declined sends nothing. `cloud_clear_caches`: the computer's own
+brain clears its caches, `completed`, `failed`, or `denied` (an agent's ask
+declined or unanswered). `cloud_disk_grow`: an agent's grow of the
+disk of the computer it runs on (`cloud.grow_disk`, from that computer's brain):
+`completed` (a grow was asked), `denied` (the person or the agent limits said
+no), `rejected` (the account's storage limit) or `failed` (busy, or the grow
+couldn't run); a disk that already has the room sends nothing. The grows
+themselves are counted by the account directory (`ade_cloud_action` `grow`).
+`cloud_default_size`: the person picked another size
+for new lanes, `size_small` to `size_xlarge` (a value another computer synced
+is not counted again). No lane, project, computer, branch, prompt, size of a
+computer or error travels. Each is a person's decision or a launch that makes
+a computer, so the existing `ade_feature_used` ceilings bound them; there is
+no dedupe key.
 
 Sign-ins for cloud machines record `feature: "connections"`, `action:
 "cloud_sign_in"` in the brain, when a sign-in is saved
@@ -1871,7 +2267,10 @@ characters; it names a registry entry, never anything a person typed), and
 gate knows by its text or code (`shared/sentry/expectedFailure.ts`), or
 `unexpected` for everything else, which is what separates
 a bug from a refusal the person caused; `brain_action` names the first
-action of that shape in the hour. A per-domain-per-code one-hour
+action of that shape in the hour. An unexpected failure with no code also
+carries `brain_frame`, the brain's top frame of ADE's own code as
+`function:line` (`brainActionFailureFrame`): no file name and no path, so
+`rpc_tool_failed` can be traced to the code that threw. A per-domain-per-code one-hour
 deduplication key (unchanged when these two were added, so counts stay
 comparable across builds) turns an error loop into one accepted event an hour, and the
 event's own 20-per-day / 3-per-minute caps bound the rest without touching
@@ -1925,6 +2324,47 @@ measured on an M4 Max: 2.4 ms of brain CPU and one 1.2 ms `sysctl` every five
 minutes on macOS (none on Linux; none on Windows unless memory is short);
 an episode adds about three spawns and 1.3 s of wall time off the loop.
 
+On macOS the same samples drive the iOS simulators' low-memory pass
+(`ade-cli/src/services/runtime/simulatorMemoryReclaimer.ts`, rules in
+`ios/simulatorMemoryReclaim.ts`). It acts only while an episode is open,
+the current sample breaches memory or swap, and the simulators hold
+at least 3 GB and 10% of RAM. The first step warns each lane with a booted
+simulator and logs `ios_simulator.memory_warning_sent` (info: device, terminal
+and chat counts). Ten minutes later, or on a later critical sample, it shuts
+down the simulators that nothing uses (`simctl shutdown`; never erase, delete
+or kill) and logs `ios_simulator.reclaimed_for_memory` (info: counts per
+in-use reason, swap and simulator MB); a failed shutdown logs
+`ios_simulator.reclaim_for_memory_failed` (warn) and does not count. A step
+whose `simctl list` fails logs `ios_simulator.memory_reclaim_failed` (warn,
+with `step`) and is tried again on the next sample. After a
+pass that shut a device down, the next pass waits an hour; a pass that shut
+nothing down tries again on the next sample. While Simulator.app runs, the
+device it last showed (its `CurrentDeviceUDID` setting, one `defaults read`)
+stays on, and any other device must have gone two hours without ADE use, an
+install change or a boot. A device whose boot time cannot be read stays on.
+Any process outside the simulator whose command line names a device keeps
+that device on; a `simctl` command for `booted` keeps every device on.
+`ADE_APPLE_MEMORY_POWER_OFF=0` keeps the warnings and stops the shutdowns.
+The episode in `runtime/resource-pressure.json` keeps the pass's counts as
+`simulatorReclaim`. It sends no analytics event: no closed taxonomy fits it,
+and the episode's own event already counts memory episodes. A sample that
+could take a step costs one process listing; while the simulators hold less
+than the mark, that listing runs at most every 30 minutes. A step costs one
+`simctl list` and, for a shutdown pass, one `ps`, read again before each
+shutdown after the first.
+
+At each start the brain logs `brain.restart_cause` (info) once: why the
+brain before it on the endpoint ended (`update`, `computer_restarted`,
+`service_restarted_by_watchdog`, `service_restarted` or `unknown`), with the
+time, the version, who asked for an update (`requestedByKind`,
+`requestedByName`), the watchdog's freeze cause, and whether memory was low.
+The asker's name comes from the paired device record of its connection
+(the client's own claim only when there is none), and is kept in
+`runtime/update-request.json` only when the update was accepted. A request
+more than 30 minutes before the brain stopped names nobody.
+`brain.remote_update_route` and `autoUpdate.remote_install_requested` carry
+the same `requestedByKind` and `requestedByName` of a remote update.
+
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 
 Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a random v4 client UUID as the PostHog insert ID; non-random or malformed client IDs are regenerated at the transport boundary. Screen events are limited to project, Hub, lanes, work, PRs, settings, and onboarding arrivals; utility/detail/loading transitions are skipped. The hosted Hub uses the existing `ade_screen_viewed` event with only `screen: "hub"`, `route_kind: "web"`, and `source: "renderer_route"`. Its two-second per-screen deduplication and the existing 12-per-minute, 80-per-day screen limits bound rapid tab switching without raising the shared 200-event ceiling. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.
@@ -1950,8 +2390,10 @@ reason: one row per press.
 
 Chat goals, stop-mode choices, waits, and restart resume add no analytics.
 Setting a goal is an ordinary `chat.send` (`/goal …`); a goal ending, a waiter
-firing, and a chat continuing after a restart are things the app does with no
-person behind them; and a Stop press is high-frequency enough that which of
+firing, a chat continuing after a restart, and an agent CLI reopened after a
+planned or unclean stop are things the app does with no person behind them
+(the CLI reopen writes one local line per start with counts only,
+`agent_chat.cli_reopened_after_restart` or `agent_chat.cli_reopen_skipped`); and a Stop press is high-frequency enough that which of
 six modes it used would be a typing signal, not a product decision.
 
 Whether a merge also deleted the head branch is deliberately **not** a property.
@@ -1995,13 +2437,25 @@ event at the expansion owner boundary (`chatMentionService` via the
 `onChatMentionsExpanded` hook, produced by
 `captureChatMentionsExpandedAnalytics`) with `feature: "chat"`,
 `action: "mention_expanded"`, `outcome: "completed"`, and `source: "runtime"`.
-It fires only when a send's text actually gained `<ade-mention>` pointer
+It fires for chat sends and for text a CLI's input box sends
+(`agentCliTyping.ts`), only when the text actually gained `<ade-mention>` pointer
 blocks — never per keystroke, per suggestion query, or on the idempotent
 second expansion pass — and carries no mention targets, titles, previews, or
 counts. An installation-wide `chat_mention_expanded` deduplication key with a
 one-hour minimum interval bounds it to at most 24 accepted events per UTC day,
 inside the existing `ade_feature_used` and shared ceilings. The keystroke-rate
 `chat.listMentionSuggestions` read stays untracked by design.
+
+A chat on a free model (`shared/freeModels.ts`: OpenCode Zen's free tier, no
+account or key) records the existing coarse `ade_feature_used` event at the
+turn-settled boundary (`agentTurnProductAnalytics.ts`) with `feature: "chat"`,
+`action: "free_model_used"`, the turn's `outcome`, `provider: "opencode"` and
+`source: "runtime"`. It carries no model id, prompt or session id (the
+session only keys the local dedupe, hashed). The `free-model-chat:<session>`
+dedupe key holds it to one event per chat each UTC day (the dedupe store
+clears at the day roll), so a long chat on a free model sends one event a
+day, not one per turn. It stays inside the existing `ade_feature_used` and
+shared ceilings; no limit was raised.
 
 Regenerating a chat's visible metadata records the existing coarse
 `ade_feature_used` event at the chat service boundary via
@@ -2025,6 +2479,20 @@ It records only the successful user action—not lane names, paths, sizes,
 blocked reasons, retries, or scheduled review scans. The existing
 `ade_feature_used` limits cap it at 30 accepted events per minute and 140 per
 UTC day without raising the shared 200-event ceiling.
+
+Lane sharing records the same coarse mutation fact with `feature: "lanes"`,
+through the same ledger, at the brain that runs the `lane_share` runtime
+action, after the action succeeded (`usageActionFromRpcDomain`):
+`lanes.share` (a share made), `lanes.shareEditRights`, `lanes.shareRevoke`,
+`lanes.shareLeave` (a guest leaves), `lanes.shareMoveChat` (the owner offers to move a chat to
+the other person) and `lanes.shareMoveRespond` (the owner answers a move the
+other person offered). Reads, invite re-sends and the transfer steps of a move
+record nothing. No email address, name, grant, lane, rights or user id of
+either person crosses. These are deliberate decisions, a handful per
+installation per day, inside the existing `ade_feature_used` 140-per-day and
+30-per-minute limits; no ceiling was raised and no PostHog definition changed.
+A guest's accept is recorded only by the account directory, which has no
+product-analytics path for it.
 
 The renderer records `template_setup_started` when the setup chat draft opens
 (`from_banner` or `from_settings`), `template_suggestion_hidden` when the prompt
@@ -2121,23 +2589,43 @@ per-outcome one-minute deduplication key bounds a chord-mashing loop to at most
 is single digits. No ceiling was raised, and the dashboard spec is deliberately
 untouched — no card asks that question yet.
 
+### The CTO's home move
+
+When the CTO moves to a new home machine, the brain there records one
+`ade_feature_used` event where the account copy lands it
+(`ctoAccountCopyService.ts` `adopt`, reported by `reportCtoHomeMove` in
+`analytics/ctoHomeProductAnalytics.ts`), with `feature: "cto"`,
+`action: "cto_home_move"`, `surface: "api"`, and one of three outcomes:
+`completed` (it took the CTO another machine left in the account), `kept` (it
+already held the newest copy, or there was none), or `failed` (the account
+couldn't be read; the copy is taken later). The product question is whether the
+CTO comes along when people move it. Never the machine, its name, the
+repository, the notes, the conversation, or the routines. A per-outcome
+one-hour deduplication key bounds it to 24 accepted events per outcome a day in
+theory; the realistic number is a handful a month. No ceiling was raised, and
+the dashboard spec is untouched.
+
 ### Native iOS
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.
 
-Every native event carries `client: "ios"`, `interactive` (`false` only for `ade_mobile_analytics_budget`), `app_version` (`CFBundleShortVersionString`), `build_number` (`CFBundleVersion`), `distribution` (`testflight`, `app_store`, or `development`, read from the App Store receipt name) and `release_channel` (`beta` in the ADE Beta app, `stable` in the normal app whether it came from TestFlight or the App Store, `development`). There is no `is_internal`: a phone has no team-install marker. The first open of a new install also carries `first_open: true`, once; an install that already has a stored budget from an earlier build reports none. Both are properties of the existing `ade_mobile_app_opened` and add no event.
+Every native event carries `client: "ios"`, `interactive` (`false` only for `ade_mobile_analytics_budget`), `app_version` (`CFBundleShortVersionString`), `build_number` (`CFBundleVersion`), `distribution` (`testflight`, `app_store`, or `development`, read from the App Store receipt name), `release_channel` (`beta` in the ADE Beta app, `stable` in the normal app whether it came from TestFlight or the App Store, `development`) and `environment` (`production` for stable, otherwise the channel). A phone has no team-install marker. Apple's review and TestFlight processing farm is the exception: `hw.machine` matching `iPhone99,*`, `iPad99,*` or `iPod99,*` adds `review_context: app_review` and `is_internal: true`. Those devices often have no classic sandbox receipt, so `distribution` stays `app_store`. A real TestFlight tester is not marked. The first open of a new install also carries `first_open: true`, once; an install that already has a stored budget from an earlier build reports none. Both are properties of the existing `ade_mobile_app_opened` and add no event.
 
-iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in, its consent prompt, and its Settings opt-out have been removed. A stored `ade.analytics.enabled` false from an earlier build is ignored; only `DO_NOT_TRACK=1` in the launch environment turns it off. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
+`ade_mobile_sign_in_outcome` with `outcome: failure` also carries `provider` (`email`, `apple`, `google`, `github`, `oauth`), `reason` (`cancelled`, `network`, `invalid_code`, `expired`, `not_started`, `unavailable`, `oauth_failed`, `other`) and `error_code` (Clerk's snake_case code, `url_error`, `url_canceled`, `web_auth_canceled`, `authorization_canceled`, `missing_attempt`, or `unknown`). A success carries `outcome` only. Nothing in those fields is an email, a name, a token, or Clerk's message.
+
+iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in, its consent prompt, and its Settings opt-out have been removed. A stored `ade.analytics.enabled` false from an earlier build is ignored. `DO_NOT_TRACK=1` turns it off, and so does a Debug or simulator run, unless the process is XCTest or `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
 
 Taking Control of a Mac's simulator from the phone records `ade_mobile_feature_used` with `feature: "simulator_control"`, `outcome: "started"` and nothing else: no device, lane, machine, stream or gesture detail. It answers the same question as the desktop's `ios_live_view` (does anyone drive a simulator that is not on this Mac), and the existing per-foreground deduplication and the 7-feature-events-per-day limit bound it; no ceiling was raised. Gestures, frames and the speed readout are never events.
+
+A GitHub connect of the ADE account that the phone started records `ade_mobile_feature_used` with `feature: "github_connect"` and `outcome` `completed` (the server says the sign-in is done), `cancelled` (declined on GitHub) or `failure`. It is the phone's half of the desktop's `connections` / `github_app_connected`: never the GitHub login, the account, the sign-in id or an error. A person connects once, so the per-foreground deduplication and the 7-feature-events-per-day limit bound it; no ceiling was raised.
+
+When an ADE Cloud plan lands (bought, or moved up) and the phone's ADE Cloud page says "You're on Plus", it records `ade_mobile_feature_used` with `feature: "cloud_plan"` and `outcome: "completed"`, once per account, plan and period on that phone (`CloudPlanSeenStore`). It never carries the plan, the price or the account. A plan changes rarely, so the per-foreground deduplication and the daily feature limit bound it; no ceiling was raised. Direct GitHub reads (PR lists, repositories) are never events.
 
 Host-recorded mobile mutations may still appear in the canonical `ade_*` namespace with `surface: mobile`; those events use the machine installation identity and the same shared 200-event budget. Native `ade_mobile_*` events describe only interaction with the phone app itself.
 
 ### Public marketing site
 
 The public-site implementation is `apps/web/src/lib/marketingAnalytics.ts` and `marketingAnalyticsBrowser.ts`, mounted by `MarketingAnalyticsBridge.tsx`. It is default-on with a browser-local opt-out (an explicit "false" preference, settable on /privacy) and uses a separate `ade_marketing_*` namespace.
-
-The same preference gates the Freebuff ad pixel (`apps/web/src/lib/freebuffPixel.ts`): it loads only when website analytics is on, and any download or copy-install click reports Freebuff's `installation_completed` goal with no event id, so Freebuff keeps one per ad click. That event means a download intent; the site cannot see an install finish.
 
 Its durable browser-local ceiling is 40 events per UTC day: 1 app open, 12 screen views, 12 conversion CTA clicks, 16 other feature clicks, 3 coarse browser error categories, and 1 budget summary. A CTA click emits only `ade_marketing_cta_clicked`, never a duplicate feature event. Per-screen/per-key caps and deduplication windows are tighter still. If durable storage is unavailable, analytics fails closed so reloads cannot bypass the budget.
 
@@ -2181,6 +2669,25 @@ fingerprint beyond the attribution above, and fit inside the unchanged 12-CTA / 
 dialog's client-side click is the funnel signal, and a test pins that the
 handlers make no analytics call for any method.
 
+The pricing page (`/pricing`, screen `pricing`) reuses the same events. The
+navbar, the footer and the download section link to it. A paid plan's button links to the web app with
+`?cloudPlan=<plan>` (it signs in, then opens Stripe's checkout); Free's button
+opens the install dialog. Each records the CTA event with `choose_plan_free`,
+`choose_plan_plus`, `choose_plan_pro` or `choose_plan_max` at position
+`pricing_page`; the CTA names the plan, which shows which plan people want.
+Every link to the page (site header and its phone menu, the home page's ADE
+Cloud section, footer) records the `view_pricing` feature. The plan finder
+records `use_plan_finder` once per page view, on the visitor's first change to
+one of its controls; the numbers chosen are never sent. Its button under the
+suggested plan records the matching `choose_plan_*` CTA at position
+`plan_finder`, so a finder-led choice is told apart from a plan card's.
+
+On the home page, the hero's ADE Cloud link records `view_ade_cloud`, the ADE
+Cloud section's four plan tiles open the web app at that plan (`?cloudPlan=`)
+and record the matching `choose_plan_*` CTA at position `home_cloud`, and the
+feature wall's "See every feature" button records `view_all_features`. The
+section's price comparison (its hours buttons) records nothing.
+
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 
 ## Account settings
@@ -2192,7 +2699,7 @@ Settings in the PostHog and Sentry accounts, not in code; recorded here because 
 
 ## Diagnostic reports: machine facts
 
-What a diagnostic report (the desktop's Report issue and automatic sends, `ade report-issue`, the brain's automatic sends; `docs/features/storage-and-recovery/README.md`) says about the machine, for triage:
+What a diagnostic report (the desktop's report dialog and automatic sends, `ade report-issue`, the brain's automatic sends; `docs/features/storage-and-recovery/README.md`) says about the machine, for triage:
 
 - **Install**: `Channel` (the release channel as Sentry and PostHog name the build; a brain launchd started has no `ADE_PACKAGE_CHANNEL`, so the CLI reads Alpha from its home `~/.ade-alpha` or its service name) and `Packaged` are always printed, `Package` when it differs; `Hardware` (the maker's model from `sysctl hw.model`, `/sys/devices/virtual/dmi/id` or the BIOS `SystemProductName` in the registry, CPU model and count, RAM; the CLI's report leaves the model out); `Machine id` (`machine_id`); `Account hash` (12 hex of the account id, desktop reports; the CLI's leaves it out because reading the session through the account service writes its key file, and its install id is the account hash once signed in anyway); `Machine key fingerprint` (12 hex of a hash of the sync machine key, to match a report to its account-directory row without the key).
 - **Machine health** (`ade-cli/src/services/diagnostics/machineHealth.ts`): memory available of total and the OS's pressure, swap, commit charge (Windows), memory stall (Linux PSI), load average, ADE's processes by group with MB and CPU, Android emulators running, the brain's last read of its databases' write-ahead logs, and the last five resource-pressure episodes. The desktop's report reads memory, the load average and the process groups live (a `sysctl`, a `ps` and a `footprint`, or one PowerShell, off the main thread, under the 8 s step deadline); the two CLI builders read only what the brain recorded (its last memory and write-ahead-log sample, and the episodes with their process groups), so their reports stay identical.
@@ -2206,11 +2713,11 @@ What a diagnostic report (the desktop's Report issue and automatic sends, `ade r
 - Product analytics and automatic diagnostic reports are part of ADE and on by default on every surface. No Settings, web, or iOS control turns them on or off, and there is no consent prompt.
 - Two opt-outs are honored everywhere, silently: `DO_NOT_TRACK=1` in the environment (desktop and brain: PostHog and automatic diagnostic reports), and a persisted explicit opt-out from an earlier build (the desktop `secrets/product-analytics.json` `enabled: false` or its `.disabled` marker, the automatic-send ledger's `enabled: false`, and the hosted-web `ade:web-product-analytics-enabled` "false" preference). Nothing in the app can change either one. iOS honors only `DO_NOT_TRACK=1`. The note a person types into Send a report follows Sentry's switches: where Sentry is off the field is not shown and nothing is sent.
 - The desktop machine-wide disable marker immediately stops all local clients and cancels queued delivery.
-- Native iOS honors only `DO_NOT_TRACK=1` and has no in-app control; a stored opt-out from an earlier build is ignored. The public marketing site keeps its own browser-local opt-out on `/privacy`, separate from ADE's product analytics.
+- Native iOS honors `DO_NOT_TRACK=1` and has no in-app control; a stored opt-out from an earlier build is ignored. A Debug or simulator run is off unless it is the test suite or `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`. The public marketing site keeps its own browser-local opt-out on `/privacy`, separate from ADE's product analytics. A headless browser (`navigator.webdriver`) or a known link-preview user agent does not send site events.
 - `ADE_DISABLE_PRODUCT_ANALYTICS=1` disables the desktop/runtime service.
 - The daily usage research report follows the product analytics state: `DO_NOT_TRACK=1`, a persisted opt-out, the disable marker, and `ADE_DISABLE_PRODUCT_ANALYTICS=1` all stop it. `ADE_USAGE_RESEARCH=0` stops only the report.
-- Development builds are analytics-inert unless a developer explicitly sets `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`.
-- Tests disable analytics automatically.
+- Development builds are analytics-inert unless a developer explicitly sets `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`. That includes an unpackaged desktop, `ADE_DEV_BRAIN=1`, and any build whose `release_channel` is `development` (a source-checkout brain). A send that flag allows is `is_internal: true`.
+- Tests disable analytics automatically. So does a workflow: `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`, `TF_BUILD`, a set `JENKINS_URL`, or `ADE_TEMPLATE_CHECK`. The ADE Cloud template check sets `DO_NOT_TRACK`, `ADE_SENTRY_DISABLED` and `ADE_TEMPLATE_CHECK` on the computer it boots, and the image build sets them only for the `ade` commands it runs while building. A customer's cloud computer is not a workflow.
 - Missing or invalid configuration disables capture without affecting ADE startup.
 
 Opting out must stop future capture immediately. Where a surface owns an anonymous installation ID, opting out rotates or removes it so later opt-in does not link activity across the boundary. Repeated opt-out/opt-in cycles must not reset the daily quota.
@@ -2233,7 +2740,7 @@ Release workflows use a second personal key of their own, limited to the ADE pro
 
 - **Release annotations** (`scripts/posthog/annotate-release.mjs`): `Desktop 1.2.130-beta.3 · beta` when the beta feed serves a beta (`beta.yml`), `Desktop 1.2.130 · stable` when `/release` publishes a stable (`release-annotation.yml`), `iOS Beta 1.4 (212) · TestFlight` after an ADE Beta upload (`ios-testflight.yml`), and `Web deploy abc1234 (webclient, push-relay)` after a web or Worker deploy (`deploy-web.yml`). Previews are not marked. A re-run finds the identical annotation and adds none.
 - **Source maps** (`scripts/posthog/upload-sourcemaps.mjs`), described under [PostHog error tracking](#posthog-error-tracking).
-- **iOS dSYMs** (`scripts/release-tools/upload-ios-dsyms.sh`, from `ios-testflight.yml` and `ios-testflight-internal-build-bump-self-hosted.yml`): each archive's dSYMs go to PostHog beside Sentry, so iOS `$exception` frames get function names. PostHog finds them by debug id, so no release is named.
+- **iOS dSYMs** (`scripts/release-tools/upload-ios-dsyms.sh`, from `ios-testflight.yml` and the local `scripts/release-tools/ios-testflight.sh`): each archive's dSYMs go to PostHog beside Sentry, so iOS `$exception` frames get function names. PostHog finds them by debug id, so no release is named.
 
 ## PostHog dashboards
 

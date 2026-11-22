@@ -1,6 +1,6 @@
 import React from "react";
 import { ArrowCounterClockwise, CircleNotch, ClockCounterClockwise, MagnifyingGlass, X } from "@phosphor-icons/react";
-import type { DeletedChat, ExternalSessionProvider, LaneSummary, OpenProjectBinding } from "../../../shared/types";
+import type { DeletedChat, ExternalSessionProvider, LaneSummary, OpenProjectBinding, TerminalToolType } from "../../../shared/types";
 import { importProviderLabel } from "../../../shared/externalSessionPolicy";
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { ipcErrorMessage, relativeWhen } from "../../lib/format";
@@ -23,6 +23,7 @@ import "../terminals/importSessions/importSessions.css";
 import "./primitives/settingsModern.css";
 import "./machineSettings.css";
 import "./recentlyDeleted.css";
+import { requirePin } from "../../state/repositoryScope";
 
 /**
  * Settings › Recently deleted: chats you deleted that can still be opened
@@ -42,7 +43,17 @@ const PAGE_ROWS = 25;
 type ProviderFilter = "all" | ExternalSessionProvider;
 
 function chatTitle(chat: DeletedChat): string {
-  return chat.title?.trim() || "Untitled chat";
+  return chat.title?.trim() || (isCli(chat) ? "Untitled CLI session" : "Untitled chat");
+}
+
+/** A deleted agent CLI terminal (Claude Code, Codex, …): Reopen relaunches it in its lane. */
+function isCli(chat: DeletedChat): boolean {
+  return chat.kind === "cli";
+}
+
+/** The row's logo: a CLI's own tool, else the agent that keeps the conversation. */
+function deletedChatToolType(chat: DeletedChat): TerminalToolType {
+  return isCli(chat) && chat.toolType ? chat.toolType as TerminalToolType : PROVIDER_TOOL_TYPE[chat.sourceProvider];
 }
 
 function deletedAtMs(chat: DeletedChat): number | null {
@@ -79,6 +90,12 @@ function ChatMeta({ chat, model }: { chat: DeletedChat; model?: string | null })
       <LanePlace chat={chat} />
       <span aria-hidden className="ade-rd-sep">·</span>
       <span className="kit-num ade-rd-nowrap">Deleted {relativeWhen(chat.deletedAt)}</span>
+      {isCli(chat) ? (
+        <>
+          <span aria-hidden className="ade-rd-sep">·</span>
+          <span className="ade-rd-nowrap">{chat.resumable ? "CLI session" : "CLI session, starts fresh"}</span>
+        </>
+      ) : null}
       {model ? (
         <>
           <span aria-hidden className="ade-rd-sep">·</span>
@@ -115,7 +132,7 @@ const DeletedChatRow = React.memo(function DeletedChatRow({
         data-deleted-chat-row={chat.id}
       >
         <span className="ade-ar-mark">
-          <ToolLogo toolType={PROVIDER_TOOL_TYPE[chat.sourceProvider]} size={15} />
+          <ToolLogo toolType={deletedChatToolType(chat)} size={15} />
         </span>
         <span className="ade-rd-text">
           <span className="ade-ar-title">{chatTitle(chat)}</span>
@@ -192,7 +209,7 @@ function DeletedChatDialog({
       open
       onOpenChange={(next) => { if (!next && !busy) onClose(); }}
       title={chatTitle(chat)}
-      icon={<ToolLogo toolType={PROVIDER_TOOL_TYPE[chat.sourceProvider]} size={18} />}
+      icon={<ToolLogo toolType={deletedChatToolType(chat)} size={18} />}
       description={<span className="ade-rd-dialog-meta"><ChatMeta chat={chat} model={model} /></span>}
       width="min(960px, calc(100vw - 4rem))"
       height="min(780px, calc(100dvh - 4rem))"
@@ -217,7 +234,13 @@ function DeletedChatDialog({
               {lanesError ? <span className="ade-rd-error">{lanesError}</span> : null}
             </>
           ) : (
-            <span>Picks up where it left off, in {chat.laneName ?? "its lane"}.</span>
+            <span>
+              {!isCli(chat)
+                ? `Picks up where it left off, in ${chat.laneName ?? "its lane"}.`
+                : chat.resumable
+                  ? `Relaunches the CLI in ${chat.laneName ?? "its lane"}, resuming its conversation.`
+                  : `Starts a new CLI in ${chat.laneName ?? "its lane"}: ADE can't resume its conversation.`}
+            </span>
           )}
         </div>
       )}
@@ -229,7 +252,7 @@ function DeletedChatDialog({
           </button>
           <button type="button" className="kit-btn kit-btn-primary" disabled={!canReopen} onClick={onReopen}>
             {reopening ? <CircleNotch size={13} className="animate-spin" /> : <ArrowCounterClockwise size={13} />}
-            {reopening ? "Reopening…" : needsLane ? "Reopen as a copy" : "Reopen"}
+            {reopening ? "Reopening…" : needsLane ? (isCli(chat) ? "Reopen in this lane" : "Reopen as a copy") : "Reopen"}
           </button>
         </>
       )}
@@ -271,7 +294,7 @@ export function RecentlyDeletedSection() {
     const seq = ++requestSeq.current;
     setLoadError(null);
     try {
-      const result = await window.ade.agentChat.listDeleted({}, pinRef.current);
+      const result = await window.ade.agentChat.listDeleted({}, requirePin(pinRef.current));
       if (seq === requestSeq.current) setChats(result.chats);
     } catch (error) {
       if (seq !== requestSeq.current) return;
@@ -329,9 +352,10 @@ export function RecentlyDeletedSection() {
   // Lanes are needed only to reopen a chat whose lane was deleted.
   const needsLanes = Boolean(openChat && !openChat.laneExists);
   React.useEffect(() => {
-    if (!needsLanes || lanes) return;
+    const listPin = pinRef.current;
+    if (!needsLanes || lanes || !listPin) return;
     let cancelled = false;
-    void window.ade.lanes.list({ includeArchived: false, includeStatus: false }, pinRef.current)
+    void window.ade.lanes.list({ includeArchived: false, includeStatus: false }, listPin)
       .then((list) => {
         if (!cancelled) setLanes(list.filter((lane) => !lane.archivedAt));
       })
@@ -360,15 +384,20 @@ export function RecentlyDeletedSection() {
     // page moved to another machine since (the toast's Open chat runs later).
     const reopenPin = pinRef.current;
     try {
-      const result = await window.ade.agentChat.reopenDeleted({ id: chat.id, ...(laneId ? { laneId } : {}) }, reopenPin);
+      const result = await window.ade.agentChat.reopenDeleted({ id: chat.id, ...(laneId ? { laneId } : {}) }, requirePin(reopenPin));
       setChats((prev) => prev?.filter((entry) => entry.id !== chat.id) ?? prev);
       setOpenId(null);
+      const cli = result.kind === "cli";
       showToast({
         id: TOAST_ID,
         tone: "success",
-        title: "Chat reopened",
-        message: result.mode === "copy" ? `${chatTitle(chat)}, as a copy in the lane you picked.` : chatTitle(chat),
-        actions: [{ label: "Open chat", onClick: () => openInWork(result, reopenPin) }],
+        title: cli ? "CLI session reopened" : "Chat reopened",
+        message: result.mode === "copy"
+          ? `${chatTitle(chat)}, as a copy in the lane you picked.`
+          : result.notice
+            ? `${chatTitle(chat)}. ${result.notice}`
+            : chatTitle(chat),
+        actions: [{ label: cli ? "Open session" : "Open chat", onClick: () => openInWork(result, reopenPin) }],
       });
       openInWork(result, reopenPin);
     } catch (error) {
@@ -384,14 +413,14 @@ export function RecentlyDeletedSection() {
     if (running) return;
     const ok = await confirmDialog({
       title: "Remove from Recently deleted?",
-      message: `You won't be able to reopen “${chatTitle(chat)}” in ADE anymore. ${importProviderLabel(chat.sourceProvider)} keeps its own copy.`,
+      message: `You won't be able to reopen “${chatTitle(chat)}” in ADE anymore. ${importProviderLabel(chat.sourceProvider)} keeps its own copy${isCli(chat) && !chat.resumable ? ", if it made one" : ""}.`,
       confirmLabel: "Remove",
       destructive: true,
     });
     if (!ok) return;
     setRunning({ id: chat.id, kind: "remove" });
     try {
-      await window.ade.agentChat.removeDeleted({ ids: [chat.id] }, pinRef.current);
+      await window.ade.agentChat.removeDeleted({ ids: [chat.id] }, requirePin(pinRef.current));
       setChats((prev) => prev?.filter((entry) => entry.id !== chat.id) ?? prev);
       setOpenId((current) => (current === chat.id ? null : current));
     } catch (error) {

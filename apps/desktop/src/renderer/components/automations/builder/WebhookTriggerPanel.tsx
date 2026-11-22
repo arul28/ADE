@@ -280,7 +280,7 @@ export function WebhookTriggerPanel({
 
   // A new webhook trigger gets its URL right away: the URL is the whole point.
   useEffect(() => {
-    if (hookId || !api || creatingRef.current) return;
+    if (hookId || !api || !runtimePin || creatingRef.current) return;
     creatingRef.current = true;
     setCreating(true);
     void api
@@ -298,20 +298,21 @@ export function WebhookTriggerPanel({
         setCreating(false);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hookId, api]);
+  }, [hookId, api, runtimePin?.key]);
 
   const refreshEndpoint = useCallback(async () => {
-    if (!hookId || !api) return;
+    if (!hookId || !api || !runtimePin) return;
     try {
       setEndpoint(await api.getEndpoint({ hookId }, runtimePin));
       setEndpointError(null);
     } catch (error) {
       setEndpointError(error instanceof Error ? error.message : String(error));
     }
-  }, [api, hookId, runtimePin]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, hookId, runtimePin?.key]);
 
   const refreshDeliveries = useCallback(async () => {
-    if (!hookId || !api) return;
+    if (!hookId || !api || !runtimePin) return;
     try {
       const list = await api.listDeliveries({ hookId, limit: 20 }, runtimePin);
       setDeliveries(list);
@@ -331,7 +332,8 @@ export function WebhookTriggerPanel({
     } catch {
       // The log is a convenience; the trigger still works without it.
     }
-  }, [api, hookId, runtimePin]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, hookId, runtimePin?.key]);
 
   useEffect(() => {
     void refreshEndpoint();
@@ -339,24 +341,32 @@ export function WebhookTriggerPanel({
   }, [refreshEndpoint, refreshDeliveries]);
 
   useEffect(() => {
-    if (!hookId) return;
+    if (!hookId || !runtimePin) return;
+    // The rule's machine receives its webhooks, so its events say when a delivery lands.
     const unsubscribe = window.ade?.automations?.onEvent?.((event) => {
       if (event.type === "webhook-deliveries-updated" && event.hookId === hookId) {
         void refreshDeliveries();
         void refreshEndpoint();
       }
-    });
+    }, runtimePin);
     return () => unsubscribe?.();
-  }, [hookId, refreshDeliveries, refreshEndpoint]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hookId, refreshDeliveries, refreshEndpoint, runtimePin?.key]);
 
+  // The signing secret is checked where the webhook lands: the rule's machine.
   const refreshSecrets = useCallback(async () => {
+    if (!runtimePin) {
+      setSecretNames(new Set());
+      return;
+    }
     try {
-      const result = await window.ade?.projectSecrets?.list?.();
+      const result = await window.ade?.projectSecrets?.list?.(runtimePin);
       setSecretNames(new Set((result?.secrets ?? []).map((entry) => entry.name)));
     } catch {
       setSecretNames(new Set());
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runtimePin?.key]);
   useEffect(() => {
     void refreshSecrets();
   }, [refreshSecrets]);
@@ -383,10 +393,10 @@ export function WebhookTriggerPanel({
   };
 
   const saveSecret = async (value: string): Promise<boolean> => {
-    if (!signature || !value.trim()) return false;
+    if (!signature || !value.trim() || !runtimePin) return false;
     setSavingSecret(true);
     try {
-      await window.ade.projectSecrets.set({ name: signature.secretName, value: value.trim() });
+      await window.ade.projectSecrets.set({ name: signature.secretName, value: value.trim() }, runtimePin);
       await refreshSecrets();
       setReplacingSecret(false);
       setSecretDraft("");
@@ -408,7 +418,7 @@ export function WebhookTriggerPanel({
   };
 
   const rotate = async () => {
-    if (!hookId || !api) return;
+    if (!hookId || !api || !runtimePin) return;
     const ok = await confirmDialog({
       title: "Make a new URL?",
       message: "The current URL stops working right away. Anything still using it will get “not found” until you paste the new one in.",
@@ -428,7 +438,7 @@ export function WebhookTriggerPanel({
   };
 
   const recreateHere = async () => {
-    if (!api) return;
+    if (!api || !runtimePin) return;
     setCreating(true);
     try {
       const created = await api.createEndpoint({ label: null }, runtimePin);
@@ -442,7 +452,7 @@ export function WebhookTriggerPanel({
   };
 
   const sendTest = async () => {
-    if (!hookId || !api) return;
+    if (!hookId || !api || !runtimePin) return;
     setTesting(true);
     setTestError(null);
     setTestResult(null);

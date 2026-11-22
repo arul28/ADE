@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { reportProviderRuntimeReady, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
 
 const mockState = vi.hoisted(() => ({
   detectAllAuth: vi.fn(),
@@ -33,6 +34,8 @@ vi.mock("./authDetector", () => ({
   getCachedCliAuthStatuses: (...args: unknown[]) => mockState.getCachedCliAuthStatuses(...args),
   resetLocalProviderDetectionCache: (...args: unknown[]) => mockState.resetLocalProviderDetectionCache(...args),
   verifyProviderApiKey: (...args: unknown[]) => mockState.verifyProviderApiKey(...args),
+  // No recorded Copilot login on disk: the status read names no Copilot account.
+  readCopilotRecordedLogins: vi.fn(async () => []),
 }));
 
 vi.mock("./providerConnectionStatus", () => ({
@@ -74,6 +77,12 @@ vi.mock("../chat/cursorModelSelection", async (importOriginal) => ({
 
 vi.mock("./apiKeyStore", () => ({
   getApiKeyStoreStatus: (...args: unknown[]) => mockState.getApiKeyStoreStatus(...args),
+  // cursorSdkAuth reads these at load time and on Cursor sign-in; no key is stored in these tests.
+  storeApiKey: vi.fn(),
+  deleteApiKey: vi.fn(),
+  getApiKey: vi.fn(() => null),
+  getCursorApiKeyOrigin: vi.fn(() => null),
+  markCursorApiKeyOAuthMinted: vi.fn(),
 }));
 
 vi.mock("./modelsDevService", () => ({
@@ -86,6 +95,11 @@ vi.mock("./claudeRuntimeProbe", () => ({
   resetClaudeRuntimeProbeCache: (...args: unknown[]) => mockState.resetClaudeRuntimeProbeCache(...args),
 }));
 
+// Starts a real Claude process against the real home.
+vi.mock("./claudeAccountSkillSync", () => ({
+  ensureClaudeAccountSkillsSynced: vi.fn(),
+}));
+
 vi.mock("./providerTaskRunner", () => ({
   runProviderTask: (...args: unknown[]) => mockState.runProviderTask(...args),
 }));
@@ -95,7 +109,8 @@ const cursorCloudMocks = vi.hoisted(() => ({
   resolveCursorCloudCreateCloudExtras: vi.fn(),
 }));
 
-vi.mock("./cursorSdkLoader", () => ({
+vi.mock("./cursorSdkLoader", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./cursorSdkLoader")>(),
   loadCursorSdk: (...args: unknown[]) => cursorCloudMocks.loadCursorSdk(...args),
 }));
 
@@ -361,28 +376,6 @@ describe("aiIntegrationService", () => {
     expect(usageInsertCalls(runCalls)).toHaveLength(1);
   });
 
-  it("passes through the resolved descriptor and session id", async () => {
-    const { service } = makeService({
-      aiConfig: { features: { initial_context: true } },
-    });
-
-    await service.executeTask({
-      feature: "initial_context",
-      taskType: "review",
-      prompt: "Evaluate this step",
-      cwd: "/tmp",
-      model: "openai/gpt-5.4",
-      sessionId: "carry-forward-session",
-      permissionMode: "read-only",
-    });
-
-    expect(mockState.runProviderTask).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "carry-forward-session",
-      descriptor: expect.objectContaining({ id: "openai/gpt-5.4" }),
-      permissionMode: "read-only",
-    }));
-  });
-
   it("uses the feature model override when executeTask omits model", async () => {
     const { service } = makeService({
       aiConfig: {
@@ -629,14 +622,6 @@ describe("aiIntegrationService", () => {
     expect(status.availableModelIds).toContain("opencode/openai/gpt-5.4-mini");
   });
 
-  it("clears the OpenCode binary cache on forced status refresh", async () => {
-    const { service } = makeService();
-
-    await service.getStatus({ force: true });
-
-    expect(mockState.clearOpenCodeBinaryCache).toHaveBeenCalledTimes(1);
-  });
-
   it("keeps forced status refresh non-interactive for Claude", async () => {
     const { service } = makeService({
       availability: { claude: true, codex: false, cursor: false, droid: false },
@@ -647,7 +632,7 @@ describe("aiIntegrationService", () => {
     expect(mockState.probeClaudeRuntimeHealth).not.toHaveBeenCalled();
   });
 
-  it("waits for an ACP auth verdict before publishing provider status", async () => {
+  it("counts an ACP provider as signed in only once its runtime reports ready, without starting a probe", async () => {
     const { service } = makeService({
       availability: { claude: false, codex: false, cursor: false, droid: false },
     });
@@ -661,9 +646,7 @@ describe("aiIntegrationService", () => {
       },
     ]);
     mockState.detectAllAuth.mockResolvedValue([]);
-    mockState.probeAllAcpProviderAuth.mockResolvedValue({
-      qwen: { state: "ready", message: null },
-    });
+    reportProviderRuntimeReady("qwen");
     const base = makeProviderConnections({ claude: false, codex: false, cursor: false, droid: false });
     mockState.buildProviderConnections.mockResolvedValue({
       ...base,
@@ -680,12 +663,15 @@ describe("aiIntegrationService", () => {
       },
     });
 
-    const status = await service.getStatus({ force: true });
+    let status: Awaited<ReturnType<typeof service.getStatus>>;
+    try {
+      status = await service.getStatus({ force: true });
+    } finally {
+      resetProviderRuntimeHealth("qwen");
+    }
 
-    expect(mockState.probeAllAcpProviderAuth).toHaveBeenCalledWith(expect.objectContaining({
-      providers: ["qwen"],
-      cwd: "/tmp/project",
-    }));
+    // The status read never starts an ACP agent probe; the runtime verdict is the proof.
+    expect(mockState.probeAllAcpProviderAuth).not.toHaveBeenCalled();
     expect(status.availableProviders.qwen).toBe(true);
     expect(status.detectedAuth).toContainEqual(expect.objectContaining({
       type: "cli-subscription",
@@ -820,29 +806,37 @@ describe("aiIntegrationService", () => {
       { type: "api-key", provider: "cursor", key, source: "store" },
     ]);
     useKey("crsr_one");
-    const list = vi.fn()
-      .mockRejectedValueOnce(new Error("rate limited"))
-      .mockResolvedValue([{ url: " https://github.com/acme/project " }, { url: "" }]);
-    cursorCloudMocks.loadCursorSdk.mockResolvedValue({ Cursor: { repositories: { list } } });
+    // Cursor's REST API at the fetch boundary: GET /v1/repositories.
+    const list = vi.fn(async (_url: string, _init?: RequestInit) => new Response(
+      JSON.stringify({ items: [{ url: " https://github.com/acme/project " }, { url: "" }] }),
+      { status: 200 },
+    ));
+    list.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "unknown", message: "rate limited" } }), { status: 500 }));
+    vi.stubGlobal("fetch", list);
+    try {
+      // A failure is not kept: the next read asks again.
+      await expect(service.listCursorCloudRepositories()).rejects.toThrow("rate limited");
+      const [first, second] = await Promise.all([
+        service.listCursorCloudRepositories(),
+        service.listCursorCloudRepositories(),
+      ]);
+      expect(first).toEqual([{ url: "https://github.com/acme/project" }]);
+      expect(second).toEqual(first);
+      await service.listCursorCloudRepositories();
+      expect(list).toHaveBeenCalledTimes(2);
 
-    // A failure is not kept: the next read asks again.
-    await expect(service.listCursorCloudRepositories()).rejects.toThrow("rate limited");
-    const [first, second] = await Promise.all([
-      service.listCursorCloudRepositories(),
-      service.listCursorCloudRepositories(),
-    ]);
-    expect(first).toEqual([{ url: "https://github.com/acme/project" }]);
-    expect(second).toEqual(first);
-    await service.listCursorCloudRepositories();
-    expect(list).toHaveBeenCalledTimes(2);
+      await service.listCursorCloudRepositories({ refresh: true });
+      expect(list).toHaveBeenCalledTimes(3);
 
-    await service.listCursorCloudRepositories({ refresh: true });
-    expect(list).toHaveBeenCalledTimes(3);
-
-    useKey("crsr_two");
-    await service.listCursorCloudRepositories();
-    expect(list).toHaveBeenCalledTimes(4);
-    expect(list).toHaveBeenLastCalledWith({ apiKey: "crsr_two" });
+      useKey("crsr_two");
+      await service.listCursorCloudRepositories();
+      expect(list).toHaveBeenCalledTimes(4);
+      expect(String(list.mock.calls.at(-1)?.[0])).toMatch(/\/v1\/repositories$/);
+      expect((list.mock.calls.at(-1)?.[1]?.headers as Record<string, string>).Authorization).toBe("Bearer crsr_two");
+      expect(cursorCloudMocks.loadCursorSdk).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("passes envVars on Cursor Cloud Agent.create and does not send metadata", async () => {

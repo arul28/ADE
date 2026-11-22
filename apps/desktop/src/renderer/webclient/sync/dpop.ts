@@ -112,6 +112,24 @@ export async function exportPublicKeyX963Base64(publicKey: CryptoKey): Promise<s
   return bytesToBase64(new Uint8Array(raw));
 }
 
+function bytesToBase64Url(bytes: Uint8Array): string {
+  return bytesToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * The RFC 7638 SHA-256 thumbprint of a P-256 public key (X9.63 uncompressed,
+ * 65 bytes), base64url. The same value as the host's `syncDpopKeyThumbprint`:
+ * a lane share ticket is bound to it, so only the key that asked for the
+ * ticket can use it.
+ */
+export async function dpopPublicKeyThumbprint(publicKey: CryptoKey): Promise<string> {
+  const raw = new Uint8Array(await crypto.subtle.exportKey("raw", publicKey));
+  if (raw.length !== 65 || raw[0] !== 0x04) throw new Error("Expected an uncompressed P-256 public key.");
+  const canonical = `{"crv":"P-256","kty":"EC","x":"${bytesToBase64Url(raw.slice(1, 33))}","y":"${bytesToBase64Url(raw.slice(33, 65))}"}`;
+  const digest = await crypto.subtle.digest("SHA-256", toArrayBuffer(utf8Bytes(canonical)));
+  return bytesToBase64Url(new Uint8Array(digest));
+}
+
 export async function signDpopProof(args: {
   privateKey: CryptoKey;
   publicKeyX963Base64: string;

@@ -15,11 +15,17 @@
  * `useCrossMachineLaneSync` (ref-counted), and the snapshot is a push feed.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { LaneSummary, OpenProjectBinding, RemoteRuntimeConnectionSnapshot } from "../../shared/types";
+import { isRemoteMachineAwayError } from "../../shared/runtimeErrors";
+import { isProjectHostTransportDrop } from "../../shared/syncHostRecoveryUi";
+import { isPersonFixConnectionFailure, type RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
+import { FAR_RTT_ON_MS } from "../../shared/slowLinkMode";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { readLocalSyncStatus } from "../lib/localSyncStatusReader";
 import { useAppStore, useRootAppStore } from "./appStore";
+import { isAdeCloudComputer, useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
+import { ADE_CLOUD_NAME } from "../../shared/adeCloudMachine";
 import { useCrossMachineLaneSync } from "./crossMachineLanes";
 import { buildAllMachineLanes, connectionOnline, type LaneMachine } from "./laneMachineRouting";
 
@@ -46,44 +52,401 @@ export type ProjectMachinesState = {
 /**
  * The remote-runtime connection snapshot, subscribed while `active`.
  *
- * `loaded` is true once the snapshot has answered since `active` last turned
- * on, and resolves even when the bridge is missing (tests, the hosted web
- * client), so callers never wait forever. The last snapshot is kept while
- * inactive.
+ * `loaded` is true once the snapshot has answered since the shared feed last
+ * started (or at once while another caller keeps it live), and resolves even
+ * when the bridge is missing (tests, the hosted web client), so callers never
+ * wait forever. The last snapshot is kept while inactive.
+ *
+ * Every caller reads the one shared feed below: one snapshot read and one
+ * window listener however many panes, chips and pickers ask. A listener per
+ * hook added one IPC listener per mounted caller, enough to trip Node's
+ * MaxListeners warning on a desktop with a few chats and computers open.
  */
 export function useRemoteConnectionSnapshot(active: boolean): {
   snapshot: RemoteRuntimeConnectionSnapshot | null;
   loaded: boolean;
 } {
-  const [snapshot, setSnapshot] = useState<RemoteRuntimeConnectionSnapshot | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const state = useSyncExternalStore(
+    active ? subscribeSharedSnapshot : subscribeNothing,
+    readSharedSnapshotState,
+    readSharedSnapshotState,
+  );
+  return active ? state : { snapshot: state.snapshot, loaded: false };
+}
+
+// ── One shared connection snapshot feed for the window ──────────────────────
+
+type SharedSnapshotState = { snapshot: RemoteRuntimeConnectionSnapshot | null; loaded: boolean };
+
+let sharedSnapshot: RemoteRuntimeConnectionSnapshot | null = null;
+let sharedSnapshotState: SharedSnapshotState = { snapshot: null, loaded: false };
+const sharedSnapshotListeners = new Set<() => void>();
+let stopSharedSnapshot: (() => void) | null = null;
+
+function subscribeNothing(): () => void {
+  return () => undefined;
+}
+
+function readSharedSnapshotState(): SharedSnapshotState {
+  return sharedSnapshotState;
+}
+
+function publishSharedSnapshot(loaded: boolean): void {
+  if (sharedSnapshotState.snapshot === sharedSnapshot && sharedSnapshotState.loaded === loaded) return;
+  sharedSnapshotState = { snapshot: sharedSnapshot, loaded };
+  for (const listener of sharedSnapshotListeners) listener();
+}
+
+// ── A machine's link coming back ────────────────────────────────────────────
+
+/**
+ * Per target: whether its link is ready now, and how many times it has become
+ * ready. A target not seen yet counts as not ready at epoch 0, so its first
+ * ready snapshot is a "came back" too: a read sent before the feed listed the
+ * machine (right after a connect) still reads again.
+ */
+const linkReadiness = new Map<string, { ready: boolean; epoch: number }>();
+
+/**
+ * Ready to answer: connected, and not a dropped link ADE Web still shows as
+ * connected while it comes back (`reconnectHold` marks those with
+ * `reconnectingSinceMs`).
+ */
+function linkReady(connection: RemoteRuntimeConnectionStatus): boolean {
+  return connectionOnline(connection) && connection.reconnectingSinceMs == null;
+}
+
+function noteLinkReadiness(snapshot: RemoteRuntimeConnectionSnapshot): void {
+  for (const connection of snapshot.connections) {
+    const targetId = connection.target.id;
+    const ready = linkReady(connection);
+    const previous = linkReadiness.get(targetId);
+    if (previous?.ready === ready) continue;
+    linkReadiness.set(targetId, { ready, epoch: (previous?.epoch ?? 0) + (ready ? 1 : 0) });
+  }
+}
+
+function linkEpoch(targetId: string | null): number {
+  return targetId ? linkReadiness.get(targetId)?.epoch ?? 0 : 0;
+}
+
+/** The read lost its way to the machine (the link dropped, or was not up yet), not an answer from it. */
+function isLinkLostReadError(error: unknown): boolean {
+  return isRemoteMachineAwayError(error) || isProjectHostTransportDrop(error);
+}
+
+function startSharedSnapshot(): () => void {
+  const bridge = typeof window === "undefined" ? undefined : window.ade?.remoteRuntime;
+  if (typeof bridge?.getConnectionSnapshot !== "function") {
+    // No other machines can exist without the remote runtime bridge.
+    publishSharedSnapshot(true);
+    return () => undefined;
+  }
+  // A restarted feed has not answered yet; its last snapshot stays readable.
+  publishSharedSnapshot(false);
+  let stopped = false;
+  const apply = (next: RemoteRuntimeConnectionSnapshot | null | undefined) => {
+    if (stopped) return;
+    if (next && !(sharedSnapshot && sharedSnapshot.updatedAt > next.updatedAt)) {
+      sharedSnapshot = next;
+      noteLinkReadiness(next);
+    }
+    for (const targetId of slowLinkChipClosed) {
+      if (!connectionLinkSlow(sharedSnapshot?.connections.find((entry) => entry.target.id === targetId))) {
+        slowLinkChipClosed.delete(targetId);
+      }
+    }
+    publishSharedSnapshot(true);
+  };
+  void bridge.getConnectionSnapshot().then(apply, () => apply(null));
+  const unsubscribe = typeof bridge.onConnectionSnapshotChanged === "function"
+    ? bridge.onConnectionSnapshotChanged((next) => apply(next))
+    : undefined;
+  return () => {
+    stopped = true;
+    unsubscribe?.();
+  };
+}
+
+function subscribeSharedSnapshot(listener: () => void): () => void {
+  sharedSnapshotListeners.add(listener);
+  if (sharedSnapshotListeners.size === 1) stopSharedSnapshot = startSharedSnapshot();
+  return () => {
+    sharedSnapshotListeners.delete(listener);
+    if (sharedSnapshotListeners.size > 0) return;
+    stopSharedSnapshot?.();
+    stopSharedSnapshot = null;
+    // Nobody listens: the next caller waits for a fresh answer, not this one.
+    sharedSnapshotState = { snapshot: sharedSnapshot, loaded: false };
+  };
+}
+
+/**
+ * "offline" when the connection snapshot lists the target and it is not
+ * connected; "online" when it is connected; "unknown" before the first
+ * snapshot, and for a target the snapshot does not list (the hosted web
+ * client lists none). Pure.
+ */
+export function remoteTargetState(
+  snapshot: Pick<RemoteRuntimeConnectionSnapshot, "connections"> | null,
+  targetId: string,
+): "online" | "offline" | "unknown" {
+  const connection = snapshot?.connections.find((entry) => entry.target.id === targetId);
+  if (!connection) return "unknown";
+  return connectionOnline(connection) ? "online" : "offline";
+}
+
+/**
+ * Whether the remote target is connected, from one shared snapshot feed for
+ * every caller (one read and one listener in the window, however many hooks
+ * ask). Returns a string, so a snapshot push that changes nothing for this
+ * target renders nothing. Null target: "unknown", and no feed.
+ */
+export function useRemoteTargetState(targetId: string | null): "online" | "offline" | "unknown" {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => (targetId ? remoteTargetState(sharedSnapshot, targetId) : "unknown"),
+    () => "unknown",
+  );
+}
+
+export type ReadRetryOnReconnect = {
+  /** Changes once after a read lost its link, when that machine's link is ready again. Put it in the read's effect deps. */
+  retryKey: number;
+  /**
+   * Call as a read goes out; call what it returns with the read's error. It
+   * answers whether the read will run again (the link was lost, not refused).
+   */
+  begin: () => (error: unknown) => boolean;
+};
+
+/**
+ * Runs a read again once the link it lost is back. A read sent to another
+ * machine just as its link drops (or before it is ready, right after a
+ * connect) fails with "Connection lost — outcome unknown"; nothing in the
+ * read's own keys changes, so without this it stays failed until a reload.
+ *
+ * Reads only: the caller re-runs its own effect, so a write never goes out
+ * twice. `pin` is the machine the read went to (the same pin it was sent
+ * with, or the tab's binding for a null pin); a pin on this computer has no
+ * link to lose and never retries. Keyed on the pin's target, not the object.
+ */
+export function useReadRetryOnReconnect(pin: OpenProjectBinding | null | undefined): ReadRetryOnReconnect {
+  const targetId = pin?.kind === "remote" ? pin.targetId : null;
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  const epoch = useSyncExternalStore(subscribe, () => linkEpoch(targetId), () => 0);
+  // The link epoch a lost read went out at; the read runs again once the link has come back since.
+  const [lostAt, setLostAt] = useState<{ targetId: string; epoch: number } | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+  const targetRef = useRef(targetId);
+  targetRef.current = targetId;
   useEffect(() => {
-    if (!active) {
-      setLoaded(false);
-      return undefined;
-    }
-    const bridge = typeof window === "undefined" ? undefined : window.ade?.remoteRuntime;
-    if (typeof bridge?.getConnectionSnapshot !== "function") {
-      // No other machines can exist without the remote runtime bridge.
-      setLoaded(true);
-      return undefined;
-    }
-    let cancelled = false;
-    const apply = (next: RemoteRuntimeConnectionSnapshot | null | undefined) => {
-      if (cancelled) return;
-      if (next) setSnapshot((current) => (current && current.updatedAt > next.updatedAt ? current : next));
-      setLoaded(true);
+    if (!lostAt || lostAt.targetId !== targetId || epoch <= lostAt.epoch) return;
+    setLostAt(null);
+    setRetryKey((key) => key + 1);
+  }, [epoch, lostAt, targetId]);
+  const begin = useCallback(() => {
+    const sentTo = targetRef.current;
+    const sentAt = linkEpoch(sentTo);
+    return (error: unknown) => {
+      if (!sentTo || sentTo !== targetRef.current || !isLinkLostReadError(error)) return false;
+      setLostAt((current) => (current?.targetId === sentTo && current.epoch <= sentAt ? current : { targetId: sentTo, epoch: sentAt }));
+      return true;
     };
-    void bridge.getConnectionSnapshot().then(apply, () => apply(null));
-    const unsubscribe = typeof bridge.onConnectionSnapshotChanged === "function"
-      ? bridge.onConnectionSnapshotChanged((next) => apply(next))
-      : undefined;
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
+  }, []);
+  return useMemo(() => ({ retryKey, begin }), [begin, retryKey]);
+}
+
+/**
+ * Whether ADE is bringing a dropped link to this machine back on its own
+ * ("reconnecting"), as opposed to waiting for the person. A background redial
+ * publishes `connecting` with its recovery kept, so both states count; a first
+ * connect, or one the person asked for, has no recovery and does not. Same
+ * shared feed; null target: false, no feed.
+ */
+export function useRemoteTargetReconnecting(targetId: string | null): boolean {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return false;
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      return (connection?.state === "error" || connection?.state === "connecting")
+        && connection.recovery === "reconnecting";
+    },
+    () => false,
+  );
+}
+
+/**
+ * The target's last connect failed in a way only the person fixes (pair
+ * again, sign in): that failure and its message, else null. The service then
+ * stops redialing it (`recovery` is not "reconnecting"). Same shared feed.
+ */
+export function useRemoteTargetPersonFixFailure(
+  targetId: string | null,
+): { failure: "pairing" | "authentication" | "identity"; message: string } | null {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  // A string, so an unchanged failure in a new snapshot renders nothing.
+  const key = useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return "";
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      const failure = connection?.state === "error" ? connection.lastErrorInfo?.failure : undefined;
+      if (!isPersonFixConnectionFailure(failure)) return "";
+      return `${failure}\u0000${connection?.lastErrorInfo?.message ?? connection?.lastError ?? ""}`;
+    },
+    () => "",
+  );
+  return useMemo(() => {
+    if (!key) return null;
+    const split = key.indexOf("\u0000");
+    return {
+      failure: key.slice(0, split) as "pairing" | "authentication" | "identity",
+      message: key.slice(split + 1),
     };
-  }, [active]);
-  return { snapshot, loaded };
+  }, [key]);
+}
+
+/**
+ * A mark for the target's current connection: its `connectedAt` while it is
+ * connected (not held after a drop), else "". A new connection, such as an
+ * ADE Cloud computer's new brain after a wake, gives a new mark. Same shared
+ * feed as `useRemoteTargetState`; null target: "", and no feed.
+ */
+export function useRemoteConnectionMark(targetId: string | null): string {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(subscribe, () => remoteConnectionMarkNow(targetId), () => "");
+}
+
+/** `useRemoteConnectionMark` read once, for a timer that runs outside render. */
+export function remoteConnectionMarkNow(targetId: string | null): string {
+  if (!targetId) return "";
+  const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+  if (!connection || connection.state !== "connected" || typeof connection.reconnectingSinceMs === "number") return "";
+  return String(connection.connectedAt ?? "");
+}
+
+function connectionLinkSlow(connection: RemoteRuntimeConnectionStatus | undefined): boolean {
+  return connection?.state === "connected" && connection.slowLink?.active === true;
+}
+
+/**
+ * Whether slow-connection mode is on for the connection to this machine
+ * (`shared/slowLinkMode.ts`). Same shared feed; null target: false, no feed.
+ */
+export function useSlowLinkActive(targetId: string | null): boolean {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => (targetId ? connectionLinkSlow(sharedSnapshot?.connections.find((entry) => entry.target.id === targetId)) : false),
+    () => false,
+  );
+}
+
+/**
+ * Machines whose slow-connection chip the person closed. It stays closed in
+ * every chat on that machine until the link is good again (the shared feed
+ * clears it); the next slow spell shows it again.
+ */
+const slowLinkChipClosed = new Set<string>();
+
+/** Close the slow-connection chip for this machine (`useSlowLinkChipShown`). */
+export function closeSlowLinkChip(targetId: string): void {
+  if (slowLinkChipClosed.has(targetId)) return;
+  slowLinkChipClosed.add(targetId);
+  for (const listener of sharedSnapshotListeners) listener();
+}
+
+/**
+ * `useSlowLinkActive`, unless the person closed the chip during this slow
+ * spell (`closeSlowLinkChip`). Same shared feed; null target: false.
+ */
+export function useSlowLinkChipShown(targetId: string | null): boolean {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => (targetId
+      ? !slowLinkChipClosed.has(targetId)
+        && connectionLinkSlow(sharedSnapshot?.connections.find((entry) => entry.target.id === targetId))
+      : false),
+    () => false,
+  );
+}
+
+/**
+ * The last measured round trip to this machine, in ms, while it is connected;
+ * null before the first measure. Same shared feed; null target: null.
+ */
+export function useLinkRoundTripMs(targetId: string | null): number | null {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return null;
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      if (connection?.state !== "connected") return null;
+      const rtt = connection.slowLink?.rttMs ?? connection.route?.latencyMs;
+      return typeof rtt === "number" ? rtt : null;
+    },
+    () => null,
+  );
+}
+
+/** A connected link on which typing shows at once (`SlowLinkStatus.far`; an older desktop sends only `active`). */
+function connectionLinkFar(connection: RemoteRuntimeConnectionStatus | undefined): boolean {
+  if (connection?.state !== "connected" || !connection.slowLink) return false;
+  return connection.slowLink.far ?? connection.slowLink.active;
+}
+
+/**
+ * The round trip to this machine when its terminals should guess typed
+ * characters (`terminalTypeAhead.ts`), else null: the link is far
+ * (`connectionLinkFar`; the machine's "Off" setting turns it off). Same
+ * shared feed; null target: null.
+ */
+export function useTypeAheadRoundTripMs(targetId: string | null): number | null {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return null;
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      if (!connectionLinkFar(connection)) return null;
+      const rtt = connection?.slowLink?.rttMs ?? connection?.route?.latencyMs ?? null;
+      return typeof rtt === "number" ? rtt : FAR_RTT_ON_MS;
+    },
+    () => null,
+  );
 }
 
 /** This computer's sync identity, read once per activation through the shared reader. */
@@ -123,13 +486,29 @@ function useThisMachineIdentity(active: boolean): {
 
 const NO_LANES: readonly LaneSummary[] = [];
 
-/** The machine list for the active project tab. */
-export function useProjectMachines(active = true): ProjectMachinesState {
+/** Whether a machine of the list is one of the account's ADE Cloud computers (a lane's, a CTO home, any). */
+export function isAdeCloudProjectMachine(
+  machine: Pick<ProjectMachine, "hostname" | "machineId" | "isThisMachine">,
+  index?: Parameters<typeof isAdeCloudComputer>[1],
+): boolean {
+  return !machine.isThisMachine && isAdeCloudComputer({ hostname: machine.hostname, machineKey: machine.machineId }, index);
+}
+
+/**
+ * The machine list for the active project tab. Every ADE Cloud computer in it
+ * reads "ADE Cloud", never its own name. `ownOnly` leaves ADE Cloud computers
+ * out: for a list of the person's own computers (machine-level settings, the
+ * `.env` tip), where ADE Cloud has its own place.
+ */
+export function useProjectMachines(active = true, options: { ownOnly?: boolean } = {}): ProjectMachinesState {
+  const ownOnly = options.ownOnly === true;
   useCrossMachineLaneSync(active);
   const projectBinding = useAppStore((state) => state.projectBinding);
   const unionMachines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   const { snapshot, loaded: snapshotLoaded } = useRemoteConnectionSnapshot(active);
   const local = useThisMachineIdentity(active);
+  const cloudIndex = useAdeCloudLaneComputers();
+  const laneComputers = cloudIndex.computers;
 
   const machines = useMemo<ProjectMachine[]>(() => {
     const all = buildAllMachineLanes({
@@ -139,6 +518,8 @@ export function useProjectMachines(active = true): ProjectMachinesState {
       machines: unionMachines ?? {},
       connections: snapshot?.connections ?? [],
       thisMachineDeviceId: local.deviceId,
+      // A cloud lane's computer reads "ADE Cloud".
+      adeCloud: { computers: laneComputers },
     });
     const withRepo = [...all.machines];
     // This computer leads the list wherever it sits in the union.
@@ -146,12 +527,18 @@ export function useProjectMachines(active = true): ProjectMachinesState {
     if (thisIndex > 0) withRepo.unshift(...withRepo.splice(thisIndex, 1));
     const withoutRepo = all.machinesWithoutRepo;
     const thisWithoutRepo = withoutRepo.filter((machine) => machine.isThisMachine);
-    return [
+    const ordered = [
       ...thisWithoutRepo,
       ...withRepo,
       ...withoutRepo.filter((machine) => !machine.isThisMachine),
     ];
-  }, [local.deviceId, projectBinding, snapshot, unionMachines]);
+    // ADE Cloud is one machine: no cloud computer shows its own name.
+    return ordered.flatMap((machine) => {
+      if (!isAdeCloudProjectMachine(machine, cloudIndex)) return [machine];
+      if (ownOnly) return [];
+      return [machine.machineName === ADE_CLOUD_NAME ? machine : { ...machine, machineName: ADE_CLOUD_NAME }];
+    });
+  }, [cloudIndex, laneComputers, local.deviceId, ownOnly, projectBinding, snapshot, unionMachines]);
 
   const connectedRemoteCount = useMemo(
     () => (snapshot?.connections ?? []).filter(connectionOnline).length,
@@ -191,10 +578,13 @@ export function withMachineTimeout<T>(
   });
 }
 
-/** A call sent to another machine is timed out; the tab machine's own call is left as is. */
+/**
+ * A call sent to another machine is timed out; the tab machine's own call is
+ * left as is (it never had a timeout, and its pin is set like any other).
+ */
 export function onMachine<T>(
   promise: Promise<T>,
-  machine: { pin: OpenProjectBinding | null; machineName: string } | null | undefined,
+  machine: { pin: OpenProjectBinding | null; machineName: string; isActiveBinding: boolean } | null | undefined,
 ): Promise<T> {
-  return machine?.pin ? withMachineTimeout(promise, machine.machineName) : promise;
+  return machine?.pin && !machine.isActiveBinding ? withMachineTimeout(promise, machine.machineName) : promise;
 }

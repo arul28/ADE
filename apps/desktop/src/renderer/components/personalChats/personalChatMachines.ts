@@ -20,8 +20,9 @@ import type {
   PersonalChatCallArgs,
 } from "../../../shared/types";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import type { AgentChatApi } from "../chat/agentChatApi";
+import type { MachineBoundAgentChatApi } from "../chat/agentChatApi";
 import { useAppStore } from "../../state/appStore";
+import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { machineScopedId } from "../../state/foreignMachineReads";
 import { connectionOnline } from "../../state/laneMachineRouting";
 import { useRemoteConnectionSnapshot, withMachineTimeout } from "../../state/projectMachines";
@@ -65,8 +66,8 @@ export async function callPersonalOn<T, A extends PersonalChatAction = PersonalC
  * One chat API per machine, shared by the rail and the pane so each machine
  * has one event poller. The poller runs only while something listens.
  */
-const apiByMachine = new Map<string, AgentChatApi>();
-export function personalAgentChatApiFor(machineId: string): AgentChatApi {
+const apiByMachine = new Map<string, MachineBoundAgentChatApi>();
+export function personalAgentChatApiFor(machineId: string): MachineBoundAgentChatApi {
   let api = apiByMachine.get(machineId);
   if (!api) {
     api = createPersonalAgentChatApi(personalChatsBridgeFor(machineId));
@@ -124,11 +125,15 @@ export function usePersonalChatMachines(): PersonalChatMachinesState {
   const projectBinding = useAppStore((state) => state.projectBinding);
   const { snapshot, loaded } = useRemoteConnectionSnapshot(!webMachines);
   const [storedDraft, setStoredDraft] = useState(readStoredDraftMachine);
+  const cloudIndex = useAdeCloudLaneComputers();
 
+  // Personal chats run on the person's own computers only: an ADE Cloud
+  // computer belongs to one lane (or a CTO), never to a chat with no project.
   const desktopMachines = useMemo<PersonalChatMachine[]>(() => {
     const machines: PersonalChatMachine[] = [{ id: THIS_MACHINE_ID, name: THIS_MACHINE_NAME, isThisMachine: true }];
     for (const connection of snapshot?.connections ?? []) {
       if (!connectionOnline(connection) || machines.some((machine) => machine.id === connection.target.id)) continue;
+      if (isAdeCloudComputer({ hostname: connection.target.hostname, machineKey: connection.target.pairedMachine?.machineKey ?? null }, cloudIndex)) continue;
       machines.push({
         id: connection.target.id,
         name: connection.target.name || connection.target.hostname,
@@ -136,7 +141,7 @@ export function usePersonalChatMachines(): PersonalChatMachinesState {
       });
     }
     return machines;
-  }, [snapshot]);
+  }, [cloudIndex, snapshot]);
 
   const selectDesktopDraft = useCallback(async (machineId: string) => {
     storeDraftMachine(machineId);

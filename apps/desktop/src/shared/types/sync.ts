@@ -28,6 +28,7 @@ import type {
 import type { ExternalSessionDetail, ExternalSessionDetailArgs } from "./externalSessionDetail";
 import type { PtySendToSessionResult, SessionActivityReport, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
+import type { LaneLinearIssue } from "./lanes";
 import type {
   MacDesktopClickArgs,
   MacDesktopDragArgs,
@@ -170,6 +171,17 @@ export const SYNC_FOLDED_REPLAY_CAPABILITY = "foldedReplay";
  */
 export const SYNC_MOBILE_CHAT_SLIM_CAPABILITY = "mobileChatSlimV1";
 
+/**
+ * Hello capability a phone declares when it understands a `chat_subscribe`
+ * answer carrying `unavailable` (see `SyncChatSubscribeSnapshotPayload`). A
+ * host that cannot serve a subscribe (a project scope it refuses, a request
+ * with no scope, a transcript it cannot read) answers such a peer with the
+ * reason instead of staying silent. A peer that does not declare it gets no
+ * answer, as before: an older phone would read an empty snapshot as an empty
+ * chat.
+ */
+export const SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY = "chatSubscribeUnavailableV1";
+
 export type SyncPayloadEncoding = "json" | "base64";
 
 export type SyncPeerPlatform = "macOS" | "linux" | "windows" | "iOS" | "unknown";
@@ -217,6 +229,15 @@ export type SyncPeerMetadata = {
   appBuild?: string;
   bundleIdentifier?: string;
   /**
+   * Host only: how long ago its brain started, by the wall clock, when it
+   * answered this hello. A start after the update a phone sent means the brain
+   * restarted (an age, so the phone's clock needs no sync). Additive: older
+   * phones ignore it. See `ade-cli/src/lib/hostUpdateFacts.ts`.
+   */
+  startedAgoMs?: number;
+  /** Host only: what kept its last update from installing (Windows). */
+  lastUpdateBlock?: SyncHostUpdateBlock;
+  /**
    * `"roster"` marks a light socket that carries only the machine-wide roster,
    * cross-project chats and routed commands. Hosts never replicate CRDT
    * changesets to it, ignore any it sends, and never record a delivered
@@ -225,6 +246,21 @@ export type SyncPeerMetadata = {
    */
   syncRole?: "roster";
 };
+
+/**
+ * The processes that held files in a Windows install folder open when an
+ * update could not replace it (`apps/desktop/build/ade-update-holders.ps1`,
+ * read by `ade-cli/src/lib/hostUpdateFacts.ts`). `ageMs`, not a time: the
+ * reader's clock is another machine's.
+ */
+export type SyncHostUpdateBlock = {
+  ageMs: number;
+  targetVersion: string | null;
+  holders: UpdateBlockHolder[];
+};
+
+/** One process that held a file in the install folder open (`readUpdateBlockHolders`). */
+export type UpdateBlockHolder = { pid: number; name: string; path: string | null };
 
 export type SyncPeerConnectionState = SyncPeerMetadata & {
   connectedAt: string;
@@ -238,6 +274,11 @@ export type SyncPeerConnectionState = SyncPeerMetadata & {
   isBrain: boolean;
   isHost?: boolean;
   isAuthenticated: boolean;
+  /**
+   * A lane-sharing guest (another ADE account). Its `deviceName` is set by
+   * the host ("Guest" and a short user id), never the name the guest sent.
+   */
+  laneShareGuest?: boolean;
 };
 
 // Legacy internal/wire role names kept for sync protocol compatibility.
@@ -343,6 +384,12 @@ export type SyncGetStatusArgs = {
    * the computation.
    */
   awaitTransferReadiness?: boolean;
+  /**
+   * False leaves out the pairing token and PIN (`bootstrapToken`,
+   * `pairingPin`). Set by a caller that never shows them, such as the
+   * account publisher's 2-second relay check: it then reads no secret file.
+   */
+  includePairingSecrets?: boolean;
 };
 
 export type SyncDeviceRuntimeState = SyncDeviceRecord & {
@@ -816,11 +863,18 @@ export function createSyncAccountDirectoryHealth(
 export type SyncRouteHealth = {
   listener: {
     listenerBound: boolean;
+    /** Some local route (the port itself, or a side door) answers as ADE. */
     loopbackAdeValidated: boolean;
     port: number | null;
     lastFailureAt: string | null;
     reason: string | null;
     lastSuccessAt: string | null;
+    /**
+     * Program name of another process holding 127.0.0.1:<port> (e.g.
+     * "workerd"); never a path or arguments. Also set while a side door
+     * answers in its place.
+     */
+    shadowedBy?: string | null;
   };
   tailscale: {
     enabled: boolean;
@@ -1064,6 +1118,16 @@ export type SyncFeatureFlags = {
     enabled: true;
   };
   /**
+   * `terminal_*` envelopes may name any project that is open on this machine
+   * (the envelope's `projectId`), on a roster socket as well as a full one.
+   * The host streams that project's session without a project switch. A
+   * project that is not open, or a session it does not have, gets a
+   * `terminal_snapshot` with `error` set. Older hosts omit this field.
+   */
+  rosterTerminal?: {
+    enabled: true;
+  };
+  /**
    * Bidirectional oversized-envelope framing. The host returns this only to a
    * peer that declared the matching hello capability.
    */
@@ -1199,6 +1263,15 @@ export type SyncMobileProjectSummary = {
   isAvailable: boolean;
   isCached: boolean;
   isOpen: boolean;
+  /**
+   * The account project this folder is a copy of (`ap_` + 32 hex). Sent only
+   * when the link belongs to the account signed in on the host
+   * (`publicProjectRecord`). Additive: older hosts omit it and older phones
+   * ignore it.
+   */
+  accountProjectId?: string;
+  /** The GitHub repository id, when the host knows it. Additive. */
+  githubRepoId?: number;
 };
 
 export type SyncProjectCatalogPayload = {
@@ -1333,6 +1406,10 @@ export type SyncRosterProject = {
    * machines by it. Optional: older hosts omit it and older phones ignore it.
    */
   repoOriginUrl?: string | null;
+  /** As `SyncMobileProjectSummary.accountProjectId`. Additive. */
+  accountProjectId?: string;
+  /** As `SyncMobileProjectSummary.githubRepoId`. Additive. */
+  githubRepoId?: number;
   iconDataUrl?: string | null;
   lastOpenedAt?: string | null;
   /** true ⇒ live running/awaiting fidelity; false ⇒ disk-derived status only. */
@@ -1643,13 +1720,45 @@ export type SyncHelloAuth =
       dpop?: SyncDpopProof | null;
       /** Optional legacy one-time desktop runtime authorization. */
       runtimeHostGrant?: string | null;
+      /**
+       * The paired secret this device already holds for the host, if any. A
+       * host that recognizes it keeps it and omits `accountPairing` from
+       * hello_ok, so adoption mints no secret a dropped reply could lose.
+       * Hosts that predate the field ignore it.
+       */
+      pairedSecret?: string | null;
     }
   | {
       kind: "account_sealed";
       v: 1;
       deviceId: string;
       sealed: string;
+    }
+  | {
+      /**
+       * Another ADE account reaching a lane the host's owner shared with it
+       * (lane sharing). Relay only. The guest's account token never comes
+       * here: `ticket` is the one-use ticket the account directory gave the
+       * guest (`POST /lane-shares/:id/connect`). The host redeems it with its
+       * own owner's token, takes the user id from the directory's answer,
+       * and accepts only while that grant is active and `dpop` is signed (over
+       * the ticket) by the key the ticket was minted for. It never writes a
+       * pairing record. A hello that also carries `accountToken` is refused.
+       */
+      kind: "guest";
+      deviceId: string;
+      ticket: string;
+      dpop: SyncDpopProof;
     };
+
+/**
+ * What the host tells a guest about its own access, in `hello_ok`. The host
+ * decided it from its grant list; a client never claims a role.
+ */
+export type SyncLaneShareGuestInfo = {
+  userId: string;
+  grants: Array<{ grantId: string; laneId: string }>;
+};
 
 export type SyncAccountChallengePayload = {
   v: 1;
@@ -1726,14 +1835,17 @@ export type SyncHelloOkPayload = {
   /** Present only for capable clients authenticated through ADE Relay. */
   relayAuthorization?: SyncRelayAuthorizationLease;
   /**
-   * Fresh paired credential minted only when a verified account hello adopts a
-   * genuinely new device. Existing devices keep their stored pairing record,
-   * and the host omits this field so reconnects cannot rotate their secret.
+   * A paired credential the account hello minted: for a new device, or for an
+   * existing record whose device did not prove a secret it holds (then staged
+   * behind the old secret until a hello presents it). Omitted when the host
+   * kept the secret the device presented in `pairedSecret`: keep yours.
    */
   accountPairing?: {
     deviceId: string;
     secret: string;
   };
+  /** Set only on a guest connection (lane sharing): the lanes this guest may read. */
+  laneShareGuest?: SyncLaneShareGuestInfo;
   /**
    * Project-host readiness on this connection. Absent on older hosts.
    * Socket-up (`hello_ok`) is not the same as a usable project host.
@@ -1814,6 +1926,14 @@ export type SyncHelloErrorPayload =
        * (`host_update_required` — update it there), or whose account session
        * moved under the handshake (`account_session_changed` — sign in, then
        * retry). None of those is a reason to destroy a saved pairing.
+       *
+       * Lane sharing: `lane_share_refused` means this account has no active
+       * grant on this machine (never shared, pending, revoked, left or ended);
+       * `lane_share_unavailable` means the host could not check its grant list
+       * right now and the guest may retry later. `lane_share_paused` means the
+       * grant is active but the owner must act first: the lane is archived, or
+       * this computer has no rights set for the share (the owner sets them or
+       * revokes the share).
        */
       code:
         | "auth_failed"
@@ -1824,7 +1944,10 @@ export type SyncHelloErrorPayload =
         | "account_session_changed"
         | "invalid_hello"
         | "relay_account_required"
-        | "connection_attempt_superseded";
+        | "connection_attempt_superseded"
+        | "lane_share_refused"
+        | "lane_share_unavailable"
+        | "lane_share_paused";
       message: string;
     })
   | (SyncHelloErrorHost & {
@@ -2097,6 +2220,11 @@ export type SyncTerminalSubscribePayload = {
    * otherwise it falls back to the regular tail snapshot.
    */
   sinceOffset?: number;
+  /**
+   * The root of the project that the envelope's `projectId` names, so a host
+   * that knows the project under another id still finds it.
+   */
+  projectRootPath?: string | null;
 };
 
 export type SyncTerminalUnsubscribePayload = {
@@ -2136,6 +2264,22 @@ export type SyncTerminalSnapshotPayload = {
    * this field and keep replaying `transcript`. Omitted on delta resumes.
    */
   screen?: SyncTerminalScreenSnapshot | null;
+  /**
+   * Set when the host cannot serve the subscribe. The snapshot then has no
+   * transcript and no live stream follows.
+   */
+  error?: SyncTerminalSubscribeError | null;
+};
+
+export type SyncTerminalSubscribeErrorCode =
+  /** The project is not open on this machine. */
+  | "project_not_open"
+  /** The project is open, but it has no session with this id. */
+  | "session_not_found";
+
+export type SyncTerminalSubscribeError = {
+  code: SyncTerminalSubscribeErrorCode;
+  message: string;
 };
 
 export type SyncTerminalDataPayload = {
@@ -2192,13 +2336,27 @@ export type SyncTerminalInputPayload = {
   inputId?: string;
 };
 
+/**
+ * A lane share host's refusal of a guest's typed line (`lane_share_*`, or
+ * `forbidden_command`). Only a guest connection gets these.
+ * `lane_share_cli_typing_unavailable`: this host cannot take typed lines at
+ * all (a Windows host), apart from `lane_share_right_missing`. A client that
+ * does not know a code shows the message.
+ */
+export type LaneShareTerminalInputRefusalCode =
+  | "lane_share_cli_typing_unavailable"
+  | "lane_share_right_missing"
+  | `lane_share_${string}`
+  | "forbidden_command";
+
 export type SyncTerminalInputAckErrorCode =
   | "invalid_input_id"
   | "not_subscribed"
   | "session_not_live"
   | "project_mismatch"
   | "input_id_conflict"
-  | "dedupe_capacity";
+  | "dedupe_capacity"
+  | LaneShareTerminalInputRefusalCode;
 
 export type SyncTerminalInputAckPayload =
   | {
@@ -2341,6 +2499,23 @@ export type SyncChatSubscribeSnapshotPayload = {
    * not part of the contiguous `events` range.
    */
   pinnedEvents?: AgentChatEventEnvelope[];
+  /**
+   * `false` when the host's chat service has no such chat (deleted, or its
+   * lane was). Clients show the chat as deleted. Absent means found.
+   */
+  sessionFound?: boolean;
+  /**
+   * Set when the host could not serve this subscribe at all. `events` is then
+   * empty and is NOT a snapshot: the client keeps what it has, shows
+   * `message`, and offers Retry. Sent only to peers that declare
+   * `SYNC_CHAT_SUBSCRIBE_UNAVAILABLE_CAPABILITY`.
+   */
+  unavailable?: SyncChatSubscribeUnavailable;
+};
+
+export type SyncChatSubscribeUnavailable = {
+  code: "project_not_open" | "project_mismatch" | "no_chat_scope" | "transcript_read_failed";
+  message: string;
 };
 
 export type SyncChatUnsubscribePayload = {
@@ -2685,6 +2860,7 @@ export type SyncCliLaunchProvider =
   | "grok"
   | "copilot"
   | "devin"
+  | "antigravity"
   | "shell";
 
 export type SyncStartCliSessionArgs = {
@@ -2718,6 +2894,19 @@ export type SyncStartCliSessionArgs = {
   presetId?: string | null;
   /** A stored API credential, when the model came from a key rather than a preset. */
   credentialId?: string | null;
+  /**
+   * Linear issues to attach to the session before the CLI spawns, so the agent
+   * inherits `ADE_LINEAR_*` and can drive its issue through `ade linear`. Same
+   * attach path as a desktop CLI launch (`pty.create` `linearIssues`).
+   */
+  linearIssues?: LaneLinearIssue[];
+  /** Delay before the launch line is typed into the shell (the host caps it). */
+  startupDelayMs?: number;
+  /**
+   * Delay before `initialInput` is sent, for a launch that types its prompt.
+   * A provider launch that sets its own delay keeps it.
+   */
+  initialInputDelayMs?: number;
 };
 
 export type SyncStartCliSessionResult = {
@@ -2817,6 +3006,8 @@ export const PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS: readonly ProviderAccountRe
 
 export type SyncRemoteCommandAction =
   | "analytics.capture"
+  | "announcements.getSeen"
+  | "announcements.markSeen"
   | "analytics.flush"
   | "analytics.getStatus"
   | "analytics.setClientEnabled"
@@ -2836,6 +3027,12 @@ export type SyncRemoteCommandAction =
   | "usage.getModelPriceOverrides"
   | "usage.setModelPriceOverride"
   | "proxy.status"
+  | "search.query"
+  | "search.indexStatus"
+  // This machine's "Update & restart", from a phone or browser
+  // (`machineUpdateRemoteCommands.ts`).
+  | "machine.updateImpact"
+  | "machine.updateAndRestart"
   | PersonalChatRemoteCommandAction
   | "lanes.list"
   | "lanes.listDeleteProgress"
@@ -2870,6 +3067,7 @@ export type SyncRemoteCommandAction =
   | "lanes.cancelGitWrite"
   | "lanes.deleteLeftoverWorktree"
   | "lanes.attachGitHubIssueToSession"
+  | "lanes.attachLinearIssueToSession"
   | "lanes.detachGitHubIssueFromSession"
   | "lanes.listGitHubIssuesForSession"
   | "lanes.listGitHubIssuesForLaneSessions"
@@ -2934,6 +3132,8 @@ export type SyncRemoteCommandAction =
   | "chat.setParallelLaunchState"
   | "chat.getFastModeEnabled"
   | "chat.setFastModeEnabled"
+  | "chat.getRootFullAccess"
+  | "chat.setRootFullAccess"
   | "chat.handoff"
   | "chat.startSideChat"
   | "chat.endSideChat"
@@ -2954,6 +3154,7 @@ export type SyncRemoteCommandAction =
   | "chat.startCrossMachineBatchMove"
   | "chat.getCrossMachineBatchMove"
   | "chat.retryCrossMachineBatchMove"
+  | "chat.crossMachineBatchSourceChanged"
   | "chat.resolveCrossMachineBatchMoveApproval"
   | "chat.getContextUsage"
   | "chat.getClaudeUsage"
@@ -2998,9 +3199,13 @@ export type SyncRemoteCommandAction =
   | "chat.continueUsageLimitOnAlternate"
   | "chat.switchAccount"
   | "chat.setScheduledWorkPaused"
+  | "chat.setScheduledWorkItemPaused"
+  | "chat.runScheduledWorkNow"
   | "chat.getTranscript"
   | "chat.getChatEventHistory"
   | "chat.listSubagents"
+  | "chat.listPendingInputs"
+  | "chat.getSessionCapabilities"
   | "chat.getSubagentTranscript"
   | "chat.getMainTranscript"
   | "chat.create"
@@ -3012,6 +3217,7 @@ export type SyncRemoteCommandAction =
   | "chat.recoverTurn"
   | "chat.resolveUnprocessedMessage"
   | "chat.steer"
+  | "chat.typeIntoCli"
   | "chat.cancelSteer"
   | "chat.editSteer"
   | "chat.moveSteer"
@@ -3035,6 +3241,10 @@ export type SyncRemoteCommandAction =
   | "chat.archive"
   | "chat.unarchive"
   | "chat.delete"
+  | "chat.listDeleted"
+  | "chat.getDeletedDetail"
+  | "chat.reopenDeleted"
+  | "chat.removeDeleted"
   | "chat.models"
   | "chat.modelCatalog"
   | "chat.getChatEventHistoryPage"
@@ -3064,6 +3274,12 @@ export type SyncRemoteCommandAction =
   | "cto.countLinearIssues"
   | "cto.getLinearCustomViews"
   | "cto.updateIdentity"
+  | "cto.updateNotes"
+  | "cto.updateOpenWork"
+  | "cto.refreshContext"
+  | "cto.adoptAccountCopy"
+  | "cto.getAccountCopyStatus"
+  | "cto.previewSystemPrompt"
   | "git.getChanges"
   | "git.getBranchChanges"
   | "git.getFile"
@@ -3138,6 +3354,7 @@ export type SyncRemoteCommandAction =
   | "github.listIssueTypes"
   | "github.commentOnIssue"
   | "github.publishCurrentProject"
+  | "projects.setMainCheckout"
   | "jira.getConnectionStatus"
   | "jira.connect"
   | "jira.disconnect"
@@ -3155,6 +3372,7 @@ export type SyncRemoteCommandAction =
   | "jira.createIssue"
   | "projectConfig.get"
   | "projectConfig.save"
+  | "projectConfig.resolveAccountSettingNotice"
   | "ai.getStatus"
   | "ai.jevDecide"
   | "ai.jevStatus"
@@ -3168,6 +3386,8 @@ export type SyncRemoteCommandAction =
   | "ai.antigravitySignInStart"
   | "ai.antigravitySignInComplete"
   | "ai.antigravitySignInCancel"
+  | "ai.pinnedToolStatus"
+  | "ai.pinnedToolDownload"
   | "ai.listCursorCloudRepositories"
   | "ai.listCursorCloudAgents"
   | "ai.listCursorCloudRuns"
@@ -3188,6 +3408,22 @@ export type SyncRemoteCommandAction =
   | "ai.cursorCloudFleet"
   | "cloud.read"
   | "cloud.write"
+  | "cloud.previewKeptLaneRestore"
+  | "cloud.restoreKeptLane"
+  | "cloud.getKeptLaneRestore"
+  | "providerLogins.status"
+  | "providerLogins.captureNow"
+  | "providerLogins.use"
+  | "providerLogins.setCloud"
+  | "providerLogins.setCloudAll"
+  | "providerLogins.setCloudBalance"
+  | "providerLogins.remove"
+  | "cloudPhone.status"
+  | "cloudPhone.view"
+  | "cloudPhone.start"
+  | "cloudPhone.stop"
+  | "cloudPhone.keepAlive"
+  | "cloudPhone.screenshot"
   | "ai.getCursorCloudFleet"
   | "ai.cursorCloudResolveLane"
   | "ai.cursorCloudPullIntoLane"
@@ -3262,6 +3498,9 @@ export type SyncRemoteCommandAction =
   | "prs.addComment"
   | "prs.updateTitle"
   | "prs.updateBody"
+  | "prs.updateDescription"
+  | "prs.searchMentionables"
+  | "prs.getRepoReferences"
   | "prs.setLabels"
   | "prs.setAssignees"
   | "prs.submitReview"
@@ -3286,6 +3525,8 @@ export type SyncRemoteCommandAction =
   | "workTools.getLaneState"
   | "workTools.readObservationPreview"
   | "workTools.closeBrowserTab"
+  | "workTools.readBrowserTabFrame"
+  | "workTools.sendBrowserTabInput"
   // Proof records for the hosted web client's citations and scene stills. Read-only;
   // the desktop reads the same list through its own IPC.
   | "computerUse.listArtifacts"
@@ -3551,6 +3792,16 @@ export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", Sy
  */
 export type SyncHostHealthEnvelope = SyncEnvelopeWithPayload<"host_health", SyncHostHealth>;
 export type SyncPrsUpdatedEnvelope = SyncEnvelopeWithPayload<"prs_updated", { updatedAt: string }>;
+/** Host to the person's devices: the provider sign-ins changed; read `providerLogins.status` again. Older clients ignore it. */
+export type SyncProviderLoginsChangedEnvelope = SyncEnvelopeWithPayload<"provider_logins_changed", { changedAt: string }>;
+/** Host to the person's devices: the account's project list changed; read it again. Older clients ignore it. */
+export type SyncAccountProjectsChangedEnvelope = SyncEnvelopeWithPayload<"account_projects_changed", { changedAt: string }>;
+/**
+ * Host to a lane share guest only: its presence, rights or limits changed.
+ * Only the grant id; the guest reads `laneShare.getGuestState` again.
+ */
+export type SyncLaneShareGuestChangedPayload = { grantId: string };
+export type SyncLaneShareGuestChangedEnvelope = SyncEnvelopeWithPayload<"lane_share_guest_changed", SyncLaneShareGuestChangedPayload>;
 export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscribe", SyncRosterSubscribePayload>;
 export type SyncRosterUnsubscribeEnvelope = SyncEnvelopeWithPayload<"roster_unsubscribe", SyncRosterUnsubscribePayload>;
 export type SyncRosterSnapshotEnvelope = SyncEnvelopeWithPayload<"roster_snapshot", SyncRosterSnapshotPayload>;
@@ -3645,6 +3896,9 @@ export type SyncEnvelope =
   | SyncBrainStatusEnvelope
   | SyncHostHealthEnvelope
   | SyncPrsUpdatedEnvelope
+  | SyncProviderLoginsChangedEnvelope
+  | SyncAccountProjectsChangedEnvelope
+  | SyncLaneShareGuestChangedEnvelope
   | SyncRosterSubscribeEnvelope
   | SyncRosterUnsubscribeEnvelope
   | SyncRosterSnapshotEnvelope

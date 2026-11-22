@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
   ArrowsClockwise,
+  Eye,
   Folder,
   GitMerge,
   PushPin,
   X,
 } from "@phosphor-icons/react";
 import {
+  isAccountNoCopyLocation,
   welcomeProjectMachineName,
   type RecentProjectLocation,
 } from "../app/projectTabGrouping";
@@ -14,6 +16,7 @@ import {
   type WebMachineStatus,
 } from "../../webclient/workspace/webWorkspaceModel";
 import { WorktreeBadge } from "./WorktreeBadge";
+import { computerCountLabel, computerReachLabel, type CopyComputers } from "../../../shared/repositoryTab";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { Z_LAYERS } from "../ui/zLayers";
 import { subscribeProjectIcon } from "../../lib/projectIconCache";
@@ -240,37 +243,55 @@ function machineLocationKey(location: RecentProjectLocation): string {
  * The machines that have this project, as one quiet chip: a monitor glyph and
  * "3 machines", with a dot that is green while any of them is online. Nothing
  * when the project lives only on this machine — the common case says nothing.
- * The chip opens a small menu listing every machine and its state; picking one
- * other than the row's own opens the project there.
+ * The chip opens a small list of every machine and its state. It is a list,
+ * not a switch: opening the row opens the project, with every machine's work.
  */
 function ProjectMachineStack({
   locations,
   primary,
-  busy,
   web,
-  onSelectMachine,
+  computers,
+  onShowCopies,
+  namedByGroup = false,
 }: {
   locations: readonly RecentProjectLocation[];
   primary: RecentProjectLocation;
-  busy: boolean;
   web: WebRowChrome | null;
-  onSelectMachine?: (location: RecentProjectLocation) => void;
+  /** The shared count (`copyComputers`) of an account project; the chip shows it. */
+  computers?: CopyComputers | null;
+  /** An account project: the chip opens its copies menu (the top bar's), not this list. */
+  onShowCopies?: (anchor: { x: number; y: number }) => void;
+  /** The row sits under an "Only on <computer>" heading: one location needs no chip. */
+  namedByGroup?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const chipRef = useRef<HTMLButtonElement | null>(null);
   if (locations.length === 0) return null;
-  if (locations.length === 1 && locations[0]!.summary.kind !== "remote") return null;
+  // An account project shows its computers whenever it has a copy anywhere,
+  // one computer included: the chip is the way to its copies.
+  // Only reachable computers count: an offline own computer is hidden, as in every tab.
+  if (computers) {
+    if (computers.reachableCount === 0) return null;
+  } else if (locations.length === 1 && (namedByGroup || locations[0]!.summary.kind !== "remote" || isAccountNoCopyLocation(locations[0]!.summary))) {
+    return null;
+  }
   const ordered = [
     ...locations.filter((location) => location.summary.kind !== "remote"),
     ...locations.filter((location) => location.summary.kind === "remote"),
   ];
-  const entries = ordered.map((location) => {
+  const entries = ordered.flatMap((location) => {
     const name = welcomeProjectMachineName(location);
     const dot = locationDotState(location, location === primary, web);
-    return { location, name, dot };
+    // An offline computer is hidden; a missing folder on a reachable one still shows.
+    if (dot === "offline" && location.summary.exists !== false) return [];
+    return [{ location, name, dot }];
   });
+  if (!computers && entries.length === 0) return null;
   const online = entries.filter((entry) => entry.dot === "online").length;
   const summary = entries.map((entry) => `${entry.name} · ${DOT_LABEL[entry.dot]}`).join("\n");
+  // Reachable computers only: an offline own computer is hidden.
+  const count = computers?.reachableCount ?? entries.length;
+  const reachable = computers ? computers.reachable : online > 0;
   return (
     <div className="ade-welcome-machines" data-ade-project-machines="true">
       <button
@@ -279,15 +300,21 @@ function ProjectMachineStack({
         className="ade-welcome-machines-chip"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`On ${entries.length} machines, ${online} online`}
+        aria-label={computerReachLabel({ count, reachableCount: computers ? computers.reachableCount : online })}
         title={summary}
         onClick={(event) => {
+          // The row behind opens the project; the chip only shows its copies.
           event.stopPropagation();
+          if (onShowCopies) {
+            const rect = event.currentTarget.getBoundingClientRect();
+            onShowCopies({ x: rect.left, y: rect.bottom + 4 });
+            return;
+          }
           setOpen((value) => !value);
         }}
       >
-        <span className="kit-dot" data-state={online > 0 ? "ok" : undefined} aria-hidden />
-        {entries.length} {entries.length === 1 ? "machine" : "machines"}
+        <span className="kit-dot" data-state={reachable ? "ok" : undefined} aria-hidden />
+        {computerCountLabel(count)}
       </button>
       {/* Portalled so the recents list's scroll area cannot clip it; closes on
           an outside press or Escape. */}
@@ -300,28 +327,25 @@ function ProjectMachineStack({
         zIndex={Z_LAYERS.popover}
         className="ade-welcome-machines-menu"
         role="menu"
-        aria-label="Open on machine"
+        aria-label="Computers with a copy"
       >
         {entries.map(({ location, name, dot }) => {
-          const isPrimary = location === primary;
           const missing = location.summary.exists === false;
-          const canSelect = !isPrimary && !missing && Boolean(onSelectMachine) && !busy;
           return (
             <button
               key={machineLocationKey(location)}
               type="button"
               role="menuitem"
               className="ade-welcome-machines-item"
-              disabled={!canSelect}
-              onClick={(event) => {
-                event.stopPropagation();
-                setOpen(false);
-                onSelectMachine?.(location);
-              }}
+              // A list, not a choice: reachable by keyboard, inert when pressed.
+              // The press stops here: React carries it through the portal to
+              // the row, which would open the project.
+              aria-disabled="true"
+              onClick={(event) => event.stopPropagation()}
             >
               <span className="kit-dot" data-state={dot === "online" ? "ok" : dot === "busy" ? "warn" : undefined} aria-hidden />
               <span className="ade-welcome-machines-name">{name}</span>
-              <span className="ade-welcome-machines-state">{isPrimary ? "this row" : missing ? "folder missing" : DOT_LABEL[dot]}</span>
+              <span className="ade-welcome-machines-state">{missing ? "folder missing" : DOT_LABEL[dot]}</span>
             </button>
           );
         })}
@@ -350,9 +374,16 @@ export function RecentProjectRow({
   onContextMenu,
   primary,
   locations,
-  onSelectMachine,
   lastActiveAt,
   web = null,
+  removeLabel,
+  restores = false,
+  repository = null,
+  computers = null,
+  iconDataUrl = null,
+  local = true,
+  onShowCopies,
+  namedByGroup = false,
 }: {
   rp: RecentProjectSummary;
   connectionState: RemoteRuntimeConnectionState | null;
@@ -361,14 +392,30 @@ export function RecentProjectRow({
   /** Another row is being opened — this one waits its turn, silently. */
   busy?: boolean;
   onOpen: () => void;
-  onTogglePin: () => void;
+  /** Absent when this computer has no recent of the project to pin. */
+  onTogglePin?: () => void;
   onForget: () => void;
+  /** The X button's label; it names what the X does. */
+  removeLabel?: string;
+  /** A row hidden from this list: the button shows it again instead of removing it. */
+  restores?: boolean;
+  /** `owner/name` of an account project: the subtitle. A local folder shows its path. */
+  repository?: string | null;
+  /** The shared computer count of an account project. */
+  computers?: CopyComputers | null;
+  /** The project's icon from any source; kept while its computer is offline. */
+  iconDataUrl?: string | null;
+  /** A folder that is no account project (recents behavior: Reconnect, path). */
+  local?: boolean;
+  /** An account project: its computers chip opens the copies menu. */
+  onShowCopies?: (anchor: { x: number; y: number }) => void;
+  /** Under an "Only on <computer>" heading, which already names the computer. */
+  namedByGroup?: boolean;
   onMerge?: () => void;
   /** Opens the project's right-click menu. */
   onContextMenu?: (event: ReactMouseEvent) => void;
   primary: RecentProjectLocation;
   locations: readonly RecentProjectLocation[];
-  onSelectMachine?: (location: RecentProjectLocation) => void;
   lastActiveAt: string | null;
   /** Present only on the hosted client, where every row is a machine's repo. */
   web?: WebRowChrome | null;
@@ -380,8 +427,15 @@ export function RecentProjectRow({
   const parked = connectionState === "parked";
   // Remote rows are "offline" until their target reports a live connection. On
   // web, a machine that is merely dialable is not dimmed — it opens on click.
-  const offline = web ? web.status === "offline" : isRemote && connectionState !== "connected";
-  const projectIconDataUrl = locations
+  // An account project with no copy is not offline: it opens its tab, where
+  // a copy can be added.
+  const noCopy = !web && isAccountNoCopyLocation(rp);
+  // An account project always opens (its tab waits for a computer when none
+  // is reachable), so it is never dimmed and never says "Reconnect".
+  const offline = !local
+    ? false
+    : web ? web.status === "offline" : isRemote && !noCopy && connectionState !== "connected";
+  const projectIconDataUrl = iconDataUrl ?? locations
     .map((location) => location.summary.remote?.iconDataUrl ?? null)
     .find((dataUrl): dataUrl is string => Boolean(dataUrl)) ?? null;
   const localIconRootPath = locations.find(
@@ -465,7 +519,9 @@ export function RecentProjectRow({
             </span>
           ) : (
             <span className="ade-welcome-row-sub">
-              <MiddleTruncatedPath path={displayPath} title={rp.rootPath} />
+              {repository
+                ? <span className="ade-welcome-row-repo" title={noCopy ? "No copy on any computer yet" : repository}>{repository}</span>
+                : noCopy ? "No copy on any computer yet" : <MiddleTruncatedPath path={displayPath} title={rp.rootPath} />}
             </span>
           )}
         </span>
@@ -475,9 +531,10 @@ export function RecentProjectRow({
         <ProjectMachineStack
           locations={locations}
           primary={primary}
-          busy={busy}
           web={web}
-          onSelectMachine={onSelectMachine}
+          computers={computers}
+          onShowCopies={onShowCopies}
+          namedByGroup={namedByGroup}
         />
         <div className="ade-welcome-row-top">
           {isOpen ? (
@@ -511,7 +568,7 @@ export function RecentProjectRow({
                   <GitMerge size={13} weight="bold" />
                 </button>
               ) : null}
-              <button
+              {onTogglePin ? <button
                 type="button"
                 className="ade-welcome-icon-button"
                 aria-label={
@@ -527,20 +584,20 @@ export function RecentProjectRow({
                 }}
               >
                 <PushPin size={13} weight={rp.pinned ? "fill" : "regular"} />
-              </button>
+              </button> : null}
               <button
                 type="button"
                 className="ade-welcome-icon-button"
-                data-danger="true"
-                aria-label={`Remove ${rp.displayName} from recents`}
-                title="Remove from recents"
+                data-danger={restores ? undefined : "true"}
+                aria-label={removeLabel ?? `Remove ${rp.displayName} from this list`}
+                title={removeLabel ?? "Remove from this list"}
                 disabled={isForgetting}
                 onClick={(event) => {
                   event.stopPropagation();
                   onForget();
                 }}
               >
-                <X size={13} weight="bold" />
+                {restores ? <Eye size={13} weight="bold" /> : <X size={13} weight="bold" />}
               </button>
             </div>
           ) : null}

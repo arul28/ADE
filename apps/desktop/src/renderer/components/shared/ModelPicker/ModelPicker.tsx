@@ -40,6 +40,7 @@ import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
 } from "./runtimeCatalogCache";
 import { fetchSharedRuntimeCatalog } from "./sharedCatalogFetch";
+import { useRuntimeCatalogVersion } from "./useRuntimeCatalogVersion";
 
 /** The saved preset (or ad-hoc route) a surface is running on, for the trigger. */
 export type ModelPickerActivePreset = {
@@ -83,6 +84,12 @@ export type ModelPickerProps = {
   filter?: (model: ModelDescriptor) => boolean;
   models?: readonly ModelDescriptor[];
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
+  /**
+   * Families whose runtime is not installed, from the same status as
+   * `providerAuthStatus` (`familiesWithoutRuntime`). Their rows stay dimmed;
+   * without it, a family that is not ready reads as a missing sign-in.
+   */
+  providerRuntimeMissing?: Partial<Record<ProviderFamily, true>>;
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
   hideSignInFamilies?: readonly ProviderFamily[];
   onRuntimeCatalogRefreshed?: (
@@ -203,6 +210,7 @@ export const ModelPicker = memo(function ModelPicker({
   filter,
   models,
   providerAuthStatus,
+  providerRuntimeMissing,
   onOpenSignIn,
   hideSignInFamilies,
   onRuntimeCatalogRefreshed,
@@ -274,6 +282,18 @@ export const ModelPicker = memo(function ModelPicker({
   const setRuntimeCatalog = useCallback((catalog: AgentChatModelCatalog | null) => {
     setRuntimeCatalogState({ scopeKey: catalogScopeKey, catalog });
   }, [catalogScopeKey]);
+  // Another surface (the "@" menu, Settings › Providers) can load or refresh
+  // this machine's bucket while the picker is mounted: follow it.
+  const sharedCatalogVersion = useRuntimeCatalogVersion(catalogScopeKey);
+  useEffect(() => {
+    const shared = getSharedRuntimeCatalog(catalogScopeKey);
+    if (!shared) return;
+    setRuntimeCatalogState((current) => (
+      current.scopeKey === catalogScopeKey && current.catalog === shared
+        ? current
+        : { scopeKey: catalogScopeKey, catalog: shared }
+    ));
+  }, [catalogScopeKey, sharedCatalogVersion]);
   const [refreshingProvider, setRefreshingProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
   const [refreshErrorProvider, setRefreshErrorProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
   const { recents } = useModelRecents({ hydrate: open });
@@ -350,8 +370,9 @@ export const ModelPicker = memo(function ModelPicker({
     void loadRuntimeCatalog({ mode: "cached" });
   }, [loadRuntimeCatalog, open]);
 
-  const handleProviderRailSelect = useCallback((family: ProviderFamily) => {
+  const handleProviderRailSelect = useCallback((family: ProviderFamily, options?: { force?: boolean }) => {
     const refreshProvider = refreshProviderForFamily(family);
+    const force = options?.force === true;
     if (refreshProvider) {
       void (async () => {
         const scopeAtRefresh = catalogScopeKey;
@@ -360,7 +381,7 @@ export const ModelPicker = memo(function ModelPicker({
         const shared = getSharedRuntimeCatalog(catalogScopeKey);
         if (shared) {
           setRuntimeCatalog(shared);
-          if (runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor, catalogScopeKey)) {
+          if (!force && runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor, catalogScopeKey)) {
             setRefreshErrorProvider((current) => current === refreshProvider ? null : current);
             setRefreshingProvider((current) => (
               providerRefreshTokenRef.current === refreshToken ? null : current
@@ -371,9 +392,9 @@ export const ModelPicker = memo(function ModelPicker({
         setRefreshErrorProvider((current) => current === refreshProvider ? null : current);
         setRefreshingProvider(refreshProvider);
         try {
-          const immediate = await loadRuntimeCatalog({ mode: "refresh-stale", refreshProvider });
+          const immediate = await loadRuntimeCatalog({ mode: force ? "force" : "refresh-stale", refreshProvider });
           if (!immediate) return;
-          if (immediate.stale === true) {
+          if (!force && immediate.stale === true) {
             const forced = await loadRuntimeCatalog({ mode: "force", refreshProvider });
             if (!forced) return;
           }
@@ -439,11 +460,13 @@ export const ModelPicker = memo(function ModelPicker({
     return firstModel ? firstModel.id : "";
   }, [value, recents, modelList]);
 
+  // `runtimeCatalog`: a refresh of this machine's catalog (Settings, another
+  // surface) can change the selected model's label and Fast/tier support.
   const selectedModel = useMemo<ModelDescriptor | undefined>(() => {
     if (!value) return undefined;
     return resolveModelDescriptorWithRuntimeCatalog(value, catalogScopeKey)
       ?? createUnknownModelPlaceholder(value);
-  }, [catalogScopeKey, value]);
+  }, [catalogScopeKey, runtimeCatalog, value]);
 
   const availableSet = useMemo(() => {
     const ids = constrainToAvailableModelIds || !runtimeCatalog
@@ -577,16 +600,22 @@ export const ModelPicker = memo(function ModelPicker({
             className="outline-none"
             style={{ zIndex: Z_LAYERS.popover }}
             onCloseAutoFocus={(event) => {
-              event.preventDefault();
+              // Keep focus that went somewhere else (the host's prompt box, an
+              // outside click). Focus that fell to the page after a keyboard
+              // pick or Escape goes back to the trigger (Radix's default).
+              const active = document.activeElement;
+              if (active && active !== document.body) event.preventDefault();
             }}
           >
             {open ? (
               <ModelPickerContent
                 catalogScopeKey={catalogScopeKey}
-                value={effectiveValue}
+                value={value}
+                openAtValue={effectiveValue}
                 models={modelList}
                 isAvailable={isAvailable}
                 {...(providerAuthStatus ? { providerAuthStatus } : {})}
+                {...(providerRuntimeMissing ? { providerRuntimeMissing } : {})}
                 onSelect={handleSelect}
                 onRequestClose={handleRequestClose}
                 {...(onOpenHarnessSettings ? { onOpenHarnessSettings: handleOpenHarnessSettings } : {})}
@@ -615,7 +644,7 @@ export const ModelPicker = memo(function ModelPicker({
                     const nextTier = fastModeAllowed ? next : "standard";
                     const model = modelList.find((entry) => entry.id === modelId);
                     if (!model) return;
-                    if (modelId === effectiveValue) {
+                    if (modelId === value) {
                       onServiceTierChange?.(nextTier);
                       return;
                     }

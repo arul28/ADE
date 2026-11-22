@@ -99,6 +99,14 @@ func workRemoteLaneMachineName(_ laneId: String, options: [WorkMachineFilterOpti
   return options.first { $0.id == machineKey }?.name
 }
 
+/// The computer a Work row's session runs on, for the row's long-press menu.
+/// Rows never name it; the menu, the chat header and the prompt box do.
+func workSessionMachineName(laneId: String, options: [WorkMachineFilterOption]) -> String? {
+  if let remote = workRemoteLaneMachineName(laneId, options: options) { return remote }
+  guard workParseRemoteLaneId(laneId) == nil else { return nil }
+  return options.first { $0.id == workPrimaryMachineFilterId }?.name
+}
+
 /// The other machines' checkouts of the repository `identity`, one per machine.
 ///
 /// A machine can register the same repository more than once (a second clone,
@@ -110,23 +118,36 @@ func workRemoteLaneMachineName(_ laneId: String, options: [WorkMachineFilterOpti
 /// out projects ADE registered on its own (`catalogVisibility == "system"`), so
 /// that part of desktop's rule is applied on the host. The Hub still lists
 /// every project separately.
+/// `account` names the folders the account knows as copies of the project:
+/// they match even when the computer still names the repository by an old
+/// GitHub address. An account copy wins over a folder that matches only by
+/// address, and the account's main copy wins over the others, because new
+/// lanes go there (Location shows it as "Used for new lanes"). An address
+/// match on another GitHub host does not count for an account project.
 func workRemoteMachineRepos(
   machines: [MachineFleet.Machine],
   identity: String?,
-  folderKey: String? = nil
+  folderKey: String? = nil,
+  account: WorkAccountCopies? = nil
 ) -> [WorkRemoteMachineRepo] {
-  guard identity != nil || folderKey != nil else { return [] }
+  guard identity != nil || folderKey != nil || account != nil else { return [] }
   var repos: [WorkRemoteMachineRepo] = []
   for machine in machines {
+    let copies = account?.onMachine(machine.machineKey) ?? (ids: [], main: nil)
     let matches = machine.projects.filter { project in
-      fleetProjectsMatch(
+      if copies.ids.contains(project.projectId) { return true }
+      let otherIdentity = workRepoIdentity(originUrl: project.repoOriginUrl)
+      if let account, otherIdentity != nil, workRepoHost(originUrl: project.repoOriginUrl) != account.host { return false }
+      return fleetProjectsMatch(
         identity: identity,
         folder: folderKey,
-        otherIdentity: workRepoIdentity(originUrl: project.repoOriginUrl),
+        otherIdentity: otherIdentity,
         otherFolder: hubProjectFolderKey(project.rootPath, displayName: project.displayName)
       )
     }
-    guard let project = workPickLiveCheckout(matches) else { continue }
+    let accountMatches = matches.filter { copies.ids.contains($0.projectId) }
+    let mainCopy = copies.main.flatMap { main in accountMatches.first { $0.projectId == main } }
+    guard let project = mainCopy ?? workPickLiveCheckout(accountMatches.isEmpty ? matches : accountMatches) else { continue }
     repos.append(WorkRemoteMachineRepo(
       machineKey: machine.machineKey,
       machineName: machine.name,
@@ -137,6 +158,15 @@ func workRemoteMachineRepos(
     ))
   }
   return repos
+}
+
+/// The account project of the focused folder, for `workRemoteMachineRepos`.
+struct WorkAccountCopies {
+  /// The project's GitHub host (`github.com`, or a GitHub Enterprise host).
+  let host: String
+  /// Fleet key -> the registry ids of the account's copies on that computer,
+  /// and the main one.
+  let onMachine: (String) -> (ids: Set<String>, main: String?)
 }
 
 /// Desktop `pickLiveCheckout` over what the roster carries: the most recently
@@ -159,31 +189,64 @@ private func workPickLiveCheckout(_ projects: [RemoteRosterProject]) -> RemoteRo
 struct WorkRemoteMachineMerge {
   var sessions: [TerminalSessionSummary]
   var lanes: [LaneSummary]
-  /// Session id -> where the chat lives, for routing and navigation.
+  /// Session id -> where the session lives, for routing and navigation.
   var remoteChats: [String: SyncRemoteMachineChat]
 }
 
-/// Add the other machines' chats and lanes to the focused project's rows. A
-/// session id the focused machine already shows wins (the desktop union
-/// deduplicates the same way).
+/// Add the other machines' sessions and lanes to the focused project's rows:
+/// chats, CLI sessions and shells. The Work filters then decide which rows
+/// show, by the same rules as focused-machine rows.
+///
+/// Who owns a session decides which row shows. A session the focused
+/// machine's live roster lists (by id, or by one of its lanes) is the focused
+/// machine's: its row wins, as in the desktop union. Any other row in
+/// `sessions` is a copy the phone keeps from another computer, for example
+/// from an earlier primary. While that computer is live, its own roster row
+/// replaces the copy, and a copy its roster no longer lists is dropped. While
+/// it is not live (its reconnect window), the copy stays as the fallback.
+/// `focused` is nil while the focused roster has not loaded: then no copy is
+/// dropped, and only an id that a live remote roster lists is replaced.
 func workMergeRemoteMachineRows(
   sessions: [TerminalSessionSummary],
   lanes: [LaneSummary],
-  remote: [WorkRemoteMachineRepo]
+  remote: [WorkRemoteMachineRepo],
+  focused: RemoteRosterProject? = nil
 ) -> WorkRemoteMachineMerge {
   guard !remote.isEmpty else {
     return WorkRemoteMachineMerge(sessions: sessions, lanes: lanes, remoteChats: [:])
   }
-  var seenSessionIds = Set(sessions.map(\.id))
-  var mergedSessions = sessions
-  var mergedLanes = lanes
+  let focusedSessionIds = Set(focused?.chats.map(\.id) ?? [])
+  let focusedLaneIds = Set(focused?.lanes.map(\.id) ?? [])
+  func ownedByFocused(_ session: TerminalSessionSummary) -> Bool {
+    focusedSessionIds.contains(session.id) || focusedLaneIds.contains(session.laneId)
+  }
+  // Raw lane id -> the live computer whose roster lists that lane.
+  var remoteLaneOwner: [String: Int] = [:]
+  for (index, repo) in remote.enumerated() {
+    for lane in repo.lanes where remoteLaneOwner[lane.id] == nil { remoteLaneOwner[lane.id] = index }
+  }
+  let remoteSessionIds = Set(remote.flatMap { $0.chats.map(\.id) })
+  var mergedSessions = sessions.filter { session in
+    if ownedByFocused(session) { return true }
+    // Replaced below by its owner's live roster row.
+    if remoteSessionIds.contains(session.id) { return false }
+    // A copy from a live computer whose roster no longer lists it.
+    if focused != nil, remoteLaneOwner[session.laneId] != nil { return false }
+    return true
+  }
+  var seenSessionIds = Set(mergedSessions.map(\.id))
+  // A lane copy of a live computer: that computer's roster lanes list it
+  // (namespaced below) when one of its rows uses it.
+  var mergedLanes = focused == nil ? lanes : lanes.filter { lane in
+    focusedLaneIds.contains(lane.id) || remoteLaneOwner[lane.id] == nil
+  }
   var seenLaneIds = Set(lanes.map(\.id))
   var remoteChats: [String: SyncRemoteMachineChat] = [:]
   for repo in remote {
     let laneById = Dictionary(repo.lanes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     var usedLaneIds: [String] = []
     var usedLaneIdSet = Set<String>()
-    for chat in repo.chats where chat.isChatTool {
+    for chat in repo.chats {
       guard seenSessionIds.insert(chat.id).inserted else { continue }
       let lane = laneById[chat.laneId]
       // The lane's own name, as desktop shows it: a machine name is not part
@@ -260,6 +323,55 @@ func workParseMachineFilter(_ raw: String) -> Set<String> {
 
 func workSerializeMachineFilter(_ ids: Set<String>) -> String {
   ids.sorted().joined(separator: "\n")
+}
+
+/// Whether a merged row is another machine's CLI or shell session. Its
+/// terminal streams over that machine's light link when the link can stream
+/// terminals. Otherwise the row opens after its machine becomes the focused one.
+func workIsRemoteMachineTerminalRow(_ session: TerminalSessionSummary) -> Bool {
+  isWorkRemoteLaneId(session.laneId) && !isChatSession(session)
+}
+
+/// A CLI or shell session of another machine that streams over that machine's
+/// light link. The phone's focused machine and project stay as they are.
+struct WorkRemoteTerminalContext: Hashable {
+  let machineKey: String
+  /// The session's project, as that machine names it.
+  let projectId: String
+  let rootPath: String
+  let session: TerminalSessionSummary
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(machineKey)
+    hasher.combine(projectId)
+    hasher.combine(session.id)
+  }
+}
+
+/// The light-link context of another machine's CLI or shell session. Nil when
+/// the terminal needs that machine focused: its link is down, its ADE is
+/// older, or its roster does not list the session in an open project.
+@MainActor
+func workRemoteTerminalContext(
+  session: TerminalSessionSummary,
+  machineKey: String,
+  fleet: MachineFleet?
+) -> WorkRemoteTerminalContext? {
+  guard let fleet,
+        let connection = fleet.connection(for: machineKey),
+        connection.canStreamTerminals,
+        let machine = fleet.machine(for: machineKey)
+  else { return nil }
+  // The roster row names the project. Never guess another project.
+  guard let project = machine.projects.first(where: { project in
+    project.chats.contains { $0.id == session.id }
+  }), project.booted else { return nil }
+  return WorkRemoteTerminalContext(
+    machineKey: machineKey,
+    projectId: project.projectId,
+    rootPath: project.rootPath ?? "",
+    session: session
+  )
 }
 
 /// The roster row of a chat that lives on another machine's checkout.

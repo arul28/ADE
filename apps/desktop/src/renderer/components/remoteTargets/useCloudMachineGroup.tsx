@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { UserMinus } from "@phosphor-icons/react";
-import type { CloudMachine } from "../../../shared/adeCloud";
+import { cloudCatalogOf, cloudMachineSelfUpdating, type CloudMachine } from "../../../shared/adeCloud";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import { accountMachinePresence, machineIsAwake } from "../../../shared/machinePresence";
 import type { AdeAccountMachine, RemoteRuntimeTarget } from "../../../shared/types";
 import { useActivityStore } from "../../state/activityStore";
-import { CloudBoxOnlyRow, CloudBoxStrip, CloudGroupBanners, CloudGroupHead, cloudDeletedRow, cloudParkedRow } from "./CloudMachineGroup";
+import { AdeCloudMachineRow, CloudBoxStrip, CloudGroupBanners, CloudGroupHead, cloudDeletedRow, cloudParkedRow } from "./CloudMachineGroup";
 import { isDeletedCloudRow, matchCloudBoxes } from "./cloudMachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
 import type { MachineRow, MachineSection, MachineSections } from "./remoteMachineModel";
 import { cloudBoxContext, useCloudBoxActions, type CloudBoxContext } from "./useCloudBoxActions";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudMachines } from "./useCloudMachines";
 
@@ -24,6 +25,8 @@ export type RowExtras = {
   extraActions?: MachineAction[];
   hideLocalRemove?: boolean;
   parked?: { label: string; action: ReactNode } | null;
+  /** A cloud computer that updates itself: its card shows the update line, so the row has no Update button. */
+  selfUpdating?: boolean;
 };
 
 /**
@@ -57,7 +60,7 @@ export function useCloudMachineGroup(args: {
     onOpenSettings,
   } = args;
   const cloudEnabled = useAdeCloudEnabled();
-  const cloudMachines = useCloudMachines(args.enabled && cloudEnabled && Boolean(window.ade?.cloud?.listMachines));
+  const cloudMachines = useCloudMachines(args.enabled && cloudEnabled && isAdeAvailable(window.ade?.cloud?.listMachines));
   const cloudResult = cloudMachines.result;
   const cloudBoxes = useMemo(
     () => (cloudResult?.state === "ok" ? cloudResult.machines : []),
@@ -132,11 +135,14 @@ export function useCloudMachineGroup(args: {
   const boxStrip = (ctx: CloudBoxContext, wakeOnCard: boolean) => (
     <CloudBoxStrip
       box={ctx.box}
+      catalog={cloudCatalogOf(cloudResult?.account)}
       work={ctx.work}
       pending={cloudActions.pendingById[ctx.box.instanceId] ?? null}
+      approvalUrl={cloudActions.approvalById[ctx.box.instanceId] ?? null}
       error={cloudActions.errorById[ctx.box.instanceId] ?? null}
       onDismissError={() => cloudActions.dismissError(ctx.box.instanceId)}
       onWake={wakeOnCard ? () => void cloudActions.wake(ctx) : null}
+      onRetryUpdate={() => void cloudActions.update(ctx)}
       onOpenSettings={onOpenSettings}
     />
   );
@@ -159,6 +165,7 @@ export function useCloudMachineGroup(args: {
         // Remove from ADE takes the saved connection with it; without an
         // account row, the row keeps its own Remove from this computer.
         hideLocalRemove: ctx.accountMachine != null,
+        selfUpdating: cloudMachineSelfUpdating(box),
         parked: cloudParkedRow(box, ctx.name, cloudActions.pendingById[box.instanceId] ?? null, () => void cloudActions.wake(ctx)),
       };
     }
@@ -188,7 +195,7 @@ export function useCloudMachineGroup(args: {
   }
 
   // Rows that are cloud boxes leave their section for the ADE Cloud group,
-  // which keeps the order Connected, Ready to connect, Not reachable.
+  // which keeps the order Connected, Not connected, Not reachable.
   const cloudRows: Array<{ row: MachineRow; section: MachineSection; box: CloudMachine }> = [];
   const listedSections: Record<MachineSection, MachineRow[]> = { connected: [], available: [], unavailable: [] };
   const matchedBoxIds = new Set<string>();
@@ -204,14 +211,21 @@ export function useCloudMachineGroup(args: {
     }
   }
   // Boxes ADE made that no row stands for: joining, removed from ADE, or
-  // never signed in. They still use hours, so they stay visible.
+  // never signed in. They still use hours; the ADE Cloud dashboard lists them.
   const looseBoxes = cloudBoxes.filter((box) => !matchedBoxIds.has(box.instanceId));
   const cloudGroupBoxes = [...cloudRows.map(({ box }) => box), ...looseBoxes];
-  const showCloudGroup = cloudResult != null && cloudResult.state !== "not_connected"
-    && (cloudGroupBoxes.length > 0 || cloudResult.state !== "ok");
+  // ADE Cloud is one machine every account has: always one row, also with no
+  // lanes yet. Only a window with no ADE account (not connected) leaves it out.
+  const showCloudGroup = args.enabled && cloudEnabled && cloudResult?.state !== "not_connected";
 
-  /** The group, with each matched row drawn by the list's own row renderer. */
-  function renderGroup(renderRow: (row: MachineRow, section: MachineSection) => ReactNode): ReactNode {
+  const cloudAccount = cloudResult?.state === "ok" ? cloudResult.account : null;
+
+  /**
+   * The group: one "ADE Cloud" machine row, never a row per computer. Each
+   * lane's computer is ADE's business; the lanes, their sizes and their
+   * actions live in Settings › ADE Cloud, named by lane.
+   */
+  function renderGroup(): ReactNode {
     if (!showCloudGroup) return null;
     return (
       <div className="ade-cx-section" data-machine-group="cloud">
@@ -222,23 +236,14 @@ export function useCloudMachineGroup(args: {
           onRetry={cloudMachines.refresh}
           onOpenSettings={onOpenSettings}
         />
-        {cloudGroupBoxes.length > 0 ? (
-          <div className="ade-cx-list">
-            {cloudRows.map(({ row, section }) => renderRow(row, section))}
-            {looseBoxes.map((box) => {
-              const ctx = boxContext(box, null);
-              return (
-                <CloudBoxOnlyRow
-                  key={`cloud:${box.instanceId}`}
-                  box={box}
-                  accountKnown={accountKnown}
-                  actions={cloudActions.actionsFor(ctx, () => undefined)}
-                  strip={boxStrip(ctx, true)}
-                />
-              );
-            })}
-          </div>
-        ) : null}
+        <div className="ade-cx-list">
+          <AdeCloudMachineRow
+            boxes={cloudGroupBoxes}
+            account={cloudAccount}
+            known={cloudResult?.state === "ok"}
+            onOpenSettings={onOpenSettings}
+          />
+        </div>
         {cloudActions.dialog}
       </div>
     );

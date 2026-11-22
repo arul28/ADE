@@ -22,6 +22,7 @@ import {
   type IntegrationFact,
 } from "./integrations/IntegrationChrome";
 import { setIssueTopBarVisible, useIssueTopBarPreferences } from "../issues/issueTopBarPreferences";
+import { showToast } from "../app/toast/toastStore";
 import { Banner } from "../ui/notice";
 import { LinearMark } from "../lanes/linearBrand";
 import "./IntegrationsSettings.css";
@@ -29,6 +30,7 @@ import { LinearAgentSection } from "./LinearAgentSection";
 import { announceLinearConnectionChanged } from "../../lib/linearConnectionEvents";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { isImeComposing } from "../../lib/imeComposition";
+import { requirePin } from "../../state/repositoryScope";
 
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
 
@@ -93,7 +95,6 @@ export function LinearSection() {
   const [validating, setValidating] = useState(false);
   const [oauthStarting, setOauthStarting] = useState(false);
   const [oauthSessionId, setOauthSessionId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   // The status read itself failed, so the page cannot say connected or not.
   const [statusReadFailed, setStatusReadFailed] = useState(false);
   const validatingRef = useRef(false);
@@ -188,7 +189,7 @@ export function LinearSection() {
     if (!window.ade?.cto) return;
     const requestId = requestIdArg ?? invalidateLoadRequests();
     try {
-      const nextProjects = await window.ade.cto.getLinearProjects(pin);
+      const nextProjects = await window.ade.cto.getLinearProjects(requirePin(pin));
       if (!isCurrentLoadRequest(requestId)) return;
       setProjects(nextProjects);
     } catch {
@@ -208,7 +209,7 @@ export function LinearSection() {
     setAutolinksLoading(true);
     setAutolinkError(null);
     try {
-      const repo = await github.detectRepo(pin);
+      const repo = await github.detectRepo(requirePin(pin));
       if (autolinksRequestIdRef.current !== requestId) return;
       setGithubRepo(repo);
       if (!repo) {
@@ -216,7 +217,7 @@ export function LinearSection() {
         setAutolinkError(null);
         return;
       }
-      const autolinks = await github.listRepoAutolinks(repo, pin);
+      const autolinks = await github.listRepoAutolinks(repo, requirePin(pin));
       if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks(autolinks);
     } catch (err) {
@@ -237,7 +238,7 @@ export function LinearSection() {
     }
     const requestId = invalidateLoadRequests();
     try {
-      const status = await window.ade.cto.getLinearConnectionStatus(pin);
+      const status = await window.ade.cto.getLinearConnectionStatus(requirePin(pin));
       if (!isCurrentLoadRequest(requestId)) return;
       setStatusReadFailed(false);
       setConnection(status);
@@ -278,7 +279,7 @@ export function LinearSection() {
     if (!cto) {
       setOauthSessionIdState(null);
       setOauthStartingState(false);
-      setError("Linear integration is unavailable in this environment.");
+      showToast({ tone: "error", title: "Linear is unavailable", message: "Linear integration is unavailable in this environment." });
       return;
     }
 
@@ -288,14 +289,13 @@ export function LinearSection() {
 
     const poll = async () => {
       try {
-        const session = await cto.getLinearOAuthSession({ sessionId: activeSessionId }, pin);
+        const session = await cto.getLinearOAuthSession({ sessionId: activeSessionId }, requirePin(pin));
         if (!active || oauthSessionIdRef.current !== activeSessionId) return;
         if (session.status === "completed") {
           setOauthSessionIdState(null);
           setOauthStartingState(false);
           setConnection(session.connection ?? null);
           announceLinearConnectionChanged();
-          setError(null);
           if (session.connection?.connected) void loadProjects();
           else void loadStatus();
           return;
@@ -303,13 +303,13 @@ export function LinearSection() {
         if (session.status === "failed" || session.status === "expired") {
           setOauthSessionIdState(null);
           setOauthStartingState(false);
-          setError(session.error ?? "OAuth failed.");
+          showToast({ tone: "error", title: "Linear sign-in failed", message: session.error ?? "OAuth failed." });
         }
       } catch (err) {
         if (!active || oauthSessionIdRef.current !== activeSessionId) return;
         setOauthSessionIdState(null);
         setOauthStartingState(false);
-        setError(err instanceof Error ? err.message : "OAuth failed.");
+        showToast({ tone: "error", title: "Linear sign-in failed", message: err instanceof Error ? err.message : "OAuth failed." });
       }
     };
     void poll();
@@ -318,7 +318,7 @@ export function LinearSection() {
       if (!active || oauthSessionIdRef.current !== activeSessionId) return;
       setOauthSessionIdState(null);
       setOauthStartingState(false);
-      setError("Linear sign-in timed out. Try again.");
+      showToast({ tone: "error", title: "Linear sign-in timed out", message: "Linear sign-in timed out. Try again." });
     }, 5 * 60 * 1000);
     return () => {
       active = false;
@@ -341,9 +341,8 @@ export function LinearSection() {
     }
     const requestId = invalidateLoadRequests();
     setValidatingState(true);
-    setError(null);
     try {
-      const status = await window.ade.cto.setLinearToken({ token: submittedToken }, pin);
+      const status = await window.ade.cto.setLinearToken({ token: submittedToken }, requirePin(pin));
       if (
         !validatingRef.current
         || oauthStartingRef.current
@@ -358,7 +357,7 @@ export function LinearSection() {
         void loadProjects(requestId);
         setTokenInput("");
       } else {
-        setError(status.message ?? "Token validation failed.");
+        showToast({ tone: "error", title: "Linear didn't accept the token", message: status.message ?? "Token validation failed.", report: false });
       }
     } catch (err) {
       if (
@@ -369,7 +368,7 @@ export function LinearSection() {
       ) {
         return;
       }
-      setError(err instanceof Error ? err.message : "Validation failed.");
+      showToast({ tone: "error", title: "Couldn't validate the token", message: err instanceof Error ? err.message : "Validation failed." });
     } finally {
       if (validatingRef.current) {
         setValidatingState(false);
@@ -387,20 +386,19 @@ export function LinearSection() {
     const openExternal = window.ade?.app?.openExternal;
     if (!cto || validatingRef.current || oauthStartingRef.current) return;
     if (isRemoteRuntime) {
-      setError("Browser sign-in can't reach a project on another computer. Use an API key instead.");
+      showToast({ tone: "error", title: "Browser sign-in unavailable", message: "Browser sign-in can't reach a project on another computer. Use an API key instead." });
       return;
     }
     if (!openExternal) {
       setOauthSessionIdState(null);
       setOauthStartingState(false);
-      setError("Browser sign-in is not available in this ADE build.");
+      showToast({ tone: "error", title: "Browser sign-in unavailable", message: "Browser sign-in is not available in this ADE build." });
       return;
     }
     invalidateLoadRequests();
     setOauthStartingState(true);
-    setError(null);
     try {
-      const session = await cto.startLinearOAuth(pin);
+      const session = await cto.startLinearOAuth(requirePin(pin));
       if (!oauthStartingRef.current || validatingRef.current) return;
       await openExternal(session.authUrl);
       if (!oauthStartingRef.current || validatingRef.current) return;
@@ -408,7 +406,7 @@ export function LinearSection() {
     } catch (err) {
       if (!oauthStartingRef.current) return;
       setOauthStartingState(false);
-      setError(err instanceof Error ? err.message : "Unable to start OAuth.");
+      showToast({ tone: "error", title: "Couldn't start Linear sign-in", message: err instanceof Error ? err.message : "Unable to start OAuth." });
     }
   }, [invalidateLoadRequests, setOauthSessionIdState, setOauthStartingState, isRemoteRuntime, pin]);
 
@@ -416,15 +414,14 @@ export function LinearSection() {
     if (!window.ade?.cto) return;
     invalidateLoadRequests();
     try {
-      const status = await window.ade.cto.clearLinearToken(pin);
+      const status = await window.ade.cto.clearLinearToken(requirePin(pin));
       setConnection(status);
       announceLinearConnectionChanged();
       setProjects([]);
       setTokenInput("");
-      setError(null);
       setOauthSessionIdState(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to disconnect Linear.");
+      showToast({ tone: "error", title: "Couldn't disconnect Linear", message: err instanceof Error ? err.message : "Failed to disconnect Linear." });
     } finally {
       setValidatingState(false);
       setOauthStartingState(false);
@@ -443,7 +440,7 @@ export function LinearSection() {
         keyPrefix: candidate.keyPrefix,
         urlTemplate: candidate.urlTemplate,
         isAlphanumeric: candidate.isAlphanumeric,
-      }, pin);
+      }, requirePin(pin));
       await loadGithubAutolinks();
     } catch (err) {
       setAutolinkError(err instanceof Error ? err.message : "Unable to create GitHub autolink.");
@@ -618,7 +615,7 @@ export function LinearSection() {
         anchor={isConnected ? "linear-connection" : undefined}
         status={statusReadFailed && !connection
           ? { tone: "warn", label: "Couldn't check" }
-          : connection == null && !error
+          : connection == null
           ? { tone: "checking", label: "Checking…" }
           : isConnected
             ? { tone: "ok", label: "Connected" }
@@ -661,10 +658,6 @@ export function LinearSection() {
           anchor: "linear-top-bar",
         }}
       />
-
-      {error ? (
-        <Banner layout="inline" model={{ id: "linear-connection-error", tone: "error", title: error }} />
-      ) : null}
 
       <IntegrationColumns>
         {isConnected ? null : connectCard}

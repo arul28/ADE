@@ -108,7 +108,8 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
 
   useEffect(() => {
     const generation = ++requestRef.current;
-    if (!trigger) {
+    // No machine online: no suggestions, nothing is asked.
+    if (!trigger || !pin) {
       setSuggestions([]);
       return undefined;
     }

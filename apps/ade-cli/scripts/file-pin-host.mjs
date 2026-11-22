@@ -11,7 +11,7 @@ const GITHUB_RELEASE_HOSTS = ["github.com", "release-assets.githubusercontent.co
 export const VENDOR_DOWNLOAD_HOSTS = {
   muse: ["lookaside.facebook.com"],
   devin: ["static.devin.ai"],
-  antigravity: ["dl.google.com"],
+  antigravity: GITHUB_RELEASE_HOSTS,
   kimi: GITHUB_RELEASE_HOSTS,
   qwen: GITHUB_RELEASE_HOSTS,
   ffmpeg: GITHUB_RELEASE_HOSTS,

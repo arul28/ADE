@@ -11,7 +11,14 @@ vi.mock("../../../desktop/src/shared/sentry/capture", () => ({
   isSentryActive: () => true,
 }));
 
-import { startBrainRestartLoopWatch } from "./brainRestartLoop";
+// launchctl is a child process: answer "no such job" without starting one.
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
+  execFile: (_file: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string) => void) =>
+    callback(new Error("Could not find service"), ""),
+}));
+
+import { brainStartIsInRestartLoop, startBrainRestartLoopWatch } from "./brainRestartLoop";
 
 const NOW = Date.parse("2026-10-30T12:00:00.000Z");
 // Past any platform's pid range, so never a live process.
@@ -45,6 +52,10 @@ beforeEach(() => {
   runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-restart-loop-"));
   captureProblem.mockReset();
   vi.useFakeTimers({ now: NOW, toFake: ["setTimeout", "Date"] });
+  // The watch ignores a brain that started before this boot. The seeded
+  // starts are minutes old, so the computer must have been up longer than
+  // that; a CI runner can be younger.
+  vi.spyOn(os, "uptime").mockReturnValue(24 * 60 * 60);
 });
 
 afterEach(() => {
@@ -54,7 +65,7 @@ afterEach(() => {
 });
 
 describe("brain restart loop report", () => {
-  it("reports a crash loop once, after the brain stays up, and not again that day", () => {
+  it("reports a crash loop once, after the brain stays up, and not again that day", async () => {
     seed([
       { pid: DEAD_PIDS[0], minutesAgo: 4, build: "b1", counted: false },
       { pid: DEAD_PIDS[1], minutesAgo: 3, build: "b1", counted: true },
@@ -62,10 +73,12 @@ describe("brain restart loop report", () => {
     ]);
     startBrainRestartLoopWatch({ runtimeDir, build: "b1" });
     expect(readStarts().starts.at(-1)).toMatchObject({ pid: process.pid, counted: true });
+    // This brain reopens nothing by itself (no agent CLI) while in the loop.
+    expect(brainStartIsInRestartLoop()).toBe(true);
     // Not while the loop may still be going.
     expect(captureProblem).not.toHaveBeenCalled();
 
-    vi.advanceTimersByTime(2 * 60_000);
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
     expect(captureProblem).toHaveBeenCalledTimes(1);
     const [message, options] = captureProblem.mock.calls[0] as [string, { fingerprint: string[]; extra: { restartCount: number } }];
     expect(message).toBe("The brain kept restarting");
@@ -81,8 +94,10 @@ describe("brain restart loop report", () => {
       { pid: DEAD_PIDS[4], minutesAgo: 0.2, build: "b1", counted: true },
     ], { lastReportedAt });
     startBrainRestartLoopWatch({ runtimeDir, build: "b1" });
-    vi.advanceTimersByTime(10 * 60_000);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(captureProblem).toHaveBeenCalledTimes(1);
+    // Not reported again, but still a loop: it still reopens nothing.
+    expect(brainStartIsInRestartLoop()).toBe(true);
   });
 
   it.each<{ name: string; build: string; previous: Partial<SeedStart>; uptimeSec?: number }>([
@@ -90,7 +105,7 @@ describe("brain restart loop report", () => {
     { name: "the previous brain is still running", build: "b1", previous: { pid: process.ppid } },
     { name: "an update replaced the build", build: "b2", previous: {} },
     { name: "the computer restarted since the previous brain started", build: "b1", previous: { minutesAgo: 1.5 }, uptimeSec: 60 },
-  ])("does not count a start when $name", ({ build, previous, uptimeSec }) => {
+  ])("does not count a start when $name", async ({ build, previous, uptimeSec }) => {
     if (uptimeSec !== undefined) vi.spyOn(os, "uptime").mockReturnValue(uptimeSec);
     seed([
       { pid: DEAD_PIDS[0], minutesAgo: 4, build: "b1", counted: true },
@@ -98,10 +113,11 @@ describe("brain restart loop report", () => {
       { pid: DEAD_PIDS[2], minutesAgo: 2, build: "b1", counted: false, ...previous },
     ]);
     startBrainRestartLoopWatch({ runtimeDir, build });
-    vi.advanceTimersByTime(10 * 60_000);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
     const { starts, lastReportedAt } = readStarts();
     expect(starts.at(-1)).toMatchObject({ pid: process.pid, counted: false });
     expect(lastReportedAt).toBeNull();
+    expect(brainStartIsInRestartLoop()).toBe(false);
     expect(captureProblem).not.toHaveBeenCalled();
   });
 });

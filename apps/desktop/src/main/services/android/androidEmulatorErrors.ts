@@ -23,6 +23,8 @@ const EXPECTED_KIND: Partial<Record<AndroidErrorCode, "user" | "environment">> =
   // The memory guard's refusal: the machine is short of memory, and the
   // message says which emulator to stop. Not a fault of ADE.
   ANDROID_LOW_MEMORY: "environment",
+  // The disk can't hold the device's data partition: the machine's set-up.
+  ANDROID_LOW_DISK: "environment",
   // adb refused the device: the machine's adb server or the AVD's adb keys,
   // and the message says what to do. Not a fault of ADE.
   ANDROID_ADB_UNAUTHORIZED: "environment",
@@ -62,6 +64,8 @@ export class AndroidEmulatorFailure extends Error {
     readonly logPath: string | null = null,
     /** `ANDROID_ADB_UNAUTHORIZED` only: the refusal came after ADE restarted the adb server. */
     readonly adbRestarted = false,
+    /** `ANDROID_LOW_DISK` only: the free space the first start needs, and the free space there is, in MB. */
+    readonly disk: { neededMb: number; freeMb: number } | null = null,
   ) {
     super(`${code}: ${message}`);
     this.name = "AndroidEmulatorFailure";
@@ -80,6 +84,7 @@ export class AndroidEmulatorFailure extends Error {
       message: this.message.startsWith(prefix) ? this.message.slice(prefix.length) : this.message,
       logPath: this.logPath,
       ...(this.adbRestarted ? { adbRestarted: true } : {}),
+      ...(this.disk ? { neededMb: this.disk.neededMb, freeMb: this.disk.freeMb } : {}),
     };
   }
 }

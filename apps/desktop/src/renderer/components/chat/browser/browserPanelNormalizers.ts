@@ -177,6 +177,11 @@ export function normalizeTab(value: unknown): BrowserTab | null {
     openedBy: value.openedBy === "chat" ? "chat" : "human",
     openedByChatSessionId: stringField(value.openedByChatSessionId),
     openedByLaneId: stringField(value.openedByLaneId),
+    // Who the tab belongs to and its lifecycle: the strip groups an agent's
+    // tabs by chat, offers Keep, and shows when it will close or that it sleeps.
+    keptByPerson: booleanField(value.keptByPerson, false),
+    autoCloseAt: stringField(value.autoCloseAt),
+    sleeping: booleanField(value.sleeping, false),
     createdAt: stringField(value.createdAt) ?? new Date().toISOString(),
     zoomFactor: numberField(value.zoomFactor) || 1,
     devToolsOpen: booleanField(value.devToolsOpen, false),

@@ -11,11 +11,23 @@ import "./lib/packagedRuntimeFlag";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
+import type { AccountResetCreditSpender } from "../../desktop/src/main/services/usage/accountUsageLiveRefresh";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
-import type { CloudReadyPool } from "../../desktop/src/shared/cloudReady";
+import { stripAnsiWithOptions } from "../../desktop/src/shared/ansiStrip";
+import type { RemoteWorkChatEnded, RemoteWorkMachineRef, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
+import type { CloudSignInStatus } from "../../desktop/src/shared/cloudSignIns";
+import {
+  LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE,
+  laneShareNextDayStart,
+  laneSharePresetRights,
+} from "../../desktop/src/shared/laneShareRights";
+import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
+import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
+import { CLOUD_SMALL_UNLIMITED_SENTENCE, cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
+  setSharedAccountResetCreditSpender,
   setSharedAccountRollupFetcher,
 } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { consumeCliViaCmdMarker } from "../../desktop/src/main/services/cli/windowsCliLauncher";
@@ -24,16 +36,23 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
+  CLOUD_COMPUTER_LIST_BUDGET_MS,
+  CLOUD_COMPUTER_LIST_REQUEST,
   MACHINE_ROW_KEY,
+  cloudComputerKeysOf,
   createMachineRemoteConnection,
+  machineListLabel,
+  markCloudComputers,
   executePlanAcrossMachines,
   extractMachineTargeting,
   FREE_TEXT_VALUE_FLAGS,
   flagNamesOutsideFreeText,
   formatMachineFanOut,
   formatMachinesRoster,
+  isCloudLaneMachineSelector,
   isMachineFanOutResult,
   locateChatOnOtherMachines,
+  runCloudLaneLaunch,
   withMachineColumns,
 } from "./cliMachineTargeting";
 import {
@@ -44,8 +63,11 @@ import {
   formatChatLocate,
   locateChatOnAccount,
   routedToLocation,
+  restingCloudChatLocation,
   type ChatLocateReport,
 } from "./cliChatLocate";
+import { isDevicesCommand, runDevicesCommand, withChatDeviceChoice } from "./cliDevices";
+import { cloudMachineAppleCommand, runCloudIphoneCommand } from "./cliCloudIphone";
 import {
   isNoneValue,
   linearLookupNeeds,
@@ -62,6 +84,7 @@ import {
 import { buildGithubIssuePlan } from "./cliGithubIssue";
 import { buildJiraPlan } from "./cliJira";
 import { buildIssuePlan } from "./cliIssue";
+import { buildCodePlan, buildMessagesPlan, buildPasswordsPlan, formatPasswords, formatPasswordsCode, formatSecretsExec } from "./cliPasswords";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -97,7 +120,8 @@ import {
   buildCliDiagnosticReport,
   buildReportIssuePayload,
   describeDiagnosticUpload,
-  openDiagnosticIssue,
+  openPublicIssue,
+  publicIssueUrlForSend,
   saveDiagnosticReportCopy,
   sendDiagnosticReport,
 } from "./commands/reportIssue";
@@ -126,7 +150,8 @@ import { readInstalledDesktopApp } from "../../desktop/src/main/services/native/
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { findSettingsEntries, isAdeCloudSettingEntry, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
 import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess";
-import { setAdeCloudSkillVisible } from "../../desktop/src/shared/agentSkillRoots";
+import { setAdeCloudSkillVisible, setAgentSkillAccessRefresh } from "../../desktop/src/shared/agentSkillRoots";
+import { cloudAccessKey, rememberedCloudAccess, useCloudAccessMemory } from "../../desktop/src/main/services/adeCloud/cloudAccessMemory";
 import { OPEN_PLACES } from "../../desktop/src/shared/openPlaces";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
 import { canonicalGitOriginUrl } from "../../desktop/src/main/services/github/githubSshAlias";
@@ -143,6 +168,7 @@ import {
 } from "../../desktop/src/shared/sentry/diagnostics";
 import { projectRegistryDiagnosticAttachment } from "./services/projects/projectRegistryJournal";
 import { initBrainSentry } from "./sentry/initBrain";
+import { startBrainClientUpdateCheck } from "./services/runtime/brainClientUpdateCheck";
 import { brainReportsAsRelease } from "./sentry/brainBuild";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
@@ -183,10 +209,6 @@ import { customNotificationProblem, describeCustomNotificationResult } from "../
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
-import {
-  isProjectSecretPullResult,
-  projectSecretPullSummary,
-} from "../../desktop/src/shared/projectSecretPullSummary";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import {
@@ -217,6 +239,7 @@ import {
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { isRemoteWorkLaneId } from "../../desktop/src/shared/types/remoteWork";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
+import { armLaunchQuiet } from "../../desktop/src/main/services/shared/launchQuiet";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import { trackPtyOutputBacklog } from "../../desktop/src/main/services/pty/ptyOutputFlowControl";
 import { forgetCliSessionsToReopen } from "../../desktop/src/main/services/pty/cliReopenAfterRestart";
@@ -231,6 +254,7 @@ import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projec
 import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { SyncHostSingletonConflict } from "./services/sync/syncHostSingleton";
 import {
+  CHAT_PROVIDER_IDS,
   droidPermissionModeFromLegacyPermissionMode,
   isAgentChatDroidPermissionMode,
   type AdeChatSessionSummaryActionResult,
@@ -264,6 +288,8 @@ import type {
   PendingInputRequest,
 } from "../../desktop/src/shared/types/chat";
 import { buildChatInboxPlan } from "./cliChatInbox";
+import { runCliTurnHook } from "./cliTurnHook";
+import { CLI_TURN_HOOK_COMMAND } from "../../desktop/src/main/services/pty/cliTurnSignals";
 import {
   describePendingInputForAgent,
   resolvePendingInputResponse,
@@ -392,6 +418,7 @@ import { browseProjectDirectories } from "../../desktop/src/main/services/projec
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
+import { withLinkSummary } from "./connectionLinkSummary";
 import { createBrainLogger } from "./services/runtime/brainLogger";
 import type {
   CloneProjectInput,
@@ -413,7 +440,10 @@ import { markActiveHostProjectOpen } from "./services/projects/projectCatalog";
 import {
   decodeProjectIconUpload,
   importProjectIconBytes,
-  resolveRemoteProjectIcon,
+  resolveProjectIconOverridePath,
+  resolveProjectIconPath,
+  resolveRemoteProjectIconForRecord,
+  type RemoteProjectIconRecordMode,
 } from "./services/projects/projectIconResolver";
 import type { ProjectRecord } from "./services/projects/projectRegistry";
 import {
@@ -425,6 +455,18 @@ import {
 } from "./services/projects/projectRoots";
 import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects/gitOwnership";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
+import { createAccountProjectSync, readAccountProjectState, type AccountProjectSync } from "./services/projects/accountProjectSync";
+import { noteAccountProjectListChanged } from "./services/projects/accountProjectListChanges";
+import { provideAccountProjectMainHandler } from "./services/projects/accountProjectMain";
+import {
+  parseAccountProjectSelector,
+  recordMatchesAccountProject,
+  resolveAccountProject,
+} from "./services/projects/accountProjectSelector";
+import { createGithubRepoLookup, type GithubApiRequest } from "./services/projects/githubRepoLookup";
+import { createSavedGithubHeaderSweep } from "./services/github/savedGithubHeaderCleanup";
+import { readProjectFolderStates } from "./services/projects/projectFolderPresence";
+import { isDevTestMachineHome, isDevTestMachineProcess } from "./services/sync/devTestMachine";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
 import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime/brainHomeRegistry";
 import {
@@ -448,6 +490,12 @@ import {
   type JsonRpcTransport,
 } from "./jsonrpc";
 import {
+  brainConnectionLostError,
+  describeBrainConnectionLoss,
+  jsonRpcErrorFromReply,
+  type DescribeBrainConnectionLoss,
+} from "./lib/brainConnectionLoss";
+import {
   ADE_RPC_AUTH_PARAM,
   generateRpcAuthToken,
   parseRpcUrlAuthToken,
@@ -457,6 +505,7 @@ import {
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 import { headlessMobileProjectSummary } from "./services/sync/headlessMobileProjectSummary";
+import { publicAccountProjectFields } from "./services/projects/publicProjectRecord";
 import { headlessProjectLaneCount } from "./services/sync/headlessProjectLaneCount";
 import {
   isUnsupportedRecoveryActionError,
@@ -545,14 +594,30 @@ import {
 } from "./cliAndroidFormat";
 import {
   appleLeaseAnswer,
+  appleElementMissExitCode,
   appleLeaseNotAcquired,
   formatAppleDeviceDelete,
+  formatAppleDeviceStart,
+  formatAppleDeviceStop,
   formatAppleInstall,
   formatAppleLease,
   formatAppleTests,
   formatAppleWindow,
   shapeAppleLeaseAnswer,
+  xcodeGenNote,
 } from "./cliAppleFormat";
+import { formatCloudStatus } from "./cliCloudStatus";
+import {
+  formatCloudBackups,
+  formatCloudChatRead,
+  formatCloudChats,
+  formatCloudJobs,
+  formatCloudLane,
+  formatCloudLaneGit,
+  formatCloudLanes,
+  formatCloudProject,
+  formatCloudSessions,
+} from "./cliCloudLanes";
 import {
   REMOTE_MCP_HELP,
   buildRemoteMcpPlan,
@@ -561,6 +626,7 @@ import {
 import {
   CHAT_PARENT_FLAGS,
   DEFAULT_PARENT_FLAGS,
+  NO_REPORT_FLAGS,
   SPAWN_TYPE_FLAGS,
 } from "./launchFlagNames";
 import {
@@ -579,8 +645,18 @@ import {
   isHarnessPresetAccountProvider,
   isHarnessPresetBody,
   isHarnessPresetSubscriptionProvider,
+  presetLabel,
+  type HarnessPreset,
   type HarnessPresetSource,
 } from "../../desktop/src/shared/harnessPresets";
+import {
+  customProviderHarnessProblem,
+  customProviderModelProblem,
+  findCustomProvider,
+  PRESET_FLAG_GONE_MESSAGE,
+} from "../../desktop/src/shared/customProviderRef";
+import { readHarnessPresetsFromMachine } from "../../desktop/src/main/services/chat/harnessPresetSettings";
+import { launchModelMissing, launchModelRequiredMessage, unknownModelHint, webhookModelRequiredMessage } from "../../desktop/src/shared/launchModelRule";
 import type { ApiCredentialSummary } from "../../desktop/src/shared/types/apiCredentials";
 import {
   competingSyncHostSkipReason,
@@ -601,12 +677,13 @@ import {
 import {
   defaultRuntimeCompileCacheDir,
   isCurrentProcessDescendantOfPid,
+  isSameElectronRuntime,
   resolveAdeServeCommand,
   RuntimeServiceStillStartingError,
   type AdeServiceCommand,
 } from "./serviceManager/common";
 import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
-import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "./services/runtime/compileCachePrune";
+import { activeCompileCacheDir, flushActiveCompileCache, scheduleStaleCompileCachePrune } from "./services/runtime/compileCachePrune";
 import { readBrainStartupState } from "./services/runtime/brainStartupState";
 import {
   readEmbeddedParentPid,
@@ -628,6 +705,9 @@ import {
 } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
 import { readMachineInventorySummary } from "./services/account/accountMachinePublisherService";
+import { providerLoginGeneration } from "../../desktop/src/main/services/ai/providerLoginChanged";
+import { getProviderRuntimeHealthVersion } from "../../desktop/src/main/services/ai/providerRuntimeHealth";
+import { pinnedToolInstallGeneration } from "./services/tools/onDemand";
 import {
   getMachineProviderInstanceStore,
   resolveProviderInstanceForLaunch,
@@ -642,7 +722,10 @@ import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
-import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "./services/account/sharedAccountAuthService";
+import { getSharedAccountAttestationConfig, getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
+import { createRemoteProviderSignIn, type ClaudePassRunner } from "./services/account/remoteProviderSignIn";
+import { startCloudBootLaunch, takeCloudLaunch } from "./services/account/cloudBootLaunch";
+import { createProviderReady } from "./services/account/cloudLaunchSignInWait";
 import {
   deviceSignInInstructions,
   readDeviceSignInPoll,
@@ -670,16 +753,47 @@ import {
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { cloudDiskGrowStatePath, cloudDiskGuardOptions, readCloudDiskGrowState } from "./services/power/cloudDiskGuard";
+import { cloudDeleteFreezeRefusal, liftCloudDeleteFreeze, liftCloudSleepFreeze } from "./services/power/cloudDeleteFreeze";
+import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
-import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
+import { brainStartIsInRestartLoop, markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
+import {
+  addBrainRunStopIntent,
+  brainRestartCause,
+  brainUnplannedRestart,
+  continueAfterRestartAllowed,
+  markBrainRunStoppedCleanly,
+  readBrainUpdateRequest,
+  recordBrainRunStart,
+  writeBrainUpdateRequest,
+} from "../../desktop/src/main/services/runtime/brainUnplannedRestart";
+import { restartCauseLogFields, type BrainStartFacts } from "../../desktop/src/main/services/runtime/brainRestartCause";
+import {
+  clearBrainStopIntent,
+  closeLiveTurnProjectsRecord,
+  dropLiveTurnProjectsAfterCrash,
+  enableLiveTurnProjectsRecord,
+  noteBrainStopIntent,
+  noteLiveTurnProjectOpening,
+  recordPlannedBrainStop,
+  settleLiveTurnProjectAfterCrash,
+  takeLiveTurnProjectsFromStoppedBrains,
+} from "../../desktop/src/main/services/runtime/liveTurnProjects";
+import { RESTART_RESUME_MAX_AGE_MS } from "../../desktop/src/shared/chatAutoResume";
+import type { UpdateRequestedBy } from "../../desktop/src/shared/types/remoteRuntime";
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
+  resolveBrainLoopWatchdogThresholdMs,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
+import { primeMachineUpdateBlock } from "./lib/hostUpdateFacts";
+import { createBrainStallProfiler, type BrainStallProfiler } from "./services/runtime/brainStallProfiler";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
 import { installSyncFsCallTracker, isStallCapablePath } from "./services/runtime/syncFsCallTracker";
+import { expectedErrorKind } from "../../desktop/src/shared/expectedError";
 import { StorageNotAnsweringError } from "../../desktop/src/main/services/state/unansweringRoots";
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import {
@@ -692,6 +806,9 @@ import { publishServedRuntimeSocket } from "./services/runtime/adeCliShim";
 import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
+import { DEVICES_HELP } from "./help/devicesHelp";
+import { lazyRecord } from "./help/lazyRecord";
+import { DOCTOR_HELP, SETTINGS_HELP, STATUS_HELP, SYNC_HELP } from "./help/systemHelp";
 import { createHelpCatalog, filterHelpTextForScope } from "./help/catalog";
 import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommandPolicy";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
@@ -752,10 +869,18 @@ export type GlobalOptions = {
   machine?: string | null;
   /** `--all-machines`: run a list command on every machine and merge the rows. */
   allMachines?: boolean;
-  /** The project on the other machine, by id, display name, or root path. */
+  /** The project on the other machine, by id, display name, root path, account project id or GitHub `owner/name`. */
   machineProject?: string | null;
+  /**
+   * `--project-root ap_<id>` or `--project-root owner/name` (no such folder):
+   * the account project. Resolved after machine targeting: to this
+   * computer's copy, or to the project on the `--machine` machine.
+   */
+  projectSelector?: string | null;
   /** `--clone`: set the repository up on that machine when it is missing. */
   machineClone?: boolean;
+  /** `--size` with `--machine cloud`: the new ADE Cloud computer's size (the person's saved size for new lanes when unset). */
+  cloudSize?: string | null;
   /**
    * Set by `cliMachineTargeting` when a `--machine` shell start or Apple call
    * runs in this chat's work copy there (no `--lane`): how a sync readies it
@@ -783,6 +908,35 @@ export type ParsedCli = {
   command: string[];
 };
 
+/** `ade chat create`'s choices, as `--machine cloud` turns them into a lane launch. */
+export type CloudLaneLaunchDraft = {
+  /** The `chat.createSession` args the command built. */
+  create: JsonObject;
+  /** The first message (`--prompt`), or null. */
+  prompt: string | null;
+  /** `--launch-id`: the same id again follows (or resumes) that launch. */
+  launchId: string | null;
+  /** `--from-linear-issue`: bound to the new lane on the computer, when it is the whole issue. */
+  linearIssue: JsonObject | null;
+  /** `--lane-name`: the new lane's name (and its computer's); null names it from the prompt. */
+  laneName: string | null;
+  /** A choice a new ADE Cloud lane can't take yet; refused with its own line. */
+  notify: boolean;
+};
+
+/**
+ * `ade lanes create`'s choices, as `--machine cloud` turns them into a lane
+ * launch with no chat (kind `lane`; see `cliMachineTargeting.ts`).
+ */
+type CloudLaneCreateDraft = {
+  /** The lane launch args, without `launchId` and `cloud` (the CLI adds them). */
+  launch: JsonObject;
+  /** `--launch-id`: the same id again follows (or resumes) that launch. */
+  launchId: string | null;
+  /** A flag a new ADE Cloud lane can't take yet, refused with its own line; null when none. */
+  refused: string | null;
+};
+
 const DEFAULT_EPHEMERAL_RUNTIME_IDLE_EXIT_MS = 5 * 60 * 1000;
 const MIN_RUNTIME_IDLE_EXIT_MS = 5_000;
 // How long "Reconnect this computer" waits for a sync-host start it kicked
@@ -803,6 +957,8 @@ export type InvocationStep = {
   params?: JsonObject | ((values: JsonObject) => JsonObject);
   unwrapToolResult?: boolean;
   optional?: boolean;
+  /** An optional step's budget: after this long it counts as failed, and the plan goes on. */
+  timeoutMs?: number;
   /** Not run when this says so, given the earlier steps' values (a fallback for an older host). */
   skipWhen?: (values: JsonObject) => boolean;
   injectProjectRootIntoArgs?: boolean;
@@ -823,6 +979,7 @@ export type FormatterId =
   | "account-machine-remove"
   | "account-machine-reconnect"
   | "projects-list"
+  | "account-projects"
   | "linear-quick-view"
   | "lanes"
   | "lane-detail"
@@ -953,10 +1110,20 @@ export type FormatterId =
   | "terminal-read"
   | "project-secrets"
   | "integrations"
-  | "cloud-ready"
+  | "cloud-status"
   | "cloud-list"
   | "cloud-hours"
+  | "cloud-invite"
   | "cloud-result"
+  | "cloud-lanes"
+  | "cloud-lane"
+  | "cloud-lane-git"
+  | "cloud-chats"
+  | "cloud-chat-read"
+  | "cloud-sessions"
+  | "cloud-backups"
+  | "cloud-jobs"
+  | "cloud-project"
   | "mcp-servers"
   | "mcp-servers-remove"
   | "history-list"
@@ -979,10 +1146,12 @@ export type FormatterId =
   | "search-status"
   | "external-sessions"
   | "provider-accounts"
+  | "provider-logins"
   | "proxy-status"
   | "harness-env"
   | "harness-routes"
   | "harness-test"
+  | "harness-providers"
   | "archive-list"
   | "deleted-chats"
   | "deleted-lanes"
@@ -1008,7 +1177,10 @@ export type FormatterId =
   | "models-sheet"
   | "update-status"
   | "notify"
-  | "remote-mcp";
+  | "remote-mcp"
+  | "passwords"
+  | "secrets-exec"
+  | "passwords-code";
 
 type ChatWaitTarget =
   | "idle"
@@ -1072,6 +1244,16 @@ export type CliPlan =
       /** `--machine a,b` starts this plan once per machine (`chat create`). */
       machineFanOut?: boolean;
       /**
+       * `chat create`: what a new lane on ADE Cloud needs when the command
+       * runs with `--machine cloud` (see `cliMachineTargeting.ts`). Ignored
+       * otherwise, except `launchId`, which only `--machine cloud` takes.
+       */
+      cloudLaunch?: CloudLaneLaunchDraft;
+      /** `lanes create`: the lane alone on ADE Cloud, when the command runs with `--machine cloud`. Ignored otherwise. */
+      cloudLaneCreate?: CloudLaneCreateDraft;
+      /** `chat launch-status|launch-cancel --machine cloud`: the brain's `cloud` action for it. */
+      cloudLaneCall?: { action: "lane_launch_status" | "lane_launch_cancel"; launchId: string };
+      /**
        * `shell start --wait`: after the shell starts, follow its output until
        * it ends, and exit with its exit code (see `followShellToExit`).
        */
@@ -1095,7 +1277,7 @@ export type CliPlan =
        * null `outPath` saves to a temp file in text mode and leaves `--json`
        * output untouched.
        */
-      saveScreenshot?: { outPath: string | null };
+      saveScreenshot?: { outPath: string | null; surface?: "browser" | "app-control" };
       syncWebOpen?: boolean;
       syncWebNoClipboard?: boolean;
       /**
@@ -1190,7 +1372,7 @@ export type CliPlan =
   | { kind: "pty-host-worker" }
   | { kind: "usage-ledger-worker" }
   | { kind: "sdk-worker"; worker: SdkWorkerName }
-  | { kind: "project-icon-worker"; rootPath: string }
+  | { kind: "project-icon-worker"; rootPath: string; recordMode?: Exclude<RemoteProjectIconRecordMode, "off"> }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
   | { kind: "deeplink"; rest: string[] }
@@ -1486,7 +1668,12 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
     $ ade machines connect <id|name>                Save an account machine on this install
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
+    $ ade devices [--kind ios|android|screen|app] --text
+                                                    Every device this chat can use, on every machine
+    $ ade devices use <kind>@<machine|here> | current
+                                                    Pick the machine this chat's iPhone, Android, screen or app runs on
+    $ ade new chat --mode chat|cli --provider <p> --model <id> --prompt "fix"
+                                                    Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
     $ ade desktop                                   Launch the installed ADE desktop app
     $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
@@ -1505,8 +1692,11 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
+    $ ade status                                    Does the ADE brain answer
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade health --text                             This project's problems and their fixes
+    $ ade report-issue [--send] [--open]            Print a redacted diagnostic report; --send hands it to ADE privately,
+                                                    --open then opens a public GitHub issue that holds only its reference
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade reset --all [--dry-run]                   Remove everything ADE put on this computer (hard reset)
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -1518,7 +1708,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
                                                     Send a push to the phones on your ADE account
     $ ade mcp status | on | off | token create | activity
-                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
+                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this machine
     $ ade prs list | create | show | checks          Manage PRs and their GitHub state
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1529,7 +1719,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
-                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
+                                                    A chat or CLI session on the Work board: file it, snooze it until a deadline
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
                                                     Create, read, and edit Linear issues
     $ ade jira status | connect | projects | list | issue | create | edit
@@ -1549,6 +1739,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade scene preview <file> --text              Check a \`\`\`scene before putting it in a reply
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control | android | floating-android
                                                     Show a surface of this chat to the user
@@ -1556,13 +1747,17 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
     $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
+    $ ade harness routes | providers | env | test   Any model in any harness (--via), and your Custom providers
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
     $ ade providers accounts list | add | remove | default
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -1580,6 +1775,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
+    --role <cto|agent>      Who the call acts as. Agents run as agent; --role cto is for the person's
+                            own terminal, and a few commands (marked CTO only) need it.
 
   Common agent flows:
     $ ade doctor --text
@@ -1636,10 +1833,26 @@ function remoteMcpHelpScope(): "read" | "write" | undefined {
 /** Whether this account has ADE Cloud, answered by this machine's brain; false until it does. */
 let cliCloudEnabled = false;
 
-const CHAT_CLOUD_READY_HELP = `    $ ade chat create --machine cloud:ready --prompt "…"
-                                                    Start on this project's ready ADE Cloud machine (prepared and
-                                                    asleep): ADE wakes it, waits until it is online, then sends.
-                                                    No --lane needed; --json adds readyMachine. See ade cloud ready.
+const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
+                                                    A new lane on its own new ADE Cloud computer: ADE makes the
+                                                    computer, gets the repository there (the pushed branch) and
+                                                    starts the chat there. --size small, medium, large, xlarge
+                                                    (default: the size you saved for new lanes; a default Small
+                                                    whose setup needs more memory moves to Medium once, and the
+                                                    repo starts at Medium after that). --lane-name <name>
+                                                    names the lane and its computer (default: from the prompt).
+                                                    Asks you first. Ctrl-C stops only the waiting; the
+                                                    same --launch-id <id> again follows it or goes on from a
+                                                    failed step. ade chat launch-status|launch-cancel <id>
+                                                    --machine cloud checks it or stops it.
+`;
+
+const LANES_CLOUD_HELP = `  ade lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
+                   (the lane alone, with no chat, on its own new ADE Cloud computer; asks you first.
+                   No --size: the size you saved for new lanes (a Small whose setup needs more memory moves
+                   to Medium once, and the repo starts at Medium after that). The same --launch-id again follows it or
+                   goes on from a failed step. A Linear issue needs its whole JSON. No --description
+                   or --no-template yet.)
 `;
 
 /**
@@ -1649,7 +1862,7 @@ const CHAT_CLOUD_READY_HELP = `    $ ade chat create --machine cloud:ready --pro
 function withoutHiddenCloudHelp(text: string): string;
 function withoutHiddenCloudHelp(text: string | undefined): string | undefined;
 function withoutHiddenCloudHelp(text: string | undefined): string | undefined {
-  return text && !cliCloudEnabled ? text.replace(CHAT_CLOUD_READY_HELP, "") : text;
+  return text && !cliCloudEnabled ? text.replace(CHAT_CLOUD_HELP, "").replace(LANES_CLOUD_HELP, "") : text;
 }
 
 function helpPagesWithoutCloud(): Record<string, string> {
@@ -1751,6 +1964,7 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   sessions: "session",
   project: "projects",
   machine: "machines",
+  device: "devices",
   quota: "usage",
   quotas: "usage",
   disk: "storage",
@@ -1761,7 +1975,12 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   logout: "auth",
 };
 
-export const HELP_BY_COMMAND: Record<string, string> = {
+// Built on the first read (`help/lazyRecord.ts`): the brain never prints these pages.
+export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
+  sync: SYNC_HELP,
+  doctor: DOCTOR_HELP,
+  status: STATUS_HELP,
+  settings: SETTINGS_HELP,
   reset: `${ADE_BANNER}
   ADE Reset
 
@@ -1929,6 +2148,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
     $ ade machines remove <machine-key> --confirm REMOVE
+    $ ade machines remove <name|machine-key|device-id>   From a chat: asks the person (Remove / Keep card)
     $ ade machines reconnect
     $ ade machines connect <machine-key|device-id|unambiguous-name>
 
@@ -1952,8 +2172,17 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   it published — one request, so a failure to clear Activity is reported as a
   failed removal you can retry rather than as a clean one. It is destructive and
   requires \`--confirm REMOVE\`. The removed machine can only rejoin when someone
-  confirms it on that computer (see \`reconnect\`); nothing this machine runs can
+  confirms it on that machine (see \`reconnect\`); nothing this machine runs can
   bring it back.
+
+  Agents cannot remove a machine. Run from a chat, \`remove\` asks the person
+  instead: the chat shows a card with the machine's name, platform, last seen
+  time and online state, and Remove / Keep buttons (an online machine, or the
+  one the chat runs on, needs a second yes). The command waits for the answer
+  (--timeout 30m by default) and prints {status, removed, machine, next}:
+  status "removed" exits 0, "kept" or "timed_out" exits 2, and
+  "pending_approval" (another chat already asked about that machine) exits 3.
+  Only the person can answer the card; stopping the turn closes it.
 
   \`reconnect\` re-pairs THIS machine after it was removed from the account
   (takes no selector). Removal is terminal by design — heartbeats never
@@ -1966,6 +2195,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   interactive sign-in, so \`reconnect\` prompts for one when it is needed and
   re-pairs as soon as it lands — no second command.
 `,
+  devices: DEVICES_HELP,
+
   search: `${ADE_BANNER}
   ADE Search
 
@@ -2339,23 +2570,29 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Manage the machine-scoped ADE project registry used by the ADE runtime.
 
     $ ade projects list --text                      Projects whose folder is gone are hidden; --include-missing lists them
+    $ ade projects list --account --text            Your ADE account's projects, with each copy and its computer
+                                                    Any command takes --project-root <ap_id|owner/name> for this computer's copy,
+                                                    or --machine <name> --machine-project <ap_id|owner/name> for another computer's
     $ ade projects add /path/to/project
     $ ade projects clone owner/repo [--path <folder>] [--name <dir>]
                                                     Clone a GitHub repository with this computer's GitHub sign-in and open it as a project
     $ ade projects prune [--dry-run]                Remove projects whose folder is gone from ADE (never deletes a folder)
-    $ ade projects remove <project-id>
+    $ ade projects remove <project-id>              Remove the project from ADE on this machine (the folder stays)
     $ ade projects touch <project-id>
+    $ ade projects retry <project-id|path>          Open a project again that ADE refused because its folder is too slow
     $ ade projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 `,
   new: `${ADE_BANNER}
-  New ADE work session
+  Start a chat or a CLI session
 
   Start either a persistent ADE Work chat or a tracked provider CLI session
-  with one command. This mirrors the desktop New Chat mode toggle.
+  with one command. This mirrors the desktop New Chat mode toggle. Every
+  launch names its model with --model; ADE never picks one.
 
     $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode chat --auto-create-lane --prompt "Fix login"
+    $ ade new chat --mode chat --auto-create-lane --provider codex --model openai/gpt-5.6-sol --prompt "Fix login"
+    $ ade new chat --mode chat --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash --prompt "Fix login"
     $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --prompt "Review the diff"
 
   Flags:
@@ -2366,11 +2603,21 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --from <default|primary|branch>  Start source for an auto-created lane.
     --on <remote|local|uncommitted>  Which copy of the branch to start from.
     --existing-branch <branch>  Work directly on an existing branch.
-    --type <subagent|peer>  From an agent the new session is a subagent that
-                           reports back (the default). peer: no report.
+    --no-report            From an agent the new session is a subagent that
+                           reports back (the default). --no-report: it does not.
     --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-                           CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin; CLI mode also accepts shell.
-    --model <id>           Runtime model id.
+                           CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity; CLI mode also accepts shell.
+    --model <id>           Required (not for a plain shell). The model id:
+                           ade chat models --provider <p> --text, or
+                           ade harness routes --text for any model in any harness.
+    --instance <email>     Which Claude/Codex account signs in (ade providers accounts list --text).
+    --custom-provider <name>, --credential <id>, --via <source>
+                           Where the model runs: a saved Custom provider, a stored
+                           API key, or any model in any harness. Optional; at most
+                           one (ade help providers, ade help harness).
+    --title <text>         The session's title.
+    --print-config         Print what would launch, and launch nothing.
+    --machine <name>       Start it on another of your machines (ade help machines).
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
     --droid-permission-mode <m>
@@ -2391,8 +2638,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Spawn lineage:
     From an agent, the new session is a subagent of that agent's chat and
-    reports back to it. --type peer: no report. --no-parent: a separate chat,
-    only when the user asks. Plain shell terminals do not record lineage.
+    reports back to it. --no-report: it does not report back. --no-parent: a
+    separate chat, only when the user asks. Plain shell terminals do not record
+    lineage.
 
   Compatibility:
     ade chat create still creates persistent Work chats.
@@ -2407,17 +2655,23 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode chat --lane auto --lane-name fix-login --prompt "Fix login"
-    $ ade new chat --mode chat --lane <lane> --prompt-file brief.md
-    $ ade new chat --mode chat --lane <lane> --prompt-file - <<'EOF'
+    $ ade new chat --mode chat --lane auto --lane-name fix-login --provider codex --model openai/gpt-5.6-sol --prompt "Fix login"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --prompt-file brief.md
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --prompt-file - <<'EOF'
+
+  --model is required (not for a plain shell); see ade help new for every flag.
 
   The first message is --prompt <text>, text after --, or --prompt-file <path|->.
 
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
   From an agent, the new session is a subagent of that agent's chat and
-  reports back to it. --type peer: no report. --no-parent: a separate chat,
-  only when the user asks. --parent <sessionId> names a different parent.
+  reports back to it. --no-report: it does not report back. --no-parent: a
+  separate chat, only when the user asks. --parent <sessionId> names a
+  different parent.
+  Without --permissions, both modes start where a chat would: a full-auto
+  parent's subagent runs full-auto, otherwise the project's default (full
+  access unless configured), never above the agent that started it.
 `,
   lanes: `${ADE_BANNER}
   Lanes
@@ -2431,9 +2685,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                    [--from default|primary|<branch>] [--on remote|local|uncommitted] [--branch-name <branch>]
                    [--existing-branch <branch>]   (no new branch: the lane works directly on <branch>)
                    [--template <id>|--no-template]
-                   [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
+                   [--linear-issue-json '{...}' [--start-chat [--no-report] --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
-  ade lanes defaults [--text|--json]
+${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
                          [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
   ade lanes list | show | archive | unarchive | delete | deleted | appearance | templates | actions
@@ -2482,6 +2736,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes deleted restore <id>                Bring one back, uncommitted files included: as a new lane, or into its lane if space was freed
     $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
+    $ ade lanes share --lane <lane> --text          List the lane's shares (people, state, access, risk, end, made by)
+    $ ade lanes share --lane <lane> --add <email> [--ends 1h|today|1w|<ISO date>] [--hide-machines] [--hide-models]
+                                                    Share the lane with another ADE account, Watch only: they see
+                                                    its chats and sessions and cannot send, run or approve anything.
+                                                    From the CLI, an agent or ADE MCP: Watch only, at most 5 an hour.
+                                                    More rights: the share sheet in the ADE app
+    $ ade lanes share --lane <lane> --remove <email|grant id>
+                                                    Stop a share of this lane
     $ ade lanes actions --text                      List callable lane service methods
 `,
   git: `${ADE_BANNER}
@@ -2582,6 +2844,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   and deployments still resolve through ADE's own row.
 
     $ ade prs list --text                           List PRs known to ADE
+    $ ade prs show <pr> --text                      One PR: state, branch, checks and reviews
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
     $ ade prs create --lane <lane> --base main      Open a GitHub PR from a lane; prints GitHub + ADE URLs
     $ ade prs create --lane <lane> --title "fix(web): new chats no longer spike CPU" --body-file pr.md
@@ -2605,6 +2868,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs link --lane <lane> --url <pr-url>     Point a lane at an existing GitHub PR
     $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
     $ ade prs comments <pr> --text                  Show unresolved review work
+    $ ade prs reply <pr> --thread <id> --body "..." Reply to one review thread
     $ ade prs comment-edit <pr> --comment <id> --body "..."
                                                     Edit an issue or review comment
     $ ade prs comment-react <pr> --comment <id> --content +1
@@ -2641,10 +2905,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start -- npm test                   Without --lane: your own lane, else the project's primary lane
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
-    $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --prompt "fix tests"
-    $ ade shell start-cli codex --lane <lane> --permission-mode edit
-    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --prompt "fix tests"
-    $ ade shell start --provider claude --lane <lane> --message "fix tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --permission-mode edit --prompt "fix tests"
+    $ ade shell start-cli codex --lane <lane> --model openai/gpt-5.6-sol --permission-mode edit
+    $ ade shell start-cli claude --lane <lane> --model claude-opus-5-5 --reasoning-effort ultracode --prompt "fix tests"
+    $ ade shell start --provider claude --model claude-opus-5-5 --lane <lane> --message "fix tests"
     $ ade shell start --lane <lane> --chat-session <owner-session-id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
     $ ade shell resize <pty-id> --cols 120 --rows 36
@@ -2653,20 +2917,28 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
 
-  On another machine (this chat's work copy there: a hidden worktree at your
-  commit, which must be on origin, with your uncommitted changes applied):
+  On another machine (in your code there: ADE keeps a copy of this chat's code
+  on that machine, at your commit, which must be pushed, with your uncommitted
+  changes applied):
     $ ade shell start --machine <name> --wait -- npm test   Stream the output, exit with its code
-    $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
-    $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
-    $ ade shell clean --machine <name>               Delete this chat's work copy there
-  Each call opens a new shell there and syncs the copy again, so put all the
-  steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+    $ ade shell start --machine <name> --code as-is -- git status   Use your code there as it is now
+    $ ade shell start --machine <name> --code fresh --wait -- npm test   Throw away changes made there first
+    $ ade shell clean --machine <name>               Delete your code there and everything it held
+    $ ade shell start --machine <name> --clone --wait -- npm test   Clone this repo there first if it is missing (GitHub)
+    $ ade shell start --machine <name> --no-code --wait -- nvidia-smi   No code needed: an empty folder there, removed after
+  --code synced (the default) makes your code there match this checkout before
+  the command runs. Each call opens a new shell there and syncs again, so put
+  all the steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+  Files made there that git does not track (a generated .xcodeproj, a pushed
+  file) stay through a sync; edits there to the repo's files refuse it.
+  --no-code needs no commit or push, only a project open in ADE there.
   The shell runs in the background there; no list on that machine shows it.
   To move a file, use ade files push|pull --machine <name> (see ade files
   --help), never base64 or echo inside a shell command.
 
-  Provider CLI launches accept --instance for Claude/Codex accounts and
-  --preset or --credential for saved harness brains.
+  Provider CLI launches take --model (required) and accept --instance for a
+  Claude/Codex account, and --custom-provider, --credential or --via for where
+  the model runs (ade help providers).
 
   Prefer ade new chat --mode cli for new tracked provider CLI sessions. start-cli
   remains as the compatibility command behind that mode.
@@ -2725,13 +2997,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade files quick-open --workspace <lane> -q src --include-directories
                                                     Also offer folders; they print with a trailing slash
 
-  On another machine (this chat's work copy there, the one ade shell start
-  --machine uses; paths there are relative to it, / or \\ both work):
-    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (made at your commit if missing)
+  On another machine (your code there, the one ade shell start --machine uses;
+  paths there are relative to its top, / or \\ both work):
+    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (your code is put there at your commit if missing)
     $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
   Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
-  base64 in shell commands. A pushed file is a change made there, so the next
-  ade shell start --machine needs --no-sync (keep it) or --discard (drop it).
+  base64 in shell commands. A pushed file git does not track stays there
+  through the next sync (--code fresh drops it); one that replaces a file of
+  the repo is a change made there, so the next sync needs --code as-is or
+  --code fresh.
 `,
   session: `${ADE_BANNER}
   Session lifecycle
@@ -2786,12 +3060,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat list --personal --text               List machine personal chats (no project required)
     $ ade chat list --machine "Mac mini" --text     Chats on another machine on your account (this repo's checkout there)
     $ ade chat list --all-machines --text           Every machine in one table, with a machine column
-    $ ade chat create --machine "Mac mini" --lane <lane there> --type subagent --prompt "…"
+    $ ade chat create --machine "Mac mini" --lane <lane there> --provider <p> --model <id> --type subagent --prompt "…"
                                                     Start a child on another machine; it wakes you when done.
                                                     Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
-${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List machine personal-chat actions
+${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
@@ -2808,7 +3082,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     only level "enforced" means the caller's servers are the whole
                                                     surface. A server the provider cannot carry fails the create.
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
-    $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
+    $ ade chat create --from-linear-issue ENG-431 --provider <p> --model <id> --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait
                                                     Start a chat in a brand-new lane (the desktop composer's new-lane
@@ -2821,7 +3095,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     or work directly on --existing-branch <branch>. Also:
                                                     --lane-name, --title, --effort, --permissions, --fast, --launch-id,
                                                     --lane-id (UUIDs; generated when omitted). The chat is top-level;
-                                                    use 'ade new chat --lane auto --type ...' for a parented child.
+                                                    use 'ade new chat --lane auto --model <id> --type ...' for a parented child.
     $ ade chat launches --text                      List new-lane launches running or recently finished on the brain
     $ ade chat launch-status <launch>               One launch's stages (exit 1 when unknown or expired)
     $ ade chat launch-cancel <launch>               Cancel a launch before its agent starts; deletes its chat, lane, and branch
@@ -2854,8 +3128,11 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     row stops saying "Needs you" about a question nobody is on.
     $ ade chat deleted list --text                  Recently deleted chats this machine can still reopen (--query <text>)
     $ ade chat deleted reopen <id> [--lane <lane>]  Reopen one with its history; a chat whose lane is gone needs --lane
-    $ ade chat inbox --text                         Every chat in the project that waits on you, each with its question
-                                                    or approval inline and the exact 'chat respond' that answers it
+                                                    A deleted CLI session (AGENT "claude CLI") relaunches in its lane,
+                                                    resuming its own conversation when ADE knows it, else fresh
+    $ ade chat inbox --text                         Every chat and CLI session in the project that waits on you, each
+                                                    with its question or approval inline and the exact command that
+                                                    answers it
                                                     (--all-machines: every machine on your account)
     $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
                                                     and the exact 'chat respond' command for each
@@ -2868,6 +3145,10 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     Approval: --approve | --approve-session | --deny (--text is the
                                                     reason). Approvals are the person's to answer unless you were
                                                     told you may approve. --deny/--cancel also decline a question.
+                                                    A Codex plan ready to implement can go to a chat of its own:
+                                                    --new-chat (with --approve implied) starts that chat, sends it
+                                                    the plan, and prints its session id. Only the person may do
+                                                    this; the plan itself stays in the planning chat.
                                                     While a chat waits on input, 'chat message' and 'chat send' are
                                                     refused (error -32011) until it is answered. A subagent's question
                                                     is also sent to its parent chat with these commands filled in.
@@ -2896,7 +3177,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     declines inline and stages instead. Other providers
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
-    $ ade chat wait <session> --for idle --timeout-ms 600000
+    $ ade chat wait <session> --for idle --timeout 10m   (or --timeout-ms 600000)
     $ ade chat events <session> --since <cursor> --json   Turn starts and ends, input needed, errors since a cursor; answers at once
     $ ade chat notify <session> --url https://… --token-stdin   POST there each time it goes idle, needs input or fails (7 days)
     $ ade chat notify <session> --list | --cancel
@@ -2925,9 +3206,9 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     Start a new chat with an extra handoff note
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
-    $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+    $ ade chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
                                                     Move the chat to another machine on your account (brief by
-                                                    default; --fork carries full history). --machine names the
+                                                    default; --fork carries full history). --to names the
                                                     DESTINATION; the chat moves from here. Without --model it
                                                     keeps the chat's own model. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
@@ -2941,19 +3222,27 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
     $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
     $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
-    $ ade chat move --machine "Mac Studio" <session> [<session>…]
+    $ ade chat move --to "Mac Studio" <session> [<session>…]
                                                     Move selected chats, their lanes, and descendants in tree order
-    $ ade chat move --machine "Mac Studio" --all    Move every active Work chat in this project and its lanes
+    $ ade chat move --to "Mac Studio" --all         Move every active Work chat in this project and its lanes
                                                     Defaults to fork; --brief sends a short context summary.
                                                     An agent batch with any unrelated chat waits for one approval
                                                     card on the caller's chat, listing the chats; deny cancels all.
                                                     A person's batch needs no approval. Chats that already
                                                     continue on another machine are skipped (named: refused).
                                                     Also: --no-descendants, --no-changes, --interrupt, --note "…"
+                                                    A CLI session (Claude Code, Codex, …) moves as a CLI: it stops
+                                                    here and resumes its own conversation there (Claude Code,
+                                                    Codex), else starts fresh there with a brief (other agents, or
+                                                    --brief). --all includes CLIs.
     $ ade chat move --status <batch-id>              Show batch progress and per-item state
     $ ade chat move --retry <batch-id>               Resume remaining batch items
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
+    $ ade chat fork <cli-session> [--model <model>]  A CLI session (Claude Code, Codex, …) forks into a new chat from its
+                                                    own conversation file; without --model it keeps the CLI's model.
+                                                    handoff <cli-session> sends a brief instead (its terminal output when
+                                                    ADE can't read the conversation).
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
                                                     Fork from an earlier finished turn; later turns are left out
     $ ade chat side <session> "Why did we pick Redis?"
@@ -2963,6 +3252,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
     $ ade chat scheduled-work pause <session>        Pause this agent session's durable wakeups/cron/loops
+    $ ade chat scheduled-work resume <session>       Re-arm them
     $ ade chat scheduled-work status <session>       Inspect pause state + next armed wake (resume to re-arm)
     $ ade chat scheduled-work list [session]         List durable jobs (--all includes recent history)
     $ ade chat scheduled-work create --in 12m --prompt "<text>"
@@ -2975,7 +3265,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
                                                     <session> is the chat that owns the job (first), <id> the job id;
                                                     also --session <s> --id <id>. Inside a chat, 'cancel <id>' is enough.
-    $ ade new chat --mode cli --lane <lane> --provider claude --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --provider claude --model claude-opus-5-5 --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
                                                     Attach a Linear issue to a chat/CLI session
@@ -2993,34 +3283,39 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade chat restart [<session>] [--stop | --after-turn]
                                                     Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP).
                                                     With no session, restarts your own chat once this turn ends (--stop is ignored for your own chat)
+    $ ade chat update <session> --pin | --unpin      Pin or unpin a chat or CLI session in the Work list
     $ ade chat archive <session>                    Archive a chat (hidden from lists; ade chat unarchive <session> brings it back)
+                                                    Also a CLI session: one at its prompt stops (Resume picks it up); mid-turn it finishes first.
+                                                    ade chat delete <cli-session> stops it and keeps it in Recently deleted.
                                                     --dry-run prints the call without running it
-    $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
-    $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
+    $ ade chat demote <session>                     Take over a subagent: its reports to its parent stop
+    $ ade chat promote <session>                    Make the chat report back to its parent again
     $ ade chat set-parent <session> --parent <chat> Make <chat> this chat's parent; reports go there from the next turn
-                                                    [--type subagent|peer]; a chat whose old parent is gone becomes a subagent
+                                                    [--no-report]; a chat whose old parent is gone becomes a subagent
     $ ade chat set-parent <session> --no-parent     Detach the chat from its parent
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
-    $ ade new chat --mode cli --lane <lane> --parent <session> --type subagent --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --provider <p> --model <id> --parent <session> --type subagent --prompt "fix"
                                                     Start a tracked provider CLI session
 
   Create flags:
     --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-    --model <id>            Model id, also sent as modelId for runtime parity.
+    --model <id>            Required. The model id (ade chat models --provider <p> --text).
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
     --prompt <text>         Create the chat, then send this as the first message.
     --prompt-file <path|->  The first message from a file, or stdin with -. Use it
                             for multi-line text (ade.cmd on Windows cuts arguments
                             at the first line break).
-    --instance <email>      Provider account, by its email (its id works too);
-                            --credential <id> and --preset <id> pick a saved
-                            credential or harness preset (ade help providers).
+    --instance <email>      Provider account, by its email (its id works too).
+    --custom-provider <name>, --credential <id>, --via <source>
+                            Where the model runs: a saved Custom provider, a
+                            stored API key, or any model in any harness. Pass
+                            one (ade help providers, ade help harness).
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
-                            The host may lower it for an agent caller (stderr note).
+                            ADE may lower it for an agent: never above the agent's own access (stderr note).
     --fast                  Request fast service tier when the model advertises it.
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
@@ -3030,8 +3325,8 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
     --no-parent             A separate top-level chat that does not report back.
                             Only when the user asks for one.
-    --type <subagent|peer>  subagent (default with a parent) reports back after
-                            every turn; peer leaves quiet notes.
+    --no-report             With a parent, the chat does not report back. By
+                            default it reports back after every turn.
 
   Transcript read flags:
     --limit <n>             Messages per bounded window (default 50, max 100).
@@ -3077,7 +3372,8 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     --personal              Use machine-owned chats instead of a project/lane chat.
     --lane <lane>           Lane/worktree for the chat.
     --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-    --model <id>            Model id, also sent as modelId for runtime parity.
+    --model <id>            Required. The model id (ade chat models --provider <p> --text;
+                            ade harness routes --text for any model in any harness).
     --reasoning-effort <v>  Reasoning tier when supported by the model.
     --effort <v>            Alias for --reasoning-effort.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
@@ -3089,11 +3385,16 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     --instance <email>      Which provider account to run on, by its email (ade
                             usage limits and ade providers accounts list show
                             them; an account's id works too).
-    --credential <id>       A saved API credential for the provider.
-    --preset <id>           A saved harness preset. See ade help providers.
+    --credential <id>       A stored API key for the provider.
+    --custom-provider <name>
+                            A saved Custom provider, by name or id (or a route id
+                            from ade harness route-id); --model must be its own
+                            model (ade harness providers --text lists them).
+    --via <source>          Any model in any harness: opencode-go, key:<provider>,
+                            account:<claude|codex>:<id>, ... (ade help harness).
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
-                            From an agent, the host may lower it: a chat never
+                            From an agent, ADE may lower it: a chat never
                             gets more access than the agent's own chat or its
                             parent. chat create then prints a note on stderr.
     --droid-permission-mode <m>
@@ -3113,8 +3414,8 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                             tracked agent shell (the spawning chat).
     --no-parent             A separate top-level chat that does not report back.
                             Only when the user asks for one.
-    --type <subagent|peer>  subagent (default with a parent) reports back after
-                            every turn; peer leaves quiet notes.
+    --no-report             With a parent, the chat does not report back. By
+                            default it reports back after every turn.
 
   With --lane, chat create warns on stderr when another chat on that lane is in
   a turn or waiting on input: the two chats then share one worktree.
@@ -3135,7 +3436,26 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
 
   CLI sessions:
     Use ade new chat --mode cli ... when you want a tracked provider CLI terminal
-    instead of a persistent Work chat.
+    instead of a persistent Work chat. These chat commands also take a tracked
+    CLI session id (they run on the machine that owns the terminal):
+      send / message   Typed at the CLI's prompt. Busy: queued as a durable wait
+                       that types it at the next free prompt (its id cancels it:
+                       ade chat wait --cancel <id>); --interrupt presses the
+                       CLI's cancel key first. Text only: no images. Qwen, Kimi,
+                       Grok, Copilot, Antigravity and Devin: typed at once (ADE
+                       cannot tell when their prompt is free).
+      steer            Typed now, even mid-turn; the CLI decides what to do with it.
+      interrupt        Presses the provider's cancel key (Esc; Esc twice for
+                       OpenCode; Ctrl-C for Cursor). The process keeps running.
+      restart          Relaunches the CLI in its row, resuming its conversation.
+      update           --title, --pin/--unpin; --model, --effort, --fast and
+                       --permission-mode relaunch it with resume (refused mid-turn,
+                       or when that CLI's resume cannot carry the setting).
+      switch-account   Claude and Codex: relaunch under the other account, resumed.
+      generate-names   The title, from its first prompt and output.
+      pending/respond  While the CLI waits at its own permission prompt: --approve,
+                       --approve-session or --deny press Claude Code's, Codex's or
+                       Cursor's own key; other CLIs are answered in the terminal.
 `,
   "chat recover": `${ADE_BANNER}
   Chat recovery
@@ -3177,7 +3497,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade drafts list --text                        Drafts and armed sends, newest first
     $ ade drafts list --scheduled --text            Only armed sends
     $ ade drafts list --needs-you --text            Sends that need you (blocked or missed)
-    $ ade drafts list --machine <key> --text        Only sends delivered by that machine
+    $ ade drafts list --machine <name> --text       That machine's drafts and armed sends
     $ ade drafts create --prompt "<text>"           Save a plain draft
     $ cat prompt.md | ade drafts create             Read the prompt from stdin
     $ ade drafts create --prompt "Ship it" --image ./shot.png
@@ -3200,11 +3520,13 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     --in <duration>         One-shot relative time: 45s, 90m, 2h, 3d, 1w.
     --target <session>      Send into an existing chat.
     --new-chat --lane <lane>  Create a chat in that lane at the fire time; also needs --provider and --model.
-    --provider <id> --model <runtime-facing model string> --model-id <id>
-                            Captured for a new chat; --model is required with --new-chat.
+    --provider <id> --model <id>
+                            Captured for a new chat; both are required with --new-chat
+                            (ade chat models --provider <p> --text lists the ids).
     --permission <mode>     Captured permission mode.
     --thinking <effort>     Captured reasoning effort.
-    --machine <key>         Which machine delivers it. Omitted: whichever runtime is up.
+    --machine <name>        Make it on that machine, the one the --target chat is on;
+                            it fires there. Omitted: this machine.
     --if-late <wait|strict|grace>  What happens when the fire time cannot send (default wait).
     --grace <duration>      How long \`grace\` holds the send (max 24h).
 
@@ -3324,6 +3646,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade apple shutdown                End this chat's simulator session (the device stays on)
     $ ade apple shutdown --force        Force-release a session owned by another chat
     $ ade apple launch --force          Take the simulator over in one step
+    $ ade apple launch --foreground     Also open Simulator.app (stays closed by default; the device shows in ADE)
     $ ade apple actions --text                   List every callable ios_simulator action
 
   ADE discovers Xcode projects from the project root and apps/* folders.
@@ -3343,8 +3666,8 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade apple preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Device sessions:
-    $ ade apple open-device --text      Boot a simulator with no app
-    $ ade apple open-device --no-window Keep the device headless
+    $ ade apple open-device --text      Boot a simulator with no app (headless; shown in ADE)
+    $ ade apple open-device --window    Also open Simulator.app (every booted simulator gets a window)
     $ ade apple device-session --text   Report the tracked device session
     $ ade apple settings --text         Read appearance, text size, a11y
     $ ade apple close-device --text     Release the device session
@@ -3593,6 +3916,9 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade screen type "hello" --submit --text       Type, then press Return
     $ ade screen press s --ctrl --text              One key, with modifiers
     $ ade screen scroll down --amount 5 --text      Scroll the screen or a target
+    $ ade screen drag --from <handle|x,y> --to <handle|x,y> --text
+                                                    Drag inside a window (--real: onto another app)
+    $ ade screen present main | display --text      Show the lane's windows on the user's screen, and back (Mac)
     $ ade screen wait --label "Done" --timeout 8000 --text
 
   Modifier keys: --ctrl, --alt, --shift, and --win (Windows key, Windows only).
@@ -3610,6 +3936,21 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade screen record stop --text                 Prints the duration and a cite line
     $ ade screen proof --caption "<what>" --text    Capture, re-observe, file proof
   --out must be inside the lane worktree or the OS temp dir (%TEMP%, $TMPDIR).
+
+  Another machine: --machine <name> drives that machine's screen (Mac,
+  Windows or Linux Desktop) with no lane there. The screen belongs to your
+  code there (ADE puts it there at your commit on the first start or open;
+  the commit must be pushed), and this chat owns it, as for a lane. status,
+  windows and stream status put nothing there. --lane is refused. screen
+  proof and a captioned recording are filed in this chat's proof drawer.
+  lease and start --shared ask in a chat on that machine, so they are
+  refused; use the default input instead. ade devices use screen@<name>
+  sends every screen command there with no flag (ade devices --text lists
+  the screens you can use). ade shell clean --machine <name> deletes your
+  code there and closes its screen.
+    $ ade screen start --machine "MacBook Pro" --text
+    $ ade screen open TextEdit --machine "MacBook Pro" --text
+    $ ade screen proof --caption "<what>" --machine "MacBook Pro" --text
 
   Errors (each prints its next step):
     WINDOWS_DESKTOP_SETUP_REQUIRED   ask the user to set up (pane card)
@@ -3864,14 +4205,21 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
   start a second emulator or cut every lane's emulator off adb.
 
   Another machine: --machine <name> runs the command on that machine, with
-  no new lane. Without --lane, the emulator there works for this chat's work
-  copy (a hidden worktree at your commit, made on first use; the commit must
-  be on origin). Every view of this chat then shows it in the Android tool.
-  status and devices make no copy. --lane <id> uses a lane on that machine
+  no new lane. Without --lane, the emulator there runs your code there (ADE
+  puts it there at your commit on first use; the commit must be pushed).
+  Every view of this chat then shows it in the Android tool. status and
+  devices put nothing there. --lane <id> uses a lane on that machine
   instead. Files are written there; a screenshot, a recording or a proof
   bundle is also filed in this chat's proof drawer. install and launch with
-  --gradle or --apk, and test, send your checkout and its uncommitted changes
-  first (an APK that git ignores does not travel: use --gradle).
+  --gradle or --apk, test and preview make your code there match this
+  checkout first, uncommitted changes included (--code as-is uses it as it
+  is, --code fresh throws away changes made there; an APK that git ignores
+  does not travel: use --gradle). A Gradle build or a boot there waits as
+  long as it would here and prints "still running" lines to stderr
+  meanwhile. --clone sets this repo up there first. The emulator's lease is
+  let go when this chat's turn ends (it stays on). ade devices use
+  android@<name> sends every android command there with no flag (ade
+  devices --text lists the emulators you can use).
     $ ade android device-create --profile medium_phone --machine windows --text
     $ ade android tap 540 1200 --machine windows --text
 
@@ -3891,6 +4239,9 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                      in a terminal on that machine); never restart adb yourself
     ANDROID_NOT_RUNNING              ade android start first
     ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
+    ANDROID_LOW_DISK                 the disk can't hold a new device's data. On ADE Cloud ADE
+                                     grows it itself (start again after the restart), or run
+                                     ade cloud resize --free 8 --reason "..."; elsewhere tell the user
     ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
     ANDROID_BUILD_FAILED             read the Gradle output, fix the build
     ANDROID_SYSTEM_IMAGE_IN_USE      an AVD uses that image; stop its emulator first
@@ -3961,7 +4312,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
   delay. --session <id> guards a command against a session that has changed.
 
   Capture and proof:
-    $ ade app-control screenshot --text            Capture without filing proof
+    $ ade app-control screenshot --out shot.png    Capture without filing proof (--text alone saves to a temp file)
     $ ade app-control snapshot --text              Screenshot + DOM element refs
     $ ade app-control inspect --x 120 --y 420      Hit-test a point, add nothing to the chat
     $ ade app-control select --x 120 --y 420       Add that element to the chat as context
@@ -4000,6 +4351,20 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade app-control minimize --text              Minimize the app window
     $ ade app-control drivers --text               Driver availability (cdp, computer_use)
     $ ade app-control actions --text               List every callable app_control action
+
+  Another machine: --machine <name> runs the app on that machine with no lane
+  there. The app runs from your code there (at your commit; the commit must
+  be pushed), and this chat owns the session, as for a lane. launch makes
+  your code there match this checkout first, uncommitted changes included
+  (--code as-is uses it as it is, --code fresh throws away changes made
+  there) and runs in a terminal there; --cwd must be inside this checkout and
+  is the same folder there. status and drivers put nothing there. --lane is
+  refused. proof and a captioned recording are filed in this chat's proof
+  drawer. ade devices use app@<name> sends every app-control command there
+  with no flag. ade shell clean --machine <name> deletes your code there and
+  stops its app.
+    $ ade app-control launch --command "npm run dev" --cwd apps/desktop --machine windows --text
+    $ ade app-control observe --map --machine windows --text
 `,
   browser: `${ADE_BANNER}
   ADE browser
@@ -4054,9 +4419,12 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
   prefer this chat's tabs and free ones, close a held tab only when the task
   needs it, and never close a tab the user opened or kept without asking them.
   "close" prints whose tab it closed. When the browser is full, the error lists
-  only your tabs and free agent tabs; ask the user about the rest. A deleted or
-  archived lane frees its tabs (they stay open). An agent's tab is not brought
-  back after ADE restarts; a tab the user opened or kept keeps its id.
+  only your tabs and free agent tabs; ask the user about the rest. Agent tabs
+  clean themselves up: a chat's tabs close 15 minutes after it goes idle, and
+  at once when it ends or its lane is archived or deleted; a tab the user
+  clicked, typed in, navigated or kept is never closed by ADE. An agent's tab
+  is not brought back after ADE restarts; a tab the user opened or kept keeps
+  its id.
 
   Which machine. "status" prints the route: the browser "open" uses (the
   computer the user sends this chat's messages from, else this machine) and
@@ -4087,7 +4455,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
   --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
-    $ ade browser status --text           Every tab on every machine, owners, and the route
+    $ ade browser status --text           Every tab on every machine, owners, and the route (alias: tabs)
     $ ade browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
     $ ade browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade browser panel --text            Open the Work sidebar Browser panel
@@ -4125,9 +4493,28 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
   attached to this machine…" when nobody answered inside 5 seconds. All three
   exit 0: the approval one means "asked, not yet loaded" — the page opens when
   they click Allow, so do not re-issue the open to retry it. Page actions
-  (observe/click/fill/screenshot) are not forwarded and still fail here.
+  (observe/click/fill/signin/screenshot) are not forwarded and still fail here.
 
-  Login handoff (you cannot sign in; a person must):
+  Signing in with Passwords:
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --account me@example.com --text
+  Sign in to the open page's site with a login saved in Passwords. ADE types the
+  username and password into the page itself; you never see the password. With
+  no saved login for the site, the person is asked in this chat (the secure
+  sign-in card): they save one and ADE fills it, or they choose to type it into
+  the page themselves (then run \`ade browser handoff\` to wait for them).
+  Never ask for a password in chat. --site <host> is only a check that the tab
+  is on the site you expect; the site is always the tab's own page.
+
+    $ ade browser signup --tab <tab-id> --text
+    $ ade browser signup --tab <tab-id> --account me@example.com --text
+  Creating an account: fill the email/username yourself, then run signup on
+  the sign-up form. ADE makes a strong password, types it into the password
+  (and confirm) boxes, and saves the login once the form holds all of it.
+  You never see it. Submit the form yourself; later sign-ins use \`ade browser signin\`.
+  --account names the username when the form has none filled in.
+
+  Login handoff (when you cannot sign in; a person must):
     $ ade browser handoff --tab <id> --reason "sign in to staging" --text
     $ ade browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
     $ ade browser handoff --tab <id> --reason "corp SSO" --no-wait
@@ -4161,6 +4548,9 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
     $ ade browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
     $ ade browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --site example.com --text
+    $ ade browser signup --tab <tab-id> --text
     $ ade browser clear-field --tab <tab-id> --selector "input[name=q]"
     $ ade browser press --tab <tab-id> --selector "input[name=q]" Enter
     $ ade browser type --tab <tab-id> "hello"
@@ -4242,6 +4632,9 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     --handle <ref>       Click/fill/press/wait via a saved observation element handle.
     --value <text>       Explicit value for browser fill, including an empty string,
                          or the text for browser clipboard write.
+    --site <host>        Browser signin: check that the open tab is on this host.
+    --account <username>
+                         Browser signin: which saved login to use.
     --html <markup>      HTML flavor for browser clipboard write.
     --image <path>       Image file for browser clipboard write. Absolute path.
     --map, --ui-map      Add a numbered visual element map image to observations.
@@ -4411,14 +4804,14 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade usage limits --machine "Mac mini" --text  Another machine's accounts (it must be online)
     $ ade usage limits --all-machines --text        Every machine on the account in one table
     $ ade usage snapshot --text                     Cached quota, source/stale state, and history
-    $ ade usage stats --preset 7d --text            Tokens, cost, and activity for a range
+    $ ade usage stats --range 7d --text             Tokens, cost, and activity for a range
     $ ade usage stats --scope account --text        Merge every machine on the account
-    $ ade usage stats --scope project --preset 30d  This project only
+    $ ade usage stats --scope project --range 30d   This project only
     $ ade usage stats --scope account --force       Skip the account fan-out rate floor
     $ ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z
     $ ade usage turns --days 14 --text              Per-turn ledger by provider, account, model
     $ ade usage turns --group-by provider --recent 20  Add the 20 newest turns
-    $ ade usage stats --by lane --preset 30d --text  ADE chat spend by chat, lane, or account
+    $ ade usage stats --by lane --range 30d --text   ADE chat spend by chat, lane, or account
     $ ade usage stats --provider claude --model claude-opus-5-5 --text  One model's cost, trend, price
     $ ade usage prices --text                       Custom model prices and Map to mappings
     $ ade --role cto usage prices set my-preview --map-to claude-opus-5-5  Count a model as another
@@ -4569,6 +4962,11 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade providers accounts remove --instance you@example.com --text
                                                     Sign an account out and forget it
     $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
+    $ ade providers accounts list --synced --text   Sign-ins your account keeps for your computers,
+                                                    and whether this computer copies its own (and why not)
+    $ ade providers accounts list --synced --provider grok --text
+    $ ade providers accounts refresh --synced --text
+                                                    Look at this computer's login files now (yours only)
     $ ade providers actions --text                  List raw provider-account service actions
 
   OpenCode logins (on this machine):
@@ -4579,44 +4977,55 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     For cloud logins, inspect \`ai.opencodeAuthMethods\` first, then call
     \`ai.opencodeCloudConnect\` with \`ade actions run\` and the current prompt answers.
 
-  Use an account for one session:
-    $ ade chat create --lane <lane> --provider claude --instance you@example.com
-    $ ade new chat --mode cli --lane <lane> --provider claude --instance you@example.com
+  Every launch names its model with --model. Use an account for one session:
+    $ ade chat create --lane <lane> --provider claude --model claude-opus-5-5 --instance you@example.com
+    $ ade new chat --mode cli --lane <lane> --provider claude --model claude-opus-5-5 --instance you@example.com
 
-  Use a saved custom setup (agent + model, from Settings > Providers > Custom)
-  or one stored API key for one session:
-    $ ade chat create --lane <lane> --preset hp_opus_work
-    $ ade new chat --mode cli --lane <lane> --provider claude --preset hp_opus_work
-    $ ade chat create --lane <lane> --provider claude --credential openrouter
-  --preset and --credential are mutually exclusive. In CLI mode a preset on
-  cursor launches the native CLI instead: Cursor takes no key or endpoint from
-  the launch.
+  Use a saved Custom provider (Settings › Providers › Custom providers) or one
+  stored API key for one session:
+    $ ade harness providers --text                      Your Custom providers, with the flags to launch each
+    $ ade chat create --lane <lane> --custom-provider "Opus at work" --model claude-opus-5-5
+    $ ade new chat --mode cli --lane <lane> --custom-provider "Opus at work" --model claude-opus-5-5
+    $ ade chat create --lane <lane> --provider claude --model claude-opus-5-5 --credential openrouter
+  --custom-provider, --credential and --via each say where the model runs; pass
+  at most one. A Custom provider runs one model, so --model must be its own. In CLI
+  mode a Custom provider on Cursor launches the native CLI instead: Cursor
+  takes no key or endpoint from the launch.
 
-  Use any model you pay for in any harness, without saving a preset:
+  Use any model you pay for in any harness, with nothing saved:
     $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
-    $ ade harness routes --harness claude --text        Everything each harness can reach
+    $ ade harness routes --provider claude --text       Everything each harness can reach
 `,
   harness: `${ADE_BANNER}
-  ADE custom providers: any model you pay for, inside any harness
+  Any model you pay for, inside any harness
+
+  A harness is the agent program ADE runs (the --provider list: claude, codex,
+  opencode, droid, pi, cursor, ...). Every launch names its model with --model.
 
   See what each harness can reach (your Claude, Codex and Grok sign-ins,
   OpenCode sign-ins, stored keys), and how:
-    $ ade harness routes --harness claude --text
+    $ ade harness routes --provider claude --text
 
-  Launch ad-hoc, no saved preset (chat or CLI):
+  Launch any of them with nothing saved (chat or CLI):
     $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
     $ ade new chat --mode cli --lane <lane> --provider codex --via opencode-go --model glm-5.3
     $ ade chat create --lane <lane> --provider droid --via account:codex:codex --model gpt-6-luna
     --via takes opencode-go | opencode | opencode:<provider> | key:<provider>[:<credentialId>]
       | account:<claude|codex>:<accountId> | subscription:<claude|codex|grok|kimi|devin|muse>
+    Model ids are examples; the routes list has the current ones.
+
+  Custom providers: a harness, where it runs and one model, saved under a name
+  in Settings › Providers › Custom providers. Launch one by name with its model:
+    $ ade harness providers --text                      Each one, with the exact flags to launch it
+    $ ade chat create --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
 
   Check one pairing with a one-token request (records the verdict for routing):
-    $ ade harness test --harness claude --via opencode-go --model deepseek-v4.1-flash --text
+    $ ade harness test --provider claude --via opencode-go --model deepseek-v4.1-flash --text
 
-  Run a custom provider in your own terminal (the env is printed, never saved;
+  Run a Custom provider in your own terminal (the env is printed, never saved;
   the harness command it defines runs ADE's pinned copy, never one on your PATH):
-    $ eval "$(ade harness env <preset-id> --text)" && claude --model <model>
-    PS> ade harness env <preset-id> --shell pwsh --text | Out-String | Invoke-Expression
+    $ eval "$(ade harness env "DeepSeek on Claude" --text)" && claude --model <model>
+    PS> ade harness env "DeepSeek on Claude" --shell pwsh --text | Out-String | Invoke-Expression
     The output contains the provider token. Do not paste it anywhere.
 `,
   proxy: `${ADE_BANNER}
@@ -4634,27 +5043,34 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade proxy logout <login-id> --text         Remove a separate proxy login (not a lent one)
 `,
   secrets: `${ADE_BANNER}
-  ADE project secrets
+  ADE secrets
 
-  Secrets are encrypted under the active project's .ade/secrets directory.
-  Account-linked projects default to account storage, but only when the account
-  vault is reachable: otherwise the secret is saved for this machine and the
-  list says so. List output never reveals values and shows where each secret
-  lives; use get only for the specific secret you need.
+  A project's secrets live in Passwords & Secrets, encrypted on the person's
+  account and synced to every computer they sign in to: the secrets for every
+  project, then this project's own over them. A secret saved with
+  --storage device stays on this computer only. List output never reveals
+  values and shows where each secret lives.
+
+  Agents use secrets, they never read them: \`ade secrets exec\` runs a command
+  with the project's secrets in its environment, on this computer, and prints
+  its output with every value masked (also in base64 and URL-encoded form;
+  values under 8 characters are not masked, and it says which). \`get\` is the
+  person's; export is in the ADE desktop app (Settings › Passwords & Secrets).
+  --env NAME (repeatable) passes only those; --timeout 10m.
 
     $ ade secrets list --text                       List secret names and metadata
-    $ ade secrets pull --text                       Take account secrets from the vault
-    $ ade secrets get STRIPE_API_KEY                Print one secret value as JSON
-    $ ade secrets get STRIPE_API_KEY --text         Print only the secret value
-    $ ade secrets set STRIPE_API_KEY --value sk_... Save in account storage
-    $ ade secrets set TOKEN --value local --storage device
+    $ ade secrets exec -- npm run deploy            Run a command with the secrets in its env
+    $ ade secrets exec --env STRIPE_API_KEY -- sh -c 'stripe login --api-key "$STRIPE_API_KEY"'
+    $ ade secrets set STRIPE_API_KEY --value sk_... Save for this project, on every computer
+    $ ade secrets set TOKEN --value local --storage device   This computer only
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
 
   Asking the person for a secret (agents: use this, never ask them to paste a
   secret into chat). The chat shows a private card; the value is saved to this
-  project's secrets and only the outcome comes back — never the value:
+  project's secrets (Passwords & Secrets) and only the outcome comes back —
+  never the value:
 
     $ ade secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
       --generate offers a strong random value first; --timeout 30m (default)
@@ -4662,13 +5078,61 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
 
     $ ade secrets request CLOUDFLARE_API_TOKEN --reason "Deploys the worker with wrangler" --delivery file --request-id cf-deploy
       For a token a shell CLI needs once, not kept in ADE. The person picks
-      "Temporary private file" or "Save to ADE secrets" (your --delivery is the
+      "Temporary private file" or "Save to Passwords & Secrets" (your --delivery is the
       default). A file answer prints {name, saved: true, delivery: "file",
       file, expiresAt}: an owner-only file on this chat's machine. Read it only
       inside a command: CLOUDFLARE_API_TOKEN="$(cat <file>)" wrangler deploy.
       Your commands can read it, so never print it. Deleted when the chat is
       archived or deleted, or after --ttl (24h, the maximum). Re-running with
       the same --request-id returns the same file without asking again.
+`,
+  passwords: `${ADE_BANNER}
+  ADE Passwords
+
+  Saved logins and API keys, encrypted on the person's account. Agents use
+  them and never see them: nothing here prints a password or a secret value.
+
+    $ ade passwords list --text      Sites, usernames and kinds of saved items
+    $ ade passwords status --text    Whether Passwords & Secrets is on for this computer
+    $ ade passwords sync --text      Pull what other computers saved
+
+  To sign in to a site, open its sign-in page and run \`ade browser signin\`:
+  ADE types the saved login into the page. With no saved login, the person is
+  asked in your chat. To create an account, run \`ade browser signup\` on the
+  sign-up form: ADE makes the password, saves it, and types it in. Changing
+  and removing items is the person's, in Settings › Passwords & Secrets.
+`,
+  code: `${ADE_BANNER}
+  ADE sign-in codes
+
+    $ ade code --site github.com --text                The current authenticator code
+    $ ade code --site github.com --account me@x.com --text
+    $ ade code wait --site github.com --text           The authenticator, else the next texted code
+    $ ade code wait --from messages --timeout 3m --text
+
+  \`code wait\` returns the site's saved authenticator code at once when it has
+  one; otherwise it waits for the newest code texted to the person's Mac
+  (Messages must be connected there) after you ask, up to --timeout (2m).
+
+  The code comes from the authenticator saved with the site's login in
+  Passwords; you get the code (it lasts seconds), never the key. \`ade browser
+  signin\` also fills it by itself on a page that asks for one. A code sent by
+  email: open the mail in the ADE browser (already signed in) and read it.
+`,
+  messages: `${ADE_BANNER}
+  ADE Messages (the person's texts, on their Mac)
+
+    $ ade messages status --text
+    $ ade messages recent --limit 10 --text          Newest texts (yours and theirs)
+    $ ade messages recent --from +15551234567 --since 1h --text
+    $ ade messages chats --text                      Recent conversations
+    $ ade messages send --to +15551234567 --text "On my way"
+
+  Off until the person connects Messages in Settings › Integrations ›
+  Messages on a Mac (ADE needs Full Disk Access there to read). Reading
+  follows its Read Texts switch. Every text you send is shown to the person
+  on a card in your chat first, unless they turned on Send Without Asking.
+  From a cloud lane, these reach the Mac the person is using.
 `,
   integrations: `${ADE_BANNER}
   ADE integrations
@@ -4694,40 +5158,108 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
   card only after they say yes.
 `,
   cloud: `${ADE_BANNER}
-  ADE Cloud machines
+  ADE Cloud computers
 
-  Computers on your ADE Cloud account. They sleep on their own after a few
-  idle minutes and use no hours while asleep; a --machine call or opening a
-  lane wakes one in about a second. <machine> is its name or id. Sizes: small,
-  medium, large, x-large (or 2x4, 4x8, 4x16, 4x32). --kind vm is a full
-  computer: Android (medium or bigger) and Docker.
+  Each computer on your ADE Cloud account is one of your machines: reach it
+  with --machine <its name>. They sleep on their own after a few idle minutes
+  and use no hours while asleep; a --machine call or a message wakes one in
+  about 20 seconds. Reading a sleeping lane's saved chats does not wake it.
+  <machine> is its name or id. Sizes: small, medium, large, xlarge
+  (ade cloud status lists each one's CPU, memory and hours). large and
+  xlarge are full computers: Android and Docker need one.
 
-    $ ade cloud list --text                       Computers, state, size, how fast each uses hours
-    $ ade cloud hours --text                      Plan, hours left, reset date
-    $ ade cloud create --kind vm --shape medium --name "android vm"
+    $ ade cloud status --text                     Everything in one read: can a new lane start (and why not),
+                                                    plan, hours, computers (N of your plan's), each lane, sizes, agent limits
+    $ ade cloud list --text                       Computers, state, size, how many hours each uses an hour (Small: none)
+
+  Lanes, chats and saved work (reads wake nothing; each delete asks you first)
+
+    $ ade cloud lanes --text                      Every lane, one list: on a computer (awake, asleep) or its
+                                                    computer deleted (the lane and chats stay; its next message
+                                                    makes a new computer). --stale: unused a week or due for
+                                                    cleanup, biggest disk first. --deleted, --project <origin>
+    $ ade cloud lanes <lane> --text               One lane and its saved chats (<lane>: name, id, branch or link)
+    $ ade cloud lanes delete <lane>               Delete the lane, its computer and its saved chats (--keep-chats).
+                                                    ADE checks its work first; the card also offers Keep for later
+    $ ade cloud lanes free <lane>                 Keep for later: push its work, remove its computer, keep the lane
+    $ ade cloud lanes start <lane> [--size medium]
+                                                    A new computer for a lane whose computer was deleted, on its branch
+    $ ade cloud lanes keep <lane>                 Stop the idle cleanup's delete (no wake, no hours)
+    $ ade cloud lanes git <lane> --text           Its Git summary as the computer saved it
+    $ ade cloud chats [read|delete <chat id>]     The account's saved chats (readable with the computer asleep or deleted)
+    $ ade cloud sessions [read|delete <id>]       Saved CLI and shell copies
+    $ ade cloud backups [forget <lane id>]        Work not on GitHub that ADE saved for each lane
+    $ ade cloud jobs [cancel <id>]                Launches, moves and copies ADE's server runs now
+    $ ade cloud project [--origin <origin>]       One project's whole ADE Cloud view
+
+  Computers
+
+    $ ade cloud hours --text                      Plan, hours left, reset date, earned hours
+    $ ade cloud work-state --text                 On a cloud computer: which lanes have work not on GitHub yet
+    $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
+                                                    (enter a friend's invite in Settings › Account)
+    $ ade cloud create --kind vm --shape large --name "android vm"
+                                                    A computer with no lane. An agent never makes one alone: it asks
+                                                    you on a card in its chat, and with nobody to ask the answer is no.
+                                                    Agents start a lane with the size it needs (--machine cloud --size).
     $ ade cloud sleep <machine>                   Sleep now (uses no hours)
-    $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
+    $ ade cloud wake <machine>                    Wake (at 0 hours the server refuses it, except a Small one)
     $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
-    $ ade cloud update <machine>                  Restart on the current ADE; files stay
-    $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy)
-    $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat
+    $ ade cloud resize --request --size large --reason "Android needs it"
+                                                    An agent asks the person (a card in its chat); nothing changes until they confirm
+    $ ade cloud resize --free 8 --reason "the build needs 8 GB"
+                                                    On a cloud computer: grow its own disk to fit 8 GB free (--disk <GB>: to that size).
+                                                    Up to the size's own disk maximum it grows with no card (agents, unattended
+                                                    too); past it, move the lane to a bigger size. It restarts the computer; the
+                                                    call waits, and ADE continues your chat after the restart. Use it instead of
+                                                    asking the person to grow it.
+    $ ade cloud update <machine>                  Move to its channel's image now and restart; files stay
+                                                    (each computer also updates itself when idle or asleep)
+    $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy; an agent's asks you)
+    $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat (an agent's asks you)
     $ ade cloud delete <machine>                  Gone for good, files and all
     $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off)
-    $ ade cloud ready [status|on|off|retry]       Keep a cloud machine ready for this project
-                                                    on takes --kind, --shape, --setup "npm ci"
-    $ ade chat create --machine cloud:ready --prompt "…"
-                                                    Start the chat on this project's ready machine
+    $ ade chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
+                                                    A new lane on its own new computer (sizes: small, medium,
+                                                    large, xlarge); the chat starts there
+    $ ade lanes create --machine cloud --name <n>  The lane alone on its own new computer, no chat
 
-  list, hours, limits (reading them), sleep and wake are the account's and
-  work from any folder; the rest run in this folder's project.
+  ade cloud alone is ade cloud status. status, list, hours, limits (reading
+  them), invite, sleep, wake, the reads of lanes, chats, sessions, backups,
+  jobs and project, and lanes keep are the account's and work from any folder;
+  the rest run in this folder's project. A new lane, create and copy are refused at
+  once when status says no new lane can start, with the same sentence.
+
+  Invites: a friend who enters your link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} extra free cloud hours, and
+  so do you once their first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
+  A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
+  Earned hours never expire; they are used after the plan's hours and before
+  extra hours. The free plan is given once per computer and once per GitHub
+  account, which must be at least 30 days old (or add a card, no charge).
+
+  Plans: Free, Plus, Pro and Max. \`ade cloud status\` lists each with its price,
+  cloud computers and hours, from ADE Cloud itself. Change it in Settings › ADE Cloud › Plans.
+  Unlimited Small computers on every plan: they never use your hours. Bigger
+  computers use hours: one hour is one hour on a Medium computer, so the same
+  hours last less on a Large or an X-Large (status shows them as time on each).
+  Each plan has a number of cloud computers, asleep or not. At the limit a new
+  lane is refused: free up a computer from another lane (ade cloud lanes free
+  <lane>: the lane and its chats stay, and it gets a new computer at its next
+  message), delete a lane, or move to a bigger plan.
+  Outside agents (ADE MCP) may start ADE Cloud work on paid plans only.
 
   Asks first: create, resize, update, copy, move, delete,
-  raising the limits, ready on. The card shows in your chat and gives up
+  raising the limits, a new lane (--machine cloud). The card shows in your chat and gives up
   after 5 minutes. In a full-auto chat or an automation ADE answers it with
   the person's limits (balanced: 3 new machines a day, up to 4x16), and says
-  no to deleting a machine that chat didn't make. create, copy and move work
+  no to deleting a machine that chat didn't make. create, copy and move are
+  the exception: an agent's always shows the card, also in a full-auto chat,
+  and with nobody to ask (an automation, ADE MCP) the answer is no. They work
   from any of your signed-in machines; without an ADE window there, your chat
   gets a link to approve the new machine joining your account.
+  From a terminal with no ADE chat, what asks first is refused: ADE can't
+  tell a person there from an agent. Start a lane in the ADE app (Run on:
+  ADE Cloud) or ask for it in an ADE chat.
   To move one chat and its lane to another computer: ade chat move.
 `,
   "mcp servers": `${ADE_BANNER}
@@ -4790,6 +5322,9 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     Attach an issue to the current CLI session
     $ ade linear issues --this-session --text       List issues attached to this session
     $ ade linear issue ENG-431 --text               Read one issue (defaults to the session's attached issue)
+    $ ade linear issue-comments ENG-431 --text      Its comments
+    $ ade linear picker-data --text                 Workflow states and users (for set-state and assign)
+    $ ade linear inbox [--all] --text               Your Linear notifications (unread unless --all)
     $ ade linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
     $ ade linear comment ENG-431 "Done"             Comment on a specific issue
     $ ade linear set-state ENG-431 "In Progress"    Move an issue to a state (name in the issue's team, or id)
@@ -4871,9 +5406,11 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a rule (on every computer when it follows your account)
     $ ade automations toggle <id> --enabled true|false
-    $ ade automations run-on <id> [--device <sync-device-id> --name <computer>]
+    $ ade automations run-on <id> [--device <sync-device-id> --name <computer> | --cloud]
                                                      Choose the one computer that runs a rule that
-                                                     follows your account. Default: this computer
+                                                     follows your account. Default: this computer.
+                                                     --cloud: ADE Cloud watches its schedule or
+                                                     webhook and starts each run on a new computer
     $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
           [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
                                                      Test a rule with an event. preview shows
@@ -4897,8 +5434,9 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade --role cto automations linear-ingress disconnect
                                                      Remove the Linear webhook (CTO only)
     $ ade automations linear-ingress poll [--text]    Drain queued Linear events now
-    $ ade automations webhook create --preset github [--filter body.action=opened]
-                 [--prompt "…"] [--model <id>] [--in-this-chat | --chat <id>]
+    $ ade automations webhook create --service github --model <id> [--filter body.action=opened]
+                 [--prompt "…"] [--in-this-chat | --chat <id>]
+                 (--model is the chat each event starts; not needed with --in-this-chat / --chat)
                  [--name "…"] [--no-signature] [--any-request] [--confirm <key>]
                                                      One step: a private URL + the rule, then paste steps
     $ ade automations webhook list [--text]          Every webhook automation, its URL and last delivery
@@ -4922,8 +5460,8 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     Create, reuse, or require lane at trigger time;
                                                     pr-branch runs in the trigger PR's own branch
     --lane <id>                                     Target lane (only with --lane-mode reuse)
-    --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
-    --lane-name-template <string>                   Template (only with preset custom)
+    --lane-naming <issue-title|issue-num-title|pr-title-author|custom>
+    --lane-name-template <string>                   Template (only with --lane-naming custom)
     --allow-legacy                                  Pass legacy create-lane action through
                                                     unchanged (default: auto-migrate to laneMode)
 
@@ -4966,7 +5504,7 @@ ${CURSOR_CLOUD_HELP.cloud}`,
   the downloaded archive so a retry is just another install, and only a second
   failure discards the download and forces a fresh one.
 `,
-};
+}));
 
 export function isRecord(value: unknown): value is JsonObject {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -5149,7 +5687,7 @@ function readDroidPermissionMode(args: string[]): AgentChatDroidPermissionMode |
 /**
  * The non-consuming half of `readValue`: the NAME from `names` that the first
  * matching token in `args` spells, whether it was written bare (`--type`) or
- * joined (`--type=peer`), or `null` when no token matches.
+ * joined (`--type=subagent`), or `null` when no token matches.
  *
  * Two callers need to know a flag was WRITTEN without taking it out of argv —
  * `readAgentSpawnLineage` distinguishing an explicit parent from an ambient
@@ -5187,7 +5725,7 @@ const REMOVED_LAUNCH_FLAGS: Readonly<Record<string, string>> = {
 /** `chat handoff` / `chat fork` flag spellings that were removed. */
 const REMOVED_HANDOFF_FLAGS: Readonly<Record<string, string>> = {
   "--model-id": "--model",
-  "--to-machine": "--machine",
+  "--to-machine": "--to",
   "--where": "--options",
   "--handoff-note": "--note",
   "--from-turn": "--through-turn",
@@ -5233,6 +5771,47 @@ function rejectFlagOperands(args: readonly string[], names: readonly string[]): 
   }
 }
 
+/**
+ * `chat handoff|move`: the machine the chat moves to, `--to <machine>` or
+ * `--machine`, its older spelling. Null when neither is given; both at once,
+ * twice, or with no machine is refused.
+ */
+function readMoveDestination(args: string[]): string | null {
+  const names = ["--to", "--machine"] as const;
+  const flags = flagNamesOutsideFreeText(args);
+  if (flags.has("--to") && flags.has("--machine")) {
+    throw new CliUsageError("--to and --machine name the same destination: use --to.");
+  }
+  // The first destination flag outside free text: `--note "--to"` is a note.
+  let at = -1;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") break;
+    const name = token.split("=")[0]!;
+    if ((names as readonly string[]).includes(name)) {
+      at = index;
+      break;
+    }
+    if (!token.includes("=") && (FREE_TEXT_VALUE_FLAGS.has(name) || VALUE_CARRIER_FLAGS.has(name))) index += 1;
+  }
+  let value: string | null = null;
+  if (at >= 0) {
+    const token = args[at]!;
+    if (token.includes("=")) {
+      value = token.slice(token.indexOf("=") + 1);
+      args.splice(at, 1);
+    } else {
+      const next = args[at + 1];
+      value = next == null || next.startsWith("--") ? "" : next;
+      args.splice(at, next == null || next.startsWith("--") ? 1 : 2);
+    }
+  }
+  if (value !== null && !value.trim()) throw new CliUsageError("--to needs a machine name or key (see `ade machines list`).");
+  const left = flagNamesOutsideFreeText(args);
+  if (value !== null && names.some((name) => left.has(name))) throw new CliUsageError("Name one destination with --to.");
+  return value;
+}
+
 export function readValue(args: string[], names: readonly string[]): string | null {
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
@@ -5240,7 +5819,23 @@ export function readValue(args: string[], names: readonly string[]): string | nu
     const matchedName = names.find(
       (name) => token === name || token.startsWith(`${name}=`),
     );
-    if (!matchedName) continue;
+    if (!matchedName) {
+      // `"--type peer"` quoted as one argument: the flag and its value never
+      // split, so the flag would be ignored without a word. Say so instead.
+      // Not when the token is another flag's value (`--title "--type peer"`).
+      const previous = args[index - 1];
+      const isValue = previous != null && VALUE_CARRIER_FLAGS.has(previous);
+      const glued = isValue
+        ? undefined
+        : names.find((name) => token.startsWith(name) && /^\s+\S+$/.test(token.slice(name.length)));
+      if (glued) {
+        const value = token.slice(glued.length).trim();
+        throw new CliUsageError(
+          `"${token}" reached ADE as one argument. Pass ${glued} and its value as two: ${glued} ${value}, or ${glued}=${value}.`,
+        );
+      }
+      continue;
+    }
     if (token.includes("=")) {
       args.splice(index, 1);
       return token.slice(token.indexOf("=") + 1);
@@ -5305,7 +5900,7 @@ function parseScheduledWorkDelaySeconds(value: string): number {
  * live in `sessionSnoozeDuration.ts`; this wrapper only turns its result union
  * into the `CliUsageError` the argv layer already knows how to report.
  */
-function parseSnoozeDurationMs(value: string): number {
+export function parseSnoozeDurationMs(value: string): number {
   const parsed = parseSnoozeDuration(value);
   if (!parsed.ok) throw new CliUsageError(parsed.message);
   return parsed.ms;
@@ -5575,7 +6170,7 @@ function envLaneIdForLaneCommand(): string | null {
   const laneId = process.env.ADE_LANE_ID?.trim() || null;
   if (isRemoteWorkLaneId(laneId)) {
     throw new CliUsageError(
-      "This shell runs in a work copy that a chat on another machine uses here, so it has no ADE lane. "
+      "This shell runs in the code a chat on another machine keeps here, so it has no ADE lane. "
       + "Pass --lane <lane> to act on a lane of this machine.",
     );
   }
@@ -5974,10 +6569,32 @@ export function readIntOption(
 ): number | undefined {
   const value = readValue(args, names);
   if (value == null) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    throw new CliUsageError(`${names[0]} must be an integer.`);
+  // Whole digits only: `parseInt` read `--timeout 25m` as 25.
+  if (!/^-?\d+$/.test(value.trim())) {
+    throw new CliUsageError(`${names[0]} must be an integer (got "${value}").`);
   }
+  return Number.parseInt(value, 10);
+}
+
+const TIMEOUT_UNIT_MS: Record<string, number> = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 };
+
+/**
+ * A wait's timeout in milliseconds: `--timeout-ms <ms>` (an integer), or
+ * `--timeout <duration>` (`25m`, `90s`, `1h`, `600000ms`; a bare number is
+ * milliseconds, as for `--timeout-ms`). Anything else is refused, never
+ * misread: `--timeout 25m` was once read as 25 ms.
+ */
+export function readTimeoutMsOption(args: string[], fallback: number): number {
+  const ms = readIntOption(args, ["--timeout-ms"]);
+  const value = readValue(args, ["--timeout"]);
+  if (ms != null) return ms;
+  if (value == null) return fallback;
+  const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h)?$/i.exec(value.trim());
+  if (!match) {
+    throw new CliUsageError(`--timeout takes a duration such as 25m, 90s, 1h or 600000ms (got "${value}"); --timeout-ms takes milliseconds.`);
+  }
+  const parsed = Math.round(Number(match[1]) * TIMEOUT_UNIT_MS[(match[2] ?? "ms").toLowerCase()]!);
+  if (!Number.isSafeInteger(parsed)) throw new CliUsageError(`--timeout "${value}" is too long.`);
   return parsed;
 }
 
@@ -6092,9 +6709,35 @@ function readJsonPayloadOption(
   return inline ?? fromFile;
 }
 
+/**
+ * The words and the list command for an id a caller left out. Callers pass the
+ * field name they read (`sessionId`), which means nothing to the agent that
+ * forgot it; this says what to pass and where to find one.
+ */
+const REQUIRED_VALUE_HINTS: Readonly<Record<string, string>> = {
+  sessionId: "a chat or CLI session id (`ade chat list --text` lists them)",
+  workSessionId: "a chat, CLI or shell session id (`ade chat list --text` lists chats and CLI sessions; `ade terminal list --text` lists shells)",
+  launchProvider: `a provider (--provider ${CHAT_PROVIDER_IDS.join(" | ")}), or shell for a plain terminal`,
+  signInProvider: "the provider to sign in, as the first word (ade providers sign-in claude --remote)",
+  proxyProvider: "--provider claude or --provider codex",
+  chatSessionId: "a chat id (`ade chat list --text` lists them)",
+  prId: "a PR number or id (`ade prs list --text` lists them)",
+  prUrlOrNumber: "a PR URL or number (`ade prs list --text` lists them)",
+  laneId: "a lane id or name (`ade lanes list --text` lists them)",
+  targetLaneId: "the lane to move to (`ade lanes list --text` lists them)",
+  targetModelId: "the model to hand it to, --model <id> (`ade chat models --text` lists them)",
+  model: "--model <id> (`ade chat models --text` lists them)",
+  provider: `a provider (--provider ${CHAT_PROVIDER_IDS.join(" | ")})`,
+  turnId: "a turn id (`ade chat transcript <chat> --json` shows them)",
+  templateId: "a lane template id (`ade lanes templates list --text` lists them)",
+  terminalId: "a terminal id, --terminal <id> (`ade terminal list --text` lists them)",
+  browserSessionId: "a browser session id, --browser-session <id> (`ade browser status --text` lists them)",
+};
+
 export function requireValue(value: string | null, label: string): string {
   if (value && value.trim().length > 0) return value.trim();
-  throw new CliUsageError(`${label} is required.`);
+  const hint = REQUIRED_VALUE_HINTS[label];
+  throw new CliUsageError(hint ? `Pass ${hint}.` : `${label} is required.`);
 }
 
 /**
@@ -6453,7 +7096,7 @@ function deriveLinearKickoffPrompt(issue: JsonObject): string {
 }
 
 /** Every spelling that reaches `buildMacDesktopPlan`, the `ade screen` family. */
-const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
+export const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
   "screen", "mac-desktop", "mac-desk", "desk", "windows-desktop", "windows-desk",
 ]);
 
@@ -6675,7 +7318,17 @@ function resolveCliPathArg(value: string): string {
 
 const GLOBAL_VALUE_FLAG_HANDLERS: Record<CliGlobalValueFlag, (options: GlobalOptions, value: string) => void> = {
   "--project-root": (options, value) => {
-    options.projectRoot = resolveCliPathArg(value);
+    const resolved = resolveCliPathArg(value);
+    // A folder always wins, so `--project-root src/app` keeps working; an
+    // account project id or `owner/name` with no such folder names the
+    // account's project (resolved in `applyAccountProjectSelector`).
+    if (!fs.existsSync(resolved) && parseAccountProjectSelector(value)) {
+      options.projectSelector = value.trim();
+      options.projectRoot = null;
+      return;
+    }
+    options.projectSelector = null;
+    options.projectRoot = resolved;
   },
   "--workspace-root": (options, value) => {
     options.workspaceRoot = resolveCliPathArg(value);
@@ -7003,6 +7656,8 @@ function formatLaneDefaultsText(value: unknown): string {
 }
 
 function formatLaneCreateResultText(value: unknown): string {
+  // `--machine cloud` already rendered its launch view (`formatChatLaunch`).
+  if (typeof value === "string") return value;
   const result = isRecord(value) ? value : {};
   const lane = isRecord(result.lane) ? result.lane : {};
   const laneName = asString(lane.name) ?? asString(lane.id) ?? "lane";
@@ -7063,6 +7718,168 @@ function readLaneTemplatePayload(args: string[]): JsonObject {
     );
   }
   return parsed;
+}
+
+const LANE_SHARE_WATCH_SENTENCE =
+  "Watch only: this person can see the lane's chats and sessions and cannot send, run or approve anything.";
+
+/**
+ * `--ends` of `ade lanes share --add`: `<n>h`, `<n>d`, `<n>w`, `today` (until
+ * the next midnight here) or an ISO date, as epoch ms in the future.
+ */
+export function parseLaneShareEndsAt(value: string, now: number = Date.now()): number {
+  const text = value.trim();
+  const units: Record<string, number> = { h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000, w: 7 * 24 * 60 * 60 * 1000 };
+  const relative = /^(\d+)\s*([hdw])$/i.exec(text);
+  if (relative) {
+    const count = Number(relative[1]);
+    if (count > 0 && Number.isSafeInteger(count)) return now + count * units[relative[2]!.toLowerCase()]!;
+  } else if (text.toLowerCase() === "today") {
+    return laneShareNextDayStart(now);
+  } else if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+    const at = Date.parse(text);
+    if (Number.isFinite(at) && at > now) return at;
+  }
+  throw new CliUsageError("--ends takes 1h, 2d, 1w, today, or an ISO date in the future (2026-12-01T18:00:00Z).");
+}
+
+function shareObject(value: unknown): JsonObject {
+  return isRecord(value) ? value : {};
+}
+
+function formatLaneShareEnd(endsAt: unknown): string {
+  return typeof endsAt === "number" && Number.isFinite(endsAt) ? new Date(endsAt).toISOString() : "no end";
+}
+
+/**
+ * `ade lanes share`: the shares of one lane, a new Watch share (`--add`), or
+ * stopping one (`--remove`). The machine that holds the lane decides: from
+ * the CLI, an agent's shell or ADE MCP it makes only a Watch share, at most 5
+ * an hour, and every other change is for a person in the ADE app.
+ */
+function buildLaneSharePlan(args: string[]): CliPlan {
+  const laneId = requireValue(readLaneId(args) ?? envLaneIdForLaneCommand(), "laneId");
+  const add = readValue(args, ["--add"]);
+  const remove = readValue(args, ["--remove"]);
+  const preset = readValue(args, ["--access", "--preset"]);
+  const endsValue = readValue(args, ["--ends"]);
+  const hideMachines = readFlag(args, ["--hide-machines"]);
+  const hideModels = readFlag(args, ["--hide-models"]);
+  // One flag per meaning: an unknown word is refused, never read as a list.
+  const unknown = args.find((word) => !PARSED_SWITCHES.has(word));
+  if (unknown !== undefined) {
+    throw new CliUsageError(`ade lanes share does not take ${unknown}. Use --lane, --add <email>, --remove <email|grant id>, --ends, --access watch, --hide-machines or --hide-models.`);
+  }
+  if (add && remove) throw new CliUsageError("Pass --add or --remove, not both.");
+  if (!add && (preset != null || endsValue != null || hideMachines || hideModels)) {
+    throw new CliUsageError("--access, --ends, --hide-machines and --hide-models go with --add <email>.");
+  }
+  if (add) {
+    if (preset != null && preset.trim().toLowerCase() !== "watch") throw new CliUsageError(LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE);
+    const input: JsonObject = { laneId, receiverEmail: add.trim() };
+    if (hideMachines || hideModels) {
+      const rights = laneSharePresetRights("watch");
+      rights.privacy = { hideMachines, hideModels };
+      input.rights = rights as unknown as JsonObject;
+    }
+    if (endsValue != null) input.endsAt = parseLaneShareEndsAt(endsValue);
+    return {
+      kind: "execute",
+      label: "lane share add",
+      steps: [actionStep("result", "lane_share", "create", input)],
+      shapeResult: (values) => {
+        const result = shareObject(unwrapActionEnvelope(values.result));
+        const directory = shareObject(result.directory);
+        const grantId = asString(result.grantId);
+        const emailSent = directory.emailSent !== false;
+        return {
+          grantId,
+          laneId,
+          receiverEmail: add.trim(),
+          state: directory.refreshed === true ? "invite sent again" : emailSent ? "invite sent" : "email not sent",
+          emailNotSentReason: emailSent ? null : asString(directory.emailNotSentReason) ?? "failed",
+          link: grantId ? buildDeeplink({ kind: "lane-share", grantId }) : null,
+          preset: "watch",
+          risk: asString(shareObject(result.risk).level) ?? "low",
+          endsAt: typeof input.endsAt === "number" ? input.endsAt : null,
+          createdBy: asString(result.createdBy),
+          note: LANE_SHARE_WATCH_SENTENCE,
+        };
+      },
+      formatText: (value) => {
+        const result = shareObject(value);
+        const reason = asString(result.emailNotSentReason);
+        const state = reason
+          ? `Email not sent (${reason === "not_configured" ? "invite emails are not set up" : reason === "rate_limited" ? "an invite went out less than 10 minutes ago" : "the email failed"}). Send the link yourself.`
+          : result.state === "invite sent again" ? `The invite to ${asString(result.receiverEmail)} was sent again.` : `Invite sent to ${asString(result.receiverEmail)}.`;
+        return [
+          state,
+          `Link: ${asString(result.link) ?? "(none)"}`,
+          `Ends: ${formatLaneShareEnd(result.endsAt)}`,
+          LANE_SHARE_WATCH_SENTENCE,
+        ].join("\n");
+      },
+    };
+  }
+  if (remove) {
+    const target = remove.trim();
+    const input: JsonObject = LANE_SHARE_GRANT_ID_PATTERN.test(target)
+      ? { laneId, grantId: target }
+      : { laneId, receiverEmail: target };
+    return {
+      kind: "execute",
+      label: "lane share remove",
+      steps: [actionStep("result", "lane_share", "revoke", input)],
+      shapeResult: (values) => unwrapActionEnvelope(values.result),
+      formatText: (value) => {
+        const result = shareObject(value);
+        const lines = [`Stopped the share ${asString(result.grantId) ?? target}. The person has no access to this lane now.`];
+        const running = Array.isArray(result.runningTurnSessionIds) ? result.runningTurnSessionIds.length : 0;
+        if (running > 0) lines.push(`${running} turn(s) the person started keep running.`);
+        if (result.directoryRevoked === false && asString(result.directoryMessage)) lines.push(asString(result.directoryMessage)!);
+        return lines.join("\n");
+      },
+    };
+  }
+  return {
+    kind: "execute",
+    label: "lane share list",
+    steps: [actionStep("result", "lane_share", "list", {})],
+    shapeResult: (values) => {
+      const result = shareObject(unwrapActionEnvelope(values.result));
+      const shares = (Array.isArray(result.shares) ? result.shares : [])
+        .filter(isRecord)
+        .filter((share) => share.laneId === laneId)
+        .map((share) => ({
+          grantId: asString(share.grantId),
+          receiverEmail: asString(share.receiverEmail),
+          state: asString(share.state),
+          preset: asString(share.preset),
+          risk: asString(shareObject(share.risk).level) ?? asString(share.directoryRisk),
+          endsAt: typeof share.endsAt === "number" ? share.endsAt : null,
+          createdBy: asString(share.createdBy),
+          link: asString(share.link),
+        }));
+      return { laneId, shares };
+    },
+    formatText: (value) => {
+      const shares = (Array.isArray(shareObject(value).shares) ? shareObject(value).shares as unknown[] : []).filter(isRecord);
+      return renderTable(
+        ["person", "state", "access", "risk", "ends", "made by", "grant"],
+        shares.map((share) => [
+          share.receiverEmail ?? "-",
+          share.state ?? "-",
+          share.preset ?? "-",
+          share.risk ?? "-",
+          formatLaneShareEnd(share.endsAt),
+          share.createdBy ?? "-",
+          share.grantId ?? "-",
+        ]),
+        "This lane has no shares.",
+        { fullColumns: ["grant"] },
+      );
+    },
+  };
 }
 
 function buildLanePlan(args: string[]): CliPlan {
@@ -7345,6 +8162,8 @@ function buildLanePlan(args: string[]): CliPlan {
     return { kind: "execute", label: "lane defaults", steps, shapeResult: values => unwrapActionEnvelope(set ? values.result : values.defaults), formatText: formatLaneDefaultsText };
   }
   if (sub === "create") {
+    // Read first, so its value is never taken for the lane's name.
+    const cloudLaunchIdFlag = readValue(args, ["--launch-id"]);
     const existing = readValue(args, ["--existing-branch"]);
     const changes = readLaneStartFlags(args);
     const branchName = readValue(args, ["--branch-name"]);
@@ -7368,6 +8187,39 @@ function buildLanePlan(args: string[]): CliPlan {
     if (parsedIssue) input.linearIssue = parsedIssue;
     if (requestedTemplateId != null) input.templateId = requestedTemplateId;
     if (noTemplate) input.skipSetup = true;
+    // `--machine cloud`: the same choices as a lane launch with no chat. The
+    // computer's brain lays them over that project's own lane defaults.
+    // The computer binds a Linear issue to a new lane only when it carries the
+    // whole issue: it has no Linear lookup for a bare id.
+    const cloudLinearIssue = parsedIssue && !existing ? parseLaneLinearIssueValue(parsedIssue) : null;
+    const cloudLaneCreate: CloudLaneCreateDraft = {
+      launch: {
+        kind: "lane",
+        mode: "background",
+        prompt: "",
+        laneName: asString(input.name) ?? "",
+        title: asString(input.name) ?? "",
+        laneConfig: existing
+          ? { mode: "existing", branchRef: existing }
+          : {
+              mode: "new",
+              ...(changes.from || changes.on ? { start: mergeLaneStart(changes, null) } : {}),
+              ...(branchName ? { branchName } : {}),
+              ...(requestedTemplateId != null ? { templateId: requestedTemplateId } : {}),
+              ...(cloudLinearIssue ? { linearIssue: cloudLinearIssue } : {}),
+            },
+      },
+      launchId: cloudLaunchIdFlag ? requireCliUuid(cloudLaunchIdFlag, "--launch-id") : null,
+      refused: parsedIssue && existing
+        ? "--machine cloud binds a Linear issue only to a new branch. Leave out --existing-branch, or attach the issue from the lane."
+        : parsedIssue && !cloudLinearIssue
+          ? "--machine cloud needs the whole Linear issue (id, identifier, title, team and state) in --linear-issue-json."
+        : noTemplate
+          ? "--no-template doesn't work with --machine cloud yet: the new computer sets the lane up with the project's template."
+          : input.description != null
+            ? "--description doesn't work with --machine cloud yet. Make the lane, then add the description from it."
+            : null,
+    };
     const start = laneStartFromFlags(existing ? null : changes, "defaults");
     const steps: InvocationStep[] = [
       ...start.steps,
@@ -7375,7 +8227,7 @@ function buildLanePlan(args: string[]): CliPlan {
     ];
     // The new lane's template setup runs inside the create call; wait for it.
     const setupTimeoutMs = newLaneSetupTimeoutMs();
-    return { kind: "execute", label: "lane create", formatText: formatLaneCreateResultText, shapeResult: values => unwrapActionEnvelope(values.result), exitCodeFromResult: result => newLaneSetupFailed(result) ? 1 : 0, ...(setupTimeoutMs != null ? { minTimeoutMs: setupTimeoutMs } : {}), steps };
+    return { kind: "execute", label: "lane create", cloudLaneCreate, formatText: formatLaneCreateResultText, shapeResult: values => unwrapActionEnvelope(values.result), exitCodeFromResult: result => newLaneSetupFailed(result) ? 1 : 0, ...(setupTimeoutMs != null ? { minTimeoutMs: setupTimeoutMs } : {}), steps };
   }
   if (
     sub === "link-linear-issue" ||
@@ -7455,6 +8307,9 @@ function buildLanePlan(args: string[]): CliPlan {
         ),
       ],
     };
+  }
+  if (sub === "share" || sub === "shares") {
+    return buildLaneSharePlan(args);
   }
   if (sub === "rename") {
     const laneId = requireValue(
@@ -7626,16 +8481,23 @@ function buildLanePlan(args: string[]): CliPlan {
 }
 
 /**
- * Read the model/provider/effort launch config shared by `--start-chat` and
- * `ade chat create`. Returns only the keys the caller explicitly set so the
- * daemon can fall back to its own defaults.
+ * Read the chat launch config of `lanes create --start-chat`. The model is
+ * required like on every launch; the other keys are sent only when set.
  */
 function readChatLaunchConfig(args: string[]): JsonObject {
   refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
   const modelArg = readValue(args, ["--model"]);
+  const providerRaw = readValue(args, ["--provider"]);
+  const selected = readLaunchIdentitySelectors(args, { provider: providerRaw, model: modelArg });
+  const { instanceId, presetId, credentialId } = selected;
+  const provider = requireChatProvider(selected.provider);
+  if (!modelArg?.trim()) throw new CliUsageError(launchModelRequiredMessage(provider));
   const fastMode = readFastModeFlag(args);
   const config: JsonObject = {};
-  maybePut(config, "provider", readValue(args, ["--provider"]));
+  maybePut(config, "provider", provider);
+  maybePut(config, "instanceId", instanceId);
+  maybePut(config, "presetId", presetId);
+  maybePut(config, "credentialId", credentialId);
   maybePut(config, "model", modelArg);
   maybePut(config, "modelId", modelArg);
   maybePut(config, "reasoningEffort", readValue(args, ["--reasoning-effort", "--effort"]));
@@ -7661,37 +8523,60 @@ function readChatLaunchConfig(args: string[]): JsonObject {
 
 
 /**
- * The three launch-identity selectors every session-creating command accepts:
- * which provider account signs in (`--instance`), and which saved brain the
- * session launches under (`--preset` XOR `--credential`).
+ * The launch-identity selectors every session-creating command accepts: which
+ * provider account signs in (`--instance`), and where the model runs: a saved
+ * Custom provider (`--custom-provider`), a stored API key (`--credential`), or
+ * any model in any harness (`--via`). The last three are exclusive.
  *
- * One reader so the parsing, the flag aliases, and the usage error cannot drift
- * between `ade new`, `ade shell start-cli`, and `ade chat create`. Call it AFTER
- * `takeArgsAfterTerminator`, so a selector written after `--` stays part of the
- * prompt rather than being consumed as a flag. The `--instance`/provider rule
- * is not checked here: `collectLaunchArgs` owns it, because only the merged
- * args know the provider the session actually launches under. Callers read the
- * spawn-lineage flags first, so a command that gets both wrong is answered with
- * the lineage error before the `--instance` one.
+ * A Custom provider runs one model, and the caller still passes it with
+ * `--model` like on every launch; a different model is refused here with the
+ * right one named. The name is resolved against this machine's copy of the
+ * account's Custom providers and only the id travels: a launch sent to another
+ * machine (`--machine`) is resolved again there against that machine's synced
+ * copy, which refuses an id it does not hold yet with its own clear error.
+ * (An agent cannot carry the provider itself: that would write to the
+ * person's list.)
+ *
+ * One reader for every launch command, so the parsing and the usage errors
+ * cannot drift between them.
+ * Call it AFTER `takeArgsAfterTerminator`, so a selector written after `--`
+ * stays part of the prompt rather than being consumed as a flag. The
+ * `--instance`/provider rule is not checked here: `collectLaunchArgs` owns it,
+ * because only the merged args know the provider the session launches under.
  */
 function readLaunchIdentitySelectors(
   args: string[],
   consumed: { provider?: string | null; model?: string | null } = {},
-): { instanceId: string | null; presetId: string | null; credentialId: string | null } {
+): { instanceId: string | null; presetId: string | null; credentialId: string | null; provider: string | null } {
+  if (findFlagName(args, ["--preset", "--preset-id"])) throw new CliUsageError(PRESET_FLAG_GONE_MESSAGE);
+  // Lower-cased like every launch reads it, so `--provider Claude` matches.
+  const providerFlag = (consumed.provider ?? peekValue(args, ["--provider"]))?.trim().toLowerCase() || null;
   const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
   const via = readValue(args, ["--via"])?.trim() || null;
   const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
-  let presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
+  // An empty `--custom-provider ""` is refused below, never read as absent.
+  const customRef = readValue(args, ["--custom-provider"]);
+  const chosen = [via ? "--via" : null, customRef !== null ? "--custom-provider" : null, credentialId ? "--credential" : null].filter(Boolean);
+  if (chosen.length > 1) {
+    throw new CliUsageError(`${chosen.join(" and ")} each say where the model runs. Pass at most one.`);
+  }
   if (via) {
-    if (presetId || credentialId) {
-      throw new CliUsageError("--via names a brain on its own. Drop --preset / --credential.");
-    }
-    presetId = routePresetIdFromFlags(args, via, consumed);
+    // The route is built for `--provider` (or `--harness`); the launch runs that same harness.
+    const harness = providerFlag ?? peekValue(args, ["--harness"])?.trim().toLowerCase() ?? null;
+    return { instanceId, presetId: routePresetIdFromFlags(args, via, consumed), credentialId, provider: harness };
   }
-  if (presetId && credentialId) {
-    throw new CliUsageError("--preset and --credential name two different brains. Pass one.");
+  if (customRef === null) return { instanceId, presetId: null, credentialId, provider: providerFlag };
+  if (providerFlag && !(CHAT_PROVIDER_IDS as readonly string[]).includes(providerFlag)) {
+    throw new CliUsageError(`--provider must be one of: ${CHAT_PROVIDER_IDS.join(", ")}. With --custom-provider it may be left out.`);
   }
-  return { instanceId, presetId, credentialId };
+  const found = findCustomProvider(readHarnessPresetsFromMachine(resolveMachineAdeDir()), customRef);
+  if (!found.ok) throw new CliUsageError(found.message);
+  const harnessProblem = customProviderHarnessProblem(found.preset, providerFlag);
+  if (harnessProblem) throw new CliUsageError(harnessProblem);
+  const modelProblem = customProviderModelProblem(found.preset, consumed.model ?? peekValue(args, ["--model", "--model-id"]) ?? peekArgModel(args));
+  if (modelProblem) throw new CliUsageError(modelProblem);
+  // A Custom provider names its harness, so `--provider` may be left out.
+  return { instanceId, presetId: found.preset.id, credentialId, provider: providerFlag ?? found.preset.harness };
 }
 
 /**
@@ -7725,6 +8610,20 @@ export function parseViaSourceSpec(spec: string): HarnessPresetSource {
   );
 }
 
+/**
+ * A model given through the `--arg` / `--arg-json` / `--input-json` escape
+ * hatch (`model`, `modelId`, or `chat.create.model`), read from a copy so the
+ * launch still reads the flags itself.
+ */
+function peekArgModel(args: readonly string[]): string | null {
+  const input = collectGenericObjectArgs([...args]);
+  const create = isRecord(input.chat) && isRecord(input.chat.create) ? input.chat.create : {};
+  for (const value of [input.model, input.modelId, create.model, create.modelId]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
 /** Like `readValue`, but leaves the flag in place for the caller that owns it. */
 function peekValue(args: readonly string[], names: readonly string[]): string | null {
   return readValue([...args], names);
@@ -7751,10 +8650,11 @@ function routePresetIdFromFlags(
 ): string {
   // Peek, never consume: the launch command still reads --provider and
   // --model itself (the model rides the chat as its display id).
+  // `--harness` is the spelling `ade harness routes|test` print; accept it here too.
   const harness = (consumed.provider ?? peekValue(args, ["--provider", "--harness"]))?.trim();
   const model = (consumed.model ?? peekValue(args, ["--model"]))?.trim();
   if (!harness || !isHarnessPresetBody(harness)) {
-    throw new CliUsageError(`--via needs --provider <harness> (${ROUTABLE_HARNESSES.join(", ")}).`);
+    throw new CliUsageError(`--via needs --provider <name> (${ROUTABLE_HARNESSES.join(", ")}).`);
   }
   if (!model) throw new CliUsageError("--via needs --model <model id> (see `ade harness routes --harness <h> --text`).");
   const effort = peekValue(args, ["--reasoning-effort", "--effort"])?.trim();
@@ -7766,18 +8666,65 @@ function routePresetIdFromFlags(
   });
 }
 
+/** The Custom providers saved on this machine, as `ade harness providers` lists them. */
+function customProviderRows(presets: HarnessPreset[] | null): JsonObject[] {
+  return (presets ?? []).map((preset) => {
+    const row: JsonObject = {
+      name: presetLabel(preset),
+      id: preset.id,
+      provider: preset.harness,
+      via: formatViaSourceSpec(preset.source),
+      model: preset.model,
+    };
+    maybePut(row, "reasoningEffort", preset.reasoningEffort);
+    if (preset.subagentModel && preset.subagentModel !== "inherit") row.subagentModel = preset.subagentModel;
+    return row;
+  });
+}
+
+function formatHarnessProviders(value: unknown): string {
+  const rows = isRecord(value) && Array.isArray(value.customProviders) ? value.customProviders.filter(isRecord) : [];
+  if (!rows.length) {
+    return "No Custom providers on this machine. Make one in Settings › Providers › Custom providers,\n"
+      + "or run any model in any harness with --via (ade harness routes --text).\n";
+  }
+  const lines = ["Custom providers (launch one with both flags; the model must be its own):"];
+  for (const row of rows) {
+    const name = asString(row.name) ?? "";
+    const model = asString(row.model) ?? "";
+    lines.push(`  ${name}`);
+    lines.push(`    --custom-provider ${JSON.stringify(name)} --model ${model}`);
+    const effort = asString(row.reasoningEffort);
+    const subagent = asString(row.subagentModel);
+    lines.push(`    ${harnessBodyLabel(asString(row.provider) ?? "")} · --via ${asString(row.via) ?? ""}${effort ? ` · effort ${effort}` : ""}${subagent ? ` · subagents ${subagent}` : ""} · id ${asString(row.id) ?? ""}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 function buildHarnessPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.harness ?? topLevelHelpText() };
   }
   const sub = firstStandalonePositional(args) ?? "routes";
   const rest = args;
+  if (sub === "providers") {
+    return {
+      kind: "static",
+      formatter: "harness-providers",
+      value: { customProviders: customProviderRows(readHarnessPresetsFromMachine(resolveMachineAdeDir())) },
+    };
+  }
   if (sub === "env") {
+    if (findFlagName(rest, ["--preset", "--preset-id"])) throw new CliUsageError(PRESET_FLAG_GONE_MESSAGE);
     const via = readValue(rest, ["--via"])?.trim() || null;
-    const presetId = readValue(rest, ["--preset", "--preset-id"])?.trim()
-      || (via ? routePresetIdFromFlags(rest, via) : null)
-      || firstStandalonePositional(rest);
-    if (!presetId) throw new CliUsageError("ade harness env needs a custom provider id (or --via with --provider and --model).");
+    const customRef = readValue(rest, ["--custom-provider"])?.trim() || (via ? null : firstStandalonePositional(rest));
+    let presetId = via ? routePresetIdFromFlags(rest, via) : null;
+    if (!presetId && customRef) {
+      const found = findCustomProvider(readHarnessPresetsFromMachine(resolveMachineAdeDir()), customRef);
+      if (!found.ok) throw new CliUsageError(found.message);
+      presetId = found.preset.id;
+    }
+    if (!presetId) throw new CliUsageError("ade harness env needs a Custom provider (`ade harness env \"<name>\"`; `ade harness providers --text` lists them), or --via with --provider and --model.");
     // PowerShell by default on Windows, where `export` lines mean nothing.
     const shell = readValue(rest, ["--shell"])?.trim() || (process.platform === "win32" ? "pwsh" : undefined);
     if (shell && shell !== "zsh" && shell !== "bash" && shell !== "pwsh") {
@@ -7797,7 +8744,9 @@ function buildHarnessPlan(args: string[]): CliPlan {
   }
   if (sub === "routes" || sub === "list" || sub === "models") {
     const harness = readValue(rest, ["--harness", "--provider"])?.trim() || null;
-    if (harness && !isHarnessPresetBody(harness)) throw new CliUsageError(`Unknown harness: ${harness}`);
+    if (harness && !isHarnessPresetBody(harness)) {
+      throw new CliUsageError(`Unknown harness '${harness}'. Harnesses: ${ROUTABLE_HARNESSES.join(", ")}.`);
+    }
     return {
       kind: "execute",
       label: harness ? `harness routes ${harness}` : "harness routes",
@@ -7831,9 +8780,11 @@ function buildHarnessPlan(args: string[]): CliPlan {
   if (sub === "route-id" || sub === "id") {
     const via = readValue(rest, ["--via"])?.trim();
     if (!via) throw new CliUsageError("ade harness route-id needs --via <source> --provider <harness> --model <id>.");
-    return { kind: "static", value: { presetId: routePresetIdFromFlags(rest, via) } };
+    // `presetId` is the old key, kept for scripts that read it.
+    const routeId = routePresetIdFromFlags(rest, via);
+    return { kind: "static", value: { routeId, presetId: routeId } };
   }
-  throw new CliUsageError(`Unknown harness command: ${sub}. Try: ade harness routes | env | test | route-id`);
+  throw new CliUsageError(`Unknown harness command: ${sub}. Try: ade harness routes | providers | env | test | route-id`);
 }
 
 function readFastModeFlag(args: string[]): boolean | undefined {
@@ -8053,15 +9004,17 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   // One options object per surface, so the profile the flag is checked against
   // and the profile the merged arg bag is checked against cannot drift.
   const launchOpts = { allowShell: mode !== "chat" };
-  const provider = (mode === "chat" ? requireChatProvider(providerRaw) : requireLaunchProfile(providerRaw, launchOpts)) ?? "codex";
+  const selected = readLaunchIdentitySelectors(args, {
+    provider: providerRaw,
+    model: modelArg,
+  });
+  const { instanceId, presetId, credentialId } = selected;
+  // An unnamed provider (no --provider, no Custom provider) is Codex.
+  const provider = (mode === "chat" ? requireChatProvider(selected.provider) : requireLaunchProfile(selected.provider, launchOpts)) ?? "codex";
   const copilotFlags = readCopilotLaunchFlags(args, provider);
   if (mode !== "chat" && Object.keys(copilotFlags).length > 0) {
     throw new CliUsageError("--copilot-permission-mode, --copilot-context-tier and --copilot-auto-tier apply to chat mode only.");
   }
-  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
-    provider: providerRaw,
-    model: modelArg,
-  });
   if (mode === "cli") {
     const effectivePermissionMode = permissionMode ?? "default";
     if (!isTrackedCliPermissionMode(effectivePermissionMode)) {
@@ -8098,8 +9051,8 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         title,
         surface: readValue(args, ["--surface"]) ?? "work",
         ...(instanceId ? { instanceId } : {}),
-        // A saved harness preset (body + brain + model). CLI mode passes the
-        // same id; the runtime is what applies the locked gate for the four
+        // A Custom provider (harness + where it runs + model). CLI mode passes
+        // the same id; the runtime is what applies the locked gate for the four
         // harnesses whose CLI cannot take an outside key.
         ...(presetId ? { presetId } : {}),
         ...(credentialId ? { credentialId } : {}),
@@ -8459,7 +9412,7 @@ function buildChatCreateConfigPreview(
     // The dry run resolves the mode before the host's ceiling, so from an
     // agent it can promise more than the chat gets.
     ...(asString(process.env.ADE_CHAT_SESSION_ID) || asString(input.orchestrationParentSessionId)
-      ? { permissionNote: "The host may lower this mode: an agent cannot start a chat with more access than its own chat or parent has. `chat create` prints a note when it does." }
+      ? { permissionNote: "ADE may lower this mode: an agent cannot start a chat with more access than its own chat or parent has. `chat create` prints a note when it does." }
       : {}),
   };
 }
@@ -8478,7 +9431,7 @@ function buildChatCreateConfigPreview(
  * command the flag names the parent LANE, which is meaningful with or without
  * a chat.
  */
-const CHAT_ONLY_LINEAGE_FLAGS = [...SPAWN_TYPE_FLAGS, ...CHAT_PARENT_FLAGS];
+const CHAT_ONLY_LINEAGE_FLAGS = [...SPAWN_TYPE_FLAGS, ...NO_REPORT_FLAGS, ...CHAT_PARENT_FLAGS];
 
 function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPlan {
   const explicitName = readValue(args, ["--name"]);
@@ -9008,7 +9961,7 @@ function buildGitPlan(args: string[]): CliPlan {
       clear: "stash_clear",
     };
     const toolName = toolNameByAction[action];
-    if (!toolName) throw new CliUsageError(`Unknown stash action '${action}'.`);
+    if (!toolName) throw new CliUsageError(`Unknown stash action '${action}'. Use push, list, apply, pop, drop or clear (ade help git).`);
     const stashRefTool =
       toolName === "stash_apply" || toolName === "stash_pop" || toolName === "stash_drop";
     const common = withLane({
@@ -10195,9 +11148,14 @@ function buildShellPlan(args: string[], inWorkCopy = false, remote: ShellRemoteT
       steps: [actionCallStep("result", "release_remote_work_copy", {})],
       formatText: (result: unknown) => {
         const value = unwrapActionEnvelope(result);
-        return isRecord(value) && value.released === true
-          ? "Deleted this chat's work copy on that machine."
-          : "This chat had no work copy on that machine.";
+        if (!isRecord(value) || value.released !== true) return "This chat had no code on that machine, so nothing was deleted.";
+        // A machine with two checkouts of the repository may have held a copy in each.
+        const removed = Array.isArray(value.removed)
+          ? value.removed.filter(isRecord).map((entry) => asString(entry.path)).filter((entry): entry is string => entry != null)
+          : [];
+        return removed.length
+          ? `Deleted your code on that machine, and everything it held:\n${removed.map((entry) => `  ${entry}`).join("\n")}`
+          : "Deleted your code on that machine, and everything it held.";
       },
     };
   }
@@ -10370,11 +11328,11 @@ function buildCliSessionStartPlan(
     providerArg ??
       readValue(args, ["--provider", "--profile"]) ??
       firstStandalonePositional(args),
-    "provider",
+    "launchProvider",
   );
   const launchOpts = { allowShell: true };
   const provider = requireLaunchProfile(rawProvider, launchOpts);
-  if (!provider) throw new CliUsageError("provider is required.");
+  if (!provider) throw new CliUsageError(`Pass ${REQUIRED_VALUE_HINTS.launchProvider}.`);
   const promptArgs = takeArgsAfterTerminator(args);
   const initialInput = promptArgs
     ? promptArgs.join(" ").trim()
@@ -10892,7 +11850,7 @@ function buildSessionPlan(args: string[]): CliPlan {
   const fallbackSessionId = readSessionId(args);
   const sessionId = requireValue(
     positionalSessionId ?? fallbackSessionId,
-    "sessionId",
+    "workSessionId",
   );
 
   if (sub === "show" || sub === "status" || sub === "get") {
@@ -11035,23 +11993,28 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const foreground = readFlag(args, ["--foreground"]);
   const wait = readFlag(args, ["--wait"]);
   const printConfig = readFlag(args, ["--print-config"]);
-  const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
+  const timeoutMs = readTimeoutMsOption(args, 10 * 60 * 1000);
   const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 1_000) ?? 1_000;
   if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
   if (pollIntervalMs <= 0) throw new CliUsageError("chat launch --poll-interval-ms must be greater than zero.");
-  const provider = requireChatProvider(readValue(args, ["--provider"])) ?? "codex";
-  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
-    provider,
+  // Text after `--` is the prompt, never flags: split it off before reading selectors.
+  const promptTail = takeArgsAfterTerminator(args);
+  const providerRaw = readValue(args, ["--provider"]);
+  const selected = readLaunchIdentitySelectors(args, {
+    provider: providerRaw,
     model: modelArg,
   });
+  const { instanceId, presetId, credentialId } = selected;
+  const provider = requireChatProvider(selected.provider) ?? "codex";
   const launchId = launchIdFlag == null ? randomUUID() : requireCliUuid(launchIdFlag, "--launch-id");
   const laneId = laneIdFlag == null ? randomUUID() : requireCliUuid(laneIdFlag, "--lane-id");
   const explicitPrompt = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--text", "--message"])
     ?? readValue(args, ["--prompt", "--text", "--message"]);
   const input = collectGenericObjectArgs(args);
-  const prompt = requireValue(explicitPrompt ?? (args.join(" ").trim() || null), "prompt");
+  const prompt = requireValue(explicitPrompt ?? (promptTail?.join(" ").trim() || args.join(" ").trim() || null), "prompt");
 
-  const create: JsonObject = { provider, model: modelArg ?? "" };
+  const create: JsonObject = { provider };
+  maybePut(create, "model", modelArg);
   maybePut(create, "modelId", modelArg);
   maybePut(create, "reasoningEffort", reasoningEffort);
   maybePut(create, "permissionMode", permissionMode);
@@ -11115,6 +12078,10 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const effectiveProvider = nestedOverride ?? topLevelOverride ?? provider;
   launchArgs.provider = effectiveProvider;
   mergedChat.create.provider = effectiveProvider;
+  // Checked on the merged plan, so `--arg chat.create.model=<id>` counts too.
+  if (launchModelMissing(effectiveProvider, mergedChat.create.model, mergedChat.create.modelId)) {
+    throw new CliUsageError(launchModelRequiredMessage(effectiveProvider));
+  }
 
   if (printConfig) {
     return {
@@ -11174,6 +12141,19 @@ async function runChatLaunchCommand(
   plan: CliPlan & { kind: "chat-launch" },
   options: GlobalOptions,
 ): Promise<{ output: string; exitCode: number }> {
+  if (isCloudLaneMachineSelector(options.machine)) {
+    // A new lane on its own ADE Cloud computer: the brain owns that launch (cliMachineTargeting.ts).
+    if (plan.notify) throw new CliUsageError("--notify-url doesn't work with --machine cloud yet.");
+    const launchArgs = plan.startOverrides
+      ? {
+          ...plan.launchArgs,
+          // The computer starts from the pushed branch; only the start point is this side's choice.
+          laneConfig: { mode: "new", start: mergeLaneStart(plan.startOverrides, null), ...(plan.launchArgs.laneName ? {} : { autoName: true }) },
+        }
+      : plan.launchArgs;
+    const result = await runCloudLaneLaunch(launchArgs, options);
+    return { output: formatOutput(result, options, "chat-launch"), exitCode: 0 };
+  }
   let connection: CliConnection;
   try {
     connection = await createConnection(options, { autoRegisterProject: true });
@@ -11244,6 +12224,15 @@ async function runChatLaunchCommand(
         const session = phase === "completed"
           ? await callChat("getSessionSummary", { sessionId: asString(launch.sessionId) ?? launchId }).catch(() => null)
           : null;
+        const create = isRecord(launchArgs.chat) && isRecord(launchArgs.chat.create) ? launchArgs.chat.create : null;
+        const lowered = isRecord(session) && create
+          ? permissionLoweredNotice(
+            asString(create.permissionMode) ?? null,
+            create.droidPermissionMode != null || create.copilotPermissionMode != null,
+            session,
+          )
+          : null;
+        if (lowered) process.stderr.write(`${lowered}\n`);
         const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch, ...notifyResult, ...(isRecord(session) ? { session: pickChatSettings(session) } : {}) };
         return { output: formatOutput(result, options, "chat-launch"), exitCode: phase === "completed" ? 0 : 1 };
       }
@@ -11292,14 +12281,26 @@ export function formatChatLaunch(value: unknown): string {
     return error === "launch_not_found" || !error ? "ADE chat launch\n(no launch)" : `ADE chat launch\n${error}`;
   }
   const queued = Array.isArray(snapshot.queuedMessages) ? snapshot.queuedMessages.length : 0;
-  return renderKeyValues(`ADE chat launch ${asString(snapshot.launchId) ?? ""} · ${asString(snapshot.phase) ?? "unknown"}`, [
+  const machine = wrapper && isRecord(wrapper.machine) ? wrapper.machine : null;
+  // A lane launch (`ade lanes create --machine cloud`) starts no chat.
+  const noun = snapshot.kind === "lane" ? "lane" : "chat";
+  // What the running stage says now ("…running again after the disk grew (restart 2)").
+  const live = (Array.isArray(snapshot.stages) ? snapshot.stages.filter(isRecord) : []).find((stage) => stage.status === "running");
+  const liveDetail = live ? asString(live.detail) : null;
+  return renderKeyValues(`ADE ${noun} launch ${asString(snapshot.launchId) ?? ""} · ${asString(snapshot.phase) ?? "unknown"}`, [
     ["lane", `${asString(snapshot.laneName) ?? ""} (${asString(snapshot.laneId) ?? ""})`],
+    // A lane on ADE Cloud: the computer made for it.
+    ["machine", machine ? `ADE Cloud · ${asString(machine.name) ?? ""}${asString(machine.machineKey) ? ` (${asString(machine.machineKey)})` : ""}` : null],
+    // Why its computer is bigger than the size asked for ("Medium: this repo's setup needed more than 4 GB before.").
+    ["size", isRecord(snapshot.cloud) ? asString(snapshot.cloud.sizeNote) : null],
+    ["approve", wrapper?.approvalUrl],
     ["base", snapshot.baseRef],
     ["branch", snapshot.branchRef],
     ["chat", snapshot.sessionId],
     ["model", snapshot.modelId],
     ["template", snapshot.templateName],
     ["stages", formatChatLaunchStages(snapshot)],
+    ["now", liveDetail ? `${asString(live!.id) ?? "?"}: ${liveDetail}` : null],
     ["queued", queued > 0 ? `${queued} message${queued === 1 ? "" : "s"}` : null],
     ["error", snapshot.error],
     ["wait", wrapper?.error === "timed_out" ? `timed out after ${String(wrapper.elapsedMs)}ms` : null],
@@ -11405,6 +12406,7 @@ function readHandoffTarget(args: string[], sub: string, options: { modelOptional
  * prints these commands.
  */
 function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
+  const newChat = readFlag(args, ["--new-chat"]);
   const requestedItemId = readValue(args, ["--item", "--item-id"]);
   const optionArgs = readRepeatedValues(args, ["--option", "--choice"]);
   const answerArgs = readRepeatedValues(args, ["--answer"]);
@@ -11423,7 +12425,8 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
   if (chosenDecisions.length > 1) {
     throw new CliUsageError("Use only one of --approve, --approve-session, --deny, or --cancel.");
   }
-  const explicitDecision = chosenDecisions[0] ?? null;
+  const explicitDecision = chosenDecisions[0] ?? (newChat ? "accept" : null);
+  if (newChat && explicitDecision !== "accept") throw new CliUsageError("--new-chat requires approving the plan.");
   const hasAnswer = optionArgs.length > 0 || answerArgs.length > 0 || answersJson !== undefined || Boolean(text?.trim());
   if (!explicitDecision && !hasAnswer) {
     throw new CliUsageError(
@@ -11437,6 +12440,12 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
     const pendingValue = values.pending;
     const listed = !(isRecord(pendingValue) && pendingValue.ok === false);
     const requests = firstArray(unwrapActionEnvelope(pendingValue), ["requests"]) as unknown as PendingInputRequest[];
+    if (newChat) {
+      const target = requestedItemId ? requests.find((request) => (request.itemId ?? request.requestId) === requestedItemId) : requests.length === 1 ? requests[0] : null;
+      if (!target || target.source !== "codex" || target.kind !== "plan_approval" || target.providerMetadata?.planHandoffSupported !== true) {
+        throw new CliUsageError("This host does not offer a new-chat handoff for that Codex plan. Implement it here or update the host.");
+      }
+    }
     try {
       return resolvePendingInputResponse(requests, listed, {
         sessionId,
@@ -11456,7 +12465,10 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
     label: "chat respond",
     shapeResult: (values) => {
       const { itemId, decision, kind, title } = resolve(values);
-      return { answered: true, sessionId, itemId, decision, ...(kind ? { kind } : {}), ...(title ? { title } : {}) };
+      // The step's value is the action envelope (`{ domain, action, result }`);
+      // the handoff's id lives one level in, beside `ok`.
+      const actionResult = unwrapActionEnvelope(values.result);
+      return { answered: true, sessionId, itemId, decision, ...(isRecord(actionResult) && typeof actionResult.implementationSessionId === "string" ? { implementationSessionId: actionResult.implementationSessionId } : {}), ...(kind ? { kind } : {}), ...(title ? { title } : {}) };
     },
     steps: [
       {
@@ -11479,6 +12491,7 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
                 sessionId,
                 itemId,
                 decision,
+                ...(newChat ? { planAction: "new_chat" } : {}),
                 ...(answers ? { answers } : {}),
                 ...(responseText ? { responseText } : {}),
               },
@@ -11549,7 +12562,7 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "move") {
     // `--note --no-changes` reports the missing note instead of eating
     // `--no-changes` and moving the changes the person asked to leave behind.
-    rejectFlagOperands(args, ["--machine", "--note", "--status", "--retry"]);
+    rejectFlagOperands(args, ["--note", "--status", "--retry"]);
     const statusBatchId = readValue(args, ["--status"]);
     const retryBatchId = readValue(args, ["--retry"]);
     if (statusBatchId !== null && retryBatchId !== null) {
@@ -11570,9 +12583,9 @@ function buildChatPlan(args: string[]): CliPlan {
         steps: [actionStep("result", "chat", action, { batchId })],
       };
     }
-    const machine = readValue(args, ["--machine"]);
-    if (machine === null || !machine.trim()) {
-      throw new CliUsageError("chat move requires --machine <name> (see `ade machines list`).");
+    const machine = readMoveDestination(args);
+    if (machine === null) {
+      throw new CliUsageError("chat move requires --to <machine> (see `ade machines list`).");
     }
     const allWorkOnThisMachine = readFlag(args, ["--all"]);
     const includeDescendants = !readFlag(args, ["--no-descendants"]);
@@ -11625,8 +12638,9 @@ function buildChatPlan(args: string[]): CliPlan {
     : null;
   // `ask` / `note` take free text, not a session positional — they default to
   // the caller's own $ADE_CHAT_SESSION_ID and accept --session <id>.
-  const selfLifecycleSub = sub === "ask" || sub === "unask" || sub === "note" || sub === "activity"
-    || sub === "generate-names" || sub === "generate_names" || sub === "names";
+  // `generate-names` takes no text, so a bare id names the session to rename
+  // (otherwise it renamed the caller's own chat and lane by surprise).
+  const selfLifecycleSub = sub === "ask" || sub === "unask" || sub === "note" || sub === "activity";
   // New-lane launches take a prompt (`launch`) or a launch id (`launch-status`,
   // `launch-cancel`), never a session positional; they read their own.
   const launchSub = sub === "launch" || sub === "launches"
@@ -12016,6 +13030,8 @@ function buildChatPlan(args: string[]): CliPlan {
       label: `chat ${sub}`,
       formatter: "chat-launch",
       steps: [actionStep("result", "chat", cancel ? "cancelLaunch" : "getLaunch", { launchId })],
+      // With --machine cloud: the launch this machine's brain owns for a new ADE Cloud lane.
+      cloudLaneCall: { action: cancel ? "lane_launch_cancel" : "lane_launch_status", launchId },
       // getLaunch answers null once the record is gone (unknown id, or a
       // finished launch past its retention window).
       exitCodeFromResult: (result) => (isRecord(result) && typeof result.launchId === "string" ? 0 : 1),
@@ -12076,10 +13092,15 @@ function buildChatPlan(args: string[]): CliPlan {
     // use it. A chat is never a shell session, so `shell` is rejected here the
     // same way `ade new chat --mode chat` rejects it.
     const launchOpts = { allowShell: false };
-    const provider = requireChatProvider(readValue(args, ["--provider"]));
-    const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider, model: modelArg });
+    const selected = readLaunchIdentitySelectors(args, { provider: readValue(args, ["--provider"]), model: modelArg });
+    const { instanceId, presetId, credentialId } = selected;
+    const provider = requireChatProvider(selected.provider);
     const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
     const explicitLane = readLaneId(args);
+    // Only `--machine cloud` takes these: the same id again follows that
+    // launch, and the new lane (and its computer) gets the name.
+    const cloudLaunchIdFlag = readValue(args, ["--launch-id"]);
+    const cloudLaneName = readValue(args, ["--lane-name"])?.trim() || null;
     const actionArgs = collectLaunchArgs(args, {
       laneId: explicitLane,
       ...lineageArgs,
@@ -12100,9 +13121,8 @@ function buildChatPlan(args: string[]): CliPlan {
       // "use the provider's default account" rule instead of receiving a
       // second, CLI-shaped way of saying the same thing.
       ...(instanceId ? { instanceId } : {}),
-      // Which saved harness preset the chat launches under. Same omit-when-
-      // unset rule as the account: the runtime keeps its own default instead
-      // of receiving a second, CLI-shaped way to say "no preset".
+      // Which Custom provider the chat launches under. Same omit-when-unset
+      // rule as the account.
       ...(presetId ? { presetId } : {}),
       ...(credentialId ? { credentialId } : {}),
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
@@ -12157,6 +13177,14 @@ function buildChatPlan(args: string[]): CliPlan {
     const kickoffText =
       explicitKickoff ??
       (linearIssue && !noKickoff ? deriveLinearKickoffPrompt(linearIssue) : null);
+    const cloudLaunch: CloudLaneLaunchDraft = {
+      create: actionArgs,
+      prompt: kickoffText,
+      launchId: cloudLaunchIdFlag ? requireCliUuid(cloudLaunchIdFlag, "--launch-id") : null,
+      linearIssue,
+      laneName: cloudLaneName,
+      notify: notify != null,
+    };
     if (printConfig) {
       return {
         kind: "static",
@@ -12176,6 +13204,7 @@ function buildChatPlan(args: string[]): CliPlan {
           label: "chat create",
           machineFanOut: true,
           chatCreateCheck,
+          cloudLaunch,
           steps: [
             { ...createStep, key: "session" },
             ...notifySteps("session"),
@@ -12207,9 +13236,9 @@ function buildChatPlan(args: string[]): CliPlan {
         };
       }
       if (notify) {
-        return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [{ ...createStep, key: "session" }, ...notifySteps("session"), ...laneChatsSteps("session")] };
+        return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, cloudLaunch, steps: [{ ...createStep, key: "session" }, ...notifySteps("session"), ...laneChatsSteps("session")] };
       }
-      return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [createStep, ...laneChatsSteps("result")] };
+      return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, cloudLaunch, steps: [createStep, ...laneChatsSteps("result")] };
     }
     const issueForKickoff = linearIssue;
     const steps: InvocationStep[] = [
@@ -12262,7 +13291,7 @@ function buildChatPlan(args: string[]): CliPlan {
         unwrapToolResult: true,
       });
     }
-    return { kind: "execute", label: "chat create from Linear issue", machineFanOut: true, chatCreateCheck, steps };
+    return { kind: "execute", label: "chat create from Linear issue", machineFanOut: true, chatCreateCheck, cloudLaunch, steps };
   }
   if (sub === "send") {
     const imageUrl = readValue(args, ["--image-url"]);
@@ -12311,6 +13340,8 @@ function buildChatPlan(args: string[]): CliPlan {
       text: sendText,
       kind: "auto",
       ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+      // One id per send: a retried call (a reconnect, an MCP client's retry) is not sent twice.
+      clientSendId: randomUUID(),
     }));
     return {
       kind: "execute",
@@ -12355,6 +13386,7 @@ function buildChatPlan(args: string[]): CliPlan {
             text: messageText,
             kind: normalizeChatMessageKind(selectedKinds[0] ?? null),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+            clientSendId: randomUUID(),
           })),
         ),
       ],
@@ -12497,7 +13529,10 @@ function buildChatPlan(args: string[]): CliPlan {
       const any = readFlag(args, ["--any"]);
       readFlag(args, ["--all"]);
       const waitForValue = readValue(args, ["--for", "--state", "--until"]);
-      const timeoutMinutes = readIntOption(args, ["--timeout-minutes"], 24 * 60);
+      // `--timeout 2h` (or --timeout-ms) works here too, rounded up to minutes.
+      const timeoutDurationMs = readTimeoutMsOption(args, 0);
+      const timeoutMinutes = readIntOption(args, ["--timeout-minutes"])
+        ?? (timeoutDurationMs > 0 ? Math.ceil(timeoutDurationMs / 60_000) : 24 * 60);
       if (timeoutMinutes !== undefined && timeoutMinutes <= 0) {
         throw new CliUsageError("--timeout-minutes must be a positive number of minutes.");
       }
@@ -12518,7 +13553,7 @@ function buildChatPlan(args: string[]): CliPlan {
         })],
       };
     }
-    const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
+    const timeoutMs = readTimeoutMsOption(args, 10 * 60 * 1000);
     const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 2_000) ?? 2_000;
     if (timeoutMs <= 0) throw new CliUsageError("chat wait --timeout-ms must be greater than zero.");
     if (pollIntervalMs <= 0) throw new CliUsageError("chat wait --poll-interval-ms must be greater than zero.");
@@ -12747,7 +13782,7 @@ function buildChatPlan(args: string[]): CliPlan {
   }
   if (sub === "handoff" || sub === "fork") refuseRemovedFlags(args, REMOVED_HANDOFF_FLAGS);
   if (sub === "handoff") {
-    // The first control flag present wins. --machine with any of them is
+    // The first control flag present wins. --to (or --machine) with any of them is
     // refused earlier, by extractMachineTargeting.
     const controls = [
       { flags: ["--cancel"], label: "chat handoff cancel", action: "cancelCrossMachineHandoff" },
@@ -12756,10 +13791,7 @@ function buildChatPlan(args: string[]): CliPlan {
     ];
     const flagNames = flagNamesOutsideFreeText(args);
     const control = controls.find((entry) => entry.flags.some((flag) => flagNames.has(flag))) ?? null;
-    const handoffMachine = readValue(args, ["--machine"]);
-    if (handoffMachine !== null && !handoffMachine.trim()) {
-      throw new CliUsageError("--machine needs a machine name or key (see `ade machines list`).");
-    }
+    const handoffMachine = readMoveDestination(args);
     if (control) {
       return {
         kind: "execute",
@@ -12770,7 +13802,7 @@ function buildChatPlan(args: string[]): CliPlan {
     if (handoffMachine !== null) {
       // Move the chat to another machine on the account. The brain runs the
       // move (crossMachineHandoffOrchestrator); the chat's banner shows it.
-      // Never forwarded: --machine names the destination (cliMachineTargeting).
+      // Never forwarded: --to names the destination (cliMachineTargeting).
       // Free text first: a prompt of "--fork" is text, not a flag.
       const continuationPrompt = readValue(args, ["--prompt", "--note"]);
       if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
@@ -12799,7 +13831,9 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "handoff" || sub === "fork") {
     // Free text first: a note of "--fork" is text, not a flag.
     const handoffNote = readValue(args, ["--note"]);
-    const { mode, targetModelId, settings } = readHandoffTarget(args, sub);
+    // A model is optional here only for a CLI session, which continues on the
+    // model it ran; a chat without one is refused by the runtime.
+    const { mode, targetModelId, settings } = readHandoffTarget(args, sub, { modelOptional: true });
     const targetLaneId = readValue(args, ["--target-lane", "--target-lane-id"]);
     if (targetLaneId !== null && mode === "fork") {
       throw new CliUsageError("chat fork stays in the source lane; --target-lane is only valid for brief handoffs.");
@@ -12818,7 +13852,7 @@ function buildChatPlan(args: string[]): CliPlan {
           "handoffSession",
           collectGenericObjectArgs(args, {
             sourceSessionId: requireSession(),
-            targetModelId,
+            targetModelId: targetModelId ?? "",
             mode,
             ...(targetLaneId !== null ? { targetLaneId } : {}),
             ...settings,
@@ -13084,11 +14118,15 @@ function buildChatPlan(args: string[]): CliPlan {
     if (detach === Boolean(parent)) {
       throw new Error("Pass --parent <session> to set the parent, or --no-parent to detach the chat.");
     }
-    const spawnKind = readValue(args, [...SPAWN_TYPE_FLAGS]);
-    if (spawnKind && spawnKind !== "subagent" && spawnKind !== "peer") {
-      throw new Error("--type must be subagent or peer.");
+    const noReport = readFlag(args, [...NO_REPORT_FLAGS]);
+    const typeArg = readValue(args, [...SPAWN_TYPE_FLAGS]);
+    // `peer` is the stored value behind `--no-report`; old scripts still pass it.
+    if (typeArg && typeArg !== "subagent" && typeArg !== "peer") {
+      throw new Error("--type must be subagent. Use --no-report for a chat that does not report back.");
     }
-    if (detach && spawnKind) throw new Error("--type needs a parent; drop it with --no-parent.");
+    if (noReport && typeArg === "subagent") throw new Error("--no-report cannot be combined with --type subagent.");
+    const spawnKind = noReport ? "peer" : typeArg;
+    if (detach && spawnKind) throw new Error("--type and --no-report need a parent; drop them with --no-parent.");
     return {
       kind: "execute",
       label: "chat set-parent",
@@ -13151,6 +14189,11 @@ function buildChatPlan(args: string[]): CliPlan {
     // and `chat updateSession` with no session sent the runtime no arguments.
     // The session can come from the positional, --session, --input-json, or
     // the caller's own chat, so it is required only after they are merged.
+    // Pinning is the row's own setting, for a chat and a CLI session alike
+    // (`session.updateMeta`, as the Work list pins it).
+    const pinFlag = readFlag(args, ["--pin"]);
+    const unpinFlag = readFlag(args, ["--unpin"]);
+    if (pinFlag && unpinFlag) throw new CliUsageError("Use only one of --pin or --unpin.");
     const update = withSession(readChatUpdateFields(args));
     // Only an omitted session falls back to the caller's own chat; an empty
     // one given on purpose is refused rather than updating the wrong chat.
@@ -13158,10 +14201,19 @@ function buildChatPlan(args: string[]): CliPlan {
       update.sessionId === undefined ? asString(process.env.ADE_CHAT_SESSION_ID) : asString(update.sessionId),
       "sessionId",
     );
+    const pinned = pinFlag ? true : unpinFlag ? false : undefined;
+    const steps: InvocationStep[] = [];
+    if (pinned !== undefined) {
+      steps.push(actionStep("pin", "session", "updateMeta", { sessionId: update.sessionId, pinned }));
+    }
+    if (pinned === undefined || Object.keys(update).some((key) => key !== "sessionId")) {
+      steps.push(actionStep("result", "chat", "updateSession", update));
+    }
     return {
       kind: "execute",
       label: "chat update",
-      steps: [actionStep("result", "chat", "updateSession", update)],
+      ...(steps.some((step) => step.key === "result") ? {} : { shapeResult: () => ({ ok: true, sessionId: update.sessionId, pinned }) }),
+      steps,
     };
   }
   return refuseUnknownSubcommand("chat", "chat", sub);
@@ -13193,7 +14245,6 @@ const DRAFT_SCHEDULE_ONLY_FLAGS: readonly string[] = [
   "--new-chat",
   "--lane",
   "--lane-id",
-  "--machine",
   "--if-late",
   "--grace",
 ];
@@ -13335,11 +14386,13 @@ function buildDraftScheduleInput(args: string[], existing: JsonObject | null): J
     ?? asString(existing?.permissionMode);
   const thinking = readValue(args, ["--thinking", "--reasoning-effort", "--effort"])
     ?? asString(existing?.thinking);
-  const machine = readValue(args, ["--machine"]) ?? asString(existing?.targetMachineKey);
+  // `--machine` runs the whole command on that machine (cliMachineTargeting);
+  // only a send armed before that keeps the delivering machine it named.
+  const machine = asString(existing?.targetMachineKey);
   // A new chat is created by the fire-time delivery, so it must carry its model
   // and provider up front — nobody is there to pick one when it fires.
   if (targetKind === "new" && !model) {
-    throw new CliUsageError("--new-chat needs --model <runtime-facing model string> (with --provider <id>).");
+    throw new CliUsageError(`--new-chat needs --model <id> (with --provider <id>). ${unknownModelHint(provider)}`);
   }
   if (targetKind === "new" && !provider) {
     throw new CliUsageError("--new-chat needs --provider <id> (with --model).");
@@ -13395,21 +14448,14 @@ function isDraftPending(status: string | null): boolean {
   return status === "scheduled" || status === "sending";
 }
 
-function selectDraftRows(
-  value: unknown,
-  opts: { filter: "all" | "scheduled" | "needs-you"; machine: string | null },
-): JsonObject[] {
+function selectDraftRows(value: unknown, filter: "all" | "scheduled" | "needs-you"): JsonObject[] {
   let rows = draftEntriesFromResult(value);
-  if (opts.filter === "scheduled") {
+  if (filter === "scheduled") {
     rows = rows.filter((row) => isDraftPending(asString(row.status)));
-  } else if (opts.filter === "needs-you") {
+  } else if (filter === "needs-you") {
     // A blocked send waits on the user; a missed one already refused to go out.
     // Both are the "you have to act" bucket.
     rows = rows.filter((row) => row.status === "blocked" || row.status === "missed");
-  }
-  if (opts.machine) {
-    const want = opts.machine.trim().toLowerCase();
-    rows = rows.filter((row) => (asString(row.targetMachineKey) ?? "").toLowerCase() === want);
   }
   return rows;
 }
@@ -13560,13 +14606,12 @@ function buildDraftsListPlan(args: string[]): CliPlan {
   if (scheduled && needsYou) {
     throw new CliUsageError("Use --scheduled or --needs-you, not both.");
   }
-  const machine = readValue(args, ["--machine"]);
   const filter: "all" | "scheduled" | "needs-you" = scheduled ? "scheduled" : needsYou ? "needs-you" : "all";
   return {
     kind: "execute",
     label: "drafts list",
     steps: [draftsActionStep("listDrafts")],
-    shapeResult: (values) => selectDraftRows(values.result, { filter, machine }),
+    shapeResult: (values) => selectDraftRows(values.result, filter),
     formatter: "drafts-list",
     tableText: (result) => renderDraftsTable(result as JsonObject[]),
   };
@@ -13919,7 +14964,8 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
   if (sub === "create") {
     refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
     const model = readValue(args, ["--model"]);
-    const provider = readValue(args, ["--provider"]);
+    const selected = readLaunchIdentitySelectors(args, { provider: readValue(args, ["--provider"]), model });
+    const provider = selected.provider;
     const prompt = readValue(args, ["--prompt"]);
     const droidPermissionMode = readDroidPermissionMode(args);
     const copilotFlags = readCopilotLaunchFlags(args, provider ?? "");
@@ -13940,6 +14986,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
       ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       ...(prompt ? { kickoffText: prompt } : {}),
+      ...(selected.instanceId ? { instanceId: selected.instanceId } : {}),
+      ...(selected.presetId ? { presetId: selected.presetId } : {}),
+      ...(selected.credentialId ? { credentialId: selected.credentialId } : {}),
     });
     requireValue(asString(createArgs.provider), "provider");
     requireValue(asString(createArgs.model), "model");
@@ -14165,7 +15214,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       steps: [personalChatStep("getSummary", { sessionId })],
     };
   }
-  throw new CliUsageError(`Unhandled personal chat subcommand '${sub}'.`);
+  throw new CliUsageError(`Unknown personal chat command '${sub}'. Run ade help chat for the --personal commands.`);
 }
 
 /** `ade scene preview <file|->`: render a scene in the desktop and report what broke. */
@@ -14502,8 +15551,8 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
     // One file into or out of this chat's work copy on another machine
     // (cliRemoteWork.ts sends it in chunks); there is no local form.
     const usage = sub === "push"
-      ? "ade files push --machine <name> <local file> <path in the work copy there>"
-      : "ade files pull --machine <name> <path in the work copy there> <local file or folder>";
+      ? "ade files push --machine <name> <local file> <path in your code there>"
+      : "ade files pull --machine <name> <path in your code there> <local file or folder>";
     if (!machine) {
       throw new CliUsageError(`ade files ${sub} copies a file ${sub === "push" ? "to" : "from"} another machine: ${usage}. Here, use cp.`);
     }
@@ -15355,7 +16404,8 @@ function iosSimulatorRootArgs(
  * may simply live on another machine on the account. The runtime answers with
  * the same "not found" for both, and an agent handed a deep link to a chat on
  * the Windows box read that as "the chat does not exist". Every `chat`
- * subcommand except `handoff` takes `--machine`, so the hint can name the fix.
+ * subcommand except `handoff` and `move` takes `--machine` as its target, so
+ * the hint can name the fix.
  * Null when the command already targets a machine, or is not a `chat` command.
  */
 function chatOtherMachineHint(argv: string[]): string | null {
@@ -15365,7 +16415,8 @@ function chatOtherMachineHint(argv: string[]): string | null {
   } catch {
     return null;
   }
-  if (command[0]?.toLowerCase() !== "chat" || command[1]?.toLowerCase() === "handoff") return null;
+  const chatSub = command[1]?.toLowerCase();
+  if (command[0]?.toLowerCase() !== "chat" || chatSub === "handoff" || chatSub === "move") return null;
   const flags = flagNamesOutsideFreeText(command);
   if (flags.has("--machine") || flags.has("--all-machines")) return null;
   // Through ADE MCP the app names a computer with `machine`, and ADE MCP
@@ -15444,11 +16495,16 @@ async function runChatHereThenElsewhere(
   if (match?.isThisMachine && match.scope.kind === "project" && match.scope.rootPath
     && !pathsEqual(path.resolve(match.scope.rootPath), path.resolve(resolveRoots(parsed.options).projectRoot))) {
     const there = { ...routedToLocation(parsed, match), options: { ...parsed.options, projectRoot: match.scope.rootPath } };
-    const restoreShellScope = dropShellScopeForOtherProject(there.options);
-    try {
-      return await runParsedCli(there);
-    } finally {
-      restoreShellScope();
+    return await withShellScopeFor(there.options, () => runParsedCli(there));
+  }
+  // Asleep on ADE Cloud: a send goes to the computer that saved the chat, and
+  // the `--machine` call wakes it (a wake uses hours, like a send from the app).
+  // A read is not worth a wake: it gets the "asleep" sentence instead.
+  if (!match && report.restingCloud?.length && isChatSendCommand(parsed.command)) {
+    const resting = await restingCloudChatLocation(parsed.options, report);
+    if (resting) {
+      process.stderr.write(`· on ${resting.machineName} (asleep on ADE Cloud: waking it, which uses hours)\n`);
+      return await runOnMachine(routedToLocation(parsed, resting));
     }
   }
   if (!match) chatLookupMiss = report;
@@ -15457,6 +16513,13 @@ async function runChatHereThenElsewhere(
   const hint = chatOtherMachineHint(process.argv.slice(2));
   if (hint) process.stderr.write(`${hint}\n`);
   return local!;
+}
+
+/** `ade chat send|message`: a command that gives a chat work, so its sleeping computer is worth a wake. */
+function isChatSendCommand(command: string[]): boolean {
+  const typed = command[0]?.toLowerCase() ?? "";
+  const sub = command[1]?.toLowerCase();
+  return (CLI_COMMAND_ALIASES[typed] ?? typed) === "chat" && (sub === "send" || sub === "message");
 }
 
 /** `ade chat locate <session>`: which machine of the account has a chat. */
@@ -15847,8 +16910,9 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "launch" || sub === "open") {
-    // Agent launches must not steal the user's screen, so the CLI parks
-    // Simulator.app in the background unless asked otherwise.
+    // Simulator.app stays closed (the device runs inside ADE) unless
+    // --foreground asks for it; sent either way, for an older brain that
+    // opened it unless told to keep it in the background.
     const foreground = readFlag(args, ["--foreground", "--open-simulator"]);
     const openDrawer = readFlag(args, ["--open-drawer", "--drawer"]);
     const follow = readFlag(args, ["--follow"]);
@@ -15949,6 +17013,9 @@ function buildIosSimulatorPlan(
         deviceUdid: readIosSimulatorDevice(args),
         ...rootArgs(),
         ...(noProof ? { proof: false } : {}),
+        // Read by a `--machine` call (cliMachineTargeting), which brings the
+        // shot back here into --out; taken off before the call leaves here.
+        ...(outPath ? { copyToCallerPath: outPath } : {}),
       }),
       ...(outPath ? { shapeResult: (values: JsonObject) => copyAppleScreenshotTo(outPath, values.result) } : {}),
     };
@@ -16302,13 +17369,16 @@ function buildIosSimulatorPlan(
     // Read once: the reader splices `--udid`/`--device` out of `args`, so a
     // second call in the value position returned null and dropped the target.
     const stopUdid = readIosSimulatorDevice(args);
-    return iosAction("Apple device stop", "deviceStop", {
-      chatSessionId: claimArgs.chatSessionId,
-      ...(stopUdid ? { udid: stopUdid } : {}),
-      ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
-      ...readIgnoreOwnershipArg(args),
-      ...rootArgs(),
-    });
+    return {
+      ...iosAction("Apple device stop", "deviceStop", {
+        chatSessionId: claimArgs.chatSessionId,
+        ...(stopUdid ? { udid: stopUdid } : {}),
+        ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
+        ...readIgnoreOwnershipArg(args),
+        ...rootArgs(),
+      }),
+      formatText: formatAppleDeviceStop,
+    };
   }
   if (
     sub === "shutdown" ||
@@ -16351,7 +17421,12 @@ function buildIosSimulatorPlan(
     const device = readIosSimulatorDevice(args);
     // A device session is not an app session: it boots a simulator and makes
     // it streamable, with no build and no install.
+    // Headless by default (the device shows in ADE); Simulator.app opens only
+    // with --window. `--no-window` is the old spelling of the default; sent,
+    // so an older brain that opened the window unless told not to stays headless.
+    const window = readFlag(args, ["--window", "--open-simulator"]);
     const noWindow = readFlag(args, ["--no-window", "--headless"]);
+    if (window && noWindow) throw new CliUsageError("open-device takes --window or --no-window, not both.");
     const force = readFlag(args, ["--force", "-f"]);
     return iosAction("iOS simulator open device", "openDevice", {
       deviceUdid: device,
@@ -16359,7 +17434,7 @@ function buildIosSimulatorPlan(
       ...(claimArgs.chatSessionId
         ? { chatSessionId: claimArgs.chatSessionId }
         : {}),
-      ...(noWindow ? { openWindow: false } : {}),
+      openWindow: window,
       ...(force ? { force: true } : {}),
     });
   }
@@ -16686,14 +17761,22 @@ function buildIosSimulatorPlan(
     const timeoutMs = readNumberOption(args, ["--timeout-ms"]);
     const gone = readFlag(args, ["--gone", "--hidden"]);
     const target = elementTargetArgs();
-    return iosAction("iOS simulator wait for element", "waitForElement", {
-      ...target,
-      ...(timeoutMs == null ? {} : { timeoutMs }),
-      ...(gone ? { state: "gone" } : {}),
-    });
+    // A miss (`ok: false`: it never appeared, or never went) exits 1, so
+    // `wait-for-element … && tap-element …` stops there.
+    return {
+      ...iosAction("iOS simulator wait for element", "waitForElement", {
+        ...target,
+        ...(timeoutMs == null ? {} : { timeoutMs }),
+        ...(gone ? { state: "gone" } : {}),
+      }),
+      exitCodeFromResult: appleElementMissExitCode,
+    };
   }
   if (sub === "assert-visible" || sub === "assert") {
-    return iosAction("iOS simulator assert visible", "assertVisible", elementTargetArgs());
+    return {
+      ...iosAction("iOS simulator assert visible", "assertVisible", elementTargetArgs()),
+      exitCodeFromResult: appleElementMissExitCode,
+    };
   }
   if (sub === "proof-bundle") {
     const device = readIosSimulatorDevice(args);
@@ -16800,19 +17883,22 @@ function buildIosSimulatorPlan(
     if (udid && creating) {
       throw new CliUsageError("apple start takes --udid (attach) or --runtime/--device-type/--create (a new device), not both.");
     }
-    return iosAction("Apple device start", "deviceStart", {
-      ...(laneId ? { laneId } : {}),
-      ...(udid ? { udid } : {}),
-      ...(creating
-        ? {
-          create: {
-            ...(sourceUdid ? { sourceUdid } : {}),
-            ...(runtime ? { runtime } : {}),
-            ...(deviceType ? { deviceType } : {}),
-          },
-        }
-        : {}),
-    });
+    return {
+      ...iosAction("Apple device start", "deviceStart", {
+        ...(laneId ? { laneId } : {}),
+        ...(udid ? { udid } : {}),
+        ...(creating
+          ? {
+            create: {
+              ...(sourceUdid ? { sourceUdid } : {}),
+              ...(runtime ? { runtime } : {}),
+              ...(deviceType ? { deviceType } : {}),
+            },
+          }
+          : {}),
+      }),
+      formatText: formatAppleDeviceStart,
+    };
   }
   if (sub === "device-list") {
     const installed = readFlag(args, ["--installed"]);
@@ -16964,15 +18050,25 @@ function buildIosSimulatorPlan(
       "--id",
     );
     const force = readFlag(args, ["--force", "-f"]);
-    return iosAction("Apple device record delete", "recordDelete", {
-      id,
-      ...rootArgs(),
-      ...(laneId ? { laneId } : {}),
-      ...(claimArgs.chatSessionId
-        ? { chatSessionId: claimArgs.chatSessionId }
-        : {}),
-      ...(force ? { force: true } : {}),
-    });
+    // The proof `record-stop` filed from this recording stays: the brain's
+    // answer says so (`note`); an older brain answers nothing, and the text
+    // still says it.
+    return {
+      ...iosAction("Apple device record delete", "recordDelete", {
+        id,
+        ...rootArgs(),
+        ...(laneId ? { laneId } : {}),
+        ...(claimArgs.chatSessionId
+          ? { chatSessionId: claimArgs.chatSessionId }
+          : {}),
+        ...(force ? { force: true } : {}),
+      }),
+      formatText: (value: unknown) => {
+        const record = unwrapActionEnvelope(value);
+        return (isRecord(record) ? asString(record.note) : null)
+          ?? `Deleted recording ${id}. Any proof record-stop filed from it stays in the proof drawer: ade proof list names it, ade proof rm <id> removes it.`;
+      },
+    };
   }
   if (sub === "frame") {
     return iosAction("Apple device frame", "frame", {
@@ -17668,14 +18764,22 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "screenshot" || sub === "capture") {
+    // Written here, from the image the call returns: `--out` used to be passed
+    // on as an unknown argument, so the command exited 0 and wrote nothing.
+    const outPath = readValue(args, ["--out", "--output", "--path"]);
+    if (outPath != null && (!outPath.trim() || outPath.startsWith("-"))) {
+      throw new CliUsageError("app-control screenshot --out needs a file path.");
+    }
     return {
       kind: "execute",
       label: "App Control screenshot",
       steps: [
+        // A file gets a fresh PNG capture, not the live view's JPEG frame.
         appControlStep("result", "screenshot",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, { format: "png" }),
         ),
       ],
+      saveScreenshot: { outPath, surface: "app-control" },
     };
   }
   if (sub === "snapshot" || sub === "screen" || sub === "elements") {
@@ -18031,6 +19135,8 @@ const BROWSER_SESSION_SUBCOMMANDS = {
   click: ["click"],
   type: ["type", "type-text"],
   fill: ["fill"],
+  signin: ["signin"],
+  signup: ["signup"],
   // `clear` is deliberately ambiguous at the CLI: with an element target it
   // clears a field, without one it clears the selection. `buildBrowserPlan`
   // keeps that branch written out because the disambiguation is a flag test,
@@ -18309,6 +19415,21 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
 }
 
 /**
+ * The host a `--site` value or a page URL names, lowercased. `--site` is only
+ * a check: signin always uses the tab's own page, so an unreadable value is
+ * refused before the browser is called rather than guessed at.
+ */
+function browserSiteHost(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    return new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The `--` terminator for the `ade browser` parser.
  *
  * `standalonePositionals` stops AT the terminator and leaves it in place, which
@@ -18534,7 +19655,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           actionStep("result", "built_in_browser", "endSession", {
             sessionId: requireValue(
               explicitSessionId ?? genericSessionId ?? firstBrowserPositional(args),
-              "sessionId",
+              "browserSessionId",
             ),
             ...genericArgs,
           }),
@@ -18566,14 +19687,14 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           ?? firstStandalonePositional(args, BROWSER_VALUE_CARRIER_FLAGS)
           ?? wrappedTail.shift()
           ?? null,
-        "sessionId",
+        "browserSessionId",
       );
       return buildBrowserPlanWithLiteralTail(
         [mode, "--browser-session", sessionId, ...args],
         wrappedTail,
       );
     }
-    throw new CliUsageError(`Unknown browser session command: ${mode}`);
+    throw new CliUsageError(`Unknown browser session command '${mode}'. Run ade help browser.`);
   }
   if (sub === "handoff" || sub === "hand-off" || sub === "sign-in") {
     return buildBrowserHandoffPlan(args, tail);
@@ -18879,6 +20000,31 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           }),
         ),
       ],
+    };
+  }
+  if (sub === "signin" || sub === "signup") {
+    // The site is always the tab's own top-frame page. `--site` only checks
+    // that the tab is where the caller thinks it is; the browser checks it on
+    // the exact tab it fills, before any login is typed. `signup` makes a new
+    // password, saves the login, and types it into the sign-up form.
+    const site = readValue(args, ["--site"])?.trim() || null;
+    const account = readValue(args, ["--account", "--username", "--email"])?.trim() || null;
+    const expectedSite = site ? browserSiteHost(site) : null;
+    if (site && !expectedSite) {
+      throw new CliUsageError(`browser ${sub} --site must be a host name like example.com, not "${site}".`);
+    }
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const signinArgs: JsonObject = {
+      ...actionArgs,
+      ...(account ? { username: account } : {}),
+      ...(expectedSite ? { expectedSite } : {}),
+    };
+    return {
+      kind: "execute",
+      label: `browser ${sub}`,
+      // With no saved login, signin asks the person in the chat; wait for them.
+      ...(sub === "signin" ? { minTimeoutMs: CARD_REQUEST_DEFAULT_TIMEOUT_MS + 30_000 } : {}),
+      steps: [actionStep("result", "passwords", sub, collectGenericObjectArgs(args, signinArgs))],
     };
   }
   if (
@@ -20202,10 +21348,10 @@ function buildUsagePlan(args: string[]): CliPlan {
   // "how much quota is left"; this answers "what has been spent", which is a
   // different service call with its own range and scope.
   if (sub === "stats" || sub === "ade" || sub === "spend") {
-    const preset = readValue(args, ["--preset", "--range"]);
+    const preset = readValue(args, ["--range", "--preset"]);
     if (preset != null && !isAdeUsageRangePreset(preset)) {
       throw new CliUsageError(
-        `usage stats --preset must be one of ${ADE_USAGE_RANGE_PRESETS.join(", ")}.`,
+        `usage stats --range must be one of ${ADE_USAGE_RANGE_PRESETS.join(", ")}.`,
       );
     }
     const scope = readValue(args, ["--scope"]);
@@ -20699,12 +21845,35 @@ function cloudStep(label: string, action: string, input: JsonObject, formatter: 
   };
 }
 
-/** `ade cloud push-work --json`: every lane's work committed and pushed. With ADE's 25 s to answer first, this fits inside the 3-minute exec that runs it. */
-function buildCloudPushWorkPlan(): CliPlan {
+/**
+ * `ade cloud push-work --json`: every lane's work committed and pushed. With
+ * ADE's 25 s to answer first, this fits inside the 3-minute exec that runs
+ * it. `--check` is `work-state`. `--message <text>` is the commit message for
+ * uncommitted work (the idle cleanup's "saved by ADE before cleanup"); an
+ * older brain ignores it and uses its own.
+ */
+function buildCloudPushWorkPlan(args: string[]): CliPlan {
+  if (args.includes("--check")) return buildCloudWorkStatePlan();
+  const message = readValue(args, ["--message"])?.trim();
   return {
     kind: "execute",
     label: "cloud push-work",
-    steps: [{ key: "result", method: "cloud.pushWork", params: {} }],
+    steps: [{ key: "result", method: "cloud.pushWork", params: message ? { message: message.slice(0, 200) } : {} }],
+    machineOnly: true,
+    minTimeoutMs: 150_000,
+  };
+}
+
+/**
+ * `ade cloud work-state --json`: only reads which lanes have work that isn't
+ * on GitHub, and changes nothing. Its own command and brain method, so an
+ * older ADE refuses it instead of reading it as a push.
+ */
+function buildCloudWorkStatePlan(): CliPlan {
+  return {
+    kind: "execute",
+    label: "cloud work-state",
+    steps: [{ key: "result", method: "cloud.workState", params: {} }],
     machineOnly: true,
     minTimeoutMs: 150_000,
   };
@@ -20715,19 +21884,89 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
   const raw = readValue(args, ["--timeout"]);
   const seconds = raw == null ? 40 : Number(raw);
   if (!Number.isFinite(seconds) || seconds <= 0) throw new CliUsageError("ade cloud prepare-stop --timeout <seconds>");
+  // A disk-only grow (the lane's size-change job): keep the turns, note the restart as a disk grow.
+  const growRaw = readValue(args, ["--disk-grow"]);
+  const growId = readValue(args, ["--grow-id"]);
+  if (growId != null && !/^[A-Za-z0-9_-]{1,80}$/.test(growId)) throw new CliUsageError("ade cloud prepare-stop --disk-grow <GB> --grow-id <job id>");
+  const diskGrowToGb = growRaw == null ? null : Number(growRaw);
+  if (diskGrowToGb != null && (!Number.isFinite(diskGrowToGb) || diskGrowToGb <= 0)) {
+    throw new CliUsageError("ade cloud prepare-stop --timeout <seconds> --disk-grow <GB>");
+  }
+  // `--for-delete`: the server deletes the computer next, so new work is frozen (`cloudDeleteFreeze.ts`).
+  // `--for-sleep`: the person's Sleep comes next, so new work is frozen until it (a short freeze).
+  // `--chats-only`: an older server's Sleep; only the turns stop and the chats are saved, with no lane backups.
+  // An older ADE ignores these flags and does a normal prepare.
+  const forDelete = args.includes("--for-delete");
+  const forSleep = args.includes("--for-sleep");
+  const chatsOnly = args.includes("--chats-only");
   return {
     kind: "execute",
     label: "cloud prepare-stop",
-    steps: [{ key: "result", method: "cloud.prepareStop", params: { timeoutMs: Math.round(seconds * 1000) } }],
+    steps: [{
+      key: "result",
+      method: "cloud.prepareStop",
+      params: {
+        timeoutMs: Math.round(seconds * 1000),
+        ...(diskGrowToGb != null ? { diskGrowToGb, ...(growId ? { growId } : {}) } : {}),
+        ...(forDelete ? { forDelete: true } : {}),
+        ...(forSleep ? { forSleep: true } : {}),
+        ...(chatsOnly ? { chatsOnly: true } : {}),
+      },
+    }],
     machineOnly: true,
     minTimeoutMs: Math.round(seconds * 1000) + 15_000,
+  };
+}
+
+/** `ade cloud unfreeze --json`: the server keeps a computer it prepared for a delete, so new work is allowed again. */
+function buildCloudUnfreezePlan(): CliPlan {
+  return {
+    kind: "execute",
+    label: "cloud unfreeze",
+    steps: [{ key: "result", method: "cloud.unfreeze", params: {} }],
+    machineOnly: true,
+    minTimeoutMs: 15_000,
+  };
+}
+
+/**
+ * `ade cloud save-for-rest [--capsules] --json`: shell and CLI copies, Git
+ * summaries and fork capsules (every save makes capsules; `--capsules` names
+ * the idle cleanup, which runs it between push-work and the check). Prints
+ * `CloudSaveForRestReport`.
+ * It fits inside the server's 4-minute exec.
+ */
+function buildCloudSaveForRestPlan(args: string[]): CliPlan {
+  return {
+    kind: "execute",
+    label: "cloud save-for-rest",
+    steps: [{ key: "result", method: "cloud.saveForRest", params: { capsules: args.includes("--capsules") } }],
+    machineOnly: true,
+    minTimeoutMs: 225_000,
+  };
+}
+
+/** `ade cloud messages drain --json`: sends the messages queued for this computer's chats (the server runs it after a wake). */
+function buildCloudMessagesPlan(args: string[]): CliPlan {
+  const action = args.filter((arg) => !arg.startsWith("-"))[1];
+  if (action !== "drain") throw new CliUsageError("ade cloud messages drain --json");
+  return {
+    kind: "execute",
+    label: "cloud messages drain",
+    steps: [{ key: "result", method: "cloud.drainMessages", params: {} }],
+    machineOnly: true,
+    minTimeoutMs: 60_000,
   };
 }
 
 /** What the server runs on a computer, whatever the access answer. */
 const CLOUD_ON_COMPUTER_PLANS = new Map<string, (args: string[]) => CliPlan>([
   ["prepare-stop", buildCloudPrepareStopPlan],
+  ["unfreeze", buildCloudUnfreezePlan],
   ["push-work", buildCloudPushWorkPlan],
+  ["work-state", buildCloudWorkStatePlan],
+  ["save-for-rest", buildCloudSaveForRestPlan],
+  ["messages", buildCloudMessagesPlan],
 ]);
 
 function buildCloudPlan(args: string[]): CliPlan {
@@ -20739,22 +21978,36 @@ function buildCloudPlan(args: string[]): CliPlan {
   const shape = readValue(args, ["--shape", "--size"]);
   const name = readValue(args, ["--name"]);
   const to = readValue(args, ["--to"]);
-  const setup = readValue(args, ["--setup"]);
-  const origin = readValue(args, ["--origin"]);
-  const sub = firstPositional(args) ?? "list";
+  const reason = readValue(args, ["--reason"]);
+  const project = readValue(args, ["--project", "--origin"]);
+  const machineKey = readValue(args, ["--machine-key"]);
+  const cursor = readValue(args, ["--cursor"]);
+  const before = readValue(args, ["--before"]);
+  // `ade cloud` alone is the whole picture, like `ade cloud status`.
+  const sub = firstPositional(args) ?? "status";
   const target = () => {
     const machine = firstPositional(args);
     if (!machine) throw new CliUsageError(`ade cloud ${sub} needs the machine: its name or id (ade cloud list).`);
     return machine;
   };
-  const originUrl = () => origin ?? getGitRemote(process.cwd());
   switch (sub) {
+    case "status":
+      return cloudStep("status", "status", {}, "cloud-status");
     case "list":
     case "ls":
     case "machines":
       return cloudStep("list", "list", {}, "cloud-list");
     case "hours":
       return cloudStep("hours", "hours", {}, "cloud-hours");
+    case "invite":
+    case "invites": {
+      const verb = firstPositional(args);
+      if (!verb || verb === "status" || verb === "show") return cloudStep("invite", "referral", {}, "cloud-invite");
+      // Entering an invite sets the account's referrer forever: the person's
+      // own call in the app, never a terminal an agent or ADE MCP app can run.
+      if (verb === "redeem" || verb === "enter") throw new CliUsageError(CLOUD_ENTER_INVITE_HINT);
+      throw new CliUsageError("ade cloud invite");
+    }
     case "create":
     case "new":
       return cloudStep("create", "create", { ...(kind ? { kind } : {}), ...(shape ? { shape } : {}), ...(name ? { name } : {}) }, "cloud-result", true);
@@ -20764,6 +22017,28 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "start":
       return cloudStep("wake", "wake", { machine: target() });
     case "resize": {
+      // The disk of the cloud computer this runs on: grows on its own inside the plan.
+      const free = readValue(args, ["--free", "--need-free"]);
+      const disk = readValue(args, ["--disk"]);
+      if (free != null || disk != null) {
+        if (!reason) throw new CliUsageError("ade cloud resize --free <GB> | --disk <GB> --reason \"why\"");
+        // It grows only the computer it runs on: a machine named here would be ignored, and the wrong one would grow.
+        if (firstPositional(args)) {
+          throw new CliUsageError("ade cloud resize --free|--disk grows the disk of the ADE Cloud computer this runs on. Leave out the machine name, and run it on that computer.");
+        }
+        return cloudStep("disk grow", "grow_disk", {
+          ...(free != null ? { needFreeGb: Number(free) } : {}),
+          ...(disk != null ? { toGb: Number(disk) } : {}),
+          reason,
+        }, "cloud-result", true);
+      }
+      // An agent asks; the person confirms on the card in its chat.
+      if (args.includes("--request")) {
+        const size = shape;
+        if (!size || !reason) throw new CliUsageError("ade cloud resize [machine] --request --size large --reason \"why\"");
+        const machine = firstPositional(args);
+        return cloudStep("resize request", "tier_request", { size, reason, ...(machine ? { machine } : {}) });
+      }
       const machine = target();
       const size = shape ?? firstPositional(args);
       if (!size) throw new CliUsageError("ade cloud resize <machine> --shape 4x8");
@@ -20784,10 +22059,11 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "update":
       return cloudStep("update", "update", { machine: target() }, "cloud-result", true);
     case "limits": {
-      const preset = firstPositional(args);
+      // The value flags first: `--per-day 3` would hand `3` to the preset otherwise.
       const perDay = readValue(args, ["--per-day"]);
       const maxShape = readValue(args, ["--max-shape"]);
       const unattended = readValue(args, ["--unattended"]);
+      const preset = firstPositional(args);
       if (!preset && perDay == null && maxShape == null && unattended == null) return cloudStep("limits", "limits", {});
       return cloudStep("limits", "set_limits", {
         ...(preset ? { preset } : {}),
@@ -20796,30 +22072,115 @@ function buildCloudPlan(args: string[]): CliPlan {
         ...(unattended != null ? { unattendedSpend: unattended === "on" || unattended === "yes" || unattended === "true" } : {}),
       }, "cloud-result", true);
     }
-    case "ready": {
-      const verb = firstPositional(args) ?? "status";
-      if (verb === "status" || verb === "list") {
-        return cloudStep("ready", "ready_status", {}, "cloud-ready");
+    case "lanes":
+    case "lane":
+      return buildCloudLanesPlan(args, { project, size: shape });
+    case "chats":
+    case "chat": {
+      const verb = firstPositional(args) ?? "list";
+      if (verb === "list" || verb === "ls") {
+        return cloudStep("chats", "saved_chats_list", {
+          ...(machineKey ? { machineKey } : {}),
+          ...(project ? { projectKey: project } : {}),
+          ...(cursor ? { cursor } : {}),
+        }, "cloud-chats");
       }
-      const url = originUrl();
-      if (!url) throw new CliUsageError("This directory has no git origin. Pass --origin <url>.");
-      if (verb === "on" || verb === "set") {
-        return cloudStep("ready on", "ready_set", {
-          originUrl: url,
-          ...(kind ? { kind } : {}),
-          ...(shape ? { shape } : {}),
-          ...(setup != null ? { setup } : {}),
-          ...(name ? { projectName: name } : {}),
-        }, "cloud-result", true);
+      const chatId = firstPositional(args);
+      if (!chatId) throw new CliUsageError(`ade cloud chats ${verb} <chat id> (ade cloud chats lists them)`);
+      if (verb === "read" || verb === "show") {
+        if (before != null && !Number.isFinite(Number(before))) throw new CliUsageError("ade cloud chats read <chat id> --before <number> (the number an older page names)");
+        return cloudStep("chat read", "saved_chats_read", {
+          chatId,
+          ...(machineKey ? { machineKey } : {}),
+          ...(before != null ? { before: Number(before) } : {}),
+        }, "cloud-chat-read");
       }
-      if (verb === "off") return cloudStep("ready off", "ready_off", { originUrl: url });
-      if (verb === "retry") return cloudStep("ready retry", "ready_retry", { originUrl: url }, "cloud-result", true);
-      throw new CliUsageError(`Unknown cloud ready command "${verb}". Use: status, on, off, retry.`);
+      if (verb === "delete" || verb === "rm") return cloudStep("chat delete", "saved_chat_delete", { chatId, ...(machineKey ? { machineKey } : {}) }, "cloud-result", true);
+      throw new CliUsageError("ade cloud chats [list | read <chat id> | delete <chat id>]");
     }
-    case "status":
-      return cloudStep("ready", "ready_status", {}, "cloud-ready");
+    case "sessions":
+    case "session":
+    case "terminals": {
+      const verb = firstPositional(args) ?? "list";
+      if (verb === "list" || verb === "ls") {
+        return cloudStep("sessions", "sessions_list", { ...(machineKey ? { machineKey } : {}), ...(project ? { project } : {}), ...(cursor ? { cursor } : {}) }, "cloud-sessions");
+      }
+      const sessionId = firstPositional(args);
+      if (!sessionId) throw new CliUsageError(`ade cloud sessions ${verb} <session id> (ade cloud sessions lists them)`);
+      if (verb === "read" || verb === "show") return cloudStep("session read", "session_read", { sessionId, ...(machineKey ? { machineKey } : {}) }, "cloud-sessions");
+      if (verb === "delete" || verb === "rm") return cloudStep("session delete", "session_delete", { sessionId, ...(machineKey ? { machineKey } : {}) }, "cloud-result", true);
+      throw new CliUsageError("ade cloud sessions [list | read <session id> | delete <session id>]");
+    }
+    case "backups":
+    case "backup": {
+      const verb = firstPositional(args) ?? "list";
+      if (verb === "list" || verb === "ls") {
+        const laneId = firstPositional(args);
+        return cloudStep("backups", "backups_list", laneId ? { laneId } : {}, "cloud-backups");
+      }
+      if (verb === "forget" || verb === "delete" || verb === "rm") {
+        const laneId = firstPositional(args);
+        if (!laneId) throw new CliUsageError("ade cloud backups forget <lane id> (ade cloud backups lists them)");
+        return cloudStep("backup forget", "backup_forget", { laneId, ...(machineKey ? { machineKey } : {}) }, "cloud-result", true);
+      }
+      throw new CliUsageError("ade cloud backups [list [lane id] | forget <lane id>]");
+    }
+    case "jobs":
+    case "job": {
+      const verb = firstPositional(args) ?? "list";
+      if (verb === "list" || verb === "ls") return cloudStep("jobs", "jobs_list", {}, "cloud-jobs");
+      if (verb === "cancel" || verb === "stop") {
+        const jobId = firstPositional(args);
+        if (!jobId) throw new CliUsageError("ade cloud jobs cancel <job id> (ade cloud jobs lists them)");
+        return cloudStep("job cancel", "job_cancel", { jobId }, "cloud-result", true);
+      }
+      throw new CliUsageError("ade cloud jobs [list | cancel <job id>]");
+    }
+    case "project":
+      // No --origin: this folder's project names it, so the call runs in that project (the account route has no folder).
+      return project
+        ? cloudStep("project", "project_overview", { origin: project }, "cloud-project")
+        : { kind: "execute", label: "cloud project", formatter: "cloud-project", steps: [actionStep("result", "cloud", "project_overview", {})] };
+    case "ready":
+      // Ready machines are gone: a new lane gets its own computer when it starts.
+      throw new CliUsageError("ade cloud ready no longer exists: ADE makes a computer for each new lane. Use ade chat create --machine cloud --provider <p> --model <id> --prompt \"…\".");
     default:
-      throw new CliUsageError(`Unknown cloud command "${sub}". Use: list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, ready, prepare-stop, push-work.`);
+      throw new CliUsageError(`Unknown cloud command "${sub}". Use: status, lanes, chats, sessions, backups, jobs, project, list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, prepare-stop, push-work, work-state.`);
+  }
+}
+
+/** The lane verbs: `ade cloud lanes` lists; `show|delete|free|start|keep|git <lane>`; a lane alone is `show`. */
+const CLOUD_LANE_VERBS = new Set(["list", "ls", "show", "delete", "rm", "free", "start", "keep", "git"]);
+
+/**
+ * `ade cloud lanes …`: every lane of the account, one list, on a computer or
+ * with its computer deleted. A lane is named by its name, id, branch or link.
+ */
+function buildCloudLanesPlan(args: string[], flags: { project: string | null; size: string | null }): CliPlan {
+  const first = firstPositional(args);
+  const verb = !first ? "list" : CLOUD_LANE_VERBS.has(first) ? first : "show";
+  if (verb === "list" || verb === "ls") {
+    return cloudStep("lanes", "lanes", {
+      ...(flags.project ? { project: flags.project } : {}),
+      ...(args.includes("--deleted") || args.includes("--kept") ? { deleted: true } : {}),
+      ...(args.includes("--stale") ? { stale: true } : {}),
+    }, "cloud-lanes");
+  }
+  const lane = verb === "show" && first !== "show" ? first : firstPositional(args);
+  if (!lane) throw new CliUsageError(`ade cloud lanes ${verb} <lane>: its name, id, branch or link (ade cloud lanes lists them)`);
+  switch (verb) {
+    case "show":
+      return cloudStep("lane", "lane_show", { lane }, "cloud-lane");
+    case "git":
+      return cloudStep("lane git", "lane_git", { lane }, "cloud-lane-git");
+    case "keep":
+      return cloudStep("lane keep", "lane_keep", { lane });
+    case "free":
+      return cloudStep("lane free", "lane_free", { lane }, "cloud-result", true);
+    case "start":
+      return cloudStep("lane start", "lane_start", { lane, ...(flags.size ? { size: flags.size } : {}) }, "cloud-result", true);
+    default:
+      return cloudStep("lane delete", "lane_delete", { lane, ...(args.includes("--keep-chats") ? { keepChats: true } : {}) }, "cloud-result", true);
   }
 }
 
@@ -20827,27 +22188,64 @@ function formatCloudList(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const machines = isRecord(raw) && Array.isArray(raw.machines) ? raw.machines.filter(isRecord) : [];
   const lines: string[] = [];
-  if (!machines.length) lines.push("No ADE Cloud computers. ade cloud create makes one.");
+  if (!machines.length) lines.push("No ADE Cloud computers. A new lane on ADE Cloud makes one: ade chat create --machine cloud, or ade lanes create --machine cloud --name <name>.");
   for (const box of machines) {
     const sleep = isRecord(box.sleep) && box.sleep.state !== "auto" ? "sleep pending" : "";
-    const rate = typeof box.hoursRate === "number" ? `${box.hoursRate}× hours` : "—";
+    const rate = typeof box.hoursRate === "number" ? formatCloudHoursRate(box.hoursRate) : "—";
     lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${rate}  ${sleep}  (${String(box.instanceId)})`);
   }
   const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
-  if (account) lines.push(formatCloudHours(account));
+  if (account) lines.push(formatCloudAccount(account));
   return lines.join("\n");
 }
 
-function formatCloudHours(value: unknown): string {
+function formatCloudAccount(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const account = isRecord(raw) ? raw : {};
   const hours = isRecord(account.hours) ? account.hours : {};
-  const hoursOf = (milli: unknown) => (typeof milli === "number" ? `${(milli / 1000).toFixed(1).replace(/\.0$/, "")}` : "—");
+  const hoursOf = (milli: unknown) => (typeof milli === "number" ? formatCloudHours(milli) : "—");
   const billing = isRecord(account.billing) ? account.billing : {};
   const resets = typeof billing.periodEnd === "number" ? new Date(billing.periodEnd).toISOString().slice(0, 10) : "—";
-  const plan = account.plan === "paid" ? "Paid plan" : "Free plan";
-  const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left, resets ${resets}`;
-  return hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`;
+  const catalog = isRecord(account.catalog) && isRecord(account.catalog.plans) ? cloudCatalogOf({ catalog: account.catalog as CloudCatalog }) : cloudCatalogOf(null);
+  const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" || account.planId === "max" ? account.planId : undefined;
+  const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
+  const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left for bigger computers, resets ${resets}`;
+  // Cloud computers asleep or not, of the plan's limit.
+  const counted = isRecord(account.computers)
+    ? cloudAccountComputers({ computers: account.computers as CloudAccountState["computers"], catalog, plan: account.plan === "paid" ? "paid" : "free", planId })
+    : null;
+  const computers = counted ? ` ${counted.total} of ${counted.limit} cloud computers in use (asleep or not).` : "";
+  const smallLine = `\n${CLOUD_SMALL_UNLIMITED_SENTENCE}${computers}`;
+  // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
+  const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
+  const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned hours left (they never expire).` : "";
+  const freePlan = cloudFreePlanOf(account as Pick<CloudAccountState, "freePlan">);
+  const freeLine = freePlan.sentence ? `\n${freePlan.sentence}` : "";
+  // The free plan's GitHub rules: why the free hours wait, and where to act (connect GitHub, or a card with no charge, in the app).
+  const github = freePlan.github;
+  const githubLine = github && github.state !== "ok" && github.sentence
+    ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? " Add the card in Settings › ADE Cloud." : ""}`
+    : "";
+  return (hours.state === "zero" ? `${plan}: out of hours for bigger computers (Small keeps working). ${left}` : `${plan}: ${left}`) + smallLine + earnedLine + freeLine + githubLine;
+}
+
+/** Where the person enters a friend's invite: the app only, never a terminal. */
+const CLOUD_ENTER_INVITE_HINT = "Enter an invite in Settings › Account.";
+
+/** `ade cloud invite`: the link, then what it earned. */
+function formatCloudInvite(value: unknown): string {
+  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
+  const referral = readCloudReferralSummary(raw);
+  if (!referral) return JSON.stringify(raw, null, 2);
+  const lines = [
+    `Your invite link: ${referral.link}`,
+    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli)} extra free cloud hours, and so do you once their first chat runs on ADE Cloud.`,
+    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} rewards paid, ${formatCloudHours(referral.hoursEarnedMilli)} hours earned.`,
+  ];
+  if (referral.canEnterCode && referral.enterCodeUntil != null) {
+    lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}. ${CLOUD_ENTER_INVITE_HINT}`);
+  }
+  return lines.join("\n");
 }
 
 function formatCloudResult(value: unknown): string {
@@ -20857,27 +22255,6 @@ function formatCloudResult(value: unknown): string {
     return `${raw.name} (${raw.instanceId})${raw.joined === false ? " is signed in and still starting." : " is ready."}`;
   }
   return JSON.stringify(raw, null, 2);
-}
-
-function formatCloudReady(value: unknown): string {
-  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
-  const pool = isRecord(raw) && Array.isArray(raw.projects) ? raw as unknown as CloudReadyPool : { projects: [] };
-  if (!pool.projects.length) {
-    return "No project keeps an ADE Cloud machine ready. Turn it on in Settings › Integrations › ADE Cloud.";
-  }
-  const lines: string[] = [];
-  for (const project of pool.projects) {
-    const summary = [
-      project.ready ? `${project.ready} ready` : project.preparing ? "being prepared" : project.keptReady ? "none ready yet" : "turned off",
-      ...(project.inUse ? [`${project.inUse} in use`] : []),
-      ...(project.failure ? [`last prepare failed: ${project.failure}`] : []),
-    ].join(", ");
-    lines.push(`${project.projectName} (${project.identity}): ${summary}`);
-    for (const machine of project.machines) {
-      lines.push(`  ${machine.name ?? machine.instanceId}  ${machine.state}  (${machine.status}, ${machine.instanceId})`);
-    }
-  }
-  return lines.join("\n");
 }
 
 /** `ade mcp servers …`: the MCP registry. `args` are the words after `servers`. */
@@ -20978,24 +22355,38 @@ function buildMcpServersPlan(args: string[]): CliPlan {
 }
 
 function buildSecretsPlan(args: string[]): CliPlan {
+  // The command after `--` first: its own flags (`--help` included) are its own.
+  const execTail = args[0] === "exec" || args[0] === "run" ? takeArgsAfterTerminator(args) : null;
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
   }
   const sub = firstPositional(args) ?? "list";
+  if (sub === "exec" || sub === "run") {
+    if (!execTail?.length) {
+      throw new CliUsageError("secrets exec needs the command after `--`: ade secrets exec [--env NAME] -- npm run deploy");
+    }
+    const names = readRepeatedValues(args, ["--env", "--name"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : 10 * 60_000;
+    return {
+      kind: "execute",
+      label: "secrets exec",
+      formatter: "secrets-exec",
+      steps: [actionStep("result", "project_secret", "exec", {
+        command: execTail,
+        cwd: process.cwd(),
+        ...(names.length ? { names } : {}),
+        timeoutMs,
+      })],
+      minTimeoutMs: timeoutMs + 30_000,
+    };
+  }
   if (sub === "list" || sub === "ls") {
     return {
       kind: "execute",
       label: "secrets list",
       formatter: "project-secrets",
       steps: [actionStep("result", "project_secret", "list", {})],
-    };
-  }
-  if (sub === "pull" || sub === "sync") {
-    return {
-      kind: "execute",
-      label: "secrets pull",
-      formatter: "project-secrets",
-      steps: [actionStep("result", "project_secret", "pullFromAccount", {})],
     };
   }
   if (sub === "get" || sub === "show" || sub === "view" || sub === "read") {
@@ -21125,7 +22516,7 @@ function buildProxyPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "login" || sub === "sign-in") {
-    const provider = requireValue(readValue(args, ["--provider"]), "provider").trim().toLowerCase();
+    const provider = requireValue(readValue(args, ["--provider"]), "proxyProvider").trim().toLowerCase();
     if (provider !== "claude" && provider !== "codex") {
       throw new CliUsageError("proxy login --provider must be claude or codex.");
     }
@@ -21159,12 +22550,55 @@ function buildProxyPlan(args: string[]): CliPlan {
  * login to land in the new directory, and `remove` signs the account out, then
  * forgets the entry; the directory itself is never deleted.
  */
+/**
+ * `ade providers sign-in <provider> --remote --json`: starts the provider's
+ * own sign-in in this machine's brain for a person on another screen (ADE's
+ * server runs it over exec for the phone and the web) and answers with the
+ * link and code. `sign-in-code <job> --stdin` passes a code pasted from the
+ * provider's page (on stdin only, so it is not in this process's arguments);
+ * `sign-in-status <job>` reads where it stands. Only `--remote` exists: a
+ * sign-in on this screen is Settings › Providers.
+ */
+function buildRemoteSignInPlan(group: "sign-in" | "sign-in-code" | "sign-in-status", args: string[]): CliPlan {
+  if (group === "sign-in") {
+    if (!readFlag(args, ["--remote"])) {
+      throw new CliUsageError("ade providers sign-in <provider> --remote: a sign-in finished on another screen. To sign in here, use Settings › Providers.");
+    }
+    const provider = requireValue(firstPositional(args), "signInProvider").trim().toLowerCase();
+    return {
+      kind: "execute",
+      label: "providers sign-in",
+      steps: [{ key: "result", method: "providers.remoteSignInStart", params: { provider } }],
+      machineOnly: true,
+      minTimeoutMs: 30_000,
+    };
+  }
+  const jobId = requireValue(firstPositional(args), "sign-in job id").trim();
+  if (group === "sign-in-status") {
+    return {
+      kind: "execute",
+      label: "providers sign-in-status",
+      steps: [{ key: "result", method: "providers.remoteSignInStatus", params: { jobId } }],
+      machineOnly: true,
+    };
+  }
+  const code = readFlag(args, ["--stdin"]) ? readAllStdinSync().trim() : "";
+  if (!code) throw new CliUsageError("ade providers sign-in-code <job> --stdin (the code on stdin)");
+  return {
+    kind: "execute",
+    label: "providers sign-in-code",
+    steps: [{ key: "result", method: "providers.remoteSignInCode", params: { jobId, code } }],
+    machineOnly: true,
+  };
+}
+
 function buildProvidersPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.providers ?? topLevelHelpText() };
   }
   const group = firstPositional(args) ?? "accounts";
   if (group === "opencode") return buildOpenCodeProvidersPlan(args);
+  if (group === "sign-in" || group === "sign-in-code" || group === "sign-in-status") return buildRemoteSignInPlan(group, args);
   if (group === "actions") {
     return {
       kind: "execute",
@@ -21180,6 +22614,28 @@ function buildProvidersPlan(args: string[]): CliPlan {
   }
   const sub = firstPositional(args) ?? "list";
   const provider = readValue(args, ["--provider"])?.trim().toLowerCase() ?? null;
+  // The sign-ins the account keeps for ADE Cloud (provider_logins), on the same verbs.
+  if (readFlag(args, ["--synced"])) {
+    if (sub === "list" || sub === "ls") {
+      return {
+        kind: "execute",
+        label: "providers accounts list --synced",
+        formatter: "provider-logins",
+        steps: [actionStep("result", "provider_logins", "status", provider ? { provider } : {})],
+      };
+    }
+    if (sub === "refresh") {
+      return {
+        kind: "execute",
+        label: "providers accounts refresh --synced",
+        // Only the user copies sign-ins into the account; an agent's shell is held to agent.
+        connectRole: "cto",
+        formatter: "provider-logins",
+        steps: [actionStep("result", "provider_logins", "captureNow", provider ? { provider } : {})],
+      };
+    }
+    throw new CliUsageError("--synced works with `providers accounts list` and `providers accounts refresh` for now.");
+  }
   if (sub === "list" || sub === "ls") {
     return {
       kind: "execute",
@@ -21455,9 +22911,9 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
   const laneId = readLaneId(args);
   const preset = readEnumOption<AutomationLaneNamePresetFlag>(
     args,
-    ["--lane-name-preset"],
+    ["--lane-naming", "--lane-name-preset"],
     AUTOMATION_LANE_NAME_PRESETS,
-    "--lane-name-preset",
+    "--lane-naming",
   );
   const template = readValue(args, ["--lane-name-template"]);
 
@@ -21485,17 +22941,17 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
   const namesLane = effectiveLaneMode === "create" || effectiveLaneMode === "pr-branch";
   if (preset != null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-preset is only valid with --lane-mode create or pr-branch.",
+      "--lane-naming is only valid with --lane-mode create or pr-branch.",
     );
   }
   if (template != null && preset != null && preset !== "custom") {
     throw new CliUsageError(
-      "--lane-name-template is only valid with --lane-name-preset custom.",
+      "--lane-name-template is only valid with --lane-naming custom.",
     );
   }
   if (template != null && preset == null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-template requires --lane-mode create or pr-branch (with --lane-name-preset custom).",
+      "--lane-name-template requires --lane-mode create or pr-branch (with --lane-naming custom).",
     );
   }
 
@@ -21726,8 +23182,8 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     const mode = firstPositional(args) ?? "list";
     const target = () => readValue(args, ["--hook", "--id"]) ?? firstPositional(args);
     if (mode === "create") {
-      // One step: URL + rule. Everything has a sensible default from the preset.
-      const preset = readValue(args, ["--preset", "--service"]);
+      // One step: URL + rule. Everything else has a sensible default from the service.
+      const preset = readValue(args, ["--service", "--preset"]);
       const filters = readRepeatedValues(args, ["--filter", "--only-when"]);
       const confirmations = readRepeatedValues(args, ["--confirm"]);
       const inThisChat = readFlag(args, ["--in-this-chat"]);
@@ -21740,6 +23196,10 @@ function buildAutomationsPlan(args: string[]): CliPlan {
       const prompt = readValue(args, ["--prompt"]);
       const secretName = readValue(args, ["--secret-name"]);
       const modelId = readValue(args, ["--model"]);
+      // Each event starts a new chat unless it goes into an existing one.
+      if (!modelId?.trim() && !inThisChat && !chat) {
+        throw new CliUsageError(webhookModelRequiredMessage("--model"));
+      }
       const reasoningEffort = readValue(args, ["--effort", "--reasoning-effort"]);
       const input: JsonObject = {
         ...(name ? { name } : {}),
@@ -21930,6 +23390,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     // Flags first, so their values are not taken for the rule id.
     const deviceId = readValue(args, ["--device", "--device-id"]);
     const name = readValue(args, ["--name"]);
+    const cloud = readFlag(args, ["--cloud"]);
     const id = requireValue(
       readValue(args, ["--id"]) ?? firstPositional(args),
       "rule id",
@@ -21937,13 +23398,16 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     if (deviceId && !name) {
       throw new CliUsageError("automations run-on --device needs --name <computer name> too.");
     }
+    if (cloud && deviceId) {
+      throw new CliUsageError("automations run-on takes --cloud or --device, not both.");
+    }
     return {
       kind: "execute",
       label: `automations run-on ${id}`,
       steps: [
         actionStep("result", "automations", "setRunOn", {
           id,
-          ...(deviceId ? { deviceId, name } : {}),
+          ...(cloud ? { cloud: true } : deviceId ? { deviceId, name } : {}),
         }),
       ],
     };
@@ -22756,6 +24220,7 @@ function buildUpdatePlan(args: string[]): CliPlan {
  * is a boolean `readFlag` anywhere, so this table can never widen the CLI.
  */
 const BROWSER_VALUE_FLAGS: readonly string[] = [
+  "--account",
   "--action",
   // `collectGenericObjectArgs` is called straight out of the browser plan and
   // consumes these, so they carry a value here like any other browser flag —
@@ -22853,6 +24318,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--session",
   "--session-id",
   "--settle-ms",
+  "--site",
   "--state",
   "--steps",
   "--tab",
@@ -22912,6 +24378,8 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--option",
   "--choice",
   "--answer",
+  // `--code synced|as-is|fresh` on a command bound for another machine.
+  "--code",
   "--answers-json",
   "--schedule-id",
   "--job-id",
@@ -22919,10 +24387,11 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "-m",
   "-q",
   "-t",
-  // `chat handoff` keeps --machine (it names the move's destination, so it
-  // is not extracted for forwarding); a session given after it must not be
-  // read as the machine's value.
+  // `chat handoff|move` keep --to and its alias --machine (they name the
+  // move's destination, so they are not extracted for forwarding); a session
+  // given after one must not be read as the machine's value.
   "--machine",
+  "--to",
   "--additional-instructions",
   "--app",
   "--accent",
@@ -23041,6 +24510,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--instance-id",
   "--preset",
   "--preset-id",
+  "--custom-provider",
   "--via",
   "--harness",
   "--shell",
@@ -23209,7 +24679,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
  * terminator, so scanning `browser upload --selector input --upload -- --help`
  * with the global set stopped at the `--` and hid a real `--help`.
  */
-function hasHelpFlag(
+export function hasHelpFlag(
   args: string[],
   carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
 ): boolean {
@@ -23317,9 +24787,16 @@ function buildCliPlan(
   if (sdkWorker) return { kind: "sdk-worker", worker: sdkWorker };
   if (primary === "__ade-project-icon-worker") {
     const primaryIndex = args.indexOf(primary);
+    const rest = args.slice(primaryIndex + 1).filter((arg) => arg !== "--");
+    // The positional after the root says what the shared project record asks
+    // of this resolve (`multiProjectRpcServer` passes it).
+    const recordMode = rest[1] === "record:detected"
+      ? "detected" as const
+      : rest[1] === "record:migrate" ? "migrate" as const : null;
     return {
       kind: "project-icon-worker",
-      rootPath: args.slice(primaryIndex + 1).find((arg) => arg !== "--") ?? "",
+      rootPath: rest[0] ?? "",
+      ...(recordMode ? { recordMode } : {}),
     };
   }
   if (primary === "desktop") {
@@ -23671,6 +25148,12 @@ function buildCliPlan(
     return buildArchivePlan(args);
   if (primary === "secrets" || primary === "secret")
     return buildSecretsPlan(args);
+  if (primary === "passwords" || primary === "password")
+    return buildPasswordsPlan(args);
+  if (primary === "code" || primary === "codes")
+    return buildCodePlan(args);
+  if (primary === "messages" || primary === "texts" || primary === "imessage")
+    return buildMessagesPlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
   if (primary === "cloud") {
@@ -24063,6 +25546,29 @@ function hasProjectCredentialStoreValue(
   }
 }
 
+/**
+ * Providers with a default key in this machine's API key store (the file the
+ * runtime and the CLI share), by name. Keys that moved out of
+ * `.ade/local.yaml` live here now, so readiness counts them too. Reads only the
+ * provider index, never a key.
+ */
+function readStoredApiKeyProviders(secretsDir: string): string[] {
+  const credentialsPath = path.join(secretsDir, "credentials.json.enc");
+  const machineKeyPath = path.join(secretsDir, ".machine-key");
+  if (!fs.existsSync(credentialsPath) || !fs.existsSync(machineKeyPath)) return [];
+  try {
+    const raw = new EncryptedFileCredentialStore({ credentialsPath, machineKeyPath }).getSync("ai.api_key.index.v1");
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      : [];
+  } catch (error) {
+    // Readiness still answers from local.yaml.
+    captureError(error, { fingerprint: ["doctor-api-key-index-unreadable", error instanceof Error ? error.name : "unknown"] });
+    return [];
+  }
+}
+
 function checkProviderReadiness(value: unknown): ReadinessCheck {
   const configResult =
     isRecord(value) && isRecord(value.result) ? value.result : value;
@@ -24082,9 +25588,10 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
     cursor: resolvePinnedCursorAgentCli() != null,
     droid: resolveDroidExecutable().source !== "fallback-command",
   };
-  const apiKeyProviders = Object.keys(apiKeys).filter((key) =>
-    Boolean(asString(apiKeys[key])),
-  );
+  const apiKeyProviders = [...new Set([
+    ...Object.keys(apiKeys).filter((key) => Boolean(asString(apiKeys[key]))),
+    ...readStoredApiKeyProviders(resolveMachineAdeLayout().secretsDir),
+  ])];
   const ready = Boolean(
     defaultProvider ||
     apiKeyProviders.length ||
@@ -24177,6 +25684,8 @@ function checkStorageReadiness(projectRoot: string): ReadinessCheck {
   try {
     const monitor = createDiskPressureMonitor({
       roots: [projectRoot, resolveMachineAdeLayout().adeDir],
+      // The brain's own guard on an ADE Cloud computer (`cloudDiskGuard.ts`).
+      ...(isAdeCloudComputer() ? cloudDiskGuardOptions(resolveMachineAdeLayout().adeDir) : {}),
     });
     const snap = monitor.getSnapshot({ maxAgeMs: 0 });
     const urgent = isUrgentDiskPressure(snap.state);
@@ -24663,13 +26172,20 @@ class SocketJsonRpcClient {
     private readonly socket: net.Socket,
     private readonly timeoutMs: number,
     private readonly authToken: string | null,
+    /** Set by a relay that wants a lost connection explained to its caller. */
+    private readonly describeLoss: DescribeBrainConnectionLoss | null,
   ) {
     socket.on("data", (chunk) => this.onData(Buffer.from(chunk)));
+    // One terminal error: the socket's own failure (with its errno) is what
+    // pending calls, later calls and close listeners all hear; the `close`
+    // that follows it finds the connection already failed.
     socket.on("error", (error) =>
-      this.rejectAll(error instanceof Error ? error : new Error(String(error))),
+      this.failConnection(brainConnectionLostError(error instanceof Error ? error : new Error(String(error)), this.describeLoss)),
     );
     socket.on("close", () =>
-      this.failConnection(new Error("ADE runtime endpoint closed.")),
+      this.failConnection(this.pending.size > 0 || this.describeLoss
+        ? brainConnectionLostError(null, this.describeLoss)
+        : new Error("ADE runtime endpoint closed.")),
     );
   }
 
@@ -24677,17 +26193,23 @@ class SocketJsonRpcClient {
     socketPath: string,
     timeoutMs: number,
     label = "ADE endpoint",
-    connectWindowMs?: number,
+    options: {
+      connectWindowMs?: number;
+      /** A relay's explanation for calls in flight when the brain's socket goes. */
+      describeLoss?: DescribeBrainConnectionLoss | null;
+    } = {},
   ): Promise<SocketJsonRpcClient> {
-    const socket = await connectSocket(socketPath, timeoutMs, label, connectWindowMs);
+    const socket = await connectSocket(socketPath, timeoutMs, label, options.connectWindowMs);
     return new SocketJsonRpcClient(
       socket,
       timeoutMs,
       parseRpcUrlAuthToken(socketPath),
+      options.describeLoss ?? null,
     );
   }
 
-  request(method: string, params?: unknown): Promise<unknown> {
+  /** `requestOptions.timeoutMs` overrides the connection's wait for this one call. */
+  request(method: string, params?: unknown, requestOptions?: { timeoutMs?: number }): Promise<unknown> {
     if (this.closedError) return Promise.reject(this.closedError);
     const id = this.nextId;
     this.nextId += 1;
@@ -24704,13 +26226,13 @@ class SocketJsonRpcClient {
       const timer = setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new Error(`Timed out waiting for ${method}.`));
-      }, this.timeoutMs);
+      }, requestOptions?.timeoutMs ?? this.timeoutMs);
       this.pending.set(pendingKey, { resolve, reject, timer });
       this.socket.write(body, "utf8", (error) => {
         if (!error) return;
         clearTimeout(timer);
         this.pending.delete(pendingKey);
-        reject(error);
+        reject(brainConnectionLostError(error, this.describeLoss));
       });
     });
   }
@@ -24815,11 +26337,7 @@ class SocketJsonRpcClient {
     this.pending.delete(pendingKey);
     clearTimeout(pending.timer);
     if (isRecord(parsed.error)) {
-      pending.reject(
-        new Error(
-          asString(parsed.error.message) ?? "ADE JSON-RPC request failed.",
-        ),
-      );
+      pending.reject(jsonRpcErrorFromReply(parsed.error));
       return;
     }
     pending.resolve(parsed.result);
@@ -25126,6 +26644,19 @@ function describeDiagnosticError(error: unknown): string {
     : `[thrown ${label}]`;
 }
 
+/**
+ * A fast failure that stands in for a wait on a drive that is not answering,
+ * as itself or carried by a wrapper (`carryExpected` keeps its mark, and ADE's
+ * own code travels with it).
+ */
+function isStorageWaitError(error: unknown): boolean {
+  if (error instanceof StorageNotAnsweringError) return true;
+  return (
+    (error as { code?: unknown } | null)?.code === "storage_read_failed" &&
+    expectedErrorKind(error) === "environment"
+  );
+}
+
 function installRuntimeProcessErrorBoundary(label: string): () => void {
   const rejectionWindowMs = 60_000;
   const rejectionLogLimit = 5;
@@ -25170,7 +26701,9 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     // restarted brain would walk back into the wait, and the loop is what the
     // fast failure exists to stop. The throw happened before the call did
     // anything, so carrying on is as safe as a caught error.
-    if (error instanceof StorageNotAnsweringError) {
+    // A wrapper that adds context (the SQL of a statement, say) keeps the
+    // code and the expected mark but not the class, so both are read here.
+    if (isStorageWaitError(error)) {
       write("storage wait", error);
       return;
     }
@@ -25396,7 +26929,12 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "keepAwake.call" ||
     method === "cloud.call" ||
     method === "cloud.prepareStop" ||
+    method === "cloud.unfreeze" ||
     method === "cloud.pushWork" ||
+    method === "cloud.workState" ||
+    method === "cloud.saveForRest" ||
+    method === "cloud.drainMessages" ||
+    method.startsWith("providers.remoteSignIn") ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -25435,6 +26973,23 @@ function buildMachinesPlan(args: string[]): CliPlan {
     // An agent's shell reads the agent-safe roster: names, presence, platform
     // and projects, with no device ids, routes or tokens. The account
     // directory itself (`account.listMachines`) stays the person's.
+    // The account's ADE Cloud computers, so their rows read "ADE Cloud · <lane>"
+    // as the app shows them. A read that wakes nothing; without an answer in
+    // time the rows keep their plain names.
+    const cloudStep: InvocationStep = {
+      key: "cloud",
+      method: "cloud.call",
+      params: { ...CLOUD_COMPUTER_LIST_REQUEST },
+      optional: true,
+      timeoutMs: CLOUD_COMPUTER_LIST_BUDGET_MS,
+    };
+    const withCloudMarks = (values: JsonObject): unknown => {
+      // An action answer can come in its envelope (`{ domain, action, result }`).
+      const raw = values.result;
+      const list = isRecord(raw) && isRecord(raw.result) && asString(raw.domain) && asString(raw.action) ? raw.result : raw;
+      if (!isRecord(list) || !Array.isArray(list.machines)) return list;
+      return { ...list, machines: markCloudComputers(list.machines, cloudComputerKeysOf(values.cloud)) };
+    };
     if (process.env.ADE_CHAT_SESSION_ID?.trim() || includeProjects) {
       return {
         kind: "execute",
@@ -25442,7 +26997,8 @@ function buildMachinesPlan(args: string[]): CliPlan {
         formatter: "machines-roster",
         machineOnly: true,
         machineAutoStart: true,
-        steps: [{ key: "result", method: "machines.list", params: { includeProjects } }],
+        steps: [{ key: "result", method: "machines.list", params: { includeProjects } }, cloudStep],
+        shapeResult: withCloudMarks,
       };
     }
     return {
@@ -25452,7 +27008,8 @@ function buildMachinesPlan(args: string[]): CliPlan {
       machineOnly: true,
       machineAutoStart: true,
       connectRole: "cto",
-      steps: [accountActionStep("result", "listMachines")],
+      steps: [accountActionStep("result", "listMachines"), cloudStep],
+      shapeResult: withCloudMarks,
     };
   }
   if (sub === "show" || sub === "get" || sub === "view" || sub === "info") {
@@ -25522,12 +27079,17 @@ function buildMachinesPlan(args: string[]): CliPlan {
     // `machines rm --confirm REMOVE` would otherwise take REMOVE as the
     // machine key and complain that --confirm has no value.
     const confirmation = readValue(args, ["--confirm", "--confirmation"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
     const machine = readValue(args, ["--machine", "--target"])
       ?? firstStandalonePositional(args);
+    // From a chat, an agent cannot remove a computer: the brain asks the
+    // person in that chat (a Remove / Keep card) and waits for them. The card
+    // is the confirmation, so --confirm is not needed there.
+    const fromChat = Boolean(process.env.ADE_CHAT_SESSION_ID?.trim());
     if (!machine?.trim()) {
-      throw new CliUsageError(`machines ${sub} requires a stable machine key.`);
+      throw new CliUsageError(`machines ${sub} requires ${fromChat ? "a machine key, device id or name" : "a stable machine key"}.`);
     }
-    if (confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
+    if (!fromChat && confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
       throw new CliUsageError(
         `machines ${sub} requires --confirm REMOVE. Run "ade machines list" first, and note the machine can only rejoin when someone confirms it on that computer.`,
       );
@@ -25535,6 +27097,9 @@ function buildMachinesPlan(args: string[]): CliPlan {
     if (firstStandalonePositional(args)) {
       throw new CliUsageError(`machines ${sub} accepts one machine key.`);
     }
+    const timeoutMs = fromChat
+      ? (timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS)
+      : null;
     return {
       kind: "execute",
       label: "account machine remove",
@@ -25546,8 +27111,23 @@ function buildMachinesPlan(args: string[]): CliPlan {
         machine: machine.trim(),
         // The action checks the same token again: an RPC caller that skips
         // this command must still say it.
-        confirmation,
+        ...(confirmation ? { confirmation } : {}),
+        ...(timeoutMs != null ? { timeoutMs } : {}),
       })],
+      ...(timeoutMs != null
+        ? {
+            // The wait for the person is the point of the command; the
+            // transport must outlive it.
+            minTimeoutMs: timeoutMs + 30_000,
+            progressNotice: `Pending approval: removing ${machine.trim()} from the ADE account needs the person's yes. Waiting for their Remove or Keep…`,
+            exitCodeFromResult: (result: unknown) => {
+              const answer = unwrapActionEnvelope(result);
+              const status = isRecord(answer) ? answer.status : undefined;
+              if (status === undefined || status === "removed") return 0;
+              return status === "pending_approval" ? 3 : 2;
+            },
+          }
+        : {}),
     };
   }
   if (sub === "reconnect" || sub === "repair") {
@@ -25628,7 +27208,7 @@ function buildBrainPinPlan(args: string[]): CliPlan {
       steps: [{ key: "result", method: "sync.clearPin" }],
     };
   }
-  throw new CliUsageError(`Unsupported brain pin action: ${action}`);
+  throw new CliUsageError(`Unknown brain pin action '${action}'. Use show, set, generate or clear.`);
 }
 
 function buildSyncPlan(args: string[]): CliPlan {
@@ -25636,19 +27216,7 @@ function buildSyncPlan(args: string[]): CliPlan {
   if (sub === "help") {
     return {
       kind: "help",
-      text: `${ADE_BANNER}
-Usage:
-  ade sync status [--include-transfer-readiness]
-  ade sync web [--open] [--no-clipboard]   Print (and copy) the web client pairing link + code
-  ade sync refresh
-  ade sync devices
-  ade sync name <name>              Name this runtime for easy identification
-  ade sync name get
-  ade sync name clear
-  ade sync security status          Machine sync security posture (require-DPoP)
-  ade sync security require-dpop <on|off>
-  ade sync pair-device --json-stdin Advanced: authorize pairing through a trusted local/SSH session
-`,
+      text: SYNC_HELP,
     };
   }
   if (sub === "web" || sub === "web-pair" || sub === "webclient") {
@@ -25799,7 +27367,7 @@ Usage:
     }
     throw new CliUsageError(`Unsupported sync security action: ${action}`);
   }
-  throw new CliUsageError(`Unsupported sync command: ${sub}`);
+  throw new CliUsageError(`Unknown sync command '${sub}'. Run ade help sync.`);
 }
 
 /** How many projects `withoutMissingProjects` left out; kept off the JSON so `--json` stays the plain list. */
@@ -25826,6 +27394,22 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
     machineOnly: true,
     machineAutoStart: true,
   };
+  if ((sub === "list" || sub === "ls") && readFlag(args, ["--account"])) {
+    // The account's projects (L30), each with its copies on every computer.
+    // The list is the one this machine's brain last read from the account
+    // directory; the roster names each computer.
+    if (target.remote) throw new CliUsageError("projects list --account is the same on every machine; drop --machine.");
+    return {
+      ...base,
+      label: "account projects list",
+      formatter: "account-projects",
+      steps: [
+        { key: "list", method: "projects.accountList" },
+        { key: "roster", method: "machines.list", params: { includeProjects: false }, optional: true },
+      ],
+      shapeResult: (values) => shapeAccountProjects(values.list, values.roster),
+    };
+  }
   if (sub === "list" || sub === "ls") {
     // Projects whose folder is gone (a deleted temp project, a drive that is
     // not plugged in) are hidden unless asked for; the text says how many.
@@ -25937,6 +27521,35 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
       steps: [
         { key: "result", method: "projects.touch", params: { projectId } },
       ],
+    };
+  }
+  if (sub === "retry") {
+    // Forget a `project_folder_too_slow` refusal and its strikes, so the
+    // next open really tries (see `projectOpenStrikes.ts`).
+    // Flags first: `firstPositional` takes the first bare word, which may be a flag's value.
+    const explicitPath = readValue(args, ["--path"]);
+    const explicitId = readValue(args, ["--project-id", "--id"]);
+    const positional = explicitPath || explicitId ? null : firstPositional(args);
+    const projectId = explicitId ?? (positional && /^project_[A-Za-z0-9]+$/.test(positional) ? positional : null);
+    let params: Record<string, unknown>;
+    if (projectId) {
+      params = { projectId };
+    } else {
+      const rootPath = requireValue(explicitPath ?? positional, "project id or path");
+      // Another computer's path is sent as typed, as `clone --path` is.
+      params = { rootPath: target.remote ? rootPath : resolveCliPathArg(rootPath) };
+    }
+    return {
+      ...base,
+      label: "projects retry",
+      steps: [{ key: "result", method: "projects.retryOpen", params }],
+      formatText: (result) => {
+        if (!isRecord(result)) return "Done.";
+        const name = String(result.displayName ?? result.projectId ?? "The project");
+        if (result.wasBlocked === true) return `${name} can be opened again. Open it to try.`;
+        if (result.strikesCleared === true) return `${name} was not refused yet; its earlier freezes are forgotten.`;
+        return `${name} was not refused. Nothing to clear.`;
+      },
     };
   }
   if (sub === "inspect") {
@@ -26676,8 +28289,10 @@ function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): 
   const args = [...serviceCommand.args];
   let buildHash: string | null = null;
   let filePath: string | null = null;
+  // The app's helper or brain copy (the brain-executable switch) runs this process's Node.
+  const runsThisNode = isSameElectronRuntime(serviceCommand.command, process.execPath);
   if (
-    serviceCommand.command === process.execPath &&
+    runsThisNode &&
     args.length === 1 &&
     args[0] === "serve" &&
     fs.existsSync(CLI_DIST_PATH)
@@ -26685,7 +28300,7 @@ function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): 
     args.splice(0, 1, CLI_DIST_PATH, "serve");
     filePath = CLI_DIST_PATH;
     buildHash = computeRuntimeBuildHash(filePath);
-  } else if (serviceCommand.command === process.execPath && args[0]) {
+  } else if (runsThisNode && args[0]) {
     filePath = path.resolve(args[0]);
     buildHash = computeRuntimeBuildHash(filePath);
   } else if (fs.existsSync(serviceCommand.command)) {
@@ -26939,6 +28554,7 @@ async function repairMachineRuntimeServiceConnection(args: {
   options: GlobalOptions;
   expectedBuildHash: string | null;
   enforceBuildCompatibility: boolean;
+  describeLoss: DescribeBrainConnectionLoss | null;
 }): Promise<SocketJsonRpcClient | null> {
   let client: SocketJsonRpcClient | null = null;
   try {
@@ -26969,6 +28585,7 @@ async function repairMachineRuntimeServiceConnection(args: {
         args.socketPath,
         args.options.timeoutMs,
         "ADE runtime endpoint",
+        { describeLoss: args.describeLoss },
       ),
     });
     const runtimeInfo = await initializeMachineRuntimeDaemon(
@@ -27104,9 +28721,14 @@ async function spawnMachineRuntimeDaemon(
 async function connectMachineRuntimeDaemon(
   options: GlobalOptions,
   socketPathOverride?: string | null,
-  connectOptions: { allowSpawn?: boolean } = {},
+  connectOptions: {
+    allowSpawn?: boolean;
+    /** A relay's explanation for calls in flight when the brain's socket goes (`lib/brainConnectionLoss.ts`). */
+    describeLoss?: DescribeBrainConnectionLoss;
+  } = {},
 ): Promise<SocketJsonRpcClient> {
   const socketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
+  const describeLoss = connectOptions.describeLoss ?? null;
   const label = "ADE runtime endpoint";
   const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
   const isTcpSocket = socketPath.startsWith("tcp://");
@@ -27128,6 +28750,7 @@ async function connectMachineRuntimeDaemon(
       options,
       expectedBuildHash,
       enforceBuildCompatibility,
+      describeLoss,
     });
   };
   try {
@@ -27135,6 +28758,7 @@ async function connectMachineRuntimeDaemon(
       socketPath,
       options.timeoutMs,
       label,
+      { describeLoss },
     );
     const runtimeInfo = await initializeMachineRuntimeDaemon(
       client,
@@ -27212,7 +28836,7 @@ async function connectMachineRuntimeDaemon(
         socketPath,
         options.timeoutMs,
         label,
-        SPAWNED_RUNTIME_CONNECT_WINDOW_MS,
+        { connectWindowMs: SPAWNED_RUNTIME_CONNECT_WINDOW_MS, describeLoss },
       );
       const restartedInfo = await initializeMachineRuntimeDaemon(
         restarted,
@@ -27269,7 +28893,7 @@ async function connectMachineRuntimeDaemon(
         socketPath,
         options.timeoutMs,
         label,
-        SPAWNED_RUNTIME_CONNECT_WINDOW_MS,
+        { connectWindowMs: SPAWNED_RUNTIME_CONNECT_WINDOW_MS, describeLoss },
       );
       const runtimeInfo = await initializeMachineRuntimeDaemon(
         client,
@@ -27468,6 +29092,12 @@ async function runRuntimeCommand(
             };
           }
         }
+        // A person stopped it: the next start continues nothing it had at work.
+        noteBrainStopIntent("stop_for_good", {
+          runtimeDir: path.dirname(lastFailurePathForMachine()),
+          socketPath,
+          pid: runtimeInfo?.pid ?? null,
+        });
         await shutdownMachineRuntimeDaemon(client);
       } finally {
         client.close();
@@ -27479,6 +29109,8 @@ async function runRuntimeCommand(
         message: "ADE runtime endpoint stopped.",
       };
     } catch (error) {
+      // The stop did not happen: a later stop must not read it as one for good.
+      clearBrainStopIntent({ runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath });
       return {
         ok: false,
         running: false,
@@ -27494,7 +29126,12 @@ async function runRuntimeCommand(
   }
   if (sub === "uninstall-service") {
     const { uninstallRuntimeService } = await import("./serviceManager");
-    return uninstallRuntimeService();
+    // A person removed the service: its brain's work is not continued later.
+    const intentTarget = { runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: resolveMachineAdeLayout().socketPath };
+    noteBrainStopIntent("stop_for_good", intentTarget);
+    const removed = await uninstallRuntimeService();
+    if (!removed.ok) clearBrainStopIntent(intentTarget);
+    return removed;
   }
   if (sub === "service-status") {
     const { getRuntimeServiceStatus } = await import("./serviceManager");
@@ -28042,7 +29679,11 @@ async function runBrainCommand(
 
   if (sub === "stop") {
     const { uninstallRuntimeService } = await import("./serviceManager");
+    // A person stopped the brain: the next start continues nothing it had at work.
+    const intentTarget = { runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: resolveMachineAdeLayout().socketPath };
+    noteBrainStopIntent("stop_for_good", intentTarget);
     const stopped = await uninstallRuntimeService();
+    if (!stopped.ok) clearBrainStopIntent(intentTarget);
     // An open ADE app needs its brain: it puts the service back within about
     // a minute (`tryRepairServiceConnection`). Say so, so the stop does not
     // seem to have failed.
@@ -28307,7 +29948,12 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
   let stop: ReturnType<typeof startJsonRpcServer> | null = null;
   let unsubscribeNotifications: (() => void) | null = null;
   try {
-    client = await connectMachineRuntimeDaemon(options);
+    // The brain pid the desktop's own `ade/initialize` reports, so a lost
+    // connection can say whether that process is still alive.
+    let brainPid: number | null = null;
+    client = await connectMachineRuntimeDaemon(options, undefined, {
+      describeLoss: () => describeBrainConnectionLoss(brainPid),
+    });
     const handler: JsonRpcHandler = async (request) => {
       const method = typeof request.method === "string" ? request.method : "";
       if (!method) return null;
@@ -28319,7 +29965,12 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
         throw new Error("ADE runtime is not connected.");
       }
       try {
-        return await client.request(method, request.params);
+        const result = await client.request(method, request.params);
+        if (method === "ade/initialize" && isRecord(result) && isRecord(result.runtimeInfo)) {
+          const pid = result.runtimeInfo.pid;
+          if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) brainPid = pid;
+        }
+        return result;
       } catch (error) {
         if (
           (method === "shutdown" || method === "exit") &&
@@ -28453,6 +30104,12 @@ async function runServe(
     const { getRuntimeServiceStatus } = await import("./serviceManager");
     return getRuntimeServiceStatus();
   }
+  // A brain starts with the desktop app on a cold launch: its background
+  // provider CLI work waits out the launch (`launchQuiet.ts`).
+  armLaunchQuiet();
+  // Below the owner's minimum: one stderr line, and no Sentry errors from
+  // this build. Never blocks the brain (a cloud computer's account updates it).
+  startBrainClientUpdateCheck({ version: BUNDLED_VERSION || null });
   // Before anything reads the env: a brain started from an agent's shell must
   // not lend that agent's identity to every client it serves.
   const droppedCallerIdentityKeys = dropInheritedCallerIdentity(process.env);
@@ -28572,6 +30229,7 @@ async function runServe(
   }
   let serveStarted = false;
   let stopBrainLoopWatchdog: (() => void) | null = null;
+  let brainStallProfiler: BrainStallProfiler | null = null;
   let stopBrainHeartbeat: (() => void) | null = null;
   let stopBrainFreshnessMonitor: (() => void) | null = null;
   // Built much later than the watchdog that feeds it: the memory mitigation may
@@ -28606,8 +30264,12 @@ async function runServe(
           + `(signed out; the old identity is kept in ${hostGuard.movedTo}).\n`,
       );
     }
-    // a cloud machine made with the person's sign-ins: Codex reads its
-    // key only from its auth file, so it is written before any chat starts.
+    // A cloud machine an older ADE made with the person's sign-ins in its env
+    // (new machines get none: the account vault carries them): Codex reads its
+    // key only from its auth file, so it is written before any chat starts, and
+    // the sign-in variables stay in the env. On an ADE Cloud computer the
+    // sign-in sync takes them out at its first apply, once the account's
+    // vault can give each key back (fix B1, providerLoginBoot.ts).
     const { applyCloudSignIns } = await import("../../desktop/src/main/services/adeCloud/cloudSignInBoot");
     if (applyCloudSignIns() === "failed") {
       process.stderr.write("ADE: couldn't write Codex's sign-in on this machine; Codex asks to sign in here instead.\n");
@@ -28625,8 +30287,10 @@ async function runServe(
       readMachineRuntimeActivitySummary,
       readMachineBusyFacts,
       readMachineNextScheduledWakeAt,
+      readMachineUpdateImpact,
     },
     { createSharedSyncListener },
+    { createLaneShareGuestRouter },
     { resolveMobileProjectIconDataUrl },
     { createBrainProjectActionsSyncHandler, BOOTSTRAP_TOKEN_KEY },
     { buildRosterSnapshot, createForeignChatTranscriptResolver },
@@ -28634,14 +30298,17 @@ async function runServe(
     { setSyncRuntimeRpcHandlerFactory },
     { buildProjectlessSyncSnapshot },
     { resolveBrainMachineSyncStores, createProjectlessSyncControls },
-    { createMachineUpdateControls },
+    { createMachineUpdateControls, runMachineUpdateAndRestart },
     { resolveContinueAfterRestart },
+    { joinOrStartMachineUpdate },
+    { setMachineUpdateRemoteCommands },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
     import("./services/projects/projectScope"),
     import("./multiProjectRpcServer"),
     import("./services/sync/sharedSyncListener"),
+    import("./services/sync/laneShareGuestRouter"),
     import("../../desktop/src/main/services/projects/projectIconThumbnail"),
     import("./services/sync/brainProjectActionsSyncHandler"),
     import("./services/sync/rosterBuilder"),
@@ -28651,6 +30318,8 @@ async function runServe(
     import("./services/sync/brainMachineSyncStores"),
     import("./services/runtime/machineUpdateAndRestart"),
     import("./services/runtime/continueAfterRestartStore"),
+    import("./services/runtime/machineUpdateInFlight"),
+    import("./services/sync/machineUpdateRemoteCommands"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -28722,6 +30391,10 @@ async function runServe(
   // child process froze it, which is most of the near misses that use no CPU.
   const { installSlowSyncSpawnMonitor } = await import("./services/runtime/slowSyncSpawnMonitor");
   installSlowSyncSpawnMonitor({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
+  // Code that ran only while the brain started drops its compiled form at the
+  // next quiet full collection (`brainCodeAging.ts`).
+  const { scheduleBrainCodeAging } = await import("./services/runtime/brainCodeAging");
+  scheduleBrainCodeAging();
   // And this names the synchronous file call, path and caller, that the main
   // thread is stuck in, for the watchdog to read while it is stuck. Installed
   // before the watchdog starts, which hands the tracker's memory to its worker.
@@ -28730,16 +30403,76 @@ async function runServe(
   projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });
   // Started below for the machine brain only; the watchdog's five-minute sample drives it.
   let resourcePressureMonitor: { tick: () => Promise<void> } | null = null;
+  // The open projects the simulators' low-memory pass reaches; set once the scope registry exists.
+  let simulatorReclaimScopes: (() => import("./services/runtime/simulatorMemoryReclaimer").SimulatorReclaimScope[]) | null = null;
+  // Freeze kills counted against the project that was opening, read once from
+  // this machine's runtime folder; the scope registry refuses a project with
+  // enough of them (`projectOpenStrikes.ts`).
+  const { ProjectOpenStrikes } = await import("./services/projects/projectOpenStrikes");
+  const projectOpenStrikes = new ProjectOpenStrikes({
+    runtimeDir: layout.runtimeDir,
+    logger: headlessProjectLogger,
+  });
+  // Read once: the watchdog kills at it, and the scope registry's open queue waits no longer.
+  const freezeThresholdMs = resolveBrainLoopWatchdogThresholdMs(process.env.ADE_LOOP_WATCHDOG_MS);
+  // What the previous brain left, read before the watchdog, the heartbeat and
+  // the pressure monitor below rewrite it: the facts that name why it ended
+  // (`brainRestartCause.ts`, used at `recordBrainRunStart`).
+  const restartCauseFacts: BrainStartFacts = {
+    currentVersion: VERSION,
+    lastHeartbeat: readBrainHeartbeat(layout.runtimeDir),
+    wedge: null,
+    memoryPressure: null,
+    updateRequest: readBrainUpdateRequest(layout.runtimeDir),
+    diskGrow: null,
+  };
+  // On an ADE Cloud computer: the disk grow the previous brain asked for (a grow restarts the computer).
+  if (isAdeCloudComputer()) {
+    const grow = readCloudDiskGrowState(cloudDiskGrowStatePath(layout.adeDir), process.env.ADE_CLOUD_INSTANCE_ID?.trim() || null);
+    if (grow?.state === "growing") restartCauseFacts.diskGrow = { atMs: grow.at, fromGb: grow.fromGb ?? null, toGb: grow.toGb };
+  }
+  const { memoryBreachForRestartCause, readResourcePressureRecord } = await import("./services/runtime/resourcePressureMonitor");
+  restartCauseFacts.memoryPressure = memoryBreachForRestartCause(readResourcePressureRecord(layout.runtimeDir));
+  // After a freeze, a one-minute profile names the code behind it (`brainStallProfiler.ts`).
+  brainStallProfiler = createBrainStallProfiler({
+    log: (event, meta) => headlessProjectLogger.warn(event, meta),
+  });
+  const stallProfiler = brainStallProfiler;
+  // After a failed Windows update, the handshakes that follow name what blocked it.
+  primeMachineUpdateBlock((event, meta) => headlessProjectLogger.warn(event, meta));
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
+    thresholdMs: freezeThresholdMs,
     socketPath,
     onSampleTick: () => {
       void resourcePressureMonitor?.tick();
     },
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
     info: (event, meta) => headlessProjectLogger.info(event, meta),
-    onStall: ({ observedLagMs }) => recordHostStall({ durationMs: observedLagMs }),
+    onStall: ({ observedLagMs, endedAgoMs }) => {
+      recordHostStall({ durationMs: observedLagMs });
+      stallProfiler.noteStall({ startedAgoMs: endedAgoMs + observedLagMs });
+    },
     onRecovered: (breadcrumb) => {
+      const wedgeAtMs = Date.parse(breadcrumb.ts);
+      if (Number.isFinite(wedgeAtMs)) {
+        restartCauseFacts.wedge = { atMs: wedgeAtMs, freezeCause: breadcrumb.freezeCause ?? null };
+      }
+      // The kill landed while projects were opening: count it against them.
+      const struck = projectOpenStrikes.recordFreezeKill(breadcrumb);
+      if (struck.length > 0) {
+        headlessProjectLogger.warn("project.open_freeze_killed", {
+          projects: struck.map(({ projectId, phase, strikes, blocked }) => ({
+            projectId,
+            phase,
+            strikes,
+            blockedUntil: blocked ? new Date(blocked.blockedUntilMs).toISOString() : null,
+            level: blocked?.level ?? null,
+          })),
+          blockedMs: breadcrumb.blockedMs,
+          killedAt: breadcrumb.ts,
+        });
+      }
       // A wedge the watchdog ended by restarting: devices that reconnect in
       // the next few minutes learn this machine froze, not that their network did.
       recordHostStall({
@@ -28796,6 +30529,12 @@ async function runServe(
   // A launchd brain gets no --socket and no socket env, only ADE_HOME. Record
   // the socket it serves so the `ade` shim it hands its agents names it.
   publishServedRuntimeSocket(socketPath);
+  // `gh` and `git` in this brain's agent shells and chats ask for the current
+  // account token on every run (githubShellShim.ts); off, they get a frozen one.
+  {
+    const { configureGithubShellShim } = await import("../../desktop/src/main/services/github/githubShellShim");
+    configureGithubShellShim({ env: process.env, logger: headlessProjectLogger });
+  }
   // Only the machine brain publishes the machine heartbeat; see the helper.
   const servesMachineEndpoint = servesMachineRuntimeEndpoint(rawSocketPath, machineRuntimeNames);
   if (servesMachineEndpoint) {
@@ -28807,10 +30546,23 @@ async function runServe(
     // One machine, one sampler: the machine brain watches this computer's
     // memory, swap, database logs and its own CPU (`resourcePressureMonitor.ts`).
     const { createResourcePressureMonitor } = await import("./services/runtime/resourcePressureMonitor");
+    // The iOS simulators give memory back when this computer is short of it
+    // (`simulatorMemoryReclaimer.ts`): on the monitor's samples. The pass
+    // itself does nothing off macOS.
+    const { createSimulatorMemoryReclaimer } = await import("./services/runtime/simulatorMemoryReclaimer");
+    const simulatorReclaimer = createSimulatorMemoryReclaimer({
+      logger: headlessProjectLogger,
+      readSimulatorMb: async () => {
+        const { readProcessGroups, simulatorGroupMb } = await import("../../desktop/src/main/services/machineStats/processGroups");
+        return simulatorGroupMb(await readProcessGroups({ platform: process.platform }));
+      },
+      listScopes: () => simulatorReclaimScopes?.() ?? [],
+    });
     resourcePressureMonitor = createResourcePressureMonitor({
       runtimeDir: layout.runtimeDir,
       logger: headlessProjectLogger,
       capture: (input) => brainProductAnalytics.captureInternal(input),
+      onOpenEpisodeSample: (sample) => simulatorReclaimer.onSample(sample),
     });
   } else {
     headlessProjectLogger.info("brain.heartbeat_skipped_non_machine_socket", {
@@ -28838,14 +30590,44 @@ async function runServe(
     headlessProjectLogger.info("sync.host_left_to_service_brain", { servicePid: serviceBrainPid });
   }
   const syncEnabled = syncRequested && syncCapableHome && serviceBrainPid == null;
+  // A repository's name and icon, shared by every machine of the account.
+  // With sync off they stay in each project's `.ade/project-record.json`.
+  const [{ createMachineProjectRecords }, { getMachineAccountStores }, projectRecordIcons] = await Promise.all([
+    import("./services/projects/projectRecords"),
+    import("./services/account/machineAccountStores"),
+    import("../../desktop/src/main/services/projects/projectRecordHost"),
+  ]);
+  let projectRecordAccountStores: ReturnType<typeof getMachineAccountStores> | null = null;
+  const machineAccountStoresForRecords = () => (projectRecordAccountStores ??= getMachineAccountStores(headlessProjectLogger));
+  const projectRecords = createMachineProjectRecords({
+    accountStore: () => (syncEnabled ? machineAccountStoresForRecords().settings : null),
+    isSignedIn: () => machineAccountStoresForRecords().accountUserId() !== null,
+    logger: headlessProjectLogger,
+    folderRefused: (project) => Boolean(project.projectId && projectOpenStrikes.blocked(project.projectId)),
+  });
   const localDeviceIdPath = path.join(layout.secretsDir, "sync-device-id");
   // `--profile` was read at the top of the function, before the identity notes.
   const projectRegistry = new ProjectRegistry(layout);
+  projectRegistry.setFolderReadSkip((projectId) => projectOpenStrikes.blocked(projectId) !== null);
+  // A refused project's folder is not read for account settings, nor counted
+  // for this cloud computer's disk report.
+  const refusedRoot = (rootPath: string): boolean => {
+    // Asked on every account-settings read; with no refusal the project list is not needed.
+    if (!projectOpenStrikes.anyBlocked()) return false;
+    const resolved = path.resolve(rootPath);
+    const record = projectRegistry.list().find((entry) => entry.rootPath === resolved);
+    return Boolean(record && projectOpenStrikes.blocked(record.projectId));
+  };
+  setAccountConfigRootSkip(refusedRoot, layout.secretsDir);
   const brainAccountAuthService = getSharedAccountAuthService({
     secretsDir: layout.secretsDir,
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
     logger: headlessProjectLogger,
   });
+  // The account signed in on this machine, for the account project link the
+  // phone's catalog and roster carry (`publicProjectRecord`). The same reader
+  // as the RPC server's project list.
+  const brainAccountUserId = (): string | null => machineAccountStoresForRecords().accountUserId();
   syncAccountAnalyticsIdentity(
     brainAccountAuthService.getStatus(),
     brainProductAnalytics,
@@ -28853,6 +30635,28 @@ async function runServe(
   const personalChatScope = createPersonalChatScope(
     runtimeProfile ? { runtimeProfile } : undefined,
   );
+  // Off the boot path: the first pass waits for the vault's first tick anyway.
+  void import("./services/account/brainProviderLoginSync").then(({ installBrainProviderLoginSync }) => installBrainProviderLoginSync({
+    // Fixed for this process: an embedded runtime, a development build and a
+    // brain with sync off never open a store for it. Every other gate (an
+    // account with ADE Cloud, its switch, a synced vault) is checked on each pass.
+    staticOff: embedded ? "embedded" : !brainReportsAsRelease(process.env) ? "dev_brain" : !syncEnabled ? "sync_off" : null,
+    adeDir: layout.adeDir,
+    secretsDir: layout.secretsDir,
+    accountAuthService: brainAccountAuthService,
+    logger: headlessProjectLogger,
+  })).catch((error: unknown) => {
+    headlessProjectLogger.warn("provider_login.install_failed", { name: error instanceof Error ? error.name : "unknown" });
+  });
+  // Claude passes use the sign-in sync's hooks (its pass, its gate, its
+  // status). The same fixed conditions turn both off; the boot token then stays.
+  void import("../../desktop/src/main/services/claudePass/installClaudePassSync").then(({ installClaudePassSync }) => installClaudePassSync({
+    staticOff: embedded ? "embedded" : !brainReportsAsRelease(process.env) ? "dev_brain" : !syncEnabled ? "sync_off" : null,
+    adeDir: layout.adeDir,
+    logger: headlessProjectLogger,
+  })).catch((error: unknown) => {
+    headlessProjectLogger.warn("claude_pass.install_failed", { name: error instanceof Error ? error.name : "unknown" });
+  });
   // Both profiles get it. An embedded runtime is exactly the case that needs
   // it most: the embedder's first screen asks "which CLIs do you have", and
   // without this it would have to write that detection itself.
@@ -28879,16 +30683,39 @@ async function runServe(
       );
     }
   }
+  // The phone's icon follows the shared record like the desktop's tab does.
+  const mobileProjectIconDataUrl = (record: ProjectRecord): string | null => {
+    // For a refused project the records answer from the account only
+    // (`folderRefused` above), and detecting an icon in its folder is skipped.
+    const decision = projectRecords.iconDecision(record);
+    if (decision.use === "record") return decision.icon.dataUrl;
+    if (scopeRegistry.isOpenBlocked(record.projectId)) return null;
+    if (decision.use === "detected") {
+      const detected = resolveProjectIconPath(record.rootPath, { iconPathOverride: undefined });
+      return detected ? resolveMobileProjectIconDataUrl(record.rootPath, { resolvedSourcePath: detected }) : null;
+    }
+    return resolveMobileProjectIconDataUrl(record.rootPath);
+  };
   const toMobileProjectSummary = (
     record: ProjectRecord,
     overrides: Partial<SyncMobileProjectSummary> = {},
-  ): SyncMobileProjectSummary =>
-    headlessMobileProjectSummary(
-      record,
-      resolveMobileProjectIconDataUrl(record.rootPath),
-      overrides,
+  ): SyncMobileProjectSummary => {
+    const sharedName = projectRecords.name(record);
+    return headlessMobileProjectSummary(
+      sharedName ? { ...record, displayName: sharedName } : record,
+      mobileProjectIconDataUrl(record),
+      // The phone joins the card to its account project by this id first.
+      { ...publicAccountProjectFields(record, brainAccountUserId), ...overrides },
     );
+  };
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
+  // One phone input ledger for the brain's own ingress and every project
+  // sync host: a resent input id is a duplicate on either one. It holds the
+  // receipts of all of them, so it gets a larger bound than one host's.
+  const syncHostModule = await import("./services/sync/syncHostService");
+  const brainTerminalInputDedupeLedger = syncHostModule.createTerminalInputDedupeLedger({
+    maxEntries: syncHostModule.TERMINAL_INPUT_DEDUPE_MAX_ENTRIES * 4,
+  });
   const keepAwakeServiceModule = !embedded && servesMachineEndpoint
     ? await import("./services/power/brainKeepAwakeService")
     : null;
@@ -28923,42 +30750,380 @@ async function runServe(
     ]).then(([{ createCloudBrainAccess }, { cloudAccessDepsFor }]) => createCloudBrainAccess(cloudAccessDepsFor({
       account: () => brainAccountAuthService,
       directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
+      // A computer this brain makes follows this brain's update track.
+      runningVersion: () => VERSION,
       logger: headlessProjectLogger,
     })));
     return cloudBrainAccess;
   };
-  const cloudDiskGrower = cloudKeepAwakeModule?.isCloudMachine()
-    ? (await import("./services/power/cloudDiskGrow")).createCloudDiskGrower({
-        instanceId: process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "",
+  if (!embedded && servesMachineEndpoint) {
+    // Until this brain has the server's ADE Cloud answer (asked a few seconds
+    // in, below), its agents' skills follow the answer it last had for the
+    // signed-in account, so a chat resumed right after a restart keeps the
+    // prompt it had. Signed out, or an account with no saved answer: withheld.
+    // `createCloudBrainAccess` replaces this hook with the one that asks.
+    useCloudAccessMemory(path.join(layout.adeDir, "cloud-access.json"));
+    let rememberedDirectory: string | null | undefined;
+    setAgentSkillAccessRefresh(() => {
+      const status = brainAccountAuthService.getStatus();
+      if (status.signedIn !== true || !status.userId) {
+        setAdeCloudSkillVisible(false);
+        return;
+      }
+      if (rememberedDirectory === undefined) {
+        try {
+          rememberedDirectory = getSharedAccountDirectoryBaseUrl() || null;
+        } catch {
+          rememberedDirectory = null;
+        }
+      }
+      setAdeCloudSkillVisible(rememberedCloudAccess(cloudAccessKey(rememberedDirectory, status.userId)) === true);
+    });
+  }
+  // This computer's ADE Cloud id, on a cloud computer; empty elsewhere.
+  const cloudInstanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
+  const cloudDiskGrowModule = cloudKeepAwakeModule && isAdeCloudComputer()
+    ? await import("./services/power/cloudDiskGrow")
+    : null;
+  const cloudDiskGrower = cloudDiskGrowModule
+    ? cloudDiskGrowModule.createCloudDiskGrower({
+        instanceId: cloudInstanceId,
         client: async () => (await getCloudBrainAccess()).client(),
         path: os.homedir(),
+        // The storage guard's refusal reads what it writes there (`cloudDiskGuardOptions` in bootstrap).
+        adeHome: layout.adeDir,
         logger: headlessProjectLogger,
       })
     : null;
-  const cloudKeepAwake = cloudKeepAwakeModule?.isCloudMachine()
+  // No swap here: when memory runs out the provider restarts the whole computer. The biggest process goes instead.
+  const cloudMemoryGuard = isAdeCloudComputer()
+    ? (await import("./services/power/cloudMemoryGuard")).startCloudMemoryGuard({ logger: headlessProjectLogger })
+    : null;
+  // What this computer tells ADE Cloud at its idle step: its lanes' work, its disk, an update, its boot.
+  const cloudComputerReports = cloudKeepAwakeModule && isAdeCloudComputer()
+    ? (await import("./services/power/cloudComputerReports")).createCloudComputerReports({
+        instanceId: cloudInstanceId,
+        projectRegistry,
+        scopeRegistry: () => scopeRegistry,
+        getCloudBrainAccess,
+        version: VERSION,
+        logger: headlessProjectLogger,
+      })
+    : null;
+  // What uses this computer's disk, its last work and the files git ignores: sent at the idle step for the dashboard.
+  const cloudDiskUsageReporter = cloudComputerReports
+    ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
+        instanceId: cloudInstanceId,
+        adeHome: layout.adeDir,
+        stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
+        projectRoots: () => projectRegistry.list().map((project) => project.rootPath).filter((root) => !refusedRoot(root)),
+        readWork: cloudComputerReports.readWork,
+        readIgnored: cloudComputerReports.readIgnored,
+        send: cloudComputerReports.send,
+        logger: headlessProjectLogger,
+      })
+    : null;
+  if (isAdeCloudComputer()) {
+    // C4: older clones saved the GitHub sign-in header in their .git/config.
+    // Take it out once a boot, off the start path.
+    const cleanup = setTimeout(() => {
+      void import("./services/github/savedGithubHeaderCleanup")
+        .then(({ removeSavedGithubHeaders }) => removeSavedGithubHeaders(
+          projectRegistry.list().map((project) => project.rootPath),
+          { logger: headlessProjectLogger },
+        ))
+        .catch((error: unknown) => headlessProjectLogger.warn("github.saved_header_cleanup_failed", { error: error instanceof Error ? error.message : String(error) }));
+    }, 60_000);
+    cleanup.unref?.();
+  }
+  // ADE Cloud: the computer's git identity (cloudGitIdentity.ts). Set once the
+  // account is known: off the start path, again at each account sign-in, and
+  // before the cleanup's commits (push-work).
+  const cloudGitIdentity = isAdeCloudComputer()
+    ? (await import("./services/github/cloudGitIdentity")).createBrainCloudGitIdentity({
+        adeHome: layout.adeDir,
+        directoryBaseUrl: () => {
+          try {
+            return getSharedAccountDirectoryBaseUrl() || null;
+          } catch {
+            return null;
+          }
+        },
+        accountAccessToken: async () => (brainAccountAuthService.getStatus().signedIn ? await brainAccountAuthService.getAccessToken() : null),
+        readGithubToken: async () => {
+          const quiet: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+          return await createHeadlessGitHubService(process.cwd(), quiet).getGitTransportTokenOrThrowAsync().catch(() => null);
+        },
+        logger: headlessProjectLogger,
+      })
+    : null;
+  if (cloudGitIdentity) {
+    const ensureIdentity = () => {
+      if (!brainAccountAuthService.getStatus().signedIn) return;
+      void cloudGitIdentity.ensure();
+    };
+    const identityTimer = setTimeout(ensureIdentity, 20_000);
+    identityTimer.unref?.();
+    brainAccountAuthService.onSignedIn(ensureIdentity);
+  }
+  // Hours near full CPU with no chat turn or agent working: reported for the owner's daily report.
+  const cloudCpuWatch = cloudComputerReports
+    ? (await import("./services/power/cloudSustainedCpu")).createSustainedCpuWatch({
+        report: cloudComputerReports.reportSustainedCpu,
+        logger: headlessProjectLogger,
+      })
+    : null;
+  // The computer's own word on its work, for a lane's status menu
+  // (`cloudActivityReporter.ts`): its agents from each busy read, its idle
+  // clock from the keep-awake's checks; made once the account client exists below.
+  let cloudActivityReporter: import("./services/account/cloudActivityReporter").CloudActivityReporter | null = null;
+  const readCloudBusy = cloudKeepAwakeModule && isAdeCloudComputer()
+    ? async () => {
+        const sources = { projectRegistry, scopeRegistry };
+        const [facts, nextWakeAt] = await Promise.all([
+          readMachineBusyFacts({ ...sources, personalChatScope }),
+          readMachineNextScheduledWakeAt(sources),
+        ]);
+        const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
+          ...facts,
+          setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
+          holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
+        }, Date.now());
+        cloudActivityReporter?.noteAgents(facts);
+        // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
+        // one goes to the account server, which wakes the machine for it.
+        return { busy, reasons, nextWakeAt, waitingOnPerson, laneSetups: facts.laneSetups ?? 0 };
+      }
+    : null;
+  // A lane launch's setup filled the disk: grow it now, while nothing else
+  // runs, and the launch's setup runs again after the restart. The launch
+  // itself still reads as `lane_setup` while it waits, so that one setup
+  // doesn't hold the grow back; a second one running does (the restart
+  // would cut it off).
+  const laneSetupOnlyRuns = async (): Promise<boolean> => {
+    if (!readCloudBusy) return false;
+    const busy = await readCloudBusy();
+    const others = busy.reasons.filter((reason) => reason !== "lane_setup");
+    if (others.length || busy.waitingOnPerson || busy.laneSetups > 1) {
+      headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", {
+        reasons: others,
+        laneSetups: busy.laneSetups,
+        waitingOnPerson: Boolean(busy.waitingOnPerson),
+      });
+      return false;
+    }
+    return true;
+  };
+  // A setup that ran out of memory on a Small whose size was ADE's default
+  // moves the computer to Medium the same way (`cloudSetupUpsize.ts`): one
+  // step, under the same "nothing else runs" rule, and setup runs again.
+  const cloudSetupUpsizer = cloudDiskGrower
+    ? (await import("./services/power/cloudSetupUpsize")).createCloudSetupUpsizer({
+        instanceId: cloudInstanceId,
+        client: async () => (await getCloudBrainAccess()).client(),
+        adeHome: layout.adeDir,
+        logger: headlessProjectLogger,
+        // The launch's own record says whether its size was ADE's default; 404: not a server launch.
+        readLaunch: async (launchId) => {
+          const base = getSharedAccountDirectoryBaseUrl();
+          if (!base || !brainAccountAuthService.getStatus().signedIn) throw new Error("not signed in to an ADE account");
+          const { createCloudApiClient, CloudApiError } = await import("../../desktop/src/shared/cloudApiClient");
+          const api = createCloudApiClient({ baseUrl: base, accessToken: async () => await brainAccountAuthService.getAccessToken() });
+          try {
+            return await api.launchStatus(launchId);
+          } catch (error) {
+            if (error instanceof CloudApiError && error.status === 404) return null;
+            throw error;
+          }
+        },
+      })
+    : null;
+  // A grow an agent or the Android emulator's first start asks for
+  // (`cloudDiskGrowHost.ts`): a running chat turn or an agent CLI session
+  // ADE tracks doesn't hold it back (ADE continues them after the restart,
+  // with the cause), but a command in a terminal (an agent CLI started by
+  // hand in a shell too), a setup, a copy or move, or a chat waiting on the
+  // person's answer does: the restart would cut them.
+  const growMayRestartNow = async (): Promise<boolean> => {
+    if (!readCloudBusy) return false;
+    const busy = await readCloudBusy();
+    // What continues after the restart (chats, ADE's agent CLIs), and the `ade` command that asked for the grow.
+    const cut = busy.reasons.filter((reason) => reason !== "chat" && reason !== "agent_cli" && reason !== "disk_grow_command");
+    if (cut.length || busy.waitingOnPerson) {
+      headlessProjectLogger.info("cloud.disk_grow_to_fit_busy", { reasons: cut, waitingOnPerson: Boolean(busy.waitingOnPerson) });
+      return false;
+    }
+    return true;
+  };
+  if (cloudDiskGrower && readCloudBusy) {
+    const [{ setCloudDiskGrowHost }, { buildCloudDiskGrowCard, buildCloudDiskLimitCard }] = await Promise.all([
+      import("../../desktop/src/main/services/adeCloud/cloudDiskGrowHost"),
+      import("../../desktop/src/shared/cloudDiskGrowCard"),
+    ]);
+    type GrowChat = import("../../desktop/src/main/services/adeCloud/cloudDiskGrowHost").CloudDiskGrowChat;
+    type GrowCard = import("../../desktop/src/shared/adeCard").AdeCardPayload;
+    // A grow's card goes to its chat through that chat's project here.
+    const postGrowCard = async (chat: GrowChat, card: GrowCard): Promise<boolean> => {
+      try {
+        const root = chat.projectRoot ? path.resolve(chat.projectRoot) : null;
+        const project = root ? projectRegistry.list().find((entry) => path.resolve(entry.rootPath) === root) : null;
+        if (!project) return false;
+        const chatService = (await scopeRegistry.get(project.projectId)).runtime.agentChatService;
+        if (!chatService) return false;
+        if (typeof chatService.emitAdeCard === "function") await chatService.emitAdeCard({ sessionId: chat.chatSessionId, card });
+        else chatService.recordSystemNotice({ sessionId: chat.chatSessionId, message: card.fallbackText });
+        return true;
+      } catch (error) {
+        headlessProjectLogger.warn("cloud.disk_grow_card_failed", { error: error instanceof Error ? error.message : String(error) });
+        return false;
+      }
+    };
+    setCloudDiskGrowHost({
+      growToFit: async (ask) => {
+        const chat = ask.chat ?? null;
+        // The "growing" card, once it went up: an ask that then doesn't grow updates it in place.
+        const shown: { card: { cardId: string; fromGb: number; toGb: number } | null } = { card: null };
+        const answer = await cloudDiskGrower.growToFit({
+          ...ask,
+          stillIdle: growMayRestartNow,
+          // Before the restart: awaited, so the card is saved before the computer goes down.
+          onGrowing: chat
+            ? async ({ fromGb, toGb, cardId }) => {
+              shown.card = { cardId, fromGb, toGb };
+              await postGrowCard(chat, buildCloudDiskGrowCard({ cardId, fromGb, toGb, reason: ask.reason, phase: "growing" }));
+            }
+            : undefined,
+        });
+        if (!chat || answer.state === "growing" || answer.state === "grown") return answer;
+        const card = shown.card;
+        if (answer.state === "limit") {
+          await postGrowCard(chat, buildCloudDiskLimitCard({
+            cardId: card?.cardId ?? `cloud-disk-limit:${cloudInstanceId}:${Date.now()}`,
+            toGb: answer.toGb,
+            reason: answer.reason,
+            sentence: answer.message,
+          }));
+        } else if (card) {
+          await postGrowCard(chat, buildCloudDiskGrowCard({ ...card, reason: ask.reason, phase: "failed", detail: answer.message }));
+        }
+        return answer;
+      },
+    });
+    // The chats the last boot's grow told before its restart: their card says
+    // how it went, once their project is open here. The continue itself is the
+    // chat's own restart resume, which names the grow (restart cause `disk_grow`).
+    // A chat whose project isn't open yet is tried again a few times; the
+    // state file keeps the chats until at least one card went out.
+    const told = cloudDiskGrower.afterRestart();
+    if (told && !told.cardId) cloudDiskGrower.noticesSent();
+    if (told?.cardId) {
+      const card = buildCloudDiskGrowCard({ cardId: told.cardId, fromGb: told.fromGb, toGb: told.toGb, reason: told.reason, phase: told.grew === false ? "same" : "grew", freeGb: told.freeGb });
+      let pending = told.chats;
+      let sent = 0;
+      const attempt = async (left: number): Promise<void> => {
+        const still: typeof pending = [];
+        for (const chat of pending) {
+          if (await postGrowCard(chat, card)) sent += 1;
+          else still.push(chat);
+        }
+        pending = still;
+        if (pending.length && left > 0) {
+          const timer = setTimeout(() => void attempt(left - 1), 30_000);
+          timer.unref?.();
+          return;
+        }
+        headlessProjectLogger.info("cloud.disk_grow_after_restart", { chats: told.chats.length, sent, grew: told.grew });
+        if (sent > 0) cloudDiskGrower.noticesSent();
+      };
+      const timer = setTimeout(() => void attempt(5), 10_000);
+      timer.unref?.();
+    }
+  }
+  const laneSetupDisk = cloudDiskGrower && readCloudBusy
+    ? {
+        ...cloudDiskGrower.setupDisk(laneSetupOnlyRuns),
+        ...(cloudSetupUpsizer ? cloudSetupUpsizer.setupMemory(laneSetupOnlyRuns) : {}),
+      }
+    : null;
+  // This machine's account machine key; null before it has one.
+  const thisMachineKey = (): string | null => {
+    try {
+      return machineCloudRelayStore.getMachineIdentity().machineKey || null;
+    } catch {
+      return null;
+    }
+  };
+  // The account server's typed client, as this brain's signed-in account. Null signed out.
+  const accountCloudApi = async (): Promise<import("../../desktop/src/shared/cloudApiClient").CloudApiClient | null> => {
+    if (!brainAccountAuthService.getStatus().signedIn) return null;
+    let base: string | null = null;
+    try {
+      base = getSharedAccountDirectoryBaseUrl() || null;
+    } catch {
+      base = null;
+    }
+    if (!base) return null;
+    const { createCloudApiClient } = await import("../../desktop/src/shared/cloudApiClient");
+    return createCloudApiClient({
+      baseUrl: base,
+      accessToken: async () => (brainAccountAuthService.getStatus().signedIn
+        ? await brainAccountAuthService.getAccessToken().catch(() => null)
+        : null),
+    });
+  };
+  if (readCloudBusy && cloudInstanceId) {
+    const { createCloudActivityReporter } = await import("./services/account/cloudActivityReporter");
+    cloudActivityReporter = createCloudActivityReporter({
+      instanceId: cloudInstanceId,
+      send: async (instanceId, report) => {
+        const api = await accountCloudApi();
+        if (!api) throw new Error("not signed in to an ADE account");
+        // Null is a 404: a server with no activity route yet. Not stored, so
+        // it is tried again (the reporter spaces the tries out and logs once).
+        if (await api.reportActivity(instanceId, report) == null) {
+          throw new Error("the account server does not take activity reports yet");
+        }
+      },
+      logger: headlessProjectLogger,
+    });
+  }
+  // ADE Cloud: the rest save, the queue of messages for its chats, and the
+  // person's use during the idle cleanup (cloudComputerRest.ts). The save and
+  // the queue are attached below, once the registries and sign-in runners exist.
+  const cloudRest = cloudInstanceId && isAdeCloudComputer()
+    ? (await import("./services/cloudChats/cloudComputerRest")).createCloudComputerRest({
+        instanceId: cloudInstanceId,
+        api: accountCloudApi,
+        logger: headlessProjectLogger,
+        // Declared below; read when a save runs.
+        holdFor: () => holdCloudWork ?? null,
+      })
+    : null;
+  const cloudKeepAwake = cloudKeepAwakeModule && readCloudBusy
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
-        readBusy: async () => {
-          const sources = { projectRegistry, scopeRegistry };
-          const [facts, nextWakeAt] = await Promise.all([
-            readMachineBusyFacts({ ...sources, personalChatScope }),
-            readMachineNextScheduledWakeAt(sources),
-          ]);
-          const { busy, reasons } = cloudKeepAwakeModule.decideCloudBusy({
-            ...facts,
-            setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
-            holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
-          }, Date.now());
-          // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
-          // one goes to the account server, which wakes the machine for it.
-          return { busy, reasons, nextWakeAt };
-        },
-        requestIdleSleep: async (instanceId) => {
+        readBusy: readCloudBusy,
+        requestIdleSleep: async (instanceId, extras) => {
           const client = await (await getCloudBrainAccess()).client();
           if (!client) throw new Error("no ADE Cloud access");
-          await client.requestIdleSleep(instanceId);
+          await client.requestIdleSleep(instanceId, { backupReportId: extras?.backupReportId ?? null });
         },
         growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
+        diskGrowDueNow: () => cloudDiskGrower?.growDueNow() ?? false,
+        reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
+        // Copies and Git summaries before the sleep: the lane reads the same with no computer awake.
+        saveForRest: async (stillIdle: () => boolean): Promise<string | null> => (cloudRest ? await cloudRest.saveAtIdle(stillIdle) : null),
+        // Messages queued for its chats while it slept go now. The freeze of the person's Sleep ends first.
+        onWoke: () => {
+          if (liftCloudSleepFreeze()) headlessProjectLogger.info("cloud.sleep_freeze_lifted", { at: "woke" });
+          cloudRest?.drain("woke");
+        },
+        // Idle and behind its channel's checked image: update now (it restarts), not sleep.
+        updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
+        reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
+        sampleCpu: cloudCpuWatch ? (at, reasons) => cloudCpuWatch.sample(at, reasons) : undefined,
+        // The status menu's idle clock is the keep-awake's own.
+        onIdleFacts: cloudActivityReporter ? (idle) => cloudActivityReporter?.noteIdle(idle) : undefined,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
@@ -29177,6 +31342,11 @@ async function runServe(
         rootPath: requestedRootPath || null,
       };
     }
+    // A refused project's folder is not touched to set its icon.
+    const refusal = scopeRegistry.openRefusal(record.projectId);
+    if (refusal) {
+      return { ok: false, message: refusal.message, projectId: record.projectId, rootPath: record.rootPath };
+    }
     if (!fs.existsSync(record.rootPath)) {
       return {
         ok: false,
@@ -29196,11 +31366,17 @@ async function runServe(
         rootPath: record.rootPath,
       };
     }
+    if (projectRecords.isShared(record)) {
+      // The shared copy for every machine of the account; the phone's icon
+      // stays set here even when that copy cannot be made.
+      const overridePath = resolveProjectIconOverridePath(record.rootPath);
+      projectRecords.writeIcon(record, overridePath ? projectRecordIcons.encodeProjectRecordIcon(overridePath) : null);
+    }
     return {
       ok: true,
       projectId: record.projectId,
       rootPath: record.rootPath,
-      iconDataUrl: resolveMobileProjectIconDataUrl(record.rootPath),
+      iconDataUrl: mobileProjectIconDataUrl(record),
     };
   };
   const machineProjectCatalogProvider: SyncProjectCatalogProvider = {
@@ -29214,14 +31390,20 @@ async function runServe(
           : null,
       )
         .map((record) => {
-          const isAvailable = fs.existsSync(record.rootPath);
+          // A refused project is there (it froze while opening): not stat'd again.
+          const refused = scopeRegistry.isOpenBlocked(record.projectId);
+          const isAvailable = refused || fs.existsSync(record.rootPath);
           return toMobileProjectSummary(record, {
             isAvailable,
             // Registry rows carry no lane data; read the count off disk so the
             // catalog does not advertise "0 lanes" for every project. A root
             // that isn't on this machine has nothing to read — skip the disk
             // work and leave the summary's default count.
-            ...(isAvailable ? { laneCount: headlessProjectLaneCount(record.rootPath) } : {}),
+            // Nor for a project refused for being too slow to open: the count
+            // opens its database, on the drive that froze the brain.
+            ...(isAvailable && !refused
+              ? { laneCount: headlessProjectLaneCount(record.rootPath) }
+              : {}),
           });
         });
       return {
@@ -29337,6 +31519,7 @@ async function runServe(
       // for a target that never takes over.
       const hosted = await scopeRegistry.switchSyncHost(projectId, {
         deactivatePreviousHost: true,
+        reason: "client_switch",
       });
       if (hosted) releaseProjectlessHostLease();
       await scopeRegistry.deactivateInactiveSyncHosts();
@@ -29403,6 +31586,16 @@ async function runServe(
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
   let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  // A brain hosting phone sync with no project scope follows the shared
+  // listener's port moves itself (a scope's sync service does this when one
+  // hosts): the lease records the port and the account directory re-publishes.
+  sharedSyncListener?.onPortChanged((change) => {
+    brainSyncHostLease?.updatePort(change.to);
+    accountMachinePublisher?.requestPublishAfterCurrentAttempt();
+  });
+  sharedSyncListener?.onLoopbackStatusChanged(() => {
+    accountMachinePublisher?.requestPublishAfterCurrentAttempt();
+  });
   /** Set below; a project scope took sync hosting over from the projectless brain. */
   let releaseProjectlessHostLease: () => void = () => {};
   /** Set below; starts hosting the newest project, with no repair override. */
@@ -29619,6 +31812,8 @@ async function runServe(
   sharedSyncListener?.setFallbackConnectionHandler(
     createBrainProjectActionsSyncHandler({
       logger: headlessProjectLogger,
+      // A lane share guest goes to its project's host (the router set below).
+      routeLaneShareGuest: async (handoff) => (await sharedSyncListener?.routeLaneShareGuest(handoff)) ?? false,
       projectCatalogProvider: machineProjectCatalogProvider,
       bootstrapCredentialStore: machineCredentialStore,
       legacyBootstrapTokenPath: path.join(layout.secretsDir, "sync-bootstrap-token"),
@@ -29639,7 +31834,20 @@ async function runServe(
       rosterProvider: {
         buildSnapshot: () => activityRosterProvider.buildSnapshot(),
       },
-      foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      foreignChatProvider: createForeignChatTranscriptResolver({
+        projectRegistry,
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
+      }),
+      terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
+      // Terminals of open projects only: a terminal never boots a project.
+      terminalProjects: async ({ projectId, projectRootPath }) => {
+        const resolvedId = projectRegistry.get(projectId)?.projectId
+          ?? projectRegistry.resolveMovedProjectId(projectId)
+          ?? (projectRootPath ? projectRegistry.findAtRootPath(projectRootPath)?.projectId ?? null : null);
+        if (!resolvedId) return null;
+        const { resolveBootedTerminalProject } = await import("./services/sync/syncTerminalTargets");
+        return await resolveBootedTerminalProject(scopeRegistry, resolvedId, headlessProjectLogger);
+      },
       // A project socket served here moves to the project host once one attaches.
       projectHostAttached: () => sharedSyncListener?.hasConnectionHandler() ?? false,
       onProjectHostAttached: (listener) => sharedSyncListener?.onConnectionHandlerAttached(listener) ?? (() => {}),
@@ -29694,15 +31902,28 @@ async function runServe(
         projectRegistry,
         scopeRegistry,
         hostProjectId: preferredSyncProjectId,
+        accountUserId: brainAccountUserId,
         logger: headlessProjectLogger,
       }),
   };
   // Bound once the agents' machine bridge exists (below); a move asked for
   // before then is refused as "can't reach other machines".
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
+  /** Bound with the bridge (below): lets go of what a chat holds on other machines when its turn ends. */
+  let releaseRemoteWorkDevices: ((event: RemoteWorkTurnRelease) => void) | null = null;
+  /** Bound with the bridge (below): removes what an archived or deleted chat added on other machines. */
+  let releaseRemoteWorkOfEndedChat: ((event: RemoteWorkChatEnded) => void) | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    openStrikes: projectOpenStrikes,
+    freezeThresholdMs,
+    logger: headlessProjectLogger,
+    terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
+    ...(laneSetupDisk ? { laneSetupDisk } : {}),
+    // Older clones saved the GitHub sign-in header in .git/config: take it out
+    // once per project, off the open path (one file read when there is none).
+    onProjectOpened: createSavedGithubHeaderSweep({ logger: headlessProjectLogger }),
     // A project removed during a repair's teardown: that teardown already
     // handed its emulators off, and nothing will re-adopt them.
     onUnregisterAfterHandOff: async (projectRoot) => {
@@ -29712,6 +31933,8 @@ async function runServe(
     // An embedded guest can't reach other machines, so it owns no moves (and
     // its chat services never sweep any).
     ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
+    ...(embedded ? {} : { releaseRemoteWorkDevices: (event: RemoteWorkTurnRelease) => releaseRemoteWorkDevices?.(event) }),
+    ...(embedded ? {} : { releaseRemoteWorkOfEndedChat: (event: RemoteWorkChatEnded) => releaseRemoteWorkOfEndedChat?.(event) }),
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
@@ -29739,12 +31962,33 @@ async function runServe(
       // project's chat transcript read-only without a project switch. Reads
       // straight off that project's `.ade` transcripts dir (registry-validated,
       // no runtime boot) — the counterpart to the roster feed above.
-      foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      foreignChatProvider: createForeignChatTranscriptResolver({
+        projectRegistry,
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
+      }),
       personalChatScope,
       // A save from the web or the phone is work, and keeps a cloud machine awake.
       onRemoteFileWrite: () => { void cloudKeepAwake?.noteUse(); },
     },
   });
+  simulatorReclaimScopes = () => scopeRegistry.listReady().map((scope) => ({
+    simulator: scope.runtime.iosSimulatorService ?? null,
+    chat: scope.runtime.agentChatService ?? null,
+    pty: scope.runtime.ptyService,
+    sessions: scope.runtime.sessionService,
+  }));
+  // Lane sharing: a guest of any project of this machine reaches its lane,
+  // whatever project the shared listener serves now (`laneShareGuestRouter.ts`).
+  sharedSyncListener?.setLaneShareGuestRouter(createLaneShareGuestRouter({
+    listProjects: () => projectRegistry.list(),
+    isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
+    bootedSync: (projectId) => {
+      const booted = scopeRegistry.getIfBooted(projectId);
+      return booted ? booted.then((scope) => scope.runtime.syncService ?? null) : null;
+    },
+    openSync: async (projectId) => (await scopeRegistry.get(projectId)).runtime.syncService ?? null,
+    logger: headlessProjectLogger,
+  }));
   keepAwakeService?.start();
   cloudKeepAwake?.start();
   // What a brain report needs to explain a missing project or a lost scope
@@ -29771,12 +32015,34 @@ async function runServe(
   /** Set before `finish()` when the brain stops because something failed. */
   let stoppingOnFailure = false;
 
-  const finish = () => {
+  /**
+   * `requested`: someone asked this brain to stop (a signal from the service
+   * manager, an installer, a logout or reboot, or a `shutdown` request). The
+   * brain is a kept-alive service, so a start follows: the chats and CLIs at
+   * work are kept for it (`recordPlannedBrainStop`), first, before the slow
+   * teardown, unless the stop was announced as one for good. Every other stop
+   * (idle, socket lost, parent gone) has nothing at work to keep, or belongs
+   * to a brain the record does not cover.
+   */
+  const finish = (options: { requested?: boolean } = {}) => {
     if (done) return;
     done = true;
     // An orderly stop (an update, the restart button, a shutdown request) is
     // not a crash for the restart-loop report.
-    if (!stoppingOnFailure) markBrainStoppedCleanly();
+    if (!stoppingOnFailure) {
+      markBrainStoppedCleanly();
+      // The clean stop first: a kill during the project writes below still
+      // leaves a stopped run record.
+      markBrainRunStoppedCleanly();
+      const kept = options.requested && !embedded
+        ? recordPlannedBrainStop({ runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: serveSocketPath })
+        : null;
+      // The intent the planned-stop record took, so the next start can say an
+      // update ended this brain.
+      addBrainRunStopIntent(kept?.intent ?? null);
+      if (kept) headlessProjectLogger.info("brain.planned_stop_recorded", { ...kept });
+      else closeLiveTurnProjectsRecord();
+    }
     resolveDone?.();
   };
 
@@ -29806,31 +32072,94 @@ async function runServe(
   // install its own update: an app that owns the brain puts its own runtime
   // back over a standalone one. On a Mac or Windows PC whose app runs the
   // brain but is closed, the app is opened to do it (`requestUpdateThroughClosedApp`).
-  const requestDesktopAppUpdateFromServe = async (targetVersion: string | null) => {
+  const requestDesktopAppUpdateFromServe = async (
+    targetVersion: string | null,
+    requestedBy: UpdateRequestedBy | null = null,
+  ) => {
     const { hostAppPath, requestDesktopAppUpdate, requestUpdateThroughClosedApp } = await import(
       "./services/runtime/desktopAppUpdateBridge"
     );
     const socketPath = process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
       || resolveReachableMachineDesktopBridgeSocketPath();
-    let routing = await requestDesktopAppUpdate({ socketPath, targetVersion });
+    let routing = await requestDesktopAppUpdate({ socketPath, targetVersion, requestedBy });
     const closedAppPath = routing.attached ? null : hostAppPath();
     if (closedAppPath && !routing.attached) {
       headlessProjectLogger.info("brain.remote_update_opening_app", {
         appPath: closedAppPath,
         detail: routing.detail,
       });
-      routing = await requestUpdateThroughClosedApp({ appPath: closedAppPath, socketPath, targetVersion });
+      routing = await requestUpdateThroughClosedApp({ appPath: closedAppPath, socketPath, targetVersion, requestedBy });
     }
+    const requester = {
+      requestedByKind: requestedBy?.clientKind ?? "unknown",
+      requestedByName: requestedBy?.machineName ?? null,
+    };
     headlessProjectLogger.info("brain.remote_update_route", routing.attached
       ? {
         route: "desktop_app",
         outcome: routing.result.outcome,
         version: routing.result.version,
         openedClosedApp: closedAppPath != null,
+        ...requester,
       }
-      : { route: "standalone", detail: routing.detail });
+      : { route: "standalone", detail: routing.detail, ...requester });
     return routing;
   };
+
+  // An embedded runtime is a guest inside an external process. Updating and
+  // restarting the MACHINE's ADE from inside it would reach far outside the
+  // embedder's lifecycle — it is the same "never claim machine authority"
+  // invariant that forces sync off, so it belongs to the profile rather
+  // than to whatever the caller's role default happens to be.
+  const machineUpdateControls = embedded
+    ? null
+    : createMachineUpdateControls({
+      version: VERSION,
+      logger: headlessProjectLogger,
+      requestRestart: requestBrainServiceRestartFromServe,
+      requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
+      // Kept for the next start, which names who asked (`brainRestartCause.ts`).
+      noteAcceptedUpdate: (request) => writeBrainUpdateRequest(path.dirname(lastFailurePathForMachine()), request),
+      updateInstallMode: () => readDesktopUpdateInstallMode(),
+      // The app this brain reports as `desktopAppVersion`, on every platform.
+      installedApp: async () => {
+        const { readInstalledDesktopApp } = await import(
+          "../../desktop/src/main/services/native/nativeHelperPaths"
+        );
+        return readInstalledDesktopApp();
+      },
+    });
+  // The phone's "Update & restart" (sync commands), installed before any
+  // project boots so every project host registers it. Same run as the
+  // desktop's `machine.updateAndRestart` RPC below.
+  const clearMachineUpdateRemoteCommands = machineUpdateControls
+    ? setMachineUpdateRemoteCommands({
+        updateImpact: async () => await readMachineUpdateImpact({
+          projectRegistry,
+          scopeRegistry,
+          personalChatScope,
+          readContinueAfterRestart: () => resolveContinueAfterRestart(),
+        }),
+        updateAndRestart: async (targetVersion, requestedBy) => {
+          const result = await joinOrStartMachineUpdate(
+            () => runMachineUpdateAndRestart(machineUpdateControls, targetVersion, requestedBy),
+          );
+          // Whether people update a machine from a phone or browser, and how
+          // often the machine refuses. `completed` means it accepted and began
+          // (a restart that never comes back is logged, not counted here). The
+          // detail stays in the update log.
+          const outcome = result.ok ? "completed" : "failed";
+          brainProductAnalytics?.capture({
+            event: "ade_feature_used",
+            surface: requestedBy?.clientKind === "ios" ? "mobile" : requestedBy?.clientKind === "web" ? "web" : "api",
+            properties: { feature: "updates", action: "remote_machine_update", outcome },
+            dedupeKey: `remote_machine_update:${outcome}`,
+            minimumIntervalMs: 60 * 60_000,
+          });
+          return result;
+        },
+      })
+    : () => {};
 
   // Ask once, off the boot path: agents and `ade cloud` read this answer, and a
   // chat that launches later keeps it current (`watchCloudAccessForSkills`).
@@ -29847,6 +32176,11 @@ async function runServe(
         appVersion: VERSION,
         projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
         logger: headlessProjectLogger,
+        // An account project id also matches a folder there by its origin.
+        resolveAccountProjectId: (id) => {
+          const resolved = resolveAccountProject({ kind: "id", id }, readAccountProjectState(path.dirname(projectRegistry.path)).projects);
+          return resolved.kind === "found" ? resolved : null;
+        },
         // A call to a sleeping cloud box wakes it with the account's key.
         wakeForUse: async (machine) => (await getCloudBrainAccess()).wakeForUse(machine),
       }),
@@ -29897,11 +32231,11 @@ async function runServe(
         callMachineMethod: async <T,>(
           machineKey: string,
           method: string,
-          _params?: Record<string, unknown>,
+          params?: Record<string, unknown>,
           callOptions?: { timeoutMs?: number },
         ): Promise<T> => {
           if (!isAgentUsageMethod(method)) throw new Error(`${method} can't run on another machine from here.`);
-          return await bridge.fetchUsageMethod(machineKey, method, callOptions?.timeoutMs ?? 4_000) as T;
+          return await bridge.fetchUsageMethod(machineKey, method, callOptions?.timeoutMs ?? 4_000, params ?? {}) as T;
         },
         localMachineKey: () => bridge.localMachineKey() ?? "",
         logger: headlessProjectLogger,
@@ -29923,10 +32257,92 @@ async function runServe(
     };
     setSharedAccountRollupFetcher(lazyFetcher((factories, deps) => factories.createAccountRollupFetcher(deps)));
     setSharedAccountLiveQuotaFetcher(lazyFetcher((factories, deps) => factories.createAccountLiveQuotaFetcher(deps)));
+    // The spend rides the same connection, built on its first use.
+    let resetSpender: Promise<AccountResetCreditSpender> | null = null;
+    setSharedAccountResetCreditSpender(async (args) => {
+      resetSpender ??= Promise.all([import("../../desktop/src/main/services/usage/accountUsageLiveRefresh"), fetcherDeps()])
+        .then(([factories, deps]) => factories.createAccountResetCreditSpender(deps))
+        .catch((error) => { resetSpender = null; throw error; });
+      try {
+        return await (await resetSpender)(args);
+      } catch (error) {
+        return { ok: false, status: "failure", message: `Could not reach ${args.label} to spend the reset: ${error instanceof Error ? error.message : String(error)}` };
+      }
+    });
   }
+
+  /**
+   * One `ade/actions/call` to each machine a chat used, as that chat, sent
+   * and never awaited: each machine by its own key, never woken, a failure
+   * there logged and skipped. `logKey` names the logs (`<logKey>_skipped`,
+   * `<logKey>_bridge_failed`, and `<logKey>d` with `logAnswered` when set).
+   */
+  const callRemoteWorkMachines = (
+    uses: readonly RemoteWorkMachineRef[],
+    sessionId: string,
+    call: { name: string; arguments: Record<string, unknown>; timeoutMs: number; logKey: string; logAnswered?: Record<string, unknown> },
+  ): void => {
+    void getAgentMachineBridge().then((bridge) => Promise.all(uses.map((use) => bridge.call({
+      machine: use.machineKey,
+      scope: use.projectId ? { kind: "project", selector: use.projectId } : { kind: "anyProject", originUrl: null },
+      method: "ade/actions/call",
+      params: { name: call.name, arguments: call.arguments },
+      caller: { chatSessionId: sessionId, permissionLevel: null },
+      timeoutMs: call.timeoutMs,
+      wake: false,
+    }).then(() => {
+      if (call.logAnswered) headlessProjectLogger.info(`${call.logKey}d`, { machineKey: use.machineKey, ...call.logAnswered });
+    }).catch((error: unknown) => {
+      headlessProjectLogger.info(`${call.logKey}_skipped`, {
+        machineKey: use.machineKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })))).catch((error: unknown) => {
+      headlessProjectLogger.warn(`${call.logKey}_bridge_failed`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
 
   // Moving a chat to another machine rides the same paired connection. The
   // destination applies its own action policy to every step.
+  // A chat that drove a simulator, emulator or screen on another machine
+  // through its work copy lets go of it there when its turn ends (that
+  // machine never sees the chat end). `release_remote_work_devices` there
+  // frees only this chat's own claims and powers nothing off. Best effort:
+  // a machine that is offline or asleep is skipped (never woken), and the
+  // device leases there still time out by themselves.
+  if (!embedded) {
+    releaseRemoteWorkDevices = ({ sessionId, turnId, uses }) => {
+      callRemoteWorkMachines(uses, sessionId, {
+        name: "release_remote_work_devices",
+        // The ended turn goes in the arguments, not the caller claim: there
+        // it would count as the chat's latest turn, after its next one.
+        arguments: turnId ? { turnId } : {},
+        timeoutMs: 30_000,
+        logKey: "remote_work.turn_release",
+      });
+    };
+  }
+
+  // A chat archived or deleted (on its own or with its lane) has what it
+  // added on each machine it used removed there at once: its work copy in
+  // every checkout, and with it the devices and App Control app it drove.
+  // A copy holding unpushed work stays (`keepUnsynced`). Never awaited by
+  // the archive or delete; a machine that is offline is cleaned by its
+  // hourly sweep instead.
+  if (!embedded) {
+    releaseRemoteWorkOfEndedChat = ({ sessionId, keepUnsynced, uses }) => {
+      callRemoteWorkMachines(uses, sessionId, {
+        name: "release_remote_work_copy",
+        arguments: { keepUnsynced, ended: true },
+        timeoutMs: 120_000,
+        logKey: "remote_work.chat_end_release",
+        logAnswered: { keepUnsynced },
+      });
+    };
+  }
+
   if (!embedded) {
     crossMachineHandoffTransport = {
       listMachines: async (options) => {
@@ -29981,6 +32397,7 @@ async function runServe(
       scopeRegistry: {
         get: (projectId) => scopeRegistry.get(projectId),
         getIfBooted: (projectId) => scopeRegistry.getIfBooted(projectId),
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
       },
       personalChatScope,
       deliverRemote: async (machineKey, payload) => (await getAgentMachineBridge()).deliverWake(machineKey, payload),
@@ -29993,10 +32410,13 @@ async function runServe(
     // start and then hourly deletes copies unused for a week and copies whose
     // chat its own machine says is deleted or archived.
     const sweepWorkCopies = async (): Promise<void> => {
-      const [{ sweepMachineRemoteWork }, { parseForeignCallerSessionId }] = await Promise.all([
+      const [{ sweepMachineRemoteWork }, { sweepRemoteWorkScratch }, { parseForeignCallerSessionId }] = await Promise.all([
         import("../../desktop/src/main/services/remoteWork/remoteWorkCopyService"),
+        import("../../desktop/src/main/services/remoteWork/remoteWorkScratch"),
         import("../../desktop/src/shared/runtimeClientNames"),
       ]);
+      // `--scratch` folders a restart left behind.
+      sweepRemoteWorkScratch(undefined, headlessProjectLogger);
       await sweepMachineRemoteWork({
         logger: headlessProjectLogger,
         ownerGone: async (owner) => {
@@ -30023,11 +32443,19 @@ async function runServe(
   // a brain with sync off (a test brain) never opens the account's vault. One
   // runtime object, so a background make keeps its maker.
   let machineAccountRuntime: Promise<AccountDomainRuntime> | null = null;
+  const startedPasswords = <T extends { startPeriodicSync(): void }>(service: T): T => {
+    service.startPeriodicSync();
+    return service;
+  };
   const machineAccountDomains = async () => {
     const { buildMachineAccountDomainServices } = await import("../../desktop/src/main/services/adeActions/registry");
+    return buildMachineAccountDomainServices(await getMachineAccountRuntime());
+  };
+  const getMachineAccountRuntime = (): Promise<AccountDomainRuntime> => {
     machineAccountRuntime ??= (async () => {
       const { getMachineAccountStores } = await import("./services/account/machineAccountStores");
-      const vault = syncEnabled ? getMachineAccountStores(headlessProjectLogger).vault : null;
+      const stores = syncEnabled ? getMachineAccountStores(headlessProjectLogger) : null;
+      const vault = stores?.vault ?? null;
       if (vault) {
         // With no project open, no project runtime keeps the vault in step
         // with the account. Join (or start) its background sync for the life
@@ -30060,11 +32488,467 @@ async function runServe(
         logger: headlessProjectLogger,
         accountAuthService: brainAccountAuthService,
         accountVaultStore: vault,
+        // Read from its local copy only (cloud.status reads the default lane size).
+        accountSettingsStore: stores?.settings ?? null,
+        passwordService: stores ? startedPasswords(stores.passwords) : null,
         productAnalyticsService: brainProductAnalytics,
       };
     })();
-    return buildMachineAccountDomainServices(await machineAccountRuntime);
+    return machineAccountRuntime;
   };
+
+  // ADE Cloud lane launches (`ade chat create --machine cloud`) are owned
+  // here, in the brain, and reach the new computer over the agents' machine
+  // bridge. Set off the boot path; a launch a quit left behind goes on once
+  // the brain is up.
+  if (!embedded) {
+    void Promise.all([
+      import("../../desktop/src/main/services/adeCloud/cloudLaneLaunchBrainHost"),
+      import("../../desktop/src/main/services/adeCloud/cloudBrainMaker"),
+    ]).then(([{ setCloudLaneLaunchTransport }, { setCloudJoinApprovalPush }]) => {
+      setCloudLaneLaunchTransport({
+        call: async (input) => await (await getAgentMachineBridge()).call(input),
+      });
+      // A machine this brain makes (`ade cloud create`, copy, move with no
+      // desktop) waits for the person's approval: the push reaches their phones.
+      setCloudJoinApprovalPush((notice) => {
+        void import("./services/push/pushPublisherService").then(({ peekSharedPushPublisherService, resolvePushRelayStateFile }) => {
+          // Peek, never create: the publisher is the one the project scopes made.
+          const publisher = peekSharedPushPublisherService(resolvePushRelayStateFile(layout.secretsDir));
+          if (!publisher) {
+            headlessProjectLogger.info("cloud.join_approval_push_skipped", { reason: "no_publisher" });
+            return;
+          }
+          publisher.handleSessionNotice({
+            sessionId: notice.chatSessionId,
+            dedupeKey: notice.dedupeKey,
+            title: notice.title,
+            body: notice.body,
+            deepLink: notice.deepLink,
+          });
+        }).catch((error: unknown) => {
+          headlessProjectLogger.warn("cloud.join_approval_push_failed", { error: error instanceof Error ? error.message : String(error) });
+        });
+      });
+      const resumeTimer = setTimeout(() => {
+        void (async () => {
+          const { resumeCloudLaneLaunches } = await import("../../desktop/src/main/services/adeActions/registry");
+          resumeCloudLaneLaunches(await getMachineAccountRuntime());
+        })().catch((error: unknown) => {
+          headlessProjectLogger.warn("cloud_lane_launch.resume_failed", { error: error instanceof Error ? error.message : String(error) });
+        });
+      }, 5_000);
+      resumeTimer.unref?.();
+    }).catch((error: unknown) => {
+      headlessProjectLogger.warn("cloud_lane_launch.transport_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
+
+  // A provider sign-in a person finishes on another screen (`ade providers
+  // sign-in --remote`): the login runners live here, in the brain, so they
+  // outlive the short command ADE's server runs over exec.
+  let claudePassRunner: Promise<ClaudePassRunner> | null = null;
+  const remoteProviderSignIn = embedded ? null : createRemoteProviderSignIn({
+    providerAccounts: async () => (await import("../../desktop/src/main/services/providerAccounts/machineProviderLoginRunner")).getMachineProviderLoginRunner(),
+    defaultInstanceId: async (provider) => {
+      const { getMachineProviderInstanceStore } = await import("./services/providerInstances/providerInstanceStore");
+      return getMachineProviderInstanceStore().getDefault(provider).id;
+    },
+    agentClis: async () => {
+      const runner = (await import("../../desktop/src/main/services/ai/machineAgentCliLoginRunner")).getMachineAgentCliLoginRunner();
+      return {
+        start: (args) => runner.start(args),
+        status: (loginId) => runner.status(loginId),
+        submitCode: (loginId, code) => runner.submitCode(loginId, code),
+      };
+    },
+    // Claude's pass (`claude setup-token`) through this machine's own cloud
+    // sign-in actions, which save the pass to the account vault. Built once.
+    claudePass: () => {
+      claudePassRunner ??= (async (): Promise<ClaudePassRunner> => {
+        const cloud = (await machineAccountDomains()).cloud as Record<string, ((args?: unknown) => Promise<unknown>) | undefined>;
+        const call = async (action: string, args?: unknown): Promise<CloudSignInStatus["claude"]> => {
+          const run = cloud[action];
+          if (typeof run !== "function") throw new Error("ADE on this computer can't run Claude's sign-in.");
+          const status = await run(args) as CloudSignInStatus | null;
+          return status?.claude ?? null;
+        };
+        return {
+          start: () => call("cloud_sign_in_start", {}),
+          status: () => call("cloud_sign_in_status"),
+          submitCode: (code: string) => call("cloud_sign_in_code", { code }),
+        };
+      })().catch((error: unknown) => {
+        // A failed build is tried again on the next sign-in.
+        claudePassRunner = null;
+        throw error;
+      });
+      return claudePassRunner;
+    },
+  });
+
+  // A lane launch's setup that filled the disk waits through the grow's
+  // restart (`roomMark`): its project opens now, so the launch goes on
+  // (and reads as busy, so the computer stays awake) with nobody watching.
+  if (!embedded && cloudInstanceId) {
+    void (async () => {
+      const [{ hasChatLaunchAwaitingRoom }, { resolveAdeLayout }] = await Promise.all([
+        import("../../desktop/src/main/services/chat/chatLaunchRecords"),
+        import("../../desktop/src/shared/adeLayout"),
+      ]);
+      for (const project of projectRegistry.list()) {
+        if (!hasChatLaunchAwaitingRoom(path.join(resolveAdeLayout(project.rootPath).cacheDir, "chat-launches"))) continue;
+        headlessProjectLogger.info("cloud.lane_setup_resume_open", { projectId: project.projectId });
+        await scopeRegistry.get(project.projectId).catch((error: unknown) => {
+          headlessProjectLogger.warn("cloud.lane_setup_resume_open_failed", { projectId: project.projectId, error: error instanceof Error ? error.message : String(error) });
+        });
+      }
+    })().catch((error: unknown) => {
+      headlessProjectLogger.warn("cloud.lane_setup_resume_scan_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
+
+  // A server launch (C6): ADE's server made this computer for a caller with
+  // no computer and named the launch in its env. The computer signs itself
+  // in with its join code and runs the launch here. The code leaves this
+  // process's env now, so nothing the brain starts inherits it. A server
+  // copy's fork gets it in a one-time file instead, deleted as it is read.
+  const bootLaunchEnv = !embedded && cloudInstanceId ? takeCloudLaunch(layout.adeDir, headlessProjectLogger, process.env) : null;
+  // A chat whose provider isn't signed in here waits for the person's sign-in
+  // (a launch, and a message queued for an existing chat).
+  const cloudProviderReady = createProviderReady(async (options) => (await import("../../desktop/src/main/services/ai/authDetector")).detectAllAuth(undefined, options));
+  const cloudRemoteSignIn = remoteProviderSignIn
+    ? { start: (provider: string) => remoteProviderSignIn.start(provider), status: (jobId: string) => remoteProviderSignIn.status(jobId) }
+    : undefined;
+  // Pulls the vault, then runs one sign-in pass on it, so a pass or key saved
+  // on another screen is applied here now (the Claude pass reconcile hears the pass).
+  const cloudRefreshVault = async () => {
+    const runtime = await getMachineAccountRuntime();
+    await runtime.accountVaultStore?.sync();
+    const { providerLoginSync } = await import("../../desktop/src/main/services/providerLogins/providerLoginSync");
+    await providerLoginSync()?.pass(null);
+  };
+  // Sends one message to a chat; the same `clientSendId` makes a retry safe.
+  const sendCloudChatMessage = async (
+    projectId: string,
+    sessionId: string,
+    message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }> },
+  ) => {
+    const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+    if (!chat) throw new Error("This ADE runtime has no chats.");
+    await chat.sendMessage({
+      sessionId,
+      text: message.text,
+      clientSendId: message.clientSendId,
+      ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+    });
+  };
+  // A queued message waits until the chat's running turn is over (an event wait, at most 30 minutes).
+  // A tracked agent CLI takes a queued message at its prompt, held for a running turn.
+  const typeIntoCloudCli = async (projectId: string, sessionId: string, message: { text: string; clientMessageId: string }) => {
+    const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+    if (!chat) throw new Error("This ADE runtime has no chats.");
+    const typed = await chat.typeIntoAgentCliWhenFree({
+      sessionId,
+      text: message.text,
+      holdUntilFree: true,
+      clientMessageId: message.clientMessageId.slice(0, 128),
+    });
+    return typed.outcome;
+  };
+  const waitCloudChatIdle = async (projectId: string, sessionId: string) => {
+    const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+    if (!chat) return false;
+    const { waitForChatIdleByEvents } = await import("./services/cloudChats/chatIdleWait");
+    return await waitForChatIdleByEvents(chat, sessionId);
+  };
+  // The settings picked with a queued message or a fork-continue, applied
+  // before the message goes. Only what differs from the chat now: the queue
+  // sends the chat's own model with every message.
+  const applyCloudChatSettings = async (
+    projectId: string,
+    sessionId: string,
+    settings: import("../../account-directory/src/cloud/contract").CloudChatMessageSettings & { modelId?: string | null },
+  ): Promise<void> => {
+    const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+    if (!chat) return;
+    const summary = await chat.getSessionSummary(sessionId).catch(() => null);
+    const update: Parameters<typeof chat.updateSession>[0] = { sessionId };
+    if (settings.presetId !== undefined) update.presetId = settings.presetId;
+    const modelId = settings.modelId?.trim();
+    if (modelId && modelId !== (summary?.modelId ?? summary?.model)) update.modelId = modelId;
+    if (settings.reasoningEffort !== undefined && settings.reasoningEffort !== (summary?.reasoningEffort ?? null)) {
+      update.reasoningEffort = settings.reasoningEffort;
+    }
+    if (settings.fastMode !== undefined) {
+      update.fastMode = settings.fastMode;
+      if (settings.fastTier !== undefined) update.fastTier = settings.fastTier;
+    }
+    if (Object.keys(update).length === 1) return;
+    await chat.updateSession(update);
+  };
+  // ADE Cloud computer: a lane that starts here gets its saved work back. Installed
+  // before the boot launch starts, so its first lane never misses the restore.
+  if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
+    const [{ installCloudLaneRestore }, laneBackup] = await Promise.all([
+      import("../../desktop/src/main/services/lanes/cloudLaneRestoreHook"),
+      import("./services/cloudChats/cloudLaneBackup"),
+    ]);
+    installCloudLaneRestore({
+      prepareBranch: async ({ laneId, branchRef, projectRoot }) => {
+        const api = await accountCloudApi();
+        const machineKey = thisMachineKey();
+        if (!api || !machineKey) return { created: false };
+        return await laneBackup.prepareLaneBranchFromBackup({ api, machineKey, laneId, branchRef, projectRoot, logger: headlessProjectLogger });
+      },
+      restore: async ({ laneId, worktreePath, projectRoot }) => {
+        const api = await accountCloudApi();
+        const machineKey = thisMachineKey();
+        if (!api || !machineKey) return null;
+        const outcome = await laneBackup.restoreLaneBackupIfNeeded({ api, instanceId: cloudInstanceId, machineKey, laneId, worktreePath, projectRoot, logger: headlessProjectLogger });
+        return outcome === "kept_newer_local_work" || outcome === "kept_branch_differs"
+          ? "This lane has other work than its saved work on ADE Cloud, so ADE left the lane as it is. Download the saved work from the lane to compare."
+          : outcome === "applied" ? "ADE put back this lane's work that wasn't on GitHub." : null;
+      },
+    });
+  }
+  // The person's own machine: a kept ADE Cloud lane (its computer deleted) can come back
+  // here from the server copies (`cloud.restoreKeptLane`). An ADE Cloud computer brings a
+  // kept lane back through its own launch instead, so it has no store.
+  if (!embedded && !cloudInstanceId) {
+    const { createKeptLaneRestores, setKeptLaneRestores } = await import("./services/cloudChats/keptLaneRestore");
+    setKeptLaneRestores(createKeptLaneRestores({ api: accountCloudApi, machineKey: thisMachineKey, logger: headlessProjectLogger }));
+  }
+  if (bootLaunchEnv) {
+    startCloudBootLaunch(bootLaunchEnv, {
+      cloudInstanceId,
+      adeDir: layout.adeDir,
+      secretsDir: layout.secretsDir,
+      logger: headlessProjectLogger,
+      account: brainAccountAuthService,
+      onAccountSignedIn: (status) => {
+        syncAccountAnalyticsIdentity(status, brainProductAnalytics);
+      },
+      directoryBaseUrl: getSharedAccountDirectoryBaseUrl,
+      clerkIssuer: () => getSharedAccountAttestationConfig().issuer,
+      projectRegistry,
+      chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
+      cloudClient: async () => await (await getCloudBrainAccess()).client(),
+      holdCloudWork: holdCloudWork ?? null,
+      providerReady: cloudProviderReady,
+      remoteSignIn: cloudRemoteSignIn,
+      refreshVault: cloudRefreshVault,
+      // The person's messages sent before the chat existed (the server keeps them).
+      // `waitForChatIdle` runs first (cloudLaunchMessages), so this is one send.
+      sendChatMessage: sendCloudChatMessage,
+      applyChatSettings: applyCloudChatSettings,
+      // Claude takes a send during a turn and then fails that turn ("Turn already
+      // active"), so a queued message waits for the running turn's end.
+      waitForChatIdle: waitCloudChatIdle,
+      // A continued CLI's queued messages are typed at its prompt; a CLI row takes no chat send.
+      typeIntoCli: typeIntoCloudCli,
+      // Fork-continue: the chat's old computer is gone; restore it here with the same id.
+      continueChat: async (projectId, args) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        if (!chat) throw new Error("This ADE runtime has no chats.");
+        const api = await accountCloudApi();
+        if (!api) throw new Error("This computer isn't signed in to the account, so it can't read the saved chat.");
+        const [{ restoreCloudChat }, { adoptRestoredCloudChat, holdRestoringCloudChat, releaseRestoringCloudChat }] = await Promise.all([
+          import("./services/cloudChats/cloudChatRestore"),
+          import("./services/cloudChats/cloudChatUploader"),
+        ]);
+        return await restoreCloudChat({
+          api,
+          instanceId: cloudInstanceId,
+          machineKey: machineCloudRelayStore.getMachineIdentity().machineKey,
+          logger: headlessProjectLogger,
+          restore: (restoreArgs) => chat.restoreSavedCloudChat(restoreArgs),
+          restoreCli: (restoreArgs) => chat.restoreSavedCloudCli(restoreArgs),
+          adopt: adoptRestoredCloudChat,
+          hold: holdRestoringCloudChat,
+          release: releaseRestoringCloudChat,
+        }, args);
+      },
+      // A lane that came back here brings its other saved chats (C3).
+      restoreLaneChats: async (projectId, args) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        const api = await accountCloudApi();
+        if (!chat || !api) return 0;
+        const [{ restoreLaneChats }, { adoptRestoredCloudChat, holdRestoringCloudChat, releaseRestoringCloudChat }] = await Promise.all([
+          import("./services/cloudChats/cloudChatRestore"),
+          import("./services/cloudChats/cloudChatUploader"),
+        ]);
+        return await restoreLaneChats({
+          api,
+          instanceId: cloudInstanceId,
+          machineKey: machineCloudRelayStore.getMachineIdentity().machineKey,
+          logger: headlessProjectLogger,
+          restore: (restoreArgs) => chat.restoreSavedCloudChat(restoreArgs),
+          adopt: adoptRestoredCloudChat,
+          hold: holdRestoringCloudChat,
+          release: releaseRestoringCloudChat,
+        }, args);
+      },
+      // An automation's run (C9): its chat's turn ending is the run's end. Nobody
+      // watches that chat, so one that stops to ask for input ends the run as
+      // failed rather than holding its computer until the server's stop limit.
+      waitForChatEnd: async (projectId, sessionId) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        if (!chat) return { ok: false, error: "This ADE runtime has no chats." };
+        const ASKED_FOR_INPUT = { ok: false, error: "The agent asked for input." } as const;
+        return await new Promise((resolve) => {
+          let settled = false;
+          const timers = new Set<ReturnType<typeof setTimeout>>();
+          const finish = (result: { ok: boolean; error?: string | null }) => {
+            if (settled) return;
+            settled = true;
+            unsubscribe();
+            for (const timer of timers) clearTimeout(timer);
+            resolve(result);
+          };
+          // Reads the chat once, `delayMs` from now: gone, still waiting on a card, or over.
+          const checkLater = (delayMs: number) => {
+            const timer = setTimeout(() => {
+              timers.delete(timer);
+              void chat.getSessionSummary(sessionId).then((summary) => {
+                if (!summary) finish({ ok: false, error: "The run's chat is gone." });
+                else if (summary.awaitingInput) finish(ASKED_FOR_INPUT);
+                else if (summary.status !== "active") finish({ ok: true });
+              }).catch((error: unknown) => {
+                headlessProjectLogger.warn("cloud_boot_launch.automation_chat_read_failed", { error: error instanceof Error ? error.message : String(error) });
+              });
+            }, delayMs);
+            timer.unref?.();
+            timers.add(timer);
+          };
+          const unsubscribe = chat.subscribeToEvents((envelope) => {
+            if (envelope.sessionId !== sessionId) return;
+            const event = envelope.event;
+            if (event.type === "done") {
+              finish(event.status === "completed" ? { ok: true } : { ok: false, error: `The run's chat ${event.status === "interrupted" ? "was stopped" : "failed"}.` });
+            } else if (event.type === "approval_request" || event.type === "structured_question") {
+              // A card that settles itself (an auto-approved tool) is gone by then; one that waits for a person ends the run.
+              checkLater(30_000);
+            }
+          });
+          // Already over or already waiting (a restart after the hand-off): read once,
+          // after the hand-off's first turn has surely started.
+          checkLater(20_000);
+        });
+      },
+    });
+  }
+
+  // ADE Cloud computer: the rest save and the queue of messages for its chats.
+  if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
+    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }, laneBackup, { normalizeGitRemoteIdentity }, { readGitOriginUrl }] = await Promise.all([
+      import("./services/cloudChats/cloudRestSave"),
+      import("./services/cloudChats/cloudChatMessageQueue"),
+      import("./services/cloudChats/cloudChatUploader"),
+      import("./services/cloudChats/cloudLaneBackup"),
+      import("../../desktop/src/shared/crossMachineHandoff"),
+      import("../../desktop/src/main/services/projects/recentProjectSummary"),
+    ]);
+    const projectKeyOf = (root: string): string | null => {
+      try {
+        return normalizeGitRemoteIdentity(readGitOriginUrl(root)) || null;
+      } catch {
+        return null;
+      }
+    };
+    const restSave = createCloudRestSave({
+      adeHome: layout.adeDir,
+      instanceId: cloudInstanceId,
+      logger: headlessProjectLogger,
+      api: accountCloudApi,
+      machineKey: thisMachineKey,
+      // Only open projects: one nobody opened since boot has nothing new to save.
+      openRuntimes: async () => {
+        const booted = await Promise.all(projectRegistry.list().map(async (record) => {
+          const runtime = (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null;
+          return runtime ? { projectId: record.projectId, runtime } : null;
+        }));
+        return booted.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+      },
+      flushChats: (timeoutMs) => uploadPendingCloudChats(timeoutMs),
+      accountUserId: () => brainAccountAuthService.getStatus().userId ?? null,
+      uploadSubagentCopy: uploadSubagentCloudCopy,
+      backupLanes: laneBackup.createBackupLaneLister({
+        cachePath: path.join(layout.adeDir, "cloud", "backup-lanes.json"),
+        projects: () => projectRegistry.list().map((record) => ({
+          projectId: record.projectId,
+          booted: async () => (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null,
+          open: async () => (await scopeRegistry.get(record.projectId)).runtime,
+        })),
+        projectKey: projectKeyOf,
+        logger: headlessProjectLogger,
+      }),
+    });
+    const chatQueue = createCloudChatMessageQueue({
+      instanceId: cloudInstanceId,
+      adeHome: layout.adeDir,
+      logger: headlessProjectLogger,
+      api: accountCloudApi,
+      // The message's own project first, then any project here that has the chat.
+      locateChat: async (message) => {
+        const records = projectRegistry.list();
+        const named = message.projectId ? records.find((record) => record.projectId === message.projectId) : undefined;
+        for (const record of named ? [named, ...records.filter((entry) => entry !== named)] : records) {
+          const scope = await scopeRegistry.get(record.projectId).catch(() => null);
+          if (scope?.runtime.sessionService.get(message.chatId)) return { projectId: record.projectId, rootPath: record.rootPath };
+        }
+        return null;
+      },
+      chatProvider: async (projectId, sessionId) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        return (await chat?.getSessionSummary(sessionId).catch(() => null))?.provider ?? null;
+      },
+      waitForChatIdle: waitCloudChatIdle,
+      sendChatMessage: sendCloudChatMessage,
+      applyChatSettings: applyCloudChatSettings,
+      // A tracked agent CLI takes the message at its prompt; a sleep keeps its process, a cold restart does not.
+      sessionKind: async (projectId, sessionId) => {
+        const { runtime } = await scopeRegistry.get(projectId);
+        const row = runtime.sessionService.get(sessionId);
+        const { isTrackedAgentCliToolType } = await import("../../desktop/src/shared/types/sessions");
+        if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType)) return "chat";
+        return runtime.ptyService.hasLivePty(sessionId) ? "cli" : "cli_ended";
+      },
+      typeIntoCli: typeIntoCloudCli,
+      signIn: {
+        logger: headlessProjectLogger,
+        providerReady: cloudProviderReady,
+        remoteSignIn: cloudRemoteSignIn,
+        refreshVault: cloudRefreshVault,
+      },
+      ...(holdCloudWork ? { holdFor: holdCloudWork } : {}),
+    });
+    cloudRest.attach({ save: restSave, queue: chatQueue });
+    // Messages queued while the brain was down go once the account is signed in.
+    const drainAtStart = () => {
+      if (!brainAccountAuthService.getStatus().signedIn) return;
+      cloudRest.drain("start");
+    };
+    const drainTimer = setTimeout(drainAtStart, 15_000);
+    drainTimer.unref?.();
+    brainAccountAuthService.onSignedIn(drainAtStart);
+  }
+
+  // Every brain: the account lane index (accountLaneIndexPublisher.ts). Each
+  // project runtime notes its lane and PR changes; one write 30 s later.
+  if (!embedded && servesMachineEndpoint) {
+    const { createAccountLaneIndexPublisher, installAccountLaneIndexPublisher } = await import("./services/account/accountLaneIndexPublisher");
+    installAccountLaneIndexPublisher(createAccountLaneIndexPublisher({
+      adeHome: layout.adeDir,
+      machineKey: thisMachineKey,
+      putLanes: async () => {
+        const api = await accountCloudApi();
+        return api ? (index) => api.putAccountLanes(index) : null;
+      },
+      listProjects: () => projectRegistry.list().map((record) => ({ projectId: record.projectId, accountProjectId: record.accountProjectId ?? null })),
+      logger: headlessProjectLogger,
+    }));
+  }
 
   // Work another machine does here (a command, a chat or CLI send, a file
   // copied in) keeps a cloud machine awake (cloudKeepAwake). Reads, lists
@@ -30078,40 +32962,91 @@ async function runServe(
     // A person watching a tool (Linux Desktop, a preview): a read, so it never
     // wakes a sleeping computer, but it does keep an awake one awake.
     if (domain === "work_tools" && action === "noteWatching") return true;
+    // Someone typing warms the chat's model: a draft's first keystroke
+    // (`prewarmDraft`) or a keystroke in an open chat (`warmupModel` with
+    // `sdkOnly`). Background writes (BACKGROUND_WRITES), so typing never wakes
+    // a sleeping computer, but an awake one stays awake while the person is
+    // about to send. Any other warmup (Cursor's, when its tile is only viewed)
+    // is not use.
+    if (domain === "chat" && action === "prewarmDraft") return true;
+    if (domain === "chat" && action === "warmupModel") return isRecord(params.arguments.args) && params.arguments.args.sdkOnly === true;
     return Boolean(domain && action && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action));
   };
   const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {
     if (!peerDeviceId || !cloudKeepAwake) return handler;
     const keepAwake = cloudKeepAwake;
     return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
-      if (request.method === "ade/actions/call" && isRemoteWork(request.params)) void keepAwake.noteUse();
+      if (request.method === "ade/actions/call" && isRemoteWork(request.params)) {
+        // The server deletes this computer next (`cloudDeleteFreeze.ts`): work that came now would be lost with it.
+        const frozen = cloudDeleteFreezeRefusal();
+        if (frozen) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, frozen);
+        void keepAwake.noteUse();
+        // The server's idle cleanup may be saving this computer for its delete
+        // (`/use`, cloudComputerRest.ts): once the delete started, the work is refused.
+        const refusal = await cloudRest?.noteRemoteWork();
+        if (refusal) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, refusal);
+      }
       return await handler(request);
     }, handler);
   };
-  const createHandler = (context?: { peerDeviceId: string | null }) =>
-    withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
+  const createHandler = (context?: { peerDeviceId: string | null; peerDeviceName?: string | null }) =>
+    withLinkSummary(withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       holdCloudWork,
+      remoteProviderSignIn,
       pushCloudWork: holdCloudWork
-        ? async () => {
+        ? async ({ check, message }: { check: boolean; message?: string | null }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
+            // The idle cleanup starts with this push: a person's send in the next minutes is use (`/use`).
+            if (!check) cloudRest?.noteCleanupStarted();
             return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
+              check,
+              message,
+              ...(cloudGitIdentity ? { ensureIdentity: cloudGitIdentity.ensure } : {}),
               projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
               logger: headlessProjectLogger,
             }));
           }
         : null,
+      saveCloudForRest: holdCloudWork && cloudRest
+        ? async ({ capsules }: { capsules: boolean }) => await cloudRest.saveForCleanup(capsules)
+        : null,
+      drainCloudMessages: cloudKeepAwake && cloudRest
+        ? async () => await cloudRest.drainAnswer()
+        : null,
       prepareCloudStop: cloudKeepAwake
-        ? async ({ timeoutMs }) => {
+        ? async ({ timeoutMs, diskGrowToGb, growId, forDelete, forSleep, chatsOnly }) => {
             const { prepareCloudComputerToStop } = await import("./services/power/cloudPrepareStop");
+            // A disk grow's restart continues the turns it cuts (`continueAfterRestartAllowed`): keep them
+            // running, once the note that marks the restart is written. No note: stop them, as before.
+            const keepTurns = diskGrowToGb != null && (cloudDiskGrower?.noteOutsideGrow(diskGrowToGb, growId ?? null) ?? false);
             const booted = await Promise.all(projectRegistry.list().map(async (record) =>
               (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
             const personal = await personalChatScope.bootedRuntime().catch(() => null);
             const runtimes = [...booted, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
-            return await prepareCloudComputerToStop({ runtimes, timeoutMs, logger: headlessProjectLogger });
+            // `--chats-only` (an older server's Sleep) saves no lane backups: the sleep waits for this prepare.
+            const saveForRest = chatsOnly ? null : cloudRest?.saveBeforeStop ?? null;
+            return await prepareCloudComputerToStop({
+              runtimes,
+              timeoutMs,
+              logger: headlessProjectLogger,
+              keepTurns,
+              ...(saveForRest ? { saveForRest } : {}),
+              // A disk grow keeps the computer; only a delete or the person's Sleep freezes it.
+              ...(forDelete && !keepTurns ? { forDelete: true } : {}),
+              ...(forSleep && !keepTurns ? { forSleep: true } : {}),
+            });
+          }
+        : null,
+      unfreezeCloudComputer: cloudKeepAwake
+        ? async () => {
+            const lifted = liftCloudDeleteFreeze();
+            headlessProjectLogger.info("cloud.delete_freeze_lifted", { lifted });
+            return { ok: true, lifted };
           }
         : null,
       serverVersion: VERSION,
       peerDeviceId: context?.peerDeviceId ?? null,
+      peerDeviceName: context?.peerDeviceName ?? null,
       agentMachineBridge: agentMachineBridgeProxy,
       crossScopeChats,
       projectRegistry,
@@ -30122,6 +33057,27 @@ async function runServe(
       providerStatus,
       keepAwakeService,
       machineAccountDomains,
+      // The machine route's account stores, as a project runtime of this
+      // brain has them: only with sync on. Passwords keeps in step with the
+      // account while it is lent, as `accountVault.call`'s copy does.
+      machineScopeAccountStores: syncEnabled
+        ? () => {
+            const stores = machineAccountStoresForRecords();
+            stores.passwords.startPeriodicSync();
+            return { settings: stores.settings, passwords: stores.passwords };
+          }
+        : null,
+      // Settings › Android devices with no project: the same machine settings
+      // file every project's emulator service reads.
+      machineScopeAndroid: embedded ? null : async () => {
+        const { createAndroidMachineSettingsService } = await import("../../desktop/src/main/services/android/androidMachineSettingsService");
+        return (onEvent) => createAndroidMachineSettingsService({
+          sdkSettingsFile: path.join(layout.adeDir, "android", "settings.json"),
+          logger: headlessProjectLogger,
+          onEvent,
+        });
+      },
+      projectRecords,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,
@@ -30141,31 +33097,14 @@ async function runServe(
         accountRetainsMachineOwnership: () =>
           accountSessionRetainsMachineOwnership(brainAccountAuthService.getStatus()),
       }),
-      // An embedded runtime is a guest inside an external process. Updating and
-      // restarting the MACHINE's ADE from inside it would reach far outside the
-      // embedder's lifecycle — it is the same "never claim machine authority"
-      // invariant that forces sync off, so it belongs to the profile rather
-      // than to whatever the caller's role default happens to be.
-      ...(embedded
-        ? {}
-        : {
+      // Embedded runtimes get none of these (see `machineUpdateControls`).
+      ...(machineUpdateControls
+        ? {
           readContinueAfterRestart: () => resolveContinueAfterRestart(),
-          machineUpdateControls: createMachineUpdateControls({
-            version: VERSION,
-            logger: headlessProjectLogger,
-            requestRestart: requestBrainServiceRestartFromServe,
-            requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
-            updateInstallMode: () => readDesktopUpdateInstallMode(),
-            // The app this brain reports as `desktopAppVersion`, on every platform.
-            installedApp: async () => {
-              const { readInstalledDesktopApp } = await import(
-                "../../desktop/src/main/services/native/nativeHelperPaths"
-              );
-              return readInstalledDesktopApp();
-            },
-          }),
+          machineUpdateControls,
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
-        }),
+        }
+        : {}),
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -30178,11 +33117,12 @@ async function runServe(
             lastHttpReason: publishHealth.lastHttpReason,
           },
           lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
+          lastUnplannedRestart: brainUnplannedRestart(),
         };
       },
       disposeScopesOnDispose: false,
-      onShutdown: finish,
-    }));
+      onShutdown: () => finish({ requested: true }),
+    })), { logger: headlessProjectLogger, peerDeviceId: context?.peerDeviceId ?? null });
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
   // An embedded runtime belongs to the process that spawned it. On POSIX an
   // orphaned child is reparented to init and keeps running, so a host that dies
@@ -30304,7 +33244,7 @@ async function runServe(
       // ADE_PROJECT_ROOT selects the project whose sync scope this brain
       // should serve. It may already follow another machine, so resolve it as
       // a reader and let the scope's blocker determine whether it is a viewer.
-      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId, { purpose: "serve" });
+      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId, { purpose: "serve", reason: "startup" });
     } else {
       activeScope = await scopeRegistry.resolveActiveSyncHost((record) => {
         if (reportedMissingSyncProjectIds.has(record.projectId)) return;
@@ -30382,17 +33322,28 @@ async function runServe(
   };
   startSyncHostForRepair = () => startSyncHost(true);
   startSyncHostOnDemand = () => startSyncHost();
+  // Stops the account project sync of the brain (set where that sync is built).
+  let stopAccountProjectSync: (() => void) | null = null;
+  // Set first thing in shutdown: the projects-after-crash opens stop, so no
+  // project opens after `disposeAll` took its list of open scopes.
+  let serveShutdownStarted = false;
   const disposeServeResources = async () => {
+    serveShutdownStarted = true;
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
     cloudKeepAwake?.dispose();
+    cloudMemoryGuard?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
     stopSyncHostRehostWatch?.();
     stopSyncHostRehostWatch = null;
     machinePairingAutoRecovery?.stop();
     machinePairingAutoRecovery = null;
+    // The account project sync stops before the publisher releases the lease,
+    // so no copy is sent or written once shutdown has begun.
+    stopAccountProjectSync?.();
+    stopAccountProjectSync = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
     brainRelayTunnelGate?.dispose();
@@ -30463,6 +33414,7 @@ async function runServe(
     }
     clearSyncRuntimeRpcHandlerFactory?.();
     clearSyncRuntimeRpcHandlerFactory = null;
+    clearMachineUpdateRemoteCommands();
   };
 
   const listen = async (
@@ -30768,6 +33720,57 @@ async function runServe(
     } catch {}
   }
 
+  /**
+   * Whether this brain came back after an unplanned stop (the window's
+   * restart banner), and the record of projects with a running turn that the
+   * next brain opens after a crash. Only now, with the endpoint bound: a brain
+   * that loses the race for the socket must not replace the record of the
+   * brain that crashed.
+   *
+   * Every brain reads and takes what the brain before it left, including a
+   * brain an app started because the service brain was gone. Only a brain no
+   * other process owns (the service on any platform, a hand-run `ade serve`)
+   * writes its own record: an app can end the brain it started with a kill
+   * when the app quits, which is not a crash.
+   */
+  const writesBrainRun = !embedded && readRuntimeParentPid() == null;
+  if (!embedded) {
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    const bundlePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
+    recordBrainRunStart({
+      runtimeDir,
+      socketPath: serveSocketPath,
+      build: computeRuntimeBuildStamp(bundlePath, VERSION),
+      writeOwnRecord: writesBrainRun,
+      causeFacts: restartCauseFacts,
+    });
+    const restartCause = brainRestartCause();
+    if (restartCause) headlessProjectLogger.info("brain.restart_cause", restartCauseLogFields(restartCause));
+    if (writesBrainRun) enableLiveTurnProjectsRecord({ runtimeDir, socketPath: serveSocketPath });
+  }
+  // A signal means launchd/systemd or an installer wants this brain gone.
+  // Graceful disposal can wedge on live agent/PTY children; a wedged brain
+  // outlives its service registration and squats on the channel socket and
+  // sync singleton, so force the exit if disposal does not finish in time.
+  const finishFromSignal = () => {
+    finish({ requested: true });
+    const timer = setTimeout(() => process.exit(0), 10_000);
+    timer.unref();
+  };
+  let stopSignalsHandled = false;
+  const handleStopSignals = () => {
+    if (stopSignalsHandled) return;
+    stopSignalsHandled = true;
+    process.once("SIGINT", finishFromSignal);
+    process.once("SIGTERM", finishFromSignal);
+  };
+  // A brain that writes its own run record takes the signals from now on: a
+  // stop during the rest of the start would otherwise end it with the default
+  // action, leave the record unmarked, and the next start would show the
+  // restart banner for a stop ADE asked for. The start code already handles a
+  // stop under way (`done`); the wait below then disposes at once.
+  if (writesBrainRun) handleStopSignals();
+
   let tcpUrl: string | null = null;
   if (port != null) {
     const tcpState = createHeadlessRpcServer(createHandler);
@@ -30861,6 +33864,90 @@ async function runServe(
       if (!activeProjectId) return null;
       return await scopeRegistry.getIfBooted(activeProjectId)?.catch(() => null) ?? null;
     };
+    // The account's project list (`accountProjectSync.ts`). One instance for
+    // the brain, fed by whichever publisher holds the lease: it runs after an
+    // accepted heartbeat and owns no timer. The GitHub service it asks for
+    // repository ids is built on first use, with this machine's own
+    // credentials (gh, an environment token, a stored token, the App).
+    let accountProjectSync: AccountProjectSync | null = null;
+    let accountProjectGithubRequest: GithubApiRequest | null = null;
+    const getAccountProjectSync = (): AccountProjectSync => {
+      accountProjectSync ??= createAccountProjectSync({
+        adeDir: layout.adeDir,
+        registry: projectRegistry,
+        getAccountUserId: () => {
+          const status = brainAccountAuthService.getStatus();
+          return status.signedIn ? status.userId?.trim() || null : null;
+        },
+        lookupRepo: createGithubRepoLookup({
+          getApiRequest: async () => {
+            accountProjectGithubRequest ??= (() => {
+              const service = createHeadlessGitHubService(process.cwd(), headlessProjectLogger);
+              return (args) => service.apiRequest(args);
+            })();
+            return accountProjectGithubRequest;
+          },
+        }),
+        readFolderStates: (records) => readProjectFolderStates(records),
+        isDevTestMachine: () => isDevTestMachineProcess() || isDevTestMachineHome(layout.adeDir),
+        logger: headlessProjectLogger,
+        onListChanged: () => noteAccountProjectListChanged(),
+      });
+      return accountProjectSync;
+    };
+    stopAccountProjectSync = () => {
+      accountProjectSync?.stop();
+      accountProjectSync = null;
+      provideAccountProjectMainHandler(null);
+    };
+    // "Use for new lanes" from the phone or another computer
+    // (`accountProjectMain.ts`). Only while this brain publishes: the choice
+    // goes out with the next publish, which the handler asks for at once.
+    provideAccountProjectMainHandler(async (checkoutId) => {
+      const publisher = accountMachinePublisher;
+      if (!syncEnabled || !publisher) {
+        return { ok: false, code: "not_publishing", message: "This computer is not sending its projects to your ADE account right now." };
+      }
+      const sync = getAccountProjectSync();
+      const result = await sync.setMainCheckout(checkoutId);
+      if (!result.ok) return result;
+      // One heartbeat sends it. A heartbeat already in flight may have run the
+      // sync before the change; then one more heartbeat runs it after.
+      const before = sync.runCount();
+      await publisher.publishNow();
+      await sync.idle();
+      if (sync.runCount() === before && accountMachinePublisher === publisher) {
+        await publisher.publishNow();
+        await sync.idle();
+      }
+      // Saved here either way; say when the account does not have it yet.
+      const published = sync.runCount() !== before && !sync.publishPending();
+      return { ...result, published };
+    });
+    // The heartbeat (every 60 s) counts models and signed-in providers from
+    // the AI status, whose own cache lives 30 s, so every heartbeat rebuilt
+    // it: saved-login reads, two macOS keychain probes (`security`), the Pi
+    // and OpenCode inventories and four project config reads. The counts are
+    // decoration on the heartbeat. A status up to 5 minutes old is reused,
+    // unless a sign-in, a tool install or a provider runtime change on this
+    // computer happened since; `account.getMachineInventory` still reads
+    // afresh.
+    const HEARTBEAT_AI_STATUS_MAX_AGE_MS = 5 * 60_000;
+    let heartbeatAiStatus: { service: object; key: string; atMs: number; status: unknown } | null = null;
+    const heartbeatAiStatusReader = (
+      service: { getStatus(): Promise<unknown> } | null,
+    ): { getStatus(): Promise<unknown> } | null => service && {
+      getStatus: async () => {
+        const key = `${providerLoginGeneration()}|${pinnedToolInstallGeneration()}|${getProviderRuntimeHealthVersion()}`;
+        const kept = heartbeatAiStatus;
+        if (kept && kept.service === service && kept.key === key && Date.now() - kept.atMs < HEARTBEAT_AI_STATUS_MAX_AGE_MS) {
+          return kept.status;
+        }
+        const status = await service.getStatus();
+        heartbeatAiStatus = { service, key, atMs: Date.now(), status };
+        return status;
+      },
+    };
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({
@@ -30884,6 +33971,8 @@ async function runServe(
           const activeScope = await activeSyncHostScopeWithoutBooting();
           const scoped = await activeScope?.runtime.syncService?.getStatus({
             includeTransferReadiness: false,
+            // The registration never carries the pairing token or PIN.
+            includePairingSecrets: false,
           }) ?? null;
           if (scoped) return scoped;
           // Hosting sync without a project is a supported state, not the
@@ -30901,7 +33990,7 @@ async function runServe(
           return await readMachineInventorySummary({
             providerInstanceStore: getMachineProviderInstanceStore(),
             accountSettingsStore: activeScope?.runtime.accountSettingsStore ?? null,
-            aiIntegrationService: activeScope?.runtime.aiIntegrationService ?? null,
+            aiIntegrationService: heartbeatAiStatusReader(activeScope?.runtime.aiIntegrationService ?? null),
           });
         },
         // Only consulted on the `no_active_sync_scope` branch, but declared here
@@ -30921,6 +34010,11 @@ async function runServe(
           }
         },
         directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
+        // Only with sync on: a brain started with --no-sync keeps the account
+        // list out of it, like every other account store.
+        onPublished: (event) => {
+          if (syncEnabled) getAccountProjectSync().afterHeartbeat(event);
+        },
         captureAnalytics: (input) => {
           brainProductAnalytics.captureInternal(input);
         },
@@ -30994,6 +34088,10 @@ async function runServe(
         // acquisition rebuilds it above.
         accountMachinePublisher?.dispose();
         accountMachinePublisher = null;
+        // The account project sync it fed stops with it (nothing more sent or
+        // written from here); the next lease builds a new one on first use.
+        accountProjectSync?.stop();
+        accountProjectSync = null;
       }, SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS);
       accountPublisherReleaseTimer.unref?.();
     });
@@ -31060,6 +34158,9 @@ async function runServe(
     socketPath,
     tcpUrl: tcpUrl ?? null,
   });
+  // The start-up code is compiled now: write its cache, so a brain that is
+  // killed later (and never exits normally) still starts warm next time.
+  flushActiveCompileCache();
   // Once per brain start, to Sentry Logs: the beta gate counts the machines
   // whose brain ran a build (`shared/sentry/logBridge.ts`).
   headlessProjectLogger.info("brain.started", {
@@ -31070,6 +34171,75 @@ async function runServe(
     platform: process.platform,
     arch: process.arch,
   });
+  if (!embedded) {
+    /**
+     * Open, one at a time, the projects in which the brain before this one
+     * had a chat or CLI turn running when it stopped: unplanned (a crash), or
+     * planned (a restart, an update, a reboot) no more than 6 h ago. Opening a
+     * project is what runs its CLI reopen and chat continue, so they
+     * continue within seconds instead of when a window or phone next opens
+     * the project. Only those projects: no other project database is opened.
+     * Nothing opens in a restart loop or with "Continue chats after restarts"
+     * off (unless an ADE disk grow made this restart); the files are claimed
+     * either way.
+     */
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    const roots = takeLiveTurnProjectsFromStoppedBrains({
+      runtimeDir,
+      socketPath: serveSocketPath,
+      maxStoppedAgeMs: RESTART_RESUME_MAX_AGE_MS,
+      onStoppedRecord: ({ projects, stale }) => {
+        // A stale stop's projects stay closed; each one says which chats and
+        // CLIs it drops when it next opens (`reopenCliSessionsAfterRestart`).
+        headlessProjectLogger.info("brain.planned_stop_record_taken", { projects, stale });
+      },
+    });
+    if (roots.length > 0) {
+      // An ADE disk grow's restart continues whatever the setting says (`continueAfterRestartAllowed`).
+      const hold = brainStartIsInRestartLoop()
+        ? "restart_loop"
+        : !continueAfterRestartAllowed(() => resolveContinueAfterRestart()) ? "disabled" : null;
+      if (hold) {
+        headlessProjectLogger.info("brain.projects_after_crash_skipped", { reason: hold, projects: roots.length });
+        dropLiveTurnProjectsAfterCrash();
+      } else {
+        void (async () => {
+          const startedMs = Date.now();
+          let opened = 0;
+          for (const root of roots) {
+            if (serveShutdownStarted) break;
+            const record = projectRegistry.list().find((entry) => pathsEqual(entry.rootPath, root));
+            if (!record) {
+              settleLiveTurnProjectAfterCrash(root);
+              continue;
+            }
+            noteLiveTurnProjectOpening(root);
+            try {
+              await scopeRegistry.get(record.projectId);
+              opened += 1;
+              settleLiveTurnProjectAfterCrash(root);
+            } catch (error) {
+              // Kept on disk: if this brain crashes too, the next one tries it again.
+              noteLiveTurnProjectOpening(null);
+              headlessProjectLogger.warn("brain.project_after_crash_open_failed", {
+                projectId: record.projectId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          headlessProjectLogger.info("brain.projects_opened_after_crash", {
+            projects: roots.length,
+            opened,
+            durationMs: Date.now() - startedMs,
+          });
+          if (opened > 0) {
+            const { noteProjectsOpenedWithoutClient } = await import("./services/runtime/brainIdleMemory");
+            noteProjectsOpenedWithoutClient({ listRuntimes: () => scopeRegistry.listReady().map((scope) => scope.runtime) });
+          }
+        })();
+      }
+    }
+  }
   // Compile caches of earlier builds go once the brain is listening. Only the brain's
   // default root is pruned: an explicit NODE_COMPILE_CACHE is the caller's directory.
   scheduleStaleCompileCachePrune(activeCompileCacheDir(), {
@@ -31103,11 +34273,19 @@ async function runServe(
         try { process.kill(pid, 0); return true; } catch { return false; }
       },
     });
+    // Named by its release as analytics names it (`stable`, `beta`, `alpha`),
+    // `dev` for a development brain. ADE_PACKAGE_CHANNEL alone is set only for
+    // Alpha, so it named every Stable, Beta and ADE Cloud brain "dev".
+    const releaseChannel = resolveReleaseChannel({
+      env: process.env,
+      packaged: brainReportsAsRelease(process.env),
+      version: VERSION,
+    });
     const otherBrains = brainRegistry.join({
       pid: process.pid,
       endpoint: socketPath,
       startedAtMs: readProcessStartTimeMs(process.pid),
-      label: process.env.ADE_PACKAGE_CHANNEL?.trim() || "dev",
+      label: releaseChannel === "development" ? "dev" : releaseChannel,
     });
     const sharedHomeSentence = describeOtherBrains(otherBrains);
     if (sharedHomeSentence) {
@@ -31330,17 +34508,7 @@ async function runServe(
         return;
       }
       resolveDone = resolve;
-      // A signal means launchd/systemd or an installer wants this brain gone.
-      // Graceful disposal can wedge on live agent/PTY children; a wedged brain
-      // outlives its service registration and squats on the channel socket and
-      // sync singleton, so force the exit if disposal does not finish in time.
-      const finishFromSignal = () => {
-        finish();
-        const timer = setTimeout(() => process.exit(0), 10_000);
-        timer.unref();
-      };
-      process.once("SIGINT", finishFromSignal);
-      process.once("SIGTERM", finishFromSignal);
+      handleStopSignals();
     });
   } finally {
     stopParentMonitor();
@@ -31413,7 +34581,11 @@ async function runServe(
             : "unknown";
     // A live brain already holds the endpoint (an update's handover, a second
     // start): this one leaving is not a crash for the restart-loop report.
-    if (code === "socket_owned_by_other") markBrainStoppedCleanly();
+    if (code === "socket_owned_by_other") {
+      markBrainStoppedCleanly();
+      markBrainRunStoppedCleanly();
+      closeLiveTurnProjectsRecord();
+    }
     if (!serveStarted) {
       recordLastFailure({ kind: "machine" }, {
         code,
@@ -31429,6 +34601,7 @@ async function runServe(
     brainMemoryRestartGuard?.stop();
     stopBrainHeartbeat?.();
     stopBrainLoopWatchdog?.();
+    brainStallProfiler?.dispose();
   }
 }
 
@@ -32241,7 +35414,7 @@ export function formatUsageLimits(value: unknown): string {
   const notes = Array.isArray(report.notes) ? report.notes.map((note) => asString(note)).filter(Boolean) : [];
   if (notes.length) lines.push("", ...notes.map((note) => `note: ${note}`));
   if (accounts.some((account) => asString(account.instanceId))) {
-    lines.push("", "Start a chat on an account: ade chat create --provider <provider> --instance <email>");
+    lines.push("", "Start a chat on an account: ade chat create --provider <provider> --model <id> --instance <email>");
   }
   return lines.join("\n");
 }
@@ -33353,7 +36526,8 @@ function formatDeletedChats(value: unknown): string {
     chats.map((chat) => [
       asString(chat.id) ?? "?",
       cell(chat.title ?? "Untitled chat", 40),
-      cell(chat.provider, 10),
+      // A deleted agent CLI says so: Reopen relaunches it in its lane.
+      chat.kind === "cli" ? cell(`${asString(chat.provider) ?? "agent"} CLI`, 14) : cell(chat.provider, 10),
       chat.laneExists === true ? cell(chat.laneName, 20) : `${cell(chat.laneName ?? "lane", 14)} (deleted)`,
       cell(chat.deletedAt, 24),
     ]),
@@ -33397,7 +36571,7 @@ function formatArchiveList(value: unknown): string {
       typeof item.sizeBytes === "number" ? formatBytes(item.sizeBytes) : "-",
       item.kind === "lane"
         ? `${item.worktreePresent === true ? "worktree on disk" : "no worktree"}${item.branchRef ? `, branch ${String(item.branchRef)}` : ""}`
-        : cell(item.toolType, 20),
+        : cell(item.toolLabel ?? item.toolType, 20),
     ]),
     "Nothing is archived.",
     // A ref is pasted back into `ade archive restore`; a shortened one matches nothing.
@@ -34326,12 +37500,30 @@ export function formatChatStatus(value: unknown, nowMs = Date.now()): string {
     nowMs,
     asString(record.timeZone),
   );
+  // A tracked CLI session whose process is gone reads `idle` like a quiet one,
+  // so say how it ended: a crash and a clean finish are not the same answer.
+  const processRow = formatCliProcessEndRow(record.cliSession);
+  const extraRows = [resumeRow, processRow].filter((row): row is string => Boolean(row));
   // The resume row belongs in the key/value header block: `formatChatTurnStatus`
   // separates that block from the subagent tree with a blank line, and a row
   // hanging off the end of the tree reads as a subagent.
   return formatChatTurnStatus(record as ChatTurnStatusSnapshot, {
-    ...(resumeRow ? { extraRows: [resumeRow] } : {}),
+    ...(extraRows.length ? { extraRows } : {}),
   });
+}
+
+function formatCliProcessEndRow(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const status = asString(value.status);
+  if (!status || status === "running") return null;
+  const exitCode = typeof value.exitCode === "number" ? value.exitCode : null;
+  // Stopped first: a CLI someone stopped often ends non-zero (Ctrl-C is 130).
+  const label = status === "disposed"
+    ? "stopped"
+    : status === "failed" || (exitCode != null && exitCode !== 0)
+      ? "exited with an error"
+      : status === "detached" ? "detached from this ADE" : "exited";
+  return chatTurnStatusRow("process", `${label}${exitCode != null ? ` (exit ${exitCode})` : ""}`);
 }
 
 export function formatChatContinueOnAccount(value: unknown): string {
@@ -34939,6 +38131,19 @@ function formatIosSimStatus(value: unknown): string {
   const activeSession = isRecord(status.activeSession)
     ? status.activeSession
     : {};
+  // The device a lane drives is its own (`laneDevice`). With no session and
+  // no lane device, `activeDevice` is only a simulator booted on that Mac,
+  // which this lane does not drive: it is named as that, not as "active".
+  const laneDevice = isRecord(status.laneDevice) ? status.laneDevice : null;
+  const claimed = isRecord(status.activeSession) || isRecord(status.deviceSession);
+  const activeIsLanes = Boolean(laneDevice && asString(laneDevice.udid) && asString(laneDevice.udid) === asString(activeDevice.udid));
+  let laneDeviceText: string | null = null;
+  if (laneDevice) {
+    const laneState = activeIsLanes && activeDevice.state ? ` (${String(activeDevice.state)})` : "";
+    laneDeviceText = `${asString(laneDevice.name) ?? asString(laneDevice.udid) ?? "its own"}${laneState}`;
+  } else if (status.supported !== false) {
+    laneDeviceText = "none yet (ade apple start gives this lane its own)";
+  }
   // The device half and the live view, because `status` is the one command an
   // agent is told to poll. Leaving them to `--json` only meant a reader saw no
   // stream block and concluded the live view was off while it was running.
@@ -34952,9 +38157,10 @@ function formatIosSimStatus(value: unknown): string {
     renderKeyValues("ADE iOS simulator", [
       ["supported", status.supported],
       ["platform", status.platform],
+      ["lane device", laneDeviceText],
       [
-        "active device",
-        activeDevice.name
+        claimed || activeIsLanes ? "active device" : "booted, not this lane's",
+        activeDevice.name && !(activeIsLanes && !claimed)
           ? `${activeDevice.name} (${activeDevice.state})`
           : null,
       ],
@@ -34981,6 +38187,10 @@ function formatIosSimStatus(value: unknown): string {
       ]),
       "Tools\n(none)",
     ),
+    // No simulator here (Windows, Linux): name the one that runs anywhere.
+    ...(status.supported === false
+      ? ["", "No simulator on this machine. The ADE Cloud iPhone runs from any machine: ade devices use ios@cloud (or one command with --machine cloud). ade devices --kind ios --text shows its minutes left."]
+      : []),
   ].join("\n");
 }
 
@@ -35066,6 +38276,8 @@ function formatIosSimLaunch(value: unknown): string {
       "warning: launched a prebuilt binary — current changes not included.",
     );
   }
+  const generated = xcodeGenNote(session.generatedXcodeProjects);
+  if (generated) lines.push(generated);
   return lines.join("\n");
 }
 
@@ -35629,6 +38841,7 @@ function nextTempScreenshotPath(): string {
 function saveScreenshotResult(
   result: unknown,
   outPath: string | null,
+  surface: "browser" | "app-control" = "browser",
 ): { savedPath: string; width: number | null; height: number | null; bytes: number } {
   const unwrapped = unwrapActionEnvelope(result);
   const shot = isRecord(unwrapped) ? unwrapped : {};
@@ -35639,12 +38852,16 @@ function saveScreenshotResult(
     // reach the fallback and print a stack trace instead of one clear line.
     const reason = asString(shot.reason);
     throw new CliToolError(
-      `browser screenshot failed — the browser returned no screenshot image${reason ? ` (${reason})` : ""}.`,
+      `${surface} screenshot failed — ${surface === "browser" ? "the browser" : "the app"} returned no screenshot image${reason ? ` (${reason})` : ""}.`,
       undefined,
     );
   }
   const bytes = Buffer.from(match[1]!, "base64");
-  const savedPath = path.resolve(outPath ?? nextTempScreenshotPath());
+  // Named for what the bytes are: a JPEG (a live frame) never lands under a
+  // .png name, which PNG-only readers refuse.
+  const jpeg = /^data:image\/jpe?g;/.test(dataUrl!);
+  const requested = path.resolve(outPath ?? nextTempScreenshotPath());
+  const savedPath = jpeg && /\.png$/i.test(requested) ? requested.replace(/\.png$/i, ".jpg") : requested;
   fs.mkdirSync(path.dirname(savedPath), { recursive: true });
   // A temp screenshot stays private: exclusive create, owner-only. An explicit
   // `--out` is the caller's own path and keeps the default mode.
@@ -36213,8 +39430,28 @@ function domElementTable(elements: JsonObject[]): string {
 function formatBrowserAction(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const trace = firstRecord(result, ["trace"]);
+  const signin = firstRecord(result, ["signin"]);
+  const signinFilled = Array.isArray(signin?.filled)
+    ? signin.filled.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  // The result names the site, the account and which fields were filled —
+  // never a value. The password stays inside the page.
+  const signinSite = asString(signin?.site) ?? "the page";
+  const signinLine = !signin
+    ? null
+    : signin.created === true
+      ? `signed up: a new password for ${signinSite}${asString(signin.username) ? ` (${asString(signin.username)})` : ""} is saved in Passwords and typed into the form (filled: ${signinFilled.join(", ") || "nothing"}). Submit the form; \`ade browser signin\` uses it from now on.`
+      : signin.signInYourself === true
+        ? `not signed in: the person chose to sign in to ${signinSite} themselves. Run \`ade browser handoff --tab <id> --reason "sign in to ${signinSite}"\` to wait for them.`
+        : `signed in: ${signinSite} as ${asString(signin.username) ?? "(saved login)"} (filled: ${signinFilled.join(", ") || "nothing"})`;
   return [
-    ...formatActionAnswerLines(result, { action: asString(trace?.action) }),
+    ...(signinLine ? [signinLine] : []),
+    ...formatActionAnswerLines(result, {
+      action: asString(trace?.action),
+      // signin targets no single element: it types into whichever login fields
+      // the page presented, and the `signed in` line already says which.
+      ...(signin ? { noElement: "the page's login fields" } : {}),
+    }),
     "",
     formatBrowserObservation(value),
   ].join("\n");
@@ -36697,9 +39934,6 @@ function formatMcpServerRemove(value: unknown): string {
 
 function formatProjectSecrets(value: unknown): string {
   const record = isRecord(value) ? value : {};
-  if (isProjectSecretPullResult(value)) {
-    return projectSecretPullSummary(value);
-  }
   if (typeof record.value === "string") {
     return record.value;
   }
@@ -36723,32 +39957,26 @@ function formatProjectSecrets(value: unknown): string {
   }
   if (typeof record.name === "string" && typeof record.deleted === "boolean") {
     return record.deleted
-      ? `Deleted ADE secret ${record.name}.`
-      : `No ADE secret named ${record.name} was found.`;
+      ? `Deleted ${record.name}.`
+      : `This project has no secret of its own named ${record.name}.`;
   }
+  // Where a secret lives, as the person reads it in Passwords & Secrets.
+  const where = (storage: unknown) => (storage === "device" ? "this computer" : "every computer");
   if (typeof record.name === "string") {
-    const storage = typeof record.storage === "string" ? ` in ${record.storage} storage` : "";
-    return `Saved ADE secret ${record.name} (${cell(record.valueLength)} chars${storage}).`;
+    return `Saved ${record.name} (${cell(record.valueLength)} chars) for this project, on ${where(record.storage)}.`;
   }
   const secrets = Array.isArray(record.secrets)
     ? record.secrets.filter(isRecord)
     : Array.isArray(value)
       ? value.filter(isRecord)
       : [];
-  const rows = secrets.map((secret) => [
-    secret.name,
-    secret.valueLength,
-    secret.uploadPending === true ? `${secret.storage} (uploading)` : secret.storage,
-    secret.updatedAt,
-  ]);
-  const storage = isRecord(record.storage) ? record.storage : {};
+  const rows = secrets.map((secret) => [secret.name, secret.valueLength, where(secret.storage), secret.updatedAt]);
   const header = renderTable(
-    ["name", "chars", "where", "updated"],
+    ["name", "chars", "on", "updated"],
     rows,
-    "ADE project secrets\n(no secrets found)",
+    "This project's secrets\n(none yet: add one in Settings › Passwords & Secrets, or ade secrets request)",
   );
-  const pathLine = typeof storage.path === "string" ? `\n\nLocal cache: ${storage.path}` : "";
-  return `${header}${pathLine}`;
+  return `${header}\n\nIn Passwords & Secrets: those for every project, then this project's own.`;
 }
 
 /**
@@ -36759,6 +39987,50 @@ function formatProjectSecrets(value: unknown): string {
  * var with its value — because that string is the entire point of the command:
  * ADE cannot sign the account in, so the user runs it themselves.
  */
+/** `providers accounts list --synced`: the account's sign-ins and this computer's part. Never a value. */
+function formatProviderLogins(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const here = isRecord(record.thisComputer) ? record.thisComputer : {};
+  const cloud = isRecord(record.cloud) ? record.cloud : {};
+  // The sign-ins are shared between a person's own computers either way; only
+  // an account with ADE Cloud reads what ADE Cloud does with them.
+  const lines = [
+    renderKeyValues(cliCloudEnabled ? "Sign-ins for ADE Cloud" : "Sign-ins in your account", [
+      ["this computer", here.label],
+      ["copies sign-ins", here.capture === "on" ? "yes" : `no (${asString(here.reason) ?? "unknown"})`],
+      ["why", here.message],
+      ...(cliCloudEnabled
+        ? [
+          ["cloud computer", here.cloudComputer === true ? "yes" : "no"],
+          ["ADE Cloud sign-ins", cloud.enabled === false ? "switched off" : "on"],
+        ] as Array<[string, unknown]>
+        : []),
+      ["last pass", here.lastPassAt],
+    ]),
+  ];
+  const signIns = Array.isArray(record.signIns) ? record.signIns.filter(isRecord) : [];
+  lines.push("", signIns.length ? "In your account:" : "In your account: none.");
+  for (const signIn of signIns) {
+    const origin = isRecord(signIn.origin) ? signIn.origin : {};
+    const account = isRecord(signIn.account) ? (asString(signIn.account.email) ?? asString(signIn.account.id)) : null;
+    const flags = [
+      cliCloudEnabled && signIn.inUseOnCloud === true ? "in use on ADE Cloud" : null,
+      cliCloudEnabled && signIn.onForCloud === false ? "off for ADE Cloud" : null,
+      origin.thisComputer === true ? "this computer" : null,
+    ].filter(Boolean).join(", ");
+    lines.push(`  ${cell(signIn.provider, 12)} ${cell(account ?? `Sign-in from ${asString(origin.label) ?? "a computer"}`, 40)} `
+      + `${cell(signIn.class, 9)} ${cell(asString(signIn.renewedAt) ?? asString(signIn.capturedAt) ?? "", 24)} ${flags}`);
+    lines.push(`    key ${cell(signIn.key, 64)}`);
+  }
+  const providers = Array.isArray(record.providers) ? record.providers.filter(isRecord) : [];
+  if (providers.length) lines.push("", "Providers on this computer:");
+  for (const entry of providers) {
+    const local = isRecord(entry.local) ? entry.local : {};
+    lines.push(`  ${cell(entry.provider, 12)} ${cell(entry.carry, 9)} ${cell(local.state, 22)} ${cell(entry.message, 140)}`);
+  }
+  return lines.join("\n");
+}
+
 function formatProviderAccounts(value: unknown): string {
   const record = isRecord(value) ? value : {};
 
@@ -36869,6 +40141,78 @@ function formatProviderAccounts(value: unknown): string {
     "ADE provider accounts\n(no provider accounts found)",
     // The path is copied into commands, so it is never cut short.
     { fullColumns: ["account", "config home", "id"] },
+  );
+}
+
+const ACCOUNT_SIGN_IN_NEXT_STEP =
+  "Sign in with `ade login` (`ade login --headless` on a computer with no browser), "
+  + "or set ADE_ACCOUNT_TOKEN from `ade account token create` for CI and agents.";
+
+/**
+ * `ade projects list --account`: the account's projects with a computer name
+ * on each copy. Signed out or not read yet throws with the next step, so a
+ * script never reads an empty list as "no projects".
+ */
+function shapeAccountProjects(list: unknown, roster: unknown): JsonObject {
+  const state = isRecord(list) ? asString(list.state) : null;
+  if (state === "signed_out") {
+    throw new CliUsageError(`ADE projects belong to your ADE account. ${ACCOUNT_SIGN_IN_NEXT_STEP}`);
+  }
+  if (state !== "ready") {
+    // A usage error (exit 2), as for signed out: a script treats both the same.
+    throw new CliUsageError(
+      "ADE has not read your account's projects on this computer yet. "
+      + "Keep the ADE brain running for a minute (`ade brain start`), then run this again. `ade doctor` shows the account state.",
+    );
+  }
+  const machines = isRecord(roster) && Array.isArray(roster.machines) ? roster.machines.filter(isRecord) : [];
+  const byKey = new Map(machines.map((machine) => [asString(machine.machineKey) ?? "", machine]));
+  const projects = (Array.isArray((list as JsonObject).projects) ? (list as JsonObject).projects as unknown[] : [])
+    .filter(isRecord)
+    .map((project) => ({
+      accountProjectId: project.id,
+      repository: `${String(project.owner)}/${String(project.name)}`,
+      host: project.host,
+      copies: (Array.isArray(project.copies) ? project.copies : []).filter(isRecord).map((copy) => {
+        const machine = byKey.get(asString(copy.machineKey) ?? "") ?? null;
+        return {
+          machineKey: copy.machineKey,
+          machine: asString(machine?.name) ?? asString(copy.machineKey),
+          thisMachine: machine?.isThisMachine === true,
+          online: machine ? machine.online === true : null,
+          projectId: copy.checkoutId,
+          rootPath: copy.rootPath,
+          main: copy.isMain === true,
+        };
+      }),
+    }));
+  return { state: "ready", projects };
+}
+
+function formatAccountProjects(value: unknown): string {
+  const projects = isRecord(value) && Array.isArray(value.projects) ? value.projects.filter(isRecord) : [];
+  const rows: unknown[][] = [];
+  for (const project of projects) {
+    const copies = Array.isArray(project.copies) ? project.copies.filter(isRecord) : [];
+    if (copies.length === 0) {
+      rows.push([project.repository, project.accountProjectId, "(no copy on any computer)", ""]);
+      continue;
+    }
+    copies.forEach((copy, index) => {
+      const where = `${String(copy.machine)}${copy.thisMachine ? " (this computer)" : copy.online === false ? " (offline)" : ""}`;
+      rows.push([
+        index === 0 ? project.repository : "",
+        index === 0 ? project.accountProjectId : "",
+        where,
+        `${String(copy.rootPath)}${copy.main ? "" : " (other copy)"}`,
+      ]);
+    });
+  }
+  return renderTable(
+    ["repository", "account project", "computer", "folder"],
+    rows,
+    "ADE account projects\n(no projects on your account yet: `ade projects clone <owner/name>` adds one)",
+    { fullColumns: ["account project"] },
   );
 }
 
@@ -36997,7 +40341,8 @@ function formatAccountMachines(value: unknown): string {
   const machines = Array.isArray(result.machines)
     ? result.machines.flatMap((entry) => {
         const machine = parseAccountMachine(entry);
-        return machine ? [machine] : [];
+        // `cloud`: an ADE Cloud computer (`markCloudComputers`).
+        return machine ? [{ machine, cloud: isRecord(entry) && entry.cloud === true }] : [];
       })
     : [];
   // `status` answers "can this be dialled"; `presence` answers "is it awake,
@@ -37007,7 +40352,7 @@ function formatAccountMachines(value: unknown): string {
   // `connected` is deliberately not passed: this table marks no row as holding
   // a live channel, and a surface that renders no such mark must not claim one.
   let anyAsleep = false;
-  const rows = machines.map((machine) => {
+  const rows = machines.map(({ machine, cloud }) => {
     const connectionState = accountMachineConnectionState(machine);
     if (accountMachinePresence(machine) === "asleep") anyAsleep = true;
     const lastSeenAt = typeof machine.lastSeenAt === "number" && Number.isFinite(machine.lastSeenAt)
@@ -37017,7 +40362,7 @@ function formatAccountMachines(value: unknown): string {
       asString(machine.machineKey) ?? "—",
       // With the install ("MacBook Pro · ADE Alpha"), so two installs on one
       // Mac do not look like a duplicate to remove.
-      accountMachineRowLabel(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
+      machineListLabel(accountMachineRowLabel(machine) ?? asString(machine.deviceId) ?? "Unnamed machine", cloud),
       connectionState,
       machineStatusLine(machine) ?? "—",
       lastSeenAt,
@@ -37252,7 +40597,7 @@ function formatTextOutput(
         // `ade report-issue` exists for: it reads local files only, so it still
         // works on the machine where the brain will not come up.
         if (!doctorRows.some((row) => row.status === "fail")) return table;
-        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue\` and file the printed report.`;
+        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue --send\` to send the report to the ADE team privately.`;
       }
       const project =
         isRecord(value) && isRecord(value.project) ? value.project : {};
@@ -37395,6 +40740,17 @@ function formatTextOutput(
       return describeReconnectOutcome(result).message;
     }
     case "account-machine-remove": {
+      // From a chat: the person's answer to the Remove / Keep card.
+      const answer = unwrapActionEnvelope(value);
+      if (isRecord(answer) && typeof answer.status === "string" && typeof answer.next === "string") {
+        const machine = isRecord(answer.machine) ? asString(answer.machine.name) ?? asString(answer.machine.machineKey) : null;
+        const head = answer.status === "removed"
+          ? `Removed ${machine ?? "the computer"} from the ADE account.`
+          : answer.status === "pending_approval"
+            ? `Pending approval: ${machine ?? "the computer"} was not removed.`
+            : `Not removed: ${machine ?? "the computer"} stays on the ADE account.`;
+        return `${head}\n${answer.next}`;
+      }
       const removed = isRecord(value) ? asString(value.machineKey) : null;
       // The directory purges the removed machine's Activity as part of the same
       // request, so a plain success here means both landed; a partial removal
@@ -37404,6 +40760,8 @@ function formatTextOutput(
     }
     case "projects-list":
       return formatProjectsList(value);
+    case "account-projects":
+      return formatAccountProjects(value);
     case "linear-quick-view":
       return formatLinearQuickView(value);
     case "lanes":
@@ -37703,16 +41061,42 @@ function formatTextOutput(
       return formatTerminalRead(value);
     case "project-secrets":
       return formatProjectSecrets(value);
+    case "passwords":
+      return formatPasswords(value);
+    case "secrets-exec":
+      return formatSecretsExec(value);
+    case "passwords-code":
+      return formatPasswordsCode(value);
     case "integrations":
       return formatIntegrations(value);
-    case "cloud-ready":
-      return formatCloudReady(value);
+    case "cloud-status":
+      return formatCloudStatus(value);
     case "cloud-list":
       return formatCloudList(value);
     case "cloud-hours":
-      return formatCloudHours(value);
+      return formatCloudAccount(value);
+    case "cloud-invite":
+      return formatCloudInvite(value);
     case "cloud-result":
       return formatCloudResult(value);
+    case "cloud-lanes":
+      return formatCloudLanes(value);
+    case "cloud-lane":
+      return formatCloudLane(value);
+    case "cloud-lane-git":
+      return formatCloudLaneGit(value);
+    case "cloud-chats":
+      return formatCloudChats(value);
+    case "cloud-chat-read":
+      return formatCloudChatRead(value);
+    case "cloud-sessions":
+      return formatCloudSessions(value);
+    case "cloud-backups":
+      return formatCloudBackups(value);
+    case "cloud-jobs":
+      return formatCloudJobs(value);
+    case "cloud-project":
+      return formatCloudProject(value);
     case "mcp-servers":
       return formatMcpServers(value);
     case "mcp-servers-remove":
@@ -37723,6 +41107,8 @@ function formatTextOutput(
       return formatHarnessRoutes(value);
     case "harness-test":
       return formatHarnessTest(value);
+    case "harness-providers":
+      return formatHarnessProviders(value);
     case "history-list":
       return formatHistoryList(value);
     case "history-commits":
@@ -37759,6 +41145,8 @@ function formatTextOutput(
       return formatExternalSessions(value);
     case "provider-accounts":
       return formatProviderAccounts(value);
+    case "provider-logins":
+      return formatProviderLogins(value);
     case "proxy-status":
       return formatProxyStatus(value);
     case "sync-status":
@@ -37962,6 +41350,8 @@ function inferFormatter(
     label === "browser key" ||
     label === "browser scroll" ||
     label === "browser fill" ||
+    label === "browser signin" ||
+    label === "browser signup" ||
     label === "browser clear" ||
     label === "browser wait" ||
     label === "browser hover" ||
@@ -38609,6 +41999,9 @@ async function recoverAccountMachineReconnect(
   return true;
 }
 
+/** How long `ade login`'s device sign-in keeps trying an account directory it can't reach yet. */
+const DEVICE_SIGN_IN_START_RETRY_MS = 45_000;
+
 /**
  * Interactive machine-account authorization. The daemon owns either the
  * loopback listener or the device-code secret, token exchange, and credential
@@ -38745,6 +42138,10 @@ async function runAccountLogin(
       const answer = await runAccountAction("startDeviceLogin", {
         projectRoot,
         ignoreEnvCredential: plan.explicitHeadless || options.headless,
+        // Nobody can click Retry here (a fresh ADE Cloud computer signs in this
+        // way seconds after boot, before its network is up): the brain keeps
+        // trying an unreachable account directory for a while first.
+        retryUnreachableForMs: DEVICE_SIGN_IN_START_RETRY_MS,
       });
       const device = readDeviceSignInStart(answer);
       if (!device) {
@@ -39232,6 +42629,26 @@ const GENERIC_PERMISSION_WORD_BY_LEVEL: Readonly<Record<PermissionLevel, string>
 };
 
 /**
+ * The note for a chat the host started below the asked-for mode (see
+ * `chatCreateNotices`). Shared by `chat create` and `chat launch --wait`.
+ */
+function permissionLoweredNotice(
+  requestedMode: string | null,
+  nativePermissionFlag: boolean,
+  session: JsonObject,
+): string | null {
+  const requestedLevel = requestedMode && !nativePermissionFlag
+    ? UNIFORM_GENERIC_PERMISSION_LEVELS[requestedMode] ?? null
+    : null;
+  if (!requestedLevel) return null;
+  // An unreadable posture counts as the top rung, so it never reads as lowered.
+  const applied = sessionPermissionLevel(session as SessionPermissionFields, "full-auto");
+  if (permissionLevelRank(applied) >= permissionLevelRank(requestedLevel)) return null;
+  return `note: ADE started this chat at '${GENERIC_PERMISSION_WORD_BY_LEVEL[applied]}', not '${requestedMode}': `
+    + "an agent cannot start a chat with more access than its own chat or parent has.";
+}
+
+/**
  * What `chat create` says on stderr once the chat exists (stdout may be JSON).
  * Notes only: the chat is already made.
  *
@@ -39251,19 +42668,8 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
   const session = isRecord(created) && isRecord(created.session) ? created.session : created;
   if (!isRecord(session)) return [];
   const notices: string[] = [];
-  const requestedLevel = check.permissionMode && !check.nativePermissionFlag
-    ? UNIFORM_GENERIC_PERMISSION_LEVELS[check.permissionMode] ?? null
-    : null;
-  if (requestedLevel) {
-    // An unreadable posture counts as the top rung, so it never reads as lowered.
-    const applied = sessionPermissionLevel(session as SessionPermissionFields, "full-auto");
-    if (permissionLevelRank(applied) < permissionLevelRank(requestedLevel)) {
-      notices.push(
-        `note: ADE started this chat at '${GENERIC_PERMISSION_WORD_BY_LEVEL[applied]}', not '${check.permissionMode}': `
-        + "an agent cannot start a chat with more access than its own chat or parent has.",
-      );
-    }
-  }
+  const lowered = permissionLoweredNotice(check.permissionMode ?? null, check.nativePermissionFlag, session);
+  if (lowered) notices.push(lowered);
   const laneChats = check.laneId ? unwrapActionEnvelope(values.laneChats) : null;
   if (Array.isArray(laneChats)) {
     const newId = asString(session.id) ?? asString(session.sessionId);
@@ -39297,6 +42703,21 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
 const FOLLOW_SHELL_POLL_MS = 1_000;
 /** The most output `shell start --wait --json` keeps (the end of it). */
 const FOLLOW_SHELL_MAX_OUTPUT_CHARS = 1024 * 1024;
+/**
+ * No new output for this long while the command runs: one line on stderr
+ * says that it may wait for input there. The command runs in a terminal that
+ * nobody types in, so a pager or a prompt waits forever.
+ */
+const FOLLOW_SHELL_QUIET_NOTICE_MS = 2 * 60_000;
+/**
+ * No new output for this long: `--wait` stops and says how to read or stop
+ * the command, which keeps running there. A guard, so that `--wait` always
+ * ends; the other machine starts the command with no pager or git prompt.
+ */
+const FOLLOW_SHELL_QUIET_LIMIT_MS = 30 * 60_000;
+/** A screen code cut off at the end of a read: a lone ESC, a CSI with no final byte, an unterminated OSC. */
+// eslint-disable-next-line no-control-regex
+const FOLLOW_SHELL_PARTIAL_CODE = /\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?|[ -/]*)$/;
 
 /**
  * Follow a shell `shell start` just started until it ends: print its output as
@@ -39316,17 +42737,52 @@ async function followShellToExit(
     unwrapActionEnvelope(unwrapToolResult(await connection.request("ade/actions/call", { name: "run_ade_action", arguments: { domain, action, args } })));
   let since: number | undefined;
   let output = "";
-  const readMore = async (): Promise<JsonObject | null> => {
+  // When the shell last printed something (the start counts).
+  let lastOutputAt = Date.now();
+  // A read can end inside a screen code; its start waits for the next read
+  // so the pipe never gets half a code the stripper could not match.
+  let heldCode = "";
+  const writeText = (data: string, last: boolean): void => {
+    if (!options.text) return;
+    if (process.stdout.isTTY) {
+      if (data) process.stdout.write(data);
+      return;
+    }
+    let text = `${heldCode}${data}`;
+    heldCode = "";
+    const partial = last ? null : FOLLOW_SHELL_PARTIAL_CODE.exec(text);
+    if (partial && text.length - partial.index <= 256) {
+      heldCode = text.slice(partial.index);
+      text = text.slice(0, partial.index);
+    }
+    if (text) process.stdout.write(stripAnsiWithOptions(text, { preserveCarriageReturns: true }));
+  };
+  const readMore = async (last = false): Promise<JsonObject | null> => {
     const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
-    if (!isRecord(read)) return null;
+    if (!isRecord(read)) {
+      if (last) writeText("", true);
+      return null;
+    }
     const data = typeof read.data === "string" ? read.data : "";
+    // To a pipe (an agent reading it), without the screen codes a terminal
+    // adds (Windows' console sends a title, clear screen and mode switches
+    // around the first line of output).
+    if (data || last) writeText(data, last);
     if (data) {
-      if (options.text) process.stdout.write(data);
       output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
+      lastOutputAt = Date.now();
     }
     if (typeof read.nextSince === "number") since = read.nextSince;
     return read;
   };
+  let quietNoticeSent = false;
+  // The commands that read or stop the shell, on the machine it runs on.
+  const onMachine = options.machine?.trim()
+    ? ` --machine ${quoteShellArg(options.machine.trim())}${options.machineProject?.trim() ? ` --machine-project ${quoteShellArg(options.machineProject.trim())}` : ""}`
+    : "";
+  const ptyId = asString(created.ptyId);
+  const readAndStop = `Read it: ade terminal read --terminal ${terminalId}${onMachine} --text`
+    + (ptyId ? ` · stop it: ade shell close ${ptyId}${onMachine}` : "");
   for (;;) {
     const read = await readMore();
     // A brain older than the read's status falls back to the terminal list.
@@ -39337,7 +42793,7 @@ async function followShellToExit(
         : null));
     if (!isRecord(state) || state.status !== "running") {
       // One last read: output written just before the end.
-      await readMore();
+      await readMore(true);
       const exitCode = isRecord(state) && typeof state.exitCode === "number" ? state.exitCode : null;
       return {
         ...created,
@@ -39346,6 +42802,21 @@ async function followShellToExit(
         exitCode,
         ...(options.text ? {} : { output }),
       };
+    }
+    const quietMs = Date.now() - lastOutputAt;
+    if (quietMs >= FOLLOW_SHELL_QUIET_LIMIT_MS) {
+      throw new CliToolError(
+        `The command printed nothing for ${Math.round(FOLLOW_SHELL_QUIET_LIMIT_MS / 60_000)} minutes and still runs, so ADE stopped waiting for it. `
+          + `It can wait for input (a pager or a prompt). ${readAndStop}`,
+        { terminalId, ...(ptyId ? { ptyId } : {}), status: "running" },
+      );
+    }
+    if (!quietNoticeSent && quietMs >= FOLLOW_SHELL_QUIET_NOTICE_MS) {
+      quietNoticeSent = true;
+      process.stderr.write(
+        `\n· the command printed nothing for ${Math.round(FOLLOW_SHELL_QUIET_NOTICE_MS / 60_000)} minutes and still runs. `
+          + `It can wait for input (a pager or a prompt). ${readAndStop}\n`,
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, FOLLOW_SHELL_POLL_MS));
   }
@@ -39444,10 +42915,18 @@ async function executePlan(
               },
             }
           : resolvedParams;
-        values[step.key] = await waitThroughBrowserApproval(async () => {
+        const answer = waitThroughBrowserApproval(async () => {
           const raw = await connection.request(step.method, params);
           return step.unwrapToolResult ? unwrapToolResult(raw) : raw;
         });
+        values[step.key] = step.optional && step.timeoutMs != null
+          ? await Promise.race([
+            answer,
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error(`${step.method} did not answer in ${step.timeoutMs} ms.`)), step.timeoutMs).unref?.();
+            }),
+          ])
+          : await answer;
       } catch (error) {
         if (!step.optional) {
           const createdSessionId = (
@@ -39505,14 +42984,18 @@ async function executePlan(
       error instanceof CliExecutionError
     )
       throw error;
+    const cause = error instanceof Error ? error.message : String(error);
     throw new CliExecutionError(`Failed while running ${plan.label}.`, {
-      cause: error instanceof Error ? error.message : String(error),
+      cause,
       mode: connection.mode,
       projectRoot: connection.projectRoot,
       workspaceRoot: connection.workspaceRoot,
       socketPath: connection.socketPath,
       nextAction:
-        connection.mode === "desktop-socket"
+        // A clone into a folder that is already there: a doctor run would not help.
+        plan.label === "projects clone" && /already exists/i.test(cause)
+          ? "Clone into another folder: add --name <dir> (a new folder name) or --path <folder> (where it goes)."
+          : connection.mode === "desktop-socket"
           ? "Check ADE desktop logs or retry with --headless if the workflow does not need UI-owned state."
           : "Run ade doctor --json to inspect local project readiness, or start ADE desktop and retry with --socket.",
     });
@@ -40020,18 +43503,115 @@ function isChatLocateCommand(command: string[]): boolean {
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
-  const parsed = extractMachineTargeting(parseCliArgs(argv));
-  const restoreShellScope = dropShellScopeForOtherProject(parsed.options);
-  try {
+  // A device command with no --machine and no --lane follows the chat's
+  // device choice (`ade devices use`), exactly as --machine would.
+  const { parsed: chosen, cloudIphone } = await withChatDeviceChoice(parseCliArgs(argv));
+  // The ADE Cloud iPhone: the chat's `ios@cloud` choice, or `--machine cloud` on one `ade apple` command.
+  // Read before machine targeting, which knows no machine "cloud"; the
+  // selected project (`--project-root`, an account project) applies as for
+  // any command, so a build uploads that checkout.
+  const cloudCommand = cloudIphone ? chosen.command.slice(1) : cloudMachineAppleCommand(chosen.command);
+  if (cloudCommand) {
+    // Help first: `ade apple start --machine cloud --help` must not start (or stop) a phone.
+    if (hasHelpFlag(cloudCommand)) return await runParsedCli(extractMachineTargeting({ ...chosen, command: ["apple", ...cloudCommand] }));
+    await applyAccountProjectSelector(chosen.options);
+    return await withShellScopeFor(chosen.options, async () => await runCloudIphoneCommand(chosen, cloudCommand));
+  }
+  const parsed = extractMachineTargeting(chosen);
+  await applyAccountProjectSelector(parsed.options);
+  return await withShellScopeFor(parsed.options, async () => {
     if (isChatLocateCommand(parsed.command)) return await runChatLocate(parsed);
+    if (isDevicesCommand(parsed.command)) return await runDevicesCommand(parsed);
     if (!parsed.options.machine) {
       const sessionId = chatIdForLookup(parsed);
       return sessionId ? await runChatHereThenElsewhere(parsed, sessionId) : await runParsedCli(parsed);
     }
     return await runOnMachine(parsed);
-  } finally {
-    restoreShellScope();
+  });
+}
+
+/**
+ * The account project a command names (`--project-root ap_<id>|owner/name`,
+ * or `--machine-project` with either form), as a project this command can
+ * use. With `--machine`, the selector goes to that machine (an id after its
+ * merges); without, it becomes this computer's copy. The account's list is
+ * the one this machine's brain last read (`account-projects.json`), so a
+ * signed-out computer gets a message that says so.
+ */
+/**
+ * The account signed in on this computer: its user id, null when signed out,
+ * or undefined when that cannot be told (the saved list then counts as before).
+ */
+function signedInAccountUserIdForSelector(secretsDir: string): string | null | undefined {
+  try {
+    const status = getSharedAccountAuthService({ secretsDir }).getStatus();
+    if (!status.signedIn) return null;
+    return status.userId?.trim() || undefined;
+  } catch {
+    return undefined;
   }
+}
+
+async function applyAccountProjectSelector(options: GlobalOptions): Promise<void> {
+  const remote = Boolean(options.machine?.trim()) || Boolean(options.allMachines);
+  const typed = options.projectSelector?.trim() || (remote ? options.machineProject?.trim() : null) || null;
+  if (!typed) return;
+  const selector = parseAccountProjectSelector(typed);
+  if (!selector) return;
+  const layout = resolveMachineAdeLayout();
+  const state = readAccountProjectState(layout.adeDir);
+  // The saved list stays on disk after a sign-out, and a new account replaces
+  // it only at its first sync: it counts for the account signed in now only.
+  const signedInUserId = signedInAccountUserIdForSelector(layout.secretsDir);
+  const listed = state.userId !== null && state.cursor !== null
+    && (signedInUserId === undefined || state.userId === signedInUserId);
+  if (remote && !listed) {
+    // This shell's own home has no list (another home, or `--socket` to
+    // another brain): the other machine matches the value against its own
+    // folders, by account link or by origin. `--project-root` carried it, so
+    // it moves to the machine's selector; dropped, the call would run in the
+    // repository of the current folder.
+    options.machineProject = typed;
+    options.projectSelector = null;
+    return;
+  }
+  if (selector.kind === "id" && !listed) {
+    throw new CliUsageError(
+      `ADE has not read your account's projects on this computer, so it cannot find ${selector.id}. `
+      + `${ACCOUNT_SIGN_IN_NEXT_STEP} \`ade doctor\` shows the account state.`,
+    );
+  }
+  const resolved = resolveAccountProject(selector, listed ? state.projects : {});
+  if (resolved.kind === "unknown") {
+    throw new CliUsageError(`Your ADE account has no project ${typed}. \`ade projects list --account\` lists them.`);
+  }
+  if (resolved.kind === "removed") {
+    throw new CliUsageError(`${resolved.name} was removed from your ADE account. Add it again from ADE to use it.`);
+  }
+  if (remote) {
+    // The other machine matches the final id or the repository address.
+    options.machineProject = resolved.project ? resolved.project.id : typed;
+    options.projectSelector = null;
+    return;
+  }
+  const { ProjectRegistry } = await import("./services/projects/projectRegistry");
+  const records = new ProjectRegistry(layout).list().filter((record) => recordMatchesAccountProject(record, resolved));
+  const mainIds = new Set((resolved.project?.copies ?? []).filter((copy) => copy.isMain).map((copy) => copy.checkoutId));
+  const ordered = [...records].sort((left, right) =>
+    Number(mainIds.has(right.projectId)) - Number(mainIds.has(left.projectId))
+    || (right.lastOpenedAt ?? 0) - (left.lastOpenedAt ?? 0));
+  const copy = ordered.find((record) => fs.existsSync(record.rootPath)) ?? null;
+  if (!copy) {
+    const elsewhere = resolved.project?.copies.length ?? 0;
+    throw new CliUsageError(
+      `${resolved.name} has no copy on this computer. `
+      + (elsewhere > 0
+        ? `It has ${elsewhere} ${elsewhere === 1 ? "copy" : "copies"} on other computers: \`ade projects list --account\` shows where; add --machine <name> to run there.`
+        : "No computer has a copy yet: `ade projects clone <owner/name>` adds one here."),
+    );
+  }
+  options.projectRoot = copy.rootPath;
+  options.projectSelector = null;
 }
 
 /**
@@ -40040,47 +43620,79 @@ async function runCli(
  * names another project with `--project-root` must not pick that lane or
  * worktree up as its default: the lane is not in the named project, and a
  * worktree there would route the call back to the shell's project. For this
- * run only, the shell's lane and worktree are dropped (an explicit
- * `--workspace-root` still wins). Returns the undo.
+ * run only, the shell's lane and worktree are dropped. An explicit
+ * `--workspace-root` wins, and stands in for the shell's `ADE_WORKSPACE_ROOT`
+ * for the run: plan builders (`proof`'s `callerRoot`) read only the env.
  */
-function dropShellScopeForOtherProject(options: GlobalOptions): () => void {
+function withShellScopeFor<T>(options: GlobalOptions, fn: () => Promise<T>): Promise<T> {
+  const workspaceRoot = options.workspaceRoot;
+  const run = workspaceRoot ? () => withShellEnv({ ADE_WORKSPACE_ROOT: path.resolve(workspaceRoot) }, fn) : fn;
   const explicitRoot = options.projectRoot;
   const shellRoot = process.env.ADE_PROJECT_ROOT?.trim();
-  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return () => {};
-  const saved: Array<[string, string | undefined]> = [];
-  for (const name of ["ADE_PROJECT_ROOT", "ADE_WORKSPACE_ROOT", "ADE_LANE_ID"] as const) {
-    if (name === "ADE_WORKSPACE_ROOT" && options.workspaceRoot) continue;
-    saved.push([name, process.env[name]]);
-    delete process.env[name];
-  }
-  if (saved.some(([name, value]) => name !== "ADE_PROJECT_ROOT" && value?.trim())) {
+  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return run();
+  const names = ["ADE_PROJECT_ROOT", "ADE_LANE_ID", ...(workspaceRoot ? [] : ["ADE_WORKSPACE_ROOT"])];
+  if (names.some((name) => name !== "ADE_PROJECT_ROOT" && process.env[name]?.trim())) {
     process.stderr.write(
       `ade: --project-root ${explicitRoot} is not this shell's project (${shellRoot}); `
       + "ignoring the shell's ADE_LANE_ID and ADE_WORKSPACE_ROOT for this command.\n",
     );
   }
-  return () => {
+  return withoutShellEnv(names, run);
+}
+
+/**
+ * Runs `fn` with the named variables of this shell out of the environment,
+ * and puts them back when it ends (when its promise settles, for an async one).
+ */
+function withoutShellEnv<T>(names: readonly string[], fn: () => T): T {
+  return withShellEnv(Object.fromEntries(names.map((name) => [name, undefined])), fn);
+}
+
+/**
+ * Runs `fn` with these variables set (undefined: removed) in the environment,
+ * and puts them back when it ends (when its promise settles, for an async one).
+ */
+function withShellEnv<T>(values: Readonly<Record<string, string | undefined>>, fn: () => T): T {
+  const names = Object.keys(values);
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) {
+    const value = values[name];
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  const restore = () => {
     for (const [name, value] of saved) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
   };
+  let result: T;
+  try {
+    result = fn();
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  if (result instanceof Promise) return result.finally(restore) as T;
+  restore();
+  return result;
+}
+
+/**
+ * Runs `fn` without this shell's lane. That lane is a lane on THIS machine:
+ * a plan for another machine that defaulted to it would name a lane that
+ * machine has never heard of. There the caller says `--lane <id>` (from
+ * `ade lanes list --machine …`) or lets the target pick, as `ade chat launch`
+ * does with a new lane.
+ */
+export function withoutShellLane<T>(fn: () => T): T {
+  return withoutShellEnv(["ADE_LANE_ID"], fn);
 }
 
 async function runOnMachine(
   parsed: ReturnType<typeof extractMachineTargeting>,
 ): Promise<{ output: string; exitCode: number }> {
-  // This shell's lane is a lane on THIS machine. Plan builders that default
-  // to it would name a lane the other machine has never heard of; there the
-  // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the
-  // target pick, as `ade chat launch` does with a new lane. Only for this run.
-  const laneId = process.env.ADE_LANE_ID;
-  delete process.env.ADE_LANE_ID;
-  try {
-    return await runParsedCli(parsed);
-  } finally {
-    if (laneId !== undefined) process.env.ADE_LANE_ID = laneId;
-  }
+  return await withoutShellLane(() => runParsedCli(parsed));
 }
 
 /**
@@ -40093,14 +43705,15 @@ async function resolveCliCloudEnabled(parsed: ReturnType<typeof extractMachineTa
   const isCloud = primary === "cloud";
   // What the server runs on a cloud computer never depends on the answer.
   if (isCloud && CLOUD_ON_COMPUTER_PLANS.has(parsed.command[1]?.toLowerCase() ?? "")) {
-    const { isCloudMachine } = await import("./services/power/cloudKeepAwake");
-    if (isCloudMachine()) {
+    if (isAdeCloudComputer()) {
       cliCloudEnabled = true;
       setAdeCloudSkillVisible(true);
       return;
     }
   }
-  const skipped = !isCloud && primary !== "skill" && primary !== "skills" && primary !== "help" && primary !== "settings" && primary !== "setting";
+  // `providers accounts list --synced` names ADE Cloud's part of the shared sign-ins only with access.
+  const syncedSignIns = (primary === "providers" || primary === "provider") && parsed.command.includes("--synced");
+  const skipped = !isCloud && !syncedSignIns && primary !== "skill" && primary !== "skills" && primary !== "help" && primary !== "settings" && primary !== "setting";
   if (skipped && !hasHelpFlag(parsed.command)) return;
   let client: Pick<CliConnection, "request" | "close"> | null = null;
   try {
@@ -40189,7 +43802,7 @@ async function runParsedCli(
     };
   if (plan.kind === "project-icon-worker") {
     return {
-      output: `${JSON.stringify(resolveRemoteProjectIcon(plan.rootPath))}\n`,
+      output: `${JSON.stringify(resolveRemoteProjectIconForRecord(plan.rootPath, plan.recordMode ?? "off"))}\n`,
       exitCode: 0,
     };
   }
@@ -40368,29 +43981,38 @@ async function runParsedCli(
         projectRoot: fs.existsSync(path.join(projectRoot, ".ade")) ? projectRoot : null,
         cliVersion: VERSION,
       });
-      // Copy-then-open, the same order the desktop button uses: the issue
-      // template asks the user to paste the report from their clipboard, so
-      // opening it without copying first sends them to a form with nothing to
-      // paste. Both steps are best effort and the report is printed regardless.
-      const openedIssue = plan.open ? await openDiagnosticIssue(built) : null;
       // Saved BEFORE the upload is attempted, so the path printed under a
       // failure is a file that already exists rather than one written after we
       // knew we needed it.
       const savedPath = plan.send ? saveDiagnosticReportCopy(built, { surface: "cli" }) : null;
       // Sending is opt-in and never blocks the printed report: a failed upload
-      // still leaves the user holding everything they need to file by hand.
+      // still leaves the user holding everything they need.
       const sent = plan.send ? await sendDiagnosticReport(built) : null;
+      // The full report goes to ADE privately, never to a public page. The
+      // public GitHub issue exists only after a send, and holds only the
+      // reference, the version and the OS family.
+      const publicUrl = publicIssueUrlForSend(built, sent);
+      const opened = publicUrl && plan.open ? await openPublicIssue(publicUrl) : false;
       if (parsed.options.text) {
-        const clipboardNote = openedIssue?.copied ? "\n(the report is on your clipboard)" : "";
         const sendNote = sent ? `\n${describeDiagnosticUpload(sent, savedPath)}` : "";
+        const nextStep = !plan.send
+          ? "\nTo send this report to the ADE team privately, run `ade report-issue --send`. Do not post it on a public page."
+          : publicUrl
+            ? opened
+              ? `\nOpened a public GitHub issue that holds only the reference, ADE version and OS:\n${publicUrl}`
+              : `\nTo also open a public GitHub issue (it holds only the reference, ADE version and OS), use:\n${publicUrl}`
+            : "";
+        const openNote = plan.open && !publicUrl
+          ? "\nNothing opened: a public GitHub issue needs a report sent with --send."
+          : "";
         return {
-          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}${sendNote}\n`,
+          output: `${built.report}${sendNote}${nextStep}${openNote}\n`,
           exitCode: 0,
         };
       }
       return {
         output: formatOutput(
-          buildReportIssuePayload(built, openedIssue, sent, savedPath),
+          buildReportIssuePayload(built, sent, savedPath, publicUrl ? { url: publicUrl, opened } : null),
           parsed.options,
           undefined,
         ),
@@ -40559,10 +44181,11 @@ async function runParsedCli(
       };
     }
     if (plan.saveScreenshot && (plan.saveScreenshot.outPath || parsed.options.text)) {
-      const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath);
+      const surface = plan.saveScreenshot.surface ?? "browser";
+      const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath, surface);
       return {
         output: parsed.options.text
-          ? `${browserTargetLine(unwrapActionEnvelope(result))}${renderKeyValues("ADE browser screenshot", [
+          ? `${surface === "browser" ? browserTargetLine(unwrapActionEnvelope(result)) : ""}${renderKeyValues(surface === "browser" ? "ADE browser screenshot" : "ADE App Control screenshot", [
             ["saved", saved.savedPath],
             ["size", saved.width && saved.height ? `${saved.width}x${saved.height}` : null],
             ["bytes", saved.bytes],
@@ -40671,6 +44294,28 @@ async function main(): Promise<void> {
       await runCursorHookScript(process.argv[3]);
       return;
     }
+    // Git's credential helper for clones made on an ADE Cloud computer
+    // (services/github/gitCredentialHelper.ts): answered here, with no brain
+    // and no argument parsing, because git calls it on every push. A missing
+    // or unreadable sign-in is one line on stderr, which git shows.
+    if (process.argv[2] === "git" && process.argv[3] === "credential") {
+      const { runGitCredentialHelper } = await import("./services/github/gitCredentialHelper");
+      process.exitCode = await runGitCredentialHelper(process.argv[4], {
+        readToken: async () => {
+          const quiet: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+          return await createHeadlessGitHubService(process.cwd(), quiet).getGitTransportTokenOrThrowAsync();
+        },
+      });
+      return;
+    }
+    // A tracked Claude CLI's turn hook (cliTurnHook.ts): silent, always exit 0.
+    if (process.argv[2] === CLI_TURN_HOOK_COMMAND) {
+      await runCliTurnHook(process.argv.slice(3), (argv) => runCli(argv));
+      // The hook gives up after its deadline, but a report still in flight
+      // (a hung socket) or an unclosed stdin would keep the process alive.
+      // Claude waits on nothing from it, so end it here.
+      process.exit(0);
+    }
     // The proxy supervisor's synchronous health probe on the standalone runtime.
     if (process.argv[2] === PROXY_HEALTH_PROBE_COMMAND) {
       const port = Number(process.argv[3]);
@@ -40718,7 +44363,10 @@ async function main(): Promise<void> {
         iosSimulatorSubcommandFromArgv(process.argv.slice(2)),
       );
       if (iosHint) await writeProcessOutput(process.stderr, `${iosHint}\n`);
-      const desktopHint = macDesktopErrorHint(error.message);
+      // A refusal from another machine (`--machine`) is about that machine,
+      // not this one.
+      const refusedOnOtherMachine = isRecord(error.details) && typeof error.details.machine === "string";
+      const desktopHint = macDesktopErrorHint(error.message, refusedOnOtherMachine ? null : process.platform);
       if (desktopHint) await writeProcessOutput(process.stderr, `${desktopHint}\n`);
       const androidHint = androidEmulatorErrorHint(error.message);
       if (androidHint) await writeProcessOutput(process.stderr, `${androidHint}\n`);
@@ -40794,7 +44442,6 @@ export {
   MAC_DESKTOP_VALUE_FLAGS,
   VALUE_CARRIER_FLAGS,
   buildCliPlan,
-  parseSnoozeDurationMs,
   resolveSnoozeUntilIso,
   checkLinearReadiness,
   findProjectRoots,

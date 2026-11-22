@@ -65,6 +65,8 @@ export type CrossScopeChatsDeps = {
   scopeRegistry: {
     get(projectId: string): Promise<ScopeLike>;
     getIfBooted(projectId: string): Promise<ScopeLike> | null;
+    /** A project refused as too slow to open: its folder is not read here. */
+    isOpenBlocked(projectId: string): boolean;
   };
   personalChatScope: {
     runtimeForDelivery(): Promise<AdeRuntime>;
@@ -264,6 +266,8 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
     if (located) return located.scope;
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return null;
     for (const record of deps.projectRegistry.list()) {
+      // A refused project's transcripts are not stat'd here, on the brain's thread.
+      if (deps.scopeRegistry.isOpenBlocked(record.projectId)) continue;
       const layout = resolveAdeLayout(record.rootPath);
       const onDisk = resolveReadableHistoryPath(path.join(layout.chatTranscriptsDir, `${sessionId}.jsonl`))
         ?? resolveReadableHistoryPath(path.join(layout.transcriptsDir, `${sessionId}.chat.jsonl`));

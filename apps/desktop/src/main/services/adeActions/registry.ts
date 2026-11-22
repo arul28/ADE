@@ -1,10 +1,14 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { CLOUD_DEFAULT_TIER_SETTING_KEY } from "../../../shared/cloudTiers";
 import {
   resolveContinueAfterRestart,
   writeSavedContinueAfterRestart,
 } from "../../../../../ade-cli/src/services/runtime/continueAfterRestartStore";
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
-import { encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
+import { codedError, encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
+import { LaneShareError } from "../../../../../ade-cli/src/services/sync/laneShareError";
+import type { LaneShareCaller } from "../../../shared/laneShareRights";
 import { stampedAdeVersion } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpAccount";
 import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import fs from "node:fs";
@@ -13,7 +17,9 @@ import path from "node:path";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import type { IntegrationConnectRequestResult } from "../../../shared/integrationConnect";
+import type { AdeCardPayload } from "../../../shared/adeCard";
 import { readImageFileAsDataUrl } from "../chat/imageAttachmentConverter";
+import { createAttachmentPartStore, type AttachmentPartArgs, type AttachmentPartStore } from "../chat/chatAttachmentParts";
 import { createHash } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { ingestSceneSnapshot } from "../scenes/sceneSnapshotIngest";
@@ -67,7 +73,8 @@ import type {
   AgentCliLoginSubmitCodeArgs,
 } from "../../../shared/types/agentCliLogin";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
-import { buildHarnessLaunchEnv, listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
+import { noteProviderLoginChanged } from "../ai/providerLoginChanged";
+import { buildHarnessLaunchEnv, listHarnessRouteCatalog, probeOpenCodeKeyModelsInBackground } from "../chat/harnessRouteCatalog";
 import { testHarnessRoute } from "../chat/harnessRouteTest";
 import { resolveHarnessPresetForLaunch } from "../chat/harnessPresetLaunch";
 import { prepareHarnessLaunch } from "../chat/harnessLaunchPrepare";
@@ -137,8 +144,7 @@ import type {
   DraftUpdateArgs,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
-import { isAcpChatProvider } from "../../../shared/types/chat";
-import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
+import { collectAcpProviderDiagnostics, requireAcpProvider } from "../ai/acpProviderDiagnostics";
 import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import type { LinearIngressStatus } from "../automations/linearIngressService";
@@ -186,8 +192,8 @@ import type {
   CtoAttentionState,
   CtoRunProjectScanResult,
   CursorCloudServiceTier,
-  CtoStartFreshSessionResult,
-  CtoThreadHealth,
+  CtoRefreshContextResult,
+  CtoUpdateNotesArgs,
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
@@ -245,11 +251,12 @@ import { machineStatsReader } from "../machineStats/machineStatsService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import type { CtoMemoryTags } from "../cto/ctoMemoryService";
+import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { getSourceFaviconService, type ResolveSourceFaviconsArgs } from "../chat/sourceFaviconService";
 import { resolveSmartLinkImage } from "../chat/smartLinkPreviewService";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
-import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import { deleteSessionRowWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
 import { removeProviderAccount, signOutProviderAccount } from "../providerAccounts/signOutProviderAccount";
@@ -260,6 +267,7 @@ import {
 } from "../sessions/sessionLifecycleSettings";
 import {
   getSessionWithChatProjection,
+  isChatToolType,
   listSessionsWithChatProjection,
 } from "../sessions/chatSessionProjection";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
@@ -269,6 +277,8 @@ import {
   captureAgentCardAnalytics,
   captureNotificationSentAnalytics,
   captureWebhookUrlCreatedAnalytics,
+  capturePasswordsAnalytics,
+  captureGhAccountSharingAnalytics,
   captureAutomationTestAnalytics,
   captureProviderAccountSettingsChange,
   providerAccountAnalyticsCapture,
@@ -281,11 +291,13 @@ import {
 import type { AdeActionDomain } from "./domains";
 import { ADE_ACTION_ALLOWLIST, isAutomationAllowedAdeAction } from "./actionPolicy";
 import type { AutomationAdeActionRegistry } from "../automations/automationService";
+import { readGitOriginUrl } from "../projects/recentProjectSummary";
 import {
   asActionRecord,
   optionalNonEmptyString,
   readBranchDriftResolution,
   readChatHistoryActionArgs,
+  readCloudStartBranchArgs,
   readObjectActionArg,
   readOptionalIntegerActionField,
   readRuntimeFileWatchSenderId,
@@ -301,20 +313,43 @@ import {
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
+import { runWithSecrets } from "../secrets/secretExec";
+import { buildPasswordsDomainService } from "../passwords/passwordsDomain";
+import { buildMessagesDomain, type MessagesBridge } from "../messagesIntegration/messagesDomain";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
-import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
-import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
+import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
+import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
+import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../shared/automationCloud";
+import { CloudPhoneError, createCloudPhoneService, type CloudPhoneService } from "../adeCloud/cloudPhoneService";
+import { cloudPhoneCallerChat } from "../adeCloud/cloudPhoneRun";
+import { captureError, markReportedToSentry } from "../../../shared/sentry/capture";
+import { CLOUD_ACCESS_REFUSED } from "../adeCloud/cloudProvider";
+import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudServerFor, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
+import type { CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
+import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
-import { buildCloudReadyActions } from "../adeCloud/cloudReadyActions";
 import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
-import { createCloudBrainMaker, type CloudBrainMaker } from "../adeCloud/cloudBrainMaker";
-import { approveInHeadlessChromium, findHeadlessChromium } from "../adeCloud/cloudHeadlessApproval";
+import { createCloudLaneAccount } from "../adeCloud/cloudLaneAccount";
+import { cloudDiskGrowHost } from "../adeCloud/cloudDiskGrowHost";
+import type { KeptLaneRestoreProject } from "../../../../../ade-cli/src/services/cloudChats/keptLaneRestore";
+import { pickKeptLaneRestoreArgs, type CloudKeptLaneRestorePreview, type CloudKeptLaneRestoreRecord } from "../../../shared/cloudKeptLaneRestore";
+import { createCloudBrainMaker, type CloudBrainMaker, type CloudBrainMakerBase } from "../adeCloud/cloudBrainMaker";
+import {
+  cloudLaneLaunchRecordsDir,
+  cloudLaneLaunchTransportSet,
+  createCloudLaneLaunchBrainHost,
+  hasCloudLaneLaunchRecords,
+  type CloudLaneLaunchBrainHost,
+} from "../adeCloud/cloudLaneLaunchBrainHost";
+import { accountAppConnection, cloudGitPreflight } from "../adeCloud/cloudGitCredential";
+import { approveSignInLink, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
+import { createCloudApiClient } from "../../../shared/cloudApiClient";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
-import { getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { CLOUD_READY_VAULT_KEY, createCloudReadySettingsStore } from "../adeCloud/cloudReadySettings";
+import { getSharedAccountAttestationConfig, getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
@@ -390,10 +425,10 @@ function withoutHostOnlyChatMetadata(
 type AutomationsDomainService = {
   list(): AutomationRuleSummary[];
   get(args: { id: string }): AutomationRule | null;
-  saveRule(args: AutomationSaveDraftRequest): AutomationSaveDraftResult;
+  saveRule(args: AutomationSaveDraftRequest): Promise<AutomationSaveDraftResult>;
   deleteRule(args: { id: string }): AutomationRuleSummary[];
   toggleRule(args: { id: string; enabled: boolean }): AutomationRuleSummary[];
-  setRunOn(args: { id: string; deviceId?: string | null; name?: string | null }): AutomationRuleSummary[];
+  setRunOn(args: { id: string; deviceId?: string | null; name?: string | null; cloud?: boolean }): Promise<AutomationRuleSummary[]>;
   triggerManually(args: AutomationManualTriggerRequest): Promise<AutomationRun>;
   planTest(args: AutomationTestRequest): Promise<AutomationTestPlan>;
   runTest(args: AutomationTestRequest): Promise<AutomationRun>;
@@ -433,6 +468,11 @@ function requireWebhooks(runtime: AdeRuntime) {
   return runtime.automationIngressService.webhooks;
 }
 
+/** ADE Cloud as a rule's home needs the account to have it: refused here, as the editor hides the choice. */
+async function requireAdeCloudHome(runtime: AdeRuntime): Promise<void> {
+  if (!(await cloudAccessEnabled(cloudAccessDeps(runtime)))) throw new Error(ADE_CLOUD_HOME_UNAVAILABLE);
+}
+
 function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainService | null {
   const automationService = runtime.automationService;
   const plannerService = runtime.automationPlannerService;
@@ -445,10 +485,16 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
       if (!trimmed) return null;
       return projectConfigService.get().effective.automations.find((r) => r.id === trimmed) ?? null;
     },
-    saveRule: (args) => plannerService.saveDraft(args),
+    saveRule: async (args) => {
+      if (args?.draft?.home === "ade-cloud") await requireAdeCloudHome(runtime);
+      return plannerService.saveDraft(args);
+    },
     deleteRule: ({ id }) => automationService.deleteRule({ id }),
     toggleRule: ({ id, enabled }) => automationService.toggle({ id, enabled }),
-    setRunOn: (args) => automationService.setRunOn(args),
+    setRunOn: async (args) => {
+      if (args?.cloud) await requireAdeCloudHome(runtime);
+      return automationService.setRunOn(args);
+    },
     triggerManually: (args) => automationService.triggerManually(args),
     planTest: (args) => automationService.planTest(args),
     runTest: async (args) => {
@@ -616,7 +662,7 @@ type OpaqueService = Record<string, unknown>;
  * (buildMachineAccountDomainServices).
  */
 export type AccountDomainRuntime = Pick<AdeRuntime, "logger">
-  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService">>
+  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "accountSettingsStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService" | "passwordService" | "laneService" | "sessionService">>
   & { projectRoot?: string | null };
 
 function toService(value: unknown): OpaqueService | null {
@@ -634,6 +680,10 @@ const ADE_MCP_ACCOUNT_ROWS_REFUSED =
  * MCP service reads and writes them in-process (remoteMcpShared.ts), never
  * through this domain.
  */
+function vaultWriteWireAnswer(answer: "queued" | "stale" | "refused"): boolean | "stale" {
+  return answer === "stale" ? "stale" : answer === "queued";
+}
+
 function buildAccountVaultDomainService(runtime: AccountDomainRuntime): OpaqueService | null {
   const store = runtime.accountVaultStore;
   if (!store) return null;
@@ -647,13 +697,15 @@ function buildAccountVaultDomainService(runtime: AccountDomainRuntime): OpaqueSe
       guard(args[1]);
       return store.get(...args);
     },
-    set: (...args: Parameters<Store["set"]>) => {
+    // `true`, `false` (refused), or `"stale"` when the write named a revision
+    // the item no longer has; the desktop bridge reads all three.
+    set: (...args: Parameters<Store["trySet"]>) => {
       guard(args[1]);
-      return store.set(...args);
+      return vaultWriteWireAnswer(store.trySet(...args));
     },
-    remove: (...args: Parameters<Store["remove"]>) => {
+    remove: (...args: Parameters<Store["tryRemove"]>) => {
       guard(args[1]);
-      return store.remove(...args);
+      return vaultWriteWireAnswer(store.tryRemove(...args));
     },
     sync: (...args: Parameters<Store["sync"]>) => store.sync(...args),
     pendingKeys: (...args: Parameters<Store["pendingKeys"]>) => {
@@ -711,6 +763,120 @@ function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null 
   return Object.fromEntries(
     Object.entries(handlers).map(([action, handler]) => [action, (args?: Record<string, unknown>) => handler(args ?? {})]),
   );
+}
+
+/**
+ * Lane sharing, the owner's side (lanes on THIS machine). A renderer call for
+ * a lane on another machine passes that machine's pin, so it runs there.
+ */
+/**
+ * The lane share services throw `LaneShareError` with a `code`. Error fields
+ * do not cross IPC, so the code goes in the message (`code: sentence`), where
+ * `parseCodedErrorMessage` reads it.
+ */
+async function withLaneShareErrorCode<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (error instanceof LaneShareError) {
+      // Keeps the "expected" mark of an unreachable account directory.
+      throw carryExpected(error, codedError(encodeCodedErrorMessage(error.wireCode, error.message), error.wireCode));
+    }
+    throw error;
+  }
+}
+
+/**
+ * Who calls a `lane_share` action. `callerClass` is set by the host's RPC
+ * server from its own session (`run_ade_action` drops any value the caller
+ * sent, and refuses positional arguments for this domain), so here it is
+ * the host's word. Anything but exactly "person" is an agent: a route that
+ * does not set it can never act as the person. Automations never reach this
+ * domain (`isAutomationAllowedAdeAction`).
+ */
+export function laneShareCallerOf(args: Record<string, unknown> | undefined): LaneShareCaller {
+  return args?.callerClass === "person" ? "person" : "agent";
+}
+
+function buildLaneShareDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const sync = runtime.syncService;
+  const service = typeof sync?.getLaneShareService === "function" ? sync.getLaneShareService() : null;
+  if (!service) return null;
+  return {
+    create: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.create({
+      laneId: args?.laneId,
+      receiverEmail: args?.receiverEmail,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    }, laneShareCallerOf(args))),
+    list: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.list({ scope: args?.scope })),
+    updateRights: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.updateRights({
+      grantId: args?.grantId,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    }, laneShareCallerOf(args))),
+    revoke: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.revoke({
+      grantId: args?.grantId,
+      laneId: args?.laneId,
+      receiverEmail: args?.receiverEmail,
+    }, laneShareCallerOf(args))),
+    resendInvite: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.resendInvite({ grantId: args?.grantId }, laneShareCallerOf(args))),
+    listReceived: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.listReceived(laneShareCallerOf(args))),
+    leave: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.leave({ grantId: args?.grantId }, laneShareCallerOf(args))),
+    ...buildLaneShareMoveActions(sync),
+  };
+}
+
+/**
+ * Moving a chat to or from the other person of a share (`laneShareMoveService.ts`).
+ * The host part (`moveStart`, `moveRespond`, `moveCancel`, `moveList`) runs on
+ * the machine of the shared lane. The `moveReceive*` and `movePack*` parts run
+ * on the guest's own machine, through its pin. All are user-only.
+ */
+function buildLaneShareMoveActions(sync: AdeRuntime["syncService"]): Record<string, (args?: Record<string, unknown>) => Promise<unknown>> {
+  const moves = typeof sync?.getLaneShareMoveService === "function" ? sync.getLaneShareMoveService() : null;
+  if (!moves) return {};
+  const run = <T>(call: () => T | Promise<T>) => withLaneShareErrorCode(async () => await call());
+  return {
+    moveStart: (args) => run(() => moves.start({ grantId: args?.grantId, sessionId: args?.sessionId })),
+    moveRespond: (args) => run(() => moves.respond({
+      moveId: args?.moveId,
+      accept: args?.accept,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    })),
+    moveCancel: (args) => run(() => moves.cancel({ moveId: args?.moveId })),
+    moveList: () => run(() => moves.list()),
+    moveReceivePrepare: (args) => run(() => moves.receivePrepare({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      repoKey: args?.repoKey,
+      modelHint: args?.modelHint,
+      expiresAt: args?.expiresAt,
+    })),
+    moveReceiveBegin: (args) => run(() => moves.receiveBegin({ moveId: args?.moveId, grantId: args?.grantId, payload: args?.payload })),
+    moveReceiveChunk: (args) => run(() => moves.receiveChunk({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      index: args?.index,
+      data: args?.data,
+    })),
+    moveReceiveLand: (args) => run(() => moves.receiveLand({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      fromName: args?.fromName,
+      shareBack: args?.shareBack,
+    })),
+    moveReceiveStatus: (args) => run(() => moves.receiveStatus({ moveId: args?.moveId, grantId: args?.grantId })),
+    moveReceiveCancel: (args) => run(() => moves.receiveCancel({ moveId: args?.moveId, grantId: args?.grantId })),
+    movePackStart: (args) => run(() => moves.packStart({ moveId: args?.moveId, grantId: args?.grantId, sessionId: args?.sessionId })),
+    movePackStatus: (args) => run(() => moves.packStatus({ moveId: args?.moveId })),
+    movePackChunk: (args) => run(() => moves.packChunk({ moveId: args?.moveId, index: args?.index })),
+    movePackRelease: (args) => run(() => moves.packRelease({ moveId: args?.moveId, landed: args?.landed, toName: args?.toName })),
+  };
 }
 
 function buildKeepAwakeDomainService(runtime: AdeRuntime): OpaqueService | null {
@@ -838,6 +1004,24 @@ async function saveAgentChatTempAttachment(projectRoot: string, arg: { data?: st
   });
 }
 
+const attachmentPartStores = new Map<string, AttachmentPartStore>();
+
+function attachmentPartStoreFor(projectRoot: string): AttachmentPartStore {
+  let store = attachmentPartStores.get(projectRoot);
+  if (!store) {
+    store = createAttachmentPartStore({
+      maxBytes: MAX_TEMP_ATTACHMENT_BYTES,
+      stage: (content, filename) => stageAttachmentBytes({
+        content,
+        filename,
+        attachmentsDir: projectAttachmentsDir(projectRoot),
+      }),
+    });
+    attachmentPartStores.set(projectRoot, store);
+  }
+  return store;
+}
+
 /** The refusal for an image path outside every folder a chat image can live in. */
 const AGENT_CHAT_IMAGE_PATH_REFUSAL = "Image path is outside the folders ADE shows chat images from.";
 
@@ -894,9 +1078,35 @@ function requireCallerSessionId(value: unknown): string {
   return sessionId;
 }
 
+/**
+ * A send or steer may carry attachments with no words (the composer allows it,
+ * and the chat service routes it), so only a send with nothing at all needs
+ * text.
+ */
 function readSendText(record: Record<string, unknown>): string {
-  if (record.includeThreadComments === true) return typeof record.text === "string" ? record.text : "";
+  const hasAttachments = (Array.isArray(record.attachments) && record.attachments.length > 0)
+    || (Array.isArray(record.contextAttachments) && record.contextAttachments.length > 0);
+  if (record.includeThreadComments === true || hasAttachments) return typeof record.text === "string" ? record.text : "";
   return requireNonEmptyString(record.text, "text");
+}
+
+/**
+ * Refuse a scheduled send aimed at a plain shell while the person is still
+ * there to pick another target. Delivery refuses it too (`blocked`), but only
+ * at fire time, when nobody is watching. Checked only when the row is known
+ * here: a target on another machine is judged by that machine at delivery.
+ */
+function assertDraftTargetHasAnAgent(runtime: AdeRuntime, schedule: unknown): void {
+  if (!schedule || typeof schedule !== "object") return;
+  const { targetKind, targetSessionId } = schedule as { targetKind?: unknown; targetSessionId?: unknown };
+  if (targetKind !== "existing" || typeof targetSessionId !== "string" || !targetSessionId.trim()) return;
+  const row = runtime.sessionService?.get(targetSessionId.trim());
+  if (!row || isChatToolType(row.toolType)) return;
+  if (row.tracked && isTrackedAgentCliToolType(row.toolType)) return;
+  throw new AdeExpectedError(
+    "A scheduled send can go only to a chat or an agent CLI session; this one is a plain terminal.",
+    "user",
+  );
 }
 
 function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
@@ -957,6 +1167,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
           runtime.ptyService,
           "Terminal service not available.",
         ),
+        pickAccount: (provider, modelId) => agentChatService.pickNewCliSessionAccount(provider, modelId),
       }),
     // Object form `{ laneId?, ...options }`, or the desktop's positional
     // `argsList [laneId?, options?]`.
@@ -1118,6 +1329,47 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         note: "Message accepted by the ADE chat service; provider dispatch continues asynchronously.",
       };
     },
+    // The Work prompt box's new chat: `createSession`, then `sendMessage`, in
+    // one call (`AgentChatCreateAndSendArgs`). The send's provider fields
+    // follow the created chat, and a failed send deletes it, as the window's
+    // own rollback after two calls does. Either error is thrown unchanged.
+    createSessionAndSend: async (args?: unknown) => {
+      const { create, message, inputOrigin } = readObjectActionArg(args, "chat.createSessionAndSend");
+      if (!isRecord(create)) throw new Error("chat.createSessionAndSend requires a 'create' object.");
+      if (!isRecord(message)) throw new Error("chat.createSessionAndSend requires a 'message' object.");
+      const {
+        sessionId: _assignedByCreate,
+        interactionMode: requestedInteractionMode,
+        runtime: _followsProvider,
+        ...messageFields
+      } = message;
+      const session = await agentChatService.createSession(create as never);
+      const sessionId = session.id;
+      try {
+        const record: Record<string, unknown> = {
+          ...messageFields,
+          interactionMode: session.provider === "claude"
+            ? session.interactionMode ?? requestedInteractionMode ?? null
+            : null,
+          ...(session.provider === "cursor" ? { runtime: "local" } : {}),
+        };
+        noteSessionInputOrigin(sessionId, inputOrigin);
+        await agentChatService.sendMessage({
+          ...withoutHostOnlyChatMetadata(record),
+          sessionId,
+          text: readSendText(record),
+        } as never);
+      } catch (sendError) {
+        await agentChatService.deleteSession({ sessionId }).catch((cleanupError: unknown) => {
+          runtime.logger.warn("agent_chat.create_and_send_cleanup_failed", {
+            sessionId,
+            error: getErrorMessage(cleanupError),
+          });
+        });
+        throw sendError;
+      }
+      return session;
+    },
     messageSession: async (args?: unknown) => {
       const record = readObjectActionArg(args, "chat.messageSession");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
@@ -1130,6 +1382,32 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         sessionId,
         text,
       } as never);
+    },
+    // A person's text for a running agent CLI. The Work input box's: typed at
+    // its prompt only while the prompt is free; `deferred` means nothing was
+    // typed and the box keeps it queued. `when: "now"` (older desktops'
+    // terminal local line): typed at once, like the person's own keys.
+    typeIntoCli: async (args?: unknown) => {
+      const { inputOrigin, ...record } = readObjectActionArg(args, "chat.typeIntoCli");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      // A `now` line is typed as written, spaces and all.
+      const text = record.when === "now" && typeof record.text === "string" && record.text.trim()
+        ? record.text
+        : requireNonEmptyString(record.text, "text");
+      if (typeof agentChatService.typeIntoAgentCliWhenFree !== "function") {
+        throw new Error("Typing into a CLI session is not available in this runtime.");
+      }
+      noteSessionInputOrigin(sessionId, inputOrigin);
+      return agentChatService.typeIntoAgentCliWhenFree({
+        sessionId,
+        text,
+        holdUntilFree: record.holdUntilFree === true,
+        // A `now` line: typed at once, with the sender's stamp on its Enter.
+        ...(record.when === "now" ? { when: "now" as const, inputOrigin } : {}),
+        ...(typeof record.clientMessageId === "string" && record.clientMessageId.trim()
+          ? { clientMessageId: record.clientMessageId.trim().slice(0, 128) }
+          : {}),
+      });
     },
     steer: async (args?: unknown) => {
       const { inputOrigin, ...record } = readObjectActionArg(args, "chat.steer");
@@ -1160,6 +1438,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     createDraft: (args?: DraftCreateArgs) => {
       const record = readObjectActionArg(args, "chat.createDraft");
+      assertDraftTargetHasAnAgent(runtime, record.schedule);
       // The service owns validation for both text and attachment-only drafts.
       // Keeping the full object intact is essential on the daemon path: this is
       // the path every runtime-backed desktop uses.
@@ -1178,6 +1457,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     updateDraft: (args?: DraftUpdateArgs) => {
       const record = readObjectActionArg(args, "chat.updateDraft");
+      assertDraftTargetHasAnAgent(runtime, record.schedule);
       const updated = updateDraft(runtime.db, record);
       agentChatService.refreshDraftScheduler?.();
       return updated;
@@ -1240,6 +1520,10 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     saveTempAttachment: (args?: { data?: string; filename?: string }) =>
       saveAgentChatTempAttachment(runtime.projectRoot, args ?? {}),
+    // The same staging, sent in parts by a desktop on a slow link
+    // (`chatAttachmentParts`). Each part is safe to send again.
+    saveTempAttachmentPart: (args?: AttachmentPartArgs) =>
+      attachmentPartStoreFor(runtime.projectRoot).savePart(args ?? {}),
     // The composer's same-machine attachment staging. The renderer only reaches
     // it after `getAttachmentStagingMode` answered `copy`, which it only does
     // when the chat's machine binding IS this machine — so in the product the
@@ -1365,6 +1649,26 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
     };
   }
+  if (typeof base.setScheduledWorkItemPaused === "function") {
+    service.setScheduledWorkItemPaused = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.setScheduledWorkItemPaused");
+      if (typeof record.paused !== "boolean") throw new Error("paused must be a boolean.");
+      return agentChatService.setScheduledWorkItemPaused({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+        scheduleId: requireNonEmptyString(record.scheduleId, "scheduleId"),
+        paused: record.paused,
+      });
+    };
+  }
+  if (typeof base.runScheduledWorkNow === "function") {
+    service.runScheduledWorkNow = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.runScheduledWorkNow");
+      return agentChatService.runScheduledWorkNow({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+        scheduleId: requireNonEmptyString(record.scheduleId, "scheduleId"),
+      });
+    };
+  }
   if (typeof base.resumeUsageLimitNow === "function") {
     service.resumeUsageLimitNow = (args?: unknown) => {
       const record = readObjectActionArg(args, "chat.resumeUsageLimitNow");
@@ -1379,6 +1683,16 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       return agentChatService.continueUsageLimitOnAlternate({
         sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
       });
+    };
+  }
+  if (typeof base.updateSession === "function") {
+    // A tracked agent CLI answers `ade chat update` too (title, pin, and a
+    // relaunch for a new model, effort or permission mode); a chat goes on to
+    // the chat service's own update.
+    service.updateSession = async (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.updateSession");
+      const cli = await agentChatService.updateAgentCliSession?.(record as never);
+      return cli ?? await agentChatService.updateSession(record as never);
     };
   }
   if (typeof base.switchAccount === "function") {
@@ -1457,43 +1771,26 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
       (await runtime.agentChatService?.getCtoAttention())
       ?? { status: "unknown", awaitingInput: false, since: null },
     /**
-     * Read-only: can the CTO thread take a turn, and should it be rotated?
-     *
-     * Open to every role for the same reason `getAttention` is — it answers a
-     * question about a badge, creates nothing, and returns no content.
+     * Give the CTO a fresh provider thread; the ADE session and everything
+     * the CTO remembers stay. CTO-only (see `ADE_ACTION_CTO_ONLY.cto_state`).
      */
-    getThreadHealth: async (): Promise<CtoThreadHealth> =>
-      (await runtime.agentChatService?.getCtoThreadHealth())
-      ?? {
-        sessionId: null,
-        canTakeTurn: true,
-        blockedReason: null,
-        lastTurnFailure: null,
-        context: null,
-        rotationAdvised: false,
-      },
-    /**
-     * Retire the CTO thread and start a clean one.
-     *
-     * CTO-only (see `ADE_ACTION_CTO_ONLY.cto_state`): it ends the conversation
-     * every other surface is talking to. Nothing the CTO remembers is touched —
-     * identity, memory, the daily log and project state all carry over, and the
-     * outgoing thread is distilled into memory before it is retired.
-     */
-    startFreshSession: async (): Promise<CtoStartFreshSessionResult> => {
+    refreshContext: async (): Promise<CtoRefreshContextResult> => {
       const agentChatService = runtime.agentChatService;
       if (!agentChatService) throw new Error("The chat service is not available on this machine.");
-      await runtime.laneService?.ensurePrimaryLane();
-      const lanes = (await runtime.laneService?.list()) ?? [];
-      const laneId = lanes.find((lane) => lane.laneType === "primary")?.id;
-      if (!laneId) throw new Error("No primary lane is available to host the CTO chat session.");
-      const result = await agentChatService.startFreshIdentitySession({ identityKey: "cto", laneId });
-      return {
-        sessionId: result.session.id,
-        previousSessionId: result.previousSessionId,
-        handoff: result.handoff,
-      };
+      return agentChatService.refreshCtoContext();
     },
+    /**
+     * This machine is the CTO's home now: take the CTO from its account copy
+     * when another machine wrote it last. Person-only (`ADE_ACTION_USER_ONLY`).
+     */
+    adoptAccountCopy: async (args?: CtoAdoptAccountCopyArgs): Promise<CtoAdoptAccountCopyResult> => {
+      const copy = runtime.ctoAccountCopyService;
+      if (!copy) return { restored: false, fromName: null, savedAt: null };
+      return await copy.adopt({ home: args?.home });
+    },
+    getAccountCopyStatus: async (): Promise<CtoAccountCopyStatus> =>
+      runtime.ctoAccountCopyService?.status()
+      ?? { available: false, savedAt: null, ownerName: null, ownerIsThisMachine: false },
   };
 }
 
@@ -1502,31 +1799,34 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
   if (!ctoMemoryService) return null;
   return {
     getSnapshot: () => ctoMemoryService.getSnapshot(),
-    updateMemory: (args?: { memory?: string }) => {
-      // A missing field must not silently blank the durable memory file; only
-      // an explicit string (including a deliberate "") is a valid rewrite —
-      // and clearing writes archive the replaced content.
-      if (typeof args?.memory !== "string") {
-        throw new Error("updateMemory requires a string `memory` field.");
+    updateNotes: (args?: Partial<CtoUpdateNotesArgs>) => {
+      if (args?.scope !== "project" && args?.scope !== "user") {
+        throw new Error("updateNotes requires `scope`: \"project\" or \"user\".");
       }
-      ctoMemoryService.writeMemory(args.memory);
+      if (typeof args.text !== "string") throw new Error("updateNotes requires a string `text` field.");
+      ctoMemoryService.writeNotes(args.scope, args.text, {
+        baseHash: typeof args.baseHash === "string" ? args.baseHash : null,
+      });
       return ctoMemoryService.getSnapshot();
     },
-    searchMemory: (args?: { query?: string; limit?: number; tags?: CtoMemoryTags }) => {
-      const query = args?.query ?? "";
-      const rows = ctoMemoryService.searchMemory(query, {
-        limit: args?.limit ?? 20,
-        ...(args?.tags ? { tags: args.tags } : {}),
-      });
-      return { query, rows };
+    updateOpenWork: (args?: Partial<{ op: string; text: string; id: string }>) => {
+      const op = args?.op;
+      if (op === "add") {
+        if (typeof args?.text !== "string" || !args.text.trim()) throw new Error("updateOpenWork add requires `text`.");
+        ctoMemoryService.updateOpenWork({ op, text: args.text });
+      } else if (op === "complete" || op === "reopen" || op === "remove") {
+        if (typeof args?.id !== "string" || !args.id.trim()) throw new Error(`updateOpenWork ${op} requires \`id\`.`);
+        ctoMemoryService.updateOpenWork({ op, id: args.id });
+      } else {
+        throw new Error("updateOpenWork requires `op`: add, complete, reopen or remove.");
+      }
+      return ctoMemoryService.getSnapshot();
     },
     /**
-     * One of the three non-CTO methods on this domain — see the `cto_memory`
+     * One of the two non-CTO methods on this domain — see the `cto_memory`
      * rule in `actionPolicy.ts`, which is `allExcept` so everything else here
-     * is CTO-only by omission. Append-only: it cannot read or modify durable
-     * memory, so a worker handing up a finding gains no view of what the CTO
-     * already knows (the other two, `getSnapshot` and `searchMemory`, can read
-     * it; see that rule for why they stay open).
+     * is CTO-only by omission. Append-only: it cannot read or change the
+     * notes, so a worker handing up a finding gains no view of them.
      */
     recordDiscovery: (args?: { fact?: string; tags?: CtoMemoryTags }) => {
       if (typeof args?.fact !== "string" || !args.fact.trim().length) {
@@ -1905,6 +2205,24 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       }
       return { ok: true, sessionId, value };
     },
+    /**
+     * A tracked CLI's own turn signal (a Claude hook, run as
+     * `ade __ade-cli-turn-hook`). It goes to the runtime that owns the
+     * terminal, which reads it as working / done / needs you
+     * (pty/cliTurnSignals.ts). Unknown sessions answer `ok: false` instead of
+     * failing: the hook runs after the terminal may already be gone.
+     */
+    reportCliTurnSignal: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.reportCliTurnSignal");
+      const sessionId = requireCallerSessionId(record.sessionId);
+      const provider = optionalNonEmptyString(record.provider) ?? "";
+      const payload = record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)
+        ? record.payload as Record<string, unknown>
+        : {};
+      const token = optionalNonEmptyString(record.token) ?? null;
+      const accepted = runtime.ptyService?.reportCliTurnHookEvent?.({ sessionId, provider, payload, token }) ?? false;
+      return { ok: accepted, sessionId };
+    },
     // -----------------------------------------------------------------------
     // There is deliberately NO `settleSelfSession` / `unsettleSelfSession`
     // pair here any more (removed 2026-07). An agent used to be able to file
@@ -2049,10 +2367,11 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const sessionId = typeof arg === "string"
         ? requireNonEmptyString(arg, "sessionId")
         : requireNonEmptyString(arg?.sessionId, "sessionId");
-      return deleteTerminalSessionWithRuntimeCleanup({
+      return deleteSessionRowWithRuntimeCleanup({
         sessionId,
         sessionService,
         ptyService: requireService(runtime.ptyService, "Terminal service not available."),
+        agentChatService: runtime.agentChatService ?? null,
       });
     },
     readTranscriptTail: (args?: ReadTranscriptTailArgs) => {
@@ -2244,6 +2563,11 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     getDeleteRisk: async (args?: unknown) =>
       runtime.laneService.getDeleteRisk(readLaneIdActionArg(args, "lane.getDeleteRisk")),
+    // "Push this branch?" before an ADE Cloud launch, on the machine that has the project.
+    cloudStartBranch: async (args?: unknown) =>
+      runtime.laneService.cloudStartBranch(readCloudStartBranchArgs(args, "lane.cloudStartBranch")),
+    pushCloudStartBranch: async (args?: unknown) =>
+      runtime.laneService.pushCloudStartBranch(readCloudStartBranchArgs(args, "lane.pushCloudStartBranch")),
     cancelDelete: async (args?: unknown) =>
       runtime.laneService.cancelDelete(readLaneIdActionArg(args, "lane.cancelDelete")),
     listSnapshots: async (args?: ListLanesArgs): Promise<LaneListSnapshot[]> => {
@@ -2306,8 +2630,13 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     delete: async (args?: DeleteLaneArgs): Promise<DeleteLaneResult> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const teardownEnv = await buildLaneEnvTeardown(runtime, laneId, { includeArchived: true });
+      const release = () => releaseLaneRuntimeResources(runtime, laneId);
+      // A background delete answers before it is done: release when it is.
+      if (args?.background === true) {
+        return runtime.laneService.delete({ ...args, laneId }, { teardownEnv, onDeleted: release });
+      }
       const result = await runtime.laneService.delete({ ...(args ?? {}), laneId }, { teardownEnv });
-      releaseLaneRuntimeResources(runtime, laneId);
+      release();
       return result;
     },
     getLeftoverWorktree: async (args?: { laneId?: string }) => {
@@ -2654,13 +2983,16 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     // through that machine's own runtime, rather than reading This
     // computer's answer and labelling it theirs.
     acpProviderDiagnostics: (args?: { provider?: string; runDoctor?: boolean }) => {
-      const provider = args?.provider;
-      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, devin.");
       return collectAcpProviderDiagnostics({
-        provider,
+        provider: requireAcpProvider(args?.provider),
         cwd: runtime.projectRoot,
         ...(args?.runDoctor === true ? { runDoctor: true } : {}),
       });
+    },
+    // "Run doctor": the person asked, so unlike the page-open read above it
+    // counts as use and wakes a sleeping cloud computer.
+    runAcpProviderDoctor: (args?: { provider?: string }) => {
+      return collectAcpProviderDiagnostics({ provider: requireAcpProvider(args?.provider), cwd: runtime.projectRoot, runDoctor: true });
     },
     piLoginProviders: () => listPiLoginProviders(),
     piLoginStart: async (args?: { providerId?: string; method?: "oauth" | "api_key" }) => {
@@ -2669,19 +3001,9 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         providerId,
         ...(args?.method ? { method: args.method } : {}),
       });
-      // Signing in unlocks models, so the readiness cache is stale until it is
-      // dropped. The IPC handler does the same; this keeps the action path
-      // (remote runtime, `ade actions run`) consistent with it.
-      if (result.ok) {
-        try {
-          aiIntegrationService.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger.warn("ai.pi_auth_cache_invalidation_failed", {
-            provider: providerId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+      // The one "login changed" path, here as on the IPC handler, so a
+      // remote runtime or `ade actions run` sign-in reads fresh too.
+      if (result.ok) noteProviderLoginChanged("pi");
       return result;
     },
     piLoginSubmit: (args?: { providerId?: string; requestId?: string; value?: string }) =>
@@ -2697,6 +3019,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     cursorAuthLogin: async () => {
       const result = await loginCursorSdk();
       if (result.ok) {
+        noteProviderLoginChanged("cursor");
         try {
           aiIntegrationService.invalidateProviderReadinessCaches();
         } catch (error) {
@@ -2709,6 +3032,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     cursorAuthLogout: async () => {
       const result = await logoutCursorSdk();
+      if (result.ok) noteProviderLoginChanged("cursor");
       try {
         aiIntegrationService.invalidateProviderReadinessCaches();
       } catch (error) {
@@ -2725,6 +3049,12 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     // sign-in, a one-token live check, and the terminal launcher's env.
     listHarnessRoutes: (args?: { harness?: unknown }) => {
       const catalog = listHarnessRouteCatalog();
+      // A key for OpenCode Go or Zen that came through the account has no models here yet.
+      probeOpenCodeKeyModelsInBackground({
+        projectRoot: runtime.projectRoot,
+        projectConfig: runtime.projectConfigService.get().effective,
+        logger: runtime.logger,
+      });
       // Echo a valid filter so a text formatter (`ade harness routes
       // --harness claude`) can show just that harness; the catalog itself is
       // harness-independent.
@@ -2836,20 +3166,9 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     cliLoginStatus: async (args?: AgentCliLoginRefArgs) => {
       const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
-      const status = getMachineAgentCliLoginRunner().status(requireNonEmptyString(args?.loginId, "loginId"));
-      // Signing in unlocks models, so the readiness cache is stale until it
-      // is dropped; the IPC handler does the same.
-      if (status.state === "succeeded") {
-        try {
-          aiIntegrationService.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger.warn("ai.cli_login_cache_invalidation_failed", {
-            provider: status.provider,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-      return status;
+      // A sign-in that succeeded already dropped that provider's cached
+      // answers (the runner's `onSignedIn`); other providers keep theirs.
+      return getMachineAgentCliLoginRunner().status(requireNonEmptyString(args?.loginId, "loginId"));
     },
     cliLoginSubmitCode: async (args?: AgentCliLoginSubmitCodeArgs) => {
       const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
@@ -2883,6 +3202,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     verifyApiKeyConnection: (args?: { provider?: string }) =>
       aiIntegrationService.verifyApiKeyConnection(requireNonEmptyString(args?.provider, "provider")),
+    // The one-provider sign-in check: it runs that provider's own check (its
+    // CLI, agent or SDK) on this machine, within 20 s.
+    verifyProviderSignIn: (args?: { provider?: string }) =>
+      aiIntegrationService.verifyProviderSignIn(requireNonEmptyString(args?.provider, "provider")),
     storeApiKey: (args?: { provider?: string; key?: string }) =>
       aiIntegrationService.storeApiKey(
         requireNonEmptyString(args?.provider, "provider"),
@@ -3108,6 +3431,8 @@ async function buildAiSettingsStatus(
     // the CLI even though the renderer's IPC status carried them.
     ...(status.harnessPresets?.length ? { harnessPresets: status.harnessPresets } : {}),
     ...(status.providerAccounts?.length ? { providerAccounts: status.providerAccounts } : {}),
+    // The phone and other computers read free models from this projection.
+    ...(status.freeModels ? { freeModels: status.freeModels } : {}),
   };
 }
 
@@ -3256,6 +3581,7 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
         owner: typeof actionArgs.owner === "string" ? actionArgs.owner : undefined,
         name: typeof actionArgs.name === "string" ? actionArgs.name : undefined,
         forceRefresh: actionArgs.forceRefresh === true,
+        userRequested: actionArgs.userRequested === true,
       });
     },
     async listRepoCollaborators(args?: unknown) {
@@ -3435,6 +3761,13 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     async clearToken() {
       githubService.clearToken();
+      return githubService.getStatus();
+    },
+    async setGhAccountSharing(args?: unknown) {
+      const enabled = asActionRecord(args).enabled === true;
+      await githubService.setGhAccountSharing({ enabled });
+      // Reached only after the vault accepted the change; a refusal throws above.
+      captureGhAccountSharingAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", enabled });
       return githubService.getStatus();
     },
   };
@@ -3794,17 +4127,28 @@ function buildRemoteWorkDomainService(runtime: AdeRuntime) {
         lastUsedAt: copy.lastUsedAt,
         running: isRemoteWorkCopyInUse(copy.projectRoot, copy.owner),
         sizeBytes: await measureRemoteWorkCopy(copy.path),
+        keepsUnsynced: true,
       })));
     },
-    async delete(args: unknown): Promise<{ deleted: boolean }> {
+    /**
+     * `keepUnsynced` (the tools pane's Clean up): a copy holding work nobody
+     * pushed stays, and `keptReason` says why. Settings › Machines deletes
+     * without it, after its own confirm.
+     */
+    async delete(args: unknown): Promise<{ deleted: boolean; keptReason?: string }> {
       const owner = isRecord(args) && typeof args.owner === "string" ? args.owner.trim() : "";
       if (!owner) throw new Error("remote_work.delete requires owner.");
       const projectId = isRecord(args) && typeof args.projectId === "string" ? args.projectId.trim() : "";
       if (projectId && projectId !== deriveProjectId(runtime.projectRoot)) {
-        throw new Error("That work copy belongs to another project here; delete it through that project.");
+        throw new Error("That copy of a chat's code belongs to another project here; delete it through that project.");
       }
+      const keepUnsynced = isRecord(args) && args.keepUnsynced === true;
+      const kept: { reason?: string } = {};
       // Refused while a command runs in it (RemoteWorkError "copy_busy").
-      return { deleted: await here().release(owner) };
+      const deleted = await here().release(owner, keepUnsynced
+        ? { keepUnsynced: true, onKeptUnsynced: (reason) => { kept.reason = reason; } }
+        : {});
+      return kept.reason ? { deleted, keptReason: kept.reason } : { deleted };
     },
   };
 }
@@ -3963,20 +4307,10 @@ export function buildProviderInstancesDomainService(
       };
     },
     loginStatus(args: unknown) {
+      // A sign-in that succeeded already dropped that provider's cached
+      // answers, the signed-out mark a failed turn left included (the
+      // runner's `verify`), so the next send is not refused.
       const login = getMachineProviderLoginRunner().status(String((isRecord(args) ? args.loginId : "") ?? ""));
-      // Signing in unlocks models, and a turn that failed on the sign-in left
-      // the provider marked signed out: drop both, or the next send (a chat's
-      // automatic resend) is refused. The IPC handler does the same.
-      if (login.state === "succeeded") {
-        try {
-          runtime.aiIntegrationService?.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger?.warn("provider_instances.login_cache_invalidation_failed", {
-            provider: login.provider,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
       return { login };
     },
     loginSubmitCode(args: unknown) {
@@ -4049,16 +4383,59 @@ export function buildProviderInstancesDomainService(
  * secret through the private secret card. `request` needs the chat service,
  * so it is absent on a runtime without one.
  */
+
 function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | null {
   const projectSecretService = runtime.projectSecretService;
   if (!projectSecretService) return null;
   const agentChatService = runtime.agentChatService;
   return {
     ...(projectSecretService as unknown as OpaqueService),
-    // Callers by name (agents, `ade secrets`, the Secrets page) get the copy
-    // the account holds now, not whatever the last heartbeat brought in.
+    // Callers by name (agents, `ade secrets`) get the copy the account holds
+    // now, not whatever the last heartbeat brought in.
     get: (args?: unknown) => projectSecretService.getFresh(args as Parameters<typeof projectSecretService.getFresh>[0]),
     list: () => projectSecretService.listFresh(),
+    // `ade secrets exec -- <command>`: this runtime runs the command with the
+    // project's secrets in its environment, and returns its output masked.
+    // No value is ever returned.
+    exec: async (args?: unknown) => {
+      const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
+      const command = Array.isArray(input.command) ? input.command.filter((part): part is string => typeof part === "string") : [];
+      const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : runtime.projectRoot;
+      const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch((error: unknown) => {
+        runtime.logger.warn("project_secret.exec_lanes_failed", { error: getErrorMessage(error) });
+        return [];
+      });
+      const secrets = await projectSecretService.valuesForProcessFresh();
+      const only = Array.isArray(input.names) ? input.names.filter((name): name is string => typeof name === "string") : null;
+      const chosen = only?.length ? Object.fromEntries(Object.entries(secrets).filter(([name]) => only.includes(name))) : secrets;
+      const missing = only?.filter((name) => !(name in secrets)) ?? [];
+      if (missing.length) throw new AdeExpectedError(`No secret named ${missing.join(", ")} in this project. \`ade secrets list\` shows the names.`, "user");
+      const result = await runWithSecrets({
+        command,
+        cwd,
+        allowedRoots: [runtime.projectRoot, ...lanes.map((lane) => lane.worktreePath).filter(Boolean)],
+        secrets: chosen,
+        timeoutMs: typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
+      }).catch((error: unknown) => {
+        capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action: "secrets_exec", outcome: "failed" });
+        throw error;
+      });
+      // The command ran: its own exit code is the caller's business, not a failure of exec.
+      capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action: "secrets_exec", outcome: result.timedOut ? "failed" : "completed" });
+      const chatSessionId = typeof input.chatSessionId === "string" ? input.chatSessionId : null;
+      // One Activity row per run: which names, and the command they went to.
+      // Who ran it is stamped by the RPC server, never taken from the caller.
+      if (result.injected.length) {
+        void runtime.passwordService?.recordUse({
+          itemId: result.injected.join(", "),
+          kind: "secret",
+          target: command.join(" ").slice(0, 200),
+          by: input.calledBy === "person" ? "person" : "agent",
+          chatSessionId,
+        }).catch((error: unknown) => runtime.logger.warn("project_secret.exec_activity_failed", { error: getErrorMessage(error) }));
+      }
+      return result;
+    },
     ...(agentChatService
       ? {
           request: async (args?: unknown) => {
@@ -4095,7 +4472,7 @@ function cloudMachineStore(): EncryptedFileCredentialStore {
 function cloudSignInVaults(runtime: AccountDomainRuntime): CloudSignInVaults | null {
   const store = runtime.accountVaultStore;
   if (!store || runtime.accountAuthService?.getStatus().signedIn !== true) return null;
-  return (vaultKey) => cloudVaultFromStore(store, vaultKey);
+  return (vaultKey, kind) => cloudVaultFromStore(store, vaultKey, kind);
 }
 
 function cloudAccessDeps(runtime: AccountDomainRuntime): CloudAccessDeps {
@@ -4130,11 +4507,239 @@ const cloudBrainMakers = new WeakMap<AccountDomainRuntime, CloudBrainMaker | nul
 
 function cloudBrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnType<typeof createCloudMachines>): CloudBrainMaker | null {
   if (cloudBrainMakers.has(runtime)) return cloudBrainMakers.get(runtime) ?? null;
-  const account = runtime.accountAuthService ?? null;
-  if (!account) {
-    cloudBrainMakers.set(runtime, null);
-    return null;
+  const base = cloudBrainMakerBase(runtime, machines);
+  const maker = base ? createCloudBrainMaker({ base, logger: runtime.logger }) : null;
+  cloudBrainMakers.set(runtime, maker);
+  return maker;
+}
+
+/**
+ * The brain's ADE Cloud lane launches. One per process, not per runtime: the
+ * records live in the machine's ADE folder, and two owners would resume each
+ * launch twice. Built on first use, or at the brain's start when a quit left
+ * launches to resume (`resumeCloudLaneLaunches`). Null in a process that can't
+ * reach other machines (no transport), or with no account here.
+ */
+let cloudLaneLaunchHost: CloudLaneLaunchBrainHost | null = null;
+
+function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnType<typeof createCloudMachines>): CloudLaneLaunchBrainHost | null {
+  if (cloudLaneLaunchHost) return cloudLaneLaunchHost;
+  if (!cloudLaneLaunchTransportSet()) return null;
+  const base = cloudBrainMakerBase(runtime, machines);
+  if (!base) return null;
+  cloudLaneLaunchHost = createCloudLaneLaunchBrainHost({
+    base,
+    recordsDir: cloudLaneLaunchRecordsDir(resolveMachineAdeLayout().adeDir),
+    logger: runtime.logger,
+    // A lane's computer is made here, not by the maker: the sign-in renewal learns of it the same way.
+    onComputerCreated: noteCloudComputerMade,
+    analytics: runtime.productAnalyticsService ?? null,
+    // The launch's computer follows this machine's update track.
+    updateChannel: () => cloudAccessDeps(runtime).updateChannel?.() ?? null,
+    // C4: a private repository with no GitHub sign-in in the account is refused before a computer is made.
+    gitPreflight: (originUrl) => cloudGitPreflight({
+      vault: (key) => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true
+        ? cloudVaultFromStore(runtime.accountVaultStore, key)
+        : null),
+      // The account's GitHub App sign-in also lets the new computer's git clone.
+      accountApp: () => accountAppConnection({
+        baseUrl: getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }) || null,
+        accessToken: async () => (runtime.accountAuthService?.getStatus().signedIn === true
+          ? await runtime.accountAuthService.getAccessToken().catch(() => null)
+          : null),
+        logger: runtime.logger,
+      }),
+    }, originUrl),
+  });
+  return cloudLaneLaunchHost;
+}
+
+/**
+ * The ADE Cloud iPhone (`cloud_phone`): one per brain process, since every
+ * runtime of a brain is the same account and NoMac keeps one phone per account.
+ */
+let cloudPhoneServiceSingleton: CloudPhoneService | null = null;
+/**
+ * The project runtime each recent phone-calling chat belongs to: the phone is
+ * the brain's, but each project has its own chats, so its start and stop
+ * notices go through the chat's own project.
+ */
+const cloudPhoneChatRuntimes = new Map<string, AccountDomainRuntime>();
+const CLOUD_PHONE_CHAT_RUNTIMES_LIMIT = 20;
+function rememberCloudPhoneChat(args: unknown, runtime: AccountDomainRuntime): void {
+  const id = cloudPhoneCallerChat(args);
+  if (!id) return;
+  cloudPhoneChatRuntimes.delete(id);
+  cloudPhoneChatRuntimes.set(id, runtime);
+  if (cloudPhoneChatRuntimes.size > CLOUD_PHONE_CHAT_RUNTIMES_LIMIT) cloudPhoneChatRuntimes.delete(cloudPhoneChatRuntimes.keys().next().value as string);
+}
+function cloudPhoneServiceFor(runtime: AccountDomainRuntime): CloudPhoneService {
+  if (cloudPhoneServiceSingleton) return cloudPhoneServiceSingleton;
+  const credentials = cloudAccessDeps(runtime);
+  cloudPhoneServiceSingleton = createCloudPhoneService({
+    provider: () => getCloudProvider(credentials),
+    whyNoProvider: () => cloudNoProviderSentence(credentials),
+    logger: runtime.logger,
+    // Any provider's chat shows it; a terminal session (a CLI agent) is not a chat and is skipped.
+    notifyChat: (chatSessionId, message) => {
+      // The service catches and logs a failed notice.
+      (cloudPhoneChatRuntimes.get(chatSessionId) ?? runtime).agentChatService?.recordSystemNotice({ sessionId: chatSessionId, message });
+    },
+  });
+  return cloudPhoneServiceSingleton;
+}
+
+/**
+ * Refusals that are the account's or the caller's state, not a failure: out
+ * of minutes, a held free plan, not on the list, paused by the owner, signed
+ * out, an agent the person's settings hold back, a bad argument. They reach
+ * the person as their sentence and never Sentry.
+ */
+const CLOUD_PHONE_EXPECTED_CODES: ReadonlySet<string> = new Set([
+  "phone_free_held", "phone_minutes_out", "phone_extra_limit", "phone_not_on_account", "phone_paused",
+  "phone_not_running", "phone_running", "no_account", "declined", "bad_request", "out_path_outside_root",
+  "device_build", CLOUD_ACCESS_REFUSED,
+]);
+/** Waiting on NoMac (its phone limit, a slow call): a warning, not an error. */
+const CLOUD_PHONE_WARNING_CODES: ReadonlySet<string> = new Set([
+  "phone_busy", "phone_unavailable", "phone_queue_timeout", "fetch_timeout", "tool_timeout", "fetch_failed",
+]);
+
+/**
+ * Every failed `cloud_phone` call, from any caller (the desktop pane, ADE Web,
+ * the iOS sheet, an agent's `ade apple … --machine cloud`), reported once here,
+ * where they all pass. Grouped by action and code, each at most once every
+ * ten minutes per brain: the panes read the status every few seconds, and an
+ * outage must not send one event per read.
+ */
+const CLOUD_PHONE_REPORT_INTERVAL_MS = 10 * 60_000;
+const cloudPhoneLastReport = new Map<string, number>();
+function reportCloudPhoneFailure(action: string, error: unknown): void {
+  const raw = error && typeof error === "object" ? (error as { code?: unknown }).code : null;
+  const code = typeof raw === "string" && raw ? raw : "none";
+  // Handled here, whether reported, held back by the interval below, or an
+  // expected refusal that is never reported: the RPC server's own report of
+  // the same throw is skipped in every case.
+  markReportedToSentry(error);
+  if (CLOUD_PHONE_EXPECTED_CODES.has(code)) return;
+  const key = `${action}:${code}`;
+  const now = Date.now();
+  if (now - (cloudPhoneLastReport.get(key) ?? 0) < CLOUD_PHONE_REPORT_INTERVAL_MS) return;
+  cloudPhoneLastReport.set(key, now);
+  captureError(error, {
+    level: CLOUD_PHONE_WARNING_CODES.has(code) ? "warning" : "error",
+    tags: { area: "cloud_phone", action, code },
+    fingerprint: ["cloud_phone", action, code],
+  });
+}
+
+/**
+ * The `cloud_phone` domain for one project runtime: the brain's one phone,
+ * with captures filed to THIS project's proof drawer. Every call's failure is
+ * reported (`reportCloudPhoneFailure`) and then thrown on unchanged.
+ */
+function cloudPhoneDomainFor(runtime: AdeRuntime): CloudPhoneService {
+  const domain = cloudPhoneCallsFor(runtime);
+  const reported = { ...domain } as Record<string, unknown>;
+  for (const [action, value] of Object.entries(domain)) {
+    if (typeof value !== "function" || action === "dispose") continue;
+    const call = value as (...args: unknown[]) => unknown;
+    reported[action] = async (...args: unknown[]) => {
+      try {
+        return await call(...args);
+      } catch (error) {
+        reportCloudPhoneFailure(action, error);
+        throw error;
+      }
+    };
   }
+  return reported as CloudPhoneService;
+}
+
+function cloudPhoneCallsFor(runtime: AdeRuntime): CloudPhoneService {
+  const service = cloudPhoneServiceFor(runtime);
+  const broker = runtime.computerUseArtifactBrokerService;
+  const proof = broker ? { ingest: (request: Parameters<typeof broker.ingest>[0]) => broker.ingest(request), projectRoot: runtime.projectRoot ?? null } : null;
+  const guard = cloudPhoneAgentGuard(runtime);
+  const guarded = <A, R>(run: (args: A) => Promise<R>) => async (args: A): Promise<R> => {
+    await guard(args);
+    rememberCloudPhoneChat(args, runtime);
+    return await run(args);
+  };
+  return {
+    ...service,
+    start: guarded(service.start),
+    look: guarded(service.look),
+    act: guarded(service.act),
+    launch: guarded(service.launch),
+    installApp: guarded(service.installApp),
+    control: guarded(service.control),
+    logs: guarded(service.logs),
+    runTests: guarded(service.runTests),
+    screenshot: guarded((args) => service.screenshot(args, proof)),
+    record: guarded((args) => service.record(args, proof)),
+  };
+}
+
+/**
+ * The phone spends the plan's iPhone minutes (and extra minutes, which cost
+ * money), so an agent nobody watches (a full-auto chat, an automation run, an
+ * app on ADE MCP) uses it only when the person lets such agents spend
+ * (`unattendedSpend`, the same switch as hours); a chat in plan mode never.
+ * A person, and an attended chat, go ahead: the phone stops at the plan's
+ * minutes unless the person turned extra minutes on. Who is asking is the
+ * `approval` the RPC server stamped (`adeRpcServer.ts`), never the caller's word.
+ */
+function cloudPhoneAgentGuard(runtime: AccountDomainRuntime): (args: unknown) => Promise<void> {
+  const limits = createCloudAgentLimitsStore({
+    vault: () => (runtime.accountAuthService?.getStatus().signedIn === true && runtime.accountVaultStore
+      ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_AGENT_LIMITS_VAULT_KEY)
+      : null),
+    machineStore: () => cloudMachineStore(),
+    logger: runtime.logger,
+  });
+  const chats = runtime.agentChatService ?? null;
+  return async (args) => {
+    const approval = args && typeof args === "object" && !Array.isArray(args) ? (args as { approval?: unknown }).approval : null;
+    const stamp = approval && typeof approval === "object" ? approval as { by?: unknown; chatSessionId?: unknown; viaAdeMcp?: unknown; automation?: unknown } : null;
+    if (!stamp || stamp.by === "person") return;
+    const chatSessionId = typeof stamp.chatSessionId === "string" && stamp.chatSessionId.trim() ? stamp.chatSessionId.trim() : null;
+    const level = chatSessionId ? chats?.getPermissionCeiling?.({ actor: { kind: "agent", chatSessionId } }) ?? null : null;
+    if (level === "plan") throw new CloudPhoneError("This chat is in plan mode, so it doesn't use the ADE Cloud iPhone.", "declined");
+    const automation = stamp.automation === true
+      || (chatSessionId && chats ? Boolean((await chats.getSessionSummary(chatSessionId).catch(() => null))?.automationRunId) : false);
+    // A chat watched by a person goes ahead. An agent with no chat (a script, a
+    // terminal agent) has nobody to ask, so it is held to the limits too.
+    if (chatSessionId && stamp.viaAdeMcp !== true && !automation && level !== "full-auto") return;
+    const allowed = await limits.read().then((read) => read.unattendedSpend, (error: unknown) => {
+      runtime.logger.warn("cloud_phone.agent_limits_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      return false;
+    });
+    if (!allowed) {
+      throw new CloudPhoneError(
+        "Agents nobody watches (full-auto chats, automations, ADE MCP apps) may not use the ADE Cloud iPhone: your settings say they ask before anything that uses hours or iPhone minutes. The person can change it in Settings › Integrations › ADE Cloud › What agents may do.",
+        "declined",
+      );
+    }
+  };
+}
+
+/** At a brain's start: picks up the ADE Cloud lane launches a quit left, when there are any. */
+export function resumeCloudLaneLaunches(runtime: AccountDomainRuntime): void {
+  if (!hasCloudLaneLaunchRecords(cloudLaneLaunchRecordsDir(resolveMachineAdeLayout().adeDir), runtime.logger)) return;
+  const credentials = cloudAccessDeps(runtime);
+  cloudLaneLaunchHostFor(runtime, createCloudMachines({
+    client: () => getCloudProvider(credentials),
+    whyNoClient: () => cloudNoProviderSentence(credentials),
+    removeAccountMachine: async () => undefined,
+    logger: runtime.logger,
+  }));
+}
+
+/** The creator's deps a brain fills in (no window), or null with no account here. */
+function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType<typeof createCloudMachines>): CloudBrainMakerBase | null {
+  const account = runtime.accountAuthService ?? null;
+  if (!account) return null;
   const credentials = cloudAccessDeps(runtime);
   const directoryBaseUrl = () => {
     try {
@@ -4149,55 +4754,67 @@ function cloudBrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnType<
   });
   // Only a brain on a cloud machine approves the machines it makes; anywhere
   // else a person has a browser, and the sign-in link goes to them.
-  const chromium = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
-  const maker = createCloudBrainMaker({
-    base: {
-      client: () => requireCloudProvider(credentials),
-      getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
-      directoryBaseUrl,
-      listAccountMachines: () => directory().listMachines(),
-      renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
-      // The person's provider sign-ins, so they are signed in on the new machine (cloudSignInStore.ts).
-      machineEnv: () => cloudMachineEnv(cloudSignInVaults(runtime), runtime.logger),
-      // This brain's release: a machine made from an older template installs it on boot.
-      // Only a released build: a development build's version may not be published.
-      minAdeVersion: () => stampedAdeVersion(),
-      account: () => machines.account(),
-      removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
-      // No window here: the sign-in of a machine this brain made with an
-      // unattended yes opens in a headless Chromium (the template ships one).
-      ...(chromium ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
-        approveInHeadlessChromium({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
-      logger: runtime.logger,
-    },
+  const onCloudMachine = Boolean(process.env.ADE_CLOUD_INSTANCE_ID?.trim());
+  const chromium = onCloudMachine ? findHeadlessChromium() : null;
+  return {
+    client: () => requireCloudProvider(credentials),
+    getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
+    directoryBaseUrl,
+    listAccountMachines: () => directory().listMachines(),
+    renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
+    // This brain's release: a machine made from an older template installs it on boot.
+    // Only a released build: a development build's version may not be published.
+    minAdeVersion: () => stampedAdeVersion(),
+    account: () => machines.account(),
+    removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
+    // No window here: the sign-in of a machine this brain made with an
+    // unattended yes is approved without a browser, a headless Chromium (the
+    // template ships one) as the fallback.
+    ...(onCloudMachine ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
+      approveSignInLink({
+        url,
+        signal,
+        binary: chromium,
+        // The link must be on this brain's own Clerk hosts and account directory.
+        trust: () => ({
+          clerkIssuer: getSharedAccountAttestationConfig({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }).issuer,
+          directoryBaseUrl: directoryBaseUrl(),
+        }),
+        logger: runtime.logger,
+      }) } : {}),
     logger: runtime.logger,
-  });
-  cloudBrainMakers.set(runtime, maker);
-  return maker;
+  };
 }
 
 /**
- * The `cloud` domain for the CLI and agents: ready machines (read through
- * the same store the desktop writes) and the machine verbs. The key, the cap
- * and the choice are the account's, so every brain answers the same; making a
- * machine goes to the desktop attached to this brain.
+ * The `cloud` domain for the CLI and agents: the machine verbs, lane
+ * launches and sign-ins. The key and the cap are the account's, so every
+ * brain answers the same; making a machine goes to the desktop attached to
+ * this brain.
  */
 function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   const signedIn = () => runtime.accountAuthService?.getStatus().signedIn === true;
-  const settings = createCloudReadySettingsStore({
-    vault: () => (signedIn() && runtime.accountVaultStore
-      ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_READY_VAULT_KEY)
-      : null),
-    machineStore: () => cloudMachineStore(),
-    logger: runtime.logger,
-  });
   const credentials = cloudAccessDeps(runtime);
+  // ADE's account server for this account, or null when signed out.
+  const accountApi = () => {
+    const baseUrl = signedIn() ? getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }) : null;
+    return baseUrl
+      ? createCloudApiClient({
+          baseUrl,
+          accessToken: async () => (signedIn() ? await runtime.accountAuthService!.getAccessToken().catch(() => null) : null),
+        })
+      : null;
+  };
   const agentLimits = createCloudAgentLimitsStore({
     vault: () => (signedIn() && runtime.accountVaultStore ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_AGENT_LIMITS_VAULT_KEY) : null),
     machineStore: () => cloudMachineStore(),
+    // `PUT /cloud/limits`: only the changed fields, with the revision they replace.
+    accountApi,
     logger: runtime.logger,
   });
-  const machines = createCloudMachines({
+  // A good list or a finished make also tells the sign-in renewal that the
+  // account has cloud computers, with no request of its own.
+  const machines = observeCloudComputerLists(createCloudMachines({
     client: () => getCloudProvider(credentials),
     whyNoClient: () => cloudNoProviderSentence(credentials),
     removeAccountMachine: async (machineKey) => {
@@ -4208,29 +4825,36 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
       }).deleteMachine(machineKey);
     },
     logger: runtime.logger,
-  });
+  }));
   const agentChatService = runtime.agentChatService ?? null;
-  const maker = cloudBrainMakerFor(runtime, machines);
-  const ready = buildCloudReadyActions({
-    credentials,
-    readSettings: async () => (await settings.read()).projects,
-    // A six-hour dedupe, as on the desktop: claims are frequent in a benchmark loop.
-    onClaimed: () => runtime.productAnalyticsService?.capture({
-      event: "ade_feature_used",
-      surface: "api",
-      properties: { feature: "connections", action: "cloud_ready", outcome: "ready_cli" },
-      projectId: null,
-      dedupeKey: "cloud_ready:ready_cli",
-      minimumIntervalMs: 6 * 60 * 60 * 1_000,
-    }),
+  const maker = observeCloudComputerMakes(cloudBrainMakerFor(runtime, machines));
+  // The account side of a lane's life, shared with the desktop (`cloudLaneAccount.ts`).
+  // A brain holds no connections to the computers, and the desktop reads the list again on its own.
+  const laneAccount = createCloudLaneAccount({
+    machines,
+    client: () => requireCloudProvider(credentials),
+    laneBackups: async (machineKey) => {
+      const api = accountApi();
+      if (!api) throw new Error("This ADE isn't signed in to your ADE account.");
+      return await api.laneBackups(null, machineKey);
+    },
+    forgetMachineConnections: () => undefined,
+    changed: () => undefined,
     logger: runtime.logger,
   });
   const verbs = buildCloudAgentActions({
     machines,
     limits: agentLimits,
-    readySettings: settings,
     desktop: () => runtime.getCloudDesktop?.() ?? null,
     maker,
+    laneLaunch: () => cloudLaneLaunchHostFor(runtime, machines),
+    // The project's GitHub origin, for a lane launch that names none (the CTO, an automation).
+    projectOriginUrl: () => (runtime.projectRoot ? readGitOriginUrl(runtime.projectRoot) : null),
+    // The size the person picked for new lanes (Settings, the composer's size
+    // button), synced through the account settings. No store: can't read it.
+    savedDefaultTier: runtime.accountSettingsStore
+      ? () => runtime.accountSettingsStore!.get(ACCOUNT_SCOPE_ALL, CLOUD_DEFAULT_TIER_SETTING_KEY)
+      : null,
     // A runtime with no chat service of its own (the CLI's in-process
     // fallback) has no chat to ask in; costly actions are then refused.
     approvals: agentChatService && typeof agentChatService.requestChatInput === "function"
@@ -4238,6 +4862,9 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
           requestChatInput: (input) => agentChatService.requestChatInput(input),
           permissionLevel: (chatSessionId) => agentChatService.getPermissionCeiling?.({ actor: { kind: "agent", chatSessionId } }) ?? null,
           isAutomationRun: async (chatSessionId) => Boolean((await agentChatService.getSessionSummary(chatSessionId).catch(() => null))?.automationRunId),
+          ...(typeof agentChatService.emitAdeCard === "function"
+            ? { postCard: (chatSessionId: string, card: AdeCardPayload) => agentChatService.emitAdeCard({ sessionId: chatSessionId, card }) }
+            : {}),
           notice: (chatSessionId, message) => {
             try {
               agentChatService.recordSystemNotice({ sessionId: chatSessionId, message });
@@ -4247,10 +4874,20 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
           },
         }
       : null,
+    // On an ADE Cloud computer: its own disk grower, registered by the brain.
+    diskGrow: cloudDiskGrowHost,
+    projectRoot: runtime.projectRoot ?? null,
+    analytics: runtime.productAnalyticsService ?? null,
+    lanes: {
+      account: () => laneAccount,
+      client: () => requireCloudProvider(credentials),
+      api: accountApi,
+    },
     logger: runtime.logger,
   });
   const cloudSignIns = buildCloudSignInActions({
     vaults: () => cloudSignInVaults(runtime),
+    passVault: () => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true ? claudePassVaultFromStore(runtime.accountVaultStore) : null),
     accountId: () => runtime.accountAuthService?.getStatus().userId ?? null,
     // Which providers people sign in for cloud machines. A six-hour dedupe per
     // provider: at most 36 accepted events a day.
@@ -4265,11 +4902,160 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     logger: runtime.logger,
   });
   return {
-    ...ready,
     ...verbs,
     ...cloudSignIns,
+    ...savedChatReads(credentials),
+    ...keptLaneRestoreActions(runtime),
     /** Whether ADE Cloud exists for this account; the only `cloud` action served when it doesn't. */
     access: async () => ({ enabled: await cloudAccessEnabled(credentials) }),
+  };
+}
+
+/**
+ * "Move it to my computer" for a kept ADE Cloud lane
+ * (shared/cloudKeptLaneRestore.ts): this project's brain restores the lane
+ * from the account's server copies. The job runs in the brain's one store
+ * (`keptLaneRestores`, ade-cli keptLaneRestore.ts), installed only on a
+ * machine that is not an ADE Cloud computer; this project gives it the lane
+ * and chat services. `kept_lane_move` is the person's only
+ * (`ADE_ACTION_USER_ONLY`).
+ */
+function keptLaneRestoreActions(runtime: AccountDomainRuntime): {
+  kept_lane_move_preview: (args?: unknown) => Promise<CloudKeptLaneRestorePreview>;
+  kept_lane_move: (args?: unknown) => Promise<CloudKeptLaneRestoreRecord>;
+  kept_lane_move_status: (args?: unknown) => Promise<CloudKeptLaneRestoreRecord | null>;
+} {
+  const store = async () => {
+    const { keptLaneRestores } = await import("../../../../../ade-cli/src/services/cloudChats/keptLaneRestore");
+    const installed = keptLaneRestores();
+    if (!installed) {
+      throw new AdeExpectedError("This computer can't take a kept ADE Cloud lane. Move it to one of your own computers with ADE open.", "user");
+    }
+    return installed;
+  };
+  const project = async (): Promise<KeptLaneRestoreProject> => {
+    const { projectRoot, laneService, sessionService, agentChatService } = runtime;
+    if (!projectRoot || !laneService?.importBranch || !sessionService || !agentChatService) {
+      throw new AdeExpectedError("Open the lane's project on this computer, then move the lane there.", "user");
+    }
+    const [{ restoreKeptLaneBranch }, uploader] = await Promise.all([
+      import("../../../../../ade-cli/src/services/cloudChats/keptLaneRestore"),
+      import("../../../../../ade-cli/src/services/cloudChats/cloudChatUploader"),
+    ]);
+    return {
+      projectRoot,
+      originUrl: readGitOriginUrl(projectRoot),
+      restoreLane: (args) => restoreKeptLaneBranch({
+        ...args,
+        projectRoot,
+        logger: runtime.logger,
+        lanes: {
+          list: async () => (await laneService.list({ includeArchived: true, includeStatus: false })).map((lane) => ({
+            id: lane.id,
+            branchRef: lane.branchRef,
+            worktreePath: lane.worktreePath,
+            archived: Boolean(lane.archivedAt),
+            primary: lane.laneType === "primary",
+          })),
+          importBranch: (importArgs, options) => laneService.importBranch(importArgs, options),
+        },
+      }),
+      hasSession: async (sessionId) => Boolean(sessionService.get(sessionId)),
+      restore: (args) => agentChatService.restoreSavedCloudChat(args),
+      restoreCli: (args) => agentChatService.restoreSavedCloudCli(args),
+      adopt: uploader.adoptRestoredCloudChat,
+      hold: uploader.holdRestoringCloudChat,
+      release: uploader.releaseRestoringCloudChat,
+    };
+  };
+  // `fromComputer`: the lane's asleep ADE Cloud computer, released first (the store checks the id).
+  const restoreArgs = (args: unknown) => {
+    const { laneId, fromComputer } = pickKeptLaneRestoreArgs(args);
+    return { laneId: laneId ?? "", ...(fromComputer ? { fromComputer } : {}) };
+  };
+  return {
+    kept_lane_move_preview: async (args) => await (await store()).preview(await project(), restoreArgs(args)),
+    kept_lane_move: async (args) => await (await store()).start(await project(), restoreArgs(args)),
+    // Null where no restore ran (or no store is installed): nothing to show.
+    kept_lane_move_status: async (args) => {
+      const { keptLaneRestores } = await import("../../../../../ade-cli/src/services/cloudChats/keptLaneRestore");
+      return keptLaneRestores()?.get({ restoreId: pickKeptLaneRestoreArgs(args).restoreId ?? "" }) ?? null;
+    },
+  };
+}
+
+/**
+ * The account's saved chats (what each ADE Cloud computer saved before it
+ * slept), for a client that has no cloud credential of its own: ADE Web asks
+ * a connected brain through `cloud.read`, the way the desktop asks its main
+ * process (`registerCloudSavedChatsIpc.ts`). Reads only, and not in the
+ * agents' action list. Null is "couldn't ask"; the caller keeps what it shows.
+ */
+function savedChatReads(credentials: CloudAccessDeps): {
+  saved_chats_list: (args?: unknown) => Promise<CloudSavedChatList | null>;
+  saved_chats_read: (args?: unknown) => Promise<CloudSavedChatPage | null>;
+  saved_chat_machine: (args?: unknown) => Promise<{ machineKey: string; projectId: string | null; projectRoot: string | null } | null>;
+} {
+  const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+  const count = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), 500) : undefined);
+  const input = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
+  return {
+    saved_chats_list: async (args) => {
+      const request = input(args);
+      const server = cloudServerFor(credentials);
+      if (!server) return null;
+      return await server.listSavedChats({
+        machineKey: text(request.machineKey),
+        projectKey: text(request.projectKey),
+        limit: count(request.limit),
+        cursor: text(request.cursor),
+      });
+    },
+    saved_chats_read: async (args) => {
+      const request = input(args);
+      const chatId = text(request.chatId);
+      const server = cloudServerFor(credentials);
+      if (!server || !chatId) return null;
+      // No machine key (`ade cloud chats read <chat id>`): the account's list says which computer saved it.
+      let machineKey = text(request.machineKey);
+      let searched = true;
+      for (let page = 0, cursor: string | null = null; !machineKey && page < 5; page += 1) {
+        const listed: CloudSavedChatList = await server.listSavedChats({ limit: 200, cursor });
+        machineKey = listed.chats.find((chat) => chat.chatId === chatId)?.machineKey ?? null;
+        cursor = listed.nextCursor;
+        if (!cursor) break;
+        if (page === 4) searched = false;
+      }
+      // Past the newest 1,000 the chat may still exist: say so, never "no such chat".
+      if (!machineKey && !searched) throw new Error(`ADE Cloud has no saved chat ${chatId} among your newest 1,000. Pass --machine-key (ade cloud chats --machine-key <key>).`);
+      if (!machineKey) return null;
+      return await server.readSavedChat({
+        machineKey,
+        chatId,
+        before: typeof request.before === "number" && Number.isFinite(request.before) ? request.before : null,
+        limit: count(request.limit),
+      });
+    },
+    /**
+     * Which of `machineKeys` (asleep ADE Cloud computers) saved `chatId`, and
+     * its project there, from the account's copy: it wakes nothing. The CLI
+     * then sends a `--machine` call to that computer, which wakes it. Only
+     * where the chat is, never its messages. Null: none of them saved it.
+     */
+    saved_chat_machine: async (args) => {
+      const request = input(args);
+      const chatId = text(request.chatId);
+      const machineKeys = Array.isArray(request.machineKeys)
+        ? request.machineKeys.map(text).filter((key): key is string => key !== null).slice(0, 20)
+        : [];
+      const server = cloudServerFor(credentials);
+      if (!server || !chatId || !machineKeys.length) return null;
+      for (const machineKey of machineKeys) {
+        const page = await server.readSavedChat({ machineKey, chatId, limit: 1 }).catch(() => null);
+        if (page) return { machineKey, projectId: page.chat.projectId ?? null, projectRoot: page.chat.projectRoot ?? null };
+      }
+      return null;
+    },
   };
 }
 
@@ -4283,10 +5069,16 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
 export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime): {
   cloud: OpaqueService;
   account_vault: OpaqueService | null;
+  provider_logins: OpaqueService | null;
+  passwords: OpaqueService | null;
 } {
   return {
     cloud: buildCloudDomainService(runtime),
     account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
+    // The brain's one sign-in sync, the same service a project runtime serves.
+    provider_logins: toService(buildProviderLoginsDomainService()),
+    // Settings › Passwords & Secrets and the browser's fill with no project open.
+    passwords: buildPasswordsDomainService(runtime),
   };
 }
 
@@ -4487,6 +5279,7 @@ export function getAdeActionDomainServices(
     attention: toService(buildAttentionDomainService(runtime)),
     keep_awake: toService(buildKeepAwakeDomainService(runtime)),
     remote_mcp: toService(buildRemoteMcpDomainService(runtime)),
+    lane_share: toService(buildLaneShareDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),
     proxy: toService(buildProxyDomainService(runtime)),
     git: toService(runtime.gitService),
@@ -4506,8 +5299,19 @@ export function getAdeActionDomainServices(
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
+    passwords: toService(buildPasswordsDomainService(runtime)),
+    messages: runtime.builtInBrowserService
+      ? toService(buildMessagesDomain({
+          bridge: runtime.builtInBrowserService,
+          requestChatInput: runtime.agentChatService ? (input) => runtime.agentChatService!.requestChatInput(input) : null,
+          authenticatorCode: runtime.passwordService
+            ? async (site, username) => await runtime.passwordService!.currentCode({ site, username })
+            : undefined,
+        }))
+      : null,
     integration_connect: buildIntegrationConnectDomainService(runtime),
     cloud: buildCloudDomainService(runtime),
+    cloud_phone: toService(cloudPhoneDomainFor(runtime)),
     mcp_registry: buildMcpRegistryDomainService(runtime),
     account_settings: buildAccountSettingsDomainService(runtime),
     account_vault: buildAccountVaultDomainService(runtime),
@@ -4548,6 +5352,8 @@ export function getAdeActionDomainServices(
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
     provider_instances: toService(buildProviderInstancesDomainService(runtime)),
+    // The sign-ins the account keeps for ADE Cloud; the brain's one service answers.
+    provider_logins: toService(buildProviderLoginsDomainService()),
   };
 }
 

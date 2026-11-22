@@ -1,6 +1,21 @@
+import {
+  CHAT_PANE_BUCKETS,
+  HEAP_MB_BUCKETS,
+  HEAP_PCT_BUCKETS,
+  NO_TRANSCRIPT_BUCKET,
+  TRANSCRIPT_EVENT_BUCKETS,
+  UNKNOWN_BUCKET,
+  type BucketTable,
+} from "../../../shared/types/rendererMemory";
+
+/** Every label a bucket table can produce, plus the extra ones. */
+function bucketLabels(table: BucketTable, ...extra: string[]): Set<string> {
+  return new Set([...table.map(([label]) => label), ...extra]);
+}
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
 import { ACCOUNT_MACHINE_REFUSAL_CODES } from "../../../shared/accountMachineRefusal";
-import { ACCOUNT_PUBLISH_FAILURE_CAUSES, AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
+import { UPDATE_BLOCK_CAUSES } from "../../../shared/updateBlock";
+import { ACCOUNT_PUBLISH_FAILURE_CAUSES, AUTO_UPDATE_INSTALL_ABORT_REASONS, PENDING_INSTALL_HANDOFF_STEPS } from "../../../shared/types";
 import {
   RENDERER_GONE_ANALYTICS_REASONS,
   RENDERER_GONE_UNKNOWN_REASON,
@@ -160,10 +175,11 @@ const STRING_PROPERTIES = new Set([
   "screen", "feature", "action", "outcome", "app_version", "runtime_mode", "provider", "model_family",
   "duration_bucket", "error_kind", "route_kind", "connection_state", "drop_reason", "source", "mode",
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
-  "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
+  "escalation_reason", "handoff_step", "blocked_by", "install_source", "trigger", "from_version", "to_version", "user_action",
   "tool_error_kind", "crash_reason", "count_bucket",
-  "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind", "cause",
+  "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind", "cause", "brain_frame",
   "kind", "severity", "emulator_count", "top_table", "ram_gb_bucket",
+  "heap_mb_bucket", "heap_pct_bucket", "transcript_bucket", "chat_pane_bucket",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -178,7 +194,7 @@ const NUMBER_PROPERTIES = new Set([
 ]);
 const BOOLEAN_PROPERTIES = new Set([
   "recoverable", "recovered", "paired", "cached_data", "is_packaged", "native_staging_completed",
-  "dev_brain_running",
+  "dev_brain_running", "replay_active",
 ]);
 
 // Actions emitted only by daemon services (not user-mutation ledger rows) that
@@ -217,6 +233,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // and whether the fix works. completed | partial (ran, some files still not
   // theirs) | cancelled (password prompt dismissed) | failed.
   "bundle_ownership_fix",
+  // A paired phone or browser's "Update & restart" for this machine, recorded
+  // by the brain that ran it (feature "updates"). completed | failed.
+  "remote_machine_update",
   "machine_reconnect",
   // Feature "connections". `remote_connect`: an automatic or manual dial to
   // another machine failed, or came back after failing. `work_first_load`: the
@@ -225,6 +244,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "remote_connect",
   "work_first_load",
   "mention_expanded",
+  // Feature "chat": a chat's first settled turn on a free model
+  // (`shared/freeModels.ts`), at most once per chat each day. Provider only,
+  // never the model id.
+  "free_model_used",
   "hooks_ignored",
   "plugins_ignored",
   "metadata_regenerated",
@@ -238,15 +261,44 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // the chat from spending another turn. Three coarse transitions and nothing
   // about the chat itself.
   "auto_resume",
-  // One coarse fact per "Report issue" press: whether the GitHub issue page
-  // opened. Never the surface it was pressed on, and never the report itself.
+  // Feature "issue_report". `issue_report`: whether a report sent from an
+  // error screen reached ADE (success | failed). `report_dialog`: the report
+  // dialog was opened, closed after a send (completed) or closed with nothing
+  // sent (cancelled). `github_issue`: the public GitHub issue page, offered only
+  // after a send, opened (opened | failed). `report_copied`: "Copy report"
+  // where sending is impossible (completed | failed). Never the surface, the
+  // report, the note, the reference or an error.
   "issue_report",
+  "report_dialog",
+  "github_issue",
+  "report_copied",
   // Machine membership. `machine_removed` is the user dropping a computer from
   // their account; `machine_register_refused` is the account directory refusing
   // to take THIS computer back, which is the state a revoked machine sits in
   // and the one that produced no telemetry at all last time.
   "machine_removed",
   "machine_register_refused",
+  // The person shares this computer's gh sign-in with the account, or takes it
+  // off, from Settings › GitHub (feature "connections"), once the vault accepts
+  // it: outcome completed only. The background sync never records these. Never
+  // the login, the account, or an error.
+  "github_cli_shared",
+  "github_cli_removed",
+  // How a connect of the account's ADE GitHub App sign-in ended (feature
+  // "connections"): completed | cancelled (declined, or the link ran out) |
+  // failed; and a disconnect (completed). Read in Settings once the server
+  // settles it. Never the login, the account, or an error.
+  "github_app_connected",
+  "github_app_disconnected",
+  // Passwords (feature "passwords"): turned on or off here (enabled |
+  // disabled), a CSV import, and an agent's sign-in, sign-up or
+  // `secrets exec` (completed | failed). Never the site, account, item,
+  // command, a count, or an error.
+  "passwords_switched",
+  "logins_imported",
+  "agent_signed_in",
+  "agent_signed_up",
+  "secrets_exec",
   // "New cloud machine" (feature "connections"): whether installations make
   // cloud boxes from ADE at all, and how often a create fails. completed (it
   // joined) | partial (signed in, still starting) | cancelled | failed. Never
@@ -261,18 +313,30 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // ADE Cloud's plan and hours (feature "connections"): plan_checkout | plan_portal
   // (the Stripe page opened) | extra_on | extra_off (the switch). Never an amount.
   "cloud_plan",
-  // Ready machines (feature "connections"): whether people keep a cloud
-  // machine ready for a project, how often preparing one fails, and where the
-  // chats that take one start. enabled | disabled (the per-project switch),
-  // completed | failed (a prepare), ready_picker | ready_cli (a claim). Never
-  // the project, repository, machine, size, setup commands, or an error.
-  "cloud_ready",
   // Sign-ins for cloud machines (feature "connections"): which providers
   // people sign in once for every new cloud machine. Outcome is the
   // provider, prefixed (signin_claude | signin_codex | …), only once it is
   // saved. Never the key, the token, the account, or an error.
   "cloud_sign_in",
-  // One coarse fact per automatic diagnostic send: whether it went, was refused
+  // ADE Cloud lanes (feature "connections"). `cloud_lane_launch`: how a new
+  // lane on its own computer ends, once per launch and end (completed |
+  // failed | cancelled). `cloud_lane_freed`: a lane's computer freed
+  // (completed | failed). `cloud_lane_deleted`: a person deleted a lane and its
+  // computer (completed: its chats went too | kept: they kept its chats |
+  // partial: its chats couldn't all be deleted | failed). `cloud_clear_caches`: a computer's caches cleared
+  // (completed | failed | denied, an agent's ask declined). `cloud_disk_grow`: an
+  // agent's grow of its computer's disk (completed: a grow was asked | denied: the
+  // person or the agent limits said no | rejected: at the storage limit | failed:
+  // busy or couldn't run); none when it already fits. `cloud_default_size`:
+  // the person picked another size for new lanes (size_<tier>). Never the
+  // lane, project, computer, branch, prompt, size of a computer, or an error.
+  "cloud_lane_launch",
+  "cloud_lane_freed",
+  "cloud_lane_deleted",
+  "cloud_clear_caches",
+  "cloud_disk_grow",
+  "cloud_default_size",
+  // One coarse fact per automatic diagnostic send (feature "issue_report"): whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
   // never the surface, never the report or its upload reference — those are the
   // local file and the upload the user was toasted about, not analytics.
@@ -318,6 +382,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // composer. Never the window, its title, the app it belonged to, the path the
   // PNG passed through, or the image.
   "capture_gesture",
+  // How a move of the CTO to a new home landed there: took the CTO another
+  // machine left (`completed`), already had the newest copy (`kept`), or
+  // couldn't read the account yet (`failed`). Never the machine, the
+  // repository, the notes, the conversation, or the routines.
+  "cto_home_move",
   // What became of a handoff's transcript replay. Cross-provider handoffs carry
   // the conversation as text, and the only product question is whether it
   // arrives: whole, in part, not at all, or only after ADE re-sent the message
@@ -389,11 +458,13 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // ended. Never the URL, the hook, the secret's name or value, or the chat.
   "webhook_url_created",
   "secret_requested",
-  // How an agent's connect card or MCP server card ended. Never the account,
-  // the server's name, its command or URL, or the chat.
+  // How an agent's connect card, MCP server card or computer removal card
+  // ended. Never the account, the server's name, its command or URL, the
+  // computer, or the chat.
   "connect_requested",
   "mcp_server_requested",
   "mcp_server_remove_requested",
+  "machine_removal_requested",
   // A person moved an automation to another computer ("Runs on"). Never the
   // rule, either computer, or the repository.
   "run_on_changed",
@@ -422,6 +493,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // Whether an installation opens find, on which surface, and whether the
   // palette's words get used. Never the query, the chat, the diff, or a match.
   "find_opened",
+  // The built-in browser (feature "browser"): a person kept an agent's tab so
+  // ADE will not close it, watched a tab live from another machine, or took
+  // control of one. Once a day each. Never the URL, title, tab, chat, lane or
+  // machine.
+  "tab_kept", "remote_tab_watched", "remote_tab_controlled",
   // A shell code block in a chat reply was run after its confirm, and its
   // output was sent back to the agent. Never the command, its output, the
   // chat, the lane, the machine, or the exit code.
@@ -455,6 +531,19 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "star_prompt_clicked",
   "star_prompt_dismissed",
   "repo_starred",
+  // ADE Cloud's referral program (feature "cloud_invite", README "Referrals and
+  // the free plan"). The "Invite friends, get free cloud hours" pill: seen,
+  // clicked, dismissed (outcome: which showing, prompt_first | prompt_second |
+  // prompt_third). The invite link copied (outcome: where, from_pill |
+  // from_settings | from_dashboard). A friend's code entered (outcome: accepted,
+  // or refused_<reason> from `CloudInviteRefusalReason`, or refused_unavailable).
+  // Never the code, the link, the friend, or an email. The reward itself is
+  // counted on the server (`ade_cloud_referral`), where it is decided.
+  "invite_pill_shown",
+  "invite_pill_clicked",
+  "invite_pill_dismissed",
+  "invite_link_copied",
+  "invite_code_entered",
   // First run on a new computer (feature "onboarding"): each card of the
   // launch gate as it shows, and how setup ended. One event per card per
   // install a day. Never what the person picked on a card.
@@ -464,6 +553,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "onboarding_projects_shown",
   "onboarding_completed",
   "onboarding_skipped",
+  // The in-project tour: its finish card closed, or Skip tour.
+  "onboarding_tour_completed",
+  "onboarding_tour_skipped",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -500,7 +592,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_analytics_budget: new Set(["sent_count", "dropped_count", "drop_reason"]),
   ade_update_install_aborted: new Set(["reason"]),
   ade_update_quit_escalated: new Set(["blocked_ms", "escalation_reason", "native_staging_completed"]),
-  ade_update_install_did_not_land: new Set(["attempt"]),
+  ade_update_install_did_not_land: new Set(["attempt", "handoff_step", "blocked_by"]),
   ade_update_auto_applied: new Set(),
   ade_update_auto_apply_cancelled: new Set(),
   ade_update_prompted: new Set(["from_version", "to_version", "user_action", "resume_chats"]),
@@ -508,7 +600,14 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // `reason` is Electron's own closed enum (crashed/oom/killed/launch-failed/…);
   // `recovered` says whether the retry budget still allowed a reload. No URL, no
   // window title, no exit detail.
-  ade_renderer_recovered: new Set(["crash_reason", "recovered"]),
+  // What the window held at its last memory snapshot, as closed buckets: the
+  // heap, its share of the limit, how long the window was open
+  // (`duration_bucket`), open chat panes, the largest loaded transcript, and
+  // whether session replay was recording. Exact numbers go to Sentry only.
+  ade_renderer_recovered: new Set([
+    "crash_reason", "recovered", "heap_mb_bucket", "heap_pct_bucket", "duration_bucket",
+    "chat_pane_bucket", "transcript_bucket", "replay_active",
+  ]),
   ade_publish_failing: new Set(["failing_minutes", "leg", "code", "cause"]),
   ade_relay_suppressed: new Set(["attempt", "code"]),
   ade_account_session_unreadable: new Set(["code"]),
@@ -526,7 +625,9 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // answer known only by its text or code, or `unexpected`:
   // most brain errors carry no structured code, and without these two every
   // failure read as `unknown` with nothing to tell a bug from a user outcome.
-  ade_brain_action_failed: new Set(["action_domain", "error_code", "brain_action", "expected_kind"]),
+  // `brain_frame` is the brain's top frame of an uncoded failure, `function:line`
+  // of ADE's own code with no file name or path (`brainActionFailureFrame`).
+  ade_brain_action_failed: new Set(["action_domain", "error_code", "brain_action", "expected_kind", "brain_frame"]),
   // What ran short, how badly, how many Android emulators were up, whether a
   // developer's brain ran beside the installed one, and which of ADE's own
   // tables took the most writes in the five minutes before. Group names,
@@ -579,6 +680,11 @@ const ADE_ACTION_DOMAIN_ALLOWLIST: ReadonlySet<string> = new Set(ADE_ACTION_DOMA
  * even narrower charset, so nothing hyphenated can be scraped out of prose.
  */
 const ERROR_CODE_VALUE = /^[a-z][a-z0-9_-]{0,47}$/;
+/**
+ * A brain frame, `function:line` (`brainStackFrames`): an identifier, or
+ * `<anonymous>` for an unnamed function, never a path.
+ */
+const BRAIN_FRAME_VALUE = /^(?:<anonymous>|[A-Za-z_$][A-Za-z0-9_$.<>]{0,79}):\d{1,6}$/;
 
 /** Installed RAM as closed buckets (`ram_gb_bucket`): the event never carries the exact size. */
 export const RAM_GB_BUCKETS = ["le_8", "9_16", "17_32", "33_64", "gt_64"] as const;
@@ -612,6 +718,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "home",
     // Find (⌘F) in a chat or a diff, and the ⌘K hand-off into a chat's find bar.
     "find",
+    // The built-in browser: keeping an agent's tab, and watching or driving a
+    // tab on another machine.
+    "browser",
     // Settings › Integrations › MCP servers: a browser sign-in to a registry server.
     "mcp_servers",
     // ADE MCP: this computer as an MCP server for outside AI apps.
@@ -624,8 +733,16 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "account_sign_in",
     // The desktop "Star ADE on GitHub" pill.
     "star_prompt",
+    // ADE Cloud's referral program: the invite pill, the link, the code box.
+    "cloud_invite",
     // The first-run cards of the launch gate (actions "onboarding_*").
     "onboarding",
+    // Passwords: on/off per computer, imports, and agents' sign-ins,
+    // sign-ups and `secrets exec`.
+    "passwords",
+    // Reports to ADE: the error screens' report dialog and its send, the
+    // public GitHub issue after a send, and ADE's automatic sends.
+    "issue_report",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -679,11 +796,11 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move", "box_reconnect", "box_push_all_work",
     // ADE Cloud's plan: the Stripe pages opened and the extra-hours switch.
     "plan_checkout", "plan_portal", "extra_on", "extra_off",
-    // Where a chat that took a ready machine started, prefixed the same way.
-    "ready_picker", "ready_cli",
+    // The size an ADE Cloud lane starts with by default (`CLOUD_TIER_IDS`).
+    "size_small", "size_medium", "size_large", "size_xlarge",
     // The provider of a sign-in saved for cloud machines (`CLOUD_SIGN_INS`).
     "signin_claude", "signin_codex", "signin_cursor", "signin_droid", "signin_grok",
-    "signin_copilot", "signin_devin", "signin_muse", "signin_openrouter",
+    "signin_copilot", "signin_devin", "signin_muse", "signin_openrouter", "signin_qwen",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and
@@ -747,6 +864,12 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // Which showing of the star pill: before any dismissal, or the one return
     // after it. Prefixed like the other renderer surfaces.
     "prompt_first", "prompt_second",
+    // The invite pill's third showing (it returns twice), where the invite link
+    // was copied, and what entering a friend's code did. Closed to
+    // `CloudInviteRefusalReason`; a new reason is added here deliberately.
+    "prompt_third", "from_pill", "from_dashboard",
+    "accepted", "refused_invalid_code", "refused_unknown_code", "refused_own_code", "refused_already_referred",
+    "refused_mutual", "refused_too_late", "refused_rate_limited", "refused_unavailable",
   ]),
   provider: PROVIDER_VALUES,
   model_family: new Set([
@@ -757,6 +880,10 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   // Bucketed, never a raw count: a fleet that fails to stop must not become a
   // high-cardinality dimension.
   count_bucket: new Set(["1", "2_5", "6_plus"]),
+  heap_mb_bucket: bucketLabels(HEAP_MB_BUCKETS, UNKNOWN_BUCKET),
+  chat_pane_bucket: bucketLabels(CHAT_PANE_BUCKETS),
+  heap_pct_bucket: bucketLabels(HEAP_PCT_BUCKETS, UNKNOWN_BUCKET),
+  transcript_bucket: bucketLabels(TRANSCRIPT_EVENT_BUCKETS, NO_TRANSCRIPT_BUCKET, UNKNOWN_BUCKET),
   route_kind: new Set(["desktop", "web"]),
   connection_state: new Set(["connected", "disconnected", "pairing", "direct", "relay", "error"]),
   drop_reason: new Set([
@@ -784,6 +911,10 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     RENDERER_GONE_UNKNOWN_REASON,
   ]),
   escalation_reason: new Set(["hard_deadline", "post_staging"]),
+  // How far a failed update's quit got (`PendingInstallUpdate.handoffStep`).
+  handoff_step: new Set(["none", ...PENDING_INSTALL_HANDOFF_STEPS]),
+  // What held a failed Windows install's files (`updateBlockCause`).
+  blocked_by: new Set(UPDATE_BLOCK_CAUSES),
   install_source: new Set(["direct_download", "homebrew", "install_script", "development", "unknown"]),
   trigger: new Set(["work_session_completed", "cli_session_started"]),
   user_action: new Set(["accepted", "deferred", "dismissed"]),
@@ -828,7 +959,7 @@ const ERROR_KIND_BUCKETS = new Set([
   "timeout", "expired", "cancelled", "permission", "network", "type_error", "range_error", "syntax_error",
   "rate_limit", "budget", "busy", "cli_missing", "other",
   // A failed agent turn's finer kinds (`turnFailureKind`).
-  "server_overloaded", "context_too_long", "model_unavailable", "process_exited",
+  "server_overloaded", "context_too_long", "model_unavailable", "process_exited", "plan",
 ]);
 
 function coarseErrorKind(value: ProductAnalyticsPropertyValue): string | null {
@@ -854,6 +985,11 @@ function safeStringProperty(key: string, value: ProductAnalyticsPropertyValue): 
     return raw === "open" || isMeaningfulUsageAction(raw) || ANALYTICS_ONLY_ACTIONS.has(raw) ? raw : null;
   }
   if (key === "error_kind") return coarseErrorKind(value);
+  if (key === "brain_frame") {
+    if (typeof value !== "string" || value.length > 96) return null;
+    const frame = value.trim();
+    return BRAIN_FRAME_VALUE.test(frame) ? frame : null;
+  }
   if (key === "error_code") {
     if (typeof value !== "string" || value.length > 256) return null;
     const normalized = value.trim().toLowerCase();

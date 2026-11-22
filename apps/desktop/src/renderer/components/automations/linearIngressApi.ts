@@ -23,16 +23,16 @@ export function isLinearNotConnectedError(error: unknown): boolean {
 }
 
 /**
- * Set up Linear ingress on the machine `pin` names (null: the tab's machine).
- * When Linear itself is not connected there, open THAT machine's Linear
- * settings, since connecting it comes first; any other failure is the
- * caller's to handle.
+ * Set up Linear ingress on the machine `pin` names. With no pin (no computer
+ * with this project is online) it sends nothing. When Linear itself is not
+ * connected there, open THAT machine's Linear settings, since connecting it
+ * comes first; any other failure is the caller's to handle.
  */
 export async function setupLinearIngressOrOpenSettings(pin: OpenProjectBinding | null): Promise<void> {
   const api = linearIngressApi();
-  if (!api?.setup) return;
+  if (!api?.setup || !pin) return;
   try {
-    await (pin ? api.setup(pin) : api.setup());
+    await api.setup(pin);
   } catch (error) {
     if (!isLinearNotConnectedError(error)) throw error;
     openLinearSettings(pin);

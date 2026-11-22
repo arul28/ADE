@@ -11,7 +11,7 @@ struct LaneOpenChip: View {
     let laneAccent = laneTint.text ?? ADEColor.textPrimary
     HStack(spacing: 6) {
       WorkLaneLogoMark(color: laneAccent, laneIcon: snapshot.lane.icon, emoji: snapshot.lane.emoji, size: 10)
-      Text(snapshot.lane.name)
+      Text(snapshot.lane.displayName)
         .font(.caption.weight(.medium))
         .foregroundStyle(laneAccent)
         .lineLimit(1)
@@ -25,7 +25,7 @@ struct LaneOpenChip: View {
     .frame(minHeight: 32)
     // A quiet kit pill: the lane's colour stays on its mark and name.
     .adeKitPill()
-    .accessibilityLabel("\(snapshot.lane.name)\(isPinned ? ", pinned" : "")")
+    .accessibilityLabel("\(snapshot.lane.displayName)\(isPinned ? ", pinned" : "")")
   }
 }
 
@@ -167,7 +167,7 @@ func laneStackCardAccessibilityLabel(
   isOpen: Bool,
   pullRequest: LanePrTag? = nil
 ) -> String {
-  var parts = [snapshot.lane.name, normalizedPrBranchName(snapshot.lane.branchRef)]
+  var parts = [snapshot.lane.displayName, normalizedPrBranchName(snapshot.lane.branchRef)]
   if snapshot.lane.laneType == "primary" { parts.append("primary") }
   if snapshot.lane.archivedAt != nil { parts.append("archived") }
   if snapshot.lane.status.dirty { parts.append("dirty") }
@@ -210,18 +210,16 @@ struct LanePrTagChip: View {
 
 // MARK: - Stack card
 
-/// The machine a lane lives on, shown on its row when the list spans more
-/// than one machine (the desktop's rule: chips only with two or more).
+/// The machine a lane lives on, while the list spans more than one machine.
+/// A row never shows it; the lane's long-press menu offers "Show only" it,
+/// and a lane on a machine with no live link has no swipe actions.
 struct LaneMachineChip: Equatable {
   let name: String
-  /// False for a machine the phone has no live link to: its rows are the last
-  /// roster it sent, dimmed, with no actions.
+  /// False for a machine the phone has no live link to right now.
   let isLive: Bool
-  /// SF Symbol from `machineSymbol(machineKey:name:)`.
-  var symbol: String = "desktopcomputer"
 }
 
-/// The chip of every lane in a list that spans machines, by lane id.
+/// The machine of every lane in a list that spans machines, by lane id.
 struct LaneMachineChips: Equatable {
   var focused: LaneMachineChip?
   var byMachineKey: [String: LaneMachineChip] = [:]
@@ -243,13 +241,11 @@ struct LaneStackCard: View, Equatable {
   var pullRequest: LanePrTag? = nil
   var transitionNamespace: Namespace.ID? = nil
   var isSelectedTransitionSource = false
-  var machine: LaneMachineChip? = nil
-  /// The machine chip in the detail line. The machine still dims a row that
-  /// is not live when the chip is hidden.
-  var showsMachineChip = true
+  /// The lane's ADE Cloud computer was deleted: "Computer deleted" leads the facts line.
+  var computerDeleted = false
 
   static func == (lhs: LaneStackCard, rhs: LaneStackCard) -> Bool {
-    lhs.renderSignature == rhs.renderSignature
+    lhs.renderSignature == rhs.renderSignature && lhs.computerDeleted == rhs.computerDeleted
   }
 
   /// Cheap render-relevant equality key (mirrors the Hub row-signature pattern in
@@ -263,8 +259,7 @@ struct LaneStackCard: View, Equatable {
       isPinned: isPinned,
       isOpen: isOpen,
       pullRequest: pullRequest,
-      isSelectedTransitionSource: isSelectedTransitionSource,
-      machine: showsMachineChip ? machine : machine.map { LaneMachineChip(name: "", isLive: $0.isLive, symbol: $0.symbol) }
+      isSelectedTransitionSource: isSelectedTransitionSource
     )
   }
 
@@ -280,11 +275,11 @@ struct LaneStackCard: View, Equatable {
         .padding(.top, 1)
       VStack(alignment: .leading, spacing: 3) {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-          Text(snapshot.lane.name)
+          Text(snapshot.lane.displayName)
             .font(.system(size: 16, weight: .semibold))
             // The glyph carries the lane colour; the name stays readable (a
             // yellow or pale name on the light page failed contrast).
-            .foregroundStyle(machine?.isLive == false ? ADEColor.textSecondary : ADEColor.textPrimary)
+            .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
             .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
@@ -316,9 +311,8 @@ struct LaneStackCard: View, Equatable {
     }
     .contentShape(Rectangle())
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "lane-container-\(snapshot.lane.id)" : nil, in: transitionNamespace)
-    .opacity(machine?.isLive == false ? 0.5 : 1)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel(stackCardAccessibilityLabel)
+    .accessibilityLabel(computerDeleted ? "\(stackCardAccessibilityLabel), computer deleted" : stackCardAccessibilityLabel)
   }
 
   private var laneGlyphTile: some View {
@@ -348,16 +342,16 @@ struct LaneStackCard: View, Equatable {
     }
   }
 
-  /// One line of muted facts, joined with dots: the machine (only where the
-  /// list mixes machines and no section header names it), Archived/Primary,
+  /// One line of muted facts, joined with dots: Archived/Primary,
   /// the PR ("Merged #1601", in its state's colour), ahead/behind, "edited"
   /// for uncommitted changes, and the branch when there is no PR. Truncates as
   /// one line, at the branch.
   private var metaLine: some View {
     let status = snapshot.lane.status
     var parts: [Text] = []
-    if let machine, showsMachineChip {
-      parts.append(Text(machine.isLive ? machine.name : "\(machine.name), not live"))
+    if computerDeleted {
+      // Quiet, no pill: the lane and its chats are all still there.
+      parts.append(Text("Computer deleted").foregroundStyle(ADEColor.textSecondary))
     }
     if snapshot.lane.archivedAt != nil {
       parts.append(Text("Archived"))
@@ -406,14 +400,12 @@ struct LaneStackCard: View, Equatable {
   }
 
   private var stackCardAccessibilityLabel: String {
-    let label = laneStackCardAccessibilityLabel(
+    laneStackCardAccessibilityLabel(
       snapshot: snapshot,
       isPinned: isPinned,
       isOpen: isOpen,
       pullRequest: pullRequest
     )
-    guard let machine else { return label }
-    return "\(label), on \(machine.name)\(machine.isLive ? "" : ", not live")"
   }
 }
 
@@ -425,12 +417,9 @@ func laneStackCardRenderSignature(
   isPinned: Bool,
   isOpen: Bool,
   pullRequest: LanePrTag?,
-  isSelectedTransitionSource: Bool,
-  machine: LaneMachineChip? = nil
+  isSelectedTransitionSource: Bool
 ) -> Int {
   var hasher = Hasher()
-  hasher.combine(machine?.name)
-  hasher.combine(machine?.isLive)
   let lane = snapshot.lane
   hasher.combine(lane.id)
   hasher.combine(lane.name)
@@ -607,6 +596,8 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
   let onManage: () -> Void
   let onCopyLaneLink: () -> Void
   let onCopyBranchLink: () -> Void
+  /// "Move to…": the lane moves to another of the person's computers. Nil hides it.
+  var onMove: (() -> Void)? = nil
   /// Set when something in the lane asks for Git (a diff opening).
   var forcesGit = false
   @ViewBuilder let dashboard: () -> Dashboard
@@ -668,7 +659,7 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
       WorkLaneLogoMark(color: tint, laneIcon: lane.icon, emoji: lane.emoji, size: 20)
         .frame(width: 28, height: 28)
       VStack(alignment: .leading, spacing: 4) {
-        Text(lane.name)
+        Text(lane.displayName)
           .font(.title3.weight(.bold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(2)
@@ -803,6 +794,9 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
   @ViewBuilder
   private var overflowItems: some View {
     Button("Refresh", systemImage: "arrow.clockwise", action: onRefresh)
+    if let onMove {
+      Button("Move to…", systemImage: "arrow.right.circle", action: onMove)
+    }
     Divider()
     Button("Copy ADE lane link", systemImage: "link", action: onCopyLaneLink)
     Button("Copy branch link", systemImage: "arrow.triangle.branch", action: onCopyBranchLink)

@@ -256,6 +256,26 @@ Canonical `ComputerUseArtifactKind` values:
 
 `normalizeComputerUseArtifactKind` (in `shared/proofArtifacts.ts`) maps backend-specific labels into these canonical kinds.
 
+### Showing a proof picture from another machine
+
+A transcript tile for a proof picture on a paired machine pulls the picture
+through main's loopback media server, which reads it from that machine in
+pieces about 250 ms of the measured link (1 MiB on a fast link, 16-30 KiB at
+1 Mbit/s), retries a piece that lost its connection from the same offset, and
+keeps what already arrived (`artifactMediaServer.ts`,
+`remoteLinkMeter.ts`). For a picture over 1920 px on its long edge, the machine
+that holds it also makes a JPEG display copy — once, in
+`.ade/cache/artifact-display/`, at most 400 copies, each pruned after a minute
+of rest (`artifactDisplayCopy.ts`, `readArtifactRange` with
+`variant: "display"`). The tile shows that copy; the lightbox, copy, save and
+what the model sees always read the original, and a picture of 1920 px or less
+never gets one. A machine without the display copy answers with the original,
+which the tile shows as itself. On a fast, near link the tile asks for the
+original: the slow path is chosen from the link, not from the picture. With the
+machine's slow-connection mode on, a picture not yet shown waits as a
+`Show picture · <size>` tile (one small read of the copy for the size). See
+[Remote runtime](../remote-runtime/README.md#a-slow-or-dropping-link).
+
 ## Ingestion pipeline
 
 `computerUseArtifactBrokerService.ingest({ inputs, owners, backend, callerRoot? })`:

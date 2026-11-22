@@ -52,8 +52,6 @@ const AGENT_CAN_CHANGE: readonly string[] = [
   "lanes-git.lanes",
   "lanes-git.new-lane-start",
   "lanes-git.lane-templates",
-  // `ade secrets set` is how an agent stores a key it was handed for the work.
-  "secrets.secrets",
 ];
 
 const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly string[]> = {
@@ -87,13 +85,17 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
     "integrations.jira",
     "integrations.ade-cloud",
     "integrations.ade-cloud-sign-ins",
+    // Saved logins and secrets: the person's vault, never an agent's to change.
+    "passwords.logins",
+    "passwords.secrets",
   ],
   money: [
-    // Keeps a billing cloud machine prepared for a project.
-    "integrations.ade-cloud-ready",
     // What cloud machines spent, what unattended agents may spend, the optional cap.
     "integrations.ade-cloud-spending",
     "integrations.ade-cloud-agent-limits",
+    // The plan (the Stripe subscription) and the size new lanes start at (its hours rate).
+    "ade-cloud.plans",
+    "ade-cloud.sizes",
     "agents.budget",
     "stats.usage",
     "chat.fast-mode",

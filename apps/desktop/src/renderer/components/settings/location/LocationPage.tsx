@@ -3,6 +3,7 @@ import { ArrowClockwise, CaretDown, CheckCircle, FolderSimple, HardDrive, HardDr
 import { ModernSection } from "../primitives";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { ProjectLocationSection } from "../ProjectLocationSection";
+import { ProjectCopiesSection } from "./ProjectCopiesSection";
 import { AgentLaunchSetup } from "../../shared/AgentLaunchSetup";
 import { Banner } from "../../ui/notice";
 import { formatBytes, relativeWhen } from "../../../lib/format";
@@ -70,6 +71,8 @@ export function LocationPage() {
           ) : null}
         </div>
       ) : null}
+
+      <ProjectCopiesSection />
 
       <ProjectLocationSection />
 

@@ -101,6 +101,28 @@ final class DpopKeyService {
     ]
   }
 
+  /// `buildProof` off the caller's thread. A Secure Enclave key signs in the
+  /// enclave over XPC, so a cached key can still wait for an answer: on the
+  /// main thread a slow one held the app until the watchdog ended it
+  /// (ADE-IOS-2R). Call this from an async context that would sign next.
+  func buildProofOffMain(deviceId: String, secret: String) async -> [String: Any]? {
+    await Task.detached(priority: .userInitiated) { [self] in
+      buildProof(deviceId: deviceId, secret: secret)
+    }.value
+  }
+
+  /// `buildRelayReauthorizationProof` off the caller's thread, for the same
+  /// reason as `buildProofOffMain`.
+  func buildRelayReauthorizationProofOffMain(
+    deviceId: String,
+    relayAccountToken: String,
+    challenge: String
+  ) async -> [String: Any]? {
+    await Task.detached(priority: .userInitiated) { [self] in
+      buildRelayReauthorizationProof(deviceId: deviceId, relayAccountToken: relayAccountToken, challenge: challenge)
+    }.value
+  }
+
   /// Builds a fresh proof over the exact host-issued Relay reauthorization
   /// challenge. The bearer token is only returned to callers alongside this
   /// device-key signature; callers must not send it if this method fails.
@@ -183,9 +205,17 @@ final class DpopKeyService {
     lock.lock()
     defer { lock.unlock() }
     if let cachedKey { return cachedKey }
-    if let existing = loadPrivateKey() {
+    switch loadPrivateKey() {
+    case .found(let existing):
       cachedKey = existing
       return existing
+    case .failed:
+      // The keychain refused the read (a launch before the first unlock). The
+      // key may still be there: a new one would replace the key this phone
+      // proved itself with. Try again on the next call.
+      return nil
+    case .absent:
+      break
     }
     // Prefer the Secure Enclave; fall back to a software key when the hardware
     // is unavailable (simulator) or enclave key creation is refused.
@@ -194,7 +224,13 @@ final class DpopKeyService {
     return created
   }
 
-  private func loadPrivateKey() -> SecKey? {
+  private enum StoredKey {
+    case found(SecKey)
+    case absent
+    case failed
+  }
+
+  private func loadPrivateKey() -> StoredKey {
     let query: [String: Any] = [
       kSecClass as String: kSecClassKey,
       kSecAttrApplicationTag as String: applicationTag,
@@ -206,8 +242,9 @@ final class DpopKeyService {
     // Verify the CF type before casting so an unexpected item fails gracefully
     // instead of trapping (a conditional `as?` to a CF type always "succeeds",
     // so the compiler rejects it — check the CFTypeID explicitly).
-    guard status == errSecSuccess, let item, CFGetTypeID(item) == SecKeyGetTypeID() else { return nil }
-    return (item as! SecKey)
+    if status == errSecItemNotFound { return .absent }
+    guard status == errSecSuccess, let item, CFGetTypeID(item) == SecKeyGetTypeID() else { return .failed }
+    return .found(item as! SecKey)
   }
 
   private func createPrivateKey(inSecureEnclave: Bool) -> SecKey? {

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { parseGitCheckoutProgressLine } from "../git/git";
 import { createLaneService, removeWorktreeDirectoryWithRecovery } from "./laneService";
 import type { LaneDeleteProgress } from "../../../shared/types";
@@ -50,7 +50,7 @@ async function setup(options: { fileCount?: number; fileBytes?: number; onDelete
   git(repo, "add", ".");
   git(repo, "commit", "-q", "-m", "init");
 
-  const db = await openKvDb(path.join(root, "kv.sqlite"), logger);
+  const db = await openFreshKvDb(path.join(root, "kv.sqlite"), logger);
   const now = new Date().toISOString();
   db.run(
     "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",

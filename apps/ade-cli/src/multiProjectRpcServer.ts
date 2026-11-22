@@ -1,13 +1,17 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
+import { brainPingReply } from "./services/runtime/brainLoopWatchdog";
+import { CHAT_LAUNCH_KINDS } from "../../desktop/src/shared/types/chatLaunch";
+import { MACHINE_SCOPE_DOMAINS, MACHINE_SCOPE_PROJECT_ID, machineScopeActionAllowed, machineScopeRefusalMessage } from "../../desktop/src/shared/machineScope";
 import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { isInsideTempFolder } from "../../desktop/src/main/services/shared/pathCompare";
 import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
+import { markExpected } from "../../desktop/src/shared/expectedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { conditionalActionResult } from "./conditionalActionResult";
 import { CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM, CONDITIONAL_ACTION_PARAM } from "../../desktop/src/shared/conditionalActionResult";
-import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
+import { BACKGROUND_JOB_PARAM, backgroundJobFingerprint, createBackgroundActionJobs } from "./backgroundActionJobs";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -44,7 +48,13 @@ import type {
   SearchResultItem,
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
-import { isHighVolumeRuntimeEvent, runtimeEventFrameLaneId } from "./runtimeEventVolume";
+import {
+  isHighVolumeRuntimeEvent,
+  passesPtyDataFilter,
+  readPtyDataIds,
+  runtimeEventFrameLaneId,
+} from "./runtimeEventVolume";
+import { joinOrStartMachineUpdate } from "./services/runtime/machineUpdateInFlight";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
 import type { MachineUpdateAndRestartDeps } from "./services/runtime/machineUpdateAndRestart";
 import {
@@ -57,15 +67,27 @@ import {
 import { createConnectionFrameDemand } from "./connectionFrameDemand";
 import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { readAccountProjectListForRpc } from "./services/projects/accountProjectSync";
+import { setAccountProjectMainCheckout } from "./services/projects/accountProjectMain";
 import { peekSharedUsageTrackingService } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { readProjectFolderPresence, readProjectFolderStates } from "./services/projects/projectFolderPresence";
+import { createProjectCopyRemoval } from "./services/projects/projectCopyRemoval";
 import {
+  clearProjectIconOverride,
   decodeProjectIconUpload,
   importProjectIconBytes,
   REMOTE_ICON_MAX_DATA_URL_BYTES,
   removeProjectIconOverride,
   resolveRemoteProjectIcon,
+  type RemoteProjectIconRecordMode,
 } from "./services/projects/projectIconResolver";
+import type { MachineProjectRecords } from "./services/projects/projectRecords";
+import type { ProjectRecordIconDecision } from "../../desktop/src/main/services/projects/projectRecordHost";
+import {
+  PROJECT_RECORD_ICON_MAX_VALUE_BYTES,
+  projectRecordIconValue,
+  type ProjectRecordIconValue,
+} from "../../desktop/src/shared/projectRecord";
 import {
   ProjectRegistry,
   SYSTEM_PROJECT_REGISTRATION,
@@ -74,8 +96,10 @@ import {
   type ProjectRegistrationIntent,
   type ProjectRegistrationSource,
 } from "./services/projects/projectRegistry";
-import { ProjectScopeRegistry } from "./services/projects/projectScope";
+import { ProjectScopeRegistry, type ProjectScope } from "./services/projects/projectScope";
 import type { AdeRuntime } from "./bootstrap";
+import type { AndroidEmulatorEvent } from "../../desktop/src/shared/types/androidEmulator";
+import type { AndroidMachineSettingsService } from "../../desktop/src/main/services/android/androidMachineSettingsService";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import { readRuntimeBusyFacts, summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "./services/runtime/runtimeWorkSummary";
 import type { CloudBusyFacts } from "./services/power/cloudKeepAwake";
@@ -87,6 +111,7 @@ import { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { createHeadlessAccountVaultBridge } from "./services/account/accountRuntimeLifecycle";
 import { getMachineAccountStores } from "./services/account/machineAccountStores";
+import { publicProjectRecord as publicProjectRecordFor } from "./services/projects/publicProjectRecord";
 import {
   isMachineAccountMethod,
   runMachineAccountAction,
@@ -100,8 +125,18 @@ import {
 import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
 import { sendNotifyAsChatMessage } from "./services/push/chatMessageNotify";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
+import { requestMachineRemovalFromUser } from "./services/account/machineRemovalRequest";
+import { captureAgentCardAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
+import { noteUserClientClosed, noteUserClientOpened, type IdleMemorySources } from "./services/runtime/brainIdleMemory";
+import {
+  isRemoteRuntimeEventCategory,
+  sanitizeMachineName,
+  sanitizeUpdateRequestedBy,
+  type UpdateRequestClientKind,
+  type UpdateRequestedBy,
+} from "../../desktop/src/shared/types/remoteRuntime";
 import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
@@ -111,6 +146,7 @@ import {
 } from "../../desktop/src/shared/types";
 import {
   callAccountAction,
+  getSignedInAccountAccessToken,
   type AccountAnalyticsIdentity,
   type AccountAuthService,
 } from "./services/account/accountAuthService";
@@ -139,7 +175,12 @@ import {
 import { selectAccountMachine } from "../../desktop/src/shared/accountDirectory";
 import { buildAccountMachineSnapshot, findMachineByMentionId } from "../../desktop/src/shared/accountMachineSnapshot";
 import type { AdeAccountMachine, MachineConnectionRoutes } from "../../desktop/src/shared/types/account";
-import { ATTENTION_SNAPSHOT_INCLUDE_MESSAGES, type AttentionItem } from "../../desktop/src/shared/types/attention";
+import {
+  ATTENTION_CONTRACT_VERSION,
+  ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
+  type AttentionItem,
+  type AttentionSnapshot,
+} from "../../desktop/src/shared/types/attention";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import { mapPlatform } from "./services/sync/syncProtocol";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
@@ -153,6 +194,7 @@ import type { AgentMachineBridge } from "./services/account/agentMachineBridge";
 import type { CrossScopeChats } from "./services/chat/crossScopeChats";
 import {
   rememberChildWakeToken,
+  noteExternalChatTurn,
   rememberExternalChat,
 } from "../../desktop/src/main/services/chat/externalChats";
 import {
@@ -162,10 +204,12 @@ import {
   createdChatSessionId,
   omitRemoteCaller,
   readMachineCallScope,
+  remoteActionResult,
 } from "./services/account/agentRemoteRpc";
 import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
 import { readInstalledDesktopAppVersion } from "../../desktop/src/main/services/native/nativeHelperPaths";
+import { brainStartedAgoMs, readMachineUpdateBlock } from "./lib/hostUpdateFacts";
 import { readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/desktopUpdateInstallMode";
 
 type HandlerEntry = {
@@ -184,6 +228,11 @@ type RuntimeEventSubscription = {
    */
   projectId: ProjectId | null;
   unsubscribe: () => void;
+  /**
+   * The terminals whose `pty_data` this subscription sends, or null for all.
+   * `runtimeEvents.setPtyDataFilter` changes it; personal-chat streams have none.
+   */
+  ptyDataFilter?: { ids: Set<string> | null };
 };
 
 function decodeSearchQueryResult(
@@ -330,6 +379,11 @@ export type MultiProjectRpcHandlerOptions = {
    */
   peerDeviceId?: string | null;
   /**
+   * The device name the host stored in that peer's paired record. It names
+   * who asked for a remote update in place of the client's own claim.
+   */
+  peerDeviceName?: string | null;
+  /**
    * Backs `machines.call` / `machines.list`: this brain's agents reaching the
    * account's other machines. Absent on embedded and test runtimes, which then
    * refuse both methods.
@@ -351,7 +405,7 @@ export type MultiProjectRpcHandlerOptions = {
   personalChatScope?: Pick<
     PersonalChatScope,
     "capabilities" | "call" | "streamEvents" | "dispose"
-  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents" | "providerAccountsCall" | "credentialsCall" | "presetsCall">>;
+  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents" | "providerAccountsCall" | "credentialsCall" | "presetsCall" | "runtimeForDelivery">>;
   /** Profile of the outer runtime, used to trust the sole embedded host. */
   runtimeProfile?: "full" | "chat" | "embedded";
   /**
@@ -375,11 +429,29 @@ export type MultiProjectRpcHandlerOptions = {
    * which never own the machine's power settings.
    */
   /** On a cloud computer: interrupts work and writes the saved chat copy before a stop (`ade cloud prepare-stop`). */
-  prepareCloudStop?: ((args: { timeoutMs: number }) => Promise<unknown>) | null;
+  prepareCloudStop?: ((args: {
+    timeoutMs: number;
+    diskGrowToGb?: number | null;
+    growId?: string | null;
+    /** The server deletes the computer next: new work is frozen (`cloudDeleteFreeze.ts`). */
+    forDelete?: boolean;
+    /** The person's Sleep comes next: new work is frozen until it (`cloudDeleteFreeze.ts`). */
+    forSleep?: boolean;
+    /** An older server's Sleep: stop the turns and save the chats, with no lane backups. */
+    chatsOnly?: boolean;
+  }) => Promise<unknown>) | null;
+  /** On a cloud computer: the server keeps a computer it prepared for a delete, so the freeze ends (`ade cloud unfreeze`). */
+  unfreezeCloudComputer?: (() => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
-  pushCloudWork?: (() => Promise<unknown>) | null;
+  pushCloudWork?: ((args: { check: boolean; message?: string | null }) => Promise<unknown>) | null;
+  /** On a cloud computer: saves what clients read at rest, fork capsules too (`ade cloud save-for-rest`). */
+  saveCloudForRest?: ((args: { capsules: boolean }) => Promise<unknown>) | null;
+  /** On a cloud computer: sends the messages queued for its existing chats (`ade cloud messages drain`). */
+  drainCloudMessages?: (() => Promise<unknown>) | null;
   /** On a cloud computer: keeps it awake while `run` works (a first clone), and counts the end as use. */
   holdCloudWork?: (<T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>) | null;
+  /** `ade providers sign-in --remote` and its code and status companions (remoteProviderSignIn.ts). */
+  remoteProviderSignIn?: import("./services/account/remoteProviderSignIn").RemoteProviderSignIn | null;
   keepAwakeService?: Pick<
     BrainKeepAwakeService,
     "getSnapshot" | "setLevel" | "migrateLegacyPreference" | "fixSystemSleep"
@@ -390,6 +462,24 @@ export type MultiProjectRpcHandlerOptions = {
    * `accountVault.call`. Without it, those methods answer unavailable.
    */
   machineAccountDomains?: MachineAccountDomains;
+  /**
+   * The account stores the machine scope is lent: the settings store, so a
+   * provider's account-saved entries (OpenCode's cloud logins) reach the
+   * account the same way a project copy's do, and Passwords. Null on a brain
+   * with sync off, whose project runtimes have neither.
+   */
+  machineScopeAccountStores?: (() => MachineScopeAccountStores) | null;
+  /**
+   * The machine scope's Android settings (the SDK, its install, the machine
+   * preferences): built once per machine-owned runtime, its events sent to
+   * that runtime's feed. Absent on an embedded runtime.
+   */
+  machineScopeAndroid?: (() => Promise<(onEvent: (event: AndroidEmulatorEvent) => void) => AndroidMachineSettingsService>) | null;
+  /**
+   * The shared project record (a repository's name and icon on every machine
+   * of the account). Without it, names and icons come from this machine only.
+   */
+  projectRecords?: MachineProjectRecords | null;
   accountAuthService?: AccountAuthService;
   productAnalyticsService?: AccountAnalyticsIdentity & {
     /** Present on the real service; records the account sign-in funnel. */
@@ -461,6 +551,12 @@ export type MultiProjectRpcHandlerOptions = {
       blockedMs: number;
       ts: string;
     } | null;
+    /** This brain started after the one before it stopped unplanned (`brainUnplannedRestart.ts`). Optional for older embedders. */
+    lastUnplannedRestart?: {
+      ts: string;
+      chats: number;
+      cliSessions: number;
+    } | null;
   };
   registerAccountConfigRoot?: typeof registerAccountConfigProjectRoot;
   reconcileAccountOwnership?: typeof reconcileAccountOwnedMachineTrust;
@@ -514,14 +610,19 @@ export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSourc
 /** What the cloud busy list reads, across every project this brain booted and its personal chats. */
 export async function readMachineBusyFacts(args: BootedRuntimeSources & {
   personalChatScope: Partial<Pick<PersonalChatScope, "busyFacts">>;
-}): Promise<Pick<CloudBusyFacts, "chats" | "terminals">> {
-  const parts = [
+}): Promise<Pick<CloudBusyFacts, "chats" | "terminals" | "laneSetups">> {
+  const parts: Array<Pick<CloudBusyFacts, "chats" | "terminals" | "laneSetups">> = [
     ...await mapBootedProjectRuntimes(args, (runtime) => readRuntimeBusyFacts(runtime)),
     typeof args.personalChatScope.busyFacts === "function"
       ? await args.personalChatScope.busyFacts()
       : { chats: [], terminals: [] },
   ];
-  return { chats: parts.flatMap((part) => part.chats), terminals: parts.flatMap((part) => part.terminals) };
+  const laneSetups = parts.reduce((total, part) => total + (part.laneSetups ?? 0), 0);
+  return {
+    chats: parts.flatMap((part) => part.chats),
+    terminals: parts.flatMap((part) => part.terminals),
+    ...(laneSetups > 0 ? { laneSetups } : {}),
+  };
 }
 
 /**
@@ -598,7 +699,14 @@ const RUNTIME_METHODS = new Set([
   "remoteMcp.call",
   "keepAwake.call",
   "cloud.prepareStop",
+  "cloud.unfreeze",
   "cloud.pushWork",
+  "cloud.workState",
+  "cloud.saveForRest",
+  "cloud.drainMessages",
+  "providers.remoteSignInStart",
+  "providers.remoteSignInStatus",
+  "providers.remoteSignInCode",
   "cloud.call",
   "accountVault.call",
   "attention.call",
@@ -606,6 +714,7 @@ const RUNTIME_METHODS = new Set([
   "providers.status",
   "usage.getUsageRollup",
   "usage.getLiveQuota",
+  "usage.consumeResetCredit",
   "personalChats.call",
   "providerAccounts.call",
   "credentials.call",
@@ -617,11 +726,17 @@ const RUNTIME_METHODS = new Set([
   "machine.updateAndRestart",
   "machine.reportPowerTransition",
   "projects.list",
+  "projects.accountList",
   "projects.add",
   "projects.setCatalogVisibility",
   "projects.remove",
+  "projects.inspectRemoval",
+  "projects.removeCopy",
+  "projects.setMainCheckout",
   "projects.pruneMissing",
   "projects.touch",
+  "projects.retryOpen",
+  "projects.checkOpen",
   "projects.setIcon",
   "projects.removeIcon",
   "projects.browseDirectories",
@@ -635,6 +750,7 @@ const RUNTIME_METHODS = new Set([
   "projects.listMyGitHubRepos",
   "runtimeEvents.subscribe",
   "runtimeEvents.unsubscribe",
+  "runtimeEvents.setPtyDataFilter",
   "appControl.setFrameDemand",
   "sync.switchHost",
   "sync.getStatus",
@@ -712,10 +828,10 @@ function assertProjectFolderPresent(rootPath: string): void {
 }
 
 function requireRegisteredProjectForIcon(
-  projectRegistry: Pick<ProjectRegistry, "findByRootPath">,
+  projectRegistry: Pick<ProjectRegistry, "findByRootPath" | "list">,
   params: Record<string, unknown>,
   method: string,
-): { rootPath: string } {
+): { rootPath: string; projectId: string } {
   const rootPath = readOptionalString(params.rootPath);
   if (!rootPath) {
     throw new JsonRpcError(
@@ -723,7 +839,11 @@ function requireRegisteredProjectForIcon(
       `${method} requires rootPath.`,
     );
   }
-  const project = projectRegistry.findByRootPath(rootPath);
+  // The registered root as given first: normalizing reads the folder, which
+  // for a refused project is the drive that froze the brain.
+  const given = path.resolve(rootPath);
+  const project = projectRegistry.list().find((record) => record.rootPath === given)
+    ?? projectRegistry.findByRootPath(rootPath);
   if (!project) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
@@ -796,12 +916,8 @@ async function readCloneProjectInput(
       JsonRpcErrorCode.invalidParams,
       "projects.clone requires parentDir.",
     );
-  // A folder named from another computer (`--machine`) arrives as typed there:
-  // `~` means this computer's home, and a relative path would land wherever
-  // this brain happens to run, so it is refused.
-  const resolvedParentDir = /^~(?=$|[\\/])/.test(parentDir)
-    ? path.join(os.homedir(), parentDir.slice(1))
-    : parentDir;
+  // A relative path would land wherever this brain happens to run, so it is refused.
+  const resolvedParentDir = expandRemoteHome(parentDir);
   if (!path.isAbsolute(resolvedParentDir))
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
@@ -828,6 +944,91 @@ function readListMyReposInput(
  * never copied the account's GitHub token, so it is read from the account
  * vault here first; without it a private repository does not clone.
  */
+/**
+ * The account getters a machine-level GitHub service needs for the account's
+ * GitHub App sign-in, so a clone on a new cloud computer can use it.
+ */
+function machineAccountAppGithubOptions(accountUserId: () => string | null) {
+  return {
+    getAccountAccessToken: (options?: { forceRefresh?: boolean }) =>
+      getSignedInAccountAccessToken(getSharedAccountAuthService({ logger: machineProjectLogger }), options),
+    getAccountUserId: accountUserId,
+    getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl() || null,
+  };
+}
+
+/** The account stores a machine scope is lent while sync is on. */
+export type MachineScopeAccountStores = {
+  settings: NonNullable<AdeRuntime["accountSettingsStore"]>;
+  passwords: NonNullable<AdeRuntime["passwordService"]>;
+};
+
+/** What the machine scope is lent beyond the machine-owned runtime's own services. */
+type MachineScopeLent = {
+  account: MachineScopeAccountStores | null;
+  keepAwake: AdeRuntime["keepAwakeService"] | null;
+  android: AndroidMachineSettingsService | null;
+};
+
+/**
+ * The machine scope's Android service: its settings only. Lanes, devices and
+ * recordings need a project, and `machineScopeActionAllowed` keeps every
+ * other action from reaching here; this says so if one ever does.
+ */
+function machineScopeAndroidService(settings: AndroidMachineSettingsService): NonNullable<AdeRuntime["androidEmulatorService"]> {
+  return new Proxy(settings, {
+    get(target, property) {
+      if (Object.hasOwn(target, property)) return target[property as keyof AndroidMachineSettingsService];
+      return () => Promise.reject(new Error("Android devices need a project; this computer's settings have none."));
+    },
+  }) as unknown as NonNullable<AdeRuntime["androidEmulatorService"]>;
+}
+
+/** One overlay per machine-owned runtime, so every connection shares it. */
+const lentMachineScopeRuntimes = new WeakMap<AdeRuntime, AdeRuntime>();
+
+/**
+ * The machine-owned runtime (sync off, chat profile) with what the machine
+ * route needs lent to it: this brain's account stores (only when sync is on),
+ * its keep-awake service, and the machine's Android settings. A prototype
+ * overlay keeps the runtime's getters and methods live. It is made once per
+ * runtime, and `lend` is called once with it: what the action registry hangs
+ * on a runtime (the sign-in status bridges) is then added once, and disposing
+ * the runtime runs the overlay's teardown first (the lent Android settings,
+ * then whatever wraps the overlay), then the runtime's own.
+ */
+function withLentMachineServices(runtime: AdeRuntime, lend: (runtime: AdeRuntime) => MachineScopeLent): AdeRuntime {
+  const cached = lentMachineScopeRuntimes.get(runtime);
+  if (cached) return cached;
+  const lent = lend(runtime);
+  const scoped = Object.create(runtime) as AdeRuntime;
+  const define = <K extends keyof AdeRuntime>(key: K, value: AdeRuntime[K]) =>
+    Object.defineProperty(scoped, key, { value, enumerable: true });
+  if (lent.account) {
+    define("accountSettingsStore", lent.account.settings);
+    define("passwordService", lent.account.passwords);
+  }
+  if (lent.keepAwake) define("keepAwakeService", lent.keepAwake);
+  if (lent.android) define("androidEmulatorService", machineScopeAndroidService(lent.android));
+  const ownDispose = runtime.dispose;
+  // The overlay's own `dispose` ends in the runtime's; whatever wraps it
+  // (`ensureAuthStatusRelayBridges`) runs first.
+  Object.defineProperty(scoped, "dispose", {
+    value: (reason?: Parameters<AdeRuntime["dispose"]>[0]) => {
+      lent.android?.dispose();
+      return ownDispose(reason);
+    },
+    writable: true,
+    enumerable: true,
+  });
+  runtime.dispose = (reason) => {
+    lentMachineScopeRuntimes.delete(runtime);
+    return scoped.dispose(reason);
+  };
+  lentMachineScopeRuntimes.set(runtime, scoped);
+  return scoped;
+}
+
 async function createMachineProjectScaffoldService() {
   const account = getMachineAccountStores(machineProjectLogger);
   const githubService = createHeadlessGitHubService(
@@ -835,14 +1036,16 @@ async function createMachineProjectScaffoldService() {
     machineProjectLogger,
     {
       getAccountVault: () => createHeadlessAccountVaultBridge(() => account.vault),
-      getAccountUserId: account.accountUserId,
+      ...machineAccountAppGithubOptions(account.accountUserId),
     },
   );
   const userId = account.accountUserId();
   if (userId) {
     // Recorded before the awaits, so a sign-in as another account meanwhile purges it.
     machineGithubTokenUserId = userId;
-    await account.vault.sync({ maxAgeMs: MACHINE_GITHUB_VAULT_MAX_AGE_MS }).catch(() => {});
+    await account.vault.sync({ maxAgeMs: MACHINE_GITHUB_VAULT_MAX_AGE_MS }).catch((err) => {
+      console.warn(`[multiProjectRpcServer] vault sync failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
     await githubService.hydratePatFromVault();
     // The account changed while the token was read: it is not this account's
     // to keep. A newer request that read the new account's token recorded that
@@ -885,25 +1088,28 @@ const LIST_ICON_RESOLVE_BUDGET_MS = 750;
 const ICON_WRITE_RESOLVE_BUDGET_MS = 8_000;
 
 /**
- * The one "Update & restart" run this process will do at a time.
- *
- * Module-scoped on purpose: overlapping callers are not one impatient client
- * but several — a desktop, a phone, and a reconnect that retried — each on its
- * own connection and its own handler. Two runs would download and swap the same
- * runtime concurrently and then both ask the service to restart, mid-swap.
- * Whoever asks while a run is in flight joins that run and gets its result.
+ * What the shared project record asks of one icon resolve (see
+ * `RemoteProjectIconRecordMode`), and where a `migrate` answer's shrunk copy
+ * of this machine's own icon goes.
  */
-let machineUpdateAndRestartInFlight: Promise<unknown> | null = null;
+type ProjectIconRecordRequest = {
+  mode: RemoteProjectIconRecordMode;
+  /** `undefined`: this machine has no custom icon; `null`: it has one that does not fit the record. */
+  onRecordValue?: (value: ProjectRecordIconValue | null | undefined) => void;
+};
 
 type ProjectIconResolver = (
   rootPath: string,
   timeoutMs: number,
+  record?: ProjectIconRecordRequest,
 ) => ResolvedProjectIcon | Promise<ResolvedProjectIcon>;
 
-function projectIconWorkerInvocation(rootPath: string): {
+function projectIconWorkerInvocation(rootPath: string, mode: RemoteProjectIconRecordMode): {
   command: string;
   args: string[];
 } {
+  // A positional after the root, so an older argument parser still reads the root.
+  const modeArgs = mode === "off" ? [] : [`record:${mode}`];
   const entryPath = process.argv[1] ?? "";
   const isCliScript = /(^|[/\\])cli\.(?:ts|js|cjs)$/i.test(entryPath)
     && fs.existsSync(entryPath);
@@ -915,13 +1121,14 @@ function projectIconWorkerInvocation(rootPath: string): {
           entryPath,
           "__ade-project-icon-worker",
           rootPath,
+          ...modeArgs,
         ],
       }
     : {
         // Node SEA executables re-enter the bundled CLI directly. Its SEA
         // banner restores the synthetic cli.cjs argv entry before parsing.
         command: process.execPath,
-        args: ["__ade-project-icon-worker", rootPath],
+        args: ["__ade-project-icon-worker", rootPath, ...modeArgs],
       };
 }
 
@@ -938,11 +1145,14 @@ function isResolvedProjectIcon(value: unknown): value is ResolvedProjectIcon {
 // responsive; the caller's deadline is enforced by `resolveIconBeforeDeadline`,
 // and a worker that hangs is killed at `timeoutMs`. `null` when the worker
 // failed or ran out of time, which is not an answer worth keeping.
+type ProjectIconWorkerAnswer = { icon: ResolvedProjectIcon; recordValue: ProjectRecordIconValue | null | undefined };
+
 function runProjectIconWorker(
   rootPath: string,
   timeoutMs: number,
-): Promise<ResolvedProjectIcon | null> {
-  const invocation = projectIconWorkerInvocation(rootPath);
+  mode: RemoteProjectIconRecordMode,
+): Promise<ProjectIconWorkerAnswer | null> {
+  const invocation = projectIconWorkerInvocation(rootPath, mode);
   return new Promise((resolve) => {
     execFile(
       invocation.command,
@@ -950,7 +1160,7 @@ function runProjectIconWorker(
       {
         timeout: Math.max(1, Math.floor(timeoutMs)),
         killSignal: "SIGKILL",
-        maxBuffer: REMOTE_ICON_MAX_DATA_URL_BYTES + 16 * 1024,
+        maxBuffer: REMOTE_ICON_MAX_DATA_URL_BYTES + PROJECT_RECORD_ICON_MAX_VALUE_BYTES + 16 * 1024,
         encoding: "utf8",
         windowsHide: true,
       },
@@ -960,8 +1170,23 @@ function runProjectIconWorker(
           return;
         }
         try {
-          const icon = JSON.parse(stdout.trim()) as unknown;
-          resolve(isResolvedProjectIcon(icon) ? icon : null);
+          const parsed = JSON.parse(stdout.trim()) as unknown;
+          if (!isResolvedProjectIcon(parsed)) {
+            resolve(null);
+            return;
+          }
+          // Only the icon goes to callers; the record copy is for this brain.
+          const recordValue = (parsed as { recordValue?: unknown }).recordValue;
+          const decoded = recordValue === undefined
+            ? undefined
+            : recordValue && typeof recordValue === "object"
+                && typeof (recordValue as { dataUrl?: unknown }).dataUrl === "string"
+              ? projectRecordIconValue((recordValue as { dataUrl: string }).dataUrl)
+              : null;
+          resolve({
+            icon: { dataUrl: parsed.dataUrl, sourcePath: parsed.sourcePath, mimeType: parsed.mimeType },
+            recordValue: decoded,
+          });
         } catch {
           resolve(null);
         }
@@ -977,13 +1202,20 @@ function runProjectIconWorker(
  * with it: measured, a dev brain answering a lane list every 3 s started 24
  * such processes a minute. An answer is reused while the same signature the
  * in-process resolver trusts still holds (the folders it scans, the project's
- * `.ade/local.yaml` icon setting, the icon file itself). Past five minutes an
- * answer whose signature still holds is served while one worker re-checks in
- * the background, so a list never waits on a cold worker for an icon it
+ * `.ade/local.yaml` icon setting, the icon file itself). Past its age limit
+ * an answer whose signature still holds is served while one worker re-checks
+ * in the background, so a list never waits on a cold worker for an icon it
  * already has. The stats are async: a project on a dead network mount must
  * not stop the event loop.
+ *
+ * The age limit is an hour, not five minutes. Each re-check is a new node
+ * process that loads the whole CLI bundle (about 0.5 to 1 s of CPU and a
+ * short 60 to 120 MB peak), and a held signature already says that nothing
+ * the scan reads at the top level changed. An icon write drops the answer at
+ * once (`forgetProjectIconAnswer`), so only a new icon file deep in a folder
+ * the signature does not stat waits for the re-check.
  */
-const PROJECT_ICON_ANSWER_TTL_MS = 5 * 60_000;
+const PROJECT_ICON_ANSWER_TTL_MS = 60 * 60_000;
 /**
  * How long a worker may run. The list's caller stops waiting at its own
  * budget (750 ms) and shows no icon, as before, but the worker finishes and
@@ -996,8 +1228,15 @@ const PROJECT_ICON_WORKER_TIMEOUT_MS = 15_000;
 /** How long a failed worker's "no icon" stands before a list re-checks it in the background. */
 const PROJECT_ICON_FAILURE_TTL_MS = 60_000;
 const PROJECT_ICON_ANSWERS_MAX = 256;
+// Keyed by record mode and root: an answer made while the record had no icon
+// keeps this machine's override, which a `detected` answer must not reuse.
 const projectIconAnswers = new Map<string, { signature: string; icon: ResolvedProjectIcon; expiresAtMs: number }>();
 const projectIconResolves = new Map<string, Promise<ResolvedProjectIcon | null>>();
+const RECORD_MODES: readonly RemoteProjectIconRecordMode[] = ["off", "detected", "migrate"];
+
+function projectIconAnswerKey(rootPath: string, mode: RemoteProjectIconRecordMode): string {
+  return mode === "off" ? rootPath : `${mode}\u0000${rootPath}`;
+}
 
 function statStamp(entry: string): Promise<string> {
   return fs.promises.stat(entry).then((stat) => `${stat.mtimeMs}:${stat.size}`, () => "-");
@@ -1020,42 +1259,55 @@ async function projectIconSignature(rootPath: string, sourcePath: string | null)
  * the signature from before the change, so its answer is never trusted later.
  */
 function forgetProjectIconAnswer(rootPath: string): void {
-  projectIconAnswers.delete(rootPath);
-  projectIconResolves.delete(rootPath);
+  for (const mode of RECORD_MODES) {
+    projectIconAnswers.delete(projectIconAnswerKey(rootPath, mode));
+    projectIconResolves.delete(projectIconAnswerKey(rootPath, mode));
+  }
 }
 
 async function resolveRemoteProjectIconInWorker(
   rootPath: string,
   timeoutMs: number,
+  record: ProjectIconRecordRequest = { mode: "off" },
 ): Promise<ResolvedProjectIcon> {
   if (timeoutMs <= 0) return EMPTY_PROJECT_ICON;
-  const kept = projectIconAnswers.get(rootPath);
+  const kept = projectIconAnswers.get(projectIconAnswerKey(rootPath, record.mode));
   if (kept && kept.signature === await projectIconSignature(rootPath, kept.icon.sourcePath)) {
-    if (kept.expiresAtMs <= Date.now()) void startProjectIconResolve(rootPath, timeoutMs);
+    if (kept.expiresAtMs <= Date.now()) void startProjectIconResolve(rootPath, timeoutMs, record);
     return kept.icon;
   }
-  return (await startProjectIconResolve(rootPath, timeoutMs)) ?? EMPTY_PROJECT_ICON;
+  return (await startProjectIconResolve(rootPath, timeoutMs, record)) ?? EMPTY_PROJECT_ICON;
 }
 
 /** One worker per project at a time: two lists at once (a desktop and a phone connecting) share it. */
-function startProjectIconResolve(rootPath: string, timeoutMs: number): Promise<ResolvedProjectIcon | null> {
-  const existing = projectIconResolves.get(rootPath);
+function startProjectIconResolve(
+  rootPath: string,
+  timeoutMs: number,
+  record: ProjectIconRecordRequest,
+): Promise<ResolvedProjectIcon | null> {
+  const key = projectIconAnswerKey(rootPath, record.mode);
+  const existing = projectIconResolves.get(key);
   if (existing) return existing;
   const self: { promise: Promise<ResolvedProjectIcon | null> | null } = { promise: null };
   const resolving = (async () => {
     // Taken before the worker reads, so a change while it runs is not hidden.
     const folders = await projectIconSignature(rootPath, null);
-    const icon = await runProjectIconWorker(rootPath, Math.max(timeoutMs, PROJECT_ICON_WORKER_TIMEOUT_MS));
+    const answer = await runProjectIconWorker(rootPath, Math.max(timeoutMs, PROJECT_ICON_WORKER_TIMEOUT_MS), record.mode);
+    const icon = answer?.icon ?? null;
     // A worker that failed (it crashed, ran out of time, or printed more than
     // it may) is kept as "no icon" for a minute. Not keeping it made every
     // list wait out its whole budget for a worker that fails again: measured
     // on Windows, `projects.list` took 751 ms on every call.
     const kept = icon ?? EMPTY_PROJECT_ICON;
     const signature = icon?.sourcePath ? `${folders}|${await statStamp(icon.sourcePath)}` : folders;
-    // A resolve that an icon write superseded keeps its answer to itself.
-    if (projectIconResolves.get(rootPath) !== self.promise) return icon;
-    projectIconAnswers.delete(rootPath);
-    projectIconAnswers.set(rootPath, {
+    // A resolve that an icon write superseded keeps its answer to itself, and
+    // records nothing: an old worker must not undo a newer choice (a removed
+    // icon coming back on every machine).
+    if (projectIconResolves.get(key) !== self.promise) return icon;
+    // A fresh answer only, so a kept one never retries an upload.
+    if (answer && record.mode === "migrate") record.onRecordValue?.(answer.recordValue);
+    projectIconAnswers.delete(key);
+    projectIconAnswers.set(key, {
       signature,
       icon: kept,
       expiresAtMs: Date.now() + (icon ? PROJECT_ICON_ANSWER_TTL_MS : PROJECT_ICON_FAILURE_TTL_MS),
@@ -1067,9 +1319,9 @@ function startProjectIconResolve(rootPath: string, timeoutMs: number): Promise<R
     return icon;
   })();
   self.promise = resolving;
-  projectIconResolves.set(rootPath, resolving);
+  projectIconResolves.set(key, resolving);
   void resolving.finally(() => {
-    if (projectIconResolves.get(rootPath) === resolving) projectIconResolves.delete(rootPath);
+    if (projectIconResolves.get(key) === resolving) projectIconResolves.delete(key);
   });
   return resolving;
 }
@@ -1078,12 +1330,13 @@ async function resolveIconBeforeDeadline(
   resolveIcon: ProjectIconResolver,
   rootPath: string,
   timeoutMs: number,
+  record?: ProjectIconRecordRequest,
 ): Promise<ResolvedProjectIcon> {
   if (timeoutMs <= 0) return EMPTY_PROJECT_ICON;
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
     return await Promise.race([
-      Promise.resolve().then(() => resolveIcon(rootPath, timeoutMs)),
+      Promise.resolve().then(() => (record ? resolveIcon(rootPath, timeoutMs, record) : resolveIcon(rootPath, timeoutMs))),
       new Promise<ResolvedProjectIcon>((resolve) => {
         timer = setTimeout(() => resolve(EMPTY_PROJECT_ICON), timeoutMs);
       }),
@@ -1100,26 +1353,48 @@ async function resolveIconBeforeDeadline(
 // add/create/clone (which feed the desktop's cached connection.projects), so a
 // freshly registered project opens with its icon instead of a blank folder.
 // Best-effort: a failed resolve degrades to a null icon and never throws.
-async function decorateProjectWithIcon<T extends { rootPath: string }>(
+async function decorateProjectWithIcon<T extends { rootPath: string; gitOriginUrl?: string | null; displayName?: string }>(
   record: T,
+  projectRecords: MachineProjectRecords | null = null,
 ): Promise<T & { icon: ResolvedProjectIcon }> {
+  const decision = projectRecords?.iconDecision(record) ?? null;
+  const name = projectRecords?.name(record) ?? null;
+  const named = name && typeof record.displayName === "string" ? { ...record, displayName: name } : record;
+  if (decision?.use === "record") return { ...named, icon: decision.icon };
   return {
-    ...record,
+    ...named,
     icon: await resolveIconBeforeDeadline(
       resolveRemoteProjectIconInWorker,
       record.rootPath,
       LIST_ICON_RESOLVE_BUDGET_MS,
+      projectIconRecordRequest(record, decision, projectRecords),
     ),
   };
+}
+
+/** The worker mode for a project whose record did not settle its icon. */
+function projectIconRecordRequest(
+  project: { rootPath: string; gitOriginUrl?: string | null; projectId?: string },
+  decision: ProjectRecordIconDecision | null,
+  projectRecords: MachineProjectRecords | null,
+): ProjectIconRecordRequest | undefined {
+  if (!decision || !projectRecords) return undefined;
+  if (decision.use === "detected") return { mode: "detected" };
+  // A refused project's icon is not migrated: that reads its `.ade` folder here.
+  if (decision.use === "local" && decision.migrate && projectRecords.readsFolder(project)) {
+    return { mode: "migrate", onRecordValue: (value) => projectRecords.completeMigration(project, value) };
+  }
+  return undefined;
 }
 
 // Decorate a full project list with icons under the connect-path budget above.
 // Icons are resolved for the most-recently-opened projects first (those most
 // likely to be open as tabs) while the returned array stays in registry order.
-export async function decorateProjectListWithIcons<T extends { rootPath: string; lastOpenedAt: number }>(
+export async function decorateProjectListWithIcons<T extends { rootPath: string; lastOpenedAt: number; gitOriginUrl?: string | null }>(
   records: readonly T[],
   resolveIcon: ProjectIconResolver = resolveRemoteProjectIconInWorker,
   resolveBudgetMs = LIST_ICON_RESOLVE_BUDGET_MS,
+  projectRecords: MachineProjectRecords | null = null,
 ): Promise<Array<T & { icon: ResolvedProjectIcon }>> {
   const icons = new Map<number, ResolvedProjectIcon>();
   let count = 0;
@@ -1130,7 +1405,23 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
     .sort((a, b) =>
       b.record.lastOpenedAt - a.record.lastOpenedAt || a.index - b.index
     );
+  // The record's own icons first: each is a small data URL already in
+  // memory, so it costs no worker, no file read and none of the time budget.
+  const decisions = new Map<number, ProjectRecordIconDecision>();
+  if (projectRecords) {
+    for (const { record, index } of byRecency) {
+      const decision = projectRecords.iconDecision(record);
+      decisions.set(index, decision);
+      if (decision.use !== "record" || !decision.icon.dataUrl) continue;
+      const iconBytes = Buffer.byteLength(decision.icon.dataUrl, "utf8");
+      if (bytes + iconBytes > LIST_ICON_BYTE_BUDGET) continue;
+      bytes += iconBytes;
+      icons.set(index, decision.icon);
+    }
+  }
   for (const { record, index } of byRecency) {
+    // A record icon past the byte budget stays empty: the local file is not the answer.
+    if (icons.has(index) || decisions.get(index)?.use === "record") continue;
     const elapsedMs = Date.now() - startedAt;
     if (
       count >= LIST_ICON_COUNT_BUDGET
@@ -1141,6 +1432,7 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
       resolveIcon,
       record.rootPath,
       resolveBudgetMs - elapsedMs,
+      projectIconRecordRequest(record, decisions.get(index) ?? null, projectRecords),
     );
     count += 1;
     const iconBytes = icon.dataUrl
@@ -1246,11 +1538,16 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
     ) {
       blockingErrors.push("Destination Git authentication preflight received invalid repository details.");
     } else if (fs.existsSync(normalizedParent) && fs.statSync(normalizedParent).isDirectory()) {
-      const githubService = createHeadlessGitHubService(normalizedParent, machineProjectLogger);
+      const githubService = createHeadlessGitHubService(
+        normalizedParent,
+        machineProjectLogger,
+        machineAccountAppGithubOptions(getMachineAccountStores(machineProjectLogger).accountUserId),
+      );
       let destinationToken = "";
-      if (githubService.parseGitHubRepoFromRemoteUrl(originUrl) && /^https:\/\//i.test(originUrl)) {
+      const destinationRepo = githubService.parseGitHubRepoFromRemoteUrl(originUrl);
+      if (destinationRepo && /^https:\/\//i.test(originUrl)) {
         try {
-          destinationToken = await githubService.getGitTransportTokenOrThrowAsync();
+          destinationToken = await githubService.getGitTransportTokenOrThrowAsync({ owner: destinationRepo.owner });
         } catch {
           // The destination may still have a system credential helper. Let
           // Git try it with terminal prompting disabled below.
@@ -1297,6 +1594,50 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
   };
 }
 
+/**
+ * A folder named from another computer (`--machine`) arrives as typed there:
+ * a leading `~` means this computer's home. `~user` is left as typed.
+ */
+function expandRemoteHome(typed: string): string {
+  return /^~(?=$|[\\/])/.test(typed) ? path.join(os.homedir(), typed.slice(1)) : typed;
+}
+
+/**
+ * The registered project a `projectId` (or the id it moved to) or `rootPath`
+ * names, or null. `rootPath` matches the registered root before any `realpath`.
+ */
+function findRegisteredProjectRef(
+  projectRegistry: ProjectRegistry,
+  params: Record<string, unknown>,
+): ProjectRecord | null {
+  const projectId = readProjectId(params);
+  const typedRoot = readOptionalString(params.rootPath);
+  const rootPath = typedRoot ? expandRemoteHome(typedRoot) : typedRoot;
+  if (projectId) {
+    return projectRegistry.get(projectId) ?? projectRegistry.get(projectRegistry.resolveMovedProjectId(projectId) ?? "");
+  }
+  return rootPath ? projectRegistry.findAtRootPath(rootPath) : null;
+}
+
+/** {@link findRegisteredProjectRef}, or an invalid-params error when it names nothing registered. */
+function readRegisteredProjectRef(
+  projectRegistry: ProjectRegistry,
+  params: Record<string, unknown>,
+  method: string,
+): ProjectRecord {
+  if (!readProjectId(params) && !readOptionalString(params.rootPath)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${method} requires projectId or rootPath.`);
+  }
+  const record = findRegisteredProjectRef(projectRegistry, params);
+  if (!record) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `No project ${readProjectId(params) ?? readOptionalString(params.rootPath)} is registered on this machine.`,
+    );
+  }
+  return record;
+}
+
 function readProjectId(params: Record<string, unknown>): ProjectId | null {
   const value = params.projectId;
   return typeof value === "string" && value.trim().length > 0
@@ -1324,25 +1665,22 @@ function readProjectRegistrationIntent(
 
 /**
  * A call that runs in the caller's work copy there: `ade shell start
- * --machine` (pty.create), or a lane-less `ade apple … --machine` or
- * `ade android … --machine`. Null for anything else.
+ * --machine` (pty.create), or a lane-less `ade apple … --machine`,
+ * `ade android … --machine`, `ade screen … --machine` (its desktop screen)
+ * or `ade app-control … --machine`. Null for anything else.
  */
-function remoteWorkCallKind(method: string, params: Record<string, unknown>): "shell" | "simulator" | "android" | null {
+function remoteWorkCallKind(
+  method: string,
+  params: Record<string, unknown>,
+): "shell" | "simulator" | "android" | "desktop" | "app_control" | null {
   if (method !== "ade/actions/call" || params.name !== "run_ade_action" || !isRecord(params.arguments)) return null;
   const call = params.arguments;
   if (!isRecord(call.args) || !isRecord(call.args.remoteWork)) return null;
   if (call.domain === "pty" && call.action === "create") return "shell";
   if (call.domain === "ios_simulator") return "simulator";
   if (call.domain === "android_emulator") return "android";
-  return null;
-}
-
-/** The action's own result in a forwarded `ade/actions/call` answer (`{ structuredContent: { result } }`, or older shapes). */
-function remoteActionResult(answer: unknown): Record<string, unknown> | null {
-  const structured = isRecord(answer) && isRecord(answer.structuredContent) ? answer.structuredContent : null;
-  for (const candidate of [structured?.result, isRecord(answer) ? answer.result : null, structured, answer]) {
-    if (isRecord(candidate) && !("structuredContent" in candidate)) return candidate;
-  }
+  if (call.domain === "mac_desktop") return "desktop";
+  if (call.domain === "app_control") return "app_control";
   return null;
 }
 
@@ -1375,6 +1713,21 @@ function omitProjectId(
  * folder, the storage preflight, this machine's own Git credentials, and the
  * clone service's rollback on failure. An already registered checkout wins.
  */
+/**
+ * A registry record as an RPC answer (`services/projects/publicProjectRecord`).
+ * The signed-in account is read only for a linked record, unless the caller
+ * passes it (a list reads it once).
+ */
+function publicProjectRecord<T extends { accountProjectId?: string; accountProjectUserId?: string }>(
+  record: T,
+  accountUserId?: string | null,
+): Omit<T, "accountProjectId" | "accountProjectUserId"> & { accountProjectId?: string } {
+  return publicProjectRecordFor(
+    record,
+    accountUserId !== undefined ? accountUserId : () => getMachineAccountStores(machineProjectLogger).accountUserId(),
+  );
+}
+
 async function cloneRepositoryForRemoteAgent(
   projectRegistry: ProjectRegistry,
   originUrl: string | undefined,
@@ -1416,6 +1769,40 @@ async function cloneRepositoryForRemoteAgent(
   return projectRegistry.add(result.rootPath, asked);
 }
 
+type HoldCloudWork = <T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>;
+
+/**
+ * A clone into this machine's projects folder with no project open. A second
+ * request for the same folder joins the first (the scaffold service), and a
+ * folder that already holds this repository is the answer. Nothing on a cloud
+ * computer's busy list sees such a clone, so it is held while it runs; the
+ * hold wraps only a real clone.
+ */
+function machineCloneIntoFolder(holdCloudWork: HoldCloudWork | null) {
+  const whileFirstCloneHeld = <T>(run: () => Promise<T>): Promise<T> =>
+    holdCloudWork ? holdCloudWork("first_clone", 30 * 60_000, run) : run();
+  return async (input: CloneProjectInput, beforeClone?: () => Promise<void>): Promise<CloneProjectResult> =>
+    await (await createMachineProjectScaffoldService()).cloneRepository(input, {
+      reuseExistingCheckout: true,
+      beforeClone,
+      wrapClone: whileFirstCloneHeld,
+    });
+}
+
+/**
+ * `machines.cloneForAgent`'s work, for this machine's own brain: a new cloud
+ * computer of a server launch sets its lane's repository up at boot, with the
+ * same rules (GitHub only, its canonical URL, this machine's own Git
+ * sign-in, an existing checkout wins).
+ */
+export async function setUpRepositoryOnThisMachine(
+  projectRegistry: ProjectRegistry,
+  originUrl: string,
+  holdCloudWork: HoldCloudWork | null,
+): Promise<ProjectRecord> {
+  return await cloneRepositoryForRemoteAgent(projectRegistry, originUrl, machineCloneIntoFolder(holdCloudWork));
+}
+
 function readEventCategory(value: unknown): RuntimeEventCategory | null {
   return isRemoteRuntimeEventCategory(value) ? value : null;
 }
@@ -1432,6 +1819,12 @@ function readLimit(value: unknown): number {
     : 100;
 }
 
+/**
+ * Long actions callers follow by job id. One map for the whole brain: the
+ * call sent again after a dropped link arrives on a new connection.
+ */
+const backgroundActionJobs = createBackgroundActionJobs();
+
 export function createMultiProjectRpcRequestHandler(
   options: MultiProjectRpcHandlerOptions,
 ): JsonRpcHandler & {
@@ -1439,6 +1832,7 @@ export function createMultiProjectRpcRequestHandler(
   setNotifier: (notify: JsonRpcNotifier | null) => void;
 } {
   const projectRegistry = options.projectRegistry ?? new ProjectRegistry();
+  const projectRecords = options.projectRecords ?? null;
   const registerAccountConfigRoot = options.registerAccountConfigRoot
     ?? registerAccountConfigProjectRoot;
   const registerAccountProjects = (): void => {
@@ -1447,19 +1841,7 @@ export function createMultiProjectRpcRequestHandler(
     }
   };
   registerAccountProjects();
-  // A clone another machine asked for runs with no project open, so nothing on
-  // a cloud computer's busy list sees it.
-  const whileFirstCloneHeld = <T>(run: () => Promise<T>): Promise<T> =>
-    options.holdCloudWork ? options.holdCloudWork("first_clone", 30 * 60_000, run) : run();
-  // Another machine asked: a second request for the same folder joins the
-  // first (the scaffold service), and a folder that already holds this
-  // repository is the answer. The hold wraps only a real clone.
-  const cloneIntoFolder = async (input: CloneProjectInput, beforeClone?: () => Promise<void>): Promise<CloneProjectResult> =>
-    await (await createMachineProjectScaffoldService()).cloneRepository(input, {
-      reuseExistingCheckout: true,
-      beforeClone,
-      wrapClone: whileFirstCloneHeld,
-    });
+  const cloneIntoFolder = machineCloneIntoFolder(options.holdCloudWork ?? null);
   const accountAuthService = options.accountAuthService ?? getSharedAccountAuthService({
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
   });
@@ -1468,6 +1850,28 @@ export function createMultiProjectRpcRequestHandler(
   const currentAccountOwnerUserId = (): string | null => {
     const status = accountAuthService.getStatus();
     return status.signedIn ? status.userId?.trim() || null : null;
+  };
+  /** The account's machine directory, as this brain reaches it. */
+  const accountMachineDirectory = (): AccountMachineDirectoryService =>
+    new AccountMachineDirectoryService(accountAuthService, {
+      appVersion: options.serverVersion,
+      directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
+        projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
+      }),
+    });
+  /** This computer's account machine key, or null when it has none or it cannot be read. */
+  const localAccountMachineKey = (): string | null => {
+    try {
+      return createSyncCloudRelayStore({
+        filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
+      }).getMachineIdentity().machineKey.trim() || null;
+    } catch (error) {
+      // Without the key a removal card cannot mark this computer, so say why.
+      machineProjectLogger.warn("account.local_machine_key_unreadable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   };
   const accountOwnerUserIdFromStatus = (value: unknown): string | null => {
     if (!isRecord(value) || value.signedIn !== true) return null;
@@ -1520,6 +1924,15 @@ export function createMultiProjectRpcRequestHandler(
    * into an already-drained map and never cleaned up.
    */
   let disposed = false;
+  /** This connection is a desktop window (`brainIdleMemory.ts`). */
+  let countedAsDesktop = false;
+  /**
+   * This connection comes from another machine (a phone, another computer, the
+   * web app, another machine's agents): a paired channel names its device. It
+   * keeps the brain's idle memory release away while it is open.
+   */
+  let countedAsRemote = Boolean(options.peerDeviceId?.trim());
+  if (countedAsRemote) noteUserClientOpened("remote");
   const frameDemand = createConnectionFrameDemand();
   const disposeProjectRuntimeCaches = (projectId: ProjectId): void => {
     frameDemand.forgetProject(projectId);
@@ -1547,16 +1960,26 @@ export function createMultiProjectRpcRequestHandler(
     "function"
       ? scopeRegistry.onDispose(disposeProjectRuntimeCaches)
       : null;
-  /** Forgets a project: its booted scope, this connection's handler, then its registry entry. Never its folder. */
-  const removeProject = async (projectId: ProjectId): Promise<boolean> => {
+  /** Stops a project that is being removed: its booted scope and this connection's handler. Never its entry or folder. */
+  const stopProjectForRemoval = async (projectId: ProjectId): Promise<void> => {
     const rootPath = projectRegistry.get(projectId)?.rootPath ?? null;
     // Nothing will re-adopt a removed project's devices, so they stop.
     await scopeRegistry.dispose(projectId, "unregister");
     // The stop just saved its open CLIs to reopen; a removed project keeps none.
     if (rootPath) forgetCliSessionsToReopen(rootPath);
     handlers.delete(projectId);
+  };
+  /** Forgets a project: its booted scope, this connection's handler, then its registry entry. Never its folder. */
+  const removeProject = async (projectId: ProjectId): Promise<boolean> => {
+    await stopProjectForRemoval(projectId);
     return projectRegistry.remove(projectId);
   };
+  const projectCopyRemoval = createProjectCopyRemoval({
+    projectRegistry,
+    scopeRegistry,
+    stopProject: stopProjectForRemoval,
+    adeHome: resolveMachineAdeLayout().adeDir,
+  });
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
@@ -1660,14 +2083,63 @@ export function createMultiProjectRpcRequestHandler(
     }
   };
 
+  /**
+   * This computer's own settings with no project (`MACHINE_SCOPE_PROJECT_ID`):
+   * the machine-owned runtime personal chats run in.
+   */
+  const machineScopeRuntime = async (): Promise<AdeRuntime> => {
+    if (typeof personalChatScope.runtimeForDelivery !== "function") {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime has no machine scope.");
+    }
+    const runtime = await personalChatScope.runtimeForDelivery();
+    const lentAlready = lentMachineScopeRuntimes.get(runtime);
+    if (lentAlready) return lentAlready;
+    const createAndroid = await options.machineScopeAndroid?.();
+    return withLentMachineServices(runtime, (owner) => ({
+      account: options.machineScopeAccountStores?.() ?? null,
+      // The brain's own service, the one `keepAwake.call` answers from.
+      keepAwake: (options.keepAwakeService as AdeRuntime["keepAwakeService"] | null | undefined) ?? null,
+      android: createAndroid?.((event) => {
+        owner.eventBuffer.push({
+          timestamp: new Date().toISOString(),
+          category: "runtime",
+          payload: { type: "android_emulator_event", event },
+        });
+      }) ?? null,
+    }));
+  };
+
+  /**
+   * The runtime a project id names, and its App Control (whose frames a
+   * connection asks for): a project's scope, or for `MACHINE_SCOPE_PROJECT_ID`
+   * this computer's own settings, which show no App Control frames. The one
+   * place the machine scope is told apart from a project.
+   */
+  const scopeFor = async (
+    projectId: ProjectId,
+    requestedBy?: string,
+  ): Promise<{ runtime: AdeRuntime; appControl: NonNullable<AdeRuntime["appControlService"]> | null; machineScope: boolean }> => {
+    if (projectId === MACHINE_SCOPE_PROJECT_ID) {
+      return { runtime: await machineScopeRuntime(), appControl: null, machineScope: true };
+    }
+    const scope = await scopeRegistry.get(projectId, { requestedBy });
+    return { runtime: scope.runtime, appControl: scope.runtime.appControlService ?? null, machineScope: false };
+  };
+
+  /**
+   * The request handler for a project id (`scopeFor`), built and initialized
+   * the same way for a project and for the machine scope, so their role
+   * checks are the same. One cache and one dispose path for both.
+   */
   const getProjectHandler = async (
     projectId: ProjectId,
+    requestedBy?: string,
   ): Promise<HandlerEntry> => {
     const cached = handlers.get(projectId);
     if (cached) return await cached;
 
     const pending = (async () => {
-      const scope = await scopeRegistry.get(projectId);
+      const scope = await scopeFor(projectId, requestedBy);
       const handler = createAdeRpcRequestHandler({
         runtime: scope.runtime,
         serverVersion: options.serverVersion,
@@ -1675,7 +2147,7 @@ export function createMultiProjectRpcRequestHandler(
       if (initializedParams) {
         await handler({
           jsonrpc: "2.0",
-          id: "initialize-project-scope",
+          id: scope.machineScope ? "initialize-machine-scope" : "initialize-project-scope",
           method: "ade/initialize",
           params: initializedParams,
         });
@@ -1687,7 +2159,7 @@ export function createMultiProjectRpcRequestHandler(
     try {
       return await pending;
     } catch (error) {
-      handlers.delete(projectId);
+      if (handlers.get(projectId) === pending) handlers.delete(projectId);
       throw error;
     }
   };
@@ -1722,6 +2194,8 @@ export function createMultiProjectRpcRequestHandler(
         machineName: typeof claim.machineName === "string" ? claim.machineName.trim().slice(0, 120) || null : null,
         permissionLevel: readPermissionLevel(claim.permissionLevel),
       });
+      // The latest turn it called in, for `release_remote_work_devices`.
+      if (typeof claim.turnId === "string") noteExternalChatTurn(foreignId, claim.turnId.trim().slice(0, 200));
     }
     return foreignId;
   };
@@ -1820,6 +2294,8 @@ export function createMultiProjectRpcRequestHandler(
           }
           continue;
         }
+        // A refused project's database is not read here, on the brain's thread.
+        if (scopeRegistry.isOpenBlocked(record.projectId)) continue;
         if (isProjectBackedChatToolType(readSessionToolTypeFromDisk(record.rootPath, sessionId))) {
           return record.projectId;
         }
@@ -1854,6 +2330,13 @@ export function createMultiProjectRpcRequestHandler(
     record: ProjectRecordForSearch,
     query: { query: string; laneId: string | null },
   ): UnloadedProjectSearch => {
+    // A refused project's folder is not read here, on the brain's thread.
+    if (scopeRegistry.isOpenBlocked(record.projectId)) {
+      return {
+        status: "unavailable",
+        entry: `${record.displayName} (its folder is too slow for ADE to open; \`ade projects retry\` opens it again)`,
+      };
+    }
     if (!fs.existsSync(record.rootPath)) {
       return { status: "unavailable", entry: record.displayName };
     }
@@ -2059,7 +2542,11 @@ export function createMultiProjectRpcRequestHandler(
     // past the required-send ceiling and the host closed the whole connection
     // (4001 "Required sync response backpressured"). See `runtimeEventVolume`.
     const includeHighVolumeEvents = params.includeHighVolumeEvents === true;
-    const scope = await scopeRegistry.get(projectId);
+    // Terminal output only for the terminals the client shows (null: all).
+    const ptyDataFilter = { ids: readPtyDataIds(params.ptyDataIds) };
+    // The machine scope (a computer's own settings) streams its runtime's
+    // events the same way (`scopeFor`); it has no App Control frames.
+    const scope = await scopeFor(projectId);
     const subscriptionId = `runtime-events-${nextSubscriptionId++}`;
     const eventEpoch = scope.runtime.eventBuffer.epoch();
     const shouldForward = (event: BufferedEvent): boolean => {
@@ -2068,7 +2555,7 @@ export function createMultiProjectRpcRequestHandler(
       // picture of the same screen, so a dropped frame costs nothing and a
       // buffered one costs the transport.
       if (!includeHighVolumeEvents && isHighVolumeRuntimeEvent(event)) return false;
-      return true;
+      return passesPtyDataFilter(event, ptyDataFilter.ids);
     };
     const unsubscribe = scope.runtime.eventBuffer.subscribe((event) => {
       if (shouldForward(event))
@@ -2085,7 +2572,7 @@ export function createMultiProjectRpcRequestHandler(
         "The connection closed before the runtime event subscription was ready.",
       );
     }
-    const frameService = scope.runtime.appControlService ?? null;
+    const frameService = scope.appControl;
     // A scope that restarted under this connection has a fresh service with no
     // demand; this puts back what the connection last declared for it.
     frameDemand.apply(projectId, frameService);
@@ -2099,6 +2586,7 @@ export function createMultiProjectRpcRequestHandler(
         unsubscribe();
         releaseLegacyFrameDemand?.();
       },
+      ptyDataFilter,
     });
 
     const replayResult = replay
@@ -2206,13 +2694,15 @@ export function createMultiProjectRpcRequestHandler(
       );
     }
     // Recorded before the scope lookup, so a slower lookup for an older call
-    // applies this newer demand rather than its own.
+    // applies this newer demand rather than its own. A computer's own
+    // settings show no App Control frames (`scopeFor`): nothing to record,
+    // and nothing to look up.
+    if (projectId === MACHINE_SCOPE_PROJECT_ID) return { applied: false };
     frameDemand.declare(projectId, readAppControlFrameDemand(params));
-    const scope = await scopeRegistry.get(projectId);
-    if (disposed) return { applied: false };
-    const service = scope.runtime.appControlService ?? null;
-    frameDemand.apply(projectId, service);
-    return { applied: service != null };
+    const scope = await scopeFor(projectId);
+    if (disposed || !scope.appControl) return { applied: false };
+    frameDemand.apply(projectId, scope.appControl);
+    return { applied: true };
   };
 
   const unsubscribeRuntimeEvents = (params: Record<string, unknown>) => {
@@ -2233,6 +2723,28 @@ export function createMultiProjectRpcRequestHandler(
     return { removed: true };
   };
 
+  /**
+   * Changes which terminals' output a subscription sends. The answer comes
+   * after the change, so a client that reads a terminal's screen after it
+   * misses none of the output that follows the screen.
+   */
+  const setRuntimeEventPtyDataFilter = (params: Record<string, unknown>) => {
+    const subscriptionId =
+      typeof params.subscriptionId === "string"
+        ? params.subscriptionId.trim()
+        : "";
+    if (!subscriptionId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "runtimeEvents.setPtyDataFilter requires subscriptionId.",
+      );
+    }
+    const filter = eventSubscriptions.get(subscriptionId)?.ptyDataFilter;
+    if (!filter) return { applied: false };
+    filter.ids = readPtyDataIds(params.ptyDataIds);
+    return { applied: true };
+  };
+
   const resolveSyncService = async () => {
     const scope = await scopeRegistry.resolveActiveSyncHost();
     return scope?.runtime.syncService ?? null;
@@ -2246,23 +2758,32 @@ export function createMultiProjectRpcRequestHandler(
       ? projectRegistry.findByRootPath(path.resolve(params.projectRoot.trim()))?.projectId ?? null
       : null);
 
+  /**
+   * A project scope that has finished opening and can answer a sync read, or
+   * null. Never boots a project, never runs host activation and never waits
+   * on a scope that is still opening: a read that activated a host turned a
+   * status check into "Another ADE brain is already hosting mobile sync"
+   * whenever a second brain held the port. With no ready scope, the caller
+   * answers with the machine's state.
+   */
+  const resolveReadySyncServiceForRead = () =>
+    scopeRegistry.resolveReadySyncScope?.()?.runtime.syncService ?? null;
+
   // Status is a recovery control: if a project scope is already alive, use it
   // without re-entering host activation (which may be timed out or backed off).
-  // Preserve the ordinary resolver when nothing is booted.
+  // With nothing booted the caller answers with the machine-level status.
   const resolveRecoverySyncService = async (params: Record<string, unknown>) => {
     const requestedProjectId = requestedSyncProjectId(params);
     const targetProjectId = requestedProjectId
       ?? scopeRegistry.getActiveSyncHostProjectId?.()
       ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
-    const scope = targetProjectId
-      ? scopeRegistry.getIfReady?.(targetProjectId) ?? null
-      : null;
-    // Only consult the ordinary resolver when no precise recovery target is
-    // known. A missing target scope must never redirect a destructive action.
-    const resolvedScope = targetProjectId
-      ? scope
-      : await scopeRegistry.resolveActiveSyncHost();
-    return resolvedScope?.runtime.syncService ?? null;
+    // A known target answers only from its own ready scope. A missing target
+    // scope must never redirect a destructive action.
+    const syncService = targetProjectId
+      ? scopeRegistry.getIfReady?.(targetProjectId)?.runtime.syncService ?? null
+      : resolveReadySyncServiceForRead();
+    if (syncService) await applyPendingLanePresence();
+    return syncService;
   };
 
   // Disconnect rewrites the saved connection and clears the device records, so
@@ -2294,9 +2815,67 @@ export function createMultiProjectRpcRequestHandler(
       "Sync service is not available. Register a project first.",
     );
 
+  /**
+   * The Lanes page's open lanes: the newest list, kept for the sync host. It
+   * is a hint for paired phones, so it never starts a sync host by itself
+   * (that start timed out at 10 s and failed the write, ADE-DESKTOP-7). Only
+   * the known host's own ready scope gets it: another scope has no host
+   * service, and a list stored there never reaches the real host. While no
+   * host is known, or its scope is not ready, the list waits. It goes out on
+   * each scope-ready or host-switch notice and on any sync call that finds a
+   * running sync service, whenever that host has not taken this list yet.
+   */
+  let lanePresence: { laneIds: string[]; generation: number } | null = null;
+  let lanePresenceGeneration = 0;
+  /** The newest list the host's sync service took, and which service took it. */
+  let lanePresenceSent: { syncService: object; generation: number } | null = null;
+
+  /** The known sync host's ready scope's sync service, or null to keep the list waiting. */
+  const resolveLanePresenceSyncService = () => {
+    const activeHostProjectId = scopeRegistry.getActiveSyncHostProjectId?.() ?? null;
+    if (!activeHostProjectId) return null;
+    return scopeRegistry.getIfReady?.(activeHostProjectId)?.runtime.syncService ?? null;
+  };
+
+  /**
+   * Sends the newest open lanes to the sync host when it has not taken them.
+   * A newer list always wins: a failed or late send of an older list never
+   * replaces it, because each send reads the newest list. Never throws
+   * unless `throwOnError` (the write that set the list); the list stays for
+   * the next chance either way.
+   */
+  const applyPendingLanePresence = async (options: { throwOnError?: boolean } = {}): Promise<void> => {
+    const list = lanePresence;
+    if (!list) return;
+    const syncService = resolveLanePresenceSyncService();
+    if (!syncService) return;
+    const sent = lanePresenceSent;
+    if (sent?.syncService === syncService && sent.generation >= list.generation) return;
+    try {
+      await syncService.setActiveLanePresence(list.laneIds);
+      const latest = lanePresenceSent;
+      if (latest?.syncService !== syncService || latest.generation < list.generation) {
+        lanePresenceSent = { syncService, generation: list.generation };
+      }
+    } catch (error) {
+      if (options.throwOnError) throw error;
+      console.warn(
+        "[sync] could not send the open lanes to the sync host",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  };
+  const removeSyncScopeReadyListener =
+    typeof (scopeRegistry as Partial<ProjectScopeRegistry>).onSyncScopeReady === "function"
+      ? scopeRegistry.onSyncScopeReady(() => {
+          void applyPendingLanePresence().catch(() => {});
+        })
+      : null;
+
   const getSyncService = async () => {
     const syncService = await resolveSyncService();
     if (!syncService) throw syncServiceUnavailable();
+    await applyPendingLanePresence();
     return syncService;
   };
 
@@ -2316,19 +2895,23 @@ export function createMultiProjectRpcRequestHandler(
     machineFallback: (controls: ProjectlessSyncControls) => TFallback | Promise<TFallback>,
   ): Promise<TFallback | TService> => {
     const syncService = await resolveSyncService();
-    if (syncService) return await run(syncService);
+    if (syncService) {
+      await applyPendingLanePresence();
+      return await run(syncService);
+    }
     const controls = options.projectlessSyncControls;
     if (controls) return await machineFallback(controls);
     throw syncServiceUnavailable();
   };
 
   /**
-   * `withSyncService` for a read. The scope that hosts sync, or most recently
-   * tried to (a held failure, else the last requested switch, which outlives
-   * the backoff), answers as it is when it is ready; only with no such scope
-   * does the read go through `withSyncService`. Re-entering host activation
-   * for a read answered the Phone tab with "Another ADE brain is already
-   * hosting mobile sync" whenever activation was blocked or backed off.
+   * `withSyncService` for a read, which never activates a sync host. The scope
+   * that hosts sync, or most recently tried to (a held failure, else the last
+   * requested switch, which outlives the backoff), answers as it is when it is
+   * ready; then any project scope already booted; then the machine-level
+   * controls. Re-entering host activation for a read answered the Phone tab
+   * with "Another ADE brain is already hosting mobile sync" whenever
+   * activation was blocked, backed off, or a second brain held the port.
    */
   const readSyncService = async <TService, TFallback>(
     run: (syncService: ActiveSyncService) => TService | Promise<TService>,
@@ -2340,8 +2923,14 @@ export function createMultiProjectRpcRequestHandler(
     const readySyncService = hostProjectId
       ? scopeRegistry.getIfReady?.(hostProjectId)?.runtime.syncService ?? null
       : null;
-    if (readySyncService) return await run(readySyncService);
-    return await withSyncService(run, machineFallback);
+    const runningSyncService = readySyncService ?? resolveReadySyncServiceForRead();
+    if (runningSyncService) {
+      await applyPendingLanePresence();
+      return await run(runningSyncService);
+    }
+    const controls = options.projectlessSyncControls;
+    if (controls) return await machineFallback(controls);
+    throw syncServiceUnavailable();
   };
 
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth => {
@@ -2423,6 +3012,7 @@ export function createMultiProjectRpcRequestHandler(
   const resolveRuntimeEnvInfo = () => {
     const projectRoot = trimmedEnvOrNull("ADE_PROJECT_ROOT");
     const packageChannel = trimmedEnvOrNull("ADE_PACKAGE_CHANNEL");
+    const desktopAppVersion = readInstalledDesktopAppVersion();
     return {
       buildHash: trimmedEnvOrNull("ADE_RUNTIME_BUILD_HASH") ?? computeRuntimeBuildHash(),
       defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
@@ -2435,7 +3025,10 @@ export function createMultiProjectRpcRequestHandler(
       // The installed desktop app's version, beside this brain's own: after
       // `ade brain update` they differ, and another device must not read the
       // brain's version as the app's. Null on a machine with no app.
-      desktopAppVersion: readInstalledDesktopAppVersion(),
+      desktopAppVersion,
+      // What kept the last update from installing, for the Machines card on
+      // other computers; null when nothing did, or that version is in since.
+      lastUpdateBlock: readMachineUpdateBlock(() => desktopAppVersion),
       ...readDesktopUpdateInstallMode(),
     };
   };
@@ -2452,14 +3045,53 @@ export function createMultiProjectRpcRequestHandler(
             }
           : null,
         lastWedge: status?.lastWedge ? { ...status.lastWedge } : null,
+        lastUnplannedRestart: status?.lastUnplannedRestart
+          ? {
+              ts: status.lastUnplannedRestart.ts,
+              chats: status.lastUnplannedRestart.chats,
+              cliSessions: status.lastUnplannedRestart.cliSessions,
+            }
+          : null,
       };
     } catch {
       return {
         syncPort: null,
         publishHealth: null,
         lastWedge: null,
+        lastUnplannedRestart: null,
       };
     }
+  };
+
+  /**
+   * A call for `MACHINE_SCOPE_PROJECT_ID`: a computer's own settings, never a
+   * project. Only the actions `machineScopeActionAllowed` lists (and
+   * `stream_events`) answer here.
+   */
+  const routeMachineScopeCall = async (request: JsonRpcRequest, params: Record<string, unknown>): Promise<unknown> => {
+    const method = typeof request.method === "string" ? request.method : "";
+    // Another machine's agents act through a project they were given, not
+    // this computer's settings.
+    if (isAgentRemoteClientName(callerClientName())) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "This computer's settings are not open to another machine's agents.");
+    }
+    if (method !== "ade/actions/call" || (params.name !== "run_ade_action" && params.name !== "stream_events")) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `${method} needs a project; this computer's settings do not answer it.`);
+    }
+    const envelope = params.name === "run_ade_action" ? safeParams(params.arguments) : null;
+    if (envelope) {
+      const domain = typeof envelope.domain === "string" ? envelope.domain : "";
+      const action = typeof envelope.action === "string" ? envelope.action : "";
+      if (!machineScopeActionAllowed(domain, action)) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, machineScopeRefusalMessage(domain, action));
+      }
+    }
+    const entry = await getProjectHandler(MACHINE_SCOPE_PROJECT_ID);
+    const result = await entry.handler({ ...request, params: omitProjectId(omitRemoteCaller(params)) });
+    if (envelope && params[CONDITIONAL_ACTION_PARAM] === true) {
+      return conditionalActionResult(result, params[CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM]);
+    }
+    return result;
   };
 
   const handler = (async (request: JsonRpcRequest): Promise<unknown | null> => {
@@ -2468,6 +3100,10 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "ade/initialize") {
       initializedParams = params;
+      if (!countedAsDesktop && !disposed && isDesktopClientName(callerClientName())) {
+        countedAsDesktop = true;
+        noteUserClientOpened("desktop");
+      }
       return {
         protocolVersion:
           typeof params.protocolVersion === "string"
@@ -2483,6 +3119,8 @@ export function createMultiProjectRpcRequestHandler(
           multiProject: true,
           pid: process.pid,
           uptimeMs: Math.max(0, Math.round(process.uptime() * 1_000)),
+          // Wall-clock age; `uptimeMs` stops while the computer sleeps (`hostUpdateFacts.ts`).
+          startedAgoMs: brainStartedAgoMs(),
         },
         capabilities: {
           actions: {
@@ -2500,6 +3138,25 @@ export function createMultiProjectRpcRequestHandler(
           // `chat.sendMessage` drops a repeat of a `clientSendId` it has seen.
           // A client retries a send of unknown outcome only against this.
           clientSendDedupe: true,
+          // `chat.typeIntoCli` takes `when: "now"` (older desktops' terminal
+          // local line) and answers a repeat of a `clientMessageId` once, in both modes.
+          agentCliTypeNow: true,
+          // `runtimeEvents.subscribe` and `stream_events` take `ptyDataIds`
+          // (send only these terminals' output), and
+          // `runtimeEvents.setPtyDataFilter` changes the list of a subscription.
+          ptyDataFilter: true,
+          // `ade/actions/call` takes `backgroundJob: { id, waitMs }`: a long
+          // action runs once per id, and a call sent again joins it.
+          backgroundActionJobs: true,
+          // `chat.saveTempAttachmentPart` takes a paste in parts, each safe to
+          // send again. A client without it sends one `saveTempAttachment`.
+          chatAttachmentParts: true,
+          // `chat.createSessionAndSend` makes a new chat and sends its first
+          // message in one call. A client without it makes two calls.
+          chatCreateAndSend: true,
+          // The chat launch kinds this brain runs. An ADE Cloud hand-off of a
+          // CLI or lane launch is refused by a brain that doesn't list it.
+          chatLaunchKinds: [...CHAT_LAUNCH_KINDS],
           machineProjects: {
             browseDirectories: true,
             getDetail: true,
@@ -2511,9 +3168,22 @@ export function createMultiProjectRpcRequestHandler(
             clone: true,
             listMyGitHubRepos: true,
             setIcon: true,
+            // `projects.inspectRemoval` + `projects.removeCopy`.
+            removeCopy: true,
+            // `projects.accountList`, and `accountProjectId` / `githubRepoId` on `projects.list` rows.
+            accountList: true,
+            // `projects.setMainCheckout` ("Use for new lanes").
+            setMainCheckout: true,
           },
           ...sdkCapabilities(),
           account: true,
+          // `MACHINE_SCOPE_PROJECT_ID` names this computer's own settings
+          // (Providers) with no project: `ade/actions/call` for the actions
+          // `machineScopeActionAllowed` lists, and `runtimeEvents.subscribe`.
+          machineScope: true,
+          // The domains it answers there: a desktop shows the ones an older
+          // brain lacks (Keep awake, Android, Passwords) as "update ADE".
+          machineScopeDomains: [...MACHINE_SCOPE_DOMAINS],
         },
       };
     }
@@ -2530,7 +3200,8 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "ping") {
-      return { pong: true, at: new Date().toISOString() };
+      // A freeze here is not the network: the reply says so (`hostFrozenMs`).
+      return brainPingReply(new Date().toISOString());
     }
 
     // Another machine's agents reach projects, `projects.list` and personal
@@ -2565,6 +3236,8 @@ export function createMultiProjectRpcRequestHandler(
           multiProject: true,
           pid: process.pid,
           uptimeMs: Math.max(0, Math.round(process.uptime() * 1_000)),
+          // Wall-clock age; `uptimeMs` stops while the computer sleeps (`hostUpdateFacts.ts`).
+          startedAgoMs: brainStartedAgoMs(),
         },
         adeDir: layout.adeDir,
         socketPath: layout.socketPath,
@@ -2590,6 +3263,51 @@ export function createMultiProjectRpcRequestHandler(
       // stays open to any role, with identity fields removed below for non-CTO
       // callers.
       const role = callerRole();
+      // An agent in a chat may not remove a computer, but it may ask: the
+      // person answers a user-only card in that chat, and the brain removes
+      // the computer while it accepts their answer, with the same directory
+      // call as below. The agent's role is never raised; a person's terminal
+      // carries no chat and takes the path below.
+      const removalChatSessionId = action === "deleteMachine" ? callerChatSessionId() : null;
+      if (removalChatSessionId) {
+        const removalArgs = isRecord(params.args) ? params.args : {};
+        const located = await options.crossScopeChats?.locateChat(removalChatSessionId, { boot: false }).catch(() => null) ?? null;
+        const chatService = located?.runtime.agentChatService ?? null;
+        if (!chatService) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.policyDenied,
+            "account.deleteMachine is not available to agents, and this ADE does not hold your chat to ask the person in. Ask the person to remove the computer on the Account page.",
+          );
+        }
+        reconcileAccountOwnership(currentAccountOwnerUserId());
+        const removalDirectory = accountMachineDirectory();
+        // How the card ended, like the brain's other agent cards. A second chat
+        // that was told another card is open asked nothing, so it is not counted.
+        const captureRemovalCard = (outcome: "completed" | "cancelled" | "failed") =>
+          captureAgentCardAnalytics({ analytics: located?.runtime.productAnalyticsService, surface: "api", card: "machine_removal", outcome });
+        try {
+          const result = await requestMachineRemovalFromUser({
+            requestChatInput: (input) => chatService.requestChatInput(input),
+            listMachines: () => removalDirectory.listMachines(),
+            deleteMachine: (machineKey) => removalDirectory.deleteMachine(machineKey),
+            localMachineKey: localAccountMachineKey,
+          }, {
+            chatSessionId: removalChatSessionId,
+            machine: typeof removalArgs.machine === "string" ? removalArgs.machine : "",
+            ...(typeof removalArgs.timeoutMs === "number" ? { timeoutMs: removalArgs.timeoutMs } : {}),
+          });
+          if (result.status !== "pending_approval") {
+            captureRemovalCard(result.status === "removed" ? "completed" : result.status === "kept" ? "cancelled" : "failed");
+          }
+          return { domain: "account", action, result, statusHints: {} };
+        } catch (error) {
+          captureRemovalCard("failed");
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidRequest,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
       const ctoOnlyAccountAction = isCtoOnlyAdeAction("account", action)
         || action === "renameMachine"
         // Re-pairing this machine into the account is a machine-operator act,
@@ -2637,12 +3355,7 @@ export function createMultiProjectRpcRequestHandler(
             "account.showMachine requires a machine name, machine key, or device id.",
           );
         }
-        const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
-          appVersion: options.serverVersion,
-          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
-            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
-          }),
-        });
+        const machineDirectory = accountMachineDirectory();
         const listed = await machineDirectory.listMachines();
         if (listed.state !== "ok") {
           return {
@@ -2671,15 +3384,7 @@ export function createMultiProjectRpcRequestHandler(
         } catch {
           activityItems = null;
         }
-        let localMachineKey: string | null = null;
-        try {
-          localMachineKey = createSyncCloudRelayStore({
-            filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
-          }).getMachineIdentity().machineKey;
-        } catch {
-          localMachineKey = null;
-        }
-        const snapshot = buildAccountMachineSnapshot({ machine, activityItems, localMachineKey });
+        const snapshot = buildAccountMachineSnapshot({ machine, activityItems, localMachineKey: localAccountMachineKey() });
         return {
           domain: "account",
           action,
@@ -2730,12 +3435,7 @@ export function createMultiProjectRpcRequestHandler(
         || action === "deleteMachine"
       ) {
         reconcileAccountOwnership(currentAccountOwnerUserId());
-        const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
-          appVersion: options.serverVersion,
-          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
-            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
-          }),
-        });
+        const machineDirectory = accountMachineDirectory();
         const actionArgs = isRecord(params.args) ? params.args : {};
         if (action === "listMachines") {
           const result = await machineDirectory.listMachines();
@@ -2824,12 +3524,7 @@ export function createMultiProjectRpcRequestHandler(
             filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
           }).getMachineIdentity().machineKey.trim();
           if (ownMachineKey) {
-            await new AccountMachineDirectoryService(accountAuthService, {
-              appVersion: options.serverVersion,
-              directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
-                projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
-              }),
-            }).deleteMachine(ownMachineKey, { timeoutMs: 5_000 });
+            await accountMachineDirectory().deleteMachine(ownMachineKey, { timeoutMs: 5_000 });
           }
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
@@ -2914,19 +3609,20 @@ export function createMultiProjectRpcRequestHandler(
         && params.targetVersion.trim()
         ? params.targetVersion.trim()
         : null;
-      if (machineUpdateAndRestartInFlight) return await machineUpdateAndRestartInFlight;
-      const run = (async () => {
+      // Who asked, for the logs and the next start's continue message. It
+      // never changes the routing.
+      const requestedBy = updateRequester(params.requestedBy, {
+        authenticatedName: options.peerDeviceId ? options.peerDeviceName ?? null : null,
+        clientName: callerClientName(),
+      });
+      // One run per process, joined synchronously: a phone's sync command
+      // joins this run too (`machineUpdateInFlight.ts`).
+      return await joinOrStartMachineUpdate(async () => {
         const { runMachineUpdateAndRestart } = await import(
           "./services/runtime/machineUpdateAndRestart"
         );
-        return await runMachineUpdateAndRestart(controls, targetVersion);
-      })();
-      machineUpdateAndRestartInFlight = run;
-      try {
-        return await run;
-      } finally {
-        if (machineUpdateAndRestartInFlight === run) machineUpdateAndRestartInFlight = null;
-      }
+        return await runMachineUpdateAndRestart(controls, targetVersion, requestedBy);
+      });
     }
 
     // The desktop's pre-suspend beat, forwarded to the brain that publishes
@@ -3002,7 +3698,10 @@ export function createMultiProjectRpcRequestHandler(
 
     // The server runs this over exec before stopping a computer at 0 hours. Not
     // a `cloud.call`: this machine may not have the account access `cloud` needs.
-    if (method === "cloud.prepareStop" || method === "cloud.pushWork") {
+    if (
+      method === "cloud.prepareStop" || method === "cloud.unfreeze" || method === "cloud.pushWork" || method === "cloud.workState"
+      || method === "cloud.saveForRest" || method === "cloud.drainMessages"
+    ) {
       if (callerIdentityIsAgent(callerIdentity())) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "An agent can't run this on the computer.");
       }
@@ -3010,13 +3709,55 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "cloud.prepareStop") {
       const prepare = options.prepareCloudStop;
       if (!prepare) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't prepare a computer to stop.");
-      return await prepare({ timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000 });
+      return await prepare({
+        timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000,
+        diskGrowToGb: typeof params.diskGrowToGb === "number" && Number.isFinite(params.diskGrowToGb) && params.diskGrowToGb > 0 ? params.diskGrowToGb : null,
+        growId: typeof params.growId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(params.growId) ? params.growId : null,
+        forDelete: params.forDelete === true,
+        forSleep: params.forSleep === true,
+        chatsOnly: params.chatsOnly === true,
+      });
+    }
+    if (method === "cloud.unfreeze") {
+      if (!options.unfreezeCloudComputer) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't end a delete freeze.");
+      return await options.unfreezeCloudComputer();
+    }
+
+    // A provider sign-in a person finishes on another screen (`ade providers
+    // sign-in --remote`, which ADE's server runs over exec for the phone and
+    // the web). The person starts it; an agent never does.
+    if (method === "providers.remoteSignInStart" || method === "providers.remoteSignInStatus" || method === "providers.remoteSignInCode") {
+      if (callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "Only the person starts a provider sign-in.");
+      }
+      const signIn = options.remoteProviderSignIn;
+      if (!signIn) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't run a provider sign-in for another screen.");
+      if (method === "providers.remoteSignInStart") return await signIn.start(readOptionalString(params.provider) ?? "");
+      const jobId = readOptionalString(params.jobId) ?? "";
+      if (method === "providers.remoteSignInStatus") return await signIn.status(jobId);
+      return await signIn.submitCode(jobId, typeof params.code === "string" ? params.code : "");
     }
 
     // "Push all work to GitHub", run over exec on a computer that may be out of hours.
     if (method === "cloud.pushWork") {
       if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't push this computer's work.");
-      return await options.pushCloudWork();
+      return await options.pushCloudWork({ check: params.check === true, message: readOptionalString(params.message) ?? null });
+    }
+    // Only reads. A method of its own: a brain that predates it refuses it
+    // instead of reading the check as a push.
+    if (method === "cloud.workState") {
+      if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't read this computer's work.");
+      return await options.pushCloudWork({ check: true });
+    }
+    // The idle cleanup's save between push-work and the check (CONTRACTS 4).
+    if (method === "cloud.saveForRest") {
+      if (!options.saveCloudForRest) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't save this computer for rest.");
+      return await options.saveCloudForRest({ capsules: params.capsules === true });
+    }
+    // The server runs this after it woke the computer for a queued message.
+    if (method === "cloud.drainMessages") {
+      if (!options.drainCloudMessages) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't send queued chat messages.");
+      return await options.drainCloudMessages();
     }
 
     if (method === "keepAwake.call") {
@@ -3127,10 +3868,32 @@ export function createMultiProjectRpcRequestHandler(
       const activeScope = await scopeRegistry.resolveActiveSyncHost();
       const publisher = activeScope?.runtime.pushPublisherService;
       if (!publisher) {
-        throw new JsonRpcError(
+        // A brain with no project it can open (signed out, a fresh install, or
+        // only projects whose folders are gone) has no push publisher, and no
+        // work to show. A read answers with an empty snapshot, not an
+        // "unavailable" error.
+        const hasOpenableProject = projectRegistry.list()
+          .some((record) => !projectRegistry.isProjectDataMissing(record));
+        if (!activeScope && !hasOpenableProject && (action === "getSnapshot" || action === "getMachineSnapshot")) {
+          return {
+            contractVersion: ATTENTION_CONTRACT_VERSION,
+            scope: "machine",
+            // The same owner the publisher stamps: the signed-in user, else none.
+            accountOwnerId: currentAccountOwnerUserId(),
+            streamId: null,
+            revision: 0,
+            generatedAt: new Date().toISOString(),
+            machines: [],
+            items: [],
+            tombstones: [],
+          } satisfies AttentionSnapshot;
+        }
+        // Projects are there but the one that hosts sync is still opening: a
+        // state the caller retries, not a defect.
+        throw markExpected(new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
           "Account Activity is unavailable until the ADE brain is ready.",
-        );
+        ), "environment");
       }
       if (action === "getSnapshot") {
         const since = Number.isFinite(Number(args.since))
@@ -3287,6 +4050,23 @@ export function createMultiProjectRpcRequestHandler(
       return peekSharedUsageTrackingService(resolveMachineAdeLayout().adeDir)?.getOwnLiveQuota() ?? null;
     }
 
+    // Another machine spends a reset banked here: it shows this machine's
+    // credits for a login it cannot read itself. It spends one of this
+    // machine's own credits only, so a claim never travels on to a third
+    // machine. Agents may spend, matching the `usage.consumeResetCredit` action.
+    if (method === "usage.consumeResetCredit") {
+      if (!callerHasRoleAtLeast(callerRole(), "agent")) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "usage.consumeResetCredit requires the agent role.");
+      }
+      const accountId = typeof params.accountId === "string" ? params.accountId.trim() : "";
+      const service = peekSharedUsageTrackingService(resolveMachineAdeLayout().adeDir);
+      if (!service) {
+        return { ok: false, status: "failure", message: "Usage tracking has not started on this computer yet." };
+      }
+      const email = typeof params.email === "string" ? params.email.trim() : "";
+      return await service.consumeOwnResetCredit({ accountId, ...(email ? { email } : {}) });
+    }
+
     if (method === "providerAccounts.call" || method === "credentials.call" || method === "presets.call") {
       const action = typeof params.action === "string" ? params.action.trim() : "";
       if (!action) {
@@ -3345,9 +4125,10 @@ export function createMultiProjectRpcRequestHandler(
       if (!isAgentRemoteClientName(callerClientName()) || !options.peerDeviceId) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "machines.cloneForAgent is for another machine's agents.");
       }
-      return await decorateProjectWithIcon(
+      return publicProjectRecord(await decorateProjectWithIcon(
         await cloneRepositoryForRemoteAgent(projectRegistry, readOptionalString(params.originUrl), cloneIntoFolder),
-      );
+        projectRecords,
+      ));
     }
 
     if (method === "machines.deliverWake") {
@@ -3385,7 +4166,10 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       if (method === "machines.list") {
-        return await bridge.listMachines({ includeProjects: params.includeProjects === true });
+        return await bridge.listMachines({
+          includeProjects: params.includeProjects === true,
+          ...(typeof params.projectsBudgetMs === "number" ? { projectsBudgetMs: params.projectsBudgetMs } : {}),
+        });
       }
       const machine = typeof params.machine === "string" ? params.machine.trim() : "";
       const requestParams = isRecord(params.request) ? params.request : {};
@@ -3424,6 +4208,7 @@ export function createMultiProjectRpcRequestHandler(
           caller: {
             chatSessionId: callerChat,
             permissionLevel: located?.runtime.agentChatService?.permissionLevelOf(callerChat ?? "") ?? null,
+            turnId: callerChat ? located?.runtime.agentChatService?.remoteTurnIdOf(callerChat) ?? null : null,
             ...(wakeToken ? { wakeToken } : {}),
           },
           timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
@@ -3435,15 +4220,17 @@ export function createMultiProjectRpcRequestHandler(
         // Bookkeeping for the chat's views: the call already ran there, so a
         // failure here is logged and never turns it into a failed call.
         const workCopyLaneId = remoteWorkKind ? remoteWorkCopyLaneId(answer.result) : null;
-        // An Android status or device list with no copy there yet names no
-        // emulator, so it is not work there.
-        if (callerChat && remoteWorkKind && (remoteWorkKind !== "android" || workCopyLaneId)) {
+        // An Android, Desktop or App Control status read with no copy there
+        // yet names no device, screen or session, so it is not work there.
+        if (callerChat && remoteWorkKind && (remoteWorkKind === "shell" || remoteWorkKind === "simulator" || workCopyLaneId)) {
           try {
             located?.runtime.agentChatService?.noteRemoteWork({
               terminalId: remoteWorkKind === "shell" ? remoteWorkCreatedTerminalId(answer.result) : null,
               workCopyLaneId,
               usesSimulator: remoteWorkKind === "simulator",
               usesAndroidEmulator: remoteWorkKind === "android",
+              usesDesktop: remoteWorkKind === "desktop",
+              usesAppControl: remoteWorkKind === "app_control",
               sessionId: callerChat,
               machineKey: answer.machine.machineKey,
               machineName: answer.machine.name,
@@ -3453,6 +4240,17 @@ export function createMultiProjectRpcRequestHandler(
             });
           } catch (error) {
             console.warn("[remote-work] could not record the chat's work on another machine", error);
+          }
+        }
+        // `ade shell clean --machine`: the copy (and its lane, shells and
+        // devices) is gone there, so the chat's record drops them; the
+        // machine entry stays.
+        if (callerChat && forwardMethod === "ade/actions/call" && forwardParams.name === "release_remote_work_copy"
+          && remoteActionResult(answer.result)?.released === true) {
+          try {
+            located?.runtime.agentChatService?.noteRemoteWorkCleaned({ sessionId: callerChat, machineKey: answer.machine.machineKey });
+          } catch (error) {
+            console.warn("[remote-work] could not forget the chat's work on another machine", error);
           }
         }
         // A child this chat started there: remember it, so that machine's
@@ -3521,6 +4319,8 @@ export function createMultiProjectRpcRequestHandler(
         // One project at a time, yielding between them, so a long registry never holds the brain's loop.
         await new Promise<void>((resolve) => setImmediate(resolve));
         const running = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+        // A refused project's database is not read here, on the brain's thread.
+        if (!running && scopeRegistry.isOpenBlocked(record.projectId)) continue;
         const deleted = running
           ? await running.runtime?.agentChatService?.findDeletedChat?.(sessionId).catch(() => null)
           : readDeletedChatOnDisk(record.rootPath, sessionId, (error) => {
@@ -3560,12 +4360,29 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "projects.list") {
       const records = projectRegistry.list();
       const [decorated, presence] = await Promise.all([
-        decorateProjectListWithIcons(records),
+        decorateProjectListWithIcons(records, undefined, undefined, projectRecords),
         readProjectFolderPresence(records),
       ]);
-      // Additive: older callers ignore `exists`, and an unknown answer is left out.
-      return decorated.map((record, index) =>
-        presence[index] === undefined ? record : { ...record, exists: presence[index] });
+      // Read once for the whole list (`publicProjectRecord`).
+      const accountUserId = records.some((record) => record.accountProjectId)
+        ? getMachineAccountStores(machineProjectLogger).accountUserId()
+        : null;
+      // Additive: older callers ignore `exists`, `accountProjectId` and
+      // `githubRepoId`, and an unknown answer is left out.
+      return decorated.map((record, index) => {
+        const linked = publicProjectRecord(record, accountUserId);
+        const sharedName = projectRecords?.name(record) ?? null;
+        const named = sharedName ? { ...linked, displayName: sharedName } : linked;
+        return presence[index] === undefined ? named : { ...named, exists: presence[index] };
+      });
+    }
+
+    if (method === "projects.accountList") {
+      // The account's projects as this machine last read them (after a
+      // heartbeat that saw a change). Only the signed-in account's list; an
+      // account switch answers `not_loaded` until the new list is read.
+      const accountUserId = getMachineAccountStores(machineProjectLogger).accountUserId();
+      return readAccountProjectListForRpc(path.dirname(projectRegistry.path), accountUserId);
     }
 
     if (method === "projects.add") {
@@ -3582,8 +4399,8 @@ export function createMultiProjectRpcRequestHandler(
       // asks for no icon: resolving one starts a worker process, and a cold one
       // held every project open for up to its 750 ms budget. Every other
       // caller, and every older client, still gets the icon.
-      if (params.withoutIcon === true) return { ...added, icon: EMPTY_PROJECT_ICON };
-      return await decorateProjectWithIcon(added);
+      if (params.withoutIcon === true) return publicProjectRecord({ ...added, icon: EMPTY_PROJECT_ICON });
+      return publicProjectRecord(await decorateProjectWithIcon(added, projectRecords));
     }
 
     if (method === "projects.setCatalogVisibility") {
@@ -3601,7 +4418,7 @@ export function createMultiProjectRpcRequestHandler(
         registration.catalogVisibility,
         registration.registrationSource,
       );
-      return project ? await decorateProjectWithIcon(project) : null;
+      return project ? publicProjectRecord(await decorateProjectWithIcon(project, projectRecords)) : null;
     }
 
     if (method === "projects.remove") {
@@ -3613,6 +4430,63 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       return { removed: await removeProject(projectId) };
+    }
+
+    // The state of this machine's copy of a project, for the remove dialog:
+    // changes, unpushed commits, stashes and what runs in it. Read-only, the
+    // same reach as `projects.getWorkSummary`.
+    if (method === "projects.inspectRemoval") {
+      const projectId = readProjectId(params);
+      if (!projectId || !projectRegistry.get(projectId)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.inspectRemoval requires a registered projectId.");
+      }
+      return await projectCopyRemoval.inspect(projectId);
+    }
+
+    // Removes this machine's entry for a project and, when asked, its folder.
+    // Deleting files is the person's act: an agent (a chat-bound caller) never
+    // reaches it, nor anything below the cto role. Another machine reaches it
+    // only over the runtime channel, which the sync host opens only to a
+    // computer of the same account with host rights (runtimeHostGranted).
+    if (method === "projects.removeCopy") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto") || callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "Removing a project is up to the person: use Remove project in ADE.",
+        );
+      }
+      const projectId = readProjectId(params);
+      if (!projectId) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.removeCopy requires projectId.");
+      }
+      const deleteFolder = params.deleteFolder === true;
+      const stateToken = readOptionalString(params.stateToken) ?? null;
+      if (deleteFolder && !stateToken) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.removeCopy with deleteFolder requires stateToken.");
+      }
+      return await projectCopyRemoval.remove(
+        projectId,
+        { deleteFolder, stateToken, acceptWork: params.acceptWork === true },
+        params.folderMode === "caller" ? "caller" : "delete",
+      );
+    }
+
+    // "Use for new lanes": which folder of a project new lanes on this
+    // computer use. A person's choice, like Remove project: no agent, nothing
+    // below the cto role. Another computer reaches it over the runtime
+    // channel (same account, host rights), the phone as a sync command.
+    if (method === "projects.setMainCheckout") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto") || callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "Choosing the folder for new lanes is up to the person: use Location in ADE.",
+        );
+      }
+      const checkoutId = readProjectId(params) ?? readOptionalString(params.checkoutId);
+      if (!checkoutId) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.setMainCheckout requires checkoutId.");
+      }
+      return await setAccountProjectMainCheckout(checkoutId);
     }
 
     if (method === "projects.pruneMissing") {
@@ -3650,11 +4524,39 @@ export function createMultiProjectRpcRequestHandler(
           "projects.touch requires projectId.",
         );
       }
-      return projectRegistry.touch(projectId);
+      return publicProjectRecord(projectRegistry.touch(projectId));
+    }
+
+    if (method === "projects.checkOpen") {
+      // Whether a project may be opened, asked by a client before it reads
+      // the project's folder itself (the desktop opens the database in its own
+      // process too). Throws the `project_folder_too_slow` refusal; answers
+      // `{ ok: true }` otherwise, including for a folder not registered yet.
+      const record = findRegisteredProjectRef(projectRegistry, params);
+      const refusal = record ? scopeRegistry.openRefusal(record.projectId) : null;
+      if (refusal) throw refusal;
+      return { ok: true };
+    }
+
+    if (method === "projects.retryOpen") {
+      // A person asking to open a project again that was refused for freezing
+      // this machine's ADE while it opened (`project_folder_too_slow`). Only
+      // forgets the refusal; opening it is the caller's next call.
+      const record = readRegisteredProjectRef(projectRegistry, params, "projects.retryOpen");
+      const outcome = scopeRegistry.retryOpen(record.projectId);
+      return {
+        projectId: record.projectId,
+        displayName: record.displayName,
+        rootPath: record.rootPath,
+        ...outcome,
+      };
     }
 
     if (method === "projects.setIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.setIcon");
+      // A refused project's folder is not touched for its icon.
+      const iconRefusal = scopeRegistry.openRefusal(project.projectId);
+      if (iconRefusal) throw iconRefusal;
       assertProjectFolderPresent(project.rootPath);
       const upload = readProjectIconUpload(params);
       try {
@@ -3665,6 +4567,19 @@ export function createMultiProjectRpcRequestHandler(
           JsonRpcErrorCode.invalidParams,
           `Could not set the project icon: ${error instanceof Error ? error.message : String(error)}`,
         );
+      }
+      if (projectRecords?.isShared(project)) {
+        // The worker shrinks the new icon for the shared record (off this
+        // event loop); every machine of the account shows it next.
+        let shared = false;
+        const icon = await resolveIconBeforeDeadline(
+          resolveRemoteProjectIconInWorker,
+          project.rootPath,
+          ICON_WRITE_RESOLVE_BUDGET_MS,
+          { mode: "migrate", onRecordValue: (value) => { shared = projectRecords.writeIcon(project, value ?? null); } },
+        );
+        const decision = projectRecords.iconDecision(project);
+        return shared && decision.use === "record" ? decision.icon : icon;
       }
       // Resolve through the same worker path `projects.list` uses, so the
       // caller gets exactly the icon every other device will see.
@@ -3677,7 +4592,23 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.removeIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.removeIcon");
+      // A refused project's folder is not touched for its icon.
+      const iconRefusal = scopeRegistry.openRefusal(project.projectId);
+      if (iconRefusal) throw iconRefusal;
       assertProjectFolderPresent(project.rootPath);
+      if (projectRecords?.isShared(project)) {
+        // Every machine goes back to the icon it detects and drops its own
+        // override; the "no icon" value stops one bringing its old one back.
+        projectRecords.writeNoIcon(project);
+        clearProjectIconOverride(project.rootPath);
+        forgetProjectIconAnswer(project.rootPath);
+        return await resolveIconBeforeDeadline(
+          resolveRemoteProjectIconInWorker,
+          project.rootPath,
+          ICON_WRITE_RESOLVE_BUDGET_MS,
+          { mode: "detected" },
+        );
+      }
       removeProjectIconOverride(project.rootPath);
       forgetProjectIconAnswer(project.rootPath);
       return await resolveIconBeforeDeadline(
@@ -3742,23 +4673,27 @@ export function createMultiProjectRpcRequestHandler(
         await (await createMachineProjectScaffoldService()).createLocalProject(
           readCreateProjectInput(params),
         );
-      return await decorateProjectWithIcon(
+      return publicProjectRecord(await decorateProjectWithIcon(
         projectRegistry.add(
           result.rootPath,
           readProjectRegistrationIntent(params),
         ),
-      );
+        projectRecords,
+      ));
     }
 
     if (method === "projects.clone") {
       const input = await readCloneProjectInput(params, () => defaultParentDir(projectRegistry));
       const result = await cloneIntoFolder(input);
-      return await decorateProjectWithIcon(
+      const record = publicProjectRecord(await decorateProjectWithIcon(
         projectRegistry.add(
           result.rootPath,
           readProjectRegistrationIntent(params),
         ),
-      );
+        projectRecords,
+      ));
+      // Cloned with the asking computer's one-shot header and no GitHub sign-in here: the asker tells the person.
+      return result.githubSignInMissing ? { ...record, githubSignInMissing: true } : record;
     }
 
     if (method === "projects.listMyGitHubRepos") {
@@ -3773,6 +4708,10 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "runtimeEvents.unsubscribe") {
       return unsubscribeRuntimeEvents(params);
+    }
+
+    if (method === "runtimeEvents.setPtyDataFilter") {
+      return setRuntimeEventPtyDataFilter(params);
     }
 
     if (method === "appControl.setFrameDemand") {
@@ -3987,7 +4926,8 @@ export function createMultiProjectRpcRequestHandler(
             (laneId): laneId is string => typeof laneId === "string",
           )
         : [];
-      await (await getSyncService()).setActiveLanePresence(laneIds);
+      lanePresence = { laneIds, generation: ++lanePresenceGeneration };
+      await applyPendingLanePresence({ throwOnError: true });
       return null;
     }
 
@@ -3997,7 +4937,14 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "exit") {
-      process.nextTick(() => process.exit(0));
+      process.nextTick(() => {
+        try {
+          handler.dispose();
+        } catch {
+          // Best-effort cleanup before exit.
+        }
+        process.exit(0);
+      });
       return {};
     }
 
@@ -4015,9 +4962,10 @@ export function createMultiProjectRpcRequestHandler(
         `Method ${method} requires params.projectId.`,
       );
     }
+    if (projectId === MACHINE_SCOPE_PROJECT_ID) return await routeMachineScopeCall(request, params);
     const foreignCaller = resolveForeignCaller(params);
     const handlerFor = (target: ProjectId): Promise<HandlerEntry> => (
-      foreignCaller ? getForeignCallerProjectHandler(target, foreignCaller) : getProjectHandler(target)
+      foreignCaller ? getForeignCallerProjectHandler(target, foreignCaller) : getProjectHandler(target, method)
     );
     let forwardedParams = omitProjectId(omitRemoteCaller(params));
     const parentSlot = childParentSlot(method, forwardedParams);
@@ -4095,6 +5043,34 @@ export function createMultiProjectRpcRequestHandler(
       });
     }
 
+    const jobParam = actionEnvelope && actionDomain && actionName ? params[BACKGROUND_JOB_PARAM] : null;
+    if (jobParam != null && actionDomain && actionName && !childWakeTokenFromCaller) {
+      const jobId = typeof (jobParam as { id?: unknown }).id === "string"
+        ? (jobParam as { id: string }).id.trim()
+        : "";
+      // Followed by job id: started once for this id, joined by a call sent
+      // again. A request that asked to be followed never runs un-followed: a
+      // call sent again would then run the action twice.
+      if (!jobId || jobId.length > 128) {
+        throw new Error("A background job needs an id of 1 to 128 characters.");
+      }
+      const { [BACKGROUND_JOB_PARAM]: _job, ...jobless } = forwardedParams as Record<string, unknown>;
+      const jobEntry = await handlerFor(projectId);
+      const outcome = await backgroundActionJobs.run({
+        key: `${projectId}\u0000${jobId}`,
+        fingerprint: backgroundJobFingerprint(actionDomain, actionName, actionArgs),
+        waitMs: Number((jobParam as { waitMs?: unknown }).waitMs) || 0,
+        start: () => jobEntry.handler({ ...request, params: jobless as typeof forwardedParams }),
+      });
+      if (outcome.state === "running") {
+        return { ok: true, domain: actionDomain, action: actionName, result: null, backgroundJob: { id: jobId, state: "running" } };
+      }
+      // The same answer a caller that asked for a conditional result got before.
+      return actionEnvelope && params[CONDITIONAL_ACTION_PARAM] === true
+        ? conditionalActionResult(outcome.value, params[CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM])
+        : outcome.value;
+    }
+
     const entry = await handlerFor(projectId);
     const result = await entry.handler({
       ...request,
@@ -4115,6 +5091,21 @@ export function createMultiProjectRpcRequestHandler(
 
   handler.dispose = () => {
     disposed = true;
+    if (countedAsDesktop || countedAsRemote) {
+      // Only a brain whose scopes outlive this connection has memory to give back.
+      const sharedScopes = options.scopeRegistry && options.disposeScopesOnDispose !== true ? options.scopeRegistry : null;
+      const sources: IdleMemorySources | null = sharedScopes
+        ? { listRuntimes: () => (typeof sharedScopes.listReady === "function" ? sharedScopes.listReady() : []).map((scope) => scope.runtime) }
+        : null;
+      if (countedAsDesktop) {
+        countedAsDesktop = false;
+        noteUserClientClosed("desktop", sources);
+      }
+      if (countedAsRemote) {
+        countedAsRemote = false;
+        noteUserClientClosed("remote", sources);
+      }
+    }
     for (const subscription of eventSubscriptions.values()) {
       subscription.unsubscribe();
     }
@@ -4129,6 +5120,7 @@ export function createMultiProjectRpcRequestHandler(
     }
     foreignHandlers.clear();
     removeScopeDisposeListener?.();
+    removeSyncScopeReadyListener?.();
     if (options.disposeScopesOnDispose ?? !options.scopeRegistry) {
       void scopeRegistry.disposeAll();
     }
@@ -4153,4 +5145,31 @@ export function createPersonalChatScope(
     // returns the actionable error to the caller.
   });
   return scope;
+}
+
+/**
+ * The kind of client a caller of `machine.updateAndRestart` is, from the name
+ * its connection gave, for a caller that names no known kind of its own.
+ */
+function updateRequestClientKindFromClientName(name: string | null): UpdateRequestClientKind {
+  if (isDesktopClientName(name)) return "desktop";
+  if (isRemoteBrainCallerClientName(name)) return "agent";
+  if (name === "ade-cli") return "cli";
+  return "unknown";
+}
+
+/**
+ * Who asked for a remote update. The machine name comes from the paired
+ * device record the connection authenticated with; the client's own claim
+ * counts only when there is none. The client kind comes from the claim when
+ * it is a known kind, else from the connection's client name.
+ */
+function updateRequester(
+  claimed: unknown,
+  connection: { authenticatedName: string | null; clientName: string | null },
+): UpdateRequestedBy {
+  const claim = sanitizeUpdateRequestedBy(claimed);
+  const machineName = sanitizeMachineName(connection.authenticatedName) ?? claim?.machineName ?? null;
+  const clientKind = claim?.clientKind ?? updateRequestClientKindFromClientName(connection.clientName);
+  return { ...(machineName ? { machineName } : {}), clientKind };
 }

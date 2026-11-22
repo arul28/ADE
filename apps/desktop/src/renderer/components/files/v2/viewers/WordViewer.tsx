@@ -78,7 +78,7 @@ function errorReason(error: unknown): string {
 
 /** Native WordprocessingML preview, loaded only when a `.docx` file is opened. */
 export function WordViewer(props: ViewerProps) {
-  const { files, workspaceId, tab, rootPath, content } = props;
+  const { files, workspaceId, tab, rootPath, pathPin, content } = props;
 
   return (
     <OoxmlPreviewShell<WordDocument>
@@ -90,6 +90,7 @@ export function WordViewer(props: ViewerProps) {
       loadingLabel={`Loading ${tab.title}…`}
       fallback={{
         rootPath,
+        pathPin,
         title: tab.title,
         mimeType: content.mimeType ?? null,
         size: content.size,

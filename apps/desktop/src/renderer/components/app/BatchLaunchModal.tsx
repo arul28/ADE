@@ -3,6 +3,10 @@ import { CaretRight, GitBranch, GithubLogo, Plus, Rocket, WarningCircle } from "
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { LaneMachineSelector } from "../lanes/LaneMachineSelector";
 import { useLaneMachineChoice } from "../lanes/useLaneMachineChoice";
+import { ADE_CLOUD_MACHINE_ID, type AdeCloudLaneChoice } from "../lanes/useAdeCloudLaneTarget";
+import { CloudSizeButton } from "../chat/AdeCloudComposerParts";
+import { adeCloudCapacityProblem } from "../chat/launch/adeCloudLaunch";
+import type { CloudTierId } from "../../../shared/cloudTiers";
 import {
   getAppDefaultModelDescriptor,
   getDefaultModelDescriptor,
@@ -11,7 +15,6 @@ import {
   defaultKickoffPrompt,
   defaultIssueKickoffPrompt,
   findIssueConflicts,
-  issueChatLaunchArgs,
   launchIssueIdentity,
   type BatchLaunchIssueConfig,
   type LaunchIssue,
@@ -35,6 +38,8 @@ import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchT
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { showToast } from "./toast/toastStore";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
+import { useTabCopyPin } from "../../state/repositoryScope";
+import { AccountSettingNotices } from "../settings/AccountSettingNotices";
 
 type PerIssueState = BatchLaunchIssueConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
@@ -85,13 +90,20 @@ function safeSaveDefaultPrompt(projectRoot: string | null | undefined, prompt: s
   }
 }
 
-async function loadProjectDefaultPrompt(projectRoot: string | null | undefined): Promise<string | null> {
+/** The account row behind the saved default prompt (`projectConfigAccountLayer.ts`). */
+const LINEAR_PROMPT_ACCOUNT_KEYS = ["linear.batchLaunchPrompt"] as const;
+
+/** The default prompt lives in the project's local config on the tab's copy (`pin`). */
+async function loadProjectDefaultPrompt(
+  projectRoot: string | null | undefined,
+  pin: OpenProjectBinding | null,
+): Promise<string | null> {
   const localFallback = safeLoadDefaultPrompt(projectRoot);
-  if (!projectRoot?.trim() || typeof window === "undefined" || !window.ade?.projectConfig?.get) {
+  if (!projectRoot?.trim() || !pin || typeof window === "undefined" || !window.ade?.projectConfig?.get) {
     return localFallback;
   }
   try {
-    const snapshot = await window.ade.projectConfig.get();
+    const snapshot = await window.ade.projectConfig.get(pin);
     const prompt = snapshot.effective.ui?.linearBatchLaunchDefaultPrompt?.trim();
     return prompt || localFallback;
   } catch {
@@ -99,10 +111,14 @@ async function loadProjectDefaultPrompt(projectRoot: string | null | undefined):
   }
 }
 
-async function persistProjectDefaultPrompt(projectRoot: string | null | undefined, prompt: string): Promise<void> {
+async function persistProjectDefaultPrompt(
+  projectRoot: string | null | undefined,
+  prompt: string,
+  pin: OpenProjectBinding | null,
+): Promise<void> {
   const value = prompt.trim();
   safeSaveDefaultPrompt(projectRoot, value);
-  if (!projectRoot?.trim() || typeof window === "undefined" || !window.ade?.projectConfig?.get || !window.ade?.projectConfig?.save) {
+  if (!projectRoot?.trim() || !pin || typeof window === "undefined" || !window.ade?.projectConfig?.get || !window.ade?.projectConfig?.save) {
     return;
   }
   await saveProjectLocalConfig((snapshot) => {
@@ -119,7 +135,7 @@ async function persistProjectDefaultPrompt(projectRoot: string | null | undefine
       delete nextLocal.ui;
     }
     return nextLocal;
-  });
+  }, pin);
 }
 
 function makeInitialConfig(defaultModelId: string, kickoffPrompt: string): PerIssueState {
@@ -187,9 +203,14 @@ export type BatchLaunchSubmit = {
 /** The machine a whole batch goes to: every lane create and launch is pinned there. */
 export type BatchLaunchMachine = {
   machineId: string;
-  /** Null for the tab's machine (the unpinned path). */
+  /** Null for the tab's machine (the unpinned path), and for ADE Cloud. */
   pin: OpenProjectBinding | null;
+  /** The batch goes to ADE Cloud: a new computer of this size for each lane. */
+  adeCloud?: { sizeId: CloudTierId; originUrl: string | null } | null;
 };
+
+/** A batch of CLI sessions can't start on ADE Cloud: the composer starts that one. */
+const ADE_CLOUD_NO_CLI_BATCH = "CLI sessions start on ADE Cloud from the composer, one at a time. Pick Chat for this batch.";
 
 function launchButtonLabel(laneOnly: boolean, count: number): string {
   if (laneOnly) return count === 1 ? "Create lane" : `Create ${count} lanes`;
@@ -227,7 +248,11 @@ export function BatchLaunchModal({
 }) {
   // Always asks where the batch goes; one choice for every lane in it.
   const machineChoice = useLaneMachineChoice(open);
-  const { selectedMachineId, targetPin, selectedTarget } = machineChoice;
+  // The tab's copy holds the project's default prompt.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
+  const { selectedMachineId, targetPin, selectedTarget, adeCloud, adeCloudPicked } = machineChoice;
   // "Existing lane" targets and conflicts are read from the chosen machine's
   // own lanes: a lane id from the tab's machine means nothing over there.
   const lanes = useMemo<LaneSummary[]>(
@@ -264,10 +289,17 @@ export function BatchLaunchModal({
   const multiIssue = issues.length > 1;
   const allLinear = issues.every((issue) => issue.tracker === "linear");
   const issueSeedKey = useMemo(() => issues.map((issue) => `${issue.tracker}:${issue.id}`).join("\0"), [issues]);
+  // The project and issues a prompt read was for: an answer that comes back
+  // after the modal moved on is dropped.
+  const promptScopeRef = useRef("");
+  useEffect(() => {
+    promptScopeRef.current = `${open ? 1 : 0}\0${projectRoot ?? ""}\0${issueSeedKey}`;
+  }, [open, projectRoot, issueSeedKey]);
   const conflicts = useMemo(() => findIssueConflicts(issues, lanes), [issues, lanes]);
+  // On ADE Cloud each issue gets a new lane on a new computer: no existing lane.
   const selectableLanes = useMemo(
-    () => lanes.filter((lane) => lane.laneType !== "primary"),
-    [lanes],
+    () => (adeCloudPicked ? [] : lanes.filter((lane) => lane.laneType !== "primary")),
+    [adeCloudPicked, lanes],
   );
 
   useEffect(() => {
@@ -320,7 +352,7 @@ export function BatchLaunchModal({
     const fallbackPrompt = safeLoadDefaultPrompt(projectRoot);
     const initialPrompt = fallbackPrompt ?? defaultKickoffPrompt();
 
-    void loadProjectDefaultPrompt(projectRoot).then((savedPrompt) => {
+    void loadProjectDefaultPrompt(projectRoot, tabCopyPinRef.current).then((savedPrompt) => {
       if (cancelled) return;
       setProjectDefaultPrompt(savedPrompt);
       if (!savedPrompt || savedPrompt === initialPrompt) return;
@@ -415,7 +447,7 @@ export function BatchLaunchModal({
   const savePromptAsDefault = useCallback((prompt: string) => {
     const value = prompt.trim();
     setProjectDefaultPrompt(value || null);
-    void persistProjectDefaultPrompt(projectRoot, value).catch(() => {});
+    void persistProjectDefaultPrompt(projectRoot, value, tabCopyPinRef.current).catch(() => {});
   }, [projectRoot]);
 
   const includedIssues = useMemo(
@@ -432,7 +464,9 @@ export function BatchLaunchModal({
         ? state
         : patchFromLaunchModelConfig(state, defaultConfig);
       if (!laneOnly && !effectiveConfig.modelId.trim()) continue;
-      const { include: _include, laneTarget, nativeControls, ...config } = effectiveConfig;
+      const { include: _include, laneTarget: pickedLaneTarget, nativeControls, ...config } = effectiveConfig;
+      // On ADE Cloud every issue gets a new lane.
+      const laneTarget = adeCloudPicked ? "new" : pickedLaneTarget;
       const existingLaneId =
         !laneOnly && laneTarget === "existing" ? state.existingLaneId?.trim() || null : null;
       if (!laneOnly && laneTarget === "existing" && !existingLaneId) continue;
@@ -441,7 +475,7 @@ export function BatchLaunchModal({
       // The brain resolves it again at spawn time, out of its own copy, so make
       // sure that copy has it before the batch is handed over.
       await ensureHarnessPresetOnBrain(config.presetId, {
-        targetsAnotherMachine: targetPin?.kind === "remote",
+        targetsAnotherMachine: adeCloudPicked || targetPin?.kind === "remote",
       });
       const target = resolveHarnessLaunchTarget(config.presetId, harnessPresets);
       if (config.presetId && !target) {
@@ -470,13 +504,37 @@ export function BatchLaunchModal({
       });
     }
     if (!entries.length || !selectedMachineId) return;
+    if (adeCloudPicked) {
+      onLaunch(entries, {
+        machineId: ADE_CLOUD_MACHINE_ID,
+        pin: null,
+        adeCloud: { sizeId: adeCloud.tierId, originUrl: machineChoice.repoOriginUrl },
+      });
+      return;
+    }
     onLaunch(entries, { machineId: selectedMachineId, pin: targetPin });
-  }, [issues, perIssue, onLaunch, laneOnly, multiIssue, defaultConfig, selectedMachineId, targetPin, harnessPresets]);
+  }, [issues, perIssue, onLaunch, laneOnly, multiIssue, defaultConfig, selectedMachineId, targetPin, harnessPresets, adeCloudPicked, adeCloud.tierId, machineChoice.repoOriginUrl]);
 
   if (!issues.length) return null;
 
   const conflictCount = includedIssues.filter((issue) => conflicts.has(launchIssueIdentity(issue))).length;
   const launchCount = includedIssues.length;
+  // ADE Cloud: free computers for every lane first, and no CLI session.
+  const cliOnAdeCloud = adeCloudPicked && !laneOnly && includedIssues.some((issue) => {
+    const state = perIssue[launchIssueIdentity(issue)];
+    return (multiIssue ? state?.sessionType : defaultConfig.sessionType) === "cli";
+  });
+  const adeCloudProblem = adeCloudPicked
+    ? adeCloudCapacityProblem(adeCloud.account, adeCloud.tierId) ?? (cliOnAdeCloud ? ADE_CLOUD_NO_CLI_BATCH : null)
+    : null;
+  const adeCloudChoice: AdeCloudLaneChoice | null = adeCloud.offered
+    ? {
+      selected: adeCloudPicked,
+      unavailableReason: adeCloud.unavailableReason,
+      detail: adeCloud.detail,
+      onSelect: () => machineChoice.setPickedMachineId(ADE_CLOUD_MACHINE_ID),
+    }
+    : null;
 
   return (
     <LaneDialogShell
@@ -521,6 +579,35 @@ export function BatchLaunchModal({
             />
           </div>
         </section>
+      ) : null}
+
+      {allLinear ? (
+        // Same machine as the prompt's own read and save (the tab's copy).
+        <div className="mt-3">
+          <AccountSettingNotices
+            pin={tabCopyPin}
+            keys={LINEAR_PROMPT_ACCOUNT_KEYS}
+            onResolved={() => {
+              const previous = projectDefaultPrompt;
+              const scope = promptScopeRef.current;
+              void loadProjectDefaultPrompt(projectRoot, tabCopyPinRef.current).then((saved) => {
+                if (promptScopeRef.current !== scope) return;
+                setProjectDefaultPrompt(saved);
+                if (!saved || previous == null || saved === previous) return;
+                // Rows still on the old default take the applied one; an edited prompt stays.
+                setPerIssue((current) => {
+                  let changed = false;
+                  const next: Record<string, PerIssueState> = {};
+                  for (const [id, state] of Object.entries(current)) {
+                    next[id] = state.kickoffPrompt === previous ? { ...state, kickoffPrompt: saved } : state;
+                    if (next[id] !== state) changed = true;
+                  }
+                  return changed ? next : current;
+                });
+              });
+            }}
+          />
+        </div>
       ) : null}
 
       <div className="mt-3 max-h-[58vh] space-y-2 overflow-y-auto pr-0.5">
@@ -672,7 +759,7 @@ export function BatchLaunchModal({
                             { key: "new", label: "New lane" },
                             { key: "existing", label: "Existing lane" },
                           ] as const).map(({ key, label }) => {
-                            const active = (state.laneTarget ?? "new") === key;
+                            const active = (adeCloudPicked ? "new" : state.laneTarget ?? "new") === key;
                             const disabled = key === "existing" && selectableLanes.length === 0;
                             return (
                               <button
@@ -680,7 +767,7 @@ export function BatchLaunchModal({
                                 type="button"
                                 aria-pressed={active}
                                 disabled={disabled}
-                                title={disabled ? "No existing lanes available yet" : undefined}
+                                title={disabled ? (adeCloudPicked ? "Each lane on ADE Cloud is new, on its own computer." : "No existing lanes available yet") : undefined}
                                 onClick={() => patchIssue(issueId, { laneTarget: key })}
                                 className={cn(
                                   "inline-flex h-6 items-center rounded px-2.5 text-[10.5px] font-medium leading-none transition-colors",
@@ -693,7 +780,7 @@ export function BatchLaunchModal({
                             );
                           })}
                         </div>
-                        {(state.laneTarget ?? "new") === "existing" ? (
+                        {(adeCloudPicked ? "new" : state.laneTarget ?? "new") === "existing" ? (
                           selectableLanes.length > 0 ? (
                             <div className="min-w-[220px] flex-1">
                               <LaneCombobox
@@ -714,7 +801,7 @@ export function BatchLaunchModal({
                     </div>
                   ) : null}
 
-                  {laneOnly || (state.laneTarget ?? "new") === "new" ? (
+                  {laneOnly || (adeCloudPicked ? "new" : state.laneTarget ?? "new") === "new" ? (
                     <label className="block space-y-1.5">
                       <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
                         Branch
@@ -745,21 +832,40 @@ export function BatchLaunchModal({
         </p>
       ) : null}
 
-      {machineChoice.machines.length > 1 ? (
+      {machineChoice.machines.length > 1 || (machineChoice.machines.length > 0 && adeCloudChoice) ? (
         <div className="mt-3">
           <LaneMachineSelector
             machines={machineChoice.machines}
-            selectedMachineId={selectedMachineId}
+            selectedMachineId={adeCloudPicked ? "" : selectedMachineId}
             selectableMachineIds={machineChoice.eligibleMachineIds}
             onSelectMachine={(machineId) => {
               if (machineChoice.machineTargets.has(machineId)) machineChoice.setPickedMachineId(machineId);
             }}
+            adeCloud={adeCloudChoice}
           />
+          {adeCloudPicked ? (
+            <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-fg/75" data-testid="batch-launch-cloud-size">
+              <CloudSizeButton
+                tiers={adeCloud.tiers}
+                tierId={adeCloud.tierId}
+                defaultTier={adeCloud.defaultTier}
+                onChoose={adeCloud.chooseTier}
+                onSetDefault={adeCloud.setDefaultTier}
+              />
+              <span>
+                A new {adeCloud.tiers.find((tier) => tier.id === adeCloud.tierId)?.label ?? "Small"} computer for each lane.
+              </span>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
       <div className="mt-4 flex items-center justify-end gap-2 border-t border-[color:var(--kit-rule)] pt-4">
-        {!selectedMachineId ? (
+        {adeCloudProblem ? (
+          <span className="mr-auto text-[11px] text-[color:var(--kit-warn)]" data-testid="batch-launch-cloud-hint">
+            {adeCloudProblem}
+          </span>
+        ) : !selectedMachineId ? (
           <span className="mr-auto text-[11px] text-muted-fg/70" data-testid="batch-launch-machine-hint">
             {machineChoice.machines.length > 1
               ? "Choose the machine these lanes will live on."
@@ -769,7 +875,7 @@ export function BatchLaunchModal({
         <Button type="button" variant="outline" casing="sentence" onClick={() => onOpenChange(false)}>
           Cancel
         </Button>
-        <Button type="button" variant="primary" casing="sentence" disabled={launchCount === 0 || !selectedMachineId} onClick={handleLaunch}>
+        <Button type="button" variant="primary" casing="sentence" disabled={launchCount === 0 || !selectedMachineId || Boolean(adeCloudProblem)} onClick={handleLaunch}>
           {laneOnly ? <Plus size={13} weight="fill" /> : <Rocket size={13} weight="fill" />}
           {launchButtonLabel(laneOnly, launchCount)}
         </Button>

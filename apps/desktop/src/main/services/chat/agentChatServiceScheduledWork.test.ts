@@ -23,8 +23,12 @@ import {
   waitForEvent,
   waitForFakeTimerCondition,
   writePersistedChatState,
+  settleSteppingTimeouts,
 } from "./agentChatService.testHarness";
-import { BACKGROUND_WORK_LOST_RESUME_PROMPT } from "../../../shared/chatAutoResume";
+import { BACKGROUND_WORK_LOST_RESUME_PROMPT, RESTART_RESUME_PROMPT } from "../../../shared/chatAutoResume";
+import { recordCliSessionsToReopen } from "../pty/cliReopenAfterRestart";
+import { computerBootedAtMs } from "../processes/processStartTime";
+import { brainRunEndpointKey, recordBrainRunStart } from "../runtime/brainUnplannedRestart";
 import { describe, expect, it, test, vi } from "vitest";
 
 async function waitForFakeTimerPromise<T>(
@@ -313,6 +317,31 @@ describe("createAgentChatService", () => {
         .toEqual([]);
     });
 
+    it.each([
+      // Ended by an earlier process (a stamped row): reopened and armed.
+      ["a chat an earlier process left failed", "failed", 30 * 60_000, { armed: true, settled: false }],
+      // Ended on purpose: never reopened, settled and not retried.
+      ["a disposed chat", "disposed", 30 * 60_000, { armed: false, settled: true }],
+      // Ended after this launch started: settled and not retried.
+      ["a chat ended during this launch", "failed", 0, { armed: false, settled: true }],
+    ] as const)("arms an update resume for %s only when an earlier process ended it", async (_label, status, endedMsAgo, expected) => {
+      const scheduledWork = createScheduledWorkDb();
+      const { service, sessionService } = createService({ db: scheduledWork.db });
+      const chat = await service.createSession({ laneId: "lane-1", provider: "claude", model: "claude-opus-5-5" });
+      sessionService.end({
+        sessionId: chat.id,
+        status,
+        exitCode: 127,
+        endedAt: new Date(Date.now() - endedMsAgo).toISOString(),
+      });
+
+      const result = await service.armUpdateResume({ sessionIds: [chat.id] });
+
+      expect(result.chats.map((armed) => armed.sessionId)).toEqual(expected.armed ? [chat.id] : []);
+      expect(result.settled ?? []).toEqual(expected.settled ? [{ sessionId: chat.id, reason: "not_schedulable" }] : []);
+      service.forceDisposeAll();
+    });
+
     it("resumes an ended tracked CLI session when its durable one-shot becomes due", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);
@@ -330,6 +359,7 @@ describe("createAgentChatService", () => {
         ptyService: {
           create: vi.fn(),
           canAcceptScheduledTurn: () => true,
+          canTakeTypedMessage: () => true,
           enrichSessions: (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
             ...row,
             runtimeState: "exited",
@@ -419,7 +449,9 @@ describe("createAgentChatService", () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);
       const scheduledWork = createScheduledWorkDb();
-      let canAcceptScheduledTurn = false;
+      // The main turn's end, not the end of its background agents: those keep
+      // the strict check (restarts, moves) false the whole time.
+      let mainTurnEnded = false;
       const sendToSession = vi.fn(async () => ({
         ptyId: "pty-cli-busy",
         sessionId: "cli-busy",
@@ -432,10 +464,11 @@ describe("createAgentChatService", () => {
         db: scheduledWork.db,
         ptyService: {
           create: vi.fn(),
-          canAcceptScheduledTurn: () => canAcceptScheduledTurn,
+          canAcceptScheduledTurn: () => false,
+          canTakeTypedMessage: () => mainTurnEnded,
           enrichSessions: (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
             ...row,
-            runtimeState: canAcceptScheduledTurn ? "waiting-input" : "running",
+            runtimeState: mainTurnEnded ? "waiting-input" : "running",
           })),
           sendToSession,
         },
@@ -456,7 +489,7 @@ describe("createAgentChatService", () => {
       expect(sendToSession).not.toHaveBeenCalled();
       expect(scheduledWork.readState()?.schedules[0]?.status).toBe("scheduled");
 
-      canAcceptScheduledTurn = true;
+      mainTurnEnded = true;
       await vi.advanceTimersByTimeAsync(20_000);
       expect(sendToSession).toHaveBeenCalledOnce();
       expect(scheduledWork.readState()?.schedules[0]?.status).toBe("done");
@@ -478,6 +511,7 @@ describe("createAgentChatService", () => {
         ptyService: {
           create: vi.fn(),
           canAcceptScheduledTurn: () => true,
+          canTakeTypedMessage: () => true,
           enrichSessions: (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
             ...row,
             runtimeState: "exited",
@@ -610,6 +644,174 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
+    it.each([
+      ["a stop just now", 0, true],
+      ["a stop more than 6 h ago", 6 * 60 * 60_000 + 60_000, false],
+    ] as const)("continues once, by id, the chats %s named, never a closed one", async (_label, stoppedMsAgo, continues) => {
+      const scheduledWork = createScheduledWorkDb();
+      const stopped = createService({ db: scheduledWork.db });
+      const atWork = await stopped.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4-codex" });
+      const closed = await stopped.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4-codex" });
+      // The brain stops: every loaded chat becomes `detached`. The person had closed one.
+      await stopped.service.disposeAll();
+      stopped.sessionService.end({ sessionId: closed.id, status: "disposed" });
+      // What the stop wrote first (`recordPlannedBrainStop`).
+      recordCliSessionsToReopen(tmpRoot, [
+        { sessionId: atWork.id, midTurn: true, kind: "chat" },
+        { sessionId: closed.id, midTurn: true, kind: "chat" },
+      ], () => new Date(Date.now() - stoppedMsAgo));
+      const ptyService = {
+        create: vi.fn(),
+        resumeSession: vi.fn(),
+        canAcceptScheduledTurn: () => true,
+        canTakeTypedMessage: () => true,
+        enrichSessions: (rows: Array<Record<string, unknown>>) => rows,
+      };
+
+      // The next brain opens the project.
+      const next = createService({ db: scheduledWork.db, ptyService });
+      const loggedDrop = (sessionId: string, reason: string) => next.logger.info.mock.calls.some(([event, fields]) =>
+        event === "agent_chat.update_resume_dropped"
+        && (fields as { sessionId?: string; reason?: string }).sessionId === sessionId
+        && (fields as { reason?: string }).reason === reason);
+      await waitFor(() => continues
+        ? next.logger.info.mock.calls.some(([event]) => event === "agent_chat.planned_stop_chats_continued")
+        : loggedDrop(atWork.id, "stale"));
+
+      const continueRows = (scheduledWork.readState()?.schedules ?? []).filter((row) => row.source === "update_restart");
+      expect(continueRows.map((row) => row.sessionId)).toEqual(continues ? [atWork.id] : []);
+      if (continues) {
+        expect(continueRows[0]?.prompt).toBe(RESTART_RESUME_PROMPT);
+        expect(loggedDrop(closed.id, "not_schedulable")).toBe(true);
+      } else {
+        expect(loggedDrop(closed.id, "stale")).toBe(true);
+      }
+      // Taken once: a later start finds no list to continue from.
+      expect(fs.readdirSync(path.join(tmpRoot, ".ade", "cache")).filter((name) => name.startsWith("reopen-cli-after-restart."))).toEqual([]);
+      next.service.forceDisposeAll();
+    });
+
+    it.each([
+      // The grow asked for during the previous brain's run restarted the computer.
+      ["continues after an ADE disk grow's restart", { bootedAgoMs: 70 * 60_000, startedAgoMs: 60 * 60_000, grewAgoMs: 2 * 60_000 }, true],
+      // The grow file outlives its restart: a grow from before the previous
+      // brain's boot is the restart that brain started after, not this one.
+      ["holds after a reboot that follows an older grow's restart", { bootedAgoMs: 9.25 * 60_000, startedAgoMs: 9 * 60_000, grewAgoMs: 9.5 * 60_000 }, false],
+    ] as const)("with Continue chats after restarts off, %s", async (_label, previousRun, continues) => {
+      const brainRuntimeDir = fs.mkdtempSync(path.join(tmpRoot, "brain-run-"));
+      const brainSocket = path.join(brainRuntimeDir, "ade.sock");
+      // Times before this computer's boot, so the result does not depend on its uptime.
+      const nowMs = Date.now();
+      const bootMs = computerBootedAtMs(nowMs);
+      const brainRunFile = path.join(brainRuntimeDir, "brain-run", `${brainRunEndpointKey(brainSocket)}.json`);
+      fs.mkdirSync(path.dirname(brainRunFile), { recursive: true });
+      fs.writeFileSync(brainRunFile, JSON.stringify({
+        pid: 987_654_321,
+        startedAt: new Date(bootMs - previousRun.startedAgoMs).toISOString(),
+        bootedAt: new Date(bootMs - previousRun.bootedAgoMs).toISOString(),
+        build: "b1",
+        stoppedAt: new Date(bootMs - 30_000).toISOString(),
+      }));
+      recordBrainRunStart({
+        runtimeDir: brainRuntimeDir,
+        socketPath: brainSocket,
+        build: "b1",
+        writeOwnRecord: false,
+        nowMs,
+        causeFacts: {
+          currentVersion: "1.0.0",
+          lastHeartbeat: null,
+          wedge: null,
+          memoryPressure: null,
+          updateRequest: null,
+          diskGrow: { atMs: bootMs - previousRun.grewAgoMs, fromGb: 64, toGb: 96 },
+        },
+      });
+      try {
+        const scheduledWork = createScheduledWorkDb();
+        const stopped = createService({ db: scheduledWork.db });
+        const atWork = await stopped.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4-codex" });
+        await stopped.service.disposeAll();
+        recordCliSessionsToReopen(tmpRoot, [{ sessionId: atWork.id, midTurn: true, kind: "chat" }]);
+
+        const next = createService({
+          db: scheduledWork.db,
+          readContinueAfterRestart: () => false,
+          ptyService: {
+            create: vi.fn(),
+            resumeSession: vi.fn(),
+            canAcceptScheduledTurn: () => true,
+            canTakeTypedMessage: () => true,
+            enrichSessions: (rows: Array<Record<string, unknown>>) => rows,
+          },
+        });
+        await waitFor(() => next.logger.info.mock.calls.some(([event, fields]) => continues
+          ? event === "agent_chat.planned_stop_chats_continued"
+          : event === "agent_chat.update_resume_dropped" && (fields as { reason?: string }).reason === "disabled"));
+
+        const continueRows = (scheduledWork.readState()?.schedules ?? []).filter((row) => row.source === "update_restart");
+        expect(continueRows.map((row) => row.sessionId)).toEqual(continues ? [atWork.id] : []);
+        // The continue names the grow it came after: its sizes, whatever the wording.
+        if (continues) expect(continueRows[0]?.prompt).toMatch(/64 GB[\s\S]*96 GB/);
+        next.service.forceDisposeAll();
+      } finally {
+        // No facts: the next start in this file names no cause.
+        recordBrainRunStart({ runtimeDir: brainRuntimeDir, socketPath: brainSocket, build: "b1", writeOwnRecord: false });
+      }
+    });
+
+    it("leaves a planned stop's machine-brain chat in the list for the machine brain", async () => {
+      const machineSocket = "/Users/me/.ade/sock/ade.sock";
+      const scheduledWork = createScheduledWorkDb();
+      const stopped = createService({ db: scheduledWork.db });
+      const atWork = await stopped.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4-codex" });
+      await stopped.service.disposeAll();
+      // The installed brain ran it, and its update restart wrote the list.
+      writePersistedChatState(atWork.id, {
+        ...readPersistedChatState(atWork.id),
+        runtimeOwner: {
+          brainId: "brain-machine-restarting",
+          pid: 987_654_320,
+          startedAt: "2026-10-20T11:00:00.000Z",
+          adeHome: null,
+          socketPath: machineSocket,
+          claimedAt: "2026-10-20T11:00:00.000Z",
+        },
+      });
+      recordCliSessionsToReopen(tmpRoot, [{ sessionId: atWork.id, midTurn: true, kind: "chat" }]);
+      const ptyService = () => ({
+        create: vi.fn(),
+        resumeSession: vi.fn(),
+        canAcceptScheduledTurn: () => true,
+        canTakeTypedMessage: () => true,
+        enrichSessions: (rows: Array<Record<string, unknown>>) => rows,
+      });
+      const continueRows = () => (scheduledWork.readState()?.schedules ?? []).filter((row) => row.source === "update_restart");
+
+      // A dev brain on the shared home opens the project first.
+      const devBrain = createService({
+        db: scheduledWork.db,
+        ptyService: ptyService(),
+        runtimeSocketPath: "/tmp/dev-brain.sock",
+        machineBrainPid: () => null,
+        isMachineBrainSocket: (socketPath: string) => socketPath === machineSocket,
+      });
+      await waitFor(() => devBrain.logger.info.mock.calls.some(([event]) => event === "agent_chat.planned_stop_chat_left"));
+      expect(continueRows()).toEqual([]);
+      devBrain.service.forceDisposeAll();
+
+      // The machine brain comes back and continues it.
+      const machineBrain = createService({
+        db: scheduledWork.db,
+        ptyService: ptyService(),
+        runtimeSocketPath: machineSocket,
+        isMachineBrainSocket: (socketPath: string) => socketPath === machineSocket,
+      });
+      await waitFor(() => machineBrain.logger.info.mock.calls.some(([event]) => event === "agent_chat.planned_stop_chats_continued"));
+      expect(continueRows().map((row) => row.sessionId)).toEqual([atWork.id]);
+      machineBrain.service.forceDisposeAll();
+    });
+
     it("leaves detached chats to the installed machine brain when it is live on the project", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);
@@ -732,6 +934,38 @@ describe("createAgentChatService", () => {
       });
       accountOnlyBrain.service.forceDisposeAll();
 
+      // A chat the machine brain ran waits for it even while it is down (no
+      // fresh heartbeat yet after a restart): the dev brain must not resume it.
+      writePersistedChatState(unowned.id, {
+        ...readPersistedChatState(unowned.id),
+        runtimeOwner: {
+          brainId: "brain-machine-killed",
+          pid: 987_654_320,
+          startedAt: "2026-10-20T11:00:00.000Z",
+          adeHome: null,
+          socketPath: "/Users/me/.ade/sock/ade.sock",
+          claimedAt: "2026-10-20T11:00:00.000Z",
+        },
+      });
+      const devBrainDuringMachineRestart = createService({
+        db: scheduledWork.db,
+        runtimeSocketPath: "/tmp/dev-brain.sock",
+        machineBrainPid: () => null,
+        isMachineBrainSocket: (socketPath: string) => socketPath === "/Users/me/.ade/sock/ade.sock",
+        processRegistry: {
+          pid: process.pid,
+          startedAt: "2026-10-20T12:00:00.000Z",
+          isProcessIdentityLive: (pid: number) => pid === process.pid,
+          listLiveProcessIdentities: () => [{ pid: process.pid, startedAt: "2026-10-20T12:00:00.000Z" }],
+        },
+      });
+      await devBrainDuringMachineRestart.service.getChatTranscript({ sessionId: unowned.id });
+      expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      expect(devBrainDuringMachineRestart.sessionService.get(unowned.id)?.status).toBe("detached");
+      expect(readPersistedChatState(unowned.id).runtimeOwner?.brainId).toBe("brain-machine-killed");
+      devBrainDuringMachineRestart.service.forceDisposeAll();
+      writePersistedChatState(unowned.id, { ...readPersistedChatState(unowned.id), runtimeOwner: null });
+
       const { send } = installClaudeResponseFixture({
         sdkSessionId: "sdk-owned-by-dev-brain",
         responseText: "The dev brain's own chat ran.",
@@ -814,7 +1048,10 @@ describe("createAgentChatService", () => {
       // The brain stops while the job runs, so the row's end time is now.
       vi.setSystemTime(SCHEDULE_TEST_START + idleForMs);
       await starter.service.disposeAll();
-      expect(starter.sessionService.get(session.id)?.status).toBe("detached");
+      // The fixture's runtime holds no live job, so the stop saw the chat at
+      // rest. A stop with the job running ends the row `detached`, and records
+      // the loss: set both, as that stop leaves them.
+      starter.sessionService.end({ sessionId: session.id, endedAt: new Date().toISOString(), exitCode: null, status: "detached" });
       writePersistedChatState(session.id, {
         ...readPersistedChatState(session.id),
         runtimeOwner: null,
@@ -1428,10 +1665,10 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Run CI and wake up when it finishes.",
-      });
+      }));
       expect(service.hasActiveWorkloads()).toBe(false);
       const wakeupId = `wakeup:${session.id}`;
 
@@ -1585,10 +1822,10 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Finish the foreground turn, then report background work.",
-      });
+      }));
       releaseIdle();
 
       const idleDone = await waitForEvent(
@@ -1698,10 +1935,10 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Complete the foreground turn, then stream idle work.",
-      });
+      }));
 
       startIdle();
       const idleDone = await waitForEvent(
@@ -1807,10 +2044,10 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Complete a visible turn, then let idle housekeeping run.",
-      });
+      }));
 
       const visibleAmbientInfo = () => events.filter((event) =>
         event.sessionId === session.id
@@ -1965,10 +2202,10 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Start a scheduled check.",
-      });
+      }));
 
       startBackground();
       await waitForEvent(
@@ -2470,10 +2707,10 @@ describe("createAgentChatService", () => {
       const postToolUseHook = opts?.hooks?.PostToolUse?.[0]?.hooks[0];
       const wakeupId = `wakeup:${session.id}`;
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Schedule a one-shot CI wakeup.",
-      });
+      }));
 
       await postToolUseHook?.({
         hook_event_name: "PostToolUse",
@@ -2814,10 +3051,10 @@ describe("createAgentChatService", () => {
       } | undefined;
       const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Schedule two recurring crons.",
-      });
+      }));
 
       await stopHook?.({
         hook_event_name: "Stop",
@@ -3282,10 +3519,10 @@ describe("createAgentChatService", () => {
       } | undefined;
       const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Resume after a persisted cron was scheduled.",
-      });
+      }));
 
       await stopHook?.({
         hook_event_name: "Stop",

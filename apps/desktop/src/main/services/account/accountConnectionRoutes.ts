@@ -63,7 +63,8 @@ export function createAccountConnectionRoutesBridge(
     }
     const targetId = deps.resolveTargetIdForMachineKey(key);
     if (!targetId || (deps.isTargetConnected && !deps.isTargetConnected(targetId))) {
-      throw new Error("Connect to this computer to see and change its routes.");
+      // A computer this window isn't connected to (asleep, offline): the row says so.
+      throw markExpected(new Error("Connect to this computer to see and change its routes."), "environment");
     }
     try {
       return read(

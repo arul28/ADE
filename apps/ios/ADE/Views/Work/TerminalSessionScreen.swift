@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -15,12 +16,33 @@ struct TerminalSessionScreen: View {
   /// while it is away and nothing while it shows (a column has no stack to
   /// pop, so a Back there did nothing).
   var leading: TerminalLeadingControl = .back
+  /// Set for another machine's session: it opens over that machine's light
+  /// link, and every terminal action goes to that machine.
+  var remoteTerminal: WorkRemoteTerminalContext? = nil
 
   @StateObject private var controller = TerminalSessionController()
+  /// The session's machine, fixed when the screen opens. Nil for an older
+  /// pairing with no machine identity.
+  @State private var sessionMachineKey: String?
+  /// Whether the connection the screen streams over still serves the
+  /// session's machine. While false, the screen sends nothing.
+  @State private var linkLive = true
+  /// The remote terminal's controller is active on the machine's light link.
+  @State private var remoteTerminalActivated = false
   @State private var keyboardVisible = false
   @State private var pasteboardHasStrings = false
   @State private var showReconnectingCaption = false
   @State private var statusDotFlash = false
+  /// The message bar for an agent CLI: write a whole message and send it,
+  /// instead of typing key by key. One choice for every CLI; off by default.
+  @AppStorage("ade.work.cliMessageBar") private var messageBarOn = false
+  /// The bar's draft. Held here so the text outlives the bar (the toggle, a
+  /// resume), but only the bar observes it: a key press re-renders the bar,
+  /// never this screen. Deliberately `@State`, not `@StateObject`: a state
+  /// object makes this screen observe the draft, and then every key press
+  /// rebuilds the whole terminal tree.
+  @State private var messageDraft = TerminalMessageDraft()
+  @State private var messageBarFocusRequest = 0
 
   private var bottomIgnoredEdges: Edge.Set {
     // The resume bar renders without the keyboard; it needs the bottom safe
@@ -46,9 +68,18 @@ struct TerminalSessionScreen: View {
   private var lifecycleDecorated: some View {
     chromeDecorated
       .task(id: session.id) { handleAppear() }
-      .onDisappear { controller.deactivate() }
-      .onChange(of: syncService.connectionState) { (_, state: RemoteConnectionState) in
-        handleConnectionState(state)
+      .onDisappear {
+        controller.deactivate()
+        remoteTerminalActivated = false
+      }
+      .onChange(of: syncService.connectionState) { (_, _: RemoteConnectionState) in refreshLinkLive() }
+      .onChange(of: syncService.focusedMachineKey) { (_, _: String?) in refreshLinkLive() }
+      .onReceive(fleetPublisher) { _ in
+        activateRemoteTerminalWhenLinked()
+        refreshLinkLive()
+      }
+      .onChange(of: linkLive) { (_, live: Bool) in
+        controller.handleConnectionChange(isConnected: live)
       }
       .onChange(of: controller.bellPulse) { (_, _: Int) in flashStatusDot() }
       .onChange(of: controller.blockedInputPulse) { (_, _: Int) in showReconnectingCaption = true }
@@ -61,6 +92,17 @@ struct TerminalSessionScreen: View {
       .safeAreaInset(edge: .bottom, spacing: 0) {
         if controller.hasExited {
           resumeBar
+        } else if messageBarOn && isAgentCli {
+          // Equatable: terminal output re-renders this screen many times a
+          // second, and the field must not re-render with it while someone
+          // types.
+          TerminalMessageBar(
+            draft: messageDraft,
+            runtimeLabel: runtimeLabel,
+            focusRequest: messageBarFocusRequest,
+            send: { text, clientMessageId in await sendMessage(text, clientMessageId: clientMessageId) }
+          )
+          .equatable()
         } else if keyboardVisible {
           keyBarStack
         }
@@ -100,7 +142,28 @@ struct TerminalSessionScreen: View {
 
   @ViewBuilder
   private var terminalLoadOverlay: some View {
-    if controller.hasPainted || controller.hasExited {
+    if controller.hasExited {
+      EmptyView()
+    } else if controller.hasPainted, let subscribeError = controller.subscribeError {
+      // A painted screen keeps its text; a bar says the stream stopped.
+      HStack(spacing: 10) {
+        Text(subscribeError)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+        Spacer(minLength: 8)
+        Button("Retry") {
+          controller.retrySubscribe()
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(ADEColor.accent)
+        .controlSize(.small)
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 10)
+      .background(Color.black.opacity(0.85))
+      .frame(maxHeight: .infinity, alignment: .top)
+    } else if controller.hasPainted {
       EmptyView()
     } else if let subscribeError = controller.subscribeError {
       VStack(spacing: 12) {
@@ -130,12 +193,70 @@ struct TerminalSessionScreen: View {
   }
 
   private func handleAppear() {
-    controller.activate(syncService: syncService, sessionId: session.id, sessionStatus: session.status)
+    activateTerminal()
     pasteboardHasStrings = controller.pasteboardHasStrings
+    refreshLinkLive()
   }
 
-  private func handleConnectionState(_ state: RemoteConnectionState) {
-    controller.handleConnectionChange(isConnected: state == .connected)
+  /// Activates the controller on the terminal's transport. A remote terminal
+  /// waits for its machine's light link. It activates once, when the link exists.
+  private func activateTerminal() {
+    if let remoteTerminal {
+      sessionMachineKey = remoteTerminal.machineKey
+      guard !remoteTerminalActivated, let connection = remoteConnection else { return }
+      connection.setTerminalScope(
+        sessionId: session.id,
+        projectId: remoteTerminal.projectId,
+        rootPath: remoteTerminal.rootPath
+      )
+      controller.activate(transport: connection, sessionId: session.id, sessionStatus: session.status)
+      remoteTerminalActivated = true
+    } else {
+      sessionMachineKey = syncService.focusedMachineKey
+      controller.activate(transport: syncService, sessionId: session.id, sessionStatus: session.status)
+    }
+  }
+
+  /// A fleet change can bring a remote terminal's light link. Activate then.
+  private func activateRemoteTerminalWhenLinked() {
+    guard remoteTerminal != nil else { return }
+    activateTerminal()
+  }
+
+  /// The light link of the session's machine, when the session is on another one.
+  private var remoteConnection: MachineConnection? {
+    remoteTerminal.flatMap { syncService.machineFleet?.connection(for: $0.machineKey) }
+  }
+
+  /// Fires when a machine's light link or the focused connection changes.
+  private var fleetPublisher: AnyPublisher<Void, Never> {
+    guard let fleet = syncService.machineFleet else {
+      return Empty<Void, Never>().eraseToAnyPublisher()
+    }
+    return fleet.$machines.map { _ in () }.eraseToAnyPublisher()
+  }
+
+  /// The screen's connection is live only while it still serves the
+  /// session's machine. After a focus change the focused connection serves
+  /// another machine, and the screen shows offline instead of sending there.
+  private func refreshLinkLive() {
+    let live: Bool
+    if remoteTerminal != nil {
+      live = remoteConnection?.canStreamTerminals ?? false
+    } else if let sessionMachineKey {
+      live = syncService.connectionState == .connected
+        && syncService.focusedMachineKey == sessionMachineKey
+        && syncService.focusedSocketMachineKey == sessionMachineKey
+    } else {
+      live = syncService.connectionState == .connected
+    }
+    if linkLive != live { linkLive = live }
+  }
+
+  /// The state of the connection this terminal streams over.
+  private var terminalConnectionState: RemoteConnectionState {
+    guard remoteTerminal != nil || sessionMachineKey != nil else { return syncService.connectionState }
+    return linkLive ? .connected : .disconnected
   }
 
   private func handleKeyboardWillShow() {
@@ -191,6 +312,22 @@ struct TerminalSessionScreen: View {
         .truncationMode(.middle)
 
       Spacer(minLength: 0)
+
+      if isAgentCli && !controller.hasExited {
+        Button {
+          messageBarOn.toggle()
+          if messageBarOn { messageBarFocusRequest += 1 }
+        } label: {
+          Image(systemName: messageBarOn ? "text.bubble.fill" : "text.bubble")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(messageBarOn ? ADEColor.accent : ADEColor.textPrimary)
+            .frame(width: 36, height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(messageBarOn ? "Type in the terminal" : "Write a message")
+        .accessibilityIdentifier("Work.Terminal.MessageBarToggle")
+      }
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 4)
@@ -226,7 +363,7 @@ struct TerminalSessionScreen: View {
     if controller.hasExited {
       return ADEColor.textMuted
     }
-    switch syncService.connectionState {
+    switch terminalConnectionState {
     case .connected:
       return controller.isSubscribed ? ADEColor.success : ADEColor.warning
     case .connecting:
@@ -312,6 +449,53 @@ struct TerminalSessionScreen: View {
     .background(ADEColor.recessedBackground.opacity(0.92))
     .overlay(alignment: .top) {
       Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5)
+    }
+  }
+
+  // MARK: - Message bar
+
+  /// A tracked agent CLI (Claude Code, Codex, ...): its computer can tell when
+  /// its prompt is free, so a whole message can be typed there for you.
+  private var isAgentCli: Bool {
+    let raw = session.toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    return session.tracked && !raw.isEmpty && raw != "shell" && !raw.hasSuffix("-chat") && !raw.hasSuffix("-orchestrated")
+  }
+
+  /// Sends the message to the session's own computer, which types it at the
+  /// CLI's prompt only once that prompt is free. The bar keeps the text unless
+  /// the computer has it.
+  private func sendMessage(_ text: String, clientMessageId: String) async -> TerminalMessageSendResult {
+    do {
+      let outcome: WorkCliTypeOutcome
+      if remoteTerminal != nil {
+        guard let connection = remoteConnection, connection.isLive else {
+          return .kept("That computer isn't connected. Your message stays here; send it once it reconnects.")
+        }
+        outcome = try await connection.typeIntoCli(sessionId: session.id, text: text, clientMessageId: clientMessageId)
+      } else {
+        // Connected to a different computer than this session's: a send would
+        // reach the wrong one.
+        if sessionMachineKey != nil, syncService.connectionState == .connected, !linkLive {
+          return .kept("This session's computer isn't the one connected now. Switch back to it to send.")
+        }
+        outcome = try await syncService.typeIntoCli(sessionId: session.id, text: text, clientMessageId: clientMessageId)
+      }
+      switch outcome {
+      case .delivered:
+        return .sent(nil)
+      case .typedAtOnce:
+        return .sent("Typed now. ADE can't tell when \(runtimeLabel) is free, so it didn't wait.")
+      case .heldUntilFree:
+        // Held for the next free prompt: a turn still running, a menu the CLI
+        // is showing, or an earlier queued message going first.
+        return .sent("Queued. It's typed when \(runtimeLabel) is free.")
+      case .queuedOffline:
+        return .sent("You're offline. It's sent when the computer reconnects.")
+      case .ended:
+        return .kept("This CLI has ended. Resume it to continue.")
+      }
+    } catch {
+      return .kept(error.localizedDescription)
     }
   }
 
@@ -524,4 +708,148 @@ enum TerminalLeadingControl {
   case showChats(() -> Void)
   /// Nothing: the list is already beside it.
   case none
+}
+
+/// What the screen did with a message from the bar.
+enum TerminalMessageSendResult {
+  /// The computer has the message (typed, held for the prompt, or queued while
+  /// offline). The bar clears the text and shows the notice, if any.
+  case sent(String?)
+  /// Nothing was sent, or it is unknown. The bar keeps the text.
+  case kept(String)
+}
+
+/// The text of the agent CLI message bar, the send in flight, and the last
+/// notice.
+@MainActor
+final class TerminalMessageDraft: ObservableObject {
+  /// Every write counts as an edit, including one that leaves the same words:
+  /// a draft cleared and retyped with the same text is still a new draft.
+  @Published var text = "" { didSet { editRevision += 1 } }
+  @Published var sending = false
+  @Published var notice: String?
+  private var editRevision = 0
+  private var messageId = UUID().uuidString
+  private var messageIdText: String?
+  /// The edit this id was minted for. A send whose text was edited afterwards
+  /// is a new message, even when it reads the same.
+  private var messageIdRevision: Int?
+
+  /// One id for one message: a send of the same text after a lost answer reuses
+  /// it, so the computer types the message once. Changed text is a new message,
+  /// and so is the same text typed again.
+  func clientMessageId(for text: String) -> String {
+    if text != messageIdText || editRevision != messageIdRevision {
+      messageIdText = text
+      messageIdRevision = editRevision
+      messageId = UUID().uuidString
+    }
+    return messageId
+  }
+
+  func markSent(notice: String?) {
+    // Text typed while the send was in flight stays, even when it reads the
+    // same as what was sent.
+    if editRevision == messageIdRevision { text = "" }
+    messageIdText = nil
+    messageIdRevision = nil
+    self.notice = notice
+  }
+}
+
+/// The agent CLI message bar. It owns its rendering: a key press re-renders
+/// only the bar, and the screen's many re-renders while output streams skip it
+/// (`Equatable`), so typing stays at local speed on a busy or slow link.
+struct TerminalMessageBar: View, Equatable {
+  @ObservedObject var draft: TerminalMessageDraft
+  let runtimeLabel: String
+  /// Raised when the bar is turned on; the field takes focus as it appears.
+  let focusRequest: Int
+  let send: @MainActor (_ text: String, _ clientMessageId: String) async -> TerminalMessageSendResult
+  @FocusState private var focused: Bool
+
+  nonisolated static func == (lhs: TerminalMessageBar, rhs: TerminalMessageBar) -> Bool {
+    lhs.draft === rhs.draft && lhs.runtimeLabel == rhs.runtimeLabel && lhs.focusRequest == rhs.focusRequest
+  }
+
+  private var canSend: Bool {
+    !draft.sending && !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  var body: some View {
+    VStack(spacing: 6) {
+      if let notice = draft.notice {
+        Text(notice)
+          .font(.caption2.weight(.medium))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(2)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 14)
+      }
+      HStack(alignment: .bottom, spacing: 8) {
+        TextField("Message \(runtimeLabel)…", text: $draft.text, axis: .vertical)
+          .lineLimit(1...5)
+          .font(.system(size: 15))
+          .foregroundStyle(ADEColor.textPrimary)
+          .focused($focused)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
+          .background(ADEColor.textPrimary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+              .stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6)
+          )
+          .accessibilityIdentifier("Work.Terminal.MessageField")
+        Button {
+          Task { await submit() }
+        } label: {
+          Group {
+            if draft.sending {
+              ProgressView().controlSize(.small).tint(.white)
+            } else {
+              Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold))
+            }
+          }
+          .foregroundStyle(.white)
+          .frame(width: 34, height: 34)
+          .background(canSend ? ADEColor.accent : ADEColor.textMuted.opacity(0.35), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSend)
+        .accessibilityLabel("Send")
+        .accessibilityIdentifier("Work.Terminal.MessageSend")
+      }
+      .padding(.horizontal, 10)
+    }
+    .padding(.top, 8)
+    .padding(.bottom, 8)
+    .background(ADEColor.recessedBackground.opacity(0.92))
+    .overlay(alignment: .top) {
+      Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5)
+    }
+    // The field's text line is its only hit area, and the terminal runs on
+    // under the bar: a tap on the bubble's padding focused the terminal, and
+    // the keys went to the CLI one by one over the link. Any tap on the bar
+    // focuses the field.
+    .contentShape(Rectangle())
+    .onTapGesture { focused = true }
+    .onAppear {
+      if focusRequest > 0 { focused = true }
+    }
+    .onChange(of: focusRequest) { (_, _: Int) in focused = true }
+  }
+
+  private func submit() async {
+    let text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty, !draft.sending else { return }
+    let clientMessageId = draft.clientMessageId(for: text)
+    draft.sending = true
+    defer { draft.sending = false }
+    switch await send(text, clientMessageId) {
+    case .sent(let notice):
+      draft.markSent(notice: notice)
+    case .kept(let notice):
+      draft.notice = notice
+    }
+  }
 }

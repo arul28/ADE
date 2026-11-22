@@ -13,9 +13,17 @@
  */
 
 import { usageLimitTextIdentity } from "./usageLimitResumePresentation";
-import { backgroundCommandLabel, deriveBackgroundItems } from "./chatScheduledWork";
+import {
+  backgroundCommandLabel,
+  deriveBackgroundItems,
+  isRestartResumeScheduleId,
+  UPDATE_RESUME_ID_PREFIX,
+} from "./chatScheduledWork";
 import { subagentSnapshotsFromEvents } from "./chatSubagents";
 import { ORPHAN_BACKGROUND_SUMMARY, ORPHAN_SUBAGENT_NO_REPORT_SUMMARY } from "./chatOrphanRunReconcile";
+import { formatGb } from "./formatting";
+import { restartCauseMemory, type RestartCause, type RestartMemoryFacts } from "./restartCause";
+import type { UpdateRequestedBy } from "./types/remoteRuntime";
 import {
   CHAT_STOP_REASON_BRAIN_RESTARTED,
   CHAT_STOP_REASON_FOREIGN_BRAIN,
@@ -259,8 +267,6 @@ export const UPDATE_RESUME_PROMPT =
 
 export const UPDATE_RESUME_REASON = "Resume after ADE restart";
 
-const UPDATE_RESUME_ID_PREFIX = "update-resume:";
-
 /**
  * Deterministic per-chat id. A repeat arm for the same chat upserts this row
  * instead of stacking a second resume.
@@ -268,6 +274,8 @@ const UPDATE_RESUME_ID_PREFIX = "update-resume:";
 export function updateResumeScheduleId(sessionId: string): string {
   return `${UPDATE_RESUME_ID_PREFIX}${sessionId}`;
 }
+
+export { isRestartResumeScheduleId };
 
 /**
  * Recognises an update-resume row by its tag. Unlike the usage-limit pair there
@@ -324,11 +332,213 @@ export const RESTART_RESUME_PROMPT =
 export const RESTART_RESUME_REASON = "Resume after ADE restarted";
 
 /**
+ * The continue a reopened agent CLI gets. The restart stopped the CLI process,
+ * and every background agent or task it started stopped with it, so a CLI
+ * that was only waiting on them must hear that their reports will never come.
+ */
+export const CLI_RESTART_RESUME_PROMPT =
+  "ADE restarted while you were working, so your last turn ended early and any background agents or tasks you started were stopped before they reported back. Continue the task from where it stopped: re-run the stopped work you still need, and do not redo work that already completed.";
+
+/**
+ * What a reopened agent CLI that ADE did not see at work is told. ADE's
+ * signal for "this CLI was working" is weak (a CLI that waits on background
+ * agents looks idle), so every reopened CLI hears why it came back; one that
+ * was idle answers in one short line and stops.
+ */
+const CLI_REOPENED_IDLE_INSTRUCTION =
+  "If you were in the middle of work or waiting on background agents or tasks, they were stopped: tell the user in one line what happened and continue. If you were not doing anything, reply in one short line and stop; do not start new work.";
+
+/** The machine name in double quotes ("Mac Studio" with its quotes), or the kind of client, or null when the asker is unknown. */
+function requesterLabel(requestedBy: UpdateRequestedBy | null | undefined): string | null {
+  const name = requestedBy?.machineName?.trim();
+  if (name) return `"${name}"`;
+  switch (requestedBy?.clientKind) {
+    case "ios":
+      return "the ADE phone app";
+    case "web":
+      return "ADE Web";
+    case "cli":
+      return "the ade CLI";
+    case "agent":
+      return "an agent on another machine";
+    case "desktop":
+      return "another computer";
+    default:
+      return null;
+  }
+}
+
+/** "13 of 13 GB swap in use, iOS simulators used about 20 GB", or null with no facts. */
+function memoryFactsPhrase(memory: RestartMemoryFacts | null): string | null {
+  if (!memory) return null;
+  const parts: string[] = [];
+  if (memory.swapUsedMb != null && memory.swapUsedMb > 0) {
+    parts.push(memory.swapTotalMb != null && memory.swapTotalMb >= memory.swapUsedMb
+      ? `${formatGb(memory.swapUsedMb)} of ${formatGb(memory.swapTotalMb)} GB swap in use`
+      : `${formatGb(memory.swapUsedMb)} GB swap in use`);
+  }
+  if (memory.simulatorMb != null && memory.simulatorMb >= 1024) {
+    parts.push(`iOS simulators used about ${formatGb(memory.simulatorMb)} GB`);
+  }
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+/** True when the cause involves low memory: facts were recorded, or the watchdog said so. */
+function restartCauseInvolvesMemory(cause: RestartCause | null | undefined): boolean {
+  if (!cause) return false;
+  if (cause.kind === "service_restarted_by_watchdog" && cause.freezeCause === "memory") return true;
+  return restartCauseMemory(cause) !== null;
+}
+
+/**
+ * The cause as the start of a sentence, without "while you were working":
+ * "The computer restarted at 3:22 PM EST". Plain words, no paths, no user
+ * content. Null when there is no cause.
+ */
+function restartCauseLead(cause: RestartCause | null | undefined): string | null {
+  if (!cause) return null;
+  const at = cause.endedAtMs != null && Number.isFinite(cause.endedAtMs)
+    ? formatAutoResumeHostClock(cause.endedAtMs)
+    : "";
+  const atClause = at ? ` at ${at}` : "";
+  switch (cause.kind) {
+    case "update": {
+      const version = cause.version?.trim();
+      const requester = requesterLabel(cause.requestedBy);
+      const update = version ? `an update to ${version}` : "an update";
+      return `ADE restarted${atClause} for ${update}${requester ? ` that ${requester} asked for` : ""}`;
+    }
+    case "computer_restarted":
+      return `The computer restarted${atClause}`;
+    case "service_restarted_by_watchdog": {
+      const why = cause.freezeCause === "drive"
+        ? " because a drive stopped answering"
+        : cause.freezeCause === "memory" ? " because the computer was short of memory" : "";
+      return `ADE's background service froze${why}, and ADE restarted it${atClause}`;
+    }
+    case "service_restarted":
+      return `ADE's background service was restarted${atClause}`;
+    case "disk_grow":
+      return `ADE grew this computer's disk${cause.fromGb != null ? ` from ${cause.fromGb} GB` : ""} to ${cause.toGb} GB, which restarted the computer${atClause}`;
+    case "unknown":
+      return `ADE's background service stopped unexpectedly${atClause} and started again`;
+  }
+}
+
+/**
+ * The memory words of every restart message: `clause` follows the cause
+ * ("(memory was low: 13 of 13 GB swap in use)"), and `note` asks the agent
+ * to say when memory is still low. Both are empty when memory was not low.
+ * No message asks the agent to fix the machine.
+ */
+function memoryWords(cause: RestartCause | null | undefined): { clause: string; note: string } {
+  const memory = restartCauseMemory(cause);
+  const facts = memoryFactsPhrase(memory);
+  return {
+    clause: facts ? ` (memory was low: ${facts})` : memory ? " (memory was low)" : "",
+    note: restartCauseInvolvesMemory(cause) ? " ADE is running again; if memory is still low, say so." : "",
+  };
+}
+
+/**
+ * The continue prompt of a chat a restart cut short (after a crash, a planned
+ * stop, or an accepted update). With no cause it is the prompt sent before
+ * causes existed: the update prompt when `acceptedUpdate`, else the restart
+ * prompt. With a cause it names the cause and asks the agent to tell the
+ * user in one line, then continue.
+ */
+export function chatRestartResumePrompt(
+  cause: RestartCause | null | undefined,
+  options: { acceptedUpdate?: boolean } = {},
+): string {
+  const lead = restartCauseLead(cause);
+  if (!lead) return options.acceptedUpdate ? UPDATE_RESUME_PROMPT : RESTART_RESUME_PROMPT;
+  const memory = memoryWords(cause);
+  return `${lead} while you were working${memory.clause}, so your last turn ended early.${memory.note} Tell the user in one line what happened, then continue the task from where it stopped; do not restart work that already completed.`;
+}
+
+/**
+ * The continue prompt of a reopened agent CLI that ADE saw at work. With no
+ * cause it is `CLI_RESTART_RESUME_PROMPT`.
+ */
+export function cliRestartResumePrompt(cause: RestartCause | null | undefined): string {
+  const lead = restartCauseLead(cause);
+  if (!lead) return CLI_RESTART_RESUME_PROMPT;
+  const memory = memoryWords(cause);
+  return `${lead} while you were working${memory.clause}, so your last turn ended early and any background agents or tasks you started were stopped before they reported back.${memory.note} Tell the user in one line what happened, then continue the task from where it stopped: re-run the stopped work you still need, and do not redo work that already completed.`;
+}
+
+/**
+ * The message of a reopened agent CLI that ADE did not see at work. It says
+ * why the session came back and lets an idle agent answer in one line and stop.
+ */
+export function cliReopenedIdlePrompt(cause: RestartCause | null | undefined): string {
+  const memory = memoryWords(cause);
+  return `${restartCauseLead(cause) ?? "ADE restarted"}${memory.clause}, and ADE reopened this session.${memory.note} ${CLI_REOPENED_IDLE_INSTRUCTION}`;
+}
+
+/** A few words for the terminal line: "The computer restarted (memory was low)". */
+function restartCauseShort(cause: RestartCause): string {
+  const memory = restartCauseInvolvesMemory(cause) ? " (memory was low)" : "";
+  switch (cause.kind) {
+    case "update":
+      return `ADE restarted for an update${cause.version?.trim() ? ` to ${cause.version.trim()}` : ""}`;
+    case "computer_restarted":
+      return `The computer restarted${memory}`;
+    case "service_restarted_by_watchdog":
+      return `ADE's background service froze and restarted${memory}`;
+    case "service_restarted":
+      return "ADE's background service was restarted";
+    case "disk_grow":
+      return `ADE grew the disk to ${cause.toGb} GB (the computer restarted)`;
+    case "unknown":
+      return `ADE restarted unexpectedly${memory}`;
+  }
+}
+
+/**
+ * The one line a reopened agent CLI shows in its own terminal, so every viewer
+ * of the session (this desktop, another computer, a phone) sees why it came
+ * back. `unexpected`: the runtime crashed, was killed, or lost power, rather
+ * than stopping on purpose. `told`: what the agent hears once the CLI is
+ * ready: `continued` (its turn was running, it gets the continue prompt),
+ * `informed` (it hears why the session came back), or null (nothing).
+ * `cause`, when known, names why in a few words.
+ */
+export function cliReopenedNotice(args: {
+  unexpected: boolean;
+  told: "continued" | "informed" | null;
+  cause?: RestartCause | null;
+}): string {
+  const restarted = args.cause
+    ? restartCauseShort(args.cause)
+    : args.unexpected ? "ADE restarted unexpectedly" : "ADE restarted";
+  if (args.told === "continued") return `${restarted} during a turn. It reopened this session and tells the agent to continue.`;
+  if (args.told === "informed") return `${restarted} and reopened this session. It tells the agent what happened.`;
+  return `${restarted} and reopened this session.`;
+}
+
+/**
+ * Written into a CLI's terminal as ADE stops, when ADE cannot reopen that CLI
+ * afterwards (Devin: ADE never learns its resume id). The ended terminal keeps
+ * the line, so the person knows why it stays closed.
+ */
+export const CLI_NOT_REOPENED_NOTICE =
+  "ADE is stopping and cannot reopen this Devin session after it starts again. Start Devin again to go on.";
+
+/**
  * Automatic resumes in a row before a chat waits for the user. A chat whose
  * resumed turn is cut off by another restart, again and again, is likely what
  * keeps stopping ADE (T3 #18461).
  */
 export const MAX_CONSECUTIVE_RESTART_RESUMES = 3;
+
+/**
+ * How long after a restart cut work off ADE still continues it by itself.
+ * Past this the work is stale: a chat, a CLI, or a brain's record of what
+ * was at work when it stopped (`recordPlannedBrainStop`) continues nothing.
+ */
+export const RESTART_RESUME_MAX_AGE_MS = 6 * 60 * 60_000;
 
 /**
  * Why a chat a restart cut short does not continue by itself, or null when it
@@ -355,6 +565,13 @@ export function restartResumeHold(args: {
   if (!args.recent) return "stale";
   if (args.capped) return "capped";
   return null;
+}
+
+const RESTART_INTERRUPTED_NOTICE_PREFIX = "ADE restarted while ";
+
+/** A notice `restartInterruptedNotice` wrote. The transcript adds its time. */
+export function isRestartInterruptedNotice(message: string | null | undefined): boolean {
+  return typeof message === "string" && message.startsWith(RESTART_INTERRUPTED_NOTICE_PREFIX);
 }
 
 /** The notice for a turn a restart cut short, by what happens next. */
@@ -477,11 +694,22 @@ export function collectRestartCancelledWork(
   // was asked to do.
   const restartClosedIds = new Set<string>();
   const spawnNameById = new Map<string, string>();
+  // A spawned ADE chat starts as `chat:<child id>`, but its row is keyed by the
+  // child's id (`agentId`), and the sweep closes it under that bare id. Both
+  // name a chat of its own that outlives the restart, never lost work.
+  const spawnedChatRowIds = new Set<string>();
   for (const envelope of events) {
     const event = envelope.event;
     if (event.type === "subagent_started") {
       const name = event.description?.trim();
       if (name && !spawnNameById.has(event.taskId)) spawnNameById.set(event.taskId, name);
+      const taskId = event.taskId?.trim() ?? "";
+      if (taskId.startsWith("chat:")) {
+        spawnedChatRowIds.add(taskId);
+        spawnedChatRowIds.add(taskId.slice("chat:".length));
+        const agentId = typeof event.agentId === "string" ? event.agentId.trim() : "";
+        if (agentId) spawnedChatRowIds.add(agentId);
+      }
       continue;
     }
     if (event.type === "subagent_result" || event.type === "scheduled_work_update") {
@@ -511,7 +739,7 @@ export function collectRestartCancelledWork(
   for (const snapshot of subagentSnapshotsFromEvents(events)) {
     const live = snapshot.status === "running";
     if (!live && !closedByRestart(snapshot.summary, snapshot.endedAt, snapshot.id)) continue;
-    if (snapshot.id.startsWith("chat:")) continue;
+    if (snapshot.id.startsWith("chat:") || spawnedChatRowIds.has(snapshot.id)) continue;
     const key = `subagent:${snapshot.id}`;
     if (seen.has(key)) continue;
     seen.add(key);

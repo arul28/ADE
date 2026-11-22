@@ -7,10 +7,11 @@ import { playableVideoMime } from "../../../../lib/playableMedia";
 import { streamFileBytes } from "../streamBytes";
 import { formatBytes } from "../../../../../shared/formatting";
 import type { ViewerProps } from "./types";
+import { runPathActionHere } from "../../pathOnThisComputer";
 
 const MAX_MEDIA_STREAM_BYTES = 250 * 1024 * 1024;
 
-export function MediaViewer({ files, workspaceId, rootPath, tab, content, kind }: ViewerProps & { kind: "audio" | "video" }) {
+export function MediaViewer({ files, workspaceId, rootPath, pathPin, tab, content, kind }: ViewerProps & { kind: "audio" | "video" }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const Icon = kind === "video" ? VideoCamera : MusicNotes;
@@ -46,7 +47,11 @@ export function MediaViewer({ files, workspaceId, rootPath, tab, content, kind }
   }, [files, workspaceId, tab.path, content.size, mimeType]);
 
   const openExternally = () => {
-    void window.ade.app.openPathInEditor?.({ rootPath, relativePath: tab.path, target: "finder" }).catch(() => {});
+    runPathActionHere(
+      pathPin,
+      () => window.ade.app.openPathInEditor({ rootPath, relativePath: tab.path, target: "finder" }, pathPin),
+      { failTitle: `Could not reveal "${tab.title}"` },
+    );
   };
 
   return (

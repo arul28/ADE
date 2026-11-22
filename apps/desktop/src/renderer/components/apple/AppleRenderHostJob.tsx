@@ -44,7 +44,7 @@ export default function AppleRenderHostJob({
   /** The answer is sent: unmount the job. */
   onDone: (requestId: string) => void;
 }) {
-  const pinRef = useRef<OpenProjectBinding | null>(job.pin);
+  const pinRef = useRef<OpenProjectBinding>(job.pin);
   const rendererRef = useRef<DeviceRenderer | null>(null);
   const [device, setDevice] = useState<AppleRenderJobDevice | null>(null);
   const [bodyReady, setBodyReady] = useState(false);

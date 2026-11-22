@@ -185,7 +185,16 @@ export function writeCopyList(root: string, listFile: string, keep: readonly str
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
     });
-    child.on("error", reject);
+    child.on("error", (err) => {
+      // Reject once the stream is actually closed, so the caller's cleanup
+      // (which removes the work dir) cannot race the open file descriptor.
+      if (out.destroyed) {
+        reject(err);
+        return;
+      }
+      out.once("close", () => reject(err));
+      out.destroy();
+    });
     child.on("close", (code) => {
       out.end(() => {
         if (code !== 0) {

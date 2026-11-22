@@ -4,6 +4,9 @@ import type { AgentChatCrossMachineHandoffMachineOption } from "../../../shared/
 import { BlockedReasons, type BlockedActionReason } from "../shared/BlockedAction";
 import { cn } from "../ui/cn";
 import type { HandoffMode } from "./crossMachineHandoffPresentation";
+import { CloudMark } from "../remoteTargets/cloudBrand";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
+import { ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE } from "./crossMachineMoveTargets";
 
 export function machineAvailable(machine: AgentChatCrossMachineHandoffMachineOption): boolean {
   return machine.online && !machine.unavailableReason;
@@ -192,6 +195,19 @@ export function CrossMachineHandoffChooseStage({
             })}
           </div>
         )}
+        {optionsLoaded ? (
+          <div
+            data-testid="handoff-move-ade-cloud"
+            aria-disabled="true"
+            className="mt-1.5 flex items-start gap-2.5 rounded-lg border border-fg/[0.05] px-3 py-2"
+          >
+            <CloudMark size={15} className="mt-px shrink-0 text-fg/25" />
+            <span className="min-w-0">
+              <span className="block text-[11.5px] font-medium text-fg/38">{ADE_CLOUD_NAME}</span>
+              <span className="block text-[10.5px] leading-4 text-fg/42">{ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE}</span>
+            </span>
+          </div>
+        ) : null}
       </FormRow>
 
       {newChatControls ? <FormRow label="New chat">{newChatControls}</FormRow> : null}

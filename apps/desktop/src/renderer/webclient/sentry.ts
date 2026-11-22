@@ -6,6 +6,11 @@
  * an error in the first few hundred milliseconds is the price. Production
  * builds only, unless `?ade_sentry_dev=1` is on the URL for testing the
  * wiring. The browser's Do Not Track setting is honoured.
+ *
+ * Errors report from the first page, signed in or not. The release-health
+ * session starts only when the signed-in workspace opens
+ * (`startWebClientSentrySession`), so the signed-out page sends no session
+ * envelope (the cold-load request budget counts it).
  */
 import * as Sentry from "@sentry/react";
 import { connectSentry, setSentryUserResolver } from "../../shared/sentry/capture";
@@ -18,11 +23,16 @@ import { webClientVersion } from "../lib/webClientMode";
 export function initWebClientSentry(): void {
   const devOptIn = new URLSearchParams(window.location.search).get("ade_sentry_dev") === "1";
   if (!import.meta.env.PROD && !devOptIn) return;
-  if (navigator.doNotTrack === "1") return;
+  if (navigator.doNotTrack === "1" || navigator.webdriver) return;
   // An analytics opt-out recorded in an earlier build covers error tracking too.
   if (window.localStorage?.getItem("ade:web-product-analytics-enabled") === "false") return;
   const hooks = createSentryEventHooks();
   const version = webClientVersion();
+  const releaseChannel = resolveReleaseChannel({
+    env: {},
+    packaged: import.meta.env.PROD,
+    version,
+  });
   Sentry.init({
     dsn: SENTRY_DSNS.web,
     release: sentryReleaseName(version),
@@ -31,30 +41,52 @@ export function initWebClientSentry(): void {
     // Errors only. Browser tracing would add about a third to this chunk, and
     // the cold-load budget counts it; no trace headers go anywhere.
     tracePropagationTargets: [],
+    // The session starts later, with the signed-in workspace.
+    integrations: (defaults) => defaults.filter((integration) => integration.name !== "BrowserSession"),
     dataCollection: SENTRY_DATA_COLLECTION,
     // A desktop-only member called on web is expected, not a crash.
     // A page the browser translated has had its text nodes swapped under
     // React, which then fails to insert or remove them: not ADE's DOM.
-    beforeSend: (event, hint) => (isAdeUnavailableError(hint?.originalException) || isTranslationDomError(hint?.originalException)
-      ? null
-      : hooks.beforeSend(event, hint)),
+    beforeSend: (event, hint) => {
+      if (isAdeUnavailableError(hint?.originalException) || isTranslationDomError(hint?.originalException)) return null;
+      if (isReactDomMoveError(hint?.originalException)) event.tags = { ...event.tags, ...foreignDomTags() };
+      return hooks.beforeSend(event, hint);
+    },
     beforeBreadcrumb: hooks.beforeBreadcrumb,
     beforeSendSpan: hooks.beforeSendSpan,
     beforeSendLog: hooks.beforeSendLog,
   });
   connectSentry(Sentry);
-  // No `is_internal`: a browser has no team-install marker. No `arch`: a
-  // browser does not say it reliably.
+  // No team-install marker in a browser. A development build that opted in
+  // (`?ade_sentry_dev=1`) is still internal. No `arch`: a browser does not
+  // say it reliably.
   Sentry.setTags({
     ...sentryCommonTags({
       surface: "web",
       client: "web",
-      releaseChannel: resolveReleaseChannel({ env: {}, packaged: import.meta.env.PROD, version }),
+      releaseChannel,
+      isInternal: releaseChannel === "development" ? true : undefined,
     }),
     process: "web-client",
   });
   setSentryUserResolver(webAccountUserHash);
   void refreshAccountHash();
+  if (sessionWanted) startWebClientSentrySession();
+}
+
+let sessionWanted = false;
+let sessionStarted = false;
+
+/**
+ * Starts the release-health session once the signed-in workspace opens.
+ * Before `initWebClientSentry` it only records the wish, and init starts it.
+ * With Sentry off (dev, Do Not Track, opt-out) it does nothing.
+ */
+export function startWebClientSentrySession(): void {
+  sessionWanted = true;
+  if (sessionStarted || !Sentry.getClient()) return;
+  sessionStarted = true;
+  Sentry.addIntegration(Sentry.browserSessionIntegration());
 }
 
 /**
@@ -92,9 +124,25 @@ async function refreshAccountHash(): Promise<void> {
   }
 }
 
-function isTranslationDomError(error: unknown): boolean {
+function isReactDomMoveError(error: unknown): boolean {
   return error instanceof Error
     && error.name === "NotFoundError"
-    && /\b(?:insertBefore|removeChild)\b/.test(error.message)
-    && /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement.className);
+    && /\b(?:insertBefore|removeChild)\b/.test(error.message);
+}
+
+function isTranslationDomError(error: unknown): boolean {
+  return isReactDomMoveError(error) && /\btranslated-(?:ltr|rtl)\b/.test(document.documentElement.className);
+}
+
+/**
+ * What else edited the page when React lost a node it placed: a translator
+ * extension that does not mark the page as Chrome's does (it wraps text in
+ * `<font>` and often rewrites `lang`), or nothing, which makes it ADE's own.
+ * Counts and the language tag only, never page text.
+ */
+function foreignDomTags(): Record<string, string> {
+  return {
+    dom_html_lang: document.documentElement.lang || "none",
+    dom_font_nodes: String(Math.min(document.getElementsByTagName("font").length, 1000)),
+  };
 }

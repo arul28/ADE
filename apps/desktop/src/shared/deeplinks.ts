@@ -1,3 +1,4 @@
+import { LANE_SHARE_GRANT_ID_PATTERN } from "./laneShareDirectory";
 // ---------------------------------------------------------------------------
 // ADE deeplinks — URL builder + parser shared across main / renderer / CLI.
 // ---------------------------------------------------------------------------
@@ -13,6 +14,7 @@
 //   ade://linear-issue/<ADE-123>[?branch=<branch>]
 //   ade://settings/<entry-id>[?machine=<machine-id>]
 //   ade://open/<place>
+//   ade://invite/<CODE>
 //
 //   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|settings>&...
 //   (param names: lane→id; session→id[+lane,event,offset]; file→path[+line,lane];
@@ -40,6 +42,7 @@
 
 import { isUuid } from "./uuid";
 import type { AppNavigationTarget } from "./types/core";
+import { cloudInviteLink, parseCloudInviteCode } from "../../../account-directory/src/cloud/contract";
 
 export const ADE_DEEPLINK_SCHEME = "ade";
 export const ADE_DEEPLINK_HTTPS_HOST = "ade-app.dev";
@@ -76,7 +79,20 @@ export type DeeplinkOwnership = {
    * rescues a legacy link whose `projectId` is the publisher's private uuid.
    */
   projectRoot?: string;
+  /**
+   * The account project of the owning folder (`ap_<32 hex>`), when the owner
+   * knows it (`get_link_ownership`). A minted link adds it next to the pair,
+   * as the phone does.
+   */
+  accountProjectId?: string;
 };
+
+/** The account project id pattern of the account directory (`ap_` and 32 hex). */
+export const ACCOUNT_PROJECT_ID_PATTERN = /^ap_[0-9a-f]{32}$/;
+
+export function isAccountProjectId(value: unknown): value is string {
+  return typeof value === "string" && ACCOUNT_PROJECT_ID_PATTERN.test(value);
+}
 
 /** Link kinds that name the computer and project they belong to. */
 export type OwnedDeeplinkTarget = Extract<DeeplinkTarget, { kind: "lane" | "session" | "pr" }>;
@@ -101,7 +117,19 @@ export function parseDeeplinkOwnership(value: unknown): DeeplinkOwnership | null
   const record = value as Record<string, unknown>;
   const accountMachineKey = typeof record.accountMachineKey === "string" ? record.accountMachineKey.trim() : "";
   const projectId = typeof record.projectId === "string" ? record.projectId.trim() : "";
-  return accountMachineKey && projectId ? { accountMachineKey, projectId } : null;
+  if (!accountMachineKey || !projectId) return null;
+  const accountProjectId = typeof record.accountProjectId === "string" ? record.accountProjectId.trim() : "";
+  return { accountMachineKey, projectId, ...(isAccountProjectId(accountProjectId) ? { accountProjectId } : {}) };
+}
+
+/**
+ * The account project a link names: its own `accountProjectId`, else the one
+ * its ownership carries. Old links have neither and keep their old route.
+ */
+export function accountProjectIdOfTarget(target: DeeplinkTarget | null | undefined): string | null {
+  if (!target || !deeplinkTargetTakesOwnership(target)) return null;
+  const id = target.accountProjectId ?? target.ownership?.accountProjectId ?? null;
+  return isAccountProjectId(id) ? id : null;
 }
 
 export type DeeplinkLaneTarget = {
@@ -109,6 +137,8 @@ export type DeeplinkLaneTarget = {
   laneId: string;
   envelope?: DeeplinkEnvelope;
   ownership?: DeeplinkOwnership;
+  /** The account project (`accountProjectId=ap_…`). It may come without the pair. */
+  accountProjectId?: string;
 };
 export type DeeplinkSessionTarget = {
   kind: "session";
@@ -118,6 +148,8 @@ export type DeeplinkSessionTarget = {
   offset?: number;
   envelope?: DeeplinkEnvelope;
   ownership?: DeeplinkOwnership;
+  /** The account project (`accountProjectId=ap_…`). It may come without the pair. */
+  accountProjectId?: string;
 };
 export type DeeplinkFileTarget = {
   kind: "file";
@@ -170,6 +202,8 @@ export type DeeplinkPrTarget = {
   /** Detail sub-tab to open on. Omitted → the PRs page picks its own default. */
   detailTab?: DeeplinkPrDetailTab;
   ownership?: DeeplinkOwnership;
+  /** The account project (`accountProjectId=ap_…`). It may come without the pair. */
+  accountProjectId?: string;
 };
 /**
  * Linear hand-off form: Linear's "Open in coding tool" passes us the issue
@@ -196,9 +230,36 @@ export type DeeplinkOpenPlaceTarget = {
   place: string;
 };
 
+/**
+ * An ADE Cloud invite (`ade://invite/<CODE>`), opened by the website's invite
+ * page: Settings › Account with the code filled in its box. Its https form is
+ * the invite page itself (`https://ade-app.dev/invite/<CODE>`).
+ */
+export type DeeplinkInviteTarget = {
+  kind: "invite";
+  code: string;
+};
+
+/** Where an invite opens: the Account card, which holds the code box. */
+export const INVITE_SETTINGS_ENTRY_ID = "account.profile";
+
+/**
+ * A lane another account shares with you (lane sharing). An address only:
+ * the grant id names the share, and the account directory decides whether
+ * this account may see it. `https://ade-app.dev/open?type=lane-share&id=<id>`
+ * is the invite link (`laneShareInviteLink`).
+ */
+export type DeeplinkLaneShareTarget = {
+  kind: "lane-share";
+  grantId: string;
+};
+
+
 export type DeeplinkTarget =
   | DeeplinkSettingsTarget
+  | DeeplinkLaneShareTarget
   | DeeplinkOpenPlaceTarget
+  | DeeplinkInviteTarget
   | DeeplinkLaneTarget
   | DeeplinkSessionTarget
   | DeeplinkFileTarget
@@ -287,10 +348,16 @@ function appendEnvelopeParams(params: URLSearchParams, envelope: DeeplinkEnvelop
 function appendOwnershipParams(
   params: URLSearchParams,
   ownership: DeeplinkOwnership | undefined,
+  accountProjectId?: string,
 ): void {
+  // The old pair stays and the account id is added (the phone mints the same).
+  const id = accountProjectId ?? ownership?.accountProjectId;
+  if (ownership) {
+    params.set("accountMachineKey", ownership.accountMachineKey);
+    params.set("projectId", ownership.projectId);
+  }
+  if (isAccountProjectId(id)) params.set("accountProjectId", id);
   if (!ownership) return;
-  params.set("accountMachineKey", ownership.accountMachineKey);
-  params.set("projectId", ownership.projectId);
   // `projectRoot` is intentionally not re-emitted: it is a parse-only
   // compatibility field, and minting it would put a local absolute path back
   // into every shareable link.
@@ -299,7 +366,28 @@ function appendOwnershipParams(
 /** Longest project root a deeplink may carry out of the URL. */
 const MAX_DEEPLINK_PROJECT_ROOT_LENGTH = 4_096;
 
+/**
+ * The link's ownership pair and its `accountProjectId`. A link may carry the
+ * account id alone. A value that is not an account project id breaks the
+ * link, as on the phone.
+ */
 function readOwnershipParams(
+  searchParams: URLSearchParams,
+  rawUrl: string,
+):
+  | { ok: true; ownership?: DeeplinkOwnership; accountProjectId?: string }
+  | { ok: false; error: ParseError; rawUrl: string } {
+  const rawAccountProjectId = searchParams.get("accountProjectId");
+  const accountProjectId = rawAccountProjectId?.trim() ?? "";
+  if (rawAccountProjectId != null && !isAccountProjectId(accountProjectId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid account project id" }, rawUrl };
+  }
+  const pair = readOwnershipPair(searchParams, rawUrl);
+  if (!pair.ok || !accountProjectId) return pair;
+  return { ...pair, accountProjectId };
+}
+
+function readOwnershipPair(
   searchParams: URLSearchParams,
   rawUrl: string,
 ):
@@ -402,6 +490,8 @@ export type BuildOptions = {
 export function buildDeeplink(target: DeeplinkTarget, options: BuildOptions = {}): string {
   // `open` has no https form: it must never run from outside a chat.
   if (target.kind === "open") return buildAdeUrl(target);
+  // An invite's https form is the website's invite page.
+  if (target.kind === "invite") return (options.form ?? "https") === "ade" ? buildAdeUrl(target) : cloudInviteLink(target.code);
   return (options.form ?? "https") === "ade" ? buildAdeUrl(target) : buildHttpsUrl(target);
 }
 
@@ -425,7 +515,7 @@ function buildAdeUrl(target: DeeplinkTarget): string {
     case "lane": {
       const params = new URLSearchParams();
       appendEnvelopeParams(params, target.envelope);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       const qs = params.toString();
       const base = `${ADE_DEEPLINK_SCHEME}://lane/${encodeURIComponent(target.laneId)}`;
       return qs ? `${base}?${qs}` : base;
@@ -436,7 +526,7 @@ function buildAdeUrl(target: DeeplinkTarget): string {
       if (target.event != null) params.set("event", String(target.event));
       if (target.offset != null) params.set("offset", String(target.offset));
       appendEnvelopeParams(params, target.envelope);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       const qs = params.toString();
       const base = `${ADE_DEEPLINK_SCHEME}://session/${encodeURIComponent(target.sessionId)}`;
       return qs ? `${base}?${qs}` : base;
@@ -471,7 +561,7 @@ function buildAdeUrl(target: DeeplinkTarget): string {
     case "pr": {
       const params = new URLSearchParams();
       if (target.detailTab) params.set("tab", target.detailTab);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       const base = target.repoOwner && target.repoName
         ? `${ADE_DEEPLINK_SCHEME}://pr/${encodeURIComponent(target.repoOwner)}/${encodeURIComponent(target.repoName)}/${target.prNumber}`
         : `${ADE_DEEPLINK_SCHEME}://pr/${target.prNumber}`;
@@ -486,19 +576,23 @@ function buildAdeUrl(target: DeeplinkTarget): string {
       const base = `${ADE_DEEPLINK_SCHEME}://settings/${encodeURIComponent(target.entryId)}`;
       return target.machineId ? `${base}?machine=${encodeURIComponent(target.machineId)}` : base;
     }
+    case "lane-share":
+      return `${ADE_DEEPLINK_SCHEME}://lane-share/${encodeURIComponent(target.grantId)}`;
     case "open":
       return `${ADE_DEEPLINK_SCHEME}://open/${encodeURIComponent(target.place)}`;
+    case "invite":
+      return `${ADE_DEEPLINK_SCHEME}://invite/${encodeURIComponent(target.code)}`;
   }
 }
 
-function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget>): string {
+function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget | DeeplinkInviteTarget>): string {
   const params = new URLSearchParams();
   switch (target.kind) {
     case "lane":
       params.set("type", "lane");
       params.set("id", target.laneId);
       appendEnvelopeParams(params, target.envelope);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       break;
     case "session":
       params.set("type", "session");
@@ -507,7 +601,7 @@ function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget>)
       if (target.event != null) params.set("event", String(target.event));
       if (target.offset != null) params.set("offset", String(target.offset));
       appendEnvelopeParams(params, target.envelope);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       break;
     case "file":
       params.set("type", "file");
@@ -539,7 +633,7 @@ function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget>)
       }
       params.set("number", String(target.prNumber));
       if (target.detailTab) params.set("tab", target.detailTab);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       break;
     case "linear-issue":
       params.set("type", "linear-issue");
@@ -550,6 +644,10 @@ function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget>)
       params.set("type", "settings");
       params.set("id", target.entryId);
       if (target.machineId) params.set("machine", target.machineId);
+      break;
+    case "lane-share":
+      params.set("type", "lane-share");
+      params.set("id", target.grantId);
       break;
   }
   return `${ADE_DEEPLINK_HTTPS_BASE_URL}?${params.toString()}`;
@@ -686,6 +784,16 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
     return buildSettingsTarget(safeDecode(pathSegments[0]), url.searchParams, rawUrl);
   }
 
+  if (host === "invite") {
+    const code = pathSegments.length === 1 ? parseCloudInviteCode(safeDecode(pathSegments[0])) : null;
+    if (!code) return { ok: false, error: { kind: "malformed", reason: "invalid invite code" }, rawUrl };
+    return { ok: true, target: { kind: "invite", code }, rawUrl };
+  }
+
+  if (host === "lane-share") {
+    return buildLaneShareTarget(pathSegments.length === 1 ? safeDecode(pathSegments[0]) : "", rawUrl);
+  }
+
   if (host === "open") {
     const place = pathSegments[0] ? safeDecode(pathSegments[0]).toLowerCase() : "";
     if (pathSegments.length !== 1 || !OPEN_PLACE_RE.test(place)) {
@@ -695,6 +803,14 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
   }
 
   return { ok: false, error: { kind: "unknown_type", type: host }, rawUrl };
+}
+
+function buildLaneShareTarget(grantIdRaw: string, rawUrl: string): ParseResult {
+  const grantId = grantIdRaw.trim();
+  if (!LANE_SHARE_GRANT_ID_PATTERN.test(grantId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid lane share id" }, rawUrl };
+  }
+  return { ok: true, target: { kind: "lane-share", grantId }, rawUrl };
 }
 
 function buildSettingsTarget(entryIdRaw: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
@@ -764,6 +880,7 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
     };
   }
   if (type === "settings") return buildSettingsTarget(url.searchParams.get("id") ?? "", url.searchParams, rawUrl);
+  if (type === "lane-share") return buildLaneShareTarget(url.searchParams.get("id") ?? "", rawUrl);
   return { ok: false, error: { kind: "unknown_type", type }, rawUrl };
 }
 
@@ -807,7 +924,7 @@ function buildPrTarget(
   const detailTab = parsePrDetailTabParam(detailTabRaw);
   const ownershipResult = readOwnershipParams(new URL(rawUrl).searchParams, rawUrl);
   if (!ownershipResult.ok) return ownershipResult;
-  if (!hasRepoIdentity && !ownershipResult.ownership) {
+  if (!hasRepoIdentity && !ownershipResult.ownership && !ownershipResult.accountProjectId) {
     return {
       ok: false,
       error: {
@@ -825,6 +942,7 @@ function buildPrTarget(
       prNumber: number,
       ...(detailTab ? { detailTab } : {}),
       ...(ownershipResult.ownership ? { ownership: ownershipResult.ownership } : {}),
+      ...(ownershipResult.accountProjectId ? { accountProjectId: ownershipResult.accountProjectId } : {}),
     },
     rawUrl,
   };
@@ -841,6 +959,7 @@ function buildLaneTarget(laneId: string, searchParams: URLSearchParams, rawUrl: 
       laneId,
       ...(envelope ? { envelope } : {}),
       ...(ownershipResult.ownership ? { ownership: ownershipResult.ownership } : {}),
+      ...(ownershipResult.accountProjectId ? { accountProjectId: ownershipResult.accountProjectId } : {}),
     },
     rawUrl,
   };
@@ -868,6 +987,7 @@ function buildSessionTarget(sessionId: string, searchParams: URLSearchParams, ra
       ...(offset != null ? { offset } : {}),
       ...(envelope ? { envelope } : {}),
       ...(ownershipResult.ownership ? { ownership: ownershipResult.ownership } : {}),
+      ...(ownershipResult.accountProjectId ? { accountProjectId: ownershipResult.accountProjectId } : {}),
     },
     rawUrl,
   };
@@ -970,8 +1090,12 @@ export function describeTarget(target: DeeplinkTarget): string {
       return target.branch ? `${target.issueIdentifier} (${target.branch})` : target.issueIdentifier;
     case "settings":
       return "ADE setting";
+    case "lane-share":
+      return "shared lane";
     case "open":
       return `ADE ${target.place}`;
+    case "invite":
+      return "ADE Cloud invite";
   }
 }
 
@@ -990,6 +1114,7 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         laneId: target.laneId,
         envelope: target.envelope ?? null,
         ...(target.ownership ? { ownership: target.ownership } : {}),
+        ...(target.accountProjectId ? { accountProjectId: target.accountProjectId } : {}),
       };
     case "session":
       return {
@@ -1000,6 +1125,7 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         event: target.event ?? null,
         offset: target.offset ?? null,
         ...(target.ownership ? { ownership: target.ownership } : {}),
+        ...(target.accountProjectId ? { accountProjectId: target.accountProjectId } : {}),
       };
     case "file":
       return {
@@ -1029,6 +1155,7 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         ...(target.repoName ? { repoName: target.repoName } : {}),
         ...(target.detailTab ? { detailTab: target.detailTab } : {}),
         ...(target.ownership ? { ownership: target.ownership } : {}),
+        ...(target.accountProjectId ? { accountProjectId: target.accountProjectId } : {}),
       };
     case "branch":
       return {
@@ -1046,7 +1173,11 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
       };
     case "settings":
       return { kind: "settings", entryId: target.entryId, machineId: target.machineId ?? null };
+    case "lane-share":
+      return { kind: "lane-share", grantId: target.grantId };
     case "open":
       return { kind: "open-place", place: target.place };
+    case "invite":
+      return { kind: "settings", entryId: INVITE_SETTINGS_ENTRY_ID, inviteCode: target.code };
   }
 }

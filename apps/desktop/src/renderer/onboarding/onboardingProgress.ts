@@ -1,4 +1,5 @@
 import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../shared/welcomeVideo";
+import type { OnboardingHintAnswer, OnboardingProgressRecord } from "../../shared/onboardingProgressRecord";
 import { createLocalStore, finiteNumber, storedRecord } from "./localStore";
 
 /**
@@ -6,14 +7,19 @@ import { createLocalStore, finiteNumber, storedRecord } from "./localStore";
  * whether the user skipped it, how far the guided tour got, and how far each
  * contextual hint got.
  *
- * Onboarding is per computer (it is the first open of ADE here, not of a
- * project), so it lives in this renderer's localStorage and never syncs.
+ * This renderer's localStorage holds it, and the answers also follow the
+ * account (`onboardingSync.ts`): a tour finished or skipped on the desktop
+ * does not run again in ADE Web or on another computer. Which step a running
+ * tour is on, and how often a hint showed, stay on this computer.
  *
+ * - `resetAt`: "Show me around again". Answers from before it (here or on
+ *   another copy) no longer count.
  * - `startedAt`: set when the welcome flow runs (first run, or "Show me around
  *   again" from the help menu). Hints only ever show after it; a computer that
  *   was set up before the flow existed never sees them.
- * - `skippedAt`: "Skip onboarding" anywhere. The tour and every hint stop for
- *   good (until "Show me around again").
+ * - `skippedAt`: "Skip" on the tour. The tour and every hint stop for good
+ *   (until "Show me around again"). Skipping the setup cards does not skip
+ *   the tour: it waits for the first project and has its own Skip.
  * - `tour`: the guided tour's current step, and when it finished. It waits on
  *   a step for as long as it takes; leaving the screen pauses it, coming back
  *   resumes it, across reloads.
@@ -43,6 +49,7 @@ export type OnboardingTourProgress = {
 };
 
 export type OnboardingProgress = {
+  resetAt?: number;
   startedAt?: number;
   skippedAt?: number;
   tour: OnboardingTourProgress;
@@ -73,6 +80,7 @@ function parseProgress(stored: unknown): OnboardingProgress {
   }
   const rawTour = storedRecord(record.tour) ?? {};
   return {
+    resetAt: finiteNumber(record.resetAt),
     startedAt: finiteNumber(record.startedAt),
     skippedAt: finiteNumber(record.skippedAt),
     tour: {
@@ -125,7 +133,8 @@ export function skipOnboarding(): void {
  * from its first step and every hint back), and the welcome video again.
  */
 export function showMeAroundAgain(): void {
-  writeOnboardingProgress({ startedAt: Date.now(), tour: {}, hints: {} });
+  const now = Date.now();
+  writeOnboardingProgress({ resetAt: now, startedAt: now, tour: {}, hints: {} });
   window.dispatchEvent(new Event(ADE_WELCOME_VIDEO_REPLAY_EVENT));
 }
 
@@ -195,4 +204,67 @@ export function dismissHint(id: OnboardingHintId): void {
     const hint = draft.hints[id] ?? { shown: 0 };
     draft.hints[id] = { ...hint, dismissedAt: Date.now() };
   });
+}
+
+/** This computer's answers, as the account copy holds them (`onboardingSync.ts`). */
+export function onboardingProgressRecord(progress: OnboardingProgress = readOnboardingProgress()): OnboardingProgressRecord {
+  const hints: Record<string, OnboardingHintAnswer> = {};
+  for (const [id, hint] of Object.entries(progress.hints)) {
+    if (!hint?.doneAt && !hint?.dismissedAt) continue;
+    hints[id] = {
+      ...(hint.doneAt ? { doneAt: hint.doneAt } : {}),
+      ...(hint.dismissedAt ? { dismissedAt: hint.dismissedAt } : {}),
+    };
+  }
+  const out: OnboardingProgressRecord = {};
+  if (progress.resetAt) out.resetAt = progress.resetAt;
+  if (progress.startedAt) out.startedAt = progress.startedAt;
+  if (progress.skippedAt) out.skippedAt = progress.skippedAt;
+  if (progress.tour.completedAt) out.tourDoneAt = progress.tour.completedAt;
+  if (Object.keys(hints).length) out.hints = hints;
+  return out;
+}
+
+/** `base` with the record's answers added; answers already in `base` stay. */
+function withRecord(base: OnboardingProgress, merged: OnboardingProgressRecord): OnboardingProgress {
+  let next = base;
+  if (merged.resetAt && merged.resetAt > (base.resetAt ?? 0)) {
+    next = { resetAt: merged.resetAt, startedAt: merged.startedAt ?? merged.resetAt, tour: {}, hints: {} };
+  }
+  const tour = { ...next.tour };
+  if (merged.tourDoneAt && !tour.completedAt) tour.completedAt = merged.tourDoneAt;
+  const hints = { ...next.hints };
+  for (const [id, answer] of Object.entries(merged.hints ?? {})) {
+    if (!isHintId(id)) continue;
+    const hint = hints[id] ?? { shown: 0 };
+    const doneAt = hint.doneAt ?? answer.doneAt;
+    const dismissedAt = hint.dismissedAt ?? answer.dismissedAt;
+    if (doneAt !== hint.doneAt || dismissedAt !== hint.dismissedAt) hints[id] = { ...hint, doneAt, dismissedAt };
+  }
+  return {
+    ...next,
+    startedAt: next.startedAt ?? merged.startedAt,
+    skippedAt: next.skippedAt ?? merged.skippedAt,
+    tour,
+    hints,
+  };
+}
+
+function writeIfChanged(next: OnboardingProgress): void {
+  if (JSON.stringify(next) !== JSON.stringify(readOnboardingProgress())) writeOnboardingProgress(next);
+}
+
+/**
+ * Takes the account's combined answers. A reset there that is newer than
+ * this computer's starts this computer over too; a tour finished or skipped
+ * elsewhere ends it here; a hint answered elsewhere stops here. Writes only
+ * when something changed.
+ */
+export function adoptOnboardingProgressRecord(merged: OnboardingProgressRecord): void {
+  writeIfChanged(withRecord(readOnboardingProgress(), merged));
+}
+
+/** Another account signed in here: its record replaces what this computer held for the last one. */
+export function replaceOnboardingProgressRecord(record: OnboardingProgressRecord): void {
+  writeIfChanged(withRecord({ tour: {}, hints: {} }, record));
 }

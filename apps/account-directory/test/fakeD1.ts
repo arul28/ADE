@@ -747,11 +747,12 @@ export class FakeD1Database {
       return before - this.revocations.length;
     }
     if (normalized.includes("insert into machines")) {
-      // values[16..19] feed the `where`: a known key, or room under the cap.
-      const [capUserId, capMachineKey, countUserId, cap] = values.slice(16, 20);
+      // values[16..17] look up an ADE Cloud computer's name (no cloud tables here).
+      // values[18..21] feed the `where`: a known key, or room under the cap.
+      const [capUserId, capMachineKey, countUserId, cap] = values.slice(18, 22);
       const known = this.rows.some((entry) => entry.user_id === capUserId && entry.machine_key === capMachineKey);
       if (!known && this.rows.filter((entry) => entry.user_id === countUserId).length >= Number(cap)) return 0;
-      const retainRelayEndpoints = values[20] === 1;
+      const retainRelayEndpoints = values[22] === 1;
       const row: StoredMachine = {
         user_id: String(values[0]),
         machine_key: String(values[1]),

@@ -1,14 +1,14 @@
 /**
  * What ADE Cloud needs from whoever runs the computers.
  *
- * Everything above this interface (machines, sleep, ready machines, hours,
+ * Everything above this interface (machines, sleep, lanes, hours,
  * sign-ins) is ADE's and knows nothing about who runs the computers. The one
  * implementation talks to ADE's server (`cloudServerProvider.ts`), which holds
  * the provider's key; a lint rule keeps it from being imported anywhere but
  * `cloudAccess.ts`.
  */
 
-import type { CloudAccountState } from "../../../shared/adeCloud";
+import type { CloudAccountState, CloudComputerLimitDetail, CloudComputerStatus, CloudDiskUsageReport, CloudFreeUnlockResult, CloudSustainedCpuReport } from "../../../shared/adeCloud";
 import type {
   CloudSavedChatDeleteArgs,
   CloudSavedChatList,
@@ -16,9 +16,30 @@ import type {
   CloudSavedChatReadArgs,
   CloudSavedChatsListArgs,
 } from "../../../shared/cloudSavedChats";
-import type { CloudExecResult, CloudInstance } from "../../../../../account-directory/src/cloud/contract";
+import type {
+  CloudCheckoutResult,
+  CloudExecResult,
+  CloudInstance,
+  CloudInviteRedeemResult,
+  CloudLaneWithoutComputer,
+  CloudCopyRecord,
+  CloudCopyRequest,
+  CloudFreeRecord,
+  CloudMoveRecord,
+  CloudMoveRequest,
+  CloudPaidPlanId,
+  CloudPhoneDevice,
+  CloudPhoneStart,
+  CloudPhoneState,
+  CloudPhoneView,
+  CloudPlanCleanupPick,
+  CloudPlanId,
+  CloudReferralSummary,
+  CloudUpdateChannel,
+  CloudUpdateCheck,
+} from "../../../../../account-directory/src/cloud/contract";
 
-export type { CloudExecResult, CloudInstance };
+export type { CloudExecResult, CloudInstance, CloudLaneWithoutComputer, CloudUpdateChannel, CloudUpdateCheck };
 
 /** What the ADE Cloud services log through: a `cloud.*` event and its fields, never a credential. */
 export type CloudLogger = {
@@ -37,6 +58,8 @@ export type CloudCreateInstanceInput = {
   publicPorts?: Array<{ port: number; label: string }>;
   /** The computer this one replaces in a move: the server gives this one the same disk. */
   moveFromInstanceId?: string;
+  /** The update channel it follows. Left out, the provider sends the track of the app that makes it. */
+  channel?: CloudUpdateChannel;
 };
 
 /** `code` on a `CloudProviderError` when the provider refused this computer's access. */
@@ -47,35 +70,91 @@ export class CloudProviderError extends Error {
     message: string,
     readonly code: string,
     readonly status: number,
+    /** A disk refusal's `error.reason` (`CloudDiskRefusalReason`), and a `computer_limit` refusal's detail. */
+    readonly detail: { reason: string | null; computerLimit?: CloudComputerLimitDetail } = { reason: null },
   ) {
     super(message);
     this.name = "CloudProviderError";
   }
 }
 
+/** `GET /cloud/access`: `enabled: false` with `readOnly` and the server's sentence for a blocked account. */
+export type CloudAccessAnswer = { enabled: boolean; readOnly: boolean; reason: string | null };
+
 export type CloudProvider = {
   /** Whether this account has ADE Cloud at all. */
   accessEnabled(): Promise<boolean>;
+  /**
+   * The same answer with the server's reason when the account can only read
+   * (blocked). Servers before the reason send only `enabled`.
+   */
+  accessAnswer?(): Promise<CloudAccessAnswer>;
   /** Plan, hours, disk and billing state (`/cloud/account`). */
   getAccount(): Promise<CloudAccountState>;
   listInstances(): Promise<CloudInstance[]>;
   getInstance(id: string): Promise<CloudInstance>;
   /** Resolves once the machine is running. `signal` stops waiting; the caller finds the machine by its `ade_request_id` tag and deletes it. */
   createInstance(input: CloudCreateInstanceInput, signal?: AbortSignal): Promise<CloudInstance>;
-  /** `reason` and `who` go in the server's delete log. */
-  deleteInstance(id: string, context?: { who?: string | null; reason?: string }): Promise<void>;
+  /**
+   * `reason` and `who` go in the server's delete log. `keepLane` keeps the
+   * lane the computer was made for as a lane without a computer.
+   */
+  deleteInstance(id: string, context?: { who?: string | null; reason?: string; keepLane?: { branchRef: string | null } | null }): Promise<void>;
+  /** The account's lanes whose computer is gone while the lane stays. Needs no wake. */
+  listLanesWithoutComputer(): Promise<CloudLaneWithoutComputer[]>;
+  /** Ends a lane without a computer (the person deleted the lane). True when there was one. */
+  forgetLaneWithoutComputer(laneId: string): Promise<boolean>;
   /** Checkpoints a running machine: memory and processes kept. Answers with the new status. */
   sleepInstance(id: string): Promise<string>;
-  /** The machine asks to be slept (idle three minutes); the server stops instead at 0 hours. Answers with the new status. */
-  requestIdleSleep(id: string): Promise<string>;
-  /** Wakes a sleeping machine or starts a stopped one. `push_work` is the one wake allowed at 0 hours. Answers with the new status. */
-  startInstance(id: string, options?: { reason?: "push_work" }): Promise<string>;
+  /**
+   * The machine asks to be slept (idle three minutes); the server stops instead at 0 hours. `backupReportId`
+   * names the lane backup report it made just before: it rests with those backups. Answers with the new status.
+   */
+  requestIdleSleep(id: string, options?: { backupReportId?: string | null }): Promise<string>;
+  /**
+   * "Keep it" on an idle cleanup warning (`POST .../keep`): the idle clock
+   * restarts with no wake and no hours. Optional: only ADE's server has it.
+   */
+  keepIdleComputer?(id: string): Promise<void>;
+  /**
+   * A lane computer's live status for its status menu (`GET .../status`):
+   * never wakes it. Null from an older server. Optional: only ADE's server has it.
+   */
+  computerStatus?(id: string): Promise<CloudComputerStatus | null>;
+  /**
+   * Wakes a sleeping machine or starts a stopped one. Every wake is use; none
+   * is allowed at 0 hours. `origin: "mcp"`: an outside agent asked, refused on
+   * the free plan (`outside_agent_free_plan`). Answers with the new status.
+   */
+  startInstance(id: string, options?: { origin?: "mcp" }): Promise<string>;
   /** Stops the machine (no memory kept). Only an explicit start brings it back. */
   stopInstance(id: string): Promise<string>;
-  /** Moves the machine to the current ADE image: it restarts, and only its home folder and caches outlive the system layer. */
-  updateInstance(id: string): Promise<string>;
+  /**
+   * Moves the machine to its channel's ADE image: it restarts, and only its
+   * home folder and caches outlive the system layer. `reason: "idle"` is the
+   * computer updating itself from its idle step; the server runs it only when
+   * the computer is behind, and answers the status it has then.
+   */
+  updateInstance(id: string, options?: { reason: "idle"; computerIdle: true }): Promise<string>;
+  /** The computer asks whether it should update itself now. */
+  checkForUpdate(id: string): Promise<CloudUpdateCheck>;
+  /** The computer's brain started: settles a waiting update. `sleepWhenIdle`: it woke only for that update. */
+  reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean }>;
+  /** The computer's own report at its idle step: its last work and, now and then, what uses its disk. */
+  reportDiskUsage?(id: string, report: CloudDiskUsageReport): Promise<void>;
+  /** The computer's own report of hours near full CPU with no chat turn or agent working (the owner's daily report). */
+  reportSustainedCpu?(id: string, report: CloudSustainedCpuReport): Promise<void>;
   /** Changes the size in place: the machine restarts, files stay, the disk only grows. */
-  resizeInstance(id: string, resources: { cpu: number; memory: number; disk?: number }, options?: { computerIdle?: boolean }): Promise<string>;
+  /** `origin: "auto"` marks the computer's own disk grower, for the server's analytics. */
+  /**
+   * `origin: "auto"`: the computer's own grow or move, not a person's. With
+   * `launchId` it is that server launch's setup moving its own computer up a
+   * size (`CLOUD_AUTO_SIZE`); the server refuses it with 409 `size_kept` when
+   * the launch's size was picked, the agent limits keep it, or it moved once.
+   * `origin: "mcp"`: an outside agent asked, refused on the free plan
+   * (`outside_agent_free_plan`).
+   */
+  resizeInstance(id: string, resources: { cpu?: number; memory?: number; disk?: number }, options?: { computerIdle?: boolean; origin?: "auto" | "mcp"; launchId?: string }): Promise<string>;
   createBackup(id: string): Promise<{ id: string | null; created: number | null; sizeBytes: number | null }>;
   setAutoSleep(id: string, policy: { autoSleep: boolean; idleTimeoutSeconds?: number }): Promise<void>;
   addPublicPort(id: string, input: { port: number; label: string }): Promise<{ port: number; url: string }>;
@@ -88,21 +167,88 @@ export type CloudProvider = {
   /** A time-boxed link to one port that needs no credential. A secret: never logged, and kept short. */
   signedUrl(id: string, input: { port: number; ttlSeconds: number }): Promise<{ url: string; expiresAt: number | null }>;
   setInstanceName(id: string, name: string): Promise<void>;
+  /**
+   * A move to the other kind, run by ADE's server (`POST /cloud/instances/:id/move`):
+   * it answers at once and goes on with no app open; `readMove` follows it,
+   * `cancelMove` stops it before the copy. Only ADE's server has them; an
+   * older one answers 404, and the server answers 409
+   * `server_move_unavailable` until its computers can run one.
+   */
+  startMove?(id: string, input: CloudMoveRequest): Promise<CloudMoveRecord>;
+  readMove?(moveId: string): Promise<CloudMoveRecord>;
+  cancelMove?(moveId: string): Promise<CloudMoveRecord>;
+  /**
+   * A copy, run by ADE's server (`POST /cloud/instances/:id/copy`), the same
+   * way: `readCopy` follows it, `cancelCopy` stops it before the copy signs
+   * in. An older server answers 404; 409 `server_copy_unavailable` until its
+   * computers can read their sign-in file, `copy_needs_update` for one on an
+   * older ADE.
+   */
+  startCopy?(id: string, input: CloudCopyRequest): Promise<CloudCopyRecord>;
+  readCopy?(copyId: string): Promise<CloudCopyRecord>;
+  cancelCopy?(copyId: string): Promise<CloudCopyRecord>;
+  /**
+   * Frees a computer (its lane kept), run by ADE's server (`POST /cloud/instances/:id/free`):
+   * it pushes every lane's work, checks it again and deletes the computer with no app open;
+   * `readFree` follows it. An older server answers 404.
+   */
+  startFree?(id: string, freeId: string): Promise<CloudFreeRecord>;
+  readFree?(freeId: string): Promise<CloudFreeRecord>;
   /** Replaces the metadata (it is not merged). */
   setInstanceMetadata(id: string, metadata: Record<string, string>): Promise<void>;
   /** Whether the server can make a computer right now (its pinned image exists). */
   hasTemplate(): Promise<boolean>;
   /** Runs `sh -c command` on the machine. A non-zero exit is a result, not an error. Wakes a sleeping machine. */
   exec(id: string, command: string, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<CloudExecResult>;
-  /** A Stripe checkout page for the paid plan. */
-  billingCheckout(): Promise<{ url: string }>;
+  /**
+   * A Stripe checkout page for a plan (Plus when left out). On a paid account
+   * asking for its other plan the server changes the plan itself and answers
+   * `{ url: null, change }`.
+   */
+  billingCheckout(plan?: CloudPaidPlanId, cleanup?: CloudPlanCleanupPick): Promise<CloudCheckoutResult>;
+  /**
+   * The person's pick for an account already over a cheaper plan
+   * (`POST /cloud/billing/plan-cleanup`): ADE frees exactly those computers,
+   * their work pushed first when `push`. Answers the account after it.
+   */
+  pickPlanCleanup(input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState>;
   /** Stripe's billing portal for changing the card or cancelling. */
   billingPortal(): Promise<{ url: string }>;
+  /**
+   * Save a card with no charge so a GitHub account younger than 30 days gets
+   * the free hours now: Stripe's page to open, or `unlocked` when a card on
+   * file already did it. Older servers answer 404.
+   */
+  billingFreeUnlock?(): Promise<CloudFreeUnlockResult>;
   /** Paid accounts only; extra hours are off by default. */
   setExtraHours(enabled: boolean): Promise<CloudAccountState>;
+  /** Paid accounts only: extra ADE Cloud iPhone minutes on, with an optional monthly limit in whole dollars, or off. */
+  setExtraPhoneMinutes?(choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState>;
+  /** The account's invite link and what it earned (`/cloud/referrals`). Account-level. */
+  readReferral(): Promise<CloudReferralSummary>;
+  /**
+   * Enters someone's invite: a pasted link or a bare code. A refusal throws a
+   * `CloudProviderError` whose message is the sentence to show and whose
+   * `detail.reason` is the `CloudInviteRefusalReason`.
+   */
+  redeemInvite(code: string): Promise<CloudInviteRedeemResult>;
   /** The account's saved chats. An account off the access list has none. */
   listSavedChats(args: CloudSavedChatsListArgs): Promise<CloudSavedChatList>;
   /** One page of a saved chat, or null when it can't be read. */
   readSavedChat(args: CloudSavedChatReadArgs): Promise<CloudSavedChatPage | null>;
   deleteSavedChat(args: CloudSavedChatDeleteArgs): Promise<void>;
+  /** The ADE Cloud iPhone (`/cloud/phone`): who may use it, the plan's minutes, the live phone. */
+  phoneState?(): Promise<CloudPhoneState>;
+  /** Starts the account's phone, or answers its live one, with a token for that phone only. */
+  /** `attach`: only the live phone's token; never starts one (`phone_not_running`). */
+  phoneStart?(input: { device?: CloudPhoneDevice; attach?: boolean }): Promise<CloudPhoneStart>;
+  /** A link that shows the live phone to this account alone. */
+  phoneView?(input: { control: boolean }): Promise<CloudPhoneView>;
+  phoneStop?(): Promise<{ stopped: boolean }>;
+  /**
+   * The account this client acts for (`cloudAccessKey`), when it knows it. A
+   * client is made per call, so this, not the object, says two are the same
+   * account (a held cloud iPhone belongs to one).
+   */
+  readonly account?: string;
 };

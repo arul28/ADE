@@ -1,9 +1,11 @@
+import { markExpected } from "../../../shared/expectedError";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/inUse";
 import { OpenCode, type OpenCodeClient, type OpenCodeEvent } from "@opencode/client";
 import type { Logger } from "../logging/logger";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
@@ -284,11 +286,35 @@ export function renderOpenCodeDiagnostic(diagnostic: OpenCodeDiagnostic): string
 /** Launch failure carrying its typed {@link OpenCodeDiagnostic} for callers that can key off it. */
 export class OpenCodeLaunchError extends Error {
   readonly diagnostic: OpenCodeDiagnostic;
-  constructor(diagnostic: OpenCodeDiagnostic) {
+  /**
+   * @param options.binaryMissing the launch proved there is no OpenCode
+   *   binary at all (`not-installed` also covers an ENOENT that is not the
+   *   binary, such as a missing working folder).
+   */
+  constructor(diagnostic: OpenCodeDiagnostic, options?: { binaryMissing?: boolean }) {
     super(renderOpenCodeDiagnostic(diagnostic));
     this.name = "OpenCodeLaunchError";
     this.diagnostic = diagnostic;
+    // Marked only where the person's machine is the cause and the message
+    // names the fix: no OpenCode binary, or macOS Gatekeeper blocking it. A
+    // launch timeout, a busy port, a bad signature on a binary ADE installed,
+    // another ENOENT, and anything unclassified stay Sentry issues: ADE can
+    // cause each of them (its pinned OpenCode, the config it writes, the
+    // ports it picks).
+    if (diagnostic.kind === "quarantined" || (diagnostic.kind === "not-installed" && options?.binaryMissing)) {
+      markExpected(this, "environment");
+    }
   }
+}
+
+/** Whether a launch failure proves there is no OpenCode binary to run. */
+function isOpenCodeBinaryMissing(error: unknown, binaryPath: string | null): boolean {
+  if (!binaryPath) return true;
+  const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
+  if (message.includes("executable is not available")) return true;
+  // A spawn ENOENT also names a missing working folder; only a binary that
+  // is really absent counts.
+  return errorCode(error) === "ENOENT" && !fs.existsSync(binaryPath);
 }
 
 function toOpenCodeLaunchError(
@@ -296,7 +322,9 @@ function toOpenCodeLaunchError(
   context: { port: number; binaryPath: string | null },
 ): OpenCodeLaunchError {
   if (error instanceof OpenCodeLaunchError) return error;
-  return new OpenCodeLaunchError(classifyOpenCodeLaunchFailure(error, context));
+  return new OpenCodeLaunchError(classifyOpenCodeLaunchFailure(error, context), {
+    binaryMissing: isOpenCodeBinaryMissing(error, context.binaryPath),
+  });
 }
 
 function activeManagedOpenCodePorts(): Set<number> {
@@ -491,6 +519,8 @@ async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<Ope
     windowsVerbatimArguments: launchSpec.windowsVerbatimArguments,
     shell: launchSpec.useShell,
   });
+  // A long-lived server outlives any record of use: its copy stays while it runs.
+  holdToolInstallsWhileRunning([launchSpec.executable], proc);
   if (proc.pid) {
     const configFile = launchSpec.env.OPENCODE_CONFIG;
     writeManagedServerRecord({
@@ -985,6 +1015,22 @@ export function shutdownOpenCodeServers(filter: { key?: string } = {}, logger?: 
     if (filter.key && key !== filter.key) continue;
     void pending.then((entry) => closeEntry(entry, "shutdown", logger), () => {});
   }
+}
+
+/**
+ * Close every server no chat holds now, instead of after its idle window. The
+ * brain calls this (through `releaseUnattendedRuntimes`) while no window and no
+ * other machine is connected; the next OpenCode chat starts a server again.
+ * A server something still holds, or one still starting, is left alone.
+ */
+export function releaseUnusedOpenCodeServers(logger?: Logger | null): number {
+  let closed = 0;
+  for (const entry of [...serverEntries.values()]) {
+    if (entry.closed || entry.refCount > 0) continue;
+    closeEntry(entry, "unattended", logger);
+    closed += 1;
+  }
+  return closed;
 }
 
 export function getOpenCodeRuntimeDiagnostics(): {

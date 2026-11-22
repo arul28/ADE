@@ -219,11 +219,12 @@ export function useNativeToolSessions(args: {
       return undefined;
     }
     const appControl = window.ade?.appControl;
-    if (!appControl?.getStatus || !appControl.onEvent) return undefined;
+    const pin = runtimePinRef.current;
+    if (!appControl?.getStatus || !appControl.onEvent || !pin) return undefined;
     let cancelled = false;
     const scope: NativeToolFeedScope = { isActive: () => !cancelled };
     setAppControlSession(null);
-    void appControl.getStatus({ laneId }, runtimePinRef.current)
+    void appControl.getStatus({ laneId }, pin)
       .then((status) => {
         if (!cancelled) setAppControlSession(status?.activeSession ?? null);
       })
@@ -239,7 +240,7 @@ export function useNativeToolSessions(args: {
         setAppControlSession(null);
       }
       appControlEventRef.current?.(event, scope);
-    }, runtimePinRef.current);
+    }, pin);
     return () => {
       cancelled = true;
       unsubscribe();

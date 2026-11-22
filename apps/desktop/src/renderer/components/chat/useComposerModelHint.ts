@@ -17,6 +17,7 @@ import {
   type ModelHintAnswers,
 } from "./modelHint";
 import { readCheaperHintOutcomes, readModelHintHistory, recordCheaperHintOutcome, recordModelHintHistory } from "./modelHintHistory";
+import { withChatPin } from "./chatMachinePin";
 
 const DEBOUNCE_MS = 700;
 /** Text that moved less than this share since the last ask keeps that answer. */
@@ -51,7 +52,7 @@ function hintMode(pin: OpenProjectBinding | null, scopeKey: string): Promise<Hin
   return cached(modeCache, scopeKey, STATUS_TTL_MS, async () => {
     const [status, config] = await Promise.all([
       window.ade.ai.jevStatus(pin),
-      window.ade.projectConfig.get(pin).catch(() => null),
+      withChatPin(pin, (chatPin) => window.ade.projectConfig.get(chatPin)).catch(() => null),
     ]);
     if (status?.available !== true) return "off";
     return config?.effective.ai?.chat?.modelHintMode ?? "model_and_effort";

@@ -6,6 +6,12 @@ name: Deploy Web Surfaces
 # deploys exactly the surfaces whose code changed; workflow_dispatch deploys
 # everything (manual full reconcile). Secrets are never exposed to fork PRs
 # because this only runs on push to main and manual dispatch.
+#
+# Every Worker or Pages deploy that is safe to repeat runs through
+# scripts/ci/retry-cloudflare.sh (its header says when it retries). A D1
+# migration never does, so a Worker whose deploy script also migrates runs its
+# `prepare` script (checks and migrations) once and retries only its `upload`
+# script.
 
 on:
   push:
@@ -18,6 +24,9 @@ on:
       - "apps/webhook-relay/**"
       - "apps/tunnel-relay/**"
       - "apps/push-relay/**"
+      - "apps/password-key-service/**"
+      # The Workers' one workspace lockfile (root package.json "workspaces").
+      - "package-lock.json"
       - ".github/workflows/deploy-web.yml"
   workflow_dispatch:
 
@@ -41,14 +50,18 @@ jobs:
       webhook-relay: ${{ steps.filter.outputs.webhook-relay }}
       tunnel-relay: ${{ steps.filter.outputs.tunnel-relay }}
       push-relay: ${{ steps.filter.outputs.push-relay }}
+      password-key-service: ${{ steps.filter.outputs.password-key-service }}
       # The Sentry release every deploy in this run reports under.
       sentry-release: ${{ steps.release.outputs.release }}
       sentry-version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          # Tags and history, for `git describe` below.
+          # Tags and history, for `git describe` below, and paths-filter's
+          # diff. Blobless: both read commits and trees only, so file contents
+          # are fetched just for the checked-out tree.
           fetch-depth: 0
+          filter: blob:none
       - name: Resolve Sentry release
         id: release
         # apps/desktop/package.json's version is never bumped; releases are v*
@@ -70,12 +83,19 @@ jobs:
               - "apps/desktop/vite.webclient.config.ts"
             account-directory:
               - "apps/account-directory/**"
+              - "package-lock.json"
             webhook-relay:
               - "apps/webhook-relay/**"
+              - "package-lock.json"
             tunnel-relay:
               - "apps/tunnel-relay/**"
+              - "package-lock.json"
             push-relay:
               - "apps/push-relay/**"
+              - "package-lock.json"
+            password-key-service:
+              - "apps/password-key-service/**"
+              - "package-lock.json"
 
   webclient:
     needs: changes
@@ -86,7 +106,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      # The node_modules ci.yml's install job caches for this lockfile pair.
+      # Restore only; a miss installs them here.
+      - name: Restore core node_modules cache
+        id: nm_core
+        uses: ./.github/actions/restore-core-node-modules
       - name: Install desktop dependencies
+        if: steps.nm_core.outputs.cache-hit != 'true'
         run: cd apps/desktop && npm ci
       - name: Build web client
         env:
@@ -112,7 +138,7 @@ jobs:
       - name: Keep source maps off the public site
         run: find apps/desktop/dist/web-client -name '*.map' -delete
       - name: Deploy to Cloudflare Pages
-        run: npx wrangler@4 pages deploy apps/desktop/dist/web-client --project-name ade-web-client --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false
+        run: scripts/ci/retry-cloudflare.sh npx wrangler@4 pages deploy apps/desktop/dist/web-client --project-name ade-web-client --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false
       - name: Verify live bundle
         run: |
           built="$(basename apps/desktop/dist/web-client/assets/index-*.js)"
@@ -134,9 +160,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: cd apps/account-directory && npm ci
-      - name: Apply D1 migrations and deploy production Worker
-        run: cd apps/account-directory && npm run deploy:production -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
+      # The Workers are one npm workspace; this installs it from the root lockfile.
+      - run: npm ci
+      # The two parts of `npm run deploy:production`; see the top of this file.
+      - name: Check deploy config and apply D1 migrations
+        run: cd apps/account-directory && npm run deploy:production:prepare
+      - name: Deploy production Worker
+        run: cd apps/account-directory && ../../scripts/ci/retry-cloudflare.sh npm run deploy:production:upload -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
       - name: Upload source maps to Sentry
         # Never fails the deploy: a missing token or a Sentry outage only means
         # stack traces stay minified.
@@ -165,9 +195,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: cd apps/webhook-relay && npm ci
+      - run: npm ci
+      # The two parts of `npm run deploy`; see the top of this file.
+      - name: Apply D1 migrations
+        run: cd apps/webhook-relay && npm run deploy:prepare
       - name: Deploy Worker
-        run: cd apps/webhook-relay && npm run deploy -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
+        run: cd apps/webhook-relay && ../../scripts/ci/retry-cloudflare.sh npm run deploy:upload -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
       - name: Upload source maps to Sentry
         # Never fails the deploy: a missing token or a Sentry outage only means
         # stack traces stay minified.
@@ -194,9 +227,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: cd apps/tunnel-relay && npm ci
+      - run: npm ci
       - name: Deploy Worker
-        run: cd apps/tunnel-relay && npm run deploy -- --tag "$GITHUB_SHA" --message "main $GITHUB_SHA" --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
+        run: cd apps/tunnel-relay && ../../scripts/ci/retry-cloudflare.sh npm run deploy -- --tag "$GITHUB_SHA" --message "main $GITHUB_SHA" --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
       - name: Upload source maps to Sentry
         # Never fails the deploy: a missing token or a Sentry outage only means
         # stack traces stay minified.
@@ -236,9 +269,27 @@ jobs:
           echo "::error::tunnel relay health did not reach protocol v2 at Worker tag $GITHUB_SHA"
           exit 1
 
-  push-relay:
+  # The Passwords key service. Deployed before push-relay, whose service
+  # binding to it would fail to deploy if the Worker did not exist yet. Its
+  # secrets (PASSWORD_KEK_MASTER, KEY_SERVICE_AUTH_SECRET) are set once by the
+  # owner with `wrangler secret put`, never from CI; unset, it answers 503.
+  password-key-service:
     needs: changes
-    if: needs.changes.outputs.push-relay == 'true' || github.event_name == 'workflow_dispatch'
+    if: needs.changes.outputs.password-key-service == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: cd apps/password-key-service && ../../scripts/ci/retry-cloudflare.sh npm run deploy
+
+  push-relay:
+    needs: [changes, password-key-service]
+    # Runs after the key service when both changed; still runs when that job
+    # was skipped, never after it failed.
+    if: ${{ !cancelled() && needs.password-key-service.result != 'failure' && (needs.changes.outputs.push-relay == 'true' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     env:
       SENTRY_RELEASE: ${{ needs.changes.outputs.sentry-release }}
@@ -247,7 +298,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: cd apps/push-relay && npm ci
+      - run: npm ci
+      # Not retried: deploy:ci also applies D1 migrations and triggers and
+      # runs the auth smoke checks in one script.
       - name: Mint Clerk smoke tokens and deploy Worker
         env:
           CLERK_PROD_SECRET_KEY: ${{ secrets.CLERK_PROD_SECRET_KEY }}
@@ -279,7 +332,7 @@ jobs:
   # only the surfaces this run deployed. Skips without POSTHOG_PERSONAL_API_KEY
   # and never fails the run.
   annotate:
-    needs: [webclient, account-directory, webhook-relay, tunnel-relay, push-relay]
+    needs: [webclient, account-directory, webhook-relay, tunnel-relay, push-relay, password-key-service]
     if: ${{ always() && contains(needs.*.result, 'success') }}
     runs-on: ubuntu-latest
     steps:

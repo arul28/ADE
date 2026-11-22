@@ -15,6 +15,13 @@ vi.mock("@cursor/sdk", () => ({
   },
 }));
 
+// Whether `@cursor/sdk` resolves on disk; a test sets it false for a broken install.
+const cursorSdkResolves = vi.hoisted(() => ({ value: true }));
+vi.mock("../ai/cursorSdkLoader", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../ai/cursorSdkLoader")>();
+  return { ...actual, cursorSdkResolvesWithoutLoading: () => cursorSdkResolves.value };
+});
+
 vi.mock("../ai/providerRuntimeHealth", () => ({
   reportProviderRuntimeAuthFailure: (...args: unknown[]) => reportProviderRuntimeAuthFailureMock(...args),
   reportProviderRuntimeFailure: (...args: unknown[]) => reportProviderRuntimeFailureMock(...args),
@@ -62,6 +69,14 @@ const cursorDescriptor = (id: string, displayName: string): ModelDescriptor => (
 
 beforeEach(() => {
   cursorModelsListMock.mockReset();
+  cursorSdkResolves.value = true;
+  // Cursor's `GET /v1/models` at the fetch boundary. ADE asks it directly
+  // when the SDK is installed, so the SDK mock's list answers through here.
+  vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: { headers?: Record<string, string> }) => {
+    const apiKey = init?.headers?.Authorization?.replace(/^Bearer /, "");
+    const items = await cursorModelsListMock({ apiKey });
+    return { ok: true, status: 200, json: async () => ({ items: items ?? [] }) };
+  }));
   reportProviderRuntimeAuthFailureMock.mockReset();
   reportProviderRuntimeFailureMock.mockReset();
   reportProviderRuntimeReadyMock.mockReset();
@@ -340,7 +355,7 @@ describe("parseCursorCliModelsStdout", () => {
     });
   });
 
-  it("falls back to Cursor's official models API when SDK model listing fails", async () => {
+  it("lists Cursor models from its official models API without the SDK", async () => {
     cursorModelsListMock.mockRejectedValue(new Error("SDK model listing failed"));
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -369,7 +384,7 @@ describe("parseCursorCliModelsStdout", () => {
         }),
       }),
     );
-    expect(reportProviderRuntimeReadyMock).not.toHaveBeenCalled();
+    expect(cursorModelsListMock).not.toHaveBeenCalled();
   });
 
   it("returns no Cursor SDK rows when model APIs cannot enumerate", async () => {
@@ -429,6 +444,9 @@ describe("parseCursorCliModelsStdout", () => {
       failureKind: null,
     });
 
+    // The package is gone (a broken install): ADE stops asking the REST API
+    // and the SDK's own load fails.
+    cursorSdkResolves.value = false;
     cursorModelsListMock.mockRejectedValue(new Error("Cannot find package '@cursor/sdk' imported from /Applications/ADE Beta.app/Contents/Resources/ade-cli/cli.js"));
 
     await expect(probeCursorSdkModelDiscovery("crsr_test", { timeoutMs: 1_000 })).resolves.toMatchObject({
@@ -541,10 +559,10 @@ describe("the catalog the selection resolvers read", () => {
     expect(cursorModelsListMock).toHaveBeenCalledTimes(1);
 
     // A successful empty fetch is an empty catalog, not a failure.
-    cursorModelsListMock.mockResolvedValue([]);
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ models: [] }) })));
+    const emptyFetch = vi.fn(async () => ({ ok: true, json: async () => ({ models: [] }) }));
+    vi.stubGlobal("fetch", emptyFetch);
     await expect(readCursorSdkCatalog("crsr_key_b")).resolves.toEqual({ status: "loaded", rows: [] });
-    expect(cursorModelsListMock).toHaveBeenCalledTimes(2);
+    expect(emptyFetch).toHaveBeenCalledTimes(1);
   });
 
   it("fails fast with this key's last cause only when asked, so a retry is real", async () => {

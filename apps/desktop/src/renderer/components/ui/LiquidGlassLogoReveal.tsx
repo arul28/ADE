@@ -385,9 +385,17 @@ function startEngine(wrap: HTMLDivElement, live: React.MutableRefObject<LiveStat
 
 // The canvas paints its own backdrop, so it must match what sits behind it exactly. Any CSS colour
 // (hex, rgb, color-mix, oklch) is resolved by painting it into one pixel and reading that back.
+// A computed background is almost always an opaque `rgb(r, g, b)`, whose pixel is those three
+// numbers, so that form is read as text: the first 2D canvas of a window costs about 9 ms at boot.
+const OPAQUE_RGB = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*1(?:\.0*)?\s*)?\)$/;
 function cssColorToHex(value: string, fallback: string): string {
   const raw = value.trim();
   if (!raw) return fallback;
+  const rgb = OPAQUE_RGB.exec(raw);
+  if (rgb) {
+    const channels = [rgb[1], rgb[2], rgb[3]].map(Number);
+    if (channels.every((c) => c <= 255)) return `#${channels.map((c) => c.toString(16).padStart(2, "0")).join("")}`;
+  }
   const ctx = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
   if (!ctx) return fallback;
   ctx.fillStyle = fallback;

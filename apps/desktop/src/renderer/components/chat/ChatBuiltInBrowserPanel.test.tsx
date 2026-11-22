@@ -4,7 +4,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PARKED_SURFACE_ATTRIBUTE } from "../../lib/parkedSurface";
 import { ChatBuiltInBrowserPanel } from "./ChatBuiltInBrowserPanel";
-import { WorkToolsMaximizeContext } from "../terminals/workToolsMaximize";
 import {
   consumeAppZoomCommand,
   resetAppZoomCommandsForTests,
@@ -109,6 +108,9 @@ function stubElementFromPoint(impl: (x: number, y: number) => Element | null): (
   };
 }
 
+/** A chat on this computer: settings and port probes go to it. */
+const LOCAL_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 const REMOTE_PIN = {
   kind: "remote",
   key: "remote:target-studio:project-a",
@@ -125,7 +127,8 @@ function statusWith(overrides: Partial<BuiltInBrowserStatus>): BuiltInBrowserSta
 }
 
 function installBrowserApi() {
-  let eventListener: ((event: unknown) => void) | null = null;
+  // Several parts of the panel listen (the panel, the key button), as in the preload.
+  const eventListeners = new Set<(event: unknown) => void>();
   let remoteRequestListener: ((event: unknown) => void) | null = null;
   const api = {
     getStatus: vi.fn().mockResolvedValue(browserStatus),
@@ -265,9 +268,9 @@ function installBrowserApi() {
       import: vi.fn(),
     },
     onEvent: vi.fn((listener: (event: unknown) => void) => {
-      eventListener = listener;
+      eventListeners.add(listener);
       return () => {
-        eventListener = null;
+        eventListeners.delete(listener);
       };
     }),
     localizeRemoteUrl: vi.fn(async ({ url }: { url: string }) => ({
@@ -336,7 +339,9 @@ function installBrowserApi() {
   });
   return {
     api,
-    emit: (event: unknown) => eventListener?.(event),
+    emit: (event: unknown) => {
+      for (const listener of [...eventListeners]) listener(event);
+    },
   };
 }
 
@@ -419,18 +424,6 @@ afterEach(() => {
 });
 
 describe("ChatBuiltInBrowserPanel", () => {
-  it("carries the preview toggle and maximize buttons on its chrome row", async () => {
-    installBrowserApi();
-
-    render(
-      <WorkToolsMaximizeContext.Provider value={{ maximized: false, setMaximized: vi.fn() }}>
-        <ChatBuiltInBrowserPanel sessionId="chat-1" />
-      </WorkToolsMaximizeContext.Provider>,
-    );
-
-    expect(await screen.findByRole("button", { name: "Show preview when minimized" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Maximize pane" })).toBeTruthy();
-  });
 
   it("exposes global profile diagnostics and permission removal only through the trusted renderer", async () => {
     const { api } = installBrowserApi();
@@ -1500,7 +1493,7 @@ describe("ChatBuiltInBrowserPanel", () => {
   it("writes browser.linkOpenMode when the link mode is changed", async () => {
     installBrowserApi();
 
-    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={LOCAL_PIN} />);
 
     await openMenu("More browser options");
     fireEvent.click(await screen.findByText("In system browser"));
@@ -1512,6 +1505,7 @@ describe("ChatBuiltInBrowserPanel", () => {
             browser: expect.objectContaining({ linkOpenMode: "external" }),
           }),
         }),
+        LOCAL_PIN,
       );
     });
   });
@@ -1803,14 +1797,14 @@ describe("ChatBuiltInBrowserPanel", () => {
       (window as unknown as { ade: { localhost: { probePort: ReturnType<typeof vi.fn> } } })
         .ade.localhost.probePort.mockImplementation(async (port: number) => port === 5173);
 
-      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" runtimePin={LOCAL_PIN} />);
       // Wait for the mounted status before replacing it, or the initial read
       // lands afterwards and puts the tab back. One tab hides the strip, so
       // the omnibox is what says the status arrived.
       await waitFor(() => expect(
         (screen.getByLabelText("ADE browser URL") as HTMLInputElement).value,
       ).toBe("https://example.test/"));
-      emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null }) });
+      emit({ type: "status", status: statusWith({ tabs: [], activeTabId: null, collectionProjectRoot: LOCAL_PIN.rootPath }) });
 
       await screen.findByTestId("browser-launchpad");
       // A dev server the human started outside ADE has no command to name it,

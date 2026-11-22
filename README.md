@@ -32,7 +32,9 @@
 
 ADE puts Claude Code, Codex, Cursor, Factory Droid, and OpenCode in one app. You use the plans you already pay for.
 
-It runs on your own machines. Sign in on each one, and you can reach all of them from the desktop app, the terminal, the web, or your phone. Every chat and terminal session stays in sync. I start a task on my desktop at home, check on it from my phone at the gym, and finish it in a browser on a friend's laptop.
+You don't need a computer of your own. Every ADE account has **ADE Cloud**, a machine that is always there, in every "Run on" menu on the web, the iPhone and the desktop. Sign in at [app.ade-app.dev](https://app.ade-app.dev) or on your phone, connect GitHub, pick a repo, and work. Each cloud lane gets its own computer that sleeps when idle and wakes when you send it work.
+
+Your own machines sit next to ADE Cloud. Sign in on each one, and you can reach all of them from the desktop app, the terminal, the web, or your phone. Every chat and terminal session stays in sync. I start a task on my desktop at home, check on it from my phone at the gym, and finish it in a browser on a friend's laptop.
 
 It's also a full dev environment: git worktrees, a code editor, pull requests, and history. And it's free.
 
@@ -61,6 +63,8 @@ It's also a full dev environment: git worktrees, a code editor, pull requests, a
 
 ## Get started
 
+**No computer?** Go to [app.ade-app.dev](https://app.ade-app.dev) or get the [iOS app](https://testflight.apple.com/join/ZSdJGKPy), sign in, and pick **ADE Cloud** under **Run on**. You can skip the rest of this section.
+
 **1. Install it.** This installs ADE's background service (the "Brain") and the `ade` command. It also asks whether you want the desktop app.
 
 ```bash
@@ -85,7 +89,7 @@ Your account is what links your machines. Run `ade connect` on each one you want
 
 You can skip the account. ADE still works on that one machine, but you can't reach it from anywhere else.
 
-**3. Open a client.** Open the desktop app, go to [app.ade-app.dev](https://app.ade-app.dev), or get the [iOS app](https://testflight.apple.com/join/ZSdJGKPy). Your machines are already there.
+**3. Open a client.** Open the desktop app, go to [app.ade-app.dev](https://app.ade-app.dev), or get the [iOS app](https://testflight.apple.com/join/ZSdJGKPy). Your machines and ADE Cloud are already there.
 
 **4. Open a repo and go.** Open a git repository, make a lane (a git worktree for one task), and ask for a small change. The [quickstart](https://ade-app.dev/docs/quickstart) walks through it.
 
@@ -98,7 +102,7 @@ Go to **Settings → AI Providers**.
 - **Click Verify, then pick a default model.** You can switch models in any chat.
 - **Mix them.** Under **Advanced**, add any OpenAI- or Anthropic-compatible provider, so you can run, say, DeepSeek inside Claude Code.
 
-You don't need to install the agents. ADE downloads them the first time a machine needs one. Model calls go straight from your machine to the provider, not through ADE.
+You don't need to install the agents. ADE downloads them the first time a machine needs one. Model calls go straight from the machine that runs the agent to the provider, not through ADE. Your keys, sign-ins and Passwords follow your account to every machine, ADE Cloud too.
 
 More: [AI providers](https://ade-app.dev/docs/configuration/ai-providers).
 
@@ -111,6 +115,7 @@ More: [AI providers](https://ade-app.dev/docs/configuration/ai-providers).
 | Web | Any browser, at [app.ade-app.dev](https://app.ade-app.dev) |
 | Phone | iOS on [TestFlight](https://testflight.apple.com/join/ZSdJGKPy). App Store and Android coming soon. |
 | Brain only | Linux (x64, arm64), plus everything above |
+| ADE Cloud | Every account. One Linux computer per cloud lane, run by ADE |
 
 A Linux server can run just the Brain, and you can use it from any client. A few Mac features aren't on [Windows](https://ade-app.dev/docs/getting-started/windows) or [Linux](https://ade-app.dev/docs/getting-started/linux) yet.
 

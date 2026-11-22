@@ -60,7 +60,7 @@ export function SceneDataFeed({
   const wantPrs = sources.includes("prs");
   const lanes = useChatMachineLanes(scope.pin);
   // Run counts exist only in the tab's own Lanes snapshots.
-  const snapshots = useAppStore((state) => (scope.pin ? NO_SNAPSHOTS : state.laneSnapshots));
+  const snapshots = useAppStore((state) => (scope.isActiveBinding ? state.laneSnapshots : NO_SNAPSHOTS));
   const sessionsForPin = useSessionsForPin(scope.binding);
   // A project transition can leave the chat unpinned with a null binding while
   // the project's session cache still holds its rows; read that cache by root
@@ -72,11 +72,12 @@ export function SceneDataFeed({
   const sessions = sessionsForPin ?? boundSessions;
   const [prs, setPrs] = useState<PrSummary[] | null>(null);
   useEffect(() => {
-    if (!wantPrs) return;
+    const feedPin = scope.pin;
+    if (!wantPrs || !feedPin) return;
     return window.ade.prs.onEvent((event) => {
       // The event carries the machine's PR list, as `useLanePrs` reads it.
       if (event.type === "prs-updated") setPrs(event.prs);
-    }, scope.pin);
+    }, feedPin);
   }, [wantPrs, scope.pin]);
 
   // PRs: read once and when lanes change (coalesced with every other reader of

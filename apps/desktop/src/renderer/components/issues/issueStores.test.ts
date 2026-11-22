@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useAppStore } from "../../state/appStore";
-import type { NormalizedLinearIssue } from "../../../shared/types";
+import type { NormalizedLinearIssue, OpenProjectBinding } from "../../../shared/types";
 import {
   editGitHubIssue,
   loadGitHubIssue,
@@ -81,6 +81,7 @@ function linearIssue(title: string): NormalizedLinearIssue {
 }
 
 const EMPTY_CATALOG = { projects: [], users: [], states: [], labels: [] };
+const TEST_PIN: OpenProjectBinding = { kind: "local", key: "local:/root", rootPath: "/root", displayName: "ADE" };
 
 /**
  * Two title edits on one issue, the first one's reply arriving last (or
@@ -95,7 +96,7 @@ const trackers = [
       const replies: Array<Deferred<unknown>> = [];
       (window as any).ade = { github: { updateIssue: vi.fn(() => { const next = deferred<unknown>(); replies.push(next); return next.promise; }) } };
       return {
-        edit: (title: string) => editGitHubIssue(root, issue, { title }, { title }),
+        edit: (title: string) => editGitHubIssue(root, issue, { title }, { title }, TEST_PIN),
         reply: (index: number, title: string) => replies[index]!.resolve(rawGitHubIssue(7, title)),
         fail: (index: number) => replies[index]!.reject(new Error("GitHub said no")),
         shown: () => peekGitHubIssue(root, "acme", "ade", 7)?.title,
@@ -109,7 +110,7 @@ const trackers = [
       const replies: Array<Deferred<unknown>> = [];
       (window as any).ade = { cto: { updateLinearIssue: vi.fn(() => { const next = deferred<unknown>(); replies.push(next); return next.promise; }) } };
       return {
-        edit: (title: string) => editLinearIssue(root, issue, { title }, EMPTY_CATALOG as never),
+        edit: (title: string) => editLinearIssue(root, issue, { title }, EMPTY_CATALOG as never, TEST_PIN),
         reply: (index: number, title: string) => replies[index]!.resolve(linearIssue(title)),
         fail: (index: number) => replies[index]!.reject(new Error("Linear said no")),
         shown: () => peekLinearIssue(root, "ADE-1")?.title,
@@ -163,9 +164,9 @@ describe("a read that started before an edit", () => {
         updateIssue: vi.fn(async () => rawGitHubIssue(5, "Saved title")),
       },
     };
-    const refresh = loadGitHubIssue(root, "acme", "ade", 5, { force: true });
+    const refresh = loadGitHubIssue(root, "acme", "ade", 5, { force: true, pin: TEST_PIN });
     const issue = normalizeGitHubIssue("acme", "ade", rawGitHubIssue(5, "Old title"))!;
-    await editGitHubIssue(root, issue, { title: "Saved title" }, { title: "Saved title" });
+    await editGitHubIssue(root, issue, { title: "Saved title" }, { title: "Saved title" }, TEST_PIN);
     expect(peekGitHubIssue(root, "acme", "ade", 5)?.title).toBe("Saved title");
 
     read.resolve(rawGitHubIssue(5, "Old title"));
@@ -188,22 +189,22 @@ describe("GitHub list rows are partial copies", () => {
         getIssue,
       },
     };
-    loadGitHubIssueList(root, { owner: "acme", name: "ade" }, "open");
+    loadGitHubIssueList(root, { owner: "acme", name: "ade" }, "open", { pin: TEST_PIN });
     await vi.waitFor(() => expect(peekGitHubIssue(root, "acme", "ade", 9)?.title).toBe("From the list"));
 
     // A list row holds only the first labels; it must not count as read.
-    await loadGitHubIssue(root, "acme", "ade", 9);
+    await loadGitHubIssue(root, "acme", "ade", 9, { pin: TEST_PIN });
     expect(getIssue).toHaveBeenCalledTimes(1);
     expect(peekGitHubIssue(root, "acme", "ade", 9)?.labels.map((label) => label.name)).toEqual(["a", "b"]);
 
     // The whole issue, once read, is served from the cache.
-    await loadGitHubIssue(root, "acme", "ade", 9);
+    await loadGitHubIssue(root, "acme", "ade", 9, { pin: TEST_PIN });
     expect(getIssue).toHaveBeenCalledTimes(1);
   });
 
   it("an open issue that a list refresh made partial is read again", async () => {
     const root = `/root/${Math.random()}`;
-    useAppStore.setState({ project: { rootPath: root, displayName: "ADE" }, projectBinding: null } as never);
+    useAppStore.setState({ project: { rootPath: root, displayName: "ADE" }, projectBinding: { ...TEST_PIN, key: `local:${root}`, rootPath: root } } as never);
     const getIssue = vi.fn(async () => rawGitHubIssue(11, "Whole", { updated_at: "2026-10-01T00:00:00Z" }));
     const listRepoIssueList = vi.fn(async () => [rawGitHubIssue(11, "Edited on GitHub", { updated_at: "2026-10-02T00:00:00Z" })]);
     (window as any).ade = { github: { getIssue, listRepoIssueList } };
@@ -213,7 +214,7 @@ describe("GitHub list rows are partial copies", () => {
     expect(getIssue).toHaveBeenCalledTimes(1);
 
     getIssue.mockImplementation(async () => rawGitHubIssue(11, "Edited on GitHub", { updated_at: "2026-10-02T00:00:00Z" }));
-    loadGitHubIssueList(root, { owner: "acme", name: "ade" }, "open", { force: true });
+    loadGitHubIssueList(root, { owner: "acme", name: "ade" }, "open", { force: true, pin: TEST_PIN });
     await vi.waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(result.current.fetchedAt).toBeGreaterThan(0));
     expect(result.current.issue?.title).toBe("Edited on GitHub");

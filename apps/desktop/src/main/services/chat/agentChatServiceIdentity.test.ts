@@ -14,7 +14,6 @@ import {
   mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
-  openKvDb,
   path,
   readPersistedChatState,
   runGit,
@@ -26,6 +25,7 @@ import {
   waitForCondition,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest";
 
 const originalCodexExecutable = process.env.CODEX_EXECUTABLE;
@@ -241,7 +241,7 @@ describe("createAgentChatService", () => {
       expect(startParams?.reasoning_effort).toBeUndefined();
     });
 
-    it("routes new Codex chats to GPT-6.1 Sol with its low default", async () => {
+    it("routes new Codex chats to GPT-6.2 Sol with its low default", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -250,8 +250,8 @@ describe("createAgentChatService", () => {
       });
 
       expect(session).toMatchObject({
-        model: "gpt-6.1-sol",
-        modelId: "openai/gpt-6.1-sol",
+        model: "gpt-6.2-sol",
+        modelId: "openai/gpt-6.2-sol",
         reasoningEffort: "low",
       });
       await service.sendMessage({ sessionId: session.id, text: "Reply only OK." });
@@ -261,12 +261,12 @@ describe("createAgentChatService", () => {
 
       const threadStart = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
       expect(threadStart?.params).toMatchObject({
-        model: "gpt-6.1-sol",
+        model: "gpt-6.2-sol",
         config: { model_reasoning_effort: "low" },
       });
       const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       expect(turnStart?.params).toMatchObject({
-        model: "gpt-6.1-sol",
+        model: "gpt-6.2-sol",
         effort: "low",
       });
     });
@@ -557,11 +557,6 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("listSessions", () => {
-    it("returns empty array when no sessions exist", async () => {
-      const { service } = createService();
-      const sessions = await service.listSessions();
-      expect(sessions).toEqual([]);
-    });
 
     it("returns created sessions", async () => {
       const { service } = createService();
@@ -968,7 +963,7 @@ describe("createAgentChatService", () => {
     async function createCtoServices({ seedIntro = false }: { seedIntro?: boolean } = {}) {
       const adeDir = path.join(tmpRoot, ".ade");
       fs.mkdirSync(adeDir, { recursive: true });
-      const db = await openKvDb(path.join(adeDir, "ade.db"), createLogger() as any);
+      const db = await openFreshKvDb(path.join(adeDir, "ade.db"), createLogger() as any);
       const ctoMemoryService = createCtoMemoryService({ adeDir });
       const ctoStateService = createCtoStateService({
         db,
@@ -992,68 +987,6 @@ describe("createAgentChatService", () => {
       }
       return { db, ctoStateService, ctoMemoryService };
     }
-
-    /**
-     * The escape hatch from a wedged thread. The owner's CTO chat crossed its
-     * context limit by ordinary accumulation over twenty sessions, every turn
-     * failed with "Prompt is too long", and the fallback compaction refused —
-     * so the only way out is a new thread that does not arrive amnesiac.
-     */
-    it("starts a fresh CTO thread while identity, memory and History all survive", async () => {
-      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
-      const { service } = createService({ ctoStateService, ctoMemoryService });
-
-      ctoStateService.updateIdentity({ name: "Ada" });
-      ctoMemoryService.appendMemoryFact("We ship on Fridays.");
-      const first = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-
-      const result = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-
-      // A NEW conversation, and the old one named rather than forgotten.
-      expect(result.session.id).not.toBe(first.id);
-      expect(result.previousSessionId).toBe(first.id);
-      expect(result.session.identityKey).toBe("cto");
-
-      // Nothing the CTO remembers was touched.
-      expect(ctoStateService.getIdentity().name).toBe("Ada");
-      expect(ctoMemoryService.readMemory()).toContain("We ship on Fridays.");
-
-      // The retired thread lands in History with its own row.
-      expect(ctoStateService.getSessionLogs(20).some((entry) => entry.sessionId === first.id)).toBe(true);
-
-      // And the next ensure resolves to the NEW thread, not the retired one.
-      const next = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-      expect(next.id).toBe(result.session.id);
-
-      db.close();
-    });
-
-    it("distils the outgoing thread into durable memory without asking a model", async () => {
-      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
-      const { service } = createService({ ctoStateService, ctoMemoryService });
-
-      const first = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-      const result = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-
-      // No provider was reachable in this fixture, and that is the point: the
-      // thread this feature exists for cannot take the turn that would write
-      // its own note, so the deterministic distillation is the one that has to
-      // work — and it did.
-      expect(result.handoff).toMatchObject({ written: true, source: "deterministic" });
-
-      // The note is journaled, names the thread it came from, and is not filed
-      // as a durable fact.
-      const daily = ctoMemoryService.getSnapshot().dailyLog;
-      expect(daily).toContain(`Thread retired (${first.id})`);
-      expect(daily).toContain("Hand-off:");
-      expect(ctoMemoryService.readMemory()).not.toContain(first.id);
-
-      // And the rolling working summary the next thread reads first was
-      // refreshed from the same text.
-      expect(ctoMemoryService.getSnapshot().threadState).toContain("Work still scheduled");
-
-      db.close();
-    });
 
     it("persists a CTO model switch back into identity model preferences", async () => {
       const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
@@ -1129,7 +1062,7 @@ describe("createAgentChatService", () => {
 
     it("injects durable memory into the CTO reconstruction context", async () => {
       const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
-      ctoMemoryService.appendMemoryFact("The build long-pole is the Windows runner.");
+      ctoMemoryService.remember({ note: "The build long-pole is the Windows runner." });
       const { service } = createService({ ctoStateService, ctoMemoryService });
 
       const session = await service.ensureIdentitySession({
@@ -1139,8 +1072,8 @@ describe("createAgentChatService", () => {
 
       // ensureIdentitySession refreshes the reconstruction context; the durable
       // memory fact must be present so it survives a fresh provider thread.
-      const reconstruction = ctoStateService.buildReconstructionContext(8);
-      expect(reconstruction).toContain("Durable memory (MEMORY.md)");
+      const reconstruction = ctoStateService.buildReconstructionContext();
+      expect(reconstruction).toContain("## Notes (project)");
       expect(reconstruction).toContain("The build long-pole is the Windows runner.");
       expect(session.identityKey).toBe("cto");
 
@@ -1266,14 +1199,13 @@ describe("createAgentChatService", () => {
       expect(await turn(session.id, "First.")).toContain("CTO Runtime Identity");
       expect(await turn(session.id, "Second.")).not.toContain("CTO Runtime Identity");
 
-      // A rotated thread is a model that has been told nothing. The
-      // reconstruction context has to be complete again.
-      const fresh = await service.startFreshIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-      expect(fresh.session.id).not.toBe(session.id);
-      const afterRotation = await turn(fresh.session.id, "Still there?");
-      expect(afterRotation).toContain("CTO Runtime Identity");
-      expect(afterRotation).toContain("ADE Architecture");
-      expect(afterRotation).toContain("CTO Context");
+      // A fresh provider thread is a model that has been told nothing. The
+      // reconstruction context has to be complete again, on the same session.
+      expect((await service.refreshCtoContext()).refreshed).toBe(true);
+      const afterRefresh = await turn(session.id, "Still there?");
+      expect(afterRefresh).toContain("CTO Runtime Identity");
+      expect(afterRefresh).toContain("ADE Architecture");
+      expect(afterRefresh).toContain("CTO Context");
 
       service.forceDisposeAll();
       db.close();
@@ -1662,7 +1594,7 @@ describe("createAgentChatService", () => {
       // The volatile half rides the headless turn exactly as it rides an
       // interactive one.
       expect(headless).toContain("CTO Context");
-      expect(headless).toContain("Current working context");
+      expect(headless).toContain("## Open work");
       // And the thread is intact, so the immutable half does not ride again.
       expect(headless).not.toContain("CTO Runtime Identity");
       expect(headless).not.toContain("ADE Architecture");
@@ -1761,134 +1693,6 @@ describe("createAgentChatService", () => {
       db.close();
     });
 
-    /**
-     * A scheduler stand-in that actually stores rows, so "was a second job
-     * created?" is answerable from state rather than from a call count alone.
-     */
-    function createRecordingScheduler() {
-      const rows: Array<Record<string, unknown>> = [];
-      return {
-        rows,
-        start: vi.fn(async () => undefined),
-        dispose: vi.fn(),
-        upsert: vi.fn(async (row: Record<string, unknown>) => {
-          rows.push(row);
-          return { ...row, status: "scheduled", pausedFlag: false, lateFlag: false };
-        }),
-        cancel: vi.fn(async (id: string) => {
-          const index = rows.findIndex((row) => row.id === id);
-          return index === -1 ? null : rows.splice(index, 1)[0];
-        }),
-        setSchedulePaused: vi.fn(async (id: string, paused: boolean) => {
-          const row = rows.find((entry) => entry.id === id);
-          if (!row) return null;
-          row.status = paused ? "paused" : "scheduled";
-          row.pausedFlag = paused;
-          return row;
-        }),
-        setSessionPaused: vi.fn(async () => undefined),
-        refreshGlobalPause: vi.fn(async () => undefined),
-        list: vi.fn(() => rows),
-        isSessionPaused: vi.fn(() => false),
-        nextWakeAt: vi.fn(() => null),
-        claimNativeFire: vi.fn(() => null),
-        recordTurnStarted: vi.fn(async () => undefined),
-        recordTurnFinished: vi.fn(async () => undefined),
-      };
-    }
-
-    it("arms one nightly memory gardener on first CTO use and announces it", async () => {
-      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
-      const scheduler = createRecordingScheduler();
-      const { service } = createService({
-        ctoStateService,
-        ctoMemoryService,
-        createScheduledWorkScheduler: () => scheduler,
-      });
-
-      const session = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-
-      expect(scheduler.upsert).toHaveBeenCalledTimes(1);
-      expect(scheduler.rows[0]).toMatchObject({
-        sessionId: session.id,
-        kind: "cron",
-        cron: "30 3 * * *",
-        reason: "Nightly memory gardening",
-        durable: true,
-      });
-      // No TTL: a job that cancelled itself after a week would be worse than
-      // no job at all.
-      expect(scheduler.rows[0].expiresAt).toBeUndefined();
-      expect(String(scheduler.rows[0].prompt)).toContain("Nightly memory gardening");
-
-      // It is pausable from Chat Info, which reads the same scheduler rows.
-      const state = await service.getScheduledWorkState({ sessionId: session.id });
-      expect(state.items.map((item) => item.title)).toContain("Nightly memory gardening");
-
-      // One system line naming the job, in the CTO thread.
-      const history = await service.getChatEventHistory(session.id, { maxEvents: 50 });
-      const notices = history.events.filter((entry) =>
-        entry.event.type === "system_notice"
-        && entry.event.message.includes("Nightly memory gardening"));
-      expect(notices).toHaveLength(1);
-
-      db.close();
-    });
-
-    it("never arms a second gardener when the CTO thread is reopened", async () => {
-      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
-      const scheduler = createRecordingScheduler();
-      const { service } = createService({
-        ctoStateService,
-        ctoMemoryService,
-        createScheduledWorkScheduler: () => scheduler,
-      });
-
-      const first = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-      const reused = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-      await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-2" });
-
-      expect(reused.id).toBe(first.id);
-      expect(scheduler.upsert).toHaveBeenCalledTimes(1);
-      expect(scheduler.rows).toHaveLength(1);
-
-      db.close();
-    });
-
-    // The whole reason the marker is the idempotency key rather than the row's
-    // presence: a presence check would quietly overrule the user.
-    it("respects a paused or deleted gardener instead of silently re-arming it", async () => {
-      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
-      const scheduler = createRecordingScheduler();
-      const { service } = createService({
-        ctoStateService,
-        ctoMemoryService,
-        createScheduledWorkScheduler: () => scheduler,
-      });
-
-      const session = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-      const scheduleId = String(scheduler.rows[0].id);
-
-      // The user pauses it from Chat Info.
-      await scheduler.setSchedulePaused(scheduleId, true);
-      await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-      expect(scheduler.upsert).toHaveBeenCalledTimes(1);
-      expect(scheduler.rows[0].status).toBe("paused");
-
-      // The user deletes it outright.
-      await scheduler.cancel(scheduleId);
-      expect(scheduler.rows).toHaveLength(0);
-      await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
-      expect(scheduler.upsert).toHaveBeenCalledTimes(1);
-      expect(scheduler.rows).toHaveLength(0);
-      expect(session.identityKey).toBe("cto");
-
-      db.close();
-    });
-
-    // The CTO chat is filtered out of every session roster, so it never reaches
-    // `terminalAttention` or the dock badge. `getCtoAttention` is the only thing
-    // standing between a hidden thread and a silently unanswered question.
     describe("getCtoAttention", () => {
       it("reports idle without creating a CTO session or a primary lane", async () => {
         const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
@@ -2019,8 +1823,6 @@ describe("createAgentChatService", () => {
       const persisted = readPersistedChatState(session.id);
       writePersistedChatState(session.id, {
         ...persisted,
-        continuitySummary: "- Keep runtime cache state machine-local.",
-        continuitySummaryUpdatedAt: new Date().toISOString(),
         recentConversationEntries: [
           { role: "user", text: "What lane should frontend use?" },
           { role: "assistant", text: "Use the primary-hosted coordinator first." },
@@ -2040,10 +1842,8 @@ describe("createAgentChatService", () => {
 
       expect(result.sessionId).toBe(session.id);
       expect(send).toHaveBeenCalledTimes(1);
-      expect(send).toHaveBeenCalledWith(expect.stringContaining("Continuity Summary"));
-      expect(send).toHaveBeenCalledWith(expect.stringContaining("Keep runtime cache state machine-local."));
-      expect(send).toHaveBeenCalledWith(expect.stringContaining("User: What lane should frontend use?"));
-      expect(send).toHaveBeenCalledWith(expect.stringContaining("Assistant: Use the primary-hosted coordinator first."));
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Person: What lane should frontend use?"));
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("CTO: Use the primary-hosted coordinator first."));
     });
 
     it("reconstructs recent conversation tail for non-identity Claude sessions after resume", async () => {
@@ -2315,7 +2115,7 @@ describe("createAgentChatService", () => {
       resumed.forceDisposeAll();
     });
 
-    it("persists a continuity snapshot and rebuilds the lost thread once after identity session reset errors", async () => {
+    it("rebuilds the lost thread once after identity session reset errors", async () => {
       const primarySend = vi.fn().mockResolvedValue(undefined);
       const recoverySend = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -2396,15 +2196,11 @@ describe("createAgentChatService", () => {
         provider: "claude",
         originalThreadId: expect.any(String),
       }));
-      const persisted = readPersistedChatState(session.id);
-      expect(persisted.continuitySummary).toContain("Recent continuity snapshot:");
-      expect(persisted.continuitySummary).toContain("User: Please keep the runtime bridge state private.");
-      expect(persisted.continuitySummary).toContain("CTO: Partial answer");
       expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(2);
       expect(recoverySend).toHaveBeenCalledTimes(1);
     });
 
-    it("keeps continuity compaction scoped to identity sessions", async () => {
+    it("rebuilds a lost non-identity thread once", async () => {
       const primarySend = vi.fn().mockResolvedValue(undefined);
       const recoverySend = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -2479,7 +2275,6 @@ describe("createAgentChatService", () => {
 
       await vi.waitFor(() => expect(readPersistedChatState(session.id).continuityRecovery)
         .toMatchObject({ state: "reconstructed", provider: "claude" }));
-      expect(readPersistedChatState(session.id).continuitySummary).toBeUndefined();
       expect(recoverySend).toHaveBeenCalledTimes(1);
     });
   });

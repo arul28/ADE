@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../shared/ipc";
+import { LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS } from "./pinnedRuntimeEvents";
 import { BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT } from "../shared/types/builtInBrowserRemote";
 
 describe("preload Activity bridge", () => {
@@ -1196,7 +1197,10 @@ describe("preload Apple device input routing", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.aiIsOpenCodeInstalled, expect.anything());
   });
 
-  it("reads env files locally while importing and exporting secrets on the bound remote machine", async () => {
+  // Passwords & Secrets is the account's vault, read on the computer the
+  // person is using: a window bound to another machine's project must not
+  // send its reads, saves, imports or exports there.
+  it("keeps Passwords & Secrets on this computer while a remote project is bound", async () => {
     const binding = {
       kind: "remote",
       key: "remote:target-1:project-1",
@@ -1206,20 +1210,9 @@ describe("preload Apple device input routing", () => {
       rootPath: "/remote/project",
       displayName: "Project",
     };
-    const envFile = { fileName: ".env", content: "API_KEY=local-file-value\n" };
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
-      if (channel === IPC.projectSecretsChooseEnvFile) return envFile;
       if (channel === IPC.appGetWindowSession) return { windowId: 1, project: null, binding };
-      if (channel === IPC.remoteRuntimeCallAction) {
-        const request = (payload as { request: { domain: string; action: string } }).request;
-        if (request.action === "previewEnvImport") {
-          return { domain: request.domain, action: request.action, result: { fileName: ".env", secrets: [{ name: "API_KEY", value: "local-file-value", exists: false }] }, statusHints: {} };
-        }
-        if (request.action === "importEnv") {
-          return { domain: request.domain, action: request.action, result: { imported: ["API_KEY"], replaced: [] }, statusHints: {} };
-        }
-        return { domain: request.domain, action: request.action, result: { filePath: "/Users/remote/Downloads/ade-secrets.env", secretCount: 1 }, statusHints: {} };
-      }
+      if (channel === IPC.passwordsCall) return { action: (payload as { action: string }).action };
       throw new Error(`unexpected IPC: ${channel}`);
     });
     const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
@@ -1232,27 +1225,15 @@ describe("preload Apple device input routing", () => {
     }));
 
     await import("./preload");
-    const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.projectSecrets.chooseEnvFile()).resolves.toMatchObject({ fileName: ".env" });
-    await expect(bridge.projectSecrets.importEnv({ secrets: [{ name: "API_KEY", value: "local-file-value" }] }))
-      .resolves.toEqual({ imported: ["API_KEY"], replaced: [] });
-    await expect(bridge.projectSecrets.exportEnv()).resolves.toEqual({
-      filePath: "/Users/remote/Downloads/ade-secrets.env",
-      secretCount: 1,
-    });
+    const passwords = (globalThis as any).__adeBridge.passwords;
+    await passwords.list({});
+    await passwords.saveSecret({ name: "API_KEY", value: "local-value", projectScope: null });
+    await passwords.importSecrets({ projectScope: null, entries: [{ name: "API_KEY", value: "local-value" }] });
+    await passwords.exportSecrets({ projectScope: null });
 
-    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
-      id: "target-1",
-      projectId: "project-1",
-      request: { domain: "project_secret", action: "previewEnvImport", args: envFile },
-    });
-    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
-      id: "target-1",
-      projectId: "project-1",
-      request: { domain: "project_secret", action: "exportEnv" },
-    });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.projectSecretsPreviewEnvImport, expect.anything());
-    expect(invoke).not.toHaveBeenCalledWith(IPC.projectSecretsExportEnv);
+    expect(invoke.mock.calls.filter(([channel]) => channel === IPC.passwordsCall).map(([, payload]) => (payload as { action: string }).action))
+      .toEqual(["list", "saveSecret", "importSecrets", "exportSecrets"]);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
   });
 
   it("allows local temp path actions while a remote project is bound", async () => {
@@ -1446,6 +1427,13 @@ describe("preload Apple device input routing", () => {
 
     expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
     expect(invoke).toHaveBeenCalledWith(IPC.lanesOpenFolder, { laneId: "lane-1" });
+
+    // A local pin for another project names that project, so main does not
+    // look the lane up in the window's project.
+    const otherProject = { kind: "local", key: "local:/other", rootPath: "/other", displayName: "Other" };
+    await bridge.lanes.openFolder({ laneId: "lane-2" }, otherProject);
+    expect(invoke).toHaveBeenCalledWith(IPC.lanesOpenFolder, { laneId: "lane-2", rootPath: "/other" });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.lanesOpenFolder, { laneId: "lane-2" });
   });
 
   it("surfaces local runtime action failures instead of falling back to in-process IPC", async () => {
@@ -7133,6 +7121,16 @@ describe("preload remote project binding", () => {
       params: {},
     });
     expect(invoke).toHaveBeenCalledWith(IPC.syncGetStatus, undefined);
+
+    // A pin on this computer keeps the same fallback.
+    invoke.mockClear();
+    await expect(bridge.sync.getStatus(undefined, binding)).resolves.toBe(status);
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallSync, {
+      rootPath: "/repo",
+      method: "sync.getStatus",
+      params: {},
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.syncGetStatus, undefined);
   });
 
   it("blocks mutating sync calls while a remote project switch is in flight", async () => {
@@ -7518,6 +7516,22 @@ describe("per-chat runtime routing", () => {
       channel === IPC.remoteRuntimeCallAction
       && (payload as { request?: { action?: string } })?.request?.action === "getSyncStatus",
     )).toHaveLength(2);
+  });
+
+  it("forwards skipRecommendation on a batch sync-status read", async () => {
+    const status = { hasUpstream: true, upstreamState: "tracking", ahead: 1, behind: 1, diverged: true, recommendedAction: "pull" };
+    const requests: Array<{ domain?: string; action?: string; args?: unknown }> = [];
+    const { bridge } = await mountBridge(machineB, async (request) => {
+      requests.push(request);
+      if (request.domain === "git" && request.action === "getSyncStatuses") return { "lane-1": status };
+      throw new Error(`unexpected git action: ${request.domain}.${request.action}`);
+    });
+
+    await bridge.git.getSyncStatuses({ laneIds: ["lane-1"], skipRecommendation: true });
+    expect(requests.find((request) => request.action === "getSyncStatuses")?.args).toMatchObject({
+      laneIds: ["lane-1"],
+      skipRecommendation: true,
+    });
   });
 
   it("surfaces sync-status runtime outages instead of treating them as missing actions", async () => {
@@ -8166,7 +8180,12 @@ describe("per-chat runtime routing", () => {
         expect(streamAttempt).toBe(expectedAttempts);
       }
 
-      await vi.advanceTimersByTimeAsync(5_000);
+      // A healthy poll on this computer's runtime is a keep-alive now: the
+      // events arrive by push, and the poll only renews main's subscription
+      // (whose idle expiry is 180 s). A failure still backs off from the base.
+      await vi.advanceTimersByTimeAsync(LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS - 1);
+      expect(streamAttempt).toBe(7);
+      await vi.advanceTimersByTimeAsync(1);
       expect(streamAttempt).toBe(8);
       await vi.advanceTimersByTimeAsync(1_999);
       expect(streamAttempt).toBe(8);
@@ -8526,6 +8545,64 @@ describe("per-chat runtime routing", () => {
     }
   });
 
+  it("keeps a terminal on its own copy after the window binds to another copy", async () => {
+    // A terminal opened on the tab's copy subscribes with that copy's pin, which
+    // shares the active stream. The active stream follows the window, so after a
+    // rebind the terminal must still hear its own copy, and not the new one.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.500Z"));
+    try {
+      const { bridge, invoke, on } = await mountBridge(machineA);
+      await bridge.app.getWindowSession();
+      const base = invoke.getMockImplementation();
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.ptyDataSubscriptions) return undefined;
+        if (channel === IPC.localRuntimeStreamEvents || channel === IPC.remoteRuntimeStreamEvents) {
+          return { events: [], nextCursor: 0, hasMore: false, eventEpoch: "epoch" };
+        }
+        return base?.(channel, arg);
+      });
+
+      // The renderer always follows the binding, as the app store does.
+      const unsubscribeBinding = bridge.app.onProjectBindingChanged(vi.fn());
+      const onData = vi.fn();
+      const removeData = bridge.pty.onData(onData, machineA);
+      await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-a"] }, machineA);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const bindingListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.appProjectBindingChanged,
+      )?.[1];
+      expect(bindingListener).toBeTypeOf("function");
+      bindingListener({}, machineB);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const runtimeListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.runtimeEvent,
+      )?.[1];
+      const emitData = (bindingKey: string, id: number, data: string) => runtimeListener({}, {
+        bindingKey,
+        eventEpoch: "epoch",
+        event: {
+          id,
+          timestamp: "2026-07-28T12:00:01.000Z",
+          category: "pty",
+          payload: { type: "pty_data", event: { ptyId: "pty-a", sessionId: "session-a", data } },
+        },
+      });
+      emitData(machineB.key, 1, "the new copy's pty-a");
+      emitData(machineA.key, 2, "its own copy");
+
+      expect(onData).toHaveBeenCalledTimes(1);
+      expect(onData).toHaveBeenCalledWith(expect.objectContaining({ data: "its own copy" }));
+      expect(onData).not.toHaveBeenCalledWith(expect.objectContaining({ data: "the new copy's pty-a" }));
+      removeData();
+      unsubscribeBinding();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("isolates PTY data filters per pin and updates the sender filter before polling", async () => {
     vi.useFakeTimers();
     try {
@@ -8575,8 +8652,9 @@ describe("per-chat runtime routing", () => {
           .map(([, arg]) => arg),
       ).toEqual([
         { ptyIds: ["pty-a"] },
-        { ptyIds: ["pty-a", "pty-b"] },
-        { ptyIds: ["pty-a", "pty-b", "pty-c"] },
+        // A pin on another machine waits for that machine to take the list.
+        { ptyIds: ["pty-a", "pty-b"], settleBindingKey: "remote:target-b:project-b" },
+        { ptyIds: ["pty-a", "pty-b", "pty-c"], settleBindingKey: "remote:target-c:project-c" },
       ]);
 
       await vi.advanceTimersByTimeAsync(0);

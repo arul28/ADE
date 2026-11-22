@@ -195,8 +195,11 @@ export function usePaletteSuggestions<C extends PaletteSuggestionCommand>({
           },
         },
       };
+      // No machine for the tab: no AI ranking, the plain order stays.
+      const decidePin = runtimePinRef.current;
+      if (!decidePin) return;
       void window.ade.ai
-        .jevDecide(request, runtimePinRef.current)
+        .jevDecide(request, decidePin)
         .then((answers) => {
           if (cancelled) return;
           const answer = answers?.command;

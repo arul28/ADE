@@ -50,7 +50,7 @@ let workChatOlderHistoryTriggerDistance: CGFloat = 240
 let workChatOlderHistoryRearmDistance: CGFloat = 420
 let workChatOlderHistoryScrollableDistance: CGFloat = 1
 
-/// The composer ⋯'s Attach Issue, handed down to the composer's menu.
+/// The composer ⋯'s Issue context section, handed down to the composer's menu.
 struct WorkChatAttachIssueAction {
   let run: () -> Void
 }
@@ -59,10 +59,18 @@ private struct WorkChatAttachIssueKey: EnvironmentKey {
   static let defaultValue: WorkChatAttachIssueAction? = nil
 }
 
+private struct WorkChatAttachGitHubIssueKey: EnvironmentKey {
+  static let defaultValue: WorkChatAttachIssueAction? = nil
+}
+
 extension EnvironmentValues {
   var workChatAttachIssue: WorkChatAttachIssueAction? {
     get { self[WorkChatAttachIssueKey.self] }
     set { self[WorkChatAttachIssueKey.self] = newValue }
+  }
+  var workChatAttachGitHubIssue: WorkChatAttachIssueAction? {
+    get { self[WorkChatAttachGitHubIssueKey.self] }
+    set { self[WorkChatAttachGitHubIssueKey.self] = newValue }
   }
 }
 
@@ -158,6 +166,13 @@ struct WorkChatOpeningSessionPlaceholder: View {
 /// composer, and read as a broken screen.
 struct WorkChatConnectingFrame: View {
   let machineName: String?
+  /// Messages ADE Cloud holds for the chat: drawn in the thread's place,
+  /// with the connecting line above them, until the chat loads.
+  var held: WorkCloudHeldThread? = nil
+  var sessionId: String = ""
+  /// Replaces the connecting line (no spinner): the chat is not on the
+  /// phone, so nothing is loading.
+  var unavailableNotice: String? = nil
 
   private var connectingText: String {
     guard let machineName = machineName?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -167,19 +182,14 @@ struct WorkChatConnectingFrame: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      Spacer(minLength: 0)
-      VStack(spacing: 10) {
-        ProgressView()
-          .controlSize(.regular)
-        Text(connectingText)
-          .font(.subheadline.weight(.medium))
-          .foregroundStyle(ADEColor.textSecondary)
-          .multilineTextAlignment(.center)
+      if let held {
+        heldStatusLine
+        // No composer here yet to take a failed message back: Put back waits
+        // for the chat to load (Dismiss and Cancel still work).
+        CloudHeldMessagesStandalone(thread: { var thread = held; thread.onPutBack = nil; return thread }(), sessionId: sessionId)
+      } else {
+        centredConnectingLine
       }
-      .padding(.horizontal, 32)
-      .accessibilityElement(children: .combine)
-      .accessibilityAddTraits(.updatesFrequently)
-      Spacer(minLength: 0)
       disabledComposer
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
@@ -187,6 +197,40 @@ struct WorkChatConnectingFrame: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .adeScreenBackground()
     .adeInspectable("Work.Chat.Connecting")
+  }
+
+  private var heldStatusLine: some View {
+    HStack(spacing: 8) {
+      if unavailableNotice == nil {
+        ProgressView()
+          .controlSize(.small)
+      }
+      Text(unavailableNotice ?? connectingText)
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.horizontal, 16)
+    .padding(.vertical, 8)
+    .accessibilityElement(children: .combine)
+  }
+
+  @ViewBuilder
+  private var centredConnectingLine: some View {
+    Spacer(minLength: 0)
+    VStack(spacing: 10) {
+      ProgressView()
+        .controlSize(.regular)
+      Text(connectingText)
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(ADEColor.textSecondary)
+        .multilineTextAlignment(.center)
+    }
+    .padding(.horizontal, 32)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.updatesFrequently)
+    Spacer(minLength: 0)
   }
 
   /// The composer's shape with nothing live in it: you cannot send until the
@@ -214,6 +258,172 @@ struct WorkChatConnectingFrame: View {
     .accessibilityValue("Unavailable while connecting")
   }
 }
+
+/// The line at the top of a screen while the ADE Cloud computer its work
+/// lives on wakes: the computer starts, and its chats and lanes answer once
+/// it is up.
+struct CloudComputerWakeBanner: View {
+  let machineName: String
+
+  var body: some View {
+    HStack(spacing: 10) {
+      ProgressView()
+        .controlSize(.small)
+      VStack(alignment: .leading, spacing: 1) {
+        Text("Waking \(machineName)…")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        Text("A cloud computer can take a minute to start.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(2)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .padding(.horizontal, 12)
+    .padding(.top, 6)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.updatesFrequently)
+    .adeInspectable("CloudComputer.Waking")
+  }
+}
+
+/// The line at the top of a screen when a wake of the ADE Cloud computer
+/// its work lives on failed: what went wrong, and one action. The rows stay
+/// listed; the person tries again or closes the line.
+struct CloudComputerWakeFailedBanner: View {
+  enum Action {
+    case retry(() -> Void)
+    case dismiss(() -> Void)
+    /// A state the person can't close (the account can't start work now).
+    case none
+  }
+
+  let message: String
+  let action: Action
+  /// False inside a list that already insets its cards (the Hub).
+  var insetsFromEdges = true
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 10) {
+      Image(systemName: "exclamationmark.icloud")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.warning)
+        .accessibilityHidden(true)
+      Text(message)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(3)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      switch action {
+      case .retry(let retry):
+        Button("Try again", action: retry)
+          .font(.subheadline.weight(.semibold))
+          .buttonStyle(.borderless)
+          .foregroundStyle(ADEColor.accent)
+          .adeInspectable("CloudComputer.WakeFailed.Retry")
+      case .none:
+        EmptyView()
+      case .dismiss(let dismiss):
+        Button(action: dismiss) {
+          Image(systemName: "xmark")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("Close")
+        .adeInspectable("CloudComputer.WakeFailed.Close")
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .padding(.horizontal, insetsFromEdges ? 12 : 0)
+    .padding(.top, insetsFromEdges ? 6 : 0)
+    .accessibilityElement(children: .contain)
+    .adeInspectable("CloudComputer.WakeFailed")
+  }
+}
+
+/// The top line of the Work list, which belongs to no single machine:
+/// "Waking <name>…" while an open waits, else the last failed wake with a
+/// Close button.
+struct CloudComputerWakeStatusLine: View {
+  let wakingName: String?
+  let failure: (fleetKey: String, message: String)?
+  let onDismissFailure: (String) -> Void
+
+  var body: some View {
+    if let wakingName {
+      CloudComputerWakeBanner(machineName: wakingName)
+    } else if let failure {
+      CloudComputerWakeFailedBanner(message: failure.message, action: .dismiss { onDismissFailure(failure.fleetKey) })
+    }
+  }
+}
+
+extension View {
+  /// Shows work that lives on an ADE Cloud computer without waking it:
+  /// the computer's state (asleep, waking, deleted, refused) and the idle
+  /// cleanup's "deleting soon" notice sit at the top. Reading never wakes a
+  /// computer; only doing (a send, a terminal, a Git action) does. A
+  /// computer the server lists awake is connected with no wake, and
+  /// `onAwake` runs once it answers. Any other machine changes nothing.
+  /// `context` says what a deleted computer's line offers: a chat's next
+  /// message, or a lane page's New computer.
+  /// `restingStateInHeader`: the screen's header shows asleep and waking
+  /// (`CloudLaneHeaderStateButton`), so only a failed wake, a refusal, a
+  /// deleted computer and the deleting-soon notice take a line here.
+  func showsCloudLaneState(
+    fleetKey: String?,
+    context: CloudLaneLineContext = .chat,
+    restingStateInHeader: Bool = false,
+    onAwake: (() async -> Void)? = nil
+  ) -> some View {
+    modifier(CloudLaneStateModifier(fleetKey: fleetKey, context: context, restingStateInHeader: restingStateInHeader, onAwake: onAwake))
+  }
+}
+
+private struct CloudLaneStateModifier: ViewModifier {
+  let fleetKey: String?
+  let context: CloudLaneLineContext
+  let restingStateInHeader: Bool
+  let onAwake: (() async -> Void)?
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+
+  /// The server's word on the computer: the connect below runs again when it changes.
+  private var serverStatus: String {
+    syncPublishes.service.cloudServerInstance(fleetKey: fleetKey)?.status ?? ""
+  }
+
+  func body(content: Content) -> some View {
+    content
+      .safeAreaInset(edge: .top, spacing: 0) {
+        if syncPublishes.service.isCloudFleetKey(fleetKey) {
+          CloudLaneStateLines(fleetKey: fleetKey, context: context, showsRestingState: !restingStateInHeader)
+        }
+      }
+      .task(id: "\(fleetKey ?? "")#\(serverStatus)") {
+        guard let fleetKey, let sync = SyncService.shared, sync.isCloudFleetKey(fleetKey),
+              fleetKey != sync.focusedMachineKey,
+              let fleet = sync.machineFleet, !fleet.isLive(fleetKey),
+              // Awake by the server's word: connect, never wake.
+              sync.cloudServerInstance(fleetKey: fleetKey)?.isAwake == true
+        else { return }
+        if await fleet.connect(machineKey: fleetKey, timeout: .seconds(10), wake: false), !Task.isCancelled {
+          await onAwake?()
+        }
+      }
+  }
+}
+
 
 /// `distanceFromTop` is how far the reader has scrolled from the first row, so
 /// it grows downward — the inverse of the geometry-probe `topY` this used to
@@ -332,6 +542,10 @@ struct WorkChatSummaryRenderContext: Equatable {
   var isSideChat = false
   /// The composer offers `/side` (a Work chat on a provider that can fork).
   var offersSideChat = false
+  /// The chat's work copies on other machines whose simulator, emulator or
+  /// screen it drives (`workRemoteWorkDevices`): their pills sit beside the
+  /// lane's own tools.
+  var remoteDevices: [WorkRemoteWorkDevice] = []
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
@@ -424,6 +638,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.crossMachineBatchApproval = summary.crossMachineBatchApproval
     self.isSideChat = summary.sideChatParentSessionId?
       .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    self.remoteDevices = workRemoteWorkDevices(summary.remoteWork)
   }
 
   var currentModelId: String {
@@ -635,6 +850,22 @@ struct WorkChatSessionView: View {
   /// same status for its before-send card). Keyed, so another provider's or
   /// machine's answer never stands in while a new read runs.
   @State var providerSignedOutBeforeSendKey: String?
+  /// The account's answer on Claude for a chat on an ADE Cloud computer
+  /// (`adeCloudClaudeKey`), kept only when it is definite.
+  @State var adeCloudClaudeRead: WorkAdeCloudClaudeReadState?
+  /// Bumped when the Claude pass page closes, so the account is read again.
+  @State var adeCloudClaudeRecheck = 0
+  @State var adeCloudClaudePassPageShown = false
+  /// The machine that gave `adeCloudClaudeRead`: the pass page reads there too.
+  @State var adeCloudClaudeReadHost: ProviderAccountsHost?
+  /// A "Send again" from the pass card is on its way.
+  @State var adeCloudClaudeResending = false
+  /// The free model the sign-in card offers a brand-new person on the chat's
+  /// machine, or nil (someone signed in there before, or no free models).
+  @State var signInFreeModelId: String?
+  /// A "Use a free model" switch is running: another tap does nothing, so a
+  /// stopped turn is sent once.
+  @State var signInFreeModelSwitching = false
   @State var bottomChromeMinY: CGFloat = 0
   @State var transcriptSafeInsets = EdgeInsets()
   /// The transcript's handle on its own `UICollectionView`. Replaces the
@@ -677,6 +908,10 @@ struct WorkChatSessionView: View {
   let transportHealth: SyncTransportHealth
   let composerDraftRestore: WorkChatComposerDraftRestore?
   var inputLockMessage: String? = nil
+  /// Why a send can't go now, from the chat's host screen (an ADE Cloud
+  /// chat whose deleted computer ADE can't make again). The composer can't
+  /// send and says this; the same sentence is the line above the chat.
+  var sendBlockedReason: String? = nil
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
   let onSend: @MainActor (String, [WorkChatInputAttachment], WorkActiveSendMode) async -> Bool
@@ -692,6 +927,9 @@ struct WorkChatSessionView: View {
   var onContinueUsageLimitOnAlternate: (@MainActor () async -> Void)? = nil
   var onStopSubagentTask: (@MainActor (String) async -> Void)? = nil
   let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
+  /// Approve a Codex plan and implement it in a chat of its own. Nil when this
+  /// screen's host cannot offer it; the plan card then shows Approve alone.
+  var onImplementPlanInNewChat: (@MainActor (String) async -> Void)? = nil
   let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
   let onSubmitQuestionAnswers: @MainActor (String, [String: AgentChatInputAnswerValue], String?) async -> Void
   let onDeclineQuestion: @MainActor (String) async -> Void
@@ -715,7 +953,8 @@ struct WorkChatSessionView: View {
   /// Moves a staged message to a new position; nil when the provider keeps
   /// its own queue or the host predates `chat.moveSteer`.
   let onMoveSteer: (@MainActor (String, Int) async -> Void)?
-  let onSelectModel: @MainActor (String) async -> Void
+  /// True when the chat now runs on the model.
+  let onSelectModel: @MainActor (String) async -> Bool
   let onSelectRuntimeMode: @MainActor (String) async -> Bool
   let onSelectEffort: @MainActor (String) async -> Void
   let onSelectCodexFastMode: @MainActor (Bool) async -> Bool
@@ -726,6 +965,9 @@ struct WorkChatSessionView: View {
   var onOpenParentSession: (() -> Void)? = nil
 
   var resolvedSessionStatus: String? = nil
+  /// Set while the chat's ADE Cloud computer is not awake: the picker lists
+  /// ADE Cloud's models instead of asking a machine the chat is not on.
+  var modelPickerCloudCatalog: CloudModelCatalog? = nil
   var lanes: [LaneSummary] = []
   var lanesRenderSignature: Int = 0
   // Host-side scroll-back: the engine reports whether older history exists
@@ -792,6 +1034,13 @@ struct WorkChatSessionView: View {
   var providerSignInMachineName: String = "this computer"
   /// The Claude or Codex account the chat runs as; nil is the machine's default.
   var providerSignInInstanceId: String? = nil
+  /// The chat's machine is an ADE Cloud computer. Claude there runs on the
+  /// account's Claude pass, never on a sign-in on that one computer.
+  var providerSignInIsAdeCloud: Bool = false
+  /// Where the account's sign-ins are read, in order: the chat machine's own
+  /// live connection, then the machine the phone drives. The answer is
+  /// account-wide, so either says the same; neither read wakes a computer.
+  var adeCloudSignInReadHosts: [ProviderAccountsHost] = []
   var onTakeOverSubagent: (@MainActor () async -> Void)? = nil
   var onKeepReportingSubagent: (@MainActor () async -> Void)? = nil
   /// The chat's pending thread comments. Empty on a host that predates them.
@@ -826,9 +1075,21 @@ struct WorkChatSessionView: View {
   /// Attach a Linear issue to this chat, from the composer's ⋯ (as on
   /// desktop). Nil when the host cannot.
   var onAttachIssue: (() -> Void)? = nil
+  /// Attaches a GitHub issue to this chat, when the host can take one. The
+  /// Linear twin above; both draw under the composer's Issue context section.
+  var onAttachGitHubIssue: (() -> Void)? = nil
   /// Opens this chat's side chat. Set only while the chat has one; the badge
   /// row then shows a Side chat chip (never otherwise).
   var onOpenSideChat: (() -> Void)? = nil
+  /// Set on the CTO thread only. Its turns draw calm: quiet chips for state
+  /// changes instead of the turn-end line, one working line while it runs.
+  /// Every other chat leaves it nil and renders exactly as before.
+  var ctoLive: CtoLiveModel? = nil
+  /// Messages ADE Cloud holds for this chat while its computer is asleep:
+  /// drawn after the transcript as the person's own messages, with the
+  /// working line while the server moves them. Nil for any other chat.
+  var cloudHeld: WorkCloudHeldThread? = nil
+  /// The CTO greeting's starters: fills the composer with the text.
 
   @State private var threadCommentsSheetPresented = false
   /// Compact first for the next send: nil follows the offer's own default.
@@ -916,11 +1177,17 @@ struct WorkChatSessionView: View {
   /// The sign-in card to show, keyed so a dismissed one stays hidden until a
   /// new reason brings it back: the failed turn whose signed-out agent it is
   /// for, else the machine's word that the agent has no login yet.
+  /// The CTO greeting's starters need a prompt box on screen to land in.
+  var ctoStartersEnabled: Bool { canComposeMessages && shownProviderSignIn == nil }
+
   var shownProviderSignIn: (key: String, reason: WorkProviderSignInReason)? {
     guard providerSignInAllowed, !isStreamingTurn, !isPersonalChat else { return nil }
     let shown: (key: String, reason: WorkProviderSignInReason)
     if let id = workLatestSignInFailure(transcript, provider: chatSummaryContext.provider) {
       shown = (id, .failedTurn)
+    } else if case .needsPass(let need)? = adeCloudClaudeReadNow, let key = adeCloudClaudeKey {
+      // ADE Cloud has no Claude pass that works: hold the send before it fails.
+      shown = ("\(key):pass:\(need)", .noLogin)
     } else if let key = providerSignedOutBeforeSendKey, key == providerSignInStatusKey {
       shown = ("\(key):no-login", .noLogin)
     } else {
@@ -933,7 +1200,8 @@ struct WorkChatSessionView: View {
   /// connection, so a connection that comes up after the chat opened reads
   /// again. Nil where no card could show.
   var providerSignInStatusKey: String? {
-    guard providerSignInAllowed, !isPersonalChat, let host = providerSignInHost,
+    // Claude on ADE Cloud asks the account (`adeCloudClaudeKey`), not the computer.
+    guard providerSignInAllowed, !isPersonalChat, !usesAdeCloudPassCard, let host = providerSignInHost,
           workProviderSignInKind(chatSummaryContext.provider) != .settings else { return nil }
     return "\(ObjectIdentifier(host)):\(chatSummaryContext.provider):\(host.providerAccountsConnected)"
   }
@@ -944,22 +1212,156 @@ struct WorkChatSessionView: View {
   func refreshProviderSignedOutBeforeSend() async {
     guard let key = providerSignInStatusKey, let host = providerSignInHost, host.providerAccountsConnected else { return }
     let provider = chatSummaryContext.provider
+    let generation = WorkFreeModelsStatusStore.shared.generation(for: host)
     let status = try? await host.runProviderAccountsCommand("ai.getStatus", args: [:])
     guard !Task.isCancelled else { return }
+    // The same answer carries the machine's free models; keep it for the card.
+    if let status { WorkFreeModelsStatusStore.shared.record(aiStatus: status, for: host, readAtGeneration: generation) }
     let signedOut = status.map { workProviderSignedOutBeforeSend($0, provider: provider) } ?? false
     providerSignedOutBeforeSendKey = signedOut ? key : nil
   }
 
+  /// A Claude chat on an ADE Cloud computer, where the account's Claude pass
+  /// decides whether a send can work. Nil for any other chat.
+  var adeCloudClaudeKey: String? {
+    guard providerSignInAllowed, !isPersonalChat, providerSignInIsAdeCloud,
+          chatSummaryContext.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "claude"
+    else { return nil }
+    // A chat on a named account that is not a pass (a login made on that
+    // computer) runs on that login: the computer's own sign-in card applies.
+    if let account = providerSignInInstanceId?.trimmingCharacters(in: .whitespacesAndNewlines), !account.isEmpty,
+       workClaudePassKey(ofAccountId: account) == nil {
+      return nil
+    }
+    // The chat's account is part of the key: a switch to another pass drops
+    // the old answer and reads again.
+    let account = providerSignInInstanceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return "ade-cloud-claude:\(session.id):\(account)"
+  }
+
+  /// The account's answer for this chat, never another chat's.
+  var adeCloudClaudeReadNow: WorkAdeCloudClaudeRead? {
+    guard let key = adeCloudClaudeKey, let read = adeCloudClaudeRead, read.key == key else { return nil }
+    return read.read
+  }
+
+  /// The sign-in card here is the Claude pass card. Sign-ins switched off
+  /// for ADE Cloud mean the person signs in on each cloud computer, so the
+  /// computer's own card stays.
+  var usesAdeCloudPassCard: Bool {
+    adeCloudClaudeKey != nil && adeCloudClaudeReadNow != .signInsOff
+  }
+
+  /// What the account read depends on: the chat, which read hosts are up,
+  /// and a recheck after the pass page closes.
+  var adeCloudClaudeReadTaskKey: String? {
+    guard let key = adeCloudClaudeKey else { return nil }
+    let live = adeCloudSignInReadHosts.map { $0.providerAccountsConnected ? "1" : "0" }.joined()
+    return "\(key):\(live):\(adeCloudClaudeRecheck)"
+  }
+
+  /// Reads the account's Claude passes on open, again whenever the account's
+  /// sign-ins change (`provider_logins_changed`), and after a reconnect.
+  /// No timer, no poll.
+  func watchAdeCloudClaudeRead() async {
+    guard adeCloudClaudeKey != nil else { return }
+    guard let service = syncServiceReference.service else {
+      await refreshAdeCloudClaudeRead()
+      return
+    }
+    // The first value is the current one: it reads at once.
+    for await _ in service.$providerLoginsRevision.removeDuplicates().values {
+      guard !Task.isCancelled else { return }
+      await refreshAdeCloudClaudeRead()
+    }
+  }
+
+  /// One read of the account, on the first host that can answer. A failed or
+  /// unknown read keeps the last definite answer: only a definite "no pass
+  /// works" holds a send, and a blip never drops a card that is right.
+  func refreshAdeCloudClaudeRead() async {
+    guard let key = adeCloudClaudeKey else { return }
+    for host in adeCloudSignInReadHosts
+    where host.providerAccountsConnected && host.supportsProviderAccountsAction("providerLogins.status") {
+      guard let status = try? await ProviderLoginsPhoneStatus.read(on: host) else { continue }
+      guard !Task.isCancelled, key == adeCloudClaudeKey else { return }
+      guard let read = workAdeCloudClaudeRead(status, accountId: providerSignInInstanceId) else { continue }
+      adeCloudClaudeRead = WorkAdeCloudClaudeReadState(key: key, read: read, status: status)
+      adeCloudClaudeReadHost = host
+      return
+    }
+  }
+
+  /// Settings › Providers › ADE Cloud › Claude, where the pass card points.
+  @ViewBuilder
+  var adeCloudClaudePassPage: some View {
+    if let host = adeCloudClaudeReadHost {
+      // The machine that answered the card's read: it can show the same passes.
+      WorkAdeCloudClaudePassSheet(readHost: host, status: adeCloudClaudeRead?.status, changes: syncServiceReference.service)
+    } else if let service = syncServiceReference.service {
+      WorkAdeCloudClaudePassSheet(syncService: service)
+    } else {
+      #if DEBUG
+      if let status = adeCloudClaudeRead?.status {
+        // Fixture screens have no machine: the page shows the status the card read.
+        WorkAdeCloudClaudePassSheet(fixture: status)
+      }
+      #endif
+    }
+  }
+
+  /// A brand-new person's sign-in card also offers the chat machine's free
+  /// default. Read for the card on screen, on the chat's own machine.
+  /// The card, its machine and that machine's connection: a reconnect reads
+  /// the offer again.
+  var signInFreeModelOfferKey: String? {
+    guard let signIn = shownProviderSignIn else { return nil }
+    let machine = providerSignInHost.map { WorkFreeModelsStatusStore.key(for: $0) } ?? ""
+    return "\(signIn.key)|\(machine)|\(providerSignInHost?.providerAccountsConnected == true)"
+  }
+
+  func refreshSignInFreeModelOffer() async {
+    guard shownProviderSignIn != nil, let host = providerSignInHost, host.providerAccountsConnected,
+          let status = await WorkFreeModelsStatusStore.shared.status(for: host), status.isNewPerson else {
+      signInFreeModelId = nil
+      return
+    }
+    let id = await workFreeDefaultModelId(on: host, status: status)
+    guard !Task.isCancelled else { return }
+    signInFreeModelId = id
+  }
+
+  /// "Use a free model": the chat moves to the free model, the card goes,
+  /// and a turn that stopped on the sign-in sends again on it.
+  func useFreeModelFromSignIn(_ modelId: String, signIn: (key: String, reason: WorkProviderSignInReason)) {
+    guard !signInFreeModelSwitching else { return }
+    signInFreeModelSwitching = true
+    Task { @MainActor in
+      defer { signInFreeModelSwitching = false }
+      // A switch that failed shows its error and keeps the card: a resend
+      // would run on the signed-out model again.
+      guard await onSelectModel(modelId) else { return }
+      dismissedSignInFailureId = signIn.key
+      providerSignedOutBeforeSendKey = nil
+      if signIn.reason == .failedTurn { resendAfterSignIn() }
+    }
+  }
+
   /// The turn that stopped on the sign-in sends again by itself, with the
   /// files it carried (the machine still holds them).
-  func resendAfterSignIn() {
+  /// `onFinished` gets whether the host took the message; a failed send keeps
+  /// the card that offered it, so the person can try again.
+  func resendAfterSignIn(onFinished: ((Bool) -> Void)? = nil) {
     let last = transcript.reversed().lazy.compactMap { envelope -> (String, [AgentChatFileRef])? in
       guard case .userMessage(let text, let attachments, _, _, _, _) = envelope.event,
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachments?.isEmpty == false
       else { return nil }
       return (text, attachments ?? [])
     }.first
-    guard let last else { return }
+    guard let last else {
+      onFinished?(false)
+      return
+    }
     let (text, refs) = last
     let attachments = refs.map { ref in
       WorkChatInputAttachment(
@@ -970,7 +1372,10 @@ struct WorkChatSessionView: View {
         state: .ready
       )
     }
-    Task { @MainActor in _ = await onSend(text, attachments, .queue) }
+    Task { @MainActor in
+      let delivered = await onSend(text, attachments, .queue)
+      onFinished?(delivered)
+    }
   }
 
   var shouldShowInterruptControl: Bool {
@@ -1183,7 +1588,18 @@ struct WorkChatSessionView: View {
   }
 
   var visibleTimelineRenderEntries: [WorkTimelineRenderEntry] {
-    timelinePresentation.renderEntries
+    let entries = timelinePresentation.renderEntries
+    guard ctoLive != nil else { return entries }
+    // The CTO thread hides its plumbing cards: drop them here, not in the row
+    // view, so they leave no empty row (and its spacing) behind.
+    return entries.filter { entry in
+      if case .entry(let timelineEntry) = entry.payload,
+         case .eventCard(let card) = timelineEntry.payload,
+         ctoThreadHidesCard(card) {
+        return false
+      }
+      return true
+    }
   }
 
   var latestScrollTargetId: String {
@@ -1240,15 +1656,23 @@ struct WorkChatSessionView: View {
     // Existing chats accept messages while live, and can still accept them
     // during reconnects when desktop advertised chat.send as queueable. Pending
     // input is gated separately so the host receives a structured answer.
-    composerInputGate.canSend
+    sendBlockedReason == nil && composerInputGate.canSend
   }
 
   var composerFeedback: String? {
     if let inputLockMessage {
       return inputLockMessage
     }
+    if let sendBlockedReason {
+      return sendBlockedReason
+    }
     if sending && !sendWillQueue {
       return "Sending message to machine..."
+    }
+    // A sleeping ADE Cloud computer isn't reconnecting: the banner above says
+    // a send wakes it, and the account holds the message until then.
+    if syncServiceReference.service?.chatSendsThroughCloudAccount(sessionId: session.id) == true {
+      return nil
     }
     if sendWillQueueIsReconnect, pendingSteers.isEmpty {
       return "Machine is reconnecting. Send will queue until it is back."
@@ -1342,9 +1766,11 @@ struct WorkChatSessionView: View {
         }
         if showsComposerLaneToolChips {
           ForEach(laneTools.chips) { chip in
-            WorkLaneToolChipView(chip: chip, isSelected: pillSelection(chip.duoToolTab, selected)) {
+            WorkLaneToolChipView(chip: chip, isSelected: toolChipSelection(chip, selected)) {
               ADEHaptics.light()
-              if let duoPane {
+              if chip.remote != nil {
+                laneTools.open(chip, macDesktopStream: true)
+              } else if let duoPane {
                 // Wide display: the tool opens beside the thread, seeded from
                 // the state this chip is already showing; tapped again, away.
                 if selected == chip.duoToolTab {
@@ -1404,6 +1830,13 @@ struct WorkChatSessionView: View {
   /// pane shows this pill's surface.
   private func pillSelection(_ tab: DuoToolTab, _ selected: DuoToolTab?) -> Bool? {
     duoPane == nil ? nil : selected == tab
+  }
+
+  /// A lane tool pill's selection. A device on another machine is never the
+  /// pane's tab: it opens on the live stage from every layout.
+  private func toolChipSelection(_ chip: WorkToolChip, _ selected: DuoToolTab?) -> Bool? {
+    guard chip.remote == nil else { return duoPane == nil ? nil : false }
+    return pillSelection(chip.duoToolTab, selected)
   }
 
   var maxUserBubbleWidth: CGFloat? {
@@ -1536,12 +1969,21 @@ struct WorkChatSessionView: View {
       )
     }
     if timelinePresentation.timelineCount == 0 {
-      var hasher = Hasher()
-      hasher.combine(transcriptLoadState)
+      // A held message drawn below is the chat's first message: no
+      // "No chat messages yet" above it (loading and a failed load still show).
+      let heldIsTheFirstMessage: Bool = {
+        guard case .idle = transcriptLoadState else { return false }
+        return !(cloudHeld?.messages.isEmpty ?? true)
+      }()
+      if !heldIsTheFirstMessage {
+        var hasher = Hasher()
+        hasher.combine(transcriptLoadState)
       hasher.combine(isLive)
-      rows.append(
-        WorkChatTranscriptRow(id: "chat-empty-state", kind: .emptyState, revision: hasher.finalize())
-      )
+        hasher.combine(ctoLive != nil && ctoStartersEnabled)
+        rows.append(
+          WorkChatTranscriptRow(id: "chat-empty-state", kind: .emptyState, revision: hasher.finalize())
+        )
+      }
     } else {
       let entries = visibleTimelineRenderEntries
       let rowRevisions = frame?.rowRevisions ?? [:]
@@ -1559,11 +2001,33 @@ struct WorkChatSessionView: View {
         )
       }
     }
-    if isStreamingTurn {
+    for message in cloudHeld?.messages ?? [] {
+      rows.append(
+        WorkChatTranscriptRow(
+          id: "cloud-held-\(message.messageId)",
+          kind: .cloudHeld(messageId: message.messageId),
+          revision: WorkCloudHeldThread.revision(message)
+        )
+      )
+    }
+    if showsStreamingStatus {
       var hasher = Hasher()
+      hasher.combine(isStreamingTurn)
       hasher.combine(turnToolActivity.active?.count ?? 0)
+      // A step finishing changes the working line's step words without
+      // changing the count.
+      for member in turnToolActivity.active?.members ?? [] {
+        switch member {
+        case .tool(let card): hasher.combine(card.status)
+        case .command(let card): hasher.combine(card.status)
+        case .fileChange(let card): hasher.combine(card.status)
+        }
+      }
       hasher.combine(frame?.activityPresentation?.label)
       hasher.combine(frame?.activityPresentation?.detail)
+      // The held working line's clock: cancelling the oldest held message
+      // moves it to the next one with no turn running.
+      hasher.combine(cloudHeld?.workingSince)
       rows.append(
         WorkChatTranscriptRow(
           id: "chat-streaming-status",
@@ -1665,6 +2129,10 @@ struct WorkChatSessionView: View {
           maxUserBubbleWidth: maxUserBubbleWidth
         )
       }
+    case .cloudHeld(let messageId):
+      if let cloudHeld, let message = cloudHeld.messages.first(where: { $0.messageId == messageId }) {
+        CloudHeldMessageRow(message: message, maxUserBubbleWidth: maxUserBubbleWidth, thread: cloudHeld)
+      }
     case .streamingStatus:
       streamingStatusSection
     case .tail:
@@ -1711,6 +2179,17 @@ struct WorkChatSessionView: View {
       }
       .adeInspectable("Work.Chat.Transcript.LoadFailed")
     case .idle:
+      // Offline, the empty thread means "not loaded", not "no history": the
+      // reconnect copy below says so, not the greeting.
+      if let ctoLive, isLive {
+        // The CTO's empty thread: it says hi and offers a start.
+        // A starter goes into the prompt box once, like a scene's reply: an
+        // event, not held state, so a composer that remounts later (after a
+        // sign-in card) keeps whatever the person typed since.
+        CtoGreetingView(live: ctoLive, onPick: ctoStartersEnabled ? { [sessionId = session.id] text in
+          WorkSceneReplyCenter.replies.send(WorkSceneReplyRequest(sessionId: sessionId, text: text))
+        } : nil)
+      } else {
       ADEEmptyStateView(
         symbol: "bubble.left.and.bubble.right",
         title: "No chat messages yet",
@@ -1718,12 +2197,58 @@ struct WorkChatSessionView: View {
           ? "Send a message to start streaming the transcript."
           : "Reconnect to load the latest chat history from the machine."
       )
+      }
     }
+  }
+
+  /// The CTO thread's live facts, for its header pill and profile.
+  var ctoLiveFacts: WorkCtoLiveFacts? {
+    guard ctoLive != nil else { return nil }
+    let active = isStreamingTurn
+    return WorkCtoLiveFacts(
+      active: active,
+      streaming: active && streamingAssistantMessageId != nil,
+      awaiting: !pendingInputs.isEmpty,
+      step: active ? ctoLatestStepWords(turnToolActivity.active?.members ?? []) : nil
+    )
+  }
+
+  /// The working line shows: a turn runs, or a held message is on its way.
+  var showsStreamingStatus: Bool {
+    isStreamingTurn || cloudHeld?.isWorking == true
+  }
+
+  /// One stand-in user message at the held send's time, so the working
+  /// line's clock starts at the send, not at the transcript's last row.
+  var cloudHeldWorkingAnchor: [WorkChatEnvelope] {
+    cloudHeld?.workingAnchor(sessionId: session.id) ?? []
   }
 
   @ViewBuilder
   var streamingStatusSection: some View {
-    if isStreamingTurn {
+    if isStreamingTurn, let ctoLive {
+      CtoWorkingLine(
+        look: ctoLive.look,
+        members: turnToolActivity.active?.members ?? [],
+        streamingText: streamingAssistantMessageId != nil,
+        startedAt: ctoLive.turnStartedAt,
+        onOpenSteps: turnToolActivity.active.map { _ in
+          { toolActivitySheet = .active }
+        }
+      )
+      .id("chat-streaming-status")
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } else if !isStreamingTurn, cloudHeld?.isWorking == true {
+      // A message ADE Cloud holds is on its way: the same working line a
+      // send to an awake computer shows, timed from the send.
+      WorkActivityIndicator(
+        transcript: cloudHeldWorkingAnchor,
+        precomputedPresentation: WorkActivityIndicator.Presentation(label: "Working", detail: nil, tint: ADEColor.accent),
+        isStreaming: true
+      )
+      .id("chat-streaming-status")
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } else if isStreamingTurn {
       WorkActivityIndicator(
         transcript: transcript,
         precomputedPresentation: frame?.activityPresentation,
@@ -1766,7 +2291,9 @@ struct WorkChatSessionView: View {
   }
 
   var composerCompactFirstOffer: WorkCompactFirstOffer? {
-    guard chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
+    // The CTO never offers: its brain moves it to a fresh thread on its own.
+    guard ctoLive == nil,
+          chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
           // OpenCode only offers `/compact` when its server lists the command, Cursor only on local chats.
           !workManualCompactDependsOnChat(chatSummaryContext.provider) || chatSummaryContext.manualCompactAvailable,
           !hasPendingInputGate, !isStreamingTurn, sessionStatus != "active",
@@ -2009,7 +2536,34 @@ struct WorkChatSessionView: View {
           .transition(.opacity)
       }
 
-      if let signIn = shownProviderSignIn {
+      if let signIn = shownProviderSignIn, usesAdeCloudPassCard {
+        // Claude on an ADE Cloud computer: what fixes it is the account's
+        // Claude pass, so the card points there instead of a sign-in on the
+        // computer.
+        let read = adeCloudClaudeReadNow
+        WorkAdeCloudClaudePassCard(
+          need: { if case .needsPass(let need)? = read { return need } else { return nil } }(),
+          reason: signIn.reason,
+          // Only a pass the account still has: a removed one runs on the "New chats" pass.
+          ownPass: workClaudePassKey(ofAccountId: providerSignInInstanceId).map { key in
+            adeCloudClaudeRead?.status.claudePasses?.contains { $0.key == key } == true
+          } ?? false,
+          passWorks: read == .passWorks,
+          onOpenPass: { adeCloudClaudePassPageShown = true },
+          onSendAgain: {
+            // The card stays until the host takes the message: a failed
+            // send can go again from here. One send at a time.
+            guard !adeCloudClaudeResending else { return }
+            adeCloudClaudeResending = true
+            resendAfterSignIn { delivered in
+              adeCloudClaudeResending = false
+              if delivered { dismissedSignInFailureId = signIn.key }
+            }
+          },
+          onDismiss: { dismissedSignInFailureId = signIn.key }
+        )
+        .id(signIn.key)
+      } else if let signIn = shownProviderSignIn {
         // The chat's agent is signed out on its machine: the sign-in card
         // takes the composer's place until the machine reads the login back.
         WorkProviderSignInCard(
@@ -2024,7 +2578,10 @@ struct WorkChatSessionView: View {
             // Nothing was sent before a no-login card, so nothing sends again.
             if signIn.reason == .failedTurn { resendAfterSignIn() }
           },
-          onDismiss: { dismissedSignInFailureId = signIn.key }
+          onDismiss: { dismissedSignInFailureId = signIn.key },
+          onUseFreeModel: signInFreeModelId.map { modelId in
+            { useFreeModelFromSignIn(modelId, signIn: signIn) }
+          }
         )
         .id(signIn.key)
       } else {
@@ -2052,7 +2609,10 @@ struct WorkChatSessionView: View {
           canAttach: canAttach,
           canSend: canSend && !composerSettingMutationInFlight,
           attachmentsAvailable: attachmentsAvailable,
-          canUploadAttachments: isLive && attachmentsAvailable,
+          // A chat on a sleeping ADE Cloud computer takes files too: they go
+          // to the account with the held message.
+          canUploadAttachments: (isLive && attachmentsAvailable)
+            || syncServiceReference.service?.chatSendsThroughCloudAccount(sessionId: session.id) == true,
           sending: sending && !sendWillQueue,
           settingsMutationInFlight: composerSettingMutationInFlight,
           codexFastModeOverride: pendingCodexFastMode,
@@ -2113,6 +2673,16 @@ struct WorkChatSessionView: View {
     // Whether the sign-in card stands in for the composer before a send.
     .task(id: providerSignInStatusKey) {
       await refreshProviderSignedOutBeforeSend()
+    }
+    .task(id: signInFreeModelOfferKey) {
+      await refreshSignInFreeModelOffer()
+    }
+    // Claude on ADE Cloud: whether the account's Claude pass works.
+    .task(id: adeCloudClaudeReadTaskKey) {
+      await watchAdeCloudClaudeRead()
+    }
+    .sheet(isPresented: $adeCloudClaudePassPageShown, onDismiss: { adeCloudClaudeRecheck += 1 }) {
+      adeCloudClaudePassPage
     }
     // A prompt left open when the chat goes away would strand its send
     // forever; answer it for the person.
@@ -2203,6 +2773,7 @@ struct WorkChatSessionView: View {
             .environment(\.workSkillInstructions, skillInstructions)
             .environment(\.workProofCitations, proofCitationContext)
             .environment(\.workSceneBridge, sceneBridge)
+            .environment(\.workChatAccentHexOverride, ctoLive.map { CtoResolvedLook($0.look).hex })
             .modifier(
               WorkChatTranscriptEnvironmentModifier(
                 provider: chatSummaryContext.provider,
@@ -2689,6 +3260,26 @@ struct WorkChatSessionView: View {
         .onChange(of: liveClaudeQuotaCardId) { _, newId in
           handleLiveQuotaCardChange(newId)
         }
+        .onChange(of: ctoLiveFacts, initial: true) { _, facts in
+          publishCtoLiveFacts(facts)
+        }
+  }
+
+  /// Hands the CTO thread's turn facts to its live model (header pill,
+  /// profile). The turn's start is read off the transcript once, when the
+  /// turn begins, never per streamed delta.
+  @MainActor
+  private func publishCtoLiveFacts(_ facts: WorkCtoLiveFacts?) {
+    guard let ctoLive, let facts else { return }
+    if facts.active {
+      if ctoLive.turnStartedAt == nil {
+        ctoLive.turnStartedAt = WorkActivityIndicator.activeTurnStartTimestamp(from: transcript)
+          .flatMap(workActivityTimestamp) ?? Date()
+      }
+    } else if ctoLive.turnStartedAt != nil {
+      ctoLive.turnStartedAt = nil
+    }
+    ctoLive.applyTurn(active: facts.active, streaming: facts.streaming, awaiting: facts.awaiting, step: facts.step, failed: false)
   }
 
   /// Per-frame bookkeeping that is not rendering: a history reset (generation
@@ -2794,13 +3385,16 @@ struct WorkChatSessionView: View {
             currentCopilotAutoTier: chatSummaryContext.copilotAutoTier,
             copilotAutoTierPending: chatSummaryContext.copilotAutoTierPending,
             onSelectCopilotTiers: { context, auto in pickedCopilotTiers = (context, auto) },
+            cloudCatalog: modelPickerCloudCatalog,
+            // The chat's own machine: a chat elsewhere never downloads here.
+            freeModelsMachine: isPersonalChat ? .automatic : (providerSignInHost.map { WorkFreeModelsMachine.host($0) } ?? .unreachable),
             onSelect: { option, pickedReasoning, _, pickedFastMode in
               Task { @MainActor in
                 modelUpdateInFlight = true
                 defer { modelUpdateInFlight = false }
                 let wasCurrentModel = workModelIdsEquivalent(option.id, currentModelId)
                 if !wasCurrentModel {
-                  await onSelectModel(option.id)
+                  _ = await onSelectModel(option.id)
                 }
                 guard !Task.isCancelled else { return }
                 let currentReasoning = chatSummaryContext.reasoningEffort
@@ -2842,6 +3436,7 @@ struct WorkChatSessionView: View {
       )
       .modifier(laneToolsPresenter)
       .environment(\.workChatAttachIssue, onAttachIssue.map(WorkChatAttachIssueAction.init))
+      .environment(\.workChatAttachGitHubIssue, onAttachGitHubIssue.map(WorkChatAttachIssueAction.init))
     )
   }
 
@@ -2853,6 +3448,7 @@ struct WorkChatSessionView: View {
       chatSessionId: session.id,
       // A side chat's lane tools are its main chat's, already polled there.
       enabled: !isPersonalChat && !chatSummaryContext.isSideChat,
+      remoteDevices: chatSummaryContext.remoteDevices,
       duoPane: duoPane,
       relay: toolsRelay
     )
@@ -3189,6 +3785,9 @@ private struct WorkChatComposerCard: View {
 
 private struct WorkChatComposerDraftInput: View {
   @Environment(\.workChatAttachIssue) private var onAttachIssue
+  @Environment(\.workChatAttachGitHubIssue) private var onAttachGitHubIssue
+  @Environment(\.workChatComposerMachineName) private var machineName
+  @Environment(\.workChatComposerLaneMove) private var laneMove
   @Environment(\.verticalSizeClass) private var verticalSizeClass
   let chatSummary: WorkChatSummaryRenderContext
   let contextMeter: WorkComposerContextMeterModel?
@@ -3663,6 +4262,10 @@ private struct WorkChatComposerDraftInput: View {
           }
 
           DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
+
+          if !isDictating, let machineName {
+            WorkComposerMachineTag(name: machineName, onMove: laneMove?.open)
+          }
         },
         trailing: {
           if !isDictating, let contextMeter {
@@ -3787,6 +4390,8 @@ private struct WorkChatComposerDraftInput: View {
   @MainActor
   private func beginAttachmentUploads() {
     guard canUploadAttachments else { return }
+    // No live link to upload to: the send carries the bytes to the account.
+    if let composerChatSessionId, syncService.chatSendsThroughCloudAccount(sessionId: composerChatSessionId) { return }
     for attachment in inputAttachments where attachment.isReady && attachment.hostRef == nil {
       WorkComposerAttachmentUploads.shared.begin(
         attachment,
@@ -3845,6 +4450,18 @@ private struct WorkChatComposerDraftInput: View {
     }
     if restored.isEmpty {
       restored = WorkComposerDraftAttachmentCache.read(entry.localFiles, for: key)
+    } else {
+      // Refs resolved, but a tile with no ref yet lives only in the cache: one
+      // whose upload had failed (back with its retry) or was still running when
+      // the person left (back ready, reusing that upload by its id).
+      let restoredIds = Set(restored.map(\.id))
+      let cachedOnly = entry.localFiles.filter { file in
+        guard let id = file.id else { return true }
+        return !restoredIds.contains(id)
+      }
+      if !cachedOnly.isEmpty {
+        restored += WorkComposerDraftAttachmentCache.read(cachedOnly, for: key)
+      }
     }
     guard !restored.isEmpty, inputAttachments.isEmpty, draftPersistenceKey == key else { return }
     inputAttachments = Array(restored.prefix(workChatInputAttachmentLimit))
@@ -3875,10 +4492,17 @@ private struct WorkChatComposerDraftInput: View {
   @ViewBuilder
   private var composerExtraMenuContent: some View {
     stopAndSendSettingsMenu
-    if let onAttachIssue {
-      Section {
-        Button(action: onAttachIssue.run) {
-          Label("Attach Issue", systemImage: "link.badge.plus")
+    if onAttachIssue != nil || onAttachGitHubIssue != nil {
+      Section("Issue context") {
+        if let onAttachIssue {
+          Button(action: onAttachIssue.run) {
+            Label("Linear issue…", systemImage: "circle.dashed")
+          }
+        }
+        if let onAttachGitHubIssue {
+          Button(action: onAttachGitHubIssue.run) {
+            Label("GitHub issue…", systemImage: "smallcircle.filled.circle")
+          }
         }
       }
     }
@@ -4179,7 +4803,7 @@ private struct WorkSubagentLineageBreadcrumb: View {
 
   private var sourceLabel: String {
     let trimmed = parentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmed.isEmpty ? "parent chat" : trimmed
+    return trimmed.isEmpty ? "another chat" : trimmed
   }
 
   var body: some View {
@@ -4190,10 +4814,10 @@ private struct WorkSubagentLineageBreadcrumb: View {
           .foregroundStyle(ADEColor.accent)
 
         VStack(alignment: .leading, spacing: 1) {
-          Text("Subagent chat")
+          Text("Started by")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.accent)
-          Text("from \(sourceLabel)")
+          Text(sourceLabel)
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
@@ -4217,8 +4841,8 @@ private struct WorkSubagentLineageBreadcrumb: View {
       .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("Open parent chat, \(sourceLabel)")
-    .accessibilityHint("Returns to the chat that spawned this subagent.")
+    .accessibilityLabel("Started by \(sourceLabel)")
+    .accessibilityHint("Opens the chat that started this one.")
   }
 }
 
@@ -4601,5 +5225,79 @@ private struct WorkChatComposerSendButton: View {
         "role": "button"
       ]
     )
+  }
+}
+
+/// "Move this lane to" from the open chat's machine label. Two actions with
+/// the same key are the same, so a chat update that rebuilds the closure
+/// does not redraw the prompt box.
+struct WorkComposerLaneMoveAction: Equatable {
+  let key: String
+  let open: () -> Void
+
+  static func == (lhs: WorkComposerLaneMoveAction, rhs: WorkComposerLaneMoveAction) -> Bool {
+    lhs.key == rhs.key
+  }
+}
+
+extension EnvironmentValues {
+  /// The computer the open chat runs on, for its prompt box. Nil elsewhere.
+  @Entry var workChatComposerMachineName: String? = nil
+  /// Opens the move of the open chat's lane. Nil when its lane can't move.
+  @Entry var workChatComposerLaneMove: WorkComposerLaneMoveAction? = nil
+}
+
+/// The open chat's computer, quiet in the prompt box's control row: where a
+/// message sent here runs. When the chat's lane can move, a tap opens "Move
+/// this lane to"; otherwise it is only a label (the chat header names it too).
+struct WorkComposerMachineTag: View {
+  let name: String
+  var onMove: (() -> Void)? = nil
+
+  var body: some View {
+    if let onMove {
+      Button {
+        ADEHaptics.light()
+        onMove()
+      } label: {
+        label(movable: true)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityHint("Moves this lane to another computer")
+      .adeInspectable("Work.Chat.Composer.MachineTag")
+    } else {
+      label(movable: false)
+    }
+  }
+
+  private func label(movable: Bool) -> some View {
+    // The model chip keeps its room first. A narrow composer shows only the
+    // computer icon; its label still names the computer.
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 4) {
+        icon
+        Text(name)
+          .font(.system(size: 12, weight: .medium))
+          .lineLimit(1)
+          .fixedSize()
+        if movable {
+          Image(systemName: "chevron.up.chevron.down")
+            .font(.system(size: 9, weight: .semibold))
+        }
+      }
+      icon
+    }
+    .foregroundStyle(ADEColor.textMuted)
+    .padding(.horizontal, 4)
+    .frame(minHeight: 28)
+    .layoutPriority(-1)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Runs on \(name)")
+  }
+
+  private var icon: some View {
+    Image(systemName: "desktopcomputer")
+      .font(.system(size: 12, weight: .medium))
   }
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DevServerRecord, OpenProjectBinding } from "../../shared/types";
-import { pinKey } from "../state/pinKey";
+import { cacheScopeKey } from "./tabBindingKey";
 import { isUnsupportedAdeActionError } from "../../shared/codedError";
 
 /**
@@ -79,6 +79,15 @@ function syncRecheck(): void {
   }
 }
 
+/**
+ * The machine part of an entry key: the copy the read goes to. The tab's own
+ * copy is keyed by its own key, so a switch to another copy never reuses an
+ * entry (or the pin saved in it) from the copy before.
+ */
+function pinKey(pin: OpenProjectBinding | null | undefined): string {
+  return cacheScopeKey(pin) ?? "bound";
+}
+
 function entryKey(pin: OpenProjectBinding | null, laneId: string): string {
   return `${pinKey(pin)}|${laneId}`;
 }
@@ -98,7 +107,8 @@ const ALL_LANES = "*";
 function load(key: string, pin: OpenProjectBinding | null, laneId: string): void {
   const entry = entries.get(key);
   const list = window.ade?.workTools?.listDevServers;
-  if (!entry || !list) return;
+  // No machine named: nothing to read; the entry stays empty.
+  if (!entry || !list || !pin) return;
   if (entry.loading) {
     entry.stale = true;
     return;
@@ -151,7 +161,7 @@ function retainMachine(pin: OpenProjectBinding | null): () => void {
     existing.refCount += 1;
   } else {
     const subscribe = window.ade?.workTools?.onDevServer;
-    const dispose = subscribe
+    const dispose = pin && typeof subscribe === "function"
       ? subscribe((event) => {
         const laneId = event.server.source.laneId;
         const prefix = `${key}|`;

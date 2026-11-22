@@ -126,6 +126,9 @@ function check(name: string, status: string, conclusion: string | null) {
   return { name, status, conclusion, detailsUrl: null, startedAt: iso(20), completedAt: conclusion ? iso(18) : null };
 }
 
+/** The tab copy's address: the dashboard reads the lane there. */
+const TAB_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 function renderDashboard(props: Partial<React.ComponentProps<typeof LaneDashboard>> = {}) {
   const handlers = {
     onStartChat: vi.fn(),
@@ -143,6 +146,7 @@ function renderDashboard(props: Partial<React.ComponentProps<typeof LaneDashboar
                 laneId="lane-1"
                 colorIndex={0}
                 rebaseLine={null}
+                pin={TAB_PIN}
                 {...handlers}
                 {...props}
               />
@@ -206,7 +210,7 @@ describe("LaneDashboard", () => {
     expect(screen.getByTestId("lane-pr-review").textContent).toBe("Changes requested by arul28");
     expect(screen.getByTestId("lane-pr-merge").textContent).toBe("Conflicts with main");
     // Detail reads are for the open PR only.
-    expect(ade.prs.getChecks).toHaveBeenCalledWith("pr-1");
+    expect(ade.prs.getChecks).toHaveBeenCalledWith("pr-1", TAB_PIN);
     expect(ade.prs.getChecks).toHaveBeenCalledTimes(1);
 
     // The merged PR sits behind one disclosure.
@@ -275,7 +279,7 @@ describe("LaneDashboard", () => {
     fireEvent.click(screen.getByTestId("lane-new-chat"));
     expect(handlers.onStartChat).toHaveBeenCalledWith("lane-1");
     fireEvent.click(screen.getByTestId("lane-reveal"));
-    expect(ade.lanes.revealWorktree).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(ade.lanes.revealWorktree).toHaveBeenCalledWith({ laneId: "lane-1" }, TAB_PIN);
     fireEvent.click(screen.getByTestId("lane-more"));
     expect(handlers.onOpenLaneMenu).toHaveBeenCalledWith("lane-1", expect.anything());
     fireEvent.click(screen.getByTestId("lane-open-files"));

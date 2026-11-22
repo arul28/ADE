@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openKvDb, type AdeDb } from "../state/kvDb";
+import { type AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { createComputerUseArtifactPath } from "../computerUse/localComputerUse";
@@ -38,7 +39,7 @@ describe("scene still filing", () => {
 
   beforeEach(async () => {
     projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-scene-still-"));
-    db = await openKvDb(path.join(projectRoot, ".ade.db"), logger);
+    db = await openFreshKvDb(path.join(projectRoot, ".ade.db"), logger);
     db.run(
       `
         insert into projects(

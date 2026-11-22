@@ -34,6 +34,32 @@ export const DEFAULT_DISK_PRESSURE_THRESHOLDS: DiskPressureThresholds = {
   warningFraction: 0.05,
 };
 
+const MB = 1024 ** 2;
+
+/** A share of the disk, kept between a floor and the desktop's own value. */
+function scaledBytes(totalBytes: number, fraction: number, floorBytes: number, ceilingBytes: number): number {
+  return Math.round(Math.min(ceilingBytes, Math.max(floorBytes, totalBytes * fraction)));
+}
+
+/**
+ * Thresholds that follow the disk's own size, for a small disk that grows
+ * (an ADE Cloud computer's, which starts at a few GB): agent turns stop at 5%
+ * free, heavy jobs at 10%, the warning starts at 15%, each between a floor and
+ * the desktop default. A large disk gets the desktop defaults. On a 4 GB disk
+ * that is about 205 MB, 410 MB and 614 MB free, where the desktop numbers
+ * would stop every turn at 1 GB (75% used).
+ */
+export function diskPressureThresholdsForSize(totalBytes: number): DiskPressureThresholds {
+  const defaults = DEFAULT_DISK_PRESSURE_THRESHOLDS;
+  if (!Number.isFinite(totalBytes) || totalBytes <= 0) return defaults;
+  return {
+    ...defaults,
+    exhaustedBytes: scaledBytes(totalBytes, 0.05, 128 * MB, defaults.exhaustedBytes),
+    criticalBytes: scaledBytes(totalBytes, 0.10, 256 * MB, defaults.criticalBytes),
+    warningBytes: scaledBytes(totalBytes, 0.15, 512 * MB, defaults.warningBytes),
+  };
+}
+
 export const DISK_PRESSURE_REFUSAL_MESSAGES = {
   chat_turn: "Your computer is almost out of storage. ADE paused new agent work to protect your chats and projects. Free up space, then resume.",
   cli_launch: "Your computer is almost out of storage. ADE can't safely start a new CLI session until you free up space.",
@@ -75,6 +101,18 @@ export function createDiskPressureMonitor(options: {
   logger?: Pick<Logger, "warn">;
   now?: () => number;
   sampleIntervalMs?: number;
+  /**
+   * Thresholds read again at each sample from the disk's size (a disk that
+   * grows moves them): `diskPressureThresholdsForSize` on an ADE Cloud
+   * computer. Wins over `thresholds`.
+   */
+  thresholdsForSize?: (totalBytes: number) => DiskPressureThresholds;
+  /**
+   * The refusal's sentence, when the caller knows better than "your computer"
+   * (an ADE Cloud computer names its own disk and how it grows). Null keeps
+   * the default sentence.
+   */
+  refusalMessage?: (kind: DiskPressureOperationKind, snapshot: DiskPressureSnapshot) => string | null;
 }): DiskPressureMonitor {
   const roots = Array.from(new Set(
     options.roots
@@ -143,7 +181,10 @@ export function createDiskPressureMonitor(options: {
     const allRootsUnknown = perRoot.length === 0;
     const rawState = allRootsUnknown
       ? "normal"
-      : classifyDiskPressure({ freeBytes, freeFraction }, thresholds);
+      : classifyDiskPressure(
+        { freeBytes, freeFraction },
+        options.thresholdsForSize ? options.thresholdsForSize(totalBytes) : thresholds,
+      );
     const previousState = snapshot?.state ?? null;
     let state = rawState;
 
@@ -184,15 +225,24 @@ export function createDiskPressureMonitor(options: {
   };
 
   const canPerform = (kind: DiskPressureOperationKind): DiskPressureDecision => {
-    const state = getSnapshot().state;
+    const current = getSnapshot();
+    const state = current.state;
     const disallowed = state === "exhausted"
       || (state === "critical" && (kind === "high_write_job" || kind === "compression"));
     if (!disallowed) return { allowed: true, state };
+    let message: string | null = null;
+    try {
+      message = options.refusalMessage?.(kind, current) ?? null;
+    } catch (error) {
+      options.logger?.warn("storage.disk_pressure_message_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     return {
       allowed: false,
       state,
       code: "disk_full",
-      message: DISK_PRESSURE_REFUSAL_MESSAGES[kind],
+      message: message || DISK_PRESSURE_REFUSAL_MESSAGES[kind],
     };
   };
 

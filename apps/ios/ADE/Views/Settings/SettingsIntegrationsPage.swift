@@ -4,23 +4,23 @@ import SwiftUI
 private let settingsIntegrationsLog = Logger(subsystem: "com.ade.ios", category: "SettingsIntegrations")
 
 /// Settings › Integrations: what the connected machine is connected to, in the
-/// desktop's order (`integrations/IntegrationsHome.tsx`): GitHub, Linear,
-/// Jira and the provider, then Webhooks. Each status is read on that machine,
-/// where its credentials live. Linear connects from the phone through the
-/// same screen the Linear pane uses, and the provider opens its pane; GitHub and
-/// Jira connect on the computer, so their cards only show where they stand.
+/// desktop's order (`integrations/IntegrationsHome.tsx`): GitHub, Linear and
+/// Jira, then Webhooks. Each status is read on that machine, where its
+/// credentials live. Linear connects from the phone through the same screen
+/// the Linear pane uses; GitHub and Jira connect on the computer, so their
+/// cards only show where they stand. ADE Cloud has its own Settings row
+/// (`SettingsRoute.adeCloud`), as on the desktop.
 struct SettingsIntegrationsPage: View {
   let syncService: SyncService
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var accountGitHub = GitHubAccountConnection.shared
 
   @State private var github: IntegrationSummary = .checking
   @State private var githubRepo: String?
   @State private var jira: IntegrationSummary = .checking
-  @State private var cloud: IntegrationSummary = .checking
   /// Linear's own status lives on `SyncService` (the Work pane reads it too),
   /// so a connect or disconnect on the pushed screen shows here on return.
   @State private var linearChecked = false
-  @State private var cloudPresented = false
 
   private var connected: Bool { syncService.connectionState == .connected }
   private var machine: String { syncService.machineDisplayName }
@@ -39,19 +39,14 @@ struct SettingsIntegrationsPage: View {
         githubSection
         linearSection
         jiraSection
-        if syncService.cloudAvailable { cloudSection }
         webhooksSection
       }
     }
-    .sheet(isPresented: $cloudPresented) {
-      CloudPaneSheet(syncService: syncService)
-        .environmentObject(syncService)
-    }
     // One read per card, side by side: a slow GitHub check never holds up Jira.
     .task(id: connected) { if connected { await loadGitHub() } }
+    .task { await accountGitHub.refreshStatus() }
     .task(id: connected) { if connected { await loadLinear() } }
     .task(id: connected) { if connected { await loadJira() } }
-    .task(id: connected) { if connected { await syncService.refreshCloudAvailability(); await loadCloud() } }
   }
 
   // MARK: - GitHub
@@ -69,7 +64,19 @@ struct SettingsIntegrationsPage: View {
         ADESettingsValueRow(title: "Repository", value: githubRepo, mono: true)
       }
       if hasProject, github == .notConnected {
-        ADESettingsRow("Connect on your computer", hint: "Settings › Integrations › GitHub")
+        switch accountGitHub.state {
+        case .notConnected, .needsReauth:
+          // The account's GitHub sign-in serves every computer that has none.
+          ADESettingsRow(title: "Connect GitHub", hint: "Connect it to your ADE account. Every device and computer can use it.", symbol: "link", tint: .slate) {
+            Button(accountGitHub.connecting ? "Connecting…" : "Connect") {
+              Task { await accountGitHub.connect() }
+            }
+            .buttonStyle(ADEKitButtonStyle(prominent: true))
+            .disabled(accountGitHub.connecting)
+          }
+        default:
+          ADESettingsRow("Connect on your computer", hint: "Settings › Integrations › GitHub")
+        }
       }
     }
   }
@@ -136,22 +143,6 @@ struct SettingsIntegrationsPage: View {
     }
   }
 
-  // MARK: - the provider
-
-  private var cloudSection: some View {
-    SettingsIntegrationCard(
-      name: "ADE Cloud",
-      tagline: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.",
-      status: cloud
-    ) {
-      ADEBrandTile(brand: .cloud, size: 42)
-    } rows: {
-      ADESettingsActionRow(title: "Open ADE Cloud", symbol: "server.rack") {
-        cloudPresented = true
-      }
-    }
-  }
-
   // MARK: - Webhooks
 
   private var webhooksSection: some View {
@@ -214,20 +205,6 @@ struct SettingsIntegrationsPage: View {
     } catch {
       settingsIntegrationsLog.warning("Jira status read failed: \(error.localizedDescription, privacy: .public)")
       jira = .couldNotCheck
-    }
-  }
-
-  private func loadCloud() async {
-    guard syncService.cloudAvailable else { return }
-    do {
-      let list = try await syncService.cloudRead("list", as: CloudPhoneList.self)
-      cloud = IntegrationSummary(
-        label: list.machines.isEmpty ? "Ready" : "\(list.machines.count) machine\(list.machines.count == 1 ? "" : "s")",
-        tone: .ok
-      )
-    } catch {
-      settingsIntegrationsLog.warning("ADE Cloud status read failed: \(error.localizedDescription, privacy: .public)")
-      cloud = IntegrationSummary(label: "Couldn't reach ADE Cloud", tone: .warn)
     }
   }
 }

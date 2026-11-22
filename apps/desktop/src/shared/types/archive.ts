@@ -28,6 +28,12 @@ export type ArchivedItem = {
   sizeBytes: number | null;
   /** Chat or shell: the session's tool type (e.g. "claude-chat", "shell"). */
   toolType?: string | null;
+  /**
+   * An agent CLI terminal (kind "shell"): the CLI's name, "Claude Code",
+   * "Codex", …, which every surface shows instead of "Shell". Absent for a
+   * plain shell and on older hosts.
+   */
+  toolLabel?: string | null;
   /** Shell: the chat it was attached to, if any. */
   parentChatId?: string | null;
   /** Lane: the worktree folder is still on disk. */

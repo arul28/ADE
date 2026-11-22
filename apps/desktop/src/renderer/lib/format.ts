@@ -1,5 +1,7 @@
 /** Shared formatting utilities for the renderer. */
 
+import { stripElectronErrorWrapper } from "../../shared/codedError";
+
 // Lives in shared so main-process and renderer text can use the same sizes.
 export { formatBytes } from "../../shared/formatting";
 
@@ -204,13 +206,29 @@ export function extractError(err: unknown): string {
 
 /**
  * The message an IPC call failed with, without Electron's
- * "Error invoking remote method '<channel>': Error: " wrapper. Empty when the
- * thrown value carries no message, so the caller can show its own fallback.
+ * "Error invoking remote method '<channel>': <Class>Error: " wrapper. Empty
+ * when the thrown value carries no message, so the caller can show its own
+ * fallback.
  */
 export function ipcErrorMessage(err: unknown): string {
-  return err instanceof Error
-    ? err.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "").trim()
-    : "";
+  const text = err instanceof Error ? stripElectronErrorWrapper(err.message) : "";
+  // The bridge's own timeout ("IPC handler for '…' timed out after 30000ms (callId=…)")
+  // is for logs; a person reads what it means.
+  return IPC_TIMEOUT_TEXT.test(text) ? "ADE didn't hear back in time. Try again in a moment." : text;
+}
+
+const IPC_TIMEOUT_TEXT = /^IPC handler for '[^']+' timed out after \d+ms/;
+
+/** A dropped or slow link to another machine's text: the person retries, ADE has nothing to fix. */
+const CONNECTION_TROUBLE_TEXT = /didn't hear back in time|connection was interrupted|connection closed|connection failed recently|timed out|can't reach|manually disconnected|websocket is not open|fell behind/i;
+
+/**
+ * Whether an error's text (as `ipcErrorMessage` returns it) means the link to
+ * the other machine dropped or was too slow, not that the action failed.
+ * Decide this once on the raw text and carry the answer with the error.
+ */
+export function isConnectionTroubleText(text: string): boolean {
+  return CONNECTION_TROUBLE_TEXT.test(text);
 }
 
 /** Shorten a SHA-like hash to the first 8 characters. */
@@ -224,4 +242,15 @@ export function statusToneOperation(status: string): string {
   if (status === "failed") return "text-red-400 border-red-900";
   if (status === "running") return "text-amber-400 border-amber-900";
   return "text-muted-fg border-border";
+}
+
+/** "2 min ago", "3 h ago", "16 days ago". */
+export function formatAgo(ms: number, now: number): string {
+  const minutes = Math.max(0, Math.round((now - ms) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? "1 day ago" : `${days} days ago`;
 }

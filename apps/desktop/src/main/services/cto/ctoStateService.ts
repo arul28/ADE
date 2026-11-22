@@ -1,35 +1,43 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-import YAML from "yaml";
-import { CTO_IDENTITY_SCHEMA_VERSION } from "../../../shared/types/cto";
+import { createHash } from "node:crypto";
+import { YAML } from "../shared/lazyPackages";
+import {
+  CTO_IDENTITY_SCHEMA_VERSION,
+  CTO_MAX_FALLBACK_MODELS,
+  CTO_PERSONALITIES,
+  DEFAULT_CTO_AVATAR_LOOK,
+  type CtoAvatarLook,
+  type CtoPersonality,
+} from "../../../shared/types/cto";
 import type {
   CtoIdentity,
-  CtoLegacyIdentityFields,
+  CtoModelPreferences,
   CtoOnboardingState,
-  CtoSessionLogEntry,
   CtoRuntimeCapabilities,
   CtoSnapshot,
   CtoStaticContextSection,
   CtoSystemPromptPreview,
 } from "../../../shared/types";
 import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
+import { normalizeCtoAvatarLook } from "../../../shared/ctoAvatarLook";
 import {
   getDefaultModelDescriptor,
   getModelById,
   listModelDescriptorsForProvider,
   resolveChatProviderForDescriptor,
   resolveModelDescriptor,
+  resolveModelDescriptorForProvider,
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
 import { AGENT_CHAT_PERMISSION_MODE_VALUES, providerSupportsLiveRedirect } from "../../../shared/types/chat";
+import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
-import { createLogIntegrityService } from "../projects/logIntegrityService";
 import { buildCtoCapabilityManifest } from "./ctoPromptContent";
+import { isKnownTimeZone } from "../../../shared/chatScheduledWork";
 import type { CtoMemoryService } from "./ctoMemoryService";
 import type { CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
-import { resolveChatTranscriptReadPath } from "../storage/legacyChatTranscripts";
 
 /**
  * Live project state sources for the per-turn block.
@@ -52,12 +60,14 @@ export type CtoLiveStateSources = Pick<
 
 type CtoStateServiceArgs = {
   db: AdeDb;
+  /** After the identity (name, look, models) changes, e.g. so the account copy is saved again. */
+  onIdentityChanged?: (() => void) | null;
   projectId: string;
   adeDir: string;
   /**
-   * Smart-memory service. Optional so ctoStateService can be constructed
+   * Notes and open work. Optional so ctoStateService can be constructed
    * standalone (e.g. capability-manifest preview), but wired in production so
-   * durable memory is injected into the reconstruction context and prompt.
+   * the memory is injected into every turn.
    */
   ctoMemoryService?: Pick<
     CtoMemoryService,
@@ -73,83 +83,13 @@ type CtoStateServiceArgs = {
   capabilities?: CtoRuntimeCapabilities | null;
 };
 
-type AppendCtoSessionLogArgs = {
-  sessionId: string;
-  summary: string;
-  startedAt: string;
-  endedAt: string | null;
-  provider: string;
-  modelId: string | null;
-  capabilityMode: "full_tooling" | "fallback";
-};
-
-
 type PersistedDoc<T> = {
   payload: T;
   updatedAt: string;
 };
 
-const CTO_CURRENT_CONTEXT_RELATIVE_PATH = ".ade/cto/CURRENT.md";
-
-/** The envelope a user turn writes. Matched as text; see `countUserTurns`. */
-const USER_MESSAGE_MARKER = '"type":"user_message"';
-
-/**
- * Is this transcript line a user turn, rather than a line that merely mentions
- * one? Parsed only after the cheap marker test has already matched, and a line
- * that will not parse is not an envelope, so it is not a turn.
- */
-function isUserTurnLine(line: string): boolean {
-  try {
-    const parsed: unknown = JSON.parse(line);
-    return !!parsed
-      && typeof parsed === "object"
-      && (parsed as { type?: unknown }).type === "user_message";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Count `user_message` envelopes without holding the transcript in memory.
- *
- * A carry buffer stitches lines across chunk boundaries; the trailing partial
- * line is counted too, because a transcript written by a process that is still
- * running may have no final newline yet.
- */
-function countUserTurnsInTranscript(transcriptPath: string): Promise<number> {
-  return new Promise<number>((resolve, reject) => {
-    const stream = fs.createReadStream(transcriptPath, { encoding: "utf8" });
-    let carry = "";
-    let count = 0;
-    const consume = (line: string): void => {
-      if (!line.includes(USER_MESSAGE_MARKER)) return;
-      if (isUserTurnLine(line)) count += 1;
-    };
-    stream.on("data", (chunk) => {
-      carry += chunk;
-      let newlineAt = carry.indexOf("\n");
-      while (newlineAt !== -1) {
-        consume(carry.slice(0, newlineAt));
-        carry = carry.slice(newlineAt + 1);
-        newlineAt = carry.indexOf("\n");
-      }
-    });
-    stream.on("error", (error) => {
-      stream.destroy();
-      reject(error);
-    });
-    stream.on("end", () => {
-      if (carry.length) consume(carry);
-      resolve(count);
-    });
-  });
-}
-
-/** A transcript larger than this is not counted; a close must not stall. */
-const TRANSCRIPT_SCAN_MAX_BYTES = 32 * 1024 * 1024;
-
-const CTO_MODEL_PROVIDER_GROUPS: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "opencode"];
+/** Provider groups named in the model-selection knowledge, for the chats the CTO starts. */
+const CTO_MODEL_PROVIDER_GROUPS: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "opencode", "copilot"];
 
 function buildCtoModelSelectionKnowledge(): string[] {
   const providerLines = CTO_MODEL_PROVIDER_GROUPS.map((provider) => {
@@ -204,11 +144,14 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "- When you are unsure which tool to use, consult the capability manifest in your system prompt before asking the user.",
   "",
   "How you speak:",
-  "- Lead with the state of things, then your read on it, then what you would do. Full sentences, not headlines.",
-  "- Explain the reasoning before the recommendation when the reasoning is what makes it make sense. Skip it when the answer is obvious.",
-  "- Stay level. No exclamation marks, no 'great question', no 'I'd be happy to', no congratulating the user for asking.",
+  "- Default reply: one to three short sentences, the answer first. Add detail only when the person asks for it or a decision needs it.",
+  "- No headings. Bullets only for three or more parallel items. Plain sentences otherwise.",
+  "- Never restate the request and never narrate what you are about to do. Do it, then say what happened.",
+  "- No closing offers (\"Let me know if…\", \"Want me to…\"). When a decision is needed, end with one direct question.",
+  "- Chat ids, lane ids, hashes and paths only when the person needs them to act. Name things by their title.",
+  "- Stay level. No exclamation marks, no 'great question', no 'I'd be happy to', no congratulating the person for asking.",
   "- When you do not know, say so plainly, say what you would check, and then check it.",
-  "- Disagree when you disagree, once, with the reason. If the user decides otherwise, do it their way and drop it.",
+  "- Disagree when you disagree, once, with the reason. If the person decides otherwise, do it their way and drop it.",
   "- Never say something is done until you have verified it.",
   "",
   "Helping with ADE itself:",
@@ -220,35 +163,52 @@ const IMMUTABLE_CTO_DOCTRINE = [
 ].join("\n");
 
 const CTO_CONTINUITY_OPERATING_MODEL = [
-  "ADE continuity model:",
-  "1. Immutable doctrine: ADE always re-applies this CTO doctrine. It is not user-editable and it is not compacted away.",
-  `2. Current working context: ${CTO_CURRENT_CONTEXT_RELATIVE_PATH}. ADE maintains this project-level state for recent sessions.`,
-  "",
-  "Compaction and recovery rules:",
-  "- Treat injected CTO continuity as current operating context, not optional notes.",
-  "- Before non-trivial work, before asking the user to restate context, and before entering an unfamiliar subsystem, re-ground yourself in the current context ADE already injects.",
-  "- ADE already injects reconstructed CTO state into the session. Do not spend turns shell-reading relative .ade/cto files from the workspace unless an explicit absolute file path is required.",
-  "- Do not write ephemeral turn-by-turn status, scratch notes, or one-off observations that can be recovered from the repo or recent chat history.",
+  "How your continuity works:",
+  "- You are one continuous CTO for this project. ADE keeps the whole conversation with the person; it is the record, and nothing in it is lost.",
+  "- ADE may give you a fresh context at any time: when this one gets full, after a compaction, when your model changes. A fresh context gets this doctrine, your notes, your open work, the live project state and the last messages of the conversation. Treat it as the same conversation continuing, not a new one.",
+  "- Your notes, open work and live project state are injected on every turn below. They are current; trust them over your own recollection.",
+  "- Before you ask the person to repeat anything, look it up with readHistory. It pages and searches the whole conversation, including everything before a fresh context.",
+  "- Do not shell-read .ade/cto. ADE already gives you what is there.",
 ].join("\n");
 
 const CTO_MEMORY_SYSTEM_GUIDANCE = [
-  "You have persistent memory that survives restarts, crashes, cleared sessions, model switches, and context compaction.",
-  "Durable facts, the project brief, and the threads you have directed live in the project context store. ADE re-injects the brief first, then the facts that match the current work, then those threads. When this repo has a git remote, the same rows follow the ADE account to another signed-in machine.",
-  "MEMORY.md is the local notes file. It is still injected, and saveMemory still writes it, but the context store is the copy that survives and syncs.",
-  "- Thread state: a rolling summary of the current goal, recent decisions, and open loops.",
-  "- Recent daily log: a compact per-turn journal of what was asked and done.",
-  "",
-  "How to use it:",
-  "- Save durable facts proactively with the saveMemory tool: architectural decisions, conventions, traps, environment quirks, the user's preferences about how to work, and anything you would want to remember weeks from now. Keep each fact one crisp sentence and give it a kind.",
-  "- ADE also writes memory down for you: every few turns, before a compaction, on a model or provider switch, and when a thread is retired, a helper model reads the conversation, refreshes the thread state, and files the durable facts it finds. Your own saveMemory is still the better record of what you decided.",
-  "- When a fact stops being true, replace it (saveMemory with `replaces`) or retire it (forgetMemory). Stale memory that keeps being injected is worse than none.",
-  "- Keep the one project brief current with setProjectBrief. The injected brief is authoritative for the goal.",
-  "- Search prior context with the searchMemory tool before asking the user to restate something. It covers your memory and every past chat in this project, including your own retired threads, so nothing said in an earlier thread is lost. readMemory reviews the notes file.",
-  "- The injected memory below is authoritative. Never claim to remember something that is not present in your injected memory or the current conversation — if you don't have it, say so or search for it.",
-  "- Your memory is model-agnostic. When the user switches your model, the same memory carries over; do not treat a switch as a reset.",
-  "- Never store secrets in memory: no API keys, tokens, passwords, or credentials. Memory is plaintext and re-injected into prompts. Reference secrets by name (e.g. \"the LINEAR_API_KEY in ade secrets\") instead of by value; ADE also scrubs secret-shaped content on write as a backstop.",
-  "- Do not shell-read .ade/cto to recover this. ADE already injects it.",
+  "How you remember:",
+  "- remember({ note }) the moment you learn something durable: a decision, a convention, a trap, how the person likes to work. One short line per note. scope \"user\" is for facts about the person, shared with you in every project on this machine; the default is this project.",
+  "- When a fact changes, rewrite its note: remember({ note, replaces: \"<part of the old line>\" }). When it stops being true, forget({ note: \"<part of the line>\" }).",
+  "- The notes have a hard size cap shown in their heading. Keep them short; merge related notes rather than adding near-copies. A note past the cap is refused until you make room.",
+  "- trackWork({ text }) when you start something that outlives this turn (a chat you launched, a PR to land, a check to make). finishWork({ id, outcome }) when it is done. The open list is injected every turn, so nothing you started is forgotten.",
+  "- When the person asks you to check on something later, use scheduleWork. Do not promise to remember to come back without scheduling it.",
+  "- Never store secrets in notes: no API keys, tokens or passwords. Refer to a secret by its name. ADE also scrubs secret-shaped text as a backstop.",
 ].join("\n");
+
+const CTO_PERSONALITY_VOICE: Record<CtoPersonality, string | null> = {
+  focused: null,
+  friendly: [
+    "Your voice: friendly. This replaces the \"stay level\" tone above; everything else above still holds.",
+    "- Warm and plain, the way a good colleague talks. Use the person's own words back to them and show you care how it lands.",
+    "- An occasional exclamation is fine when something good happened. No filler, no flattery, no \"great question\".",
+    "- The precision and verification rules above always win.",
+  ].join("\n"),
+  playful: [
+    "Your voice: playful. This replaces the \"stay level\" tone above; everything else above still holds.",
+    "- You enjoy this work and it shows: one light touch per reply, such as a quick quip, a vivid verb or a small aside. Never more than one, never forced.",
+    "- Good news can land with a little flourish. Bad news stays straight: no jokes about a failure, a lost change or the person's mistake.",
+    "- At most one emoji, and only when it adds something. Facts, file names and numbers stay exact; the precision and verification rules above always win.",
+  ].join("\n"),
+};
+
+/**
+ * The doctrine with the chosen voice after its "How you speak" rules. The
+ * default voice adds nothing: the doctrine already speaks that way.
+ */
+function doctrineWithVoice(personality: CtoPersonality): string {
+  const voice = CTO_PERSONALITY_VOICE[personality];
+  if (!voice) return IMMUTABLE_CTO_DOCTRINE;
+  const marker = "Helping with ADE itself:";
+  const at = IMMUTABLE_CTO_DOCTRINE.indexOf(marker);
+  if (at < 0) return `${IMMUTABLE_CTO_DOCTRINE}\n\n${voice}`;
+  return `${IMMUTABLE_CTO_DOCTRINE.slice(0, at)}${voice}\n\n${IMMUTABLE_CTO_DOCTRINE.slice(at)}`;
+}
 
 function buildCtoEnvironmentKnowledge(): string {
   const permissionModes = AGENT_CHAT_PERMISSION_MODE_VALUES.map((mode) => `'${mode}'`).join(" | ");
@@ -335,7 +295,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "",
   "## CTO Continuity",
   "",
-  "  ADE keeps CTO continuity through the current working context and recent sessions, re-injected across compaction and model switches.",
+  "  ADE keeps one CTO conversation per project. Notes, open work and live state are injected every turn, and readHistory reaches the whole conversation.",
   "",
   "## Tests",
   "",
@@ -454,78 +414,156 @@ function normalizeModelPreferences(raw: Record<string, unknown>): CtoIdentity["m
     ...(typeof raw.reasoningEffort === "string" || raw.reasoningEffort == null
       ? { reasoningEffort: (raw.reasoningEffort as string | null | undefined) ?? null }
       : {}),
+    // An account only means something on a multi-account provider.
+    ...(typeof raw.instanceId === "string" && raw.instanceId.trim()
+      && isProviderInstanceProvider(resolvePreferredChatProvider(raw))
+      ? { instanceId: raw.instanceId.trim() }
+      : {}),
   };
 }
 
 /**
- * Carry the retired identity fields into the extension the CTO still reads.
- *
- * `personality`, `customPersonality`, `communicationStyle` and `constraints`
- * were removed from `CtoIdentity` in favour of one freeform
- * `systemPromptExtension`. Nothing migrated them, and because `normalizeIdentity`
- * drops unknown keys and the very next `writeIdentityToFile` rewrites
- * identity.yaml from the normalized record, the first load of an older project
- * DELETED them — including `constraints`, a list the CTO itself could write.
- * Text a user (or the CTO) wrote must not vanish because a field was renamed,
- * so it is appended below whatever extension already exists.
- *
- * Runs once: the fold only fires while the stored `schemaVersion` is below
- * `CTO_IDENTITY_SCHEMA_VERSION`, and the normalized record always carries that
- * version afterwards, so a second load re-reads its own output and appends
- * nothing.
+ * Apply a `modelPreferences` patch. A patch that keeps the model merges, so a
+ * reasoning-only change keeps the stored `modelId`. A patch that names a
+ * different provider or model without a `modelId` (the phone's picker sends
+ * only those) is a new pick: the old `modelId` would survive a merge and win,
+ * because `modelId` is what the runtime launches from. It is replaced, with the
+ * id resolved from the registry when the model names one.
  */
-function foldLegacyIdentityFields(
-  source: Record<string, unknown>,
-  systemPromptExtension: string | undefined,
-): string | undefined {
-  const legacy = source as CtoLegacyIdentityFields;
+function mergeModelPreferencesPatch(
+  current: CtoIdentity["modelPreferences"],
+  patch: Partial<CtoModelPreferences>,
+): CtoModelPreferences {
+  const hasModelId = typeof patch.modelId === "string" && patch.modelId.trim().length > 0;
+  const providerChanged = typeof patch.provider === "string" && patch.provider.trim() !== (current?.provider ?? "");
+  const modelChanged = typeof patch.model === "string" && patch.model.trim() !== (current?.model ?? "");
+  // An account belongs to its provider: a pick on another provider drops it
+  // unless the patch names one.
+  const keepAccount = (next: CtoModelPreferences): CtoModelPreferences => {
+    if (patch.instanceId !== undefined || !current?.instanceId) return next;
+    const sameProvider = resolvePreferredChatProvider(next as unknown as Record<string, unknown>)
+      === resolvePreferredChatProvider(current as unknown as Record<string, unknown>);
+    if (sameProvider) return next;
+    const { instanceId: _staleAccount, ...rest } = next;
+    return rest as CtoModelPreferences;
+  };
+  if (hasModelId) {
+    // A patch naming only the model id (the CLI, the CTO's own tools) gets its
+    // provider and model from that id, never the previous pick's.
+    const descriptor = resolveModelDescriptor(patch.modelId!.trim());
+    const derived = descriptor
+      ? { provider: descriptor.family, model: descriptor.shortId ?? descriptor.id.split("/").pop() ?? descriptor.id }
+      : {};
+    return keepAccount({ ...current, ...derived, ...patch } as CtoModelPreferences);
+  }
+  if (!(providerChanged || modelChanged) || !current) {
+    return keepAccount({ ...current, ...patch } as CtoModelPreferences);
+  }
+  const { modelId: _staleModelId, ...rest } = current;
+  const next = { ...rest, ...patch } as CtoModelPreferences;
+  delete next.modelId;
+  const resolved = resolvePatchModelId(next.provider, next.model);
+  return keepAccount(resolved ? { ...next, modelId: resolved } : next);
+}
 
-  const constraints = Array.isArray(legacy.constraints)
-    ? legacy.constraints
-        .map((value) => (typeof value === "string" ? value.trim() : ""))
-        .filter((value) => value.length > 0)
-    : [];
+const CTO_PREFERENCE_PROVIDER_GROUPS = new Set<string>(["claude", "codex", "muse", "opencode", "cursor", "droid"]);
 
-  const personality = typeof legacy.personality === "string" ? legacy.personality.trim() : "";
-  const customPersonality = typeof legacy.customPersonality === "string"
-    ? legacy.customPersonality.trim()
-    : "";
-  const style = legacy.communicationStyle && typeof legacy.communicationStyle === "object"
-    ? legacy.communicationStyle
+/** The registry id a provider + model pair names, when there is exactly one reading of it. */
+function resolvePatchModelId(provider: string | undefined, model: string | undefined): string | null {
+  const ref = model?.trim();
+  if (!ref) return null;
+  const family = resolvePreferredChatProvider({ provider: provider ?? "" });
+  const descriptor = CTO_PREFERENCE_PROVIDER_GROUPS.has(family)
+    ? resolveModelDescriptorForProvider(ref, family as ModelProviderGroup)
+    : resolveModelDescriptor(ref);
+  if (!descriptor) return null;
+  // A model that would launch on another provider is not this pick.
+  if (family && resolveChatProviderForDescriptor(descriptor).provider !== family) return null;
+  return descriptor.id;
+}
+
+
+function normalizePersonality(value: unknown): CtoPersonality | null {
+  return typeof value === "string" && (CTO_PERSONALITIES as readonly string[]).includes(value)
+    ? value as CtoPersonality
     : null;
-  const styleParts = [
-    typeof style?.verbosity === "string" && style.verbosity.trim().length
-      ? `verbosity ${style.verbosity.trim()}`
-      : null,
-    typeof style?.proactivity === "string" && style.proactivity.trim().length
-      ? `proactivity ${style.proactivity.trim()}`
-      : null,
-    typeof style?.escalation === "string" && style.escalation.trim().length
-      ? `escalation ${style.escalation.trim()}`
-      : null,
-  ].filter((part): part is string => part != null);
+}
 
-  const carried: string[] = [];
-  if (constraints.length) {
-    carried.push("Constraints:");
-    for (const constraint of constraints) carried.push(`- ${constraint}`);
+/**
+ * Backup models, in order. Each passes the same live-redirect check as the
+ * main pick; an entry that fails it, repeats an earlier one, or repeats the
+ * main model is dropped rather than kept.
+ */
+function normalizeFallbackModels(value: unknown, main: CtoModelPreferences | null): CtoModelPreferences[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  // The same model on another account is a real backup: its own quota.
+  const keyOf = (prefs: CtoModelPreferences): string =>
+    `${(prefs.modelId ?? `${prefs.provider}/${prefs.model}`).toLowerCase()}@${prefs.instanceId ?? ""}`;
+  if (main) seen.add(keyOf(main));
+  const out: CtoModelPreferences[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const normalized = normalizeModelPreferences(entry as Record<string, unknown>);
+    if (!normalized) continue;
+    const key = keyOf(normalized);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+    if (out.length >= CTO_MAX_FALLBACK_MODELS) break;
   }
-  // "custom" named no preset of its own — the text lived in `customPersonality`,
-  // which is carried on its own line — so a bare "custom" is nothing to keep.
-  if (personality.length && personality !== "custom") {
-    carried.push(`- Personality preset: ${personality}`);
-  }
-  if (customPersonality.length) {
-    carried.push(`- Personality: ${customPersonality}`);
-  }
-  if (styleParts.length) {
-    carried.push(`- Communication style: ${styleParts.join(", ")}`);
-  }
+  return out;
+}
 
-  if (!carried.length) return systemPromptExtension;
+/** Every `CtoIdentity` key this build normalizes itself. */
+const CTO_IDENTITY_KNOWN_KEYS = new Set<string>([
+  "name",
+  "version",
+  "schemaVersion",
+  "persona",
+  "systemPromptExtension",
+  "onboardingState",
+  "modelPreferences",
+  "crossMachineEnabled",
+  "fallbackModels",
+  "avatar",
+  "personality",
+  "timeZone",
+  "updatedAt",
+]);
 
-  const block = ["Carried over from an earlier CTO identity:", ...carried].join("\n");
-  return systemPromptExtension ? `${systemPromptExtension}\n\n${block}` : block;
+/**
+ * The identity keys kept in `.ade/cto/preferences.json` instead of the
+ * identity record: `avatar`, `personality`, `fallbackModels`. Builds from
+ * before these fields existed rebuild identity.yaml and the synced
+ * `cto_identity_state` row from the keys they know, with the same version and
+ * updatedAt, which silently deleted them; a sidecar those builds never read or
+ * write cannot be stripped that way.
+ */
+type CtoPreferencesDoc = {
+  version: 1;
+  avatar?: CtoAvatarLook;
+  personality?: CtoPersonality;
+  fallbackModels?: CtoModelPreferences[];
+  updatedAt: string;
+};
+
+/** The identity without the sidecar keys: what the record (file and row) stores. */
+function stripPreferenceKeys(identity: CtoIdentity): CtoIdentity {
+  const { avatar: _avatar, personality: _personality, fallbackModels: _fallbackModels, ...record } = identity;
+  return record;
+}
+
+/** The sidecar keys an identity carries, normalized; empty values are left out. */
+function pickPreferences(identity: Partial<CtoIdentity>, main: CtoModelPreferences | null): Omit<CtoPreferencesDoc, "version" | "updatedAt"> {
+  const avatar = normalizeCtoAvatarLook(identity.avatar);
+  const personality = normalizePersonality(identity.personality);
+  const fallbackModels = normalizeFallbackModels(identity.fallbackModels, main);
+  return {
+    ...(avatar ? { avatar } : {}),
+    ...(personality ? { personality } : {}),
+    ...(fallbackModels.length ? { fallbackModels } : {}),
+  };
 }
 
 function normalizeIdentity(input: unknown): CtoIdentity | null {
@@ -549,23 +587,41 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
       ? source.systemPromptExtension.trim()
       : undefined;
   const schemaVersion = Math.max(1, Math.floor(Number(source.schemaVersion ?? 1)));
-  const systemPromptExtension = schemaVersion < CTO_IDENTITY_SCHEMA_VERSION
-    ? foldLegacyIdentityFields(source, storedExtension)
-    : storedExtension;
+  const systemPromptExtension = storedExtension;
 
   const crossMachineEnabled = typeof source.crossMachineEnabled === "boolean"
     ? source.crossMachineEnabled
     : undefined;
+  const modelPreferences = normalizeModelPreferences(modelPreferencesRaw);
+  const fallbackModels = normalizeFallbackModels(source.fallbackModels, modelPreferences);
+  const avatar = normalizeCtoAvatarLook(source.avatar);
+  const personality = normalizePersonality(source.personality);
+  const timeZone = isKnownTimeZone(source.timeZone) ? source.timeZone : null;
+
+  // Keys this build does not know ride along untouched, so a field a newer
+  // build added is not stripped when this one rewrites the record (the bug an
+  // older build caused for `avatar`, `personality` and `fallbackModels`).
+  const passthrough: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined || CTO_IDENTITY_KNOWN_KEYS.has(key)) continue;
+    passthrough[key] = value;
+  }
 
   return {
+    ...passthrough,
     name,
     version,
-    schemaVersion: CTO_IDENTITY_SCHEMA_VERSION,
+    // A newer build's higher schema is kept.
+    schemaVersion: Math.max(schemaVersion, CTO_IDENTITY_SCHEMA_VERSION),
     persona,
     ...(systemPromptExtension ? { systemPromptExtension } : {}),
-    modelPreferences: normalizeModelPreferences(modelPreferencesRaw),
+    modelPreferences,
+    ...(fallbackModels.length ? { fallbackModels } : {}),
+    ...(avatar ? { avatar } : {}),
+    ...(personality ? { personality } : {}),
     ...(onboardingState ? { onboardingState } : {}),
     ...(crossMachineEnabled === undefined ? {} : { crossMachineEnabled }),
+    ...(timeZone ? { timeZone } : {}),
     updatedAt,
   };
 }
@@ -578,40 +634,6 @@ function clipText(value: string, maxLength = 220): string {
   const normalized = squishText(value);
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
-}
-
-function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
-  if (!input || typeof input !== "object") return null;
-  const source = input as Record<string, unknown>;
-  const sessionId = typeof source.sessionId === "string" ? source.sessionId.trim() : "";
-  const createdAt = typeof source.createdAt === "string" ? source.createdAt.trim() : "";
-  const summary = typeof source.summary === "string" ? source.summary.trim() : "";
-  const startedAt = typeof source.startedAt === "string" ? source.startedAt.trim() : "";
-  const provider = typeof source.provider === "string" ? source.provider.trim() : "";
-  if (!sessionId || !createdAt || !summary || !startedAt || !provider) return null;
-
-  const capabilityMode = source.capabilityMode === "full_tooling" || source.capabilityMode === "full_mcp"
-    ? "full_tooling"
-    : "fallback";
-  // Absent on every entry written before the field existed, and on every entry
-  // whose transcript could not be read. Both are "not recorded", not zero.
-  const rawTurns = source.turnCount;
-  const turnCount = typeof rawTurns === "number" && Number.isFinite(rawTurns) && rawTurns >= 0
-    ? Math.floor(rawTurns)
-    : null;
-  return {
-    id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : randomUUID(),
-    prevHash: typeof source.prevHash === "string" && source.prevHash.trim().length ? source.prevHash.trim() : null,
-    sessionId,
-    summary,
-    startedAt,
-    endedAt: typeof source.endedAt === "string" && source.endedAt.trim().length ? source.endedAt.trim() : null,
-    provider,
-    modelId: typeof source.modelId === "string" && source.modelId.trim().length ? source.modelId.trim() : null,
-    capabilityMode,
-    turnCount,
-    createdAt,
-  };
 }
 
 /* ── Live project state ── */
@@ -631,11 +653,9 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
  * sections are ordered most- to least-urgent precisely so the cap eats the
  * automation-run tail rather than the approvals at the top.
  *
- * It is not extra budget. The three memory sections came down by the same 6000
- * (see `ctoMemoryService`), which measurement showed were nowhere near their
- * caps, so the per-turn prefix is unchanged at 16000. `ctoState.test.ts`
- * asserts both measured numbers, so a future section addition has to
- * re-measure rather than silently start truncating.
+ * The memory sections beside it are capped by their files (4096 + 2048 bytes
+ * of notes and a bounded open-work list), so the volatile prefix stays near
+ * the same 16000 characters.
  */
 export const CTO_LIVE_STATE_MAX_CHARS = 6000;
 
@@ -718,6 +738,22 @@ function scheduleOrder(nextRunAt: string | null): number {
   return Number.isFinite(epoch) ? epoch : Number.POSITIVE_INFINITY;
 }
 
+/** A snapshot younger than this reads as current. */
+const LIVE_STATE_STALE_AFTER_MS = 5_000;
+
+/** "40 s", "3 min", "2 h", or null while the snapshot is still current. */
+function liveStateAgeLabel(capturedAt: string, nowMs: number): string | null {
+  const captured = Date.parse(capturedAt);
+  if (!Number.isFinite(captured)) return null;
+  const ageMs = nowMs - captured;
+  if (ageMs < LIVE_STATE_STALE_AFTER_MS) return null;
+  const seconds = Math.round(ageMs / 1000);
+  if (seconds < 60) return `${seconds} s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.round(minutes / 60)} h`;
+}
+
 function liveStateOverflowLine(
   shown: number,
   total: number,
@@ -736,9 +772,14 @@ function liveStateOverflowLine(
 export function renderCtoLiveStateBlock(
   snapshot: CtoLiveStateSnapshot,
   maxChars = CTO_LIVE_STATE_MAX_CHARS,
+  /** When given, a snapshot older than a few seconds says how old it is. */
+  nowMs?: number,
 ): string {
+  const age = nowMs == null ? null : liveStateAgeLabel(snapshot.capturedAt, nowMs);
   const lines: string[] = [
-    `Live project state (captured ${snapshot.capturedAt} — this is current, do not re-derive it by shelling out)`,
+    age
+      ? `Live project state (captured ${snapshot.capturedAt}, as of ${age} ago — check a row with a tool if it matters right now)`
+      : `Live project state (captured ${snapshot.capturedAt} — this is current, do not re-derive it by shelling out)`,
   ];
 
   lines.push("", `Waiting on you (${snapshot.approvalsTotal})`);
@@ -792,7 +833,8 @@ export function renderCtoLiveStateBlock(
   if (!snapshot.scheduledWork.length) lines.push("- none");
   for (const item of snapshot.scheduledWork) {
     const owner = item.own ? "yours" : item.sessionId;
-    lines.push(`- ${clipText(item.title, 60)} [${owner}] — ${item.status}${item.nextRunAt ? `, next ${item.nextRunAt}` : ""}`);
+    const status = item.status === "fired" ? "running now" : item.status;
+    lines.push(`- ${clipText(item.title, 60)} [${owner}] — ${status}${item.nextRunAt ? `, next ${item.nextRunAt}` : ""}`);
   }
   lines.push(...liveStateOverflowLine(snapshot.scheduledWork.length, snapshot.scheduledWorkTotal, "schedules"));
 
@@ -851,13 +893,11 @@ function makeDefaultIdentity(): CtoIdentity {
 }
 
 export function createCtoStateService(args: CtoStateServiceArgs) {
-  const logIntegrityService = createLogIntegrityService();
   const ctoDir = path.join(args.adeDir, "cto");
   const identityPath = path.join(ctoDir, "identity.yaml");
+  const preferencesPath = path.join(ctoDir, "preferences.json");
   // CTO identity is local runtime state by default; the shared scaffold keeps
   // the entire cto/ directory ignored unless a user force-adds it.
-  const currentContextPath = path.join(ctoDir, "CURRENT.md");
-  const sessionsPath = path.join(ctoDir, "sessions.jsonl");
 
   fs.mkdirSync(ctoDir, { recursive: true });
 
@@ -884,7 +924,10 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   // Every read reconciles both halves, so an unchanged half is left alone: a
   // rewrite renamed a temp file over identity.yaml, and an upsert made a synced
   // database version, on every identity read (each CTO operator action).
-  const writeIdentityToFile = (payload: CtoIdentity): void => {
+  // The record never carries the sidecar keys (see `CtoPreferencesDoc`), so
+  // every writer can hand over the full overlaid identity.
+  const writeIdentityToFile = (identity: CtoIdentity): void => {
+    const payload = stripPreferenceKeys(identity);
     const text = YAML.stringify(payload, { indent: 2 });
     try {
       if (fs.readFileSync(identityPath, "utf8") === text) return;
@@ -894,7 +937,8 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     writeTextAtomic(identityPath, text);
   };
 
-  const writeIdentityToDb = (payload: CtoIdentity): void => {
+  const writeIdentityToDb = (identity: CtoIdentity): void => {
+    const payload = stripPreferenceKeys(identity);
     const payloadJson = JSON.stringify(payload);
     const stored = args.db.get<{ version: number; payload_json: string; updated_at: string }>(
       "select version, payload_json, updated_at from cto_identity_state where project_id = ? limit 1",
@@ -939,287 +983,55 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return fromFile!.payload;
   };
 
-  const listSessionLogsFromDb = (): CtoSessionLogEntry[] => {
-    const rows = args.db.all<Record<string, unknown>>(
-      `
-        select id, session_id, summary, started_at, ended_at, provider, model_id, capability_mode, created_at
-        from cto_session_logs
-        where project_id = ?
-        order by datetime(created_at) desc
-      `,
-      [args.projectId]
-    );
-    return rows
-      .map((row) =>
-        normalizeSessionLogEntry({
-          id: row.id,
-          sessionId: row.session_id,
-          summary: row.summary,
-          startedAt: row.started_at,
-          endedAt: row.ended_at,
-          provider: row.provider,
-          modelId: row.model_id,
-          capabilityMode: row.capability_mode,
-          createdAt: row.created_at,
-        })
-      )
-      .filter((entry): entry is CtoSessionLogEntry => entry != null);
-  };
+  /* ── v2 preferences sidecar (.ade/cto/preferences.json) ── */
 
-  const listSessionLogsFromFile = (): CtoSessionLogEntry[] => {
-    if (!fs.existsSync(sessionsPath)) return [];
-    const raw = fs.readFileSync(sessionsPath, "utf8");
-    const entries: CtoSessionLogEntry[] = [];
-    for (const line of raw.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed.length) continue;
-      const parsed = safeJsonParse<unknown>(trimmed, null);
-      const normalized = normalizeSessionLogEntry(parsed);
-      if (normalized) entries.push(normalized);
-    }
-    return entries;
-  };
-
-  const appendSessionLogToFile = (entry: CtoSessionLogEntry): CtoSessionLogEntry => {
-    fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
-    return logIntegrityService.appendEntry(sessionsPath, entry) as CtoSessionLogEntry;
-  };
-
-  const insertSessionLogToDb = (entry: CtoSessionLogEntry): void => {
-    args.db.run(
-      `
-        insert or ignore into cto_session_logs(
-          id, project_id, session_id, summary, started_at, ended_at, provider, model_id, capability_mode, created_at
-        )
-        values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        entry.id,
-        args.projectId,
-        entry.sessionId,
-        entry.summary,
-        entry.startedAt,
-        entry.endedAt,
-        entry.provider,
-        entry.modelId,
-        entry.capabilityMode,
-        entry.createdAt,
-      ]
-    );
-  };
-
-  /**
-   * Returns the file half of the log as it stands AFTER reconciliation.
-   *
-   * The caller needs those entries (they carry `turnCount`, which the DB table
-   * has no column for), and this function has just parsed them. Handing them
-   * back means sessions.jsonl is read once per `getSessionLogs` instead of
-   * twice — the file grows without bound and the second parse produced exactly
-   * the same rows as the first.
-   */
-  const reconcileSessionLogs = (): CtoSessionLogEntry[] => {
-    const dbEntries = listSessionLogsFromDb();
-    const fileEntries = listSessionLogsFromFile();
-    const dbKeySet = new Set(dbEntries.map((entry) => `${entry.sessionId}::${entry.createdAt}`));
-    const fileKeySet = new Set(fileEntries.map((entry) => `${entry.sessionId}::${entry.createdAt}`));
-
-    for (const entry of fileEntries) {
-      const key = `${entry.sessionId}::${entry.createdAt}`;
-      if (dbKeySet.has(key)) continue;
-      insertSessionLogToDb(entry);
-      dbKeySet.add(key);
-    }
-
-    for (const entry of dbEntries) {
-      const key = `${entry.sessionId}::${entry.createdAt}`;
-      if (fileKeySet.has(key)) continue;
-      fileEntries.push(appendSessionLogToFile(entry));
-      fileKeySet.add(key);
-    }
-
-    return fileEntries;
-  };
-
-  type ReconciledState = {
-    identity: CtoIdentity;
-    /** The file half of the session log, already parsed by the reconcile. */
-    sessionLogsFromFile: CtoSessionLogEntry[];
-  };
-
-  const reconcileIdentity = (): CtoIdentity => {
-    const identity = chooseCanonical(readIdentityFromFile(), readIdentityFromDb(), makeDefaultIdentity);
-    writeIdentityToFile(identity);
-    writeIdentityToDb(identity);
-    return identity;
-  };
-
-  const reconcileAll = (): ReconciledState => ({
-    identity: reconcileIdentity(),
-    sessionLogsFromFile: reconcileSessionLogs(),
-  });
-
-  // The identity alone: the session log (an unbounded file) is not part of it.
-  const getIdentity = (): CtoIdentity => reconcileIdentity();
-
-  const getSessionLogs = (limit = 20): CtoSessionLogEntry[] => {
-    const { sessionLogsFromFile } = reconcileAll();
-    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
-    // The turn count lives in the append-only file half of this log, not in
-    // `cto_session_logs` — that table's columns are fixed in the schema and a
-    // count is not worth a migration. The DB still decides which entries exist
-    // and in what order; the file only says how many turns each one had, keyed
-    // the way `reconcileSessionLogs` keys them.
-    const turnsByKey = new Map<string, number>();
-    for (const entry of sessionLogsFromFile) {
-      if (typeof entry.turnCount === "number") {
-        turnsByKey.set(`${entry.sessionId}::${entry.createdAt}`, entry.turnCount);
-      }
-    }
-    return args.db
-      .all<Record<string, unknown>>(
-        `
-          select id, session_id, summary, started_at, ended_at, provider, model_id, capability_mode, created_at
-          from cto_session_logs
-          where project_id = ?
-          order by datetime(created_at) desc
-          limit ?
-        `,
-        [args.projectId, safeLimit]
-      )
-      .map((row) =>
-        normalizeSessionLogEntry({
-          id: row.id,
-          sessionId: row.session_id,
-          summary: row.summary,
-          startedAt: row.started_at,
-          endedAt: row.ended_at,
-          provider: row.provider,
-          modelId: row.model_id,
-          capabilityMode: row.capability_mode,
-          createdAt: row.created_at,
-        })
-      )
-      .filter((entry): entry is CtoSessionLogEntry => entry != null)
-      .map((entry) => {
-        const turnCount = turnsByKey.get(`${entry.sessionId}::${entry.createdAt}`);
-        return turnCount === undefined ? entry : { ...entry, turnCount };
-      });
-  };
-
-  const getSnapshot = (recentLimit = 20): CtoSnapshot => {
-    const { identity } = reconcileAll();
-    return {
-      identity,
-      recentSessions: getSessionLogs(recentLimit),
-      ...(args.capabilities ? { capabilities: { ...args.capabilities } } : {}),
-    };
-  };
-
-  const buildCurrentContextLines = (snapshot: CtoSnapshot): string[] => {
-    const lines: string[] = ["## Recent CTO sessions"];
-    if (snapshot.recentSessions.length > 0) {
-      for (const entry of snapshot.recentSessions) {
-        lines.push(`- [${entry.createdAt}] ${clipText(entry.summary, 220)}`);
-      }
-    } else {
-      lines.push("- No recent CTO sessions recorded.");
-    }
-
-    return lines;
-  };
-
-  const renderGeneratedContextDoc = (
-    title: string,
-    intro: string,
-    bodyLines: ReadonlyArray<string>,
-  ): string => {
-    return [
-      `# ${title}`,
-      "",
-      intro,
-      "",
-      ...bodyLines,
-    ].join("\n").trim();
-  };
-
-  const syncDerivedContextDoc = (snapshot = getSnapshot(8)): void => {
-    const currentContextBody = renderGeneratedContextDoc(
-      "CTO Current Context",
-      "Internal ADE-generated working context for session resumes.",
-      buildCurrentContextLines(snapshot),
-    );
-    writeTextAtomic(currentContextPath, `${currentContextBody}\n`);
-  };
-
-  /**
-   * How many turns the user took in a chat session.
-   *
-   * The transcript is the cheapest DURABLE source of this number, and the only
-   * honest one. There is no turn counter anywhere in the schema, and
-   * `usage_events` counts model requests — a single user turn that runs tools
-   * or retries produces several, so it would report a number the user did not
-   * recognise. One indexed row for the path, then one pass counting
-   * `user_message` envelopes.
-   *
-   * The marker is a PRE-FILTER, not the decision. A transcript line can be tens
-   * of kilobytes of tool output, so `JSON.parse` on every line is work this does
-   * not need to do — but a line that merely QUOTES `"type":"user_message"`
-   * (tool output echoing a transcript, an agent pasting an envelope) satisfies
-   * the substring and is not a turn. Only lines that pass the cheap test are
-   * parsed, and only a parsed object whose own `type` is `user_message` counts.
-   *
-   * Read as a stream rather than in one `readFileSync` + `split`: the cap below
-   * allows 32 MB, and the synchronous version held that much as a string plus
-   * an array of every line in it, on the main process, during a session close.
-   * Bounded by `TRANSCRIPT_SCAN_MAX_BYTES` so a runaway transcript cannot stall
-   * a close.
-   *
-   * Returns null — never 0 — when the transcript is missing or unreadable, so
-   * "we do not know" stays distinguishable from "they said nothing".
-   */
-  const countUserTurns = async (sessionId: string): Promise<number | null> => {
+  /** The stored sidecar, or null when it is missing or unreadable. */
+  const readPreferences = (): CtoPreferencesDoc | null => {
+    let raw: string;
     try {
-      const row = args.db.get<{ transcript_path?: unknown }>(
-        `select transcript_path from terminal_sessions where id = ?`,
-        [sessionId],
-      );
-      const rowPath = typeof row?.transcript_path === "string" ? row.transcript_path.trim() : "";
-      // The row names the legacy file; the dedicated transcript is the complete one.
-      // A compressed transcript is not scanned (the close must not stall on a gunzip).
-      const transcriptPath = rowPath ? resolveChatTranscriptReadPath(rowPath) : "";
-      if (!transcriptPath || transcriptPath.endsWith(".gz") || !fs.existsSync(transcriptPath)) return null;
-      const stat = fs.statSync(transcriptPath);
-      if (stat.size > TRANSCRIPT_SCAN_MAX_BYTES) return null;
-      return await countUserTurnsInTranscript(transcriptPath);
+      raw = fs.readFileSync(preferencesPath, "utf8");
     } catch {
       return null;
     }
+    const parsed = safeJsonParse<unknown>(raw, null);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const source = parsed as Record<string, unknown>;
+    return {
+      version: 1,
+      ...(source.avatar !== undefined ? { avatar: source.avatar as CtoAvatarLook } : {}),
+      ...(source.personality !== undefined ? { personality: source.personality as CtoPersonality } : {}),
+      ...(source.fallbackModels !== undefined ? { fallbackModels: source.fallbackModels as CtoModelPreferences[] } : {}),
+      updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : "",
+    };
   };
 
-  /**
-   * Async because the turn count is read off the transcript as a stream. The
-   * caller must await it: the log row and the derived context doc are written
-   * inside, and a dropped promise would lose both.
-   */
-  const appendSessionLog = async (entry: AppendCtoSessionLogArgs): Promise<CtoSessionLogEntry> => {
-    reconcileAll();
-    const next: CtoSessionLogEntry = {
-      id: randomUUID(),
-      sessionId: entry.sessionId,
-      summary: entry.summary.trim() || "Session completed.",
-      startedAt: entry.startedAt,
-      endedAt: entry.endedAt,
-      provider: entry.provider,
-      modelId: entry.modelId,
-      capabilityMode: entry.capabilityMode,
-      turnCount: await countUserTurns(entry.sessionId),
-      createdAt: nowIso(),
-    };
-    insertSessionLogToDb(next);
-    const written = appendSessionLogToFile(next);
-    syncDerivedContextDoc();
-    return written;
+  const writePreferences = (prefs: Omit<CtoPreferencesDoc, "version" | "updatedAt">): void => {
+    const doc: CtoPreferencesDoc = { version: 1, ...prefs, updatedAt: nowIso() };
+    writeTextAtomic(preferencesPath, `${JSON.stringify(doc, null, 2)}\n`);
   };
+
+  /** The record with the sidecar's keys laid over it: the identity every API sees. */
+  const overlayPreferences = (record: CtoIdentity, prefs: CtoPreferencesDoc | null): CtoIdentity => {
+    const stripped = stripPreferenceKeys(record);
+    return prefs ? { ...stripped, ...pickPreferences(prefs, stripped.modelPreferences) } : stripped;
+  };
+
+  const reconcileIdentity = (): CtoIdentity => {
+    const record = chooseCanonical(readIdentityFromFile(), readIdentityFromDb(), makeDefaultIdentity);
+    writeIdentityToFile(record);
+    writeIdentityToDb(record);
+    return overlayPreferences(record, readPreferences());
+  };
+
+  const getIdentity = (): CtoIdentity => reconcileIdentity();
+
+  // `recentSessions` stays on the wire for older clients; there is one CTO
+  // conversation now, so there is no list of past ones to send.
+  const getSnapshot = (): CtoSnapshot => ({
+    identity: getIdentity(),
+    recentSessions: [],
+    ...(args.capabilities ? { capabilities: { ...args.capabilities } } : {}),
+  });
 
   /* ── Live project state ── */
 
@@ -1253,8 +1065,22 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       unavailable,
     };
 
+    // The two slow reads run side by side: lanes run git status per lane, chats
+    // summarize every row, and neither needs the other. The rest are sync.
+    const [lanesRead, chatsRead] = await Promise.allSettled([
+      Promise.resolve().then(() => sources.laneService.list({ includeArchived: false })),
+      // The identity thread (the CTO itself) is read too, for its own
+      // scheduled work only: it is not one of the chats it supervises, but its
+      // launches and check-ins are the schedule it most needs to see.
+      Promise.resolve().then(() => sources.listChats(undefined, {
+        includeIdentity: true,
+        includeAutomation: true,
+      })),
+    ]);
+
     try {
-      const lanes = await sources.laneService.list({ includeArchived: false });
+      if (lanesRead.status === "rejected") throw lanesRead.reason;
+      const lanes = lanesRead.value;
       snapshot.lanesTotal = lanes.length;
       snapshot.lanes = lanes.slice(0, LIVE_STATE_MAX_LANES).map((lane) => ({
         id: lane.id,
@@ -1268,16 +1094,11 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     }
 
     try {
-      // The identity thread (the CTO itself) is read too, for its own
-      // scheduled work only: it is not one of the chats it supervises, but its
-      // launches and check-ins are the schedule it most needs to see.
-      const listed = await sources.listChats(undefined, {
-        includeIdentity: true,
-        includeAutomation: true,
-      });
+      if (chatsRead.status === "rejected") throw chatsRead.reason;
+      const listed = chatsRead.value;
       const chats = listed.filter((chat) => !chat.identityKey);
       // "Active" means the chat is still a live concern: anything not ended or
-      // archived. A finished chat belongs in the daily log, not the live block.
+      // archived. A finished chat is history, not live state.
       const active = chats.filter((chat) => chat.status !== "ended" && !chat.archivedAt);
       snapshot.chatsTotal = active.length;
       snapshot.chats = active.slice(0, LIVE_STATE_MAX_CHATS).map((chat) => ({
@@ -1307,7 +1128,9 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       const schedules = [...identity, ...active]
         .flatMap((chat) =>
           (chat.scheduledWork ?? [])
-            .filter((item) => item.status === "scheduled" || item.status === "paused")
+            // "fired" is a routine running right now: during its own run the
+            // CTO must still see the job it is running, not "- none".
+            .filter((item) => item.status === "scheduled" || item.status === "paused" || item.status === "fired")
             .map((item) => ({
               sessionId: chat.sessionId,
               title: item.title,
@@ -1378,9 +1201,26 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
    * built from a dozen synchronous call sites, and the caller that actually
    * knows a turn is starting awaits this first.
    */
-  const refreshLiveState = async (): Promise<CtoLiveStateSnapshot | null> => {
-    liveStateCache = await captureLiveState();
-    return liveStateCache;
+  let liveStateRefresh: Promise<CtoLiveStateSnapshot | null> | null = null;
+  /**
+   * Single-flight: a send that finds a capture already running joins it rather
+   * than starting a second round of git status and chat summaries. The send
+   * path waits on it only briefly (`refreshCtoLiveStateForTurn`); a capture
+   * that outlives that wait lands in the cache for the next turn. A failed
+   * capture keeps the previous snapshot.
+   */
+  const refreshLiveState = (): Promise<CtoLiveStateSnapshot | null> => {
+    if (liveStateRefresh) return liveStateRefresh;
+    const run = captureLiveState()
+      .then((snapshot) => {
+        liveStateCache = snapshot;
+        return snapshot;
+      })
+      .finally(() => {
+        if (liveStateRefresh === run) liveStateRefresh = null;
+      });
+    liveStateRefresh = run;
+    return run;
   };
 
   const getLiveStateSnapshot = (): CtoLiveStateSnapshot | null => liveStateCache;
@@ -1400,26 +1240,19 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
    * standalone should read the prompt preview's `knowledge` section rather than
    * reintroduce the copy.
    */
-  const buildReconstructionContext = (recentLimit = 8): string => {
-    const snapshot = getSnapshot(recentLimit);
+  const buildReconstructionContext = (): string => {
+    const identity = getIdentity();
     const sections: string[] = [];
     sections.push("CTO Context");
-    sections.push("The CTO state below is already reconstructed by ADE for this session. Do not burn turns trying to rediscover it by shelling into relative .ade/cto paths.");
-    sections.push("- Runtime identity and operating doctrine keep you in the CTO role.");
-    sections.push(`- Current working context at ${CTO_CURRENT_CONTEXT_RELATIVE_PATH} carries recent sessions through session resumes.`);
-    sections.push("");
-    sections.push("CTO Identity");
-    sections.push(`- Name: ${snapshot.identity.name}`);
-    sections.push(`- Persona: ${snapshot.identity.persona}`);
-    const preferredModel = snapshot.identity.modelPreferences;
+    sections.push("ADE rebuilds this block on every turn. Do not shell into .ade/cto to rediscover it.");
+    sections.push(`- Name: ${identity.name}`);
+    sections.push(`- Persona: ${identity.persona}`);
+    const preferredModel = identity.modelPreferences;
     sections.push(
       preferredModel
         ? `- Preferred model: ${preferredModel.provider}/${preferredModel.model}`
         : "- Preferred model: not picked yet",
     );
-    sections.push("");
-    sections.push("Current working context");
-    sections.push(...buildCurrentContextLines(snapshot));
 
     const memorySections = args.ctoMemoryService?.buildMemoryContextSections() ?? [];
     for (const section of memorySections) {
@@ -1433,7 +1266,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     // budgeted send cannot cut it.
     if (liveStateCache) {
       sections.push("");
-      sections.push(renderCtoLiveStateBlock(liveStateCache, CTO_LIVE_STATE_MAX_CHARS));
+      sections.push(renderCtoLiveStateBlock(liveStateCache, CTO_LIVE_STATE_MAX_CHARS, Date.now()));
     }
 
     return sections.join("\n").trim();
@@ -1456,7 +1289,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
     writeIdentityToFile(updated);
     writeIdentityToDb(updated);
-    syncDerivedContextDoc();
     return next;
   };
 
@@ -1471,7 +1303,16 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
 
   /* ── Identity update (full patch) ── */
 
-  const updateIdentity = (patch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>): CtoSnapshot => {
+  const updateIdentity = (rawPatch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>): CtoSnapshot => {
+    // Only known keys: unknown keys pass through from the stored record (see
+    // `normalizeIdentity`), so a caller's stray key would otherwise stick.
+    const patch = Object.fromEntries(
+      Object.entries(rawPatch ?? {}).filter(([key]) => CTO_IDENTITY_KNOWN_KEYS.has(key)),
+    ) as Partial<Omit<CtoIdentity, "version" | "updatedAt">>;
+    const rawKeys = Object.keys(rawPatch ?? {});
+    if (rawKeys.length && !Object.keys(patch).length) {
+      throw new Error(`updateIdentity: no known identity field in the patch (got ${rawKeys.join(", ")}). Pass the fields themselves, e.g. { "modelPreferences": { … } }.`);
+    }
     const current = getIdentity();
     const timestamp = nowIso();
     const candidate: CtoIdentity = {
@@ -1482,17 +1323,39 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       modelPreferences: patch.modelPreferences === null
         ? null
         : patch.modelPreferences
-          ? { ...current.modelPreferences, ...patch.modelPreferences }
+          ? mergeModelPreferencesPatch(current.modelPreferences, patch.modelPreferences)
           : current.modelPreferences,
+      // A look patch may name only the fields it changes.
+      avatar: patch.avatar === null
+        ? null
+        : patch.avatar
+          ? { ...(current.avatar ?? DEFAULT_CTO_AVATAR_LOOK), ...patch.avatar }
+          : current.avatar,
       version: current.version + 1,
       updatedAt: timestamp,
     };
     const next = normalizeIdentity(candidate) ?? candidate;
+    // The look, voice and backups go to the sidecar (written first, and only
+    // when they changed, so a cleared set still leaves a sidecar behind and is
+    // never migrated back from an old record); the rest goes to the record.
+    const nextPrefs = pickPreferences(next, next.modelPreferences);
+    const stored = readPreferences();
+    const storedPrefs = stored
+      ? { avatar: stored.avatar, personality: stored.personality, fallbackModels: stored.fallbackModels }
+      : null;
+    const sameAsStored = storedPrefs != null
+      && JSON.stringify(storedPrefs) === JSON.stringify({
+        avatar: nextPrefs.avatar,
+        personality: nextPrefs.personality,
+        fallbackModels: nextPrefs.fallbackModels,
+      });
+    if (!sameAsStored) {
+      writePreferences(nextPrefs);
+    }
     writeIdentityToFile(next);
     writeIdentityToDb(next);
-    const snapshot = getSnapshot();
-    syncDerivedContextDoc(snapshot);
-    return snapshot;
+    args.onIdentityChanged?.();
+    return getSnapshot();
   };
 
   /** The cross-machine switch, as the brain's bridge reads it on every call. */
@@ -1513,7 +1376,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       {
         id: "doctrine",
         title: "Immutable ADE doctrine",
-        content: IMMUTABLE_CTO_DOCTRINE,
+        content: doctrineWithVoice(identity.personality ?? "focused"),
       },
       {
         id: "continuity",
@@ -1575,15 +1438,12 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   };
 
   // Ensure the state is initialized as soon as the service is created.
-  reconcileAll();
-  syncDerivedContextDoc();
+  reconcileIdentity();
 
   return {
     getIdentity,
-    getSessionLogs,
     getSnapshot,
     updateIdentity,
-    appendSessionLog,
     buildReconstructionContext,
     buildStaticContextSection,
     refreshLiveState,
@@ -1592,7 +1452,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     completeOnboardingStep,
     getCrossMachineAccess,
     previewSystemPrompt,
-    syncDerivedContextDoc,
   };
 }
 

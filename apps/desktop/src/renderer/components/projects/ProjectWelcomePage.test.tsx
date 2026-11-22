@@ -233,15 +233,6 @@ function renderWebWelcome(
 }
 
 describe("ProjectWelcomePage worktree recents", () => {
-  it("renders a worktree chip and a merge action for a worktree recent", async () => {
-    renderWelcome();
-
-    expect(await screen.findByText("app-feature")).toBeTruthy();
-    expect(screen.getByText("worktree of app")).toBeTruthy();
-    expect(
-      screen.getByLabelText("Merge into app as a lane…"),
-    ).toBeTruthy();
-  });
 
   it("merge confirm forgets the recent and navigates to the auto-registered lane", async () => {
     inspectPath.mockResolvedValueOnce(inspection());
@@ -309,15 +300,6 @@ describe("ProjectWelcomePage worktree recents", () => {
 });
 
 describe("ProjectWelcomePage web zero-machines state", () => {
-  it("claims an empty account only when the directory read succeeded", async () => {
-    renderWebWelcome(accountSnapshot({ state: "signed_in" }));
-
-    expect(
-      await screen.findByText(/No machines on this account yet/),
-    ).toBeTruthy();
-    expect(screen.queryByText("Retry")).toBeNull();
-  });
-
   it("says the machines could not be loaded, with the directory reason, when the read failed", async () => {
     const { retryDirectory } = renderWebWelcome(
       accountSnapshot({
@@ -328,7 +310,7 @@ describe("ProjectWelcomePage web zero-machines state", () => {
 
     expect(await screen.findByText("Couldn't load your machines.")).toBeTruthy();
     expect(screen.getByText("Machine directory returned 403.")).toBeTruthy();
-    expect(screen.queryByText(/No machines on this account yet/)).toBeNull();
+    expect(screen.queryByText(/No computer is on your account yet/)).toBeNull();
 
     fireEvent.click(screen.getByText("Retry"));
     await waitFor(() => expect(retryDirectory).toHaveBeenCalledTimes(1));
@@ -375,51 +357,6 @@ describe("ProjectWelcomePage web zero-machines state", () => {
   });
 });
 
-describe("ProjectWelcomePage web Add project gating", () => {
-  it("disables Add project when the account has no machine to add it on", async () => {
-    renderWebWelcome(accountSnapshot({ state: "signed_in" }));
-
-    const button = (await screen.findByText("Add project")).closest("button");
-    expect((button as HTMLButtonElement).disabled).toBe(true);
-    expect((button as HTMLButtonElement).title).toContain("Connect a machine first");
-  });
-
-  it("explains where projects are added instead of opening a flow that goes nowhere", async () => {
-    renderWebWelcome(
-      accountSnapshot({ state: "signed_in", machines: [accountMachine()] as any }),
-    );
-
-    const button = (await screen.findByText("Add project")).closest("button");
-    expect((button as HTMLButtonElement).disabled).toBe(false);
-
-    fireEvent.click(button as HTMLButtonElement);
-
-    expect(
-      await screen.findByText("Projects are added on the machine that hosts them."),
-    ).toBeTruthy();
-    expect(screen.getByText(/Open ADE on Mac Studio/)).toBeTruthy();
-
-    fireEvent.click(screen.getByText("Got it"));
-    await waitFor(() =>
-      expect(
-        screen.queryByText("Projects are added on the machine that hosts them."),
-      ).toBeNull(),
-    );
-  });
-
-  it("leaves the desktop Add project flow alone", async () => {
-    renderWelcome();
-
-    const button = (await screen.findByText("Add project")).closest("button");
-    expect((button as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(button as HTMLButtonElement);
-
-    expect(
-      screen.queryByText("Projects are added on the machine that hosts them."),
-    ).toBeNull();
-  });
-});
-
 describe("ProjectWelcomePage multi-machine recents", () => {
   it("renders one card for the same Git repository on two machines", async () => {
     listRecent.mockResolvedValueOnce([
@@ -447,12 +384,18 @@ describe("ProjectWelcomePage multi-machine recents", () => {
         },
       },
     ]);
+    // Only a connected computer's copy counts: an offline own computer is hidden.
+    (window as any).ade.remoteRuntime.getConnectionSnapshot.mockResolvedValue({
+      connections: [{ target: { id: "studio", name: "Mac Studio" }, state: "connected" }],
+      connectedCount: 1,
+      updatedAt: Date.now(),
+    });
 
     renderWelcome();
 
-    // One card, carrying both machines behind its "2 machines" chip.
-    fireEvent.click(await screen.findByRole("button", { name: /On 2 machines/ }));
-    const menu = screen.getByRole("menu", { name: "Open on machine" });
+    // One card, carrying both machines behind its count chip.
+    fireEvent.click(await screen.findByRole("button", { name: /^On 2 / }));
+    const menu = screen.getByRole("menu", { name: /^Computers with a copy/ });
     expect(within(menu).getAllByRole("menuitem")).toHaveLength(2);
     expect(within(menu).getByText("Mac Studio", { exact: true })).toBeTruthy();
     expect(

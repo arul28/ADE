@@ -32,10 +32,13 @@ func overlayActiveProjectRoster(
   var sessions: [TerminalSessionSummary] = []
   sessions.reserveCapacity(localSessions.count + rosterChats.count)
   // Status only: this runs on the main actor on every roster delta, so keep
-  // it to one small map (at most `workActiveProjectRosterSessionLimit`).
+  // it to one small map. It holds shells and CLI sessions too: the replica's
+  // `runtime_state` of a terminal row changes only on a full session refresh,
+  // so a quiet shell read "Working" on the focused computer for minutes while
+  // its brain (and every other computer's view, which reads the roster)
+  // already said it was idle.
   var rosterStatusById: [String: RemoteRosterChatStatus] = [:]
-  rosterStatusById.reserveCapacity(rosterChats.count)
-  for chat in rosterChats where rosterStatusById[chat.id] == nil {
+  for chat in (roster?.chats ?? []) where chat.archived != true && !chat.isIdentityChat && rosterStatusById[chat.id] == nil {
     rosterStatusById[chat.id] = chat.status
   }
   for session in localSessions
@@ -248,6 +251,9 @@ struct WorkRootSessionPresentation: Equatable {
   /// keeps it in `WorkRootBookkeeping` and hands it to the next build; it is not
   /// render state, so it is outside the render signature.
   let laneReturnState: WorkLaneReturnState
+  /// The archived ids this build used. Rows read it here: worked out per row,
+  /// it rebuilt the whole set once for every row of every list pass.
+  let archivedSessionIds: Set<String>
   private let renderSignature: Int
 
   init(
@@ -263,9 +269,11 @@ struct WorkRootSessionPresentation: Equatable {
     laneById: [String: LaneSummary],
     lanePrTagsByLaneId: [String: LanePrTag],
     laneReturnState: WorkLaneReturnState = .empty,
+    archivedSessionIds: Set<String> = [],
     renderSignature: Int
   ) {
     self.laneReturnState = laneReturnState
+    self.archivedSessionIds = archivedSessionIds
     self.mergedSessions = mergedSessions
     self.displaySessions = displaySessions
     self.displaySessionIds = displaySessionIds
@@ -294,7 +302,7 @@ struct WorkRootSessionPresentation: Equatable {
   )
 
   static func == (lhs: WorkRootSessionPresentation, rhs: WorkRootSessionPresentation) -> Bool {
-    lhs.renderSignature == rhs.renderSignature
+    lhs.renderSignature == rhs.renderSignature && lhs.archivedSessionIds == rhs.archivedSessionIds
   }
 }
 
@@ -464,6 +472,7 @@ func buildWorkRootSessionPresentation(
     laneById: laneById,
     lanePrTagsByLaneId: lanePrTagsByLaneId,
     laneReturnState: nextLaneReturnState,
+    archivedSessionIds: archivedSessionIds,
     renderSignature: workRootSessionPresentationRenderSignature(
       mergedSessions: mergedSessions,
       displaySessions: displaySessions,

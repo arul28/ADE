@@ -201,7 +201,15 @@ function sender(id = 42) {
 }
 
 function eventForSender(nextSender = sender()) {
-  return { sender: nextSender } as any;
+  // A registered channel now refuses anything but ADE's own renderer; these
+  // fake events stand for the main window's frame. Follow the renderer URL the
+  // trust helper will accept in this environment (tests set the dev URL).
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  const url = devServerUrl ? `${new URL(devServerUrl).origin}/` : "file:///tmp/ade/renderer/index.html";
+  return {
+    sender: nextSender,
+    senderFrame: { url },
+  } as any;
 }
 
 function localBinding(rootPath = "/repo"): OpenProjectBinding {
@@ -815,7 +823,7 @@ describe("registerRuntimeBridge", () => {
       cleanup: ReturnType<typeof vi.fn>;
     };
 
-    function recordingLocalRuntimePool() {
+    function recordingLocalRuntimePool(subscribeEpochs: string[] = []) {
       const subscriptions: RecordedSubscription[] = [];
       const pool = {
         subscribeEventsForRoot: vi.fn(
@@ -827,7 +835,8 @@ describe("registerRuntimeBridge", () => {
             onSubscribed?: (result: Record<string, unknown>) => void,
           ) => {
             const cleanup = vi.fn();
-            onSubscribed?.({ nextCursor: request.cursor ?? 0, hasMore: false });
+            const eventEpoch = subscribeEpochs[subscriptions.length];
+            onSubscribed?.({ nextCursor: request.cursor ?? 0, hasMore: false, ...(eventEpoch ? { eventEpoch } : {}) });
             subscriptions.push({
               rootPath,
               request,
@@ -926,6 +935,30 @@ describe("registerRuntimeBridge", () => {
 
       subscriptions[1].emit(ptyEvent(3), "epoch-1");
       expect(active.webContents.send).toHaveBeenCalledTimes(3);
+    });
+
+    it("gives every pump that shares a subscription the epoch of a restarted runtime", async () => {
+      // The bound pump and a chat pinned to the same copy send the same request,
+      // so they share one subscription and only the first sees its answer. A
+      // pump that never learns the new epoch drops every event the restarted
+      // runtime sends, and the open chat stops updating until a reload.
+      const { subscriptions, pool } = recordingLocalRuntimePool(["epoch-1", "epoch-2"]);
+      const stream = registerWithPool(pool);
+      const window = destroyableSender(215);
+      const poll = () =>
+        stream(eventForSender(window.webContents), { rootPath: "/repo", request: activePumpRequest });
+
+      await expect(poll()).resolves.toMatchObject({ eventEpoch: "epoch-1" });
+      await expect(poll()).resolves.toMatchObject({ eventEpoch: "epoch-1" });
+
+      subscriptions[0].end();
+      await expect(poll()).resolves.toMatchObject({ eventEpoch: "epoch-2" });
+      await expect(poll()).resolves.toMatchObject({ eventEpoch: "epoch-2" });
+      expect(pool.subscribeEventsForRoot).toHaveBeenCalledTimes(2);
+
+      // An epoch that arrives with a pushed event counts too.
+      subscriptions[1].emit(ptyEvent(1), "epoch-3");
+      await expect(poll()).resolves.toMatchObject({ eventEpoch: "epoch-3" });
     });
 
     it("refuses a subscription that names a category a renderer may not have", async () => {
@@ -1394,6 +1427,66 @@ describe("registerRuntimeBridge", () => {
     );
   });
 
+  it("asks the other machine for a proof picture's display copy only when the reader asks for one", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteCallActionForTargetMock.mockResolvedValue({
+      ok: true,
+      domain: "computer_use_artifacts",
+      action: "readArtifactRange",
+      result: { totalSize: 10, offset: 0, data: "", variant: "display" },
+      statusHints: {},
+    });
+    const bridge = registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await bridge.readRemoteArtifactRange({
+      targetId: "target-1",
+      projectId: "project-1",
+      relativePath: ".ade/artifacts/computer-use/shot.png",
+      offset: 0,
+      length: 1024,
+      variant: "display",
+    });
+    // The tile's request reaches the machine that holds the picture; without
+    // this field the machine returns the original and the copy never arrives.
+    expect(remoteCallActionForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
+      {
+        domain: "computer_use_artifacts",
+        action: "readArtifactRange",
+        args: {
+          uri: ".ade/artifacts/computer-use/shot.png",
+          offset: 0,
+          length: 1024,
+          variant: "display",
+        },
+      },
+    );
+
+    remoteCallActionForTargetMock.mockClear();
+    await bridge.readRemoteArtifactRange({
+      targetId: "target-1",
+      projectId: "project-1",
+      relativePath: ".ade/artifacts/computer-use/shot.png",
+      offset: 0,
+      length: 1024,
+    });
+    // The lightbox asks for the original, and an older machine would ignore
+    // the field anyway.
+    expect(remoteCallActionForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
+      {
+        domain: "computer_use_artifacts",
+        action: "readArtifactRange",
+        args: { uri: ".ade/artifacts/computer-use/shot.png", offset: 0, length: 1024 },
+      },
+    );
+  });
+
   it("creates remote port forwards through the selected target", async () => {
     remoteRegistryGetMock.mockReturnValue(target);
     remoteEnsureLocalPortForwardMock.mockResolvedValue({
@@ -1428,7 +1521,7 @@ describe("registerRuntimeBridge", () => {
       localUrl: "http://127.0.0.1:49152",
     });
 
-    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteConnectMock).toHaveBeenCalledWith(target, { initiatedBy: "background" });
     expect(remoteEnsureLocalPortForwardMock).toHaveBeenCalledWith(
       target.id,
       {
@@ -1559,14 +1652,13 @@ describe("registerRuntimeBridge", () => {
     });
 
     expect(remoteStreamEventsForTargetMock).not.toHaveBeenCalled();
-    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledWith(
+    // The machine, project and request the subscription went out with.
+    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledTimes(1);
+    expect(remoteSubscribeEventsForTargetMock.mock.calls[0]?.slice(0, 3)).toEqual([
       target,
       "project-1",
       { cursor: 0, limit: 100, category: undefined, replay: false },
-      expect.any(Function),
-      expect.any(Function),
-      expect.any(Function),
-    );
+    ]);
   });
 
   it("normalizes malformed remote event stream requests before forwarding", async () => {
@@ -1592,12 +1684,13 @@ describe("registerRuntimeBridge", () => {
       ),
     ).resolves.toEqual({ events: [], nextCursor: 0, hasMore: false });
 
-    expect(remoteStreamEventsForTargetMock).toHaveBeenCalledWith(
+    // The read and the subscription both go out with the request normalized.
+    expect(remoteStreamEventsForTargetMock.mock.calls[0]?.slice(0, 3)).toEqual([
       target,
       "project-1",
       {},
-    );
-    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledWith(
+    ]);
+    expect(remoteSubscribeEventsForTargetMock.mock.calls[0]?.slice(0, 3)).toEqual([
       target,
       "project-1",
       {
@@ -1606,10 +1699,7 @@ describe("registerRuntimeBridge", () => {
         category: undefined,
         replay: undefined,
       },
-      expect.any(Function),
-      expect.any(Function),
-      expect.any(Function),
-    );
+    ]);
   });
 
   it("cleans a remote event subscription before disconnecting that target", async () => {
@@ -1733,7 +1823,8 @@ describe("registerRuntimeBridge", () => {
     expect(remoteCallMachineForTargetMock).toHaveBeenCalledWith(
       target,
       "machine.updateAndRestart",
-      { targetVersion: "1.2.0" },
+      // The target machine learns which machine asked.
+      { targetVersion: "1.2.0", requestedBy: { machineName: expect.any(String), clientKind: "desktop" } },
       // An update downloads a build and then drops the connection to restart,
       // so it gets a long deadline and must never be silently retried.
       expect.objectContaining({
@@ -1809,6 +1900,7 @@ describe("registerRuntimeBridge", () => {
 
     expect(remoteConnectMock).toHaveBeenCalledWith(target, {
       bypassFailureBackoff: true,
+      initiatedBy: "user",
     });
     expect(remoteProjectsForTargetMock).toHaveBeenCalledWith(target);
     expect(bindRemoteProject).toHaveBeenCalledWith(7, {
@@ -2264,7 +2356,7 @@ describe("registerRuntimeBridge", () => {
 describe("registerIpc usage bridge", () => {
   beforeEach(() => {
     ipcHandlers.clear();
-    browserWindowFromWebContents.mockReset();
+    browserWindowFromWebContents.mockReset().mockReturnValue({ id: 7, isDestroyed: () => false });
   });
 
   const brainSnapshot = {
@@ -2324,6 +2416,22 @@ describe("registerIpc usage bridge", () => {
     });
     return { pool, dormantTracker };
   }
+
+  it("refuses a channel call from a page that is not ADE's renderer", async () => {
+    registerUsageIpc({ openRoots: ["/repo-one"] });
+    const handler = ipcHandlers.get(IPC.appPing)!;
+    await expect(handler({
+      sender: sender(),
+      senderFrame: { url: "https://example.com/" },
+    })).rejects.toThrow(/only available to the ADE window/);
+  });
+
+  it("treats a closing window as an expected refusal, not an untrusted page", async () => {
+    registerUsageIpc({ openRoots: ["/repo-one"] });
+    const handler = ipcHandlers.get(IPC.appPing)!;
+    const closing = { ...sender(), isDestroyed: () => true };
+    await expect(handler(eventForSender(closing))).rejects.toMatchObject({ adeExpected: "user" });
+  });
 
   it("reads the brain's shared tracker for a window with no project binding", async () => {
     const { pool, dormantTracker } = registerUsageIpc({
@@ -3314,7 +3422,7 @@ describe("registerIpc sync bridge", () => {
     });
 
     await expect(
-      ipcHandlers.get(IPC.projectSecretsChooseEnvFile)?.(eventForSender()),
+      ipcHandlers.get(IPC.passwordsChooseEnvFile)?.(eventForSender()),
     ).resolves.toBeNull();
 
     expect(showOpenDialogMock).toHaveBeenCalledWith(

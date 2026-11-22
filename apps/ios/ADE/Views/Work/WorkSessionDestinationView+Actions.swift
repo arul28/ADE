@@ -2,6 +2,18 @@ import SwiftUI
 import UIKit
 import AVKit
 
+/// A plan approval the host accepted without naming the chat it started.
+///
+/// Presenting that as success would answer the card and leave the person with
+/// no chat to look at, so it is refused like any other failed action.
+enum WorkPlanHandoffError: LocalizedError {
+  case noChatStarted
+
+  var errorDescription: String? {
+    "The computer did not confirm the new implementation chat. The plan is still here, so you can implement it in this chat."
+  }
+}
+
 func workFilteredQuestionAnswersForSubmit(
   _ answers: [String: AgentChatInputAnswerValue]
 ) -> [String: AgentChatInputAnswerValue] {
@@ -103,12 +115,21 @@ extension WorkSessionDestinationView {
     sending = true
 
     let attachmentRefs: [AgentChatFileRef]
+    // A chat on a sleeping ADE Cloud computer: its files go to the account
+    // with the held message (the computer has no live link to upload to).
+    var cloudFiles: [CloudQueuedFile] = []
+    let sendsThroughCloudAccount = !useSteer && syncService.chatSendsThroughCloudAccount(sessionId: sessionId)
     do {
-      attachmentRefs = try await workChatSaveInputAttachments(
-        inputAttachments,
-        syncService: syncService,
-        chatSessionId: sessionId
-      )
+      if sendsThroughCloudAccount {
+        attachmentRefs = []
+        cloudFiles = try workChatCloudQueuedFiles(inputAttachments)
+      } else {
+        attachmentRefs = try await workChatSaveInputAttachments(
+          inputAttachments,
+          syncService: syncService,
+          chatSessionId: sessionId
+        )
+      }
     } catch {
       sending = false
       WorkPendingUploadPreviewStore.shared.release(pendingUploadRefs)
@@ -168,8 +189,40 @@ extension WorkSessionDestinationView {
             text: text,
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
             includeThreadComments: includeThreadComments,
-            compactFirst: compactFirst
+            compactFirst: compactFirst,
+            cloudFiles: cloudFiles
           )
+        } catch is CloudChatFilesNeedLiveLink {
+          // A sleeping ADE Cloud chat with files whose computer runs an older
+          // ADE with no queue: it was just woken. Upload the files over its
+          // live link and send.
+          let liveRefs = try await workChatSaveInputAttachments(
+            inputAttachments,
+            syncService: syncService,
+            chatSessionId: sessionId
+          )
+          updateLocalEchoAttachments(echoId: echoId, attachments: liveRefs.isEmpty ? nil : liveRefs)
+          do {
+            delivery = try await syncService.sendChatMessage(
+              sessionId: sessionId,
+              text: text,
+              attachments: liveRefs.isEmpty ? nil : liveRefs,
+              includeThreadComments: includeThreadComments,
+              compactFirst: compactFirst
+            )
+          } catch where workChatErrorIndicatesActiveTurn(error) {
+            // The woken computer is mid-turn: steer, as below.
+            if atomicDispatchMode == nil {
+              updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+            }
+            delivery = try await syncService.steerChatSession(
+              sessionId: sessionId,
+              text: text,
+              attachments: liveRefs.isEmpty ? nil : liveRefs,
+              dispatchMode: atomicDispatchMode,
+              includeThreadComments: includeThreadComments
+            )
+          }
         } catch where workChatErrorIndicatesActiveTurn(error) {
           if workChatIsManualCompactCommand(text) {
             ADEHaptics.error()
@@ -268,6 +321,11 @@ extension WorkSessionDestinationView {
         localEchoMessages.removeAll { $0.id == echoId }
         errorMessage = "Message not sent — the queue is full. Wait for the current turn to finish, then resend."
         return false
+      case .heldByServer:
+        // ADE Cloud holds it until the chat's computer is up. The thread
+        // draws the held message itself (`cloudHeldThread`), as a normal
+        // sent message with the working line: one copy, so no echo as well.
+        localEchoMessages.removeAll { $0.id == echoId }
       }
       openingDeliveryWarning = nil
       errorMessage = nil
@@ -436,6 +494,24 @@ extension WorkSessionDestinationView {
     return remote ?? syncService
   }
 
+  /// The chat's own machine is an ADE Cloud computer (its key, never the
+  /// tab's machine unless the chat lives there).
+  var providerSignInIsAdeCloud: Bool {
+    syncService.isCloudFleetKey(sessionCloudMachineKey)
+  }
+
+  /// Where the chat reads the account's sign-ins: the chat machine's live
+  /// connection, then the machine the phone drives. Account-wide, so either
+  /// answers the same; a read only uses a connection that is already up, so
+  /// it never wakes a cloud computer.
+  var adeCloudSignInReadHosts: [ProviderAccountsHost] {
+    guard providerSignInIsAdeCloud else { return [] }
+    var hosts: [ProviderAccountsHost] = []
+    if let remote = syncService.remoteChatConnection(for: sessionId) { hosts.append(remote) }
+    hosts.append(syncService)
+    return hosts
+  }
+
   /// The chat's machine, by name, for the sign-in card.
   var providerSignInMachineName: String {
     if let remote = syncService.remoteChatConnection(for: sessionId) { return remote.hostName ?? "its computer" }
@@ -486,6 +562,24 @@ extension WorkSessionDestinationView {
     } catch {
       ADEHaptics.error()
       return error.localizedDescription
+    }
+  }
+
+  /// Records a GitHub issue the composer's Issue context menu picked on this
+  /// chat, through the same lane link the desktop composer writes.
+  @MainActor
+  func attachGitHubIssueToChat(_ issue: GitHubIssueRow, repo: GitHubRepoRefDTO) async {
+    guard let payload = WorkLaunchIssue
+      .github(issue, owner: repo.owner, repo: repo.name)
+      .githubIssuePayload else { return }
+    do {
+      try await syncService.attachGitHubIssueToChat(chatSessionId: sessionId, issues: [payload])
+      await refreshChatStateAfterAction(forceRemote: true)
+      ADEHaptics.success()
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
     }
   }
 
@@ -602,6 +696,44 @@ extension WorkSessionDestinationView {
     }
   }
 
+  /// "Implement in a new chat": approve the plan and let the host start a chat
+  /// of its own for it, then open that chat. The planning chat keeps the plan
+  /// and its whole conversation, so this is a fork of the work, not a move.
+  ///
+  /// A host that answers without a chat id is not a success — the plan was not
+  /// implemented anywhere the person can see — so it is reported rather than
+  /// leaving the card optimistically answered.
+  @MainActor
+  func implementPlanInNewChat(itemId: String) async {
+    do {
+      let result = try await syncService.respondToChatInput(
+        sessionId: sessionId,
+        itemId: itemId,
+        decision: .accept,
+        planAction: "new_chat"
+      )
+      guard let implementationSessionId = result.implementationSessionId?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !implementationSessionId.isEmpty
+      else {
+        throw WorkPlanHandoffError.noChatStarted
+      }
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+      // The handoff stands — the chat exists and holds the plan — but the open
+      // is the person's to see: if they left the planning screen while the call
+      // ran, do not push the implementation chat over whatever they moved to.
+      guard chatDestinationVisible else { return }
+      syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(
+        sessionId: implementationSessionId,
+        laneId: (session ?? initialSession)?.laneId
+      )
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
   @MainActor
   func cancelSteer(_ steerId: String) async {
     do {
@@ -683,8 +815,10 @@ extension WorkSessionDestinationView {
     }
   }
 
+  /// True when the chat now runs on the model.
   @MainActor
-  func selectModel(_ modelId: String) async {
+  @discardableResult
+  func selectModel(_ modelId: String) async -> Bool {
     do {
       _ = try await syncService.updateChatSession(sessionId: sessionId, modelId: modelId)
       await refreshChatStateAfterAction(forceRemote: true)
@@ -706,9 +840,11 @@ extension WorkSessionDestinationView {
         )
       }
       ADEHaptics.light()
+      return true
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
+      return false
     }
   }
 

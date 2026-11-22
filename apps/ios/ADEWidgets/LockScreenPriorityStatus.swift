@@ -97,9 +97,8 @@ struct LockScreenPriorityStatus {
         if onlineMachines.isEmpty, !machines.isEmpty {
             self = .init(
                 kind: .offline,
-                title: hideDetails
-                    ? "Computer offline"
-                    : (machines.count == 1 ? "\(focus.machine.name) offline" : "\(machines.count) computers offline"),
+                // A count, never a name (rule A).
+                title: machines.count == 1 ? "Computer offline" : "\(machines.count) computers offline",
                 detail: hideDetails ? "Open ADE for details" : "Last known work · \(focus.project.name)",
                 inlineText: "ADE · offline",
                 count: 0,
@@ -115,7 +114,8 @@ struct LockScreenPriorityStatus {
         }
 
         let presentation = Self.presentation(for: focus.phase)
-        let scope = "\(focus.machine.name) · \(focus.project.name)"
+        // The focused row's project; rows name no computer.
+        let scope = focus.project.name
         let attentionCount = needsYou.count
         let ambientCount = visible.count
         let privateTitle = focus.privacyPreview
@@ -154,6 +154,8 @@ struct LockScreenPriorityStatus {
         // stranger's chat id on the wrong computer and reported "Connected".
         // Nil on legacy snapshots written before the machine fields existed;
         // the navigation guard resolves those by owner instead.
+        // Pull requests belong to the focused computer. An agent can belong to
+        // another listed computer, so its link names the agent's own computer.
         let owner = snapshot.machineId
         let running = snapshot.runningAgents.sorted { $0.lastActivityAt > $1.lastActivityAt }
         let awaiting = snapshot.agents.filter { agent in
@@ -184,13 +186,12 @@ struct LockScreenPriorityStatus {
         )
 
         if isStale {
-            let machine = snapshot.machineName?.trimmingCharacters(in: .whitespacesAndNewlines)
             let minutes = max(1, Int(snapshotAge / 60))
             self = .init(
                 kind: .offline,
-                title: hideDetails
-                    ? "Computer offline"
-                    : "\((machine?.isEmpty == false ? machine : nil) ?? "Computer") offline",
+                // No computer name: the snapshot covers every listed computer,
+                // and widgets name none (rule A).
+                title: "Computer offline",
                 detail: minutes == 1 ? "Last update 1 minute ago" : "Last update \(minutes) minutes ago",
                 inlineText: "ADE · offline \(minutes)m",
                 count: 0,
@@ -220,7 +221,7 @@ struct LockScreenPriorityStatus {
                 symbol: "bell.badge.fill",
                 shortLabel: "WAIT",
                 tint: ADESharedTheme.warningAmber,
-                destinationURL: Self.sessionURL(first?.sessionId, owner: owner),
+                destinationURL: Self.sessionURL(first?.sessionId, owner: first?.machineId ?? owner),
                 metrics: metrics
             )
         } else if let first = failed.first {
@@ -233,7 +234,7 @@ struct LockScreenPriorityStatus {
                 symbol: "xmark.octagon.fill",
                 shortLabel: "FAIL",
                 tint: ADESharedTheme.statusFailed,
-                destinationURL: Self.sessionURL(first.sessionId, owner: owner),
+                destinationURL: Self.sessionURL(first.sessionId, owner: first.machineId ?? owner),
                 metrics: metrics
             )
         } else if let first = ciFailing.first {
@@ -289,7 +290,7 @@ struct LockScreenPriorityStatus {
                 symbol: "circle.dotted",
                 shortLabel: "WORK",
                 tint: ADESharedTheme.statusRunning,
-                destinationURL: Self.sessionURL(first.sessionId, owner: owner),
+                destinationURL: Self.sessionURL(first.sessionId, owner: first.machineId ?? owner),
                 metrics: metrics
             )
         } else if let first = openPrs.first {

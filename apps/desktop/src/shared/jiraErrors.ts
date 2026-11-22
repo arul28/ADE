@@ -40,8 +40,10 @@ export function parseJiraError(error: unknown): ParsedJiraError | null {
       : typeof error === "object" && error !== null && "message" in error && typeof error.message === "string"
         ? error.message
         : "";
-  // Electron wraps errors from the runtime ("Error invoking remote method …:
-  // Error: [jira:…] …"), so the tag can sit anywhere in the message.
+  // Electron wraps errors from the runtime ("Error invoking remote method ...:
+  // Error: [jira:<reason>] ..."), so the tag can sit anywhere in the message.
+  // ASCII on purpose: Tailwind scans this file, and a non-ASCII character in a
+  // class it picks up makes Blink keep the whole boot stylesheet as UTF-16.
   const match = /\[jira:([a-z-]+)\]\s*(.*)$/s.exec(message);
   if (!match || !JIRA_ERROR_REASONS.includes(match[1] as JiraErrorReason)) return null;
   const retryAt = typeof error === "object" && error !== null && "retryAt" in error

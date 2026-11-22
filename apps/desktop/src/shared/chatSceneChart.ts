@@ -258,7 +258,7 @@ export const SCENE_CHART_SOURCE = String.raw`
         "data-tip": data.labels[s] + "\n" + format(value, opts) + " (" + percent + ")",
       }, svg);
       offset += share;
-      items.push({ name: data.labels[s], color: color, value: format(value, opts) + " · " + percent });
+      items.push({ name: data.labels[s], color: color, value: format(value, opts) + " \u00b7 " + percent });
     }
     var center = svgEl("text", { x: size / 2, y: size / 2 + 7, "text-anchor": "middle", "class": "ade-chart-total" }, svg);
     center.textContent = opts.total != null ? String(opts.total) : format(total, opts);

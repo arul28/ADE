@@ -76,9 +76,11 @@ describe("IssueSheetHost", () => {
 
   beforeEach(() => {
     window.location.hash = "#/lanes";
+    // A project is open on this computer: the sheet reads Linear through its copy.
+    const rootPath = `/tmp/project-${Math.random()}`;
     useAppStore.setState({
-      project: { rootPath: `/tmp/project-${Math.random()}`, displayName: "ADE" },
-      projectBinding: null,
+      project: { rootPath, displayName: "ADE" },
+      projectBinding: { kind: "local", key: `local:${rootPath}`, rootPath, displayName: "ADE" },
       showWelcome: false,
       lanes: [],
     } as any);
@@ -106,7 +108,7 @@ describe("IssueSheetHost", () => {
     openDeeplink("ADE-124");
 
     expect((await screen.findAllByText("Route issue deeplinks to the viewer")).length).toBeGreaterThan(0);
-    expect(getLinearIssue).toHaveBeenCalledWith(expect.objectContaining({ issueId: "ADE-124" }));
+    expect(getLinearIssue).toHaveBeenCalledWith(expect.objectContaining({ issueId: "ADE-124" }), expect.objectContaining({ kind: "local" }));
     expect(searchLinearIssues).not.toHaveBeenCalled();
   });
 
@@ -128,21 +130,16 @@ describe("IssueSheetHost", () => {
     expect(window.location.hash).toBe("#/settings?tab=integrations#linear-connection");
   });
 
-  it("offers the project picker when no ADE project is open", async () => {
+  it("says no computer is online, and asks Linear nothing, when no project copy is open", async () => {
     useAppStore.setState({ project: null, projectBinding: null } as any);
-    (window as any).ade = {
-      cto: {
-        getLinearIssue: vi.fn(async () => {
-          throw new Error("No project is open.");
-        }),
-      },
-    };
+    const getLinearIssue = vi.fn();
+    (window as any).ade = { cto: { getLinearIssue } };
 
     render(<IssueSheetHost />);
     openDeeplink("ADE-126");
 
-    expect(await screen.findByText("Open the ADE project for ADE-126")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /open project picker/i }));
-    expect(useAppStore.getState().showWelcome).toBe(true);
+    expect(await screen.findByText("No computer is online")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Machines" })).toBeTruthy();
+    expect(getLinearIssue).not.toHaveBeenCalled();
   });
 });

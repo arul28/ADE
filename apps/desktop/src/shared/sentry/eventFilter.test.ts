@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { enableSentryDiagnostics, recordLogTailLine } from "./diagnostics";
-import { createSentryEventHooks, setSentryUserResolver } from "./eventFilter";
+import {
+  createSentryEventHooks,
+  setSentryUpdateGateResolver,
+  setSentryUserResolver,
+  type SentryUpdateGateReading,
+} from "./eventFilter";
 import { codedError } from "../codedError";
 import { AdeExpectedError } from "../expectedError";
 import { isExpectedOutcome } from "./expectedFailure";
@@ -12,7 +17,10 @@ function errorEvent(value: string, extra: Partial<TestEvent> = {}): TestEvent {
   return { exception: { values: [{ type: "Error", value }] }, ...extra };
 }
 
-afterEach(() => setSentryUserResolver(null));
+afterEach(() => {
+  setSentryUserResolver(null);
+  setSentryUpdateGateResolver(null);
+});
 
 describe("createSentryEventHooks", () => {
   it("keeps what makes a report actionable and removes secrets, user content and personal data", () => {
@@ -195,6 +203,30 @@ describe("createSentryEventHooks", () => {
     expect(hooks.beforeSend(unhandled, { originalException: marked })).not.toBeNull();
     expect(hooks.beforeSend({ ...handled, level: "fatal" }, { originalException: marked })).not.toBeNull();
     expect(hooks.beforeSend(handled, { originalException: new Error(message) })).not.toBeNull();
+  });
+
+  // No server filter on our Sentry plan: a build the update gate blocks drops
+  // its own reports. An unread gate, an exempt build or a broken resolver never does.
+  const blocked = { required: true } as const;
+  const gateCases: Array<[string, () => SentryUpdateGateReading | null, boolean]> = [
+    ["blocked, released build", () => ({ requirement: blocked, version: "1.2.130" }), true],
+    ["blocked, beta build", () => ({ requirement: blocked, version: "1.2.131-beta.1" }), true],
+    ["not blocked", () => ({ requirement: { required: false }, version: "1.2.130" }), false],
+    ["gate not read yet", () => ({ requirement: null, version: "1.2.130" }), false],
+    ["no resolver answer", () => null, false],
+    ["dev build", () => ({ requirement: blocked, version: "0.0.0" }), false],
+    ["Alpha build", () => ({ requirement: blocked, version: "1.0.40-alpha.3" }), false],
+    ["unknown version", () => ({ requirement: blocked, version: null }), false],
+    ["resolver throws", () => { throw new Error("gate not ready"); }, false],
+  ];
+  it.each(gateCases)("a blocked build drops its errors, logs and traces: %s", (label, resolver, dropped) => {
+    setSentryUpdateGateResolver(resolver);
+    const hooks = createSentryEventHooks();
+    expect(hooks.beforeSend(errorEvent(`lane list failed (${label})`)) === null).toBe(dropped);
+    expect(hooks.beforeSendLog({ message: "sync.retry", attributes: {} }) === null).toBe(dropped);
+    expect(hooks.tracesSampler({}) === 0).toBe(dropped);
+    // The one line that says the gate fired always goes.
+    expect(hooks.beforeSendLog({ message: "client_update.required", attributes: {} })).not.toBeNull();
   });
 
   it("reads an expected state from an error's code as well as its text", () => {

@@ -6,6 +6,7 @@ import { normalizePath } from "../../../lib/pathUtils";
 import { COLORS, MONO_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { getFileIcon, useFileIconColor } from "../filePresentation";
 import { isImeComposing } from "../../../lib/imeComposition";
+import { ipcErrorMessage } from "../../../lib/format";
 
 /** File names come from an in-memory index, so they can land almost immediately. */
 const NAME_DEBOUNCE_MS = 120;
@@ -21,11 +22,11 @@ export const SEARCH_PANEL_SURFACE: React.CSSProperties = {
   boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
 };
 
-/** Shared dimmed backdrop for the centred Files modals. */
+/** Shared dimmed backdrop for the centred Files modals: inside the Files pane, so an in-surface layer (notices.md). */
 export function Backdrop({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
   return (
     <div
-      className="absolute inset-0 z-50 flex items-start justify-center pt-[10vh]"
+      className="absolute inset-0 z-40 flex items-start justify-center pt-[10vh]"
       style={{ background: "rgba(0,0,0,0.4)" }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -88,8 +89,16 @@ type FileMatchGroup = { path: string; matches: FilesSearchTextMatch[] };
 /** A flat, keyboard-navigable item: either open a file, or jump to a content line. */
 type FlatItem = { kind: "file"; path: string } | { kind: "line"; path: string; line: number };
 
-type NameState = { key: string; items: FilesQuickOpenItem[] };
-type ContentState = { key: string; groups: FileMatchGroup[] };
+/**
+ * `error` is the sentence of a search that failed (a lane at rest says its
+ * computer is needed): the panel shows it instead of "No matches".
+ */
+type NameState = { key: string; items: FilesQuickOpenItem[]; error: string | null };
+type ContentState = { key: string; groups: FileMatchGroup[]; error: string | null };
+
+function searchFailureSentence(error: unknown): string {
+  return ipcErrorMessage(error) || "ADE couldn't search these files. Try again.";
+}
 
 function baseName(path: string): string {
   const normalized = normalizePath(path);
@@ -115,11 +124,10 @@ function groupMatches(matches: FilesSearchTextMatch[]): FileMatchGroup[] {
 export type FilesSearchPanelProps = {
   workspaceId: string;
   /**
-   * Machine that owns this workspace. Forwarded verbatim as the `pin` argument
-   * on every window.ade.files.* call. Undefined/null = the machine this project
-   * tab is bound to (today's behavior).
+   * The copy that owns this workspace, the tab's own copy included. Forwarded
+   * verbatim as the `pin` argument on every window.ade.files.* call.
    */
-  pin?: OpenProjectBinding | null;
+  pin: OpenProjectBinding;
   query: string;
   onQueryChange: (next: string) => void;
   /** Open a result. `line` is 1-based when the hit came from file contents. */
@@ -153,8 +161,8 @@ export function FilesSearchPanel({
   // has to name the highlighted row for a screen reader to follow along.
   const resultsListId = useId();
   const fileIconColorFor = useFileIconColor();
-  const [names, setNames] = useState<NameState>({ key: "", items: [] });
-  const [contents, setContents] = useState<ContentState>({ key: "", groups: [] });
+  const [names, setNames] = useState<NameState>({ key: "", items: [], error: null });
+  const [contents, setContents] = useState<ContentState>({ key: "", groups: [], error: null });
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [active, setActive] = useState(0);
 
@@ -165,7 +173,7 @@ export function FilesSearchPanel({
   // from re-firing when the caller hands us a new-but-equivalent binding.
   const pinRef = useRef(pin);
   pinRef.current = pin;
-  const pinKey = pin ? `${pin.kind}:${pin.key}` : "";
+  const pinKey = `${pin.kind}:${pin.key}`;
 
   // Identity of the answer we want on screen. Results carrying a different key
   // are stale, which is also how "still searching" is derived.
@@ -173,7 +181,7 @@ export function FilesSearchPanel({
 
   useEffect(() => {
     if (!searchKey) {
-      setNames({ key: "", items: [] });
+      setNames({ key: "", items: [], error: null });
       return;
     }
     let cancelled = false;
@@ -181,10 +189,10 @@ export function FilesSearchPanel({
       window.ade.files
         .quickOpen({ workspaceId, query: trimmed, limit: NAME_LIMIT, includeIgnored }, pinRef.current)
         .then((items) => {
-          if (!cancelled) setNames({ key: searchKey, items });
+          if (!cancelled) setNames({ key: searchKey, items, error: null });
         })
-        .catch(() => {
-          if (!cancelled) setNames({ key: searchKey, items: [] });
+        .catch((error: unknown) => {
+          if (!cancelled) setNames({ key: searchKey, items: [], error: searchFailureSentence(error) });
         });
     }, NAME_DEBOUNCE_MS);
     return () => {
@@ -197,7 +205,7 @@ export function FilesSearchPanel({
 
   useEffect(() => {
     if (!searchKey) {
-      setContents({ key: "", groups: [] });
+      setContents({ key: "", groups: [], error: null });
       return;
     }
     let cancelled = false;
@@ -205,10 +213,10 @@ export function FilesSearchPanel({
       window.ade.files
         .searchText({ workspaceId, query: trimmed, limit: CONTENT_LIMIT, includeIgnored }, pinRef.current)
         .then((matches) => {
-          if (!cancelled) setContents({ key: searchKey, groups: groupMatches(matches) });
+          if (!cancelled) setContents({ key: searchKey, groups: groupMatches(matches), error: null });
         })
-        .catch(() => {
-          if (!cancelled) setContents({ key: searchKey, groups: [] });
+        .catch((error: unknown) => {
+          if (!cancelled) setContents({ key: searchKey, groups: [], error: searchFailureSentence(error) });
         });
     }, CONTENT_DEBOUNCE_MS);
     return () => {
@@ -229,6 +237,8 @@ export function FilesSearchPanel({
   const contentGroups = contents.groups;
   const namesPending = hasQuery && names.key !== searchKey;
   const contentsPending = hasQuery && contents.key !== searchKey;
+  // A search that failed says why; a search that answered with nothing is "No matches".
+  const searchError = (names.key === searchKey ? names.error : null) ?? (contents.key === searchKey ? contents.error : null);
 
   const flat = useMemo<FlatItem[]>(() => {
     const items: FlatItem[] = nameItems.map((item) => ({ kind: "file", path: item.path }));
@@ -388,7 +398,7 @@ export function FilesSearchPanel({
     </div>
   ) : nameItems.length === 0 && contentGroups.length === 0 ? (
     <div className="px-3 py-3 text-xs" style={{ color: COLORS.textDim }}>
-      {namesPending || contentsPending ? "Searching…" : "No matches"}
+      {namesPending || contentsPending ? "Searching…" : searchError ?? "No matches"}
     </div>
   ) : (
     // A listbox the input can point into: the highlight moves with the arrow

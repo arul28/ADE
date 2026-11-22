@@ -3,15 +3,18 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import { invalidateAgentChatSessionListCache } from "../../../lib/agentChatSessionListCache";
 import {
   DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
+  launchMayOpenItsSession,
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   type BackgroundLaunchNotice,
+  type NewDraftRequestMark,
   type DraftLaunchJob,
   type DraftLaunchKind,
   type DraftLaunchMode,
   type DraftLaunchSnapshot,
   type PreparedDraftLaunch,
 } from "../../../lib/draftLaunchJobs";
+import { isRemoteCallNotSentError } from "../../../../shared/runtimeErrors";
 import { extractError } from "../../../lib/format";
 import { invalidateSessionListCache } from "../../../lib/sessionListCache";
 import type { ComposerHandoff } from "./chatLaunchDock";
@@ -190,6 +193,11 @@ export type RendererOwnedLaunchDeps = {
   launchBinding: OpenProjectBinding;
   /** Double-press guard key; released when the chain settles. */
   requestKey: string;
+  /**
+   * `markNewDraftRequests()` taken at Send, before any await: a new draft asked
+   * for after it stops the late open.
+   */
+  newDraftMarkAtSend: NewDraftRequestMark;
   /** The draft targets "Auto-create lane". */
   autoCreate: boolean;
   /** The pane's lane, to refresh its session list when the chat lands there. */
@@ -210,11 +218,18 @@ export type RendererOwnedLaunchDeps = {
       pin: OpenProjectBinding;
     },
   ) => Promise<DraftLaunchLaneTarget>;
+  /**
+   * `onOpeningMessageOut(true)` says one call now carries the chat and its
+   * first message (false: it did not, the machine predates it). While it is
+   * out, the launch clock no longer fails the launch: the call's answer, or
+   * the check of the chat's machine after a lost one, decides.
+   */
   startChat: (
     prepared: PreparedDraftLaunch,
     targetLane: DraftLaunchLaneTarget,
     pin: OpenProjectBinding,
     assertActive: () => void,
+    onOpeningMessageOut: (out: boolean) => void,
   ) => Promise<StartedDraftLaunch>;
   startCli: (
     prepared: PreparedDraftLaunch,
@@ -222,6 +237,7 @@ export type RendererOwnedLaunchDeps = {
     mode: DraftLaunchMode,
     assertActive: () => void,
     pin: OpenProjectBinding,
+    newDraftMarkAtSend: NewDraftRequestMark,
   ) => Promise<StartedDraftLaunch>;
   clearPromptSuggestion: () => void;
   setError: (message: string | null) => void;
@@ -234,7 +250,18 @@ export type RendererOwnedLaunchDeps = {
   refreshLanes: () => Promise<unknown>;
   openLaunchedDraftSession: (launch: OpenLaunchedDraftSessionInput) => void;
   clearSelectedSession: () => void;
+  /** The name of the machine the launch runs on, for a launch it could not reach. */
+  launchMachineName?: () => string | null;
 };
+
+/** A launch refused before anything reached its machine (it is reconnecting). */
+function notStartedMessage(kind: DraftLaunchKind, machineName: string | null, promptInComposer: boolean): string {
+  const what = kind === "chat" ? "the chat" : "the CLI session";
+  const where = promptInComposer
+    ? "Your message is still in the composer."
+    : "Press Restore to put your message back in the composer.";
+  return `Can't reach ${machineName?.trim() || "that machine"}, so ${what} was not started. ${where}`;
+}
 
 export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Promise<void> {
   const { kind, mode, snapshot, launchBinding, jobId } = deps;
@@ -261,6 +288,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
   if (mode === "foreground") {
     deps.latestForegroundJobIdRef.current = jobId;
   }
+  const { newDraftMarkAtSend } = deps;
   const job: DraftLaunchJob = {
     id: jobId,
     mode,
@@ -279,6 +307,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     autoOpen: mode === "foreground",
     createdAtMs: Date.now(),
     snapshot,
+    newDraftMarkAtSend,
   };
   deps.clearPromptSuggestion();
   deps.setError(null);
@@ -298,6 +327,11 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
   if (!holdsComposerUntilOpen) deps.clearDraftLaunchComposer(snapshot);
 
   let targetLane: DraftLaunchLaneTarget | null = null;
+  // A chat sent in one call (create and first message together) may be with
+  // the agent when the clock runs out. Then the clock does not fail the
+  // launch, and no failure deletes its lane: the start's own answer decides.
+  let openingMessageOut = false;
+  let startClockRanOut = false;
 
   try {
     if (holdsComposerUntilOpen) {
@@ -328,13 +362,23 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     // Re-check before starting the session. The start functions also re-assert
     // immediately before each of their own mutating calls.
     assertLaunchActive();
-    const launched = await withDraftLaunchTimeout(
-      kind === "chat"
-        ? deps.startChat(prepared, targetLane, launchBinding, assertLaunchActive)
-        : deps.startCli(prepared, targetLane, mode, assertLaunchActive, launchBinding),
-      "Session start",
-      markLaunchTimedOut,
-    );
+    const onOpeningMessageOut = (out: boolean) => {
+      openingMessageOut = out;
+      if (!out && startClockRanOut) markLaunchTimedOut();
+    };
+    const started = kind === "chat"
+      ? deps.startChat(prepared, targetLane, launchBinding, assertLaunchActive, onOpeningMessageOut)
+      : deps.startCli(prepared, targetLane, mode, assertLaunchActive, launchBinding, newDraftMarkAtSend);
+    let launched: StartedDraftLaunch;
+    try {
+      launched = await withDraftLaunchTimeout(started, "Session start", () => {
+        startClockRanOut = true;
+        if (!openingMessageOut) markLaunchTimedOut();
+      });
+    } catch (startError) {
+      if (!startClockRanOut || launchTimedOut) throw startError;
+      launched = await started;
+    }
     invalidateSessionListCache();
     invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
     if (launched.draftKind === "chat" && targetLane.laneId === deps.paneLaneId && deps.canRefreshPinnedProject(launchBinding)) {
@@ -347,8 +391,13 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
       draftKind: launched.draftKind,
     };
     const canMutateLaunchUi = deps.canRefreshPinnedProject(launchBinding);
+    // Not when a newer send from this pane, or a new draft the person asked
+    // for since this send, has the screen: the session shows in the list.
     const shouldAutoOpen =
-      canMutateLaunchUi && mode === "foreground" && deps.latestForegroundJobIdRef.current === jobId;
+      canMutateLaunchUi
+      && mode === "foreground"
+      && deps.latestForegroundJobIdRef.current === jobId
+      && launchMayOpenItsSession(newDraftMarkAtSend);
     const jobStillVisible = deps.draftLaunchJobExists(jobId);
     deps.patchDraftLaunchJob(jobId, {
       status: "ready",
@@ -356,10 +405,12 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
       laneName: launch.laneName,
       sessionId: launch.sessionId,
       draftKind: launch.draftKind,
-      // Keep autoOpen set for foreground sends so the pane's effect can open the
-      // chat even if the pane instance remounted during the launch (otherwise
-      // the inline open is skipped and the job sits at "ready").
-      autoOpen: mode === "foreground" && canMutateLaunchUi,
+      // Keep autoOpen set for a launch that may open its session, so the
+      // pane's effect can open the chat even if the pane instance remounted
+      // during the launch (otherwise the inline open is skipped and the job
+      // sits at "ready"). A launch that may not open it must not keep it: the
+      // next draft pane to mount would open that old session over itself.
+      autoOpen: shouldAutoOpen,
     });
     if (!jobStillVisible) {
       if (holdsComposerUntilOpen) deps.clearDraftLaunchComposer(snapshot);
@@ -381,7 +432,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     }
   } catch (launchError) {
     discardRendererLaunchHandoff(jobId);
-    if (targetLane?.autoCreated) {
+    if (targetLane?.autoCreated && !openingMessageOut) {
       // Pin the rollback to the originating project so it deletes the lane we
       // created, even if the active project has since changed.
       await window.ade.lanes.delete({ laneId: targetLane.laneId, force: true }, launchBinding).catch((cleanupError: unknown) => {
@@ -391,7 +442,9 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
         await deps.refreshLanes().catch(() => undefined);
       }
     }
-    const message = extractError(launchError);
+    const message = isRemoteCallNotSentError(launchError)
+      ? notStartedMessage(kind, deps.launchMachineName?.() ?? null, holdsComposerUntilOpen)
+      : extractError(launchError);
     const jobStillVisible = deps.draftLaunchJobExists(jobId);
     deps.patchDraftLaunchJob(jobId, {
       status: "failed",

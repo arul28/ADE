@@ -1,5 +1,5 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "ade-push-relay",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-30",
@@ -9,7 +9,10 @@
   // Persistent, queryable request logs in the dashboard (Workers → ade-push-relay
   // → Logs). Every rate_limited / budget_exceeded / auth_failed / apns_error /
   // claim_conflict event is a structured JSON line filterable there.
-  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // 10% of requests are logged: Workers Logs cost $0.60 per million events above
+  // 20 million a month, and at 100% the three Workers made about 53 million a
+  // month (measured 2026-11-12). Errors still reach Sentry in full.
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
   // Hourly prune of expired suppression / registration / rate-limit rows,
   // independent of request traffic (see the scheduled handler in index.ts).
   "triggers": { "crons": ["17 * * * *"] },
@@ -40,6 +43,10 @@
     "CLAIM_RATE_LIMIT_PER_MIN": "10",
     "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev"
   },
+  // Passwords: the key service that wraps and unwraps each account's vault key
+  // (apps/password-key-service). Needs the secret KEY_SERVICE_AUTH_SECRET, the
+  // same value as that Worker's; unset, the Passwords routes answer 503.
+  "services": [{ "binding": "PASSWORD_KEY_SERVICE", "service": "ade-password-key-service" }],
   "d1_databases": [
     {
       "binding": "DB",

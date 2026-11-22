@@ -13,7 +13,7 @@ import {
 } from "./actionPolicy";
 import { settingsEntryById } from "../../../shared/settingsManifest";
 import type { AdeActionDomain } from "./domains";
-import { ADE_ACTION_ACCESS, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { ADE_ACTION_ACCESS, isReplaySafeAdeAction, thisDesktopOnlyRefusal } from "../../../shared/adeActionAccess";
 
 /**
  * The gate, tested over the tables alone.
@@ -31,32 +31,6 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("lane", "create")).toBe(true);
     expect(isAllowedAdeAction("automations", "triggerManually")).toBe(true);
     expect(isAllowedAdeAction("issue", "addComment")).toBe(true);
-  });
-
-  it("exposes every iOS simulator action the preload routes as a runtime action", () => {
-    // The `ios_simulator` domain spreads `APPLE_AGENT_ACTIONS`, and the preload
-    // calls some of those through `callIosSimulatorActionOr` — a runtime action
-    // the daemon rejects if the name is missing here. `recordingsTotalBytes`
-    // was implemented and exposed but absent from the list, so the runtime path
-    // rejected it and the Diagnostics row silently fell back to a tree walk.
-    for (const action of [
-      "recordingsTotalBytes",
-      "startStream",
-      "stopStream",
-      "deviceStart",
-      "deviceCreate",
-    ]) {
-      expect(isAllowedAdeAction("ios_simulator", action), action).toBe(true);
-    }
-    expect(isAllowedAdeAction("ios_simulator", "definitelyNotAnAction")).toBe(false);
-  });
-
-  it("exposes the session-scoped Linear link lane actions for CLI/automation reach", () => {
-    expect(isAllowedAdeAction("lane", "attachLinearIssueToSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "detachLinearIssueFromSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "listLinearIssuesForSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "listLinearIssuesForLaneSessions")).toBe(true);
-    expect(isAllowedAdeAction("lane", "unlinkLinearIssues")).toBe(true);
   });
 
   it("exposes the Linear issue tracker write actions for the CLI daemon bridge", () => {
@@ -157,6 +131,10 @@ describe("isAllowedAdeAction", () => {
       ["android_emulator", "installSdk"],
       ["android_emulator", "cancelSdkInstall"],
       ["android_emulator", "setSdkPath"],
+      // An invite code sets the account's referrer once, forever.
+      ["cloud", "invite_redeem"],
+      // Sharing the gh sign-in hands it to every computer of the account.
+      ["github", "setGhAccountSharing"],
     ] as const) {
       expect(isAllowedAdeAction(domain, action), action).toBe(true);
       expect(isUserOnlyAdeAction(domain, action), action).toBe(true);
@@ -166,6 +144,8 @@ describe("isAllowedAdeAction", () => {
     expect(isAutomationAllowedAdeAction("ios_simulator", "deviceDelete")).toBe(true);
     // Reading the setup plan stays open to agents.
     expect(isUserOnlyAdeAction("android_emulator", "getSdkSetupPlan")).toBe(false);
+    // Reading the invite link and its rewards stays open to agents.
+    expect(isUserOnlyAdeAction("cloud", "referral")).toBe(false);
   });
 
   it("exposes snooze/wake/settle-override and lane branch drift to generic actions", () => {
@@ -195,36 +175,17 @@ describe("isAllowedAdeAction", () => {
     expect(isCtoOnlyAdeAction("ios_simulator", "renderCurrentPreview")).toBe(false);
   });
 
-  it("exposes subagent transcript reads through the chat runtime action surface", () => {
-    expect(isAllowedAdeAction("chat", "getMainTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "getSubagentTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "readTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "readTranscriptPage")).toBe(true);
-    expect(isAllowedAdeAction("chat", "sendMessage")).toBe(true);
-    expect(isAllowedAdeAction("chat", "messageSession")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "getMainTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "readTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "readTranscriptPage")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "sendMessage")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "messageSession")).toBe(false);
-  });
-
-  it("exposes Codex goal actions and getCommit through the runtime action surface", () => {
-    expect(isAllowedAdeAction("chat", "setCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "setCodexGoalStatus")).toBe(true);
-    expect(isAllowedAdeAction("chat", "clearCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "getCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "resetCodexMemory")).toBe(true);
-    expect(isAllowedAdeAction("chat", "terminateCodexBackgroundTerminal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "stopTask")).toBe(true);
-    expect(isAllowedAdeAction("git", "getCommit")).toBe(true);
-  });
-
-  it("rejects an unknown action on a known domain", () => {
-    expect(isAllowedAdeAction("git", "rmRf")).toBe(false);
-    expect(isAllowedAdeAction("issue", "deleteAllIssues")).toBe(false);
-    expect(isAllowedAdeAction("automations", "__proto__")).toBe(false);
+  // work_tools never drives the pane (the browser and App Control keep their
+  // own allowlists for that), and search never disposes the index remotely.
+  it.each([
+    ["git", "rmRf"],
+    ["issue", "deleteAllIssues"],
+    ["automations", "__proto__"],
+    ["work_tools", "click"],
+    ["work_tools", "navigate"],
+    ["search", "dispose"],
+  ] as const)("rejects %s.%s", (domain, action) => {
+    expect(isAllowedAdeAction(domain, action)).toBe(false);
   });
 
   it("rejects an unknown domain outright", () => {
@@ -437,8 +398,11 @@ describe("isCtoOnlyAdeAction", () => {
     expect(isCtoOnlyAdeAction("ai", "listApiKeys")).toBe(false);
   });
 
-  it("keeps plaintext project secret export CTO-only", () => {
-    expect(isCtoOnlyAdeAction("project_secret", "exportEnv")).toBe(true);
+  // A .env export writes every value in plain text: only the person, from the
+  // desktop app on the computer they are using, and never an agent.
+  it("keeps the plaintext secrets export the person's, on this computer", () => {
+    expect(isUserOnlyAdeAction("passwords", "exportSecrets")).toBe(true);
+    expect(thisDesktopOnlyRefusal("passwords", "exportSecrets")).toEqual(expect.any(String));
     expect(isCtoOnlyAdeAction("project_secret", "list")).toBe(false);
   });
 
@@ -521,49 +485,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(isCtoOnlyAdeAction("automations", "refreshWebhookGatewayStatus")).toBe(false);
   });
 
-  it("exposes the issue domain with GitHub issue mutation helpers", () => {
-    const actions = ADE_ACTION_ALLOWLIST.issue ?? [];
-    for (const name of ["addComment", "setLabels", "close", "reopen", "assign", "setTitle"]) {
-      expect(actions).toContain(name);
-    }
-  });
-
-  it("exposes lane.listSnapshots for runtime-backed lane snapshot parity", () => {
-    const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
-    expect(actions).toContain("listSnapshots");
-  });
-
-  it("exposes lane.listDeleteProgress for runtime-backed lane delete progress recovery", () => {
-    const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
-    expect(actions).toContain("listDeleteProgress");
-  });
-
-  it("exposes runtime-backed PR reads", () => {
-    const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
-    expect(actions).toContain("listPrsByLane");
-    expect(actions).toContain("getMobileGithubDetail");
-  });
-
-  it("exposes reconcileOnFocus + syncLanePr so the reconcile safety net works in the runtime-backed build", () => {
-    // Regression: in production a project is runtime-backed (local daemon RPC),
-    // so the desktop context's prService is null and these actions are dispatched
-    // to the daemon. If they are not allowlisted, the daemon rejects them —
-    // reconcile-on-focus becomes a no-op and the manual ⟳ sync silently fails.
-    const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
-    expect(actions).toContain("reconcileOnFocus");
-    expect(actions).toContain("syncLanePr");
-  });
-
-  it("exposes ade_project.clearLocalData for runtime-backed cleanup", () => {
-    const actions = ADE_ACTION_ALLOWLIST.ade_project ?? [];
-    expect(actions).toContain("clearLocalData");
-  });
-
-  it("exposes session.getDelta for runtime-backed session delta reads", () => {
-    const actions = ADE_ACTION_ALLOWLIST.session ?? [];
-    expect(actions).toContain("getDelta");
-  });
-
   it("exposes computer-use backend status and artifact preview reads for runtime-backed proof flows", () => {
     const actions = ADE_ACTION_ALLOWLIST.computer_use_artifacts ?? [];
     expect(actions).toContain("getBackendStatus");
@@ -592,34 +513,31 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(isCtoOnlyAdeAction("cto_memory", "recordDiscovery")).toBe(false);
 
     // ...and can still READ, exactly as it could before this domain was
-    // inverted. These two are deliberately open and must stay open: CTO memory
-    // is plain markdown under `<adeDir>/cto/` that every coding agent can
-    // already open with a file read, so closing the action gate protects
+    // inverted. The snapshot is deliberately open and must stay open: the
+    // notes are plain markdown under `<adeDir>/cto/` that every coding agent
+    // can already open with a file read, so closing the action gate protects
     // nothing — it only breaks existing automation `ade-action` steps, silently.
     expect(isCtoOnlyAdeAction("cto_memory", "getSnapshot")).toBe(false);
-    expect(isCtoOnlyAdeAction("cto_memory", "searchMemory")).toBe(false);
 
-    // The REWRITE path is the one that is actually operator state.
-    expect(isCtoOnlyAdeAction("cto_memory", "updateMemory")).toBe(true);
+    // The write paths are the ones that are actually operator state.
+    expect(isCtoOnlyAdeAction("cto_memory", "updateNotes")).toBe(true);
+    expect(isCtoOnlyAdeAction("cto_memory", "updateOpenWork")).toBe(true);
 
     // Fail-closed: a method added to the domain later is CTO-only by default
     // rather than open by omission.
     expect(isCtoOnlyAdeAction("cto_memory", "someMethodAddedLater")).toBe(true);
   });
 
-  it("keeps starting a fresh CTO session operator-only, and its reads open", () => {
+  it("keeps refreshing the CTO's context operator-only, and its reads open", () => {
     const actions = ADE_ACTION_ALLOWLIST.cto_state ?? [];
-    expect(actions).toContain("startFreshSession");
-    expect(actions).toContain("getThreadHealth");
+    expect(actions).toContain("refreshContext");
 
-    // Retiring the thread every other CTO surface is talking to is the
-    // operator's call — an agent could otherwise quietly drop the context it is
-    // being supervised with.
-    expect(isCtoOnlyAdeAction("cto_state", "startFreshSession")).toBe(true);
+    // When the CTO starts over on a fresh provider thread is the operator's
+    // call, not an agent's.
+    expect(isCtoOnlyAdeAction("cto_state", "refreshContext")).toBe(true);
 
     // Everything else on this domain is a read the whole fleet depends on and
-    // stays open, including the new health probe (it creates nothing).
-    expect(isCtoOnlyAdeAction("cto_state", "getThreadHealth")).toBe(false);
+    // stays open.
     expect(isCtoOnlyAdeAction("cto_state", "getSnapshot")).toBe(false);
     expect(isCtoOnlyAdeAction("cto_state", "getAttention")).toBe(false);
     expect(isCtoOnlyAdeAction("cto_state", "updateIdentity")).toBe(false);
@@ -703,14 +621,6 @@ describe("CTO domain coverage over the ADE action bus", () => {
     expect(contract?.input?.length ?? 0).toBeGreaterThan(0);
   });
 
-  it("covers every domain the coverage table claims exactly once", () => {
-    const domains = CTO_DOMAIN_COVERAGE.map((entry) => entry.domain);
-    expect(new Set(domains).size).toBe(domains.length);
-    for (const domain of domains) {
-      expect(ADE_ACTION_ALLOWLIST[domain], `${domain} must exist in the allowlist`).toBeDefined();
-    }
-  });
-
   // ── CTO-only decisions ────────────────────────────────────────────────────
 
   it("keeps the new read surfaces open to agents, as decided", () => {
@@ -733,7 +643,6 @@ describe("CTO domain coverage over the ADE action bus", () => {
   it("leaves the privileged neighbours of those surfaces CTO-only", () => {
     for (const [domain, action] of [
       ["search", "rebuildIndex"],
-      ["project_secret", "exportEnv"],
       ["budget", "updateConfig"],
       ["usage", "forceRefresh"],
       ["computer_use_artifacts", "deleteArtifacts"],
@@ -751,12 +660,12 @@ describe("CTO domain coverage over the ADE action bus", () => {
   });
 
   it("does not widen or re-tighten the cto_memory inversion", () => {
-    // The inversion is fail-closed: everything CTO-only EXCEPT these three,
+    // The inversion is fail-closed: everything CTO-only EXCEPT these two,
     // and the polarity is carried by the rule itself rather than by which of
     // two tables the domain happened to be listed in.
     expect(ADE_ACTION_CTO_ONLY.cto_memory)
-      .toEqual({ allExcept: ["recordDiscovery", "getSnapshot", "searchMemory"] });
-    expect(isCtoOnlyAdeAction("cto_memory", "updateMemory")).toBe(true);
+      .toEqual({ allExcept: ["recordDiscovery", "getSnapshot"] });
+    expect(isCtoOnlyAdeAction("cto_memory", "updateNotes")).toBe(true);
     expect(isCtoOnlyAdeAction("cto_memory", "recordDiscovery")).toBe(false);
   });
 

@@ -3,7 +3,10 @@
 import React, { useState } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FilesQuickOpenItem, FilesSearchTextMatch } from "../../../../shared/types";
+import type { FilesQuickOpenItem, FilesSearchTextMatch, OpenProjectBinding } from "../../../../shared/types";
+
+/** The machine whose files the panel searches. */
+const FILES_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
 import {
   FilesSearchPanel,
   getFilesSearchIncludeIgnored,
@@ -52,6 +55,7 @@ async function advance(ms: number) {
 function renderPanel(overrides: Partial<FilesSearchPanelProps> = {}) {
   const props: FilesSearchPanelProps = {
     workspaceId: "ws-1",
+    pin: FILES_PIN,
     query: "button",
     onQueryChange: vi.fn(),
     onOpen: vi.fn(),
@@ -252,6 +256,7 @@ describe("FilesSearchPanel keyboard navigation", () => {
           <input aria-label="Search files" data-files-search-field="1" value={query} onChange={(e) => setQuery(e.target.value)} />
           <FilesSearchPanel
             workspaceId="ws-1"
+            pin={FILES_PIN}
             query={query}
             onQueryChange={setQuery}
             onOpen={onOpen}

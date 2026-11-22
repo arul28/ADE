@@ -21,6 +21,36 @@ export type ArtifactByteRange = {
 };
 
 /**
+ * A whole proof file for a local conversion (the display copy), read through
+ * the same no-follow, descriptor-checked open as a range read: a link swapped
+ * in after the caller's jail check is refused, not followed, and the opened
+ * handle's own stat decides the size. Null when there is nothing to read that
+ * way (gone, a link, not a file, or over `maxBytes`).
+ */
+export async function readArtifactFileBytes(absolutePath: string, maxBytes: number): Promise<Buffer | null> {
+  const handle = await fs.promises.open(absolutePath, OPEN_FLAGS).catch((error: NodeJS.ErrnoException) => {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR" || error?.code === "ELOOP") return null;
+    throw error;
+  });
+  if (!handle) return null;
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size <= 0 || stat.size > maxBytes) return null;
+    // A read may stop short of the requested length without being at EOF.
+    const buffer = Buffer.alloc(stat.size);
+    let read = 0;
+    while (read < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, read, buffer.length - read, read);
+      if (bytesRead <= 0) break;
+      read += bytesRead;
+    }
+    return read === buffer.length ? buffer : buffer.subarray(0, read);
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
+/**
  * One bounded slice of a proof file, for a proof read one chunk at a time.
  *
  * The caller has already checked the path is one it may serve. A missing

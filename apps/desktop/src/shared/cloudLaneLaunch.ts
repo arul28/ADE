@@ -1,0 +1,379 @@
+/**
+ * Facts an ADE Cloud lane's computer carries in its metadata, so any list
+ * (desktop, phone, the server's own) can show "ADE Cloud" with the lane's name and
+ * find the lane's project without waking the computer. The launch writes
+ * them when it makes the computer (`cloudLaneLaunchService.ts`), beside
+ * `ade_request_id`, which is the launch id.
+ */
+
+import {
+  CLOUD_OUT_OF_HOURS_MESSAGE,
+  cloudCatalogOf,
+  cloudComputerLimitDetailOf,
+  cloudComputerLimitReached,
+  cloudFreePlanOf,
+  cloudOutOfHours,
+  computerLimitSentence,
+  type CloudAccountState,
+  type CloudAgentMaker,
+  type CloudMachine,
+} from "./adeCloud";
+import { cloudTier, cloudTierUsesHours } from "./cloudTiers";
+import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
+import type { ChatLaunchArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from "./types/chatLaunch";
+import type { AgentChatFileRef } from "./types/chat";
+import { DEFAULT_LANE_START } from "./laneStart";
+import { isChatLaunchSucceeded } from "./chatLaunch";
+import { CLOUD_LANE_METADATA, CLOUD_LAUNCH_MAX_ARGS_BYTES } from "../../../account-directory/src/cloud/contract";
+
+export type { CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
+
+/**
+ * The lane recipe the computer's brain gets: always from the pushed copy of
+ * its branch. A lane on an existing branch keeps that branch.
+ *
+ * Named exactly as a lane on this computer is (chatLaunchService
+ * `laneIsAutoNamed`): a launch with no recipe, or one asking for it
+ * (`autoName`), starts on the name from the prompt and a placeholder branch in
+ * the project's pattern, and the brain there renames both with the AI name.
+ * The name the person chose is kept. A rename follows the lane to its
+ * computer's metadata, its own name and its account machine's name
+ * (cloudLaneNameSync.ts, on the computer's brain), so the ADE Cloud page and
+ * the machine list show the new name.
+ */
+export function cloudLaneConfig(config: ChatLaunchLaneConfig | null | undefined): ChatLaunchLaneConfig {
+  if (config?.mode === "existing") return config;
+  const autoName = !config || config.autoName === true;
+  const { autoName: _autoName, ...base }: ChatLaunchLaneConfig = config ?? { mode: "new" };
+  return { ...base, mode: "new", start: { ...(base.start ?? DEFAULT_LANE_START), on: "remote" }, ...(autoName ? { autoName: true } : {}) };
+}
+
+/**
+ * The `lane` of a launch request (`POST /cloud/launches`) for a lane recipe,
+ * as the desktop's main process and the web app both send it.
+ */
+export function cloudLaunchLaneFields(
+  name: string,
+  config: ChatLaunchLaneConfig | null | undefined,
+): { name: string; existingBranch?: string; from?: string; autoName?: true } {
+  const lane = cloudLaneConfig(config);
+  return {
+    name,
+    ...(lane.mode === "existing" && lane.branchRef ? { existingBranch: lane.branchRef } : {}),
+    ...(lane.mode !== "existing" && lane.start?.from === "branch" && lane.start.branch ? { from: lane.start.branch } : {}),
+    ...(lane.mode !== "existing" && lane.autoName ? { autoName: true as const } : {}),
+  };
+}
+
+/** Only links: files from the sending computer travel as the server's files, never as its paths. */
+const linksOnly = (list: AgentChatFileRef[] | undefined): AgentChatFileRef[] | undefined =>
+  list ? list.filter((file) => file.type === "image-url") : list;
+
+/** Bytes as the server counts them (UTF-8), not UTF-16 string length. */
+const jsonBytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
+
+/**
+ * The launch as the person set it up in the app (`CloudServerLaunchRequest.launch`),
+ * so the computer starts with what the request's facts leave out: a
+ * provider's own permission modes, a harness preset or account, plan mode, a
+ * lane template. The desktop's main process and the web app both send it.
+ * A chat's first message travels once, in `chat.prompt`, so its text is left
+ * out here. Null when it is still over `CLOUD_LAUNCH_MAX_ARGS_BYTES` without
+ * its display text: the computer then starts from the facts alone.
+ */
+export function cloudLaunchAppArgs(launch: Omit<ChatLaunchArgs, "cloud" | "priorStages">): Record<string, unknown> | null {
+  const chatFacts = launch.kind === "chat" && Boolean(launch.chat?.create);
+  const { prompt: _prompt, ...rest } = launch;
+  let appArgs: Record<string, unknown> = {
+    ...(chatFacts ? rest : launch),
+    ...(launch.attachments ? { attachments: linksOnly(launch.attachments) } : {}),
+    ...(launch.chat
+      ? { chat: { ...launch.chat, message: { ...launch.chat.message, ...(chatFacts ? { text: "" } : {}), attachments: linksOnly(launch.chat.message.attachments) } } }
+      : {}),
+    laneConfig: cloudLaneConfig(launch.laneConfig),
+  };
+  if (jsonBytes(appArgs) > CLOUD_LAUNCH_MAX_ARGS_BYTES) {
+    // A long display text is the only big part left: without it the computer shows the message itself.
+    const { displayPrompt: _displayPrompt, ...lighter } = appArgs;
+    const chat = lighter.chat as { message?: Record<string, unknown> } | undefined;
+    appArgs = chat?.message ? { ...lighter, chat: { ...chat, message: { ...chat.message, displayText: null } } } : lighter;
+  }
+  return jsonBytes(appArgs) <= CLOUD_LAUNCH_MAX_ARGS_BYTES ? appArgs : null;
+}
+
+/**
+ * Why the account can't start a new ADE Cloud lane now, from facts of the
+ * account (hours, computers), or null. One wording for every caller: the
+ * composer's label above the prompt box, `cloud.status`'s `canStartLane`,
+ * and the early refusal of `cloud.lane_launch` and `cloud.create`.
+ * `newLane: false` (a send to a lane that exists) skips the computer limit.
+ *
+ * Small computers never use hours, so out of hours stops only a size known
+ * to use them (`sizeId`); a caller that doesn't pass the size gets no hours
+ * block (only a held free plan's) and the server decides. A new lane past
+ * the plan's computers is `computer_limit` (the limit card's three ways out).
+ *
+ * Unknown (no account read) is never a block here: the server still refuses,
+ * and each caller says what it does with unknown.
+ */
+export type CloudLaneStartBlock = {
+  code: "out_of_hours" | "computer_limit";
+  message: string;
+  /** One short line for a narrow prompt box, so a label never wraps there. */
+  short: string;
+};
+
+export function cloudLaneStartBlock(
+  account: CloudAccountState | null | undefined,
+  options: { newLane: boolean; sizeId?: string | null } = { newLane: true },
+): CloudLaneStartBlock | null {
+  if (!account) return null;
+  // A partial answer (an older server) can lack a part: that check is skipped, never thrown.
+  const { extraHours } = account as Partial<CloudAccountState>;
+  const catalog = cloudCatalogOf(account);
+  // Only a size the catalog rates above 0 uses hours.
+  const size = options.sizeId ? cloudTier(catalog, options.sizeId) : null;
+  const usesHours = size != null && cloudTierUsesHours(size);
+  // A held free plan (GitHub rules, refused) stops every size, Small too.
+  const github = (account as Partial<CloudAccountState>).rules === "free" ? cloudFreePlanOf(account).github : undefined;
+  const why = github && github.state !== "ok" ? github.sentence : null;
+  if (cloudOutOfHours(account) && !extraHours?.enabled && (usesHours || why)) {
+    // The free plan's GitHub rules hold its hours: their sentence says why and what to do.
+    return {
+      code: "out_of_hours",
+      message: why ?? `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.`,
+      short: why ? "Free hours wait on GitHub." : "Out of hours for this size.",
+    };
+  }
+  if (!options.newLane) return null;
+  const detail = cloudComputerLimitReached(account) ? cloudComputerLimitDetailOf(account) : null;
+  if (detail) {
+    return { code: "computer_limit", message: computerLimitSentence(detail), short: `All ${detail.limit} cloud computers in use.` };
+  }
+  return null;
+}
+
+/** `--machine cloud`: a new lane on its own new ADE Cloud computer (the CLI and the ADE MCP policy). */
+export const CLOUD_LANE_MACHINE = "cloud";
+
+// The server reads these too (a lane that outlives its computer), so they live in its contract.
+/** The lane this computer was made for (the launch's reserved lane id). */
+export const CLOUD_LANE_ID_METADATA = CLOUD_LANE_METADATA.laneId;
+
+/** The lane's name when the computer was made. The lane may be renamed later; this is not kept in step. */
+export const CLOUD_LANE_NAME_METADATA = CLOUD_LANE_METADATA.laneName;
+
+/** The project's normalized git origin (`github.com/owner/repo`), as `normalizeGitRemoteIdentity` writes it. */
+export const CLOUD_PROJECT_ORIGIN_METADATA = CLOUD_LANE_METADATA.projectOrigin;
+
+/** The lane's branch, written once the computer's ADE named it, so a lane that outlives its computer knows where to start again. */
+export const CLOUD_LANE_BRANCH_METADATA = CLOUD_LANE_METADATA.branch;
+
+/** Every lane fact a computer carries: a move copies these to the new computer. */
+export const CLOUD_LANE_METADATA_KEYS: readonly string[] = Object.values(CLOUD_LANE_METADATA);
+
+/** The lane name for a computer list row, or null for a computer that was not made for one lane. */
+function cloudLaneNameOf(metadata: Record<string, string> | null | undefined): string | null {
+  const name = metadata?.[CLOUD_LANE_NAME_METADATA]?.trim();
+  return metadata?.[CLOUD_LANE_ID_METADATA]?.trim() && name ? name : null;
+}
+
+/**
+ * What a computer's metadata says about the lane it was made for, read with
+ * no wake. The computer list carries it (`CloudLaneMachine.lane`), so the
+ * composer can list a project's ADE Cloud lanes before any of them is awake.
+ */
+export type CloudMachineLaneFacts = {
+  laneId: string;
+  laneName: string;
+  /** The project's normalized origin (`github.com/owner/repo`), or null when the computer did not record one. */
+  projectOrigin: string | null;
+};
+
+/** The lane facts in a computer's metadata, or null for a computer that was not made for one lane. */
+export function cloudMachineLaneFactsOf(metadata: Record<string, string> | null | undefined): CloudMachineLaneFacts | null {
+  const laneId = metadata?.[CLOUD_LANE_ID_METADATA]?.trim();
+  const laneName = cloudLaneNameOf(metadata);
+  if (!laneId || !laneName) return null;
+  return {
+    laneId,
+    laneName,
+    projectOrigin: metadata?.[CLOUD_PROJECT_ORIGIN_METADATA]?.trim().toLowerCase() || null,
+  };
+}
+
+/** A computer of the account, with its lane facts when it was made for one lane. */
+export type CloudLaneMachine = CloudMachine & {
+  lane?: CloudMachineLaneFacts | null;
+  /**
+   * The computer this one was made to replace or copy (`ade_moved_from`,
+   * `ade_copied_from`): while that one is still listed, the lane stays on it.
+   */
+  replacesInstanceId?: string | null;
+};
+
+/** A GitHub origin's identity (`github.com/owner/repo`, lowercased), owner and repository, or null for any other origin. */
+export function githubRepoOf(originUrl: string | null | undefined): { identity: string; owner: string; repo: string } | null {
+  const identity = normalizeGitRemoteIdentity(originUrl ?? null);
+  const match = identity ? /^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/i.exec(identity) : null;
+  return identity && match ? { identity, owner: match[1]!, repo: match[2]! } : null;
+}
+
+/** True for a GitHub origin: ADE Cloud sets up GitHub repositories only. */
+function isGithubOrigin(originUrl: string | null | undefined): boolean {
+  return githubRepoOf(originUrl) != null;
+}
+
+/** A start refusal: the sentence, and a short form for a narrow prompt box. */
+export type CloudLaneLaunchRefusal = { message: string; short: string };
+
+/**
+ * Why a new ADE Cloud launch can't start, with a short form, or null. The
+ * composer shows it before Send (the short form when the box is narrow).
+ */
+export function cloudLaneLaunchStartRefusal(input: { args: ChatLaunchArgs; originUrl: string | null }): CloudLaneLaunchRefusal | null {
+  const args = input.args;
+  // A chat, a tracked CLI session, or the lane alone can start a new ADE Cloud lane.
+  if (args?.kind !== "cli" && args?.kind !== "lane" && !args?.chat) {
+    return { message: "A chat launch needs its first message.", short: "Add a message first." };
+  }
+  if (!args.cloud?.sizeId) return { message: "Pick a size for the ADE Cloud computer.", short: "Pick a size first." };
+  if (!isGithubOrigin(input.originUrl)) {
+    return {
+      message: "ADE Cloud sets up GitHub repositories only, and this project has no GitHub origin.",
+      short: "ADE Cloud needs a GitHub origin.",
+    };
+  }
+  if (args.laneConfig?.start?.on === "uncommitted") {
+    return {
+      message: "An ADE Cloud lane starts from the pushed copy of its branch, so it can't bring uncommitted changes.",
+      short: "Uncommitted changes stay here.",
+    };
+  }
+  return null;
+}
+
+/** The `chatLaunch` methods `IPC.cloudLaneLaunchCall` answers. */
+export type CloudLaneLaunchMethod =
+  | "start"
+  | "get"
+  | "list"
+  | "cancel"
+  | "retry"
+  | "startNow"
+  | "queueMessage"
+  | "completeClient";
+
+export type CloudLaneLaunchCallRequest = {
+  method: CloudLaneLaunchMethod;
+  args?: unknown;
+  /**
+   * The project the call comes from: `start` clones its origin on the new
+   * computer, `list` shows only that project's cloud launches. Null lists all.
+   */
+  source?: {
+    gitOriginUrl: string | null;
+    /** A project on this computer whose binding has no origin yet: main reads it from the checkout. */
+    localRootPath?: string | null;
+    /**
+     * A tab bound to a copy on another machine: main asks that machine's
+     * brain, for the origin and for the launch's files saved there.
+     */
+    remote?: { targetId: string; projectId: string; rootPath?: string } | null;
+  } | null;
+};
+
+/**
+ * `owned: false` means this app holds no ADE Cloud launch by that id: the
+ * caller sends the call down its ordinary runtime route instead.
+ */
+export type CloudLaneLaunchCallResult = {
+  owned: boolean;
+  result?: unknown;
+  /**
+   * From `start` and `list`: the source project's origin as main read it
+   * (`github.com/owner/repo`), or null when it has none. The preload shows a
+   * subscription only the cloud launches of that project.
+   */
+  projectIdentity?: string | null;
+};
+
+/** What `cloud.lane_launch` and `cloud.lane_launch_status` answer. */
+export type CloudLaneLaunchStatus = {
+  launch: ChatLaunchSnapshot;
+  /** The computer made for the lane, once it exists. */
+  machine: { name: string; instanceId: string | null; machineKey: string | null };
+  /** While the new computer's own sign-in stopped on a page a person must confirm (rare): that page. */
+  approvalUrl: string | null;
+  /** The agent's chat that started it, or null for a person's launch. */
+  madeByChat: string | null;
+  /** The kind of agent that started it, when one did. */
+  madeByAgent?: CloudAgentMaker | null;
+};
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * A launch status as an action answered it over the wire, or null when it
+ * carries no launch (the brain no longer has it). Missing fields read as null.
+ */
+export function parseCloudLaneLaunchStatus(value: unknown): CloudLaneLaunchStatus | null {
+  if (!isPlainRecord(value) || !isPlainRecord(value.launch)) return null;
+  const machine = isPlainRecord(value.machine) ? value.machine : {};
+  const text = (field: unknown): string | null => (typeof field === "string" && field.trim() ? field.trim() : null);
+  return {
+    launch: value.launch as unknown as ChatLaunchSnapshot,
+    machine: { name: text(machine.name) ?? "", instanceId: text(machine.instanceId), machineKey: text(machine.machineKey) },
+    approvalUrl: text(value.approvalUrl),
+    madeByChat: text(value.madeByChat),
+    madeByAgent: value.madeByAgent === "chat" || value.madeByAgent === "automation" || value.madeByAgent === "mcp" ? value.madeByAgent : null,
+  };
+}
+
+export type CloudLaneLaunchFollowOutcome = "succeeded" | "failed" | "cancelled" | "timeout" | "missing";
+
+/**
+ * Follows an ADE Cloud lane launch to its end: starts it, then reads its
+ * status every `pollMs` until it succeeds, fails, is cancelled, or `waitMs`
+ * passes. `onStatus` sees every status; `onApprovalLink` sees the join's
+ * sign-in link only when it changes, while the launch still runs. "missing":
+ * an answer carried no launch. Errors from `start` and `read` reach the caller.
+ * The CLI and an automation run each keep their own words and their own sleep.
+ */
+export async function followCloudLaneLaunch(input: {
+  start: () => Promise<unknown>;
+  read: () => Promise<unknown>;
+  onStatus?: (status: CloudLaneLaunchStatus) => void;
+  onApprovalLink?: (url: string) => void;
+  pollMs: number;
+  waitMs: number;
+  sleep: (ms: number) => Promise<void>;
+  now?: () => number;
+}): Promise<{
+  outcome: CloudLaneLaunchFollowOutcome;
+  status: CloudLaneLaunchStatus | null;
+  /** The last answer as the action sent it (every field, for a caller's own result). */
+  answer: unknown;
+}> {
+  const now = input.now ?? Date.now;
+  let answer = await input.start();
+  const deadline = now() + input.waitMs;
+  let shownLink: string | null = null;
+  for (;;) {
+    const status = parseCloudLaneLaunchStatus(answer);
+    if (!status) return { outcome: "missing", status: null, answer };
+    input.onStatus?.(status);
+    const snapshot = status.launch;
+    if (isChatLaunchSucceeded(snapshot)) return { outcome: "succeeded", status, answer };
+    if (snapshot.phase === "failed" || snapshot.phase === "cancelled") return { outcome: snapshot.phase, status, answer };
+    if (status.approvalUrl && status.approvalUrl !== shownLink) {
+      shownLink = status.approvalUrl;
+      input.onApprovalLink?.(status.approvalUrl);
+    }
+    if (now() > deadline) return { outcome: "timeout", status, answer };
+    await input.sleep(input.pollMs);
+    answer = await input.read();
+  }
+}

@@ -322,8 +322,8 @@ request-driven surface carries the in-worker spend cap.
 ## Deploy
 
 ```bash
+npm install   # repo root: installs the Workers' one workspace
 cd apps/tunnel-relay
-npm install
 export CLOUDFLARE_API_TOKEN=$(ade secrets get CLOUDFLARE_API_TOKEN --text)
 export CLOUDFLARE_ACCOUNT_ID=$(ade secrets get CLOUDFLARE_ACCOUNT_ID --text)
 npx wrangler deploy

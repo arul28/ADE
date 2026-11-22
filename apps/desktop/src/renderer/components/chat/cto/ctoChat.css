@@ -1,0 +1,291 @@
+/*
+ * The CTO thread's calm rows: the working line, the quiet state chips and the
+ * "Fresh context" hairline. `--cto-accent` is the avatar colour, set by the CTO
+ * page; anywhere else (the Work tab showing the CTO's chat) the chat accent.
+ */
+
+.ade-cto-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  max-width: var(--chat-content-width, 52rem);
+}
+
+.ade-cto-chip {
+  --chip-accent: var(--cto-accent, var(--chat-accent, var(--color-accent)));
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  /* Long text ellipsizes inside the chip, so several fit on one row. */
+  max-width: min(100%, 26em);
+  height: 24px;
+  padding: 0 10px 0 8px;
+  white-space: nowrap;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--chip-accent) 22%, transparent);
+  background: color-mix(in srgb, var(--chip-accent) 7%, transparent);
+  font-family: var(--font-sans);
+  font-size: calc(var(--chat-font-size, 14px) * 11 / 14);
+  line-height: 1;
+  color: color-mix(in srgb, var(--color-fg) 62%, transparent);
+}
+
+.ade-cto-chip-icon {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--chip-accent) 85%, var(--color-fg));
+}
+
+.ade-cto-chip-verb {
+  flex-shrink: 0;
+  font-weight: 560;
+  color: color-mix(in srgb, var(--color-fg) 78%, transparent);
+}
+
+.ade-cto-chip-sep {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--color-fg) 30%, transparent);
+}
+
+.ade-cto-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-cto-chip[data-failed="true"] {
+  --chip-accent: var(--kit-warn, #f59e0b);
+}
+
+/* Light themes: the 62% grey on a 7% tint reads faint; lift the text. */
+[data-theme="light"] .ade-cto-chip {
+  color: color-mix(in srgb, var(--color-fg) 72%, transparent);
+}
+
+/* ── Fresh context ── */
+
+.ade-cto-fresh {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  max-width: var(--chat-content-width, 52rem);
+  font-family: var(--font-sans);
+  font-size: calc(var(--chat-font-size, 14px) * 10.5 / 14);
+  color: color-mix(in srgb, var(--color-fg) 40%, transparent);
+}
+
+.ade-cto-fresh-rule {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+
+.ade-cto-fresh-label {
+  flex-shrink: 0;
+}
+
+/* ── Working line ── */
+
+.ade-cto-working {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ade-cto-working-line {
+  --cto-working-accent: var(--cto-accent, var(--chat-accent, var(--color-accent)));
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 6px 16px 6px 6px;
+  border: 1px solid color-mix(in srgb, var(--cto-working-accent) 14%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--cto-working-accent) 6%, transparent);
+  font-family: var(--font-sans);
+  color: color-mix(in srgb, var(--color-fg) 78%, transparent);
+  text-align: left;
+}
+
+button.ade-cto-working-line {
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+button.ade-cto-working-line:hover {
+  border-color: color-mix(in srgb, var(--cto-working-accent) 24%, transparent);
+  background: color-mix(in srgb, var(--cto-working-accent) 10%, transparent);
+}
+
+button.ade-cto-working-line:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--cto-accent, var(--color-accent)) 55%, transparent);
+  outline-offset: 2px;
+}
+
+/* The avatar at work, on a glow that breathes with it. */
+.ade-cto-working-avatar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+}
+
+.ade-cto-working-avatar .cto-av { position: relative; }
+
+.ade-cto-working-glow {
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--cto-working-accent) 34%, transparent) 0%, transparent 68%);
+  opacity: 0.55;
+  /* Stepped, like the avatar's own loops: a timer, not the frame clock. */
+  animation: ade-cto-working-glow 2.4s steps(8, end) infinite;
+}
+
+.ade-cto-working[data-state="thinking"] .ade-cto-working-glow { animation-duration: 1.6s; }
+
+@keyframes ade-cto-working-glow {
+  0%, 100% { opacity: 0.4; transform: scale(0.92); }
+  50% { opacity: 0.8; transform: scale(1.06); }
+}
+
+.ade-cto-working-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ade-cto-working-step {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: calc(var(--chat-font-size, 14px) * 13.5 / 14);
+  font-weight: 560;
+  color: color-mix(in srgb, var(--color-fg) 88%, transparent);
+}
+
+.ade-cto-working-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+  font-size: calc(var(--chat-font-size, 14px) * 11 / 14);
+  color: color-mix(in srgb, var(--color-fg) 45%, transparent);
+}
+
+.ade-cto-working-sep {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--color-fg) 28%, transparent);
+}
+
+.ade-cto-working-time {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ade-cto-working-caret {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--color-fg) 35%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-cto-working-glow { animation: none; }
+}
+
+.ade-cto-working-steps {
+  margin: 10px 0 0 29px;
+  padding-left: 14px;
+  border-left: 1px solid color-mix(in srgb, var(--cto-accent, var(--color-accent)) 22%, transparent);
+  font-family: var(--font-sans);
+  font-size: calc(var(--chat-font-size, 14px) * 11.5 / 14);
+  color: color-mix(in srgb, var(--color-fg) 58%, transparent);
+}
+
+.ade-cto-working-steps ol {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ade-cto-working-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ade-cto-working-steps li > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-cto-working-steps li[data-status="running"] {
+  color: color-mix(in srgb, var(--color-fg) 80%, transparent);
+}
+
+.ade-cto-working-dot {
+  width: 6px;
+  height: 6px;
+  margin: 0 2px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--cto-accent, var(--color-accent));
+}
+
+.ade-cto-working-check {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--color-fg) 32%, transparent);
+}
+
+.ade-cto-working-details-toggle {
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: calc(var(--chat-font-size, 14px) * 10.5 / 14);
+  color: color-mix(in srgb, var(--color-fg) 40%, transparent);
+  cursor: pointer;
+}
+
+.ade-cto-working-details-toggle:hover {
+  color: color-mix(in srgb, var(--color-fg) 75%, transparent);
+}
+
+.ade-cto-working-details-toggle:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--cto-accent, var(--color-accent)) 55%, transparent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.ade-cto-working-details {
+  margin-top: 8px;
+}
+
+/* A finished CTO turn's stats line (time, tokens, tools) stays out of sight
+   until the reply is hovered or focused; keyboard users still reach it. */
+.ade-cto-turnend {
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.ade-cto-turnend:hover,
+.ade-cto-turnend:focus-within,
+[data-chat-row-key]:hover .ade-cto-turnend {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ade-cto-turnend { transition: none; }
+}

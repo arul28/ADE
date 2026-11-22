@@ -4,6 +4,8 @@ import type {
   AiSettingsStatus,
   OpenProjectBinding,
 } from "../../shared/types";
+import { arePathsEqual } from "./pathUtils";
+import { cacheScopePin } from "./tabBindingKey";
 
 type StatusCacheEntry = {
   value: AiSettingsStatus | null;
@@ -39,6 +41,31 @@ export type AiStatusCacheUpdatedEventDetail = {
   projectRoot: string | null;
 };
 
+/** True when a cache event for `updatedRoot` is about `projectRoot` (both may be null). */
+export function aiStatusRootMatches(updatedRoot: string | null | undefined, projectRoot: string | null | undefined): boolean {
+  const a = updatedRoot ?? null;
+  const b = projectRoot ?? null;
+  return a === b || (a != null && b != null && arePathsEqual(a, b));
+}
+
+/**
+ * The pin a status read for `runtimePin` passes: null for the tab's own
+ * machine. Settings writes the unpinned bucket, so a same-as-tab pin must
+ * read that one. The caller reads `tabBindingKey` from the store, so it
+ * re-renders when the tab moves.
+ */
+export function statusCachePin(
+  runtimePin: OpenProjectBinding | null | undefined,
+  tabBindingKey: string | null,
+): OpenProjectBinding | null {
+  return runtimePin && runtimePin.key !== tabBindingKey ? runtimePin : null;
+}
+
+/** The project root of an `AI_STATUS_CACHE_UPDATED_EVENT`. */
+export function aiStatusUpdatedRoot(event: Event): string | null {
+  return (event as CustomEvent<AiStatusCacheUpdatedEventDetail>).detail?.projectRoot ?? null;
+}
+
 const aiStatusCache = new Map<string, StatusCacheEntry>();
 const providerModelsCache = new Map<string, ModelsCacheEntry>();
 
@@ -55,7 +82,8 @@ function normalizeProjectRoot(projectRoot: string | null | undefined): string {
   return projectRoot?.trim() || "<no-project>";
 }
 
-function bindingCacheSuffix(pin: OpenProjectBinding | null | undefined): string {
+function bindingCacheSuffix(rawPin: OpenProjectBinding | null | undefined): string {
+  const pin = cacheScopePin(rawPin);
   return pin?.key ? `::pin:${pin.key}` : "";
 }
 
@@ -189,8 +217,11 @@ export async function getAgentChatModelsCached(args: {
   cursorSource?: "sdk" | "cli" | "all";
   force?: boolean;
   ttlMs?: number;
-  pin?: OpenProjectBinding | null;
+  /** The machine whose models to list. Null: none is online, so the list is empty. */
+  pin: OpenProjectBinding | null;
 }): Promise<AgentChatModelInfo[]> {
+  const pin = args.pin;
+  if (!pin) return [];
   const activateRuntime = args.activateRuntime === true;
   const key = modelsCacheKey(args.projectRoot, args.provider, activateRuntime, args.cursorSource, args.pin);
   const ttlMs = args.ttlMs ?? DEFAULT_MODELS_TTL_MS;
@@ -209,7 +240,7 @@ export async function getAgentChatModelsCached(args: {
     provider: args.provider,
     ...(activateRuntime ? { activateRuntime: true } : {}),
     ...(args.cursorSource ? { cursorSource: args.cursorSource } : {}),
-  }, ...(args.pin ? [args.pin] as const : [])).then((models) => {
+  }, pin).then((models) => {
     const current = providerModelsCache.get(key);
     if (current?.inFlight === request) {
       providerModelsCache.set(key, {

@@ -8,8 +8,8 @@
  * vendor's own checksum list (qwen `SHA256SUMS`, kimi `.sha256` sidecars
  * cross-checked against GitHub's asset digests, devin `manifest.json`), a
  * locked dependency tree (pi), or, for Antigravity, which publishes no
- * checksum at all, a sha256 this script computes by downloading every target
- * (trust on first download; re-pinning the same version must reproduce it).
+ * checksum file, GitHub's asset digest, checked by downloading every target
+ * (re-pinning the same version must reproduce it).
  * This is the only step that talks to the network; the generator reads the
  * file this writes and stays offline. Muse keeps `tools:muse-pin`.
  *
@@ -320,48 +320,52 @@ async function pinDevin(resolvedVersion) {
 }
 
 /**
- * Google's Antigravity ACP server zips. Google publishes no checksum, so the
- * pin is the sha256 of what this script downloads now. Re-pinning a version
- * that is already pinned must reproduce every hash, or the script refuses.
+ * Google's Antigravity CLI (`agy`), whose `agy acp` is the ACP agent ADE runs
+ * and whose TUI is the Antigravity terminal. The standalone `agy-acp-server`
+ * stopped at 1.4.5; ACP moved into this CLI at 1.5.0. Each archive holds one
+ * top-level `antigravity` (`antigravity.exe` on Windows). Google publishes no
+ * checksum file, so the sha256 is GitHub's digest of the release asset, checked
+ * here against a full download of every target.
  */
-/** Google publishes no version feed; the ACP registry's entry names the current server build. */
-const ACP_REGISTRY_RAW = "https://raw.githubusercontent.com/agentclientprotocol/registry/main";
-
-async function acpRegistryVersion(id) {
-  const version = (await fetchJson(`${ACP_REGISTRY_RAW}/${id}/agent.json`)).version;
-  if (typeof version !== "string" || !version) fail(`the ACP registry's ${id} entry names no version.`);
-  return version;
-}
+const ANTIGRAVITY_REPO = "google-antigravity/antigravity-cli";
 
 async function pinAntigravity(version, existing) {
+  const release = await githubRelease(ANTIGRAVITY_REPO, version.replace(/^v/, ""));
+  const resolvedVersion = release.tag_name.replace(/^v/, "");
+  if (!/^\d+\.\d+\.\d+$/.test(resolvedVersion)) fail(`unexpected antigravity-cli release tag ${release.tag_name}.`);
   const assets = {
-    "darwin-arm64": `macos/agy-acp-server-${version}-darwin-arm64.zip`,
-    "darwin-x64": `macos/agy-acp-server-${version}-darwin-x86_64.zip`,
-    "linux-arm64": `linux/agy-acp-server-${version}-linux-arm64.zip`,
-    "linux-x64": `linux/agy-acp-server-${version}-linux-x86_64.zip`,
-    "win32-x64": `windows/agy-acp-server-${version}-windows-x86_64.zip`,
+    "darwin-arm64": "agy_cli_mac_arm64.tar.gz",
+    "darwin-x64": "agy_cli_mac_x64.tar.gz",
+    "linux-arm64": "agy_cli_linux_arm64.tar.gz",
+    "linux-x64": "agy_cli_linux_x64.tar.gz",
+    "win32-x64": "agy_cli_windows_x64.zip",
   };
   const targets = {};
   for (const target of TARGETS) {
-    const url = `https://dl.google.com/agy-extensions/releases/${assets[target]}`;
-    note(`hashing ${url}`);
-    const { digest: sha256, size } = await hashDownload(url);
-    const previous = existing?.version === version ? existing.targets?.[target] : null;
+    const asset = githubAsset(release, assets[target]);
+    const digest = requireSha256(githubDigest(asset), `GitHub digest of ${asset.name}`);
+    requireHost(asset.browser_download_url, VENDOR_DOWNLOAD_HOSTS.antigravity, asset.name);
+    note(`hashing ${asset.browser_download_url}`);
+    const { digest: sha256, size } = await hashDownload(asset.browser_download_url);
+    if (sha256 !== digest || size !== asset.size) {
+      fail(`${asset.name}: GitHub says ${digest} (${asset.size} B), the download is ${sha256} (${size} B).`);
+    }
+    const previous = existing?.version === resolvedVersion ? existing.targets?.[target] : null;
     if (previous && (previous.sha256 !== sha256 || previous.size !== size)) {
-      fail(`${url} changed since it was pinned: was ${previous.sha256} (${previous.size} B), now ${sha256} (${size} B).`);
+      fail(`${asset.name} changed since it was pinned: was ${previous.sha256} (${previous.size} B), now ${sha256} (${size} B).`);
     }
     targets[target] = {
       format: "archive",
-      package: `antigravity-acp-${target}`,
-      version,
-      url,
-      archive: "zip",
+      package: `antigravity-cli-${target}`,
+      version: resolvedVersion,
+      url: asset.browser_download_url,
+      archive: asset.name.endsWith(".zip") ? "zip" : "tar.gz",
       stripComponents: 0,
       sha256,
       size,
     };
   }
-  return { version, source: "dl.google.com/agy-extensions (sha256 computed by tools:pin)", targets };
+  return { version: resolvedVersion, source: `github ${ANTIGRAVITY_REPO} ${release.tag_name} (GitHub digests, checked by download)`, targets };
 }
 
 const PI_PACKAGE = "@earendil-works/pi-coding-agent";
@@ -570,7 +574,7 @@ const TOOLS = {
   qwen: { latest: () => latestGithubVersion("QwenLM/qwen-code", /^v(\d+\.\d+\.\d+)$/), pin: pinQwen },
   kimi: { latest: () => latestGithubVersion("MoonshotAI/kimi-code", /^@moonshot-ai\/kimi-code@(\d+\.\d+\.\d+)$/), pin: pinKimi },
   devin: { latest: async () => (await fetchJson("https://static.devin.ai/cli/current/manifest.json")).version, pin: pinDevin },
-  antigravity: { latest: () => acpRegistryVersion("antigravity-acp"), pin: pinAntigravity },
+  antigravity: { latest: () => latestGithubVersion(ANTIGRAVITY_REPO, /^v?(\d+\.\d+\.\d+)$/), pin: pinAntigravity },
   pi: { latest: () => npmLatest(PI_PACKAGE), pin: pinPi },
   "copilot-cli": { latest: () => npmLatest("@github/copilot"), pin: pinCopilotCli },
   "cursor-cli": { latest: latestCursorCli, pin: pinCursorCli },

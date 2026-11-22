@@ -22,6 +22,14 @@ const remotePin: OpenProjectBinding = {
   displayName: "Project",
 };
 
+/** The chat's machine when it is this computer. */
+const localPin: OpenProjectBinding = {
+  kind: "local",
+  key: "local:/work/project",
+  rootPath: "/work/project",
+  displayName: "Project",
+};
+
 const onlineMachine = {
   machineKey: "machine-studio",
   name: "Studio",
@@ -107,7 +115,7 @@ describe("CrossMachineHandoffModal", () => {
     target = { targetModelId: "openai/gpt-5.5" },
     sourceProvider = null,
     turnActive = false,
-    runtimePin,
+    runtimePin = localPin,
   }: {
     overrides?: Partial<React.ComponentProps<typeof CrossMachineHandoffModal>>;
     target?: React.ComponentProps<typeof CrossMachineHandoffModal>["target"];
@@ -129,7 +137,7 @@ describe("CrossMachineHandoffModal", () => {
         onStopTurn={vi.fn().mockResolvedValue(undefined)}
         onClose={closed}
         onStarted={started}
-        {...(runtimePin ? { runtimePin } : {})}
+        runtimePin={runtimePin}
         {...overrides}
       />,
     );
@@ -154,7 +162,7 @@ describe("CrossMachineHandoffModal", () => {
     fireEvent.click(screen.getByRole("button", { name: /Bring them along/ }));
 
     await waitFor(() => expect(screen.queryByText("Branch has unpublished work")).toBeNull());
-    expect(getOptions).toHaveBeenCalledWith({ sourceSessionId: "chat-1" }, null);
+    expect(getOptions).toHaveBeenCalledWith({ sourceSessionId: "chat-1" }, localPin);
   });
 
   it("reviews the selected machine, model, mode, and include-changes choice", async () => {
@@ -176,7 +184,7 @@ describe("CrossMachineHandoffModal", () => {
       targetModelId: "openai/gpt-5.5",
       mode: "brief",
       includeChanges: true,
-    }, null));
+    }, localPin));
     expect(await screen.findByText(/Ready to continue on Studio/)).toBeTruthy();
   });
 
@@ -242,7 +250,7 @@ describe("CrossMachineHandoffModal", () => {
 
     await waitFor(() => expect(startMove).toHaveBeenCalledWith(expect.objectContaining({
       sourceSessionId: "chat-1", machine: onlineMachine.machineKey, whenTurnEnds: true,
-    }), null));
+    }), localPin));
   });
 
   it("passes the chosen model and permission settings to the brain", async () => {
@@ -266,7 +274,7 @@ describe("CrossMachineHandoffModal", () => {
       codexApprovalPolicy: "on-request",
       sourceSessionId: "chat-1",
       machine: onlineMachine.machineKey,
-    } satisfies Partial<AgentChatStartCrossMachineHandoffArgs>), null));
+    } satisfies Partial<AgentChatStartCrossMachineHandoffArgs>), localPin));
   });
 
   it("sends preview and start requests through the source chat's runtime pin", async () => {

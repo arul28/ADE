@@ -7,6 +7,8 @@ import {
 import {
   handleAttentionAccountRequest,
   handleAttentionMachinePublish,
+  handleDirectoryAccountPurge,
+  assertDirectoryProvenance,
   inspectAttentionAuthConfiguration,
   machineKeyRevokedAt,
   pruneAttentionState,
@@ -32,6 +34,8 @@ import {
 } from "./cloudflareTransient";
 import { boundedText, constantTimeEqual, decodePathSegment, sha256Hex, toHex } from "./attentionShared";
 import { scrubString } from "./sentryScrub";
+import { handleDirectoryLinearLeasePublish } from "./accountVault";
+import { relayAccountKeysForClerkUser } from "./attentionAuth";
 
 export { resetSpendGuardsForTests } from "./spendGuards";
 
@@ -490,12 +494,15 @@ async function loadSuppressions(
   const keys = [...new Set(dedupeKeys)];
   const suppressions = new Map<string, string>();
   if (keys.length === 0) return suppressions;
+  // A row past its retention suppresses nothing, however late the prune runs.
+  const cutoff = new Date(Date.now() - SUPPRESSION_RETENTION_HOURS * 60 * 60 * 1000).toISOString();
   const rows = (await env.DB
     .prepare(`
       select suppression_key, content_hash from publish_suppression
        where machine_key = ? and suppression_key in (${keys.map(() => "?").join(", ")})
+         and published_at >= ?
     `)
-    .bind(machineKey, ...keys)
+    .bind(machineKey, ...keys, cutoff)
     .all<SuppressionRow & { suppression_key: string }>()).results ?? [];
   for (const row of rows) suppressions.set(row.suppression_key, row.content_hash);
   return suppressions;
@@ -624,6 +631,23 @@ export async function pruneRelayState(env: PushRelayEnv): Promise<void> {
     .bind(budgetCutoff)
     .run();
   await pruneAttentionState(env);
+}
+
+/** How often one isolate prunes from requests; retention is hours to days. */
+const REQUEST_PRUNE_INTERVAL_MS = 60_000;
+const lastRequestPruneAt = new WeakMap<D1Database, number>();
+
+/**
+ * `pruneRelayState` from a request, at most once a minute per isolate and
+ * database: it is nine statements, for rows whose retention is hours or days.
+ * The hourly cron still runs it in full.
+ */
+async function pruneRelayStateFromRequest(env: PushRelayEnv): Promise<void> {
+  const now = Date.now();
+  const last = lastRequestPruneAt.get(env.DB);
+  if (last !== undefined && now - last < REQUEST_PRUNE_INTERVAL_MS) return;
+  lastRequestPruneAt.set(env.DB, now);
+  await pruneRelayState(env);
 }
 
 function phaseExpiration(phase: PushPhase, nowSeconds = Math.floor(Date.now() / 1000)): number {
@@ -945,7 +969,7 @@ async function handleDeviceUpsert(
   } else {
     await registrationStatement.run();
   }
-  await pruneRelayState(env);
+  await pruneRelayStateFromRequest(env);
   return json({ ok: true, deviceId, updatedAt: now });
 }
 
@@ -1138,7 +1162,7 @@ async function handlePublish(request: Request, env: PushRelayEnv, machineKey: st
   }
   // Publishes far outnumber device re-registrations, so prune here too or a
   // chatty machine holds expired suppression rows past their retention.
-  await pruneRelayState(env);
+  await pruneRelayStateFromRequest(env);
 
   return json({
     ok: true,
@@ -1174,6 +1198,27 @@ function trustedWebClientOrigin(env: PushRelayEnv): string | null {
   }
 }
 
+/**
+ * The only account routes a browser may call, with the methods each takes.
+ * None of them returns a secret value: the vault, the Passwords key and items,
+ * provider sign-ins, machine and device changes all stay native-only. A
+ * request with an `Origin` header comes from a browser page, so a script on
+ * the ADE Web origin can never read a secret even with a valid session.
+ */
+const BROWSER_ACCOUNT_ROUTES: ReadonlyArray<{ pattern: RegExp; methods: readonly string[] }> = [
+  { pattern: /^\/attention\/account\/snapshot$/, methods: ["GET"] },
+  { pattern: /^\/attention\/account\/(?:ack|presence)$/, methods: ["POST"] },
+  { pattern: /^\/attention\/account\/preferences$/, methods: ["GET", "PUT"] },
+  { pattern: /^\/attention\/account\/preferences\/(?:devices|machines|sessions)\/[^/]+$/, methods: ["PATCH"] },
+  { pattern: /^\/attention\/account\/settings$/, methods: ["GET", "PUT"] },
+  { pattern: /^\/attention\/account\/settings\/[^/]+\/[^/]+$/, methods: ["DELETE"] },
+];
+
+/** The methods a browser may use on this account path; empty when the path is native-only. */
+export function browserAccountRouteMethods(pathname: string): readonly string[] {
+  return BROWSER_ACCOUNT_ROUTES.find((route) => route.pattern.test(pathname))?.methods ?? [];
+}
+
 function withAccountCors(response: Response, origin: string): Response {
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", origin);
@@ -1203,9 +1248,12 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
     logCloudflareTransient("ade-push-relay", kind, scrubString(url.pathname), error);
     const response = transientUnavailableResponse();
     const origin = request.headers.get("origin");
-    return url.pathname.startsWith("/attention/account/") && origin && trustedWebClientOrigin(env) === origin
-      ? withAccountCors(response, origin)
-      : response;
+    if (!url.pathname.startsWith("/attention/account/") || !origin) return response;
+    // A browser on a native-only path gets the same 403 as on a healthy day.
+    if (!browserAccountRouteMethods(url.pathname).includes(request.method.toUpperCase())) {
+      return text("origin not allowed", 403);
+    }
+    return trustedWebClientOrigin(env) === origin ? withAccountCors(response, origin) : response;
   }
 }
 
@@ -1225,7 +1273,8 @@ async function routeRequest(request: Request, env: PushRelayEnv): Promise<Respon
   const accountAttentionRoute = url.pathname.startsWith("/attention/account/");
   const requestOrigin = request.headers.get("origin");
   const configuredWebOrigin = trustedWebClientOrigin(env);
-  const corsOrigin = requestOrigin && configuredWebOrigin === requestOrigin
+  const browserMethods = accountAttentionRoute ? browserAccountRouteMethods(url.pathname) : [];
+  const corsOrigin = requestOrigin && configuredWebOrigin === requestOrigin && browserMethods.length > 0
     ? requestOrigin
     : null;
   const withAllowedAccountCors = (response: Response): Response =>
@@ -1237,7 +1286,7 @@ async function routeRequest(request: Request, env: PushRelayEnv): Promise<Respon
     const requestedMethod = request.headers
       .get("access-control-request-method")
       ?.toUpperCase();
-    if (!requestedMethod || !["GET", "POST", "PUT"].includes(requestedMethod)) {
+    if (!requestedMethod || !browserMethods.includes(requestedMethod)) {
       return text("method not allowed", 405);
     }
     const requestedHeaders = (request.headers.get("access-control-request-headers") ?? "")
@@ -1262,8 +1311,13 @@ async function routeRequest(request: Request, env: PushRelayEnv): Promise<Respon
     });
   }
   // Native clients omit Origin. Browser callers must match the configured ADE
-  // Web origin before authentication or D1 work begins.
-  if (accountAttentionRoute && requestOrigin && !corsOrigin) {
+  // Web origin AND call a browser route with its method before authentication
+  // or D1 work begins (`BROWSER_ACCOUNT_ROUTES`).
+  if (
+    accountAttentionRoute
+    && requestOrigin
+    && (!corsOrigin || !browserMethods.includes(request.method.toUpperCase()))
+  ) {
     return text("origin not allowed", 403);
   }
   if (contentLengthExceeds(request.headers, MAX_BODY_BYTES)) {
@@ -1303,6 +1357,13 @@ async function routeRequest(request: Request, env: PushRelayEnv): Promise<Respon
   if (attentionAccountResponse) {
     return withAllowedAccountCors(attentionAccountResponse);
   }
+  // The directory's account deletion. Not under /attention/account/: it has
+  // no account token and no browser caller, only the directory's secret.
+  // The directory's Linear lease publish (accountVault.ts). Same provenance; before the purge, which owns the rest of /directory/accounts/.
+  const linearLeaseResponse = await handleDirectoryLinearLeasePublish(request, env, url, assertDirectoryProvenance, relayAccountKeysForClerkUser);
+  if (linearLeaseResponse) return linearLeaseResponse;
+  const directoryPurgeResponse = await handleDirectoryAccountPurge(request, env, url);
+  if (directoryPurgeResponse) return directoryPurgeResponse;
 
   const route = routeMachine(url.pathname);
   if (!route || !MACHINE_KEY_PATTERN.test(route.machineKey)) return text("not found", 404);

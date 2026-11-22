@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Banner } from "../../ui/notice";
 import { ArrowSquareOut, Copy, File as FileIcon, FilePlus, FolderPlus, Path, PencilSimple, TextT, Trash } from "@phosphor-icons/react";
 import type { FileChangeEvent, FileContent, FilesWorkspace } from "../../../../shared/types";
 import type { OpenProjectBinding } from "../../../../shared/types/core";
-import { useAppStore, useRootAppStore } from "../../../state/appStore";
+import { localProjectBindingForRoot, useAppStore, useRootAppStore } from "../../../state/appStore";
 import type { CrossMachineLaneMarker } from "../../../state/crossMachineLanes";
 import { INERT_ATTR } from "../../shared/inertAttr";
 import { createMonacoModelRegistry } from "../monacoModelRegistry";
@@ -86,6 +87,7 @@ import { ArrowLeft, CaretRight, MagnifyingGlass } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { confirmDialog } from "../../ui/dialog/confirm";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../../app/projectSidebar/ProjectSidebarSlot";
+import { isAccountAnsweredPin, isAdeCloudBinding } from "../../../../shared/adeCloud/binding";
 
 /**
  * Below this pane width the embedded workbench shows ONE surface at a time.
@@ -102,6 +104,8 @@ const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 const MAX_REMEMBERED_OPEN_REQUEST_KEYS = 64;
 const WORKSPACE_LIST_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000] as const;
 const FILES_REFRESH_DEBOUNCE_MS = 200;
+/** Why New file and New folder do nothing on a lane read from the account. */
+const FILES_AT_REST_READ_ONLY = "Read-only: these are the files on GitHub. Wake the lane's computer to change them.";
 // Ceiling for unscoped ("something changed") refreshes: they cost a workspace
 // list + root listing + git status, and arrive as bursts.
 const FULL_REFRESH_MIN_INTERVAL_MS = 5_000;
@@ -152,25 +156,16 @@ function mergeExternalWorkspaces(next: FilesWorkspace[], previous: FilesWorkspac
 }
 
 
+/** The pin when it names another copy than the tab's own; null otherwise. */
+function otherCopyPin(pin: OpenProjectBinding | null | undefined, boundKey: string | null): OpenProjectBinding | null {
+  return pin && pin.key !== boundKey ? pin : null;
+}
+
 function pathIsAtOrUnder(path: string, target: string): boolean {
   return path === target || path.startsWith(`${target}/`) || path.startsWith(`${target}\\`);
 }
 
-/**
- * Files workbench: the VS Code-like shell for the main Files route and the
- * embedded Work sidebar. Reuses the proven IPC + FilesExplorer + Monaco model
- * registry, the streaming/decoration backend, and the editor-groups store.
- */
-export function FilesWorkbench({
-  preferredLaneId,
-  embedded,
-  active = true,
-  externalOpenPath,
-  externalOpenNonce,
-  externalOpenLine,
-  navigationOpenRequest,
-  pin: seedPin = null,
-}: {
+type FilesWorkbenchProps = {
   preferredLaneId?: string | null;
   embedded?: boolean;
   active?: boolean;
@@ -184,10 +179,62 @@ export function FilesWorkbench({
    * requests still repin; this only supplies the starting machine.
    */
   pin?: OpenProjectBinding | null;
-}) {
+};
+
+/**
+ * Files workbench: the VS Code-like shell for the main Files route and the
+ * embedded Work sidebar. Reuses the proven IPC + FilesExplorer + Monaco model
+ * registry, the streaming/decoration backend, and the editor-groups store.
+ *
+ * Every file call names a copy. The base copy is the tab's own; a host pin
+ * (the Work tools pane) stands in when the tab has none. With no copy at all
+ * (no computer online for this project) the workbench shows its empty state
+ * and makes no call.
+ */
+export function FilesWorkbench(props: FilesWorkbenchProps) {
   const project = useAppStore((s) => s.project);
-  const boundProjectRootPath = project?.rootPath ?? "";
-  const boundProjectBinding = useAppStore((s) => s.projectBinding);
+  const tabCopyPin = useAppStore((s) => s.projectBinding);
+  const baseCopy = tabCopyPin ?? props.pin ?? null;
+  if (!baseCopy) return <FilesNoComputerState />;
+  return (
+    <FilesWorkbenchOnCopy
+      {...props}
+      baseCopy={baseCopy}
+      baseRootPath={tabCopyPin ? project?.rootPath || baseCopy.rootPath : baseCopy.rootPath}
+    />
+  );
+}
+
+/** Zero machines: no copy of this project is on a computer that is online. */
+function FilesNoComputerState() {
+  return (
+    <div
+      data-testid="files-no-computer"
+      className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center text-sm"
+      style={{ color: COLORS.textMuted, background: "color-mix(in srgb, var(--color-card) 76%, var(--color-accent) 18%)" }}
+    >
+      <span style={{ color: COLORS.textSecondary }}>No computer with this project is online.</span>
+      <span className="text-xs">Open ADE on a computer that has it to see its files.</span>
+    </div>
+  );
+}
+
+function FilesWorkbenchOnCopy({
+  preferredLaneId,
+  embedded,
+  active = true,
+  externalOpenPath,
+  externalOpenNonce,
+  externalOpenLine,
+  navigationOpenRequest,
+  pin: seedPin = null,
+  baseCopy: boundProjectBinding,
+  baseRootPath: boundProjectRootPath,
+}: FilesWorkbenchProps & {
+  /** The copy Files reads when no other machine is picked: the tab's copy, else the host pin. */
+  baseCopy: OpenProjectBinding;
+  baseRootPath: string;
+}) {
   /**
    * The machine this workbench is currently reading from, when that is NOT the
    * machine the project tab is bound to. Set by a navigation request that came
@@ -200,7 +247,12 @@ export function FilesWorkbench({
    * every file read/write follow the pin without the window rebinding — the
    * same per-call routing chats and PR reads already use.
    */
-  const [machinePin, setMachinePin] = useState<OpenProjectBinding | null>(seedPin);
+  // A pin that names the tab's own copy is not "another machine": the state
+  // below stays null for it, and every call still names the tab's copy.
+  const boundBindingKey = boundProjectBinding.key;
+  const [machinePin, setMachinePin] = useState<OpenProjectBinding | null>(
+    () => otherCopyPin(seedPin, boundBindingKey),
+  );
   /**
    * A lane picked on some machine, waiting for that machine's roster. Picking
    * a lane moves Files to the lane's machine (`pinKey`, null = the tab's), and
@@ -214,8 +266,12 @@ export function FilesWorkbench({
   // The Files API with this machine already bound to it. Identity changes only
   // when the machine does, so every callback and effect below can depend on it
   // honestly — see `pinnedFilesApi.ts` for why a ref could not.
-  const files = useMemo(() => createPinnedFilesApi(machinePin), [machinePin]);
   const projectBinding = machinePin ?? boundProjectBinding;
+  // The account answers these files (an ADE Cloud lane whose computer is at
+  // rest): they are what GitHub has, read-only, and a failure to read them is
+  // the account's sentence (connect GitHub, push the branch), not a bug.
+  const accountAnswered = isAccountAnsweredPin(projectBinding);
+  const files = useMemo(() => createPinnedFilesApi(projectBinding), [projectBinding]);
   const projectRootPath = machinePin?.rootPath ?? boundProjectRootPath;
   const isRemoteProject = projectBinding?.kind === "remote";
   const projectCacheKey = filesProjectCacheKey(projectBinding, projectRootPath);
@@ -238,6 +294,13 @@ export function FilesWorkbench({
   const rootPath = workspace?.rootPath ?? projectRootPath;
   // The web client has no Finder/Explorer of its own to reveal a path in.
   const canRevealInFinder = !isWebClientMode() && workspace != null && (workspace.kind === "external" || !isRemoteProject);
+  // Reveal runs on this computer. A folder opened from this computer's Finder
+  // is a local path; every other workspace is on the copy Files reads, so a
+  // remote copy gets the clear refusal and never a local path of the same name.
+  const revealPin = useMemo<OpenProjectBinding>(
+    () => (workspace?.kind === "external" ? localProjectBindingForRoot(workspace.rootPath, workspace.name) : projectBinding),
+    [projectBinding, workspace?.kind, workspace?.name, workspace?.rootPath],
+  );
   const branch = workspace?.branchRef?.replace("refs/heads/", "") ?? null;
   const theme: EditorThemeMode = useAppStore((s) => s.theme);
   const sessionKey = filesProjectSessionKey(projectRootPath);
@@ -337,6 +400,7 @@ export function FilesWorkbench({
 
   const {
     tree,
+    rootStatus,
     treeRef,
     expanded,
     setExpanded,
@@ -428,9 +492,10 @@ export function FilesWorkbench({
         rootPath: wsRoot,
         laneId: tab.laneId,
         canRevealInFinder: !isWebClientMode() && ws != null && (ws.kind === "external" || !isRemoteProject),
+        pathPin: ws?.kind === "external" ? localProjectBindingForRoot(ws.rootPath, ws.name) : projectBinding,
       };
     },
-    [isRemoteProject, projectRootPath, workspaces],
+    [isRemoteProject, projectBinding, projectRootPath, workspaces],
   );
 
   const migratedSessionsRef = useRef<string | null>(null);
@@ -624,9 +689,16 @@ export function FilesWorkbench({
     const targets = new Map<string, { machineId: string; laneId: string }>();
     const groups: WorkspacePickerMachineGroup[] = [];
     if (embedded || !multiMachine || !currentMachineChip) return { groups, targets };
+    // An ADE Cloud tab lists every ADE Cloud lane in its own workspaces (the
+    // account answers them). Its lane computers must not list them again.
+    const listedLaneIds = isAdeCloudBinding(projectBinding)
+      ? new Set(workspaces.map((workspace) => workspace.laneId).filter((laneId): laneId is string => Boolean(laneId)))
+      : null;
     for (const machine of allMachineLanes.machines) {
       if (machine.machineId === currentMachineChip.machineId) continue;
-      const lanes = allMachineLanes.lanes.filter((row) => row.machineId === machine.machineId);
+      const lanes = allMachineLanes.lanes.filter(
+        (row) => row.machineId === machine.machineId && !listedLaneIds?.has(row.lane.id),
+      );
       if (lanes.length === 0) continue;
       groups.push({
         machine: machineChipFor(machine),
@@ -639,7 +711,7 @@ export function FilesWorkbench({
       });
     }
     return { groups, targets };
-  }, [allMachineLanes, currentMachineChip, embedded, multiMachine]);
+  }, [allMachineLanes, currentMachineChip, embedded, multiMachine, projectBinding, workspaces]);
 
   /**
    * Move Files to the picked lane's machine. The pin comes from the machine
@@ -651,7 +723,7 @@ export function FilesWorkbench({
     if (!target) return;
     const machine = allMachineLanes.machinesById.get(target.machineId);
     if (!machine || !machine.online) return;
-    const nextPin = machine.pin;
+    const nextPin = machine.isActiveBinding ? null : machine.pin;
     if (!machine.isActiveBinding && !nextPin) return;
     setError(null);
     setMachinePin((current) => (current?.key === nextPin?.key ? current : nextPin));
@@ -694,22 +766,24 @@ export function FilesWorkbench({
   // Liveness for the pinned machine, read from the same cross-machine slices
   // the Work sidebar uses. A machine that has gone away keeps its chip and says
   // so; nothing else in here can explain why the tree stopped answering.
+  // The bar names the computer the files are on when it is not this one, the
+  // same rule as every other tab. It never compares with the tab's copy.
   const pinnedMachineOnline = useRootAppStore((state) => {
-    if (!machinePin || machinePin.kind !== "remote") return true;
-    return state.crossMachineLanesByMachineId[machinePin.targetId]?.online ?? true;
+    if (projectBinding.kind !== "remote") return true;
+    return state.crossMachineLanesByMachineId[projectBinding.targetId]?.online ?? true;
   });
   const pinnedMachineMarker = useMemo<CrossMachineLaneMarker | null>(() => {
-    if (!machinePin) return null;
-    const machineName = machinePin.kind === "remote" ? machinePin.runtimeName : machinePin.displayName;
+    if (projectBinding.kind !== "remote") return null;
+    const machineName = projectBinding.runtimeName;
     return {
-      machineId: machinePin.kind === "remote" ? machinePin.targetId : "local",
+      machineId: projectBinding.targetId,
       machineName,
       online: pinnedMachineOnline,
       mode: "name",
       title: machineName,
       sameBranchElsewhere: false,
     };
-  }, [machinePin, pinnedMachineOnline]);
+  }, [projectBinding, pinnedMachineOnline]);
 
   useEffect(() => {
     if (!active || dirtyTabIds.size === 0) return;
@@ -1121,7 +1195,7 @@ export function FilesWorkbench({
           line,
         });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
       }
     },
     [upsertWorkspace],
@@ -1172,9 +1246,10 @@ export function FilesWorkbench({
   // A host-supplied pin (the Work tools pane following its chat's machine)
   // wins whenever it changes. Identity is compared by key so an equal binding
   // rebuilt each render does not thrash the roster.
-  const seedPinKey = seedPin?.key ?? null;
+  const seedPinKey = otherCopyPin(seedPin, boundBindingKey)?.key ?? null;
   useEffect(() => {
-    setMachinePin((current) => (current?.key === seedPinKey ? current : seedPin ?? null));
+    const next = otherCopyPin(seedPin, boundBindingKey);
+    setMachinePin((current) => (current?.key === seedPinKey ? current : next));
     // Only the machine identity should retrigger this, not a new object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedPinKey]);
@@ -1185,9 +1260,9 @@ export function FilesWorkbench({
   useEffect(() => {
     if (!active || !navigationOpenRequest || appliedNavigationPinRef.current === navigationOpenRequest.nonce) return;
     appliedNavigationPinRef.current = navigationOpenRequest.nonce;
-    const requestedPin = navigationOpenRequest.pin ?? null;
+    const requestedPin = otherCopyPin(navigationOpenRequest.pin, boundBindingKey);
     setMachinePin((current) => (current?.key === requestedPin?.key ? current : requestedPin));
-  }, [active, navigationOpenRequest]);
+  }, [active, boundBindingKey, navigationOpenRequest]);
 
   // A request that names only a lane (and its machine): select that lane's
   // workspace once the machine's roster is in.
@@ -1198,8 +1273,8 @@ export function FilesWorkbench({
     const key = `navigation-lane:${navigationOpenRequest.nonce}:${laneId}`;
     if (handledOpenKeysRef.current.has(key)) return;
     markOpenRequestHandled(key);
-    setPendingLaneTarget({ pinKey: navigationOpenRequest.pin?.key ?? null, laneId });
-  }, [active, markOpenRequestHandled, navigationOpenRequest]);
+    setPendingLaneTarget({ pinKey: otherCopyPin(navigationOpenRequest.pin, boundBindingKey)?.key ?? null, laneId });
+  }, [active, boundBindingKey, markOpenRequestHandled, navigationOpenRequest]);
 
   useEffect(() => {
     if (!active || !navigationOpenRequest?.searchQuery || !workspacesLoaded) return;
@@ -1223,7 +1298,7 @@ export function FilesWorkbench({
     if (!active || !navigationOpenRequest?.path || navigationOpenRequest.searchQuery || !workspacesLoaded) return;
     // Still on the previous machine's roster; the pin effect above re-runs this
     // once the switch has landed.
-    if ((navigationOpenRequest.pin?.key ?? null) !== (machinePin?.key ?? null)) return;
+    if ((otherCopyPin(navigationOpenRequest.pin, boundBindingKey)?.key ?? null) !== (machinePin?.key ?? null)) return;
     const key = `navigation:${navigationOpenRequest.nonce}:${navigationOpenRequest.laneId ?? ""}:${navigationOpenRequest.path}:${navigationOpenRequest.line ?? ""}:${navigationOpenRequest.column ?? ""}`;
     if (handledOpenKeysRef.current.has(key)) return;
 
@@ -1254,6 +1329,7 @@ export function FilesWorkbench({
     });
   }, [
     active,
+    boundBindingKey,
     machinePin,
     markOpenRequestHandled,
     navigationOpenRequest,
@@ -1480,7 +1556,7 @@ export function FilesWorkbench({
       try {
         await files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
         return;
       }
       forgetRecentFilesUnder(recentSessionKey, sourcePath);
@@ -1507,7 +1583,7 @@ export function FilesWorkbench({
         closeOpenTabsUnder(workspaceId, path);
         await refreshRoot();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
       }
     },
     [closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, files, recentSessionKey, refreshRoot, workspaceId],
@@ -1540,11 +1616,11 @@ export function FilesWorkbench({
       type: "item",
       label: revealLabel,
       icon: <ArrowSquareOut size={14} />,
-      onClick: () => void window.ade.app.openPathInEditor?.({ rootPath, relativePath: path, target: "finder" }).catch(() => {}),
+      onClick: () => void window.ade.app.openPathInEditor?.({ rootPath, relativePath: path, target: "finder" }, revealPin).catch(() => {}),
       disabled: !canRevealInFinder,
     });
     return items;
-  }, [treeMenu, openFile, deletePath, rootPath, canRevealInFinder]);
+  }, [treeMenu, openFile, deletePath, rootPath, canRevealInFinder, revealPin]);
 
   const createInWorkspace = useCallback(
     async (kind: "file" | "directory", baseDir: string, name: string) => {
@@ -1556,7 +1632,7 @@ export function FilesWorkbench({
         await refreshRoot();
         if (kind === "file") void openFile(rel, { preview: false });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
       }
     },
     [files, workspaceId, refreshRoot, openFile],
@@ -1686,6 +1762,12 @@ export function FilesWorkbench({
         <FilesExplorer
           flat={treeInSidebar}
           tree={tree}
+          rootStatus={rootStatus}
+          readOnlyReason={accountAnswered ? FILES_AT_REST_READ_ONLY : null}
+          onRetryRoot={() => {
+            setError(null);
+            void refreshRoot();
+          }}
           expanded={expanded}
           loadingDirectories={loadingDirs}
           selectedNodePath={selectedNodePath}
@@ -1708,7 +1790,7 @@ export function FilesWorkbench({
           ) : (
             <FilesSearchPanel
               workspaceId={workspaceId}
-              pin={machinePin}
+              pin={projectBinding}
               query={searchQuery}
               onQueryChange={setSearchQuery}
               onOpen={(path, line) => void openFile(path, { preview: false, line })}
@@ -1719,7 +1801,11 @@ export function FilesWorkbench({
           onCreateFile={(basePath) => setOverlay({ kind: "create", create: "file", baseDir: basePath })}
           onCreateDirectory={(basePath) => setOverlay({ kind: "create", create: "directory", baseDir: basePath })}
           onToggleDirectory={toggleDirectory}
-          onLoadMoreChildren={(path, offset) => { loadMoreChildren(path, offset).catch(() => {}); }}
+          onLoadMoreChildren={(path, offset) => {
+            loadMoreChildren(path, offset).catch((err: unknown) => {
+              setError(formatFilesError(err));
+            });
+          }}
           onOpenFile={(path) => void openFile(path, { preview: true })}
           onActivateFile={(path) => void openFile(path, { preview: false })}
           onSelectNode={setSelectedNodePath}
@@ -1768,21 +1854,41 @@ export function FilesWorkbench({
           </span>
           {/* The routed tab changes machine by picking a lane in the picker;
               only the embedded pane (no picker) keeps an explicit way back. */}
-          {embedded ? (
+          {embedded && machinePin ? (
             <button
               type="button"
               onClick={clearMachinePin}
               className="shrink-0 text-[11px] underline-offset-2 hover:underline"
               style={{ color: COLORS.textMuted }}
             >
-              Back to this computer
+              {boundProjectBinding.kind === "remote" ? `Back to ${boundProjectBinding.runtimeName}` : "Back to this computer"}
             </button>
           ) : null}
         </div>
       ) : null}
       {error ? (
-        <div className="shrink-0 px-3 py-1 text-xs" style={{ color: COLORS.danger, background: "rgba(255,0,0,0.06)" }}>
-          {error}
+        <div className="shrink-0">
+          <Banner
+            layout="inline"
+            model={{
+              id: "files-workbench-error",
+              tone: "error",
+              // A file error can carry a path; keep it out of session replay.
+              title: <span data-ph-mask="">{error}</span>,
+              ariaLabel: error,
+              ...(accountAnswered ? { report: false as const } : {}),
+              actions: [{
+                // A file operation (rename, create, delete) cannot be replayed
+                // safely from here; refreshing the tree is the honest action.
+                label: "Refresh",
+                onClick: () => {
+                  setError(null);
+                  void refreshRoot();
+                },
+              }],
+              dismiss: { onDismiss: () => setError(null) },
+            }}
+          />
         </div>
       ) : null}
       {/*
@@ -1918,7 +2024,7 @@ export function FilesWorkbench({
           workspaceId={workspaceId}
           /* Searching a pinned machine's workspace has to run on that machine —
              otherwise the overlay searches this computer and reports nothing. */
-          pin={machinePin}
+          pin={projectBinding}
           query={searchQuery}
           onQueryChange={setSearchQuery}
           onOpen={(path, line) => void openFile(path, { preview: false, line })}

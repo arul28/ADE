@@ -5,10 +5,13 @@
  * no notice (see `docs/logging.md`, "Error tracking"). It stays off in dev
  * builds and tests so local work never spends the error quota, and it honours
  * `DO_NOT_TRACK=1` and `ADE_SENTRY_DISABLED=1`. `ADE_SENTRY_DEV=1` turns it on
- * in a dev build for testing the wiring, reporting as `development`.
+ * in a dev build for testing the wiring, reporting as `development`. A CI
+ * job, release smoke, or the cloud template check never reports, even with
+ * `ADE_SENTRY_DEV=1`: those errors are not a person's.
  */
 import { doNotTrackRequested, isTruthyEnvFlag } from "../doNotTrack";
 import { normalizeAppPackageChannel, resolveReleaseChannel, type ReleaseChannel } from "../packageChannel";
+import { isAutomatedTelemetryEnvironment, telemetryEnvironment } from "../telemetryEnvironment";
 
 /**
  * Public DSNs for the `ade-app` organization. A DSN only lets a client submit
@@ -23,7 +26,7 @@ export const SENTRY_DSNS = {
 
 export type SentrySurface = keyof typeof SENTRY_DSNS;
 
-export type SentryEnvironment = "production" | "beta" | "alpha" | "development";
+export type SentryEnvironment = "production" | "beta" | "alpha" | "development" | "ci";
 
 type Env = Record<string, string | undefined>;
 
@@ -42,6 +45,7 @@ function isSentryDevOptIn(env: Env): boolean {
  */
 export function shouldEnableSentry(args: { env: Env; packaged: boolean; priorOptOut?: boolean }): boolean {
   const { env } = args;
+  if (isAutomatedTelemetryEnvironment(env)) return false;
   if (isSentryOptedOut(env) || args.priorOptOut) return false;
   if (env.NODE_ENV === "test" || env.VITEST) return false;
   if (isSentryDevOptIn(env)) return true;
@@ -54,17 +58,20 @@ export function resolveSentryDsn(surface: SentrySurface, env: Env): string {
 
 /**
  * `production` for Stable, `beta` for a Beta-track build (read from its
- * version), `alpha` for an Alpha package, `development` otherwise. Beta gets
- * its own environment from its first build, so its errors never read as
- * Stable's (T3 #24340), and promoting a beta can ask "any new issues?".
+ * version), `alpha` for an Alpha package, `development` for an unpackaged
+ * build, `ci` for a workflow. Beta gets its own environment from its first
+ * build, so its errors never read as Stable's (T3 #24340), and promoting a
+ * beta can ask "any new issues?".
  */
 export function resolveSentryEnvironment(args: {
   env: Env;
   packaged: boolean;
   version?: string | null;
 }): SentryEnvironment {
-  const channel = resolveReleaseChannel(args);
-  return channel === "stable" ? "production" : channel;
+  return telemetryEnvironment({
+    env: args.env,
+    releaseChannel: resolveReleaseChannel(args),
+  });
 }
 
 /** One release name across desktop, brain, web client and Workers. */

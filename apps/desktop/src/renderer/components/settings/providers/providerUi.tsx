@@ -19,6 +19,7 @@ const STATUS_COLORS: Record<ProviderStatusState, string> = {
   checking: COLORS.info,
   connected: COLORS.success,
   "sign-in": COLORS.warning,
+  unknown: COLORS.textMuted,
   attention: COLORS.danger,
   "not-installed": COLORS.textDim,
   disabled: COLORS.textDim,
@@ -56,7 +57,7 @@ export function AlertBanner({
   message,
   onDismiss,
 }: {
-  tone: "success" | "error" | "warning";
+  tone: "success" | "error" | "warning" | "info";
   message: string;
   onDismiss: () => void;
 }) {

@@ -14,12 +14,14 @@ export function createProjectNamespace(infra: AdapterInfra): AdeNamespace<"proje
 
   async function listRecent() {
     const projects = await refreshCatalog();
-    // Deliberately no `gitOriginUrl`: cross-machine lane discovery keys off it
-    // (crossMachineLanes.resolveThisMachineBindingForOrigin), and the web
-    // adapter's lanes/sessions shims cannot route pinned reads. Adding the
-    // field here would silently point those reads at the wrong machine — see
-    // the contract-gap guard in sessionsPty.ts.
+    // The repository identity joins this machine's rows with the same
+    // repository on other machines (S14). The federated proxy routes each
+    // pinned read to its own machine's adapter, so the join no longer points
+    // a read at the wrong machine.
     return projects.map((project) => ({
+      gitOriginUrl: project.repoOwner && project.repoName
+        ? `https://github.com/${project.repoOwner}/${project.repoName}`
+        : null,
       rootPath: project.rootPath,
       displayName: project.displayName,
       baseRef: project.defaultBaseRef,
@@ -76,6 +78,24 @@ export function createProjectNamespace(infra: AdapterInfra): AdeNamespace<"proje
       return state.getProject();
     },
     switchToPath,
+    /**
+     * The project of a deep link's repository on the machine this web client
+     * serves. The catalog carries each project's GitHub owner and name, so no
+     * origin crosses here (see `listRecent`).
+     */
+    async findForRepo(args: { repoOwner: string; repoName: string }) {
+      const owner = args.repoOwner.trim().toLowerCase();
+      const name = args.repoName.trim().toLowerCase();
+      if (!owner || !name) return null;
+      const projects = await refreshCatalog();
+      const match = projects.find((project) =>
+        project.isAvailable !== false
+        && Boolean(project.rootPath)
+        && (project.repoOwner ?? "").toLowerCase() === owner
+        && (project.repoName ?? "").replace(/\.git$/i, "").toLowerCase() === name
+      );
+      return match?.rootPath ? { rootPath: match.rootPath, displayName: match.displayName } : null;
+    },
     async openRepo(args: string | { rootPath?: string | null } = {}) {
       const rootPath = typeof args === "string" ? args : args.rootPath;
       if (!rootPath) return state.getProject();

@@ -98,6 +98,15 @@ export function adeHomeForChannel(channel: string | null): string {
   return path.join(os.homedir(), ".ade");
 }
 
+/**
+ * The installed ADE homes on this computer: the default home and the Alpha
+ * channel's. A lane's test machine stays out of them, and a lane's test brain
+ * leaves the chats their brains run.
+ */
+export function installedAdeHomes(): string[] {
+  return [adeHomeForChannel(null), adeHomeForChannel("alpha")];
+}
+
 let cachedWindowsTokenUser: { profile: string | null; username: string | null } | undefined;
 
 /**

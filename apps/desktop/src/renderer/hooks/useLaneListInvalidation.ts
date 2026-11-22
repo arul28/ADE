@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { AppState } from "../state/appStore";
-import type { LaneLifecycleEvent } from "../../shared/types";
+import type { LaneLifecycleEvent, OpenProjectBinding } from "../../shared/types";
 import { invalidateLaneReadCache } from "../lib/laneReadCache";
 
 export const LANE_LIST_LIFECYCLE_REFRESH_DEBOUNCE_MS = 180;
@@ -37,12 +37,15 @@ function selectLatestLifecycleEvent(
 
 export function useDebouncedLaneLifecycleRefresh({
   active,
+  pin,
   debounceMs,
   onEvent,
   onRefresh,
   selectPendingEvent = selectLatestLifecycleEvent,
 }: {
   active: boolean;
+  /** The copy whose lane events to hear. Null: no copy online, so no subscription. */
+  pin: OpenProjectBinding | null;
   debounceMs: number;
   onEvent?: (event: LaneLifecycleEvent) => void;
   onRefresh: (event: LaneLifecycleEvent) => void;
@@ -53,9 +56,13 @@ export function useDebouncedLaneLifecycleRefresh({
 }): void {
   const refreshTimerRef = useRef<number | null>(null);
   const pendingHiddenEventRef = useRef<LaneLifecycleEvent | null>(null);
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
 
   useEffect(() => {
-    if (!active) {
+    const eventPin = pinRef.current;
+    if (!active || !eventPin) {
       pendingHiddenEventRef.current = null;
       return;
     }
@@ -89,7 +96,7 @@ export function useDebouncedLaneLifecycleRefresh({
 
     const unsubscribe = window.ade.lanes.onLifecycleEvent((event) => {
       scheduleRefresh(event, true);
-    });
+    }, eventPin);
     window.addEventListener("focus", refreshPendingIfVisible);
     document.addEventListener("visibilitychange", refreshPendingIfVisible);
 
@@ -99,16 +106,19 @@ export function useDebouncedLaneLifecycleRefresh({
       window.removeEventListener("focus", refreshPendingIfVisible);
       document.removeEventListener("visibilitychange", refreshPendingIfVisible);
     };
-  }, [active, debounceMs, onEvent, onRefresh, selectPendingEvent]);
+  }, [active, pinKey, debounceMs, onEvent, onRefresh, selectPendingEvent]);
 }
 
 export function useLaneListInvalidation({
   active,
+  pin,
   refreshLanes,
   freshnessKey,
   staleMs = LANE_LIST_FOCUS_STALE_MS,
 }: {
   active: boolean;
+  /** The tab copy whose lane list this refreshes. Null: no copy online. */
+  pin: OpenProjectBinding | null;
   refreshLanes: RefreshLanes;
   freshnessKey?: unknown;
   staleMs?: number;
@@ -155,6 +165,7 @@ export function useLaneListInvalidation({
 
   useDebouncedLaneLifecycleRefresh({
     active,
+    pin,
     debounceMs: LANE_LIST_LIFECYCLE_REFRESH_DEBOUNCE_MS,
     onEvent: handleLifecycleEvent,
     onRefresh: handleLifecycleRefresh,

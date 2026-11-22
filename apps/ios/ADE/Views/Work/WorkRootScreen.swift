@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import AVKit
@@ -51,7 +52,7 @@ final class WorkRootBookkeeping {
 /// when output is being searched; outside that the handler returns without a
 /// state write, so streaming output never wakes the list.
 private struct WorkSearchOutputRevisionModifier: ViewModifier {
-  let publisher: Published<Int>.Publisher
+  let publisher: AnyPublisher<Int, Never>
   let isSearching: Bool
   @Binding var revision: Int
 
@@ -124,6 +125,9 @@ struct WorkSessionRoute: Hashable {
   /// Set for a row from another machine: the chat opens through that
   /// machine's roster connection.
   var remoteChat: WorkChatCrossProjectContext? = nil
+  /// Set for another machine's CLI or shell session that streams over that
+  /// machine's light link, without a focus switch.
+  var remoteTerminal: WorkRemoteTerminalContext? = nil
   var openingPrompt: String? = nil
   var openingPromptDispatchHandled = false
   var openingDeliveryState: String? = nil
@@ -171,6 +175,9 @@ struct WorkRootSyncInputs: Equatable {
   // Always tracked.
   var listVisible = false
   var isLive = false
+  /// The paired machines with a live link. An open chat on another machine
+  /// gates its composer on its own machine, also while the list is hidden.
+  var liveMachineKeys: Set<String> = []
   var isAttached = false
   var hostUnreachable = false
   var activeProjectId: String?
@@ -213,9 +220,20 @@ struct WorkRootSyncInputs: Equatable {
   /// Other machines' checkouts of the focused repository (their chats join
   /// the list). Tracked only while the list is visible.
   var remoteMachineRepos: [WorkRemoteMachineRepo] = []
+  /// The project `remoteMachineRepos` was matched for: a rebuild that runs
+  /// after a project switch drops rows matched for the old one.
+  var remoteMachineReposProjectId: String?
   /// The Machine filter's choices: the focused machine, then the machines in
   /// `remoteMachineRepos`. Tracked only while the list is visible.
   var machineFilterOptions: [WorkMachineFilterOption] = []
+  /// False while the focused machine is off past its reconnect window: its
+  /// rows are not listed (`SyncService.focusedMachineListsWork`).
+  var primaryListsWork = true
+  /// An ADE Cloud computer an open from this list waits on while it wakes.
+  var wakingCloudMachineName: String?
+  /// The last failed wake of an ADE Cloud computer, when none is waking.
+  var cloudWakeFailureKey: String?
+  var cloudWakeFailureMessage: String?
 
   init() {}
 
@@ -228,6 +246,7 @@ struct WorkRootSyncInputs: Equatable {
     if WorkRootPreviewFixture.active?.forcesLive == true { isLive = true }
     #endif
     hostUnreachable = sync.connectionState.isHostUnreachable
+    liveMachineKeys = Set(fleet?.liveMachineKeys ?? [])
     activeProjectId = sync.activeProjectId
     activeProjectRootPath = sync.activeProjectRootPath
     activeProjectHostIdentity = sync.activeProjectHostIdentity
@@ -264,14 +283,22 @@ struct WorkRootSyncInputs: Equatable {
     crossMachineHandoffAvailable = sync.canInvokeRemoteAction("chat.getCrossMachineHandoffOptions")
       && sync.canInvokeRemoteAction("chat.startCrossMachineHandoff")
     autoHandoffAvailable = sync.autoHandoffRulesAvailable && sync.canInvokeRemoteAction("automations.saveDraft")
-    // Only machines the user keeps connected; a disconnected one stays off.
-    if let fleet, case let connected = fleet.machines.filter(\.isPinned), !connected.isEmpty, let activeProject {
+    primaryListsWork = sync.focusedMachineListsWork
+    wakingCloudMachineName = sync.anyWakingCloudMachineName
+    cloudWakeFailureKey = sync.anyCloudWakeFailure?.fleetKey
+    cloudWakeFailureMessage = sync.anyCloudWakeFailure?.message
+    // Every paired machine with a copy whose work lists: live, reconnecting,
+    // or an ADE Cloud computer. An offline, parked or disconnected computer's
+    // rows are not listed.
+    remoteMachineReposProjectId = activeProject?.id
+    if let fleet, !fleet.listedMachines.isEmpty, let activeProject {
       let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
         ?? workRepoIdentity(originUrl: sync.rosterProject(for: activeProject)?.repoOriginUrl)
       remoteMachineRepos = workRemoteMachineRepos(
-        machines: connected,
+        machines: fleet.listedMachines,
         identity: identity,
-        folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
+        folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
+        account: sync.accountCopiesOfActiveProject()
       )
       // The Work list shows every chat of this repository on the other
       // machines, and its search and filters cover them all: a paged roster
@@ -313,10 +340,14 @@ struct WorkRootSyncInputs: Equatable {
 struct WorkRootScreen: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
+
   @EnvironmentObject private var machineFleet: MachineFleet
   @EnvironmentObject private var dictationController: DictationController
   var isTabActive = true
   @State private var path = NavigationPath()
+  /// A pushed ADE Cloud launch page waits for its chat's row, so the list
+  /// keeps reading while it shows (any other pushed page pauses it).
+  @State private var cloudLaunchPageOpen = false
 
   init(isTabActive: Bool = true) {
     self.isTabActive = isTabActive
@@ -327,8 +358,9 @@ struct WorkRootScreen: View {
       syncService: syncService,
       dictationController: dictationController,
       isTabActive: isTabActive,
-      inputs: WorkRootSyncInputs(syncService, fleet: machineFleet, listVisible: isTabActive && path.isEmpty),
-      path: $path
+      inputs: WorkRootSyncInputs(syncService, fleet: machineFleet, listVisible: isTabActive && (path.isEmpty || cloudLaunchPageOpen)),
+      path: $path,
+      cloudLaunchPageOpen: $cloudLaunchPageOpen
     )
     .equatable()
   }
@@ -336,6 +368,8 @@ struct WorkRootScreen: View {
 
 struct WorkRootListScreen: View, Equatable {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
+  /// ADE Cloud launches change rarely (a read with backoff while one runs).
+  @ObservedObject var cloudLaunches = AccountCloudLaunchStore.shared
   /// Regular width (the Duo's inner display): the list and the chat sit side by
   /// side instead of the chat being pushed over the list. Read here rather than
   /// passed down so a fold or unfold needs no navigation-path rewrite.
@@ -352,19 +386,33 @@ struct WorkRootListScreen: View, Equatable {
   let isTabActive: Bool
   let inputs: WorkRootSyncInputs
   @Binding var path: NavigationPath
+  /// The phone's pushed page is an ADE Cloud launch page (`openCloudLaunch`).
+  @Binding var cloudLaunchPageOpen: Bool
+
+  /// Whether a chat destination's own computer is live. A chat on another
+  /// computer follows that computer's link; the focused computer's chats keep
+  /// the focused gate (connected and its project host ready).
+  func workDestinationIsLive(sessionId: String, remoteChat: WorkChatCrossProjectContext?) -> Bool {
+    guard let key = remoteChat?.machineKey ?? syncService.remoteChatMachineKey(sessionId: sessionId),
+          key != syncService.focusedMachineKey
+    else { return inputs.isLive }
+    return inputs.liveMachineKeys.contains(key)
+  }
 
   init(
     syncService: SyncService,
     dictationController: DictationController,
     isTabActive: Bool,
     inputs: WorkRootSyncInputs,
-    path: Binding<NavigationPath>
+    path: Binding<NavigationPath>,
+    cloudLaunchPageOpen: Binding<Bool>
   ) {
     self.syncService = syncService
     self.dictationController = dictationController
     self.isTabActive = isTabActive
     self.inputs = inputs
     self._path = path
+    self._cloudLaunchPageOpen = cloudLaunchPageOpen
   }
 
   static func == (lhs: WorkRootListScreen, rhs: WorkRootListScreen) -> Bool {
@@ -406,6 +454,8 @@ struct WorkRootListScreen: View, Equatable {
   @State var snoozeRegroupTask: Task<Void, Never>?
   @State var snoozeEpoch = 0
   @State var errorMessage: String?
+  /// The last pull couldn't read the account's machines or ADE Cloud computers.
+  @State var cloudReadFailed = false
   // Scoped per project+host through `WorkViewStateStore` rather than held in
   // flat global `@AppStorage`, so switching projects or machines restores that
   // scope's view instead of carrying the previous one over.
@@ -422,6 +472,10 @@ struct WorkRootListScreen: View, Equatable {
   @State var localHandoffSubject: WorkSessionHandoffSubject?
   @State var autoHandoffSubject: WorkSessionHandoffSubject?
   @State var crossMachineHandoffTarget: WorkCrossMachineHandoffTarget?
+  /// A chat whose ADE Cloud computer sleeps or was deleted, for Hand off.
+  @State var cloudRestingMoveTarget: WorkCloudRestingMoveTarget?
+  /// The saved copy of an ADE Cloud CLI or shell session, opened read-only.
+  @State var cloudSessionCopyRow: CloudSessionRow?
   /// Auto-handoff rule ids scoped to each chat, read once per list load so the
   /// menu can say "Edit auto handoff…" / "Remove auto handoff" without
   /// waiting on the host when it opens. Absent key = unknown.
@@ -596,6 +650,40 @@ struct WorkRootListScreen: View, Equatable {
     if WorkRootPreviewFixture.active?.forcesLive == true { return true }
     #endif
     return syncService.connectionState == .connected && syncService.projectHostIsLive
+  }
+
+  /// The open project's ADE Cloud launches that are not hidden.
+  var cloudLaunchEntries: [AccountCloudLaunchStore.Entry] {
+    guard let project = syncService.activeAccountProjectForCloud else { return [] }
+    return cloudLaunches.entries(forOrigin: "\(project.host)/\(project.owner)/\(project.name)")
+  }
+
+  /// The launch rows the Work list shows: a launch whose chat already has its
+  /// own row (its computer's roster lists it) gives way to that row. A
+  /// status, lane or machine filter hides them (a launch has none of those
+  /// yet); a search keeps the ones whose message or lane matches.
+  var listedCloudLaunchEntries: [AccountCloudLaunchStore.Entry] {
+    guard selectedStatus == .all, selectedLaneId == "all", machineFilterStorage.isEmpty else { return [] }
+    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    let entries = cloudLaunchEntries.filter { entry in
+      // A lane launch that finished: the lane and its chats list on their own.
+      if entry.isLane && entry.record?.reachedRunning == true { return false }
+      guard !query.isEmpty else { return true }
+      let lane = nonEmptyTrimmed(entry.record?.laneName) ?? entry.laneName ?? ""
+      return entry.prompt.localizedCaseInsensitiveContains(query) || lane.localizedCaseInsensitiveContains(query)
+    }
+    guard entries.contains(where: { $0.record?.sessionId != nil }) else { return entries }
+    let listed = Set(mergedSessions.map(\.id))
+    return entries.filter { entry in
+      guard let chatId = entry.record?.sessionId else { return true }
+      return !listed.contains(chatId)
+    }
+  }
+
+  /// Whether New chat can start: the project's computer is live, or ADE
+  /// Cloud can take it (every signed-in account has ADE Cloud).
+  var canStartNewChat: Bool {
+    inputs.isLive || syncService.isAccountProjectScope || AccountService.shared.isSignedIn
   }
 
   var isLoadingSkeleton: Bool {
@@ -855,8 +943,10 @@ struct WorkRootListScreen: View, Equatable {
     scheduleSessionPresentationRebuild()
   }
 
+  /// The list reads and rebuilds: nothing pushed over it, or only a launch
+  /// page that waits for its chat's row.
   var isWorkRootActive: Bool {
-    isTabActive && path.isEmpty
+    isTabActive && (path.isEmpty || cloudLaunchPageOpen)
   }
 
   var sessionPresentationTaskKey: WorkRootSessionPresentationTaskKey? {
@@ -1063,6 +1153,17 @@ struct WorkRootListScreen: View, Equatable {
     case empty
   }
 
+  /// The chat beside the list in the wide split already shows the wake
+  /// (or the failed wake) of the computer it lives on.
+  private var splitChatShowsWakeStatus: Bool {
+    guard duoLayout.isWide, duoComposeRoute == nil, let route = duoSelectedRoute else { return false }
+    let key = route.remoteChat?.machineKey
+      ?? syncService.remoteChatMachineKey(sessionId: route.sessionId)
+      ?? syncService.focusedMachineKey
+    return syncService.wakingCloudMachineName(fleetKey: key) != nil
+      || syncService.cloudWakeFailure(fleetKey: key) != nil
+  }
+
   private var duoDetail: DuoDetail {
     if let route = duoComposeRoute { return .compose(route) }
     if let route = duoSelectedRoute { return .chat(route) }
@@ -1222,7 +1323,7 @@ struct WorkRootListScreen: View, Equatable {
             }
         } else {
           DuoWorkEmptyDetail(
-            canCreate: inputs.isLive,
+            canCreate: canStartNewChat,
             showsNewChatButton: true,
             onNewChat: pushNewChatRoute
           )
@@ -1302,12 +1403,12 @@ struct WorkRootListScreen: View, Equatable {
         Button(action: pushNewChatRoute) {
           Image(systemName: "square.and.pencil")
             .font(.system(size: 17, weight: .medium))
-            .foregroundStyle(inputs.isLive ? ADEColor.textPrimary : ADEColor.textMuted)
+            .foregroundStyle(canStartNewChat ? ADEColor.textPrimary : ADEColor.textMuted)
             .frame(width: 36, height: 36)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!inputs.isLive)
+        .disabled(!canStartNewChat)
         .accessibilityLabel("New chat")
       }
     }
@@ -1331,7 +1432,7 @@ struct WorkRootListScreen: View, Equatable {
     // A plain toolbar button: the edge bar lifts a custom-styled item
     // (.glassProminent) out of the rail as an empty floating capsule.
     Button("New chat", systemImage: "square.and.pencil", action: pushNewChatRoute)
-      .disabled(!inputs.isLive)
+      .disabled(!canStartNewChat)
       .accessibilityIdentifier("Duo.Work.Rail.NewChat")
   }
 
@@ -1411,6 +1512,12 @@ struct WorkRootListScreen: View, Equatable {
       if path.isEmpty {
         if let route = duoSelectedRoute {
           path.append(route)
+          if workCloudLaunchId(routeSessionId: route.sessionId) != nil {
+            // The unfold cleared the transition id with the path; the launch
+            // page's handover checks it to know the page still shows.
+            cloudLaunchPageOpen = true
+            selectedSessionTransitionId = route.sessionId
+          }
         }
         if let compose = duoComposeRoute {
           path.append(compose)
@@ -1560,12 +1667,12 @@ struct WorkRootListScreen: View, Equatable {
       Button(action: pushNewChatRoute) {
         Image(systemName: "square.and.pencil")
           .font(.system(size: 18, weight: .medium))
-          .foregroundStyle(inputs.isLive ? ADEColor.textPrimary : ADEColor.textMuted)
+          .foregroundStyle(canStartNewChat ? ADEColor.textPrimary : ADEColor.textMuted)
           .frame(width: 32, height: 44)
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .disabled(!inputs.isLive)
+      .disabled(!canStartNewChat)
       .accessibilityLabel("New chat")
       .accessibilityIdentifier("Duo.Work.NewChat")
       WorkHeaderOverflowMenu(
@@ -1579,7 +1686,6 @@ struct WorkRootListScreen: View, Equatable {
     }
     .padding(.horizontal, 16)
     .padding(.bottom, 6)
-    .background(ADEColor.pageBackground.opacity(0.94))
   }
 
   /// The chat awaits one constructor in both layouts; only the chrome and the
@@ -1587,11 +1693,47 @@ struct WorkRootListScreen: View, Equatable {
   /// drift on the data they hand the destination.
   @ViewBuilder
   private func sessionDestinationView(_ route: WorkSessionRoute, inColumn: Bool) -> some View {
+    if let launchId = workCloudLaunchId(routeSessionId: route.sessionId) {
+      // A chat still starting on ADE Cloud: its page, until the chat runs.
+      WorkCloudLaunchPendingScreen(
+        launchId: launchId,
+        navigationChrome: inColumn ? .column : .pushedDetail,
+        onBack: inColumn ? { duoClearSelection() } : nil,
+        onChatReady: { chatId in await openLaunchedCloudChat(chatId, fromLaunch: launchId) }
+      )
+      .id(route.openId)
+    } else if let remoteTerminal = route.remoteTerminal {
+      // Another machine's terminal: it streams from its own machine.
+      TerminalSessionScreen(
+        session: remoteTerminal.session,
+        leading: remoteTerminalLeadingControl(inColumn: inColumn),
+        remoteTerminal: remoteTerminal
+      )
+      .environmentObject(syncService)
+      .id(route.openId)
+    } else {
+      focusedSessionDestinationView(route, inColumn: inColumn)
+    }
+  }
+
+  private func remoteTerminalLeadingControl(inColumn: Bool) -> TerminalLeadingControl {
+    guard inColumn else { return .back }
+    if duoShowsSessionList { return .none }
+    return .showChats {
+      ADEHaptics.light()
+      toggleDuoSessionsColumn()
+    }
+  }
+
+  @ViewBuilder
+  private func focusedSessionDestinationView(_ route: WorkSessionRoute, inColumn: Bool) -> some View {
     let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId
       ? (ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil)
       : nil
+    // Never another machine's terminal row: it is a roster stub with no PTY,
+    // and its terminal cannot stream from the focused machine.
     let initialSession = optimisticSessions[route.sessionId]
-      ?? mergedSessions.first(where: { $0.id == route.sessionId })
+      ?? mergedSessions.first(where: { $0.id == route.sessionId && !workIsRemoteMachineTerminalRow($0) })
       ?? syncService.chatLaunchEntry(sessionId: route.sessionId).map(workChatLaunchOptimisticSession)
     // A chat still being launched into a new lane shows its setup first;
     // the same session id then hands over to the ordinary destination.
@@ -1606,7 +1748,7 @@ struct WorkRootListScreen: View, Equatable {
         initialChatSummary: chatSummaries[route.sessionId]
           ?? workRemoteMachineRosterChat(sessionId: route.sessionId, in: inputs.remoteMachineRepos)?.rosterChatSummary,
         transitionNamespace: routeTransitionNamespace,
-        isLive: inputs.isLive,
+        isLive: workDestinationIsLive(sessionId: route.sessionId, remoteChat: route.remoteChat),
         navigationChrome: inColumn ? .column : .pushedDetail,
         // `sessionPresentationTaskKey` goes nil once a screen is pushed off the
         // root, so `workOrderedLanes` stops refreshing there — fall back to the
@@ -1674,8 +1816,24 @@ struct WorkRootListScreen: View, Equatable {
         }
       },
       onCliStarted: { session in
-        optimisticSessions[session.id] = session
         selectedSessionTransitionId = nil
+        // Started on another machine: its terminal streams from that machine,
+        // exactly like tapping its row. When that machine's link cannot stream
+        // terminals, the row's own fallback focuses the machine and opens it.
+        if workIsRemoteMachineTerminalRow(session) {
+          if let remote = startedRemoteTerminalContext(for: session) {
+            await showNewChatRoute(WorkSessionRoute(sessionId: session.id, remoteTerminal: remote))
+          } else {
+            // Leave the compose page; the open lands once that machine is focused.
+            if duoLayout.isWide { duoComposeRoute = nil } else { path = NavigationPath() }
+            openRemoteMachineTerminal(sessionId: session.id, laneId: session.laneId)
+          }
+          Task { @MainActor in
+            await reload(refreshRemote: true)
+          }
+          return
+        }
+        optimisticSessions[session.id] = session
         await showNewChatRoute(WorkSessionRoute(sessionId: session.id))
         Task { @MainActor in
           await reload(refreshRemote: true)
@@ -1699,16 +1857,88 @@ struct WorkRootListScreen: View, Equatable {
         let sessionId = snapshot.chatSessionId
         selectedSessionTransitionId = nil
         await showNewChatRoute(WorkSessionRoute(sessionId: sessionId))
+      },
+      onCloudLaunchStarted: { launchId in
+        // As a launch on a computer of your own: the chat's page opens now,
+        // with the message and the setup steps, and becomes the chat once
+        // its new computer runs it.
+        selectedSessionTransitionId = nil
+        await Task.yield()
+        openCloudLaunch(launchId)
       }
     )
     .environmentObject(syncService)
     .environmentObject(dictationController)
   }
 
+  /// A chat a cloud launch just started lives on its lane's computer, not on
+  /// this tab's machine: open its Work row, which routes to that computer,
+  /// once the computer is connected and its roster lists it. A bare route
+  /// would look the chat up on the tab's machine and show "Session
+  /// unavailable", so this never opens one: it answers false and the
+  /// launch's page stays with a way to try again.
+  @discardableResult
+  func openLaunchedCloudChat(_ chatId: String, fromLaunch launchId: String) async -> Bool {
+    func listedRow() -> TerminalSessionSummary? {
+      mergedSessions.first { $0.id == chatId }
+    }
+    // The open waits on the computer and the roster. If the person left the
+    // launch's page meanwhile, the chat must not pull them back to it.
+    let launchRouteId = workCloudLaunchRouteSessionId(launchId)
+    func launchPageShows() -> Bool {
+      duoLayout.isWide
+        ? duoSelectedRoute?.sessionId == launchRouteId
+        : cloudLaunchPageOpen && selectedSessionTransitionId == launchRouteId
+    }
+    if listedRow() == nil {
+      await cloudLaunches.connectComputer(launchId, using: syncService)
+    }
+    // The roster lists the chat a moment after the link is live.
+    let listedBy = ContinuousClock.now + .seconds(15)
+    while ContinuousClock.now < listedBy {
+      if Task.isCancelled || !launchPageShows() { return false }
+      if let row = listedRow() {
+        // Off the new-chat page and the launch's page first, as `showNewChatRoute` does.
+        cloudLaunchPageOpen = false
+        path = NavigationPath()
+        duoComposeRoute = nil
+        openSession(row)
+        return true
+      }
+      try? await Task.sleep(for: .milliseconds(250))
+    }
+    CrashReporting.breadcrumb("cloud_launch", message: "chat_not_listed", data: [:])
+    return false
+  }
+
+  /// Opens the page of a chat still starting on ADE Cloud: pushed on a phone,
+  /// in the detail column on a wide display. Its route is never saved as the
+  /// open route, because no machine knows its id. The transition id keeps
+  /// the page when the Duo unfolds (as `duoSelectSession` does for a chat).
+  func openCloudLaunch(_ launchId: String) {
+    let route = WorkSessionRoute(sessionId: workCloudLaunchRouteSessionId(launchId))
+    selectedSessionTransitionId = route.sessionId
+    if duoLayout.isWide {
+      if duoPane.isOpen { duoPane.close() }
+      duoComposeRoute = nil
+      if let previous = duoSelectedRoute?.sessionId, previous != route.sessionId {
+        WorkSeenStore.stamp([previous])
+      }
+      if duoViewMode == .board { duoViewModeRaw = DuoWorkViewMode.list.rawValue }
+      duoSelectedRoute = route
+    } else {
+      var fresh = NavigationPath()
+      fresh.append(route)
+      path = fresh
+      cloudLaunchPageOpen = true
+    }
+  }
+
   /// The new-chat screen's handover: a pushed chat on every phone, the detail
   /// column's chat on a wide display.
   private func showNewChatRoute(_ route: WorkSessionRoute) async {
     await Task.yield()
+    cloudLaunchPageOpen = false
     if duoLayout.isWide {
       // The compose page becomes the chat, in place, beside the list.
       path = NavigationPath()
@@ -1724,7 +1954,11 @@ struct WorkRootListScreen: View, Equatable {
       fresh.append(route)
       path = fresh
     }
-    syncService.persistOpenWorkSessionRoute(sessionId: route.sessionId)
+    // Another machine's terminal is not restored at launch: the restore path
+    // opens focused-machine sessions.
+    if route.remoteTerminal == nil {
+      syncService.persistOpenWorkSessionRoute(sessionId: route.sessionId)
+    }
   }
 
   private func workList(proxy: ScrollViewProxy, duoColumn: Bool = false) -> some View {
@@ -1745,11 +1979,12 @@ struct WorkRootListScreen: View, Equatable {
             !inputs.suppressHydrationNotices,
             let hydrationNotice = inputs.workStatus.inlineHydrationFailureNotice(for: .work)
           {
-            ADEInstructionErrorCard(
+            // One slim row, like Lanes and PRs: the cached chats stay in view.
+            ADEFlatInlineNotice(
               notice: hydrationNotice,
               retry: { Task { await reload(refreshRemote: true) } }
             )
-            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           }
@@ -1761,6 +1996,40 @@ struct WorkRootListScreen: View, Equatable {
               .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
               .listRowBackground(Color.clear)
               .listRowSeparator(.hidden)
+          }
+
+          // Chats starting on ADE Cloud for this project, from this phone or
+          // another device: one launch row each, as a chat starting in a new
+          // lane lists, until the chat's own row lists.
+          ForEach(listedCloudLaunchEntries) { entry in
+            WorkCloudLaunchRow(
+              entry: entry,
+              duoRow: duoLayout.isWide,
+              selected: duoLayout.isWide && duoSelectedRoute?.sessionId == workCloudLaunchRouteSessionId(entry.launchId)
+            ) {
+              ADEHaptics.light()
+              openCloudLaunch(entry.launchId)
+            }
+            .workRowHairline(true)
+            .id(workCloudLaunchRouteSessionId(entry.launchId))
+            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+          }
+
+          // With no computer connected too: this read goes to the account server.
+          if cloudReadFailed {
+            ADENoticeCard(
+              title: "ADE Cloud",
+              message: "ADE couldn't read your machines and ADE Cloud computers, so a new one may be missing.",
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await refreshFromPullGesture() } }
+            )
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
           }
 
           if let errorMessage,
@@ -1780,7 +2049,7 @@ struct WorkRootListScreen: View, Equatable {
             .listRowSeparator(.hidden)
           }
 
-          if displaySessions.isEmpty {
+          if displaySessions.isEmpty && listedCloudLaunchEntries.isEmpty {
             ADEEmptyStateView(
               symbol: inputs.isLive ? "bubble.left.and.bubble.right" : "terminal",
               title: workSessionEmptyStateTitle(status: selectedStatus, searchText: searchText, hasFilters: hasActiveFilters),
@@ -1788,7 +2057,8 @@ struct WorkRootListScreen: View, Equatable {
                 status: selectedStatus,
                 searchText: searchText,
                 hasFilters: hasActiveFilters,
-                isLive: inputs.isLive
+                isLive: inputs.isLive,
+                cloudOnly: AccountService.shared.isSignedIn && !syncService.accountHasOwnComputer(AccountService.shared.machines)
               )
             ) {
               if hasActiveFilters {
@@ -1804,7 +2074,7 @@ struct WorkRootListScreen: View, Equatable {
                 }
                 .buttonStyle(.glassProminent)
                 .tint(ADEColor.accent)
-                .disabled(!inputs.isLive)
+                .disabled(!canStartNewChat)
               }
             }
             .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 16, trailing: 16))
@@ -1837,6 +2107,19 @@ struct WorkRootListScreen: View, Equatable {
     // The filter panel drops from under the header (search and its filter
     // chip), not over it: on the rows, whose safe area the header insets.
     let rowsWithFilters = rows
+      // A CLI row on an ADE Cloud computer that is asleep opens once the
+      // computer is awake; the list says so meanwhile.
+      .safeAreaInset(edge: .top, spacing: 0) {
+        // A chat beside the list (the wide split) shows its own computer's
+        // wake; the list does not say it twice.
+        if !splitChatShowsWakeStatus {
+          CloudComputerWakeStatusLine(
+            wakingName: inputs.wakingCloudMachineName,
+            failure: inputs.cloudWakeFailureKey.flatMap { key in inputs.cloudWakeFailureMessage.map { (key, $0) } },
+            onDismissFailure: { SyncService.shared?.clearCloudWakeFailure(fleetKey: $0) }
+          )
+        }
+      }
       .overlay(alignment: .top) {
         if filterPanelOpen {
           ZStack(alignment: .top) {
@@ -1874,6 +2157,10 @@ struct WorkRootListScreen: View, Equatable {
         }
       }
       .onChange(of: path.count) { _, newCount in
+        // The launch page is only ever the one page on the stack; anything
+        // else on it (a chat pushed on top, the compose page after a fold)
+        // means the list is hidden again.
+        if newCount != 1 { cloudLaunchPageOpen = false }
         if newCount == 0, let leftSessionId = selectedSessionTransitionId {
           // Leaving a chat is what marks it seen (desktop stamps the same
           // moment): everything it showed, including output that landed while
@@ -1887,7 +2174,9 @@ struct WorkRootListScreen: View, Equatable {
           syncService.clearOpenWorkSessionRoute()
         }
       }
-      .sheet(item: $bulkExportShare) { share in
+      // The export file holds chat titles and summaries: it goes once the
+      // share sheet has handed it on.
+      .sheet(item: $bulkExportShare, onDismiss: { SyncService.removeSessionExports() }) { share in
         WorkActivityViewController(items: share.items)
       }
       .sheet(item: $manageLaneTarget) { snapshot in
@@ -1942,7 +2231,7 @@ struct WorkRootListScreen: View, Equatable {
         LiveStage.shared.end()
       }
       .modifier(WorkSearchOutputRevisionModifier(
-        publisher: syncService.$terminalBufferRevision,
+        publisher: syncService.terminalBufferRevisionPublisher,
         isSearching: isWorkRootActive && workSearchIsActive,
         revision: $searchOutputRevision
       ))
@@ -2078,6 +2367,26 @@ struct WorkRootListScreen: View, Equatable {
               }
               duoSessionsSearchRow
             }
+            // One backing for both rows, up through the top edge (the title
+            // row's bar padding and the safe area): rows that scroll past the
+            // top go under the header, as under the phone's Work header,
+            // and never draw through the title or the search field. A short
+            // fade below it eases the rows in instead of a hard cut.
+            .background {
+              ADEColor.pageBackground
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+            }
+            .overlay(alignment: .bottom) {
+              LinearGradient(
+                colors: [ADEColor.pageBackground, ADEColor.pageBackground.opacity(0)],
+                startPoint: .top,
+                endPoint: .bottom
+              )
+              .frame(height: 10)
+              .offset(y: 10)
+              .allowsHitTesting(false)
+            }
           }
         }
     } else {
@@ -2164,6 +2473,25 @@ struct WorkRootListScreen: View, Equatable {
         WorkCrossMachineHandoffSheet(target: target)
           .environmentObject(syncService)
       }
+      .sheet(item: $cloudRestingMoveTarget) { target in
+        WorkCloudRestingMoveSheet(
+          target: target,
+          onAwake: {
+            // Up now: the usual move sheet, from the chat's live row.
+            if let session = mergedSessions.first(where: { $0.id == target.sessionId }) {
+              handleSessionHandoff(session, intent: .remote)
+            }
+          },
+          onOpenChat: {
+            if let session = mergedSessions.first(where: { $0.id == target.sessionId }) {
+              openSession(session)
+            }
+          }
+        )
+      }
+      .sheet(item: $cloudSessionCopyRow) { row in
+        CloudSessionCopyScreen(row: row, fleetKey: syncService.cloudFleetKey(accountMachineKey: row.machineKey))
+      }
       // Once per project (and when the host starts advertising the rules): the
       // menu only needs "does this chat have rules", and the editor re-reads.
       .task(id: "\(inputs.autoHandoffAvailable)|\(inputs.activeProjectId ?? "")|\(sessions.count)") {
@@ -2213,6 +2541,8 @@ struct WorkRootListScreen: View, Equatable {
     WorkSessionLaneMenuActions(
       colorAvailable: inputs.laneColorAvailable,
       manageAvailable: inputs.laneManageAvailable,
+      restsOnCloud: { [syncService] lane in laneRestsOnCloud(lane.id, sync: syncService) },
+      hasCloudComputer: { [syncService] lane in cloudLaneComputer(lane.id, sync: syncService) != nil },
       onStartChat: startChatInLane,
       onToggleWorkPin: toggleWorkPin,
       isWorkPinned: { workPinnedLaneIds.contains($0.id) },
@@ -2454,7 +2784,7 @@ struct WorkRootListScreen: View, Equatable {
     transitionNamespace: Namespace.ID?,
     boardCard: Bool = false
   ) -> WorkSessionListRow {
-    WorkSessionListRow(
+    return WorkSessionListRow(
       session: session,
       lane: laneById[session.laneId],
       // Fall back to the resolved lane (name/branch match) so legacy sessions
@@ -2462,8 +2792,9 @@ struct WorkRootListScreen: View, Equatable {
       pullRequest: lanePrTagsByLaneId[session.laneId]
         ?? lanePrTagsByLaneId[resolvedWorkNavigationLaneId(for: session, lanes: lanes)],
       chatSummary: chatSummaries[session.id],
-      isArchived: archivedSessionIds.contains(session.id),
+      isArchived: sessionPresentation.archivedSessionIds.contains(session.id),
       transitionNamespace: transitionNamespace,
+      machineName: workSessionMachineName(laneId: session.laneId, options: inputs.machineFilterOptions),
       compact: compact,
       subagentMark: sessionPresentation.subagentMarkByParentId[session.id],
       showsLaneIdentity: showsLaneIdentity,
@@ -2472,7 +2803,6 @@ struct WorkRootListScreen: View, Equatable {
       // The Duo's sessions column (and an iPad's) draws the wide row; a phone
       // keeps its own full-width row, and drawer shells their compact form.
       duoRow: duoLayout.isWide && !boardCard && !compact,
-      machineName: workRemoteLaneMachineName(session.laneId, options: inputs.machineFilterOptions),
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,
@@ -2498,6 +2828,9 @@ struct WorkRootListScreen: View, Equatable {
       onWake: wakeSession,
       onDemoteToPeer: demoteSessionToPeer,
       onPromoteToSubagent: promoteSessionToSubagent,
+      parentChatTitle: chatSummaries[session.id]?.orchestrationParentSessionId.flatMap { parentId in
+        chatSummaries[parentId]?.title ?? syncService.chatSummaryCache[parentId]?.title
+      },
       spawnKindUpdateAvailable: inputs.spawnKindUpdateAvailable,
       deleteSessionAvailable: inputs.deleteSessionAvailable,
       onDeleteSession: deleteWorkSession,
@@ -2511,7 +2844,8 @@ struct WorkRootListScreen: View, Equatable {
       restartAvailable: syncService.canInvokeChatRemoteAction("chat.restartSession", sessionId: session.id),
       onRestartAgent: { session in restartAgentSession(session, stopFirst: false) },
       localHandoffAvailable: syncService.canInvokeChatRemoteAction("chat.handoff", sessionId: session.id),
-      crossMachineHandoffAvailable: syncService.crossMachineHandoffAvailable(sessionId: session.id),
+      crossMachineHandoffAvailable: syncService.crossMachineHandoffAvailable(sessionId: session.id)
+        || workCloudRestingMoveTarget(session: session, title: session.title, sync: syncService) != nil,
       crossMachineCancelAvailable: syncService.crossMachineHandoffActionAvailable(
         "chat.cancelCrossMachineHandoff",
         sessionId: session.id

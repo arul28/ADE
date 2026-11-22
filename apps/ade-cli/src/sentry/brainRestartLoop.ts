@@ -31,13 +31,25 @@
  * can lose a start, a reused pid reads as alive, and a brain the computer
  * killed by restarting is not counted (it started before this boot).
  */
+import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { captureProblem, flushSentry, isSentryActive } from "../../../desktop/src/shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, type DiagnosticEvent } from "../../../desktop/src/shared/sentry/diagnostics";
-import { isPidAlive } from "../serviceManager/common";
-import { brainLogAttachment, desktopLogsAttachment } from "./brainServiceDiagnostics";
-import { BRAIN_STARTS_FILE, readStartsFile, writeStartsFile, type BrainStart, type BrainStartsState } from "./brainStartsFile";
+import { currentUid, isPidAlive, resolveRuntimeServiceName } from "../serviceManager/common";
+import { resolveWindowsServicePidPath } from "../serviceManager/installWindows";
+import { readWindowsServicePidRecord } from "../serviceManager/windowsSupervisor";
+import { BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE } from "../services/runtime/brainLoopWatchdog";
+import { LAST_FAILURE_FILE_NAME } from "../../../desktop/src/main/services/runtime/lastFailureStore";
+import { brainLogAttachment, desktopLogsAttachment, readStateFile } from "./brainServiceDiagnostics";
+import {
+  BRAIN_STARTS_FILE,
+  readStartsFile,
+  writeStartsFile,
+  type BrainStart,
+  type BrainStartCause,
+  type BrainStartsState,
+} from "./brainStartsFile";
 
 const RESTART_LOOP_THRESHOLD = 3;
 const RESTART_LOOP_WINDOW_MS = 10 * 60_000;
@@ -50,6 +62,23 @@ const RESTART_LOOP_FINGERPRINT = ["brain", "restart_loop"] as const;
 
 /** This brain's own start, for `markBrainStoppedCleanly`. */
 let current: { startsPath: string; pid: number; at: string } | null = null;
+/**
+ * This start completed a loop (whether or not it was reported already). Kept
+ * on the process, not the module: `bootstrap` is also a bundle of its own, and
+ * a copy of this module there must read what the brain's start recorded.
+ */
+const RESTART_LOOP_FLAG = Symbol.for("ade.brainRestartLoop.startInLoop");
+type RestartLoopFlagHolder = { [RESTART_LOOP_FLAG]?: boolean };
+
+/**
+ * True when this brain's start is one more in a restart loop: at least
+ * `RESTART_LOOP_THRESHOLD` counted starts within `RESTART_LOOP_WINDOW_MS`. The
+ * brain then reopens nothing by itself after the stop (no agent CLI), so a
+ * reopen cannot be what keeps it stopping. False where the watch does not run.
+ */
+export function brainStartIsInRestartLoop(): boolean {
+  return (globalThis as RestartLoopFlagHolder)[RESTART_LOOP_FLAG] === true;
+}
 
 /**
  * Records this brain's start and, when it completes a loop, schedules the
@@ -60,11 +89,15 @@ export function startBrainRestartLoopWatch(options: { runtimeDir: string; build:
   if (!isSentryActive()) return;
   const nowMs = Date.now();
   const startsPath = path.join(options.runtimeDir, BRAIN_STARTS_FILE);
-  const { state, loopFoundAtMs } = recordStart(readStartsFile(startsPath), {
+  const previousState = readStartsFile(startsPath);
+  const { state, loopFoundAtMs } = recordStart(previousState, {
     pid: process.pid,
     build: options.build,
     nowMs,
+    cause: readStartCause(options.runtimeDir, previousState.starts.at(-1)),
   });
+  (globalThis as RestartLoopFlagHolder)[RESTART_LOOP_FLAG] =
+    countedStartsInWindow(state.starts, nowMs) >= RESTART_LOOP_THRESHOLD;
   current = { startsPath, pid: process.pid, at: new Date(nowMs).toISOString() };
   writeStartsFile(startsPath, state);
   if (loopFoundAtMs === null) return;
@@ -73,7 +106,11 @@ export function startBrainRestartLoopWatch(options: { runtimeDir: string; build:
   // This brain sends the report if it lives long enough; if it dies first,
   // the next one finds `loopFoundAt` and takes over.
   const delayMs = Math.max(0, Math.min(LOOP_QUIET_MS, loopFoundAtMs + LOOP_REPORT_MAX_DELAY_MS - nowMs));
-  setTimeout(() => sendLoopReport(startsPath), delayMs).unref();
+  // Asked now; the report waits for the answer (two seconds at most). In a
+  // loop that outlives each brain the report is due at once, so not waiting
+  // would drop the field exactly where it matters.
+  const launchdLastExit = readLaunchdLastExit().catch(() => null);
+  setTimeout(() => void launchdLastExit.then((lastExit) => sendLoopReport(startsPath, lastExit)), delayMs).unref();
 }
 
 function isRestartLoopEvent(event: DiagnosticEvent): boolean {
@@ -95,7 +132,7 @@ export function markBrainStoppedCleanly(): void {
 /** The file with this start added, and when the loop waiting for a report was found (null: none). */
 function recordStart(
   state: BrainStartsState,
-  start: { pid: number; build: string | null; nowMs: number },
+  start: { pid: number; build: string | null; nowMs: number; cause: BrainStartCause },
 ): { state: BrainStartsState; loopFoundAtMs: number | null } {
   const { nowMs } = start;
   // A start "after" now means the clock went back; it counts for nothing.
@@ -123,7 +160,7 @@ function recordStart(
   const counted = Boolean(previous && inWindow(previous) && (buildFlipFlop || previousCrashed));
   const starts = [
     ...state.starts,
-    { pid: start.pid, at: new Date(nowMs).toISOString(), build: start.build, counted, buildFlipFlop },
+    { pid: start.pid, at: new Date(nowMs).toISOString(), build: start.build, counted, buildFlipFlop, cause: start.cause },
   ].slice(-STARTS_KEPT);
 
   // A pending loop is kept until some brain sends it, unless it is far older
@@ -133,7 +170,7 @@ function recordStart(
     nowMs - pendingMs <= RESTART_LOOP_WINDOW_MS + LOOP_REPORT_MAX_DELAY_MS ? pendingMs : null;
   if (
     loopFoundAtMs === null
-    && starts.filter((entry) => entry.counted && inWindow(entry)).length >= RESTART_LOOP_THRESHOLD
+    && countedStartsInWindow(starts, nowMs) >= RESTART_LOOP_THRESHOLD
     && !reportedRecently(state, nowMs)
   ) {
     loopFoundAtMs = nowMs;
@@ -148,7 +185,64 @@ function recordStart(
   };
 }
 
-function sendLoopReport(startsPath: string): void {
+/**
+ * Who started this brain and what ended the brain before it, as far as the
+ * files on disk say. Read before this brain's own watchdog moves the wedge
+ * breadcrumb aside. Never throws: a fact it cannot read is null.
+ */
+function readStartCause(runtimeDir: string, previous: BrainStart | undefined): BrainStartCause {
+  const previousAtMs = previous ? Date.parse(previous.at) : Number.NaN;
+  // Written after the previous brain started, so it is about that brain.
+  const sincePrevious = (at: unknown): boolean =>
+    typeof at === "string" && Number.isFinite(previousAtMs) && Date.parse(at) >= previousAtMs;
+  const cause: BrainStartCause = {
+    startedBy: "other",
+    supervisorPid: null,
+    supervisorRestartCount: null,
+    previousExitCode: null,
+    previousWedge: null,
+    previousFailureCode: null,
+  };
+  try {
+    if (process.platform === "win32") {
+      const record = readWindowsServicePidRecord(resolveWindowsServicePidPath());
+      // A record from a supervisor that is not this brain's parent (a manual
+      // start while the service runs) says nothing about this start.
+      if (record && record.supervisorPid === process.ppid) {
+        cause.supervisorPid = record.supervisorPid;
+        cause.startedBy = "supervisor";
+        cause.supervisorRestartCount = record.restartCount;
+        cause.previousExitCode = record.lastExitCode;
+      }
+    } else if (process.env.INVOCATION_ID) {
+      cause.startedBy = "systemd";
+    } else if (process.platform === "darwin" && process.ppid === 1) {
+      cause.startedBy = "launchd";
+    }
+  } catch {
+    // Unknown stays null.
+  }
+  const wedge = readStateFile(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE));
+  // The brain's own watchdog names its pid; the Windows supervisor's kill
+  // record has no pid, only its time.
+  if (wedge && previous && (wedge.pid === previous.pid || (wedge.pid === undefined && sincePrevious(wedge.ts)))) {
+    cause.previousWedge = typeof wedge.lastCommand === "string" ? wedge.lastCommand.slice(0, 80) : "unknown";
+  }
+  const failure = readStateFile(path.join(runtimeDir, LAST_FAILURE_FILE_NAME));
+  if (failure && typeof failure.code === "string" && sincePrevious(failure.at)) {
+    cause.previousFailureCode = failure.code.slice(0, 80);
+  }
+  return cause;
+}
+
+function countedStartsInWindow(starts: readonly BrainStart[], nowMs: number): number {
+  return starts.filter((entry) => {
+    const ageMs = nowMs - Date.parse(entry.at);
+    return entry.counted && ageMs >= 0 && ageMs <= RESTART_LOOP_WINDOW_MS;
+  }).length;
+}
+
+function sendLoopReport(startsPath: string, launchdLastExit: string | null): void {
   const nowMs = Date.now();
   const state = readStartsFile(startsPath);
   const foundAt = state.loopFoundAt;
@@ -160,11 +254,24 @@ function sendLoopReport(startsPath: string): void {
   const starts = state.starts.filter((start) => Date.parse(start.at) >= since);
   const counted = starts.filter((start) => start.counted);
   try {
+    const supervisorPids = new Set(counted.map((start) => start.cause?.supervisorPid).filter((pid) => pid != null));
     captureProblem("The brain kept restarting", {
       level: "warning",
       fingerprint: [...RESTART_LOOP_FINGERPRINT, process.platform],
-      tags: { "brain.restart_loop.flip_flop": counted.some((start) => start.buildFlipFlop) },
-      extra: { restartCount: counted.length, foundAt, starts },
+      tags: {
+        "brain.restart_loop.flip_flop": counted.some((start) => start.buildFlipFlop),
+        // What ended most of the counted brains, so the issue groups by cause.
+        "brain.restart_loop.cause": mostCommon(counted.map(previousEndCause)),
+        // More than one: a reinstall or a second supervisor (ADE-160) started brains in the loop.
+        "brain.restart_loop.supervisors": supervisorPids.size,
+      },
+      // Flat: Sentry keeps three levels of `extra`, so a nested `cause` would arrive as "[Object]".
+      extra: {
+        restartCount: counted.length,
+        foundAt,
+        starts: starts.map(flattenStart),
+        ...(launchdLastExit ? { launchdLastExit } : {}),
+      },
     });
     // A brain in a loop may not live long enough for the SDK's own send.
     void flushSentry(2_000);
@@ -172,6 +279,77 @@ function sendLoopReport(startsPath: string): void {
     process.stderr.write(`ADE brain could not report its restart loop: ${errorText(error)}
 `);
   }
+}
+
+/** What ended the brain before `start`, as one word for the report's tag. */
+function previousEndCause(start: BrainStart): string {
+  const cause = start.cause;
+  if (!cause) return "unknown";
+  if (cause.previousWedge) return "wedge";
+  if (cause.previousFailureCode) return "startup_failure";
+  if (cause.previousExitCode != null) return `exit_${cause.previousExitCode}`;
+  return "unknown";
+}
+
+function mostCommon(values: readonly string[]): string {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  let best = "unknown";
+  let bestCount = 0;
+  for (const [value, count] of counts) {
+    if (count > bestCount) {
+      best = value;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+/**
+ * How launchd saw the last brain it started end, on macOS: its exit code or
+ * the signal that killed it. A brain launchd restarts writes nothing when it
+ * dies silently (a kill, a native crash), so every start in a loop there says
+ * `previousEnd: unknown`; launchd still knows (ADE-BRAIN-7Q). Null elsewhere,
+ * or when launchd does not answer within two seconds. Runs only in a brain
+ * whose start found a loop waiting for its report, once per start.
+ */
+async function readLaunchdLastExit(): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  const label = resolveRuntimeServiceName();
+  const uid = currentUid();
+  // The domain the agent is in, as `isLaunchAgentRegistered` checks it.
+  for (const domain of [`gui/${uid}`, `user/${uid}`]) {
+    const answer = await launchctlPrint(`${domain}/${label}`);
+    if (answer != null) return launchdExitFacts(answer);
+  }
+  return null;
+}
+
+const LAUNCHD_EXIT_FIELDS = [
+  ["exit", "last exit code"],
+  ["signal", "last terminating signal"],
+  ["reason", "last exit reason"],
+] as const;
+
+function launchdExitFacts(printed: string): string | null {
+  const facts = LAUNCHD_EXIT_FIELDS.flatMap(([name, key]) => {
+    const value = printed.match(new RegExp(`^\\s*${key} = (.+)$`, "m"))?.[1]?.trim().slice(0, 120);
+    return value ? [`${name}=${value}`] : [];
+  });
+  return facts.length > 0 ? facts.join("; ") : null;
+}
+
+function launchctlPrint(target: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile("launchctl", ["print", target], { encoding: "utf8", timeout: 2_000 }, (error, stdout) => {
+      resolve(error || typeof stdout !== "string" ? null : stdout);
+    });
+  });
+}
+
+function flattenStart(start: BrainStart): Record<string, unknown> {
+  const { cause, ...rest } = start;
+  return { ...rest, ...(cause ?? {}), previousEnd: previousEndCause(start) };
 }
 
 function reportedRecently(state: BrainStartsState, nowMs: number): boolean {

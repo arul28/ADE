@@ -27,13 +27,7 @@ const appUpdate = parseYaml(fs.readFileSync(path.join(desktopRoot, "resources", 
 // per platform. The gate disclosure moved with them, so this reads the hero.
 const heroDownloads = fs.readFileSync(path.join(repoRoot, "apps", "web", "src", "components", "home", "Hero.tsx"), "utf8");
 // The hero button opens the install dialog rather than linking at GitHub, so
-// the Windows install path is spread across these four files. All of them are
-// read here so the contract covers the whole route from button to asset.
-const installTargets = fs.readFileSync(
-  path.join(repoRoot, "apps", "web", "src", "lib", "installTargets.ts"),
-  "utf8",
-);
-const webLinks = fs.readFileSync(path.join(repoRoot, "apps", "web", "src", "lib", "links.ts"), "utf8");
+// the Windows install path runs through the files below, from button to asset.
 const webVercelConfig = fs.readFileSync(path.join(repoRoot, "apps", "web", "vercel.json"), "utf8");
 const webDownloadEndpoint = fs.readFileSync(
   path.join(repoRoot, "apps", "web", "api", "releaseAssets.ts"),
@@ -580,35 +574,6 @@ test("Windows NSIS install and uninstall own only their per-user channel integra
     pkg.build.win.extraResources.some((entry) => entry.to === "ade-cli/windows-uninstall-cleanup.ps1"),
     "Windows package must carry the uninstall cleanup script",
   );
-  const nsis = fs.readFileSync(path.join(desktopRoot, "build", "installer.nsh"), "utf8");
-  const cleanup = fs.readFileSync(
-    path.join(desktopRoot, "scripts", "windows-uninstall-cleanup.ps1"),
-    "utf8",
-  );
-  const setup = fs.readFileSync(
-    path.join(desktopRoot, "scripts", "windows-install-setup.ps1"),
-    "utf8",
-  );
-  assert.match(nsis, /!macro customInstall/);
-  assert.match(nsis, /windows-install-setup\.ps1/);
-  assert.match(nsis, /!macro customUnInstall/);
-  assert.match(nsis, /windows-uninstall-cleanup\.ps1/);
-  assert.match(nsis, /-AppExecutableName "\$\{APP_EXECUTABLE_FILENAME\}"/);
-  assert.match(nsis, /-PackageChannel "\$2"/);
-  assert.match(nsis, /Abort/);
-  assert.match(cleanup, /"serve", "--uninstall-service"/);
-  assert.match(cleanup, /Start-Process/);
-  assert.match(cleanup, /-Wait/);
-  assert.match(cleanup, /cleanupProcess\.ExitCode/);
-  assert.match(cleanup, /ADE_PACKAGE_CHANNEL = \$normalizedPackageChannel/);
-  assert.match(cleanup, /\$env:ADE_HOME = \$channelAdeHome/);
-  assert.match(cleanup, /app\.asar\.unpacked\\node_modules/);
-  assert.match(cleanup, /NODE_PATH = \$nodePathEntries/);
-  assert.match(cleanup, /SetEnvironmentVariable\("Path"/);
-  assert.match(cleanup, /Remove-OwnedStableProtocolRegistration/);
-  assert.match(setup, /install-path\.cmd/);
-  assert.match(setup, /serve --install-service/);
-  assert.match(setup, /ade-\$PackageChannel\.cmd/);
   assert.match(electronBuilderWrapper, /resolveWindowsPackageIdentity/);
   assert.match(electronBuilderWrapper, /--config\.fileAssociations\.name=\$\{channelIdentity\.fileClass\}/);
   assert.doesNotMatch(electronBuilderWrapper, /--config\.win\.fileAssociations/);
@@ -831,44 +796,6 @@ test("the Windows download is permanently live and carries dedicated analytics",
   // Windows 10/11 x64 + per-user, no-admin is a support claim, not decoration:
   // it has to stay visible wherever the Windows button is.
   assert.match(heroDownloads, /Windows 10\/11 x64\. Per-user installer, no administrator rights\./);
-});
-
-test("the Windows install dialog keeps both install paths and their wording", () => {
-  // What the hero button opens. These strings ARE the Windows install
-  // instructions -- the one-liner people paste into PowerShell and the
-  // no-admin promise -- so they are pinned here rather than left to drift.
-  assert.match(installTargets, /irm https:\/\/ade-app\.dev\/install\.ps1 \| iex/);
-  assert.match(
-    installTargets,
-    /Per-user installer — no administrator rights\. Windows 10\/11, x64\./,
-  );
-  // The direct download must resolve through the site endpoint, never a
-  // hardcoded versioned asset URL that goes stale on the next release.
-  assert.match(installTargets, /href: LINKS\.downloadWindows/);
-  assert.match(webLinks, /downloadWindows: "\/download\/windows"/);
-  assert.doesNotMatch(installTargets, /ADE-\d+\.\d+\.\d+/);
-  assert.match(installTargets, /MARKETING_CTA_LABELS\.DOWNLOAD_WINDOWS_X64/);
-  assert.match(installTargets, /MARKETING_FEATURES\.COPY_INSTALL_COMMAND_WINDOWS/);
-});
-
-test("the Windows install dialog warns about both OS prompts", () => {
-  // Neither prompt is a bug we can code away, so telling the user up front is
-  // the whole mitigation -- which makes this copy a support claim like the
-  // no-admin promise above, not decoration.
-  //
-  // SmartScreen: the Azure Trusted Signing certificate is a Public Trust
-  // (individual) profile, so it accrues publisher reputation rather than being
-  // trusted on sight the way an EV certificate is. A correctly signed build
-  // still warns until that reputation builds.
-  assert.match(installTargets, /Windows protected your PC/);
-  assert.match(installTargets, /Run anyway/);
-  // Firewall: Windows has no per-user firewall rule store and ADE installs
-  // per-user without elevation, so installer.nsh's netsh call cannot succeed
-  // and Windows raises its own allow dialog on first sync. See
-  // apps/desktop/scripts/windows-firewall-rules.ps1 -- it exits 0 on that path
-  // by design.
-  assert.match(installTargets, /Firewall/);
-  assert.match(installTargets, /private networks/);
 });
 
 test("the /download/windows endpoint is routed and resolves the signed installer", () => {

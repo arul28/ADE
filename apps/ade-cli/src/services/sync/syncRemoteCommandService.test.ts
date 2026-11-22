@@ -12,8 +12,10 @@ import {
 } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import {
   createSyncRemoteCommandService,
+  evaluateRemoteCommandPolicy,
   SyncRemoteCommandResultTooLargeError,
 } from "./syncRemoteCommandService";
+import { isLaneShareGuestCommand, LANE_SHARE_GUEST_COMMANDS } from "./laneShareGuestPolicy";
 import {
   ATTACHMENT_UPLOAD_PATH,
   createAttachmentUploadRegistry,
@@ -774,6 +776,21 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("usage.consumeResetCredit", { accountId: "codex:work" })))
       .resolves.toEqual({ ok: true, accountId: "codex:work" });
     expect(consumeResetCredit).toHaveBeenCalledWith({ accountId: "codex:work" });
+  });
+
+  it("lets a paired phone set the folder for new lanes, answered by the publishing brain only", async () => {
+    const { service } = createService();
+
+    // The phone shows "Use for new lanes" only when this descriptor allows a
+    // controller, and sends it to the computer that holds the folder.
+    expect(service.getDescriptor("projects.setMainCheckout")).toEqual({
+      action: "projects.setMainCheckout",
+      scope: "runtime",
+      policy: { viewerAllowed: false, controllerAllowed: true, queueable: false },
+    });
+    // A brain that does not publish this computer's projects says so.
+    await expect(service.execute(makePayload("projects.setMainCheckout", { checkoutId: "project-1" })))
+      .resolves.toMatchObject({ ok: false, code: "not_publishing" });
   });
 
   it("registers CTO-gated Linear credential commands and refreshes status after each mutation", async () => {
@@ -2030,10 +2047,11 @@ describe("createSyncRemoteCommandService", () => {
 
   it("rejects missing required args for new remote-command parsers", async () => {
     const postReviewComment = vi.fn();
+    const updateDescription = vi.fn();
     const activeForChat = vi.fn();
     const save = vi.fn();
     const { service } = createService({
-      prService: { postReviewComment },
+      prService: { postReviewComment, updateDescription },
       ptyService: { activeForChat },
       projectConfigService: { save },
     });
@@ -2043,6 +2061,13 @@ describe("createSyncRemoteCommandService", () => {
     await expect(
       service.execute(makePayload("prs.postReviewComment", { prId: "pr-1", threadId: "thread-1" })),
     ).rejects.toThrow("prs.postReviewComment requires body.");
+    // A call with no body must not reach GitHub as "clear the description".
+    await expect(
+      service.execute(makePayload("prs.updateDescription", { prId: "pr-1" })),
+    ).rejects.toThrow("prs.updateDescription requires body.");
+    expect(updateDescription).not.toHaveBeenCalled();
+    await service.execute(makePayload("prs.updateDescription", { prId: "pr-1", body: "" }));
+    expect(updateDescription).toHaveBeenCalledWith({ prId: "pr-1", body: "" });
     await expect(service.execute(makePayload("projectConfig.save"))).rejects.toThrow("projectConfig.save requires candidate.");
     await expect(service.execute(makePayload("chat.resolveSmartLinkPreview"))).rejects.toThrow(
       "chat.resolveSmartLinkPreview requires url.",
@@ -2684,6 +2709,41 @@ describe("createSyncRemoteCommandService", () => {
       laneId: "lane-1",
     }))).resolves.toEqual([{ issue }]);
   });
+
+  it("routes Linear session attach through the lane service", async () => {
+    const issue = {
+      id: "issue-1",
+      identifier: "ENG-1",
+      title: "Wire Linear attach",
+      projectId: "project-1",
+      projectSlug: "eng",
+      teamId: "team-1",
+      teamKey: "ENG",
+      stateId: "state-1",
+      stateName: "Todo",
+      stateType: "unstarted",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    };
+    const attachLinearIssueToSession = vi.fn().mockReturnValue([{ issue }]);
+    const { service } = createService({
+      laneService: { attachLinearIssueToSession },
+    });
+
+    await expect(service.execute(makePayload("lanes.attachLinearIssueToSession", {
+      issues: [issue],
+    }))).rejects.toThrow("lanes.attachLinearIssueToSession requires chatSessionId.");
+    expect(attachLinearIssueToSession).not.toHaveBeenCalled();
+
+    await expect(service.execute(makePayload("lanes.attachLinearIssueToSession", {
+      chatSessionId: " chat-1 ",
+      issues: [issue, { id: "missing-required-fields" }],
+    }))).resolves.toEqual([{ issue }]);
+    expect(attachLinearIssueToSession).toHaveBeenCalledWith({
+      chatSessionId: "chat-1",
+      issues: [expect.objectContaining({ id: "issue-1", identifier: "ENG-1" })],
+    });
+  });
 });
 
 describe("mobile CTO identity updates", () => {
@@ -3020,6 +3080,75 @@ describe("mobile lifecycle command contract", () => {
       override: "clear",
     }))).resolves.toEqual({ ok: true, sessionId: "session-1", settleOverride: null });
     expect(setSettleOverride).toHaveBeenCalledWith("session-1", null);
+  });
+});
+
+describe("lane share guest command policy", () => {
+  // Default refuse: a guest may run only the listed reads, whatever a
+  // command's descriptor allows a paired device, and every listed read must
+  // be one this registry serves to a viewer with no approval.
+  it("refuses every registered command a guest is not listed for", () => {
+    const { service } = createService();
+    const guest = { pairingRecord: null, laneShareGuest: { guest: true } };
+    const actions = service.getSupportedActions();
+    expect(actions.length).toBeGreaterThan(50);
+    for (const action of actions) {
+      const rejection = evaluateRemoteCommandPolicy({
+        action,
+        descriptor: service.getDescriptor(action),
+        peer: guest,
+        requestedProjectId: "project-1",
+        hostProjectId: "project-1",
+      });
+      if (isLaneShareGuestCommand(action)) expect([action, rejection]).toEqual([action, null]);
+      else expect([action, rejection?.code]).toEqual([action, "forbidden_command"]);
+    }
+    for (const action of Object.keys(LANE_SHARE_GUEST_COMMANDS)) {
+      const policy = service.getDescriptor(action as never)?.policy;
+      // A guest command is one a viewer or a paired controller may run; the
+      // host's rights gate decides it for the guest.
+      expect([action, Boolean(policy?.viewerAllowed || policy?.controllerAllowed)]).toEqual([action, true]);
+      expect(policy).not.toMatchObject({ requiresApproval: true });
+      expect(policy).not.toMatchObject({ localOnly: true });
+    }
+  });
+
+  // The host sets the author of a guest's message and the commit note the
+  // agent reads; the chat shows the guest's own text. An author in the args
+  // is never the one that counts (the chat service strips it).
+  it.each<[string, string, Record<string, unknown>, string]>([
+    ["a sent message", "chat.send", { sessionId: "chat-1", text: "Fix the test." }, "sendMessage"],
+    ["a steer", "chat.steer", { sessionId: "chat-1", text: "Fix the test." }, "steerUserMessage"],
+  ])("gives %s the host's guest author and note", async (_label, action, args, method) => {
+    const call = vi.fn().mockResolvedValue({ steerId: "steer-1", queued: true });
+    const { service } = createService({ agentChatService: { [method]: call } });
+    const author = { kind: "guest" as const, userId: "user_guest", name: "Guest Person" };
+    await service.execute(makePayload(action, args), { author, agentNote: "\n\nCo-authored-by: Guest Person <guest-1@users.noreply.ade-app.dev>" });
+    expect(call).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Fix the test.\n\nCo-authored-by: Guest Person <guest-1@users.noreply.ade-app.dev>",
+        displayText: "Fix the test.",
+      }),
+      expect.objectContaining({ author }),
+    );
+    // The owner's own message: no author, no note.
+    call.mockClear();
+    await service.execute(makePayload(action, args));
+    expect(call.mock.calls[0]![0]).toMatchObject({ text: "Fix the test." });
+    expect(call.mock.calls[0]![0]).not.toHaveProperty("displayText");
+    expect(call.mock.calls[0]![1]?.author).toBeUndefined();
+  });
+
+  // A guest's read must not write on the host: `work.getSession` hydrates a
+  // closed CLI row's resume target (a session row write) only for the owner.
+  it.each<[string, { readOnly?: boolean }, number]>([
+    ["an owner's read", {}, 1],
+    ["a read-only (guest) read", { readOnly: true }, 0],
+  ])("writes resume targets on %s of work.getSession only when it may write", async (_label, context, writes) => {
+    const session = { id: "session-1", tracked: true, status: "exited", toolType: "claude", resumeMetadata: null };
+    const { service, ptyService } = createService({ sessionService: { get: vi.fn().mockReturnValue(session) } });
+    await service.execute(makePayload("work.getSession", { sessionId: "session-1" }), context);
+    expect(ptyService.ensureResumeTargets).toHaveBeenCalledTimes(writes);
   });
 });
 

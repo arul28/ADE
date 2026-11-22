@@ -1,5 +1,5 @@
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://img.clerk.com https://images.clerk.dev https://storage.googleapis.com/images.clerk.dev/; font-src 'self' data:; connect-src 'self' wss: https:; worker-src 'self' blob:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://img.clerk.com https://images.clerk.dev https://storage.googleapis.com/images.clerk.dev/; font-src 'self' data:; connect-src 'self' wss: https:; worker-src 'self' blob:; frame-src 'self' blob: https://challenges.cloudflare.com https://nomac.app; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   X-Frame-Options: DENY
@@ -24,3 +24,16 @@
 /assets/*
   ! Cache-Control
   Cache-Control: public, max-age=31536000, immutable
+
+# The link page (ade-app.dev/open) frames this, hidden, to learn whether this
+# browser is signed in to ADE Web and which computers are online
+# (webclient/linkStatus/main.ts). Only that site may frame it.
+/link-status.html
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  Content-Security-Policy: default-src 'none'; script-src 'self'; connect-src https:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; frame-ancestors https://ade-app.dev https://www.ade-app.dev
+
+/link-status
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  Content-Security-Policy: default-src 'none'; script-src 'self'; connect-src https:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; frame-ancestors https://ade-app.dev https://www.ade-app.dev

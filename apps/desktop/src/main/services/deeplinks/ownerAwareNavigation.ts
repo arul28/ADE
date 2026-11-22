@@ -2,7 +2,11 @@ import type {
   AppNavigationRequest,
   AppNavigationTarget,
 } from "../../../shared/types";
-import type { DeeplinkOwnership } from "../../../shared/deeplinks";
+import { isAccountProjectId, type DeeplinkOwnership } from "../../../shared/deeplinks";
+import {
+  resolveAccountProjectLink,
+  type AccountProjectListResult,
+} from "../../../shared/accountProject";
 
 export type OwnerAwareNavigationDependencies = {
   getLocalMachineKey(): string;
@@ -88,6 +92,77 @@ export async function dispatchOwnerAwareNavigation(
   );
   await deps.deliverRemote(handle, request);
   return true;
+}
+
+export type AccountProjectNavigationDependencies = {
+  /** This computer's `projects.accountList`, with its `retired` ids. */
+  readAccountList(): Promise<AccountProjectListResult>;
+  getLocalMachineKey(): string;
+  /** Machine keys this desktop holds a live connection to. */
+  connectedMachineKeys(): readonly string[];
+  /** Machine keys the account directory shows online (one read; empty on failure). */
+  onlineMachineKeys(): Promise<readonly string[]>;
+};
+
+/**
+ * A link that names an account project (`accountProjectId`, L33), resolved
+ * before the owner routing: the phone's order (`resolveAccountProjectLink`).
+ *
+ * - No account id, or no list on this computer: the request goes on as it
+ *   came (old links keep their old route).
+ * - A merged id follows to its project; the request gets that project's
+ *   reachable copy as its owner, so the owner routing opens it there.
+ * - A lane or a chat lives in one place. When the link's own pair names a
+ *   reachable copy, the old route opens it; a different copy cannot.
+ * - No reachable copy: an `account-project` request (`no-copy`), which opens
+ *   the repository tab with no machine.
+ * - A removed id, or an id the account does not hold (with no pair to fall
+ *   back on): an `account-project` request that says so.
+ */
+export async function resolveAccountProjectNavigation(
+  request: AppNavigationRequest,
+  deps: AccountProjectNavigationDependencies,
+): Promise<AppNavigationRequest> {
+  const target = request.target;
+  if (target.kind !== "work" && target.kind !== "chat" && target.kind !== "pr" && target.kind !== "lane") return request;
+  const id = target.accountProjectId ?? target.ownership?.accountProjectId ?? null;
+  if (!isAccountProjectId(id)) return request;
+  const list = await deps.readAccountList().catch(() => null);
+  if (!list || list.state !== "ready") return request;
+  const owner = appNavigationOwnership(target);
+  const local = deps.getLocalMachineKey().trim();
+  const connected = deps.connectedMachineKeys();
+  const online = await deps.onlineMachineKeys().catch(() => [] as readonly string[]);
+  const order = [...new Set([...(local ? [local] : []), ...connected, ...online])];
+  const reachable = new Set(order);
+  const resolved = resolveAccountProjectLink(id, owner, list, order, (key) => reachable.has(key));
+  // `projectId`: the project the link ends at after its merges. The page reads
+  // projects and copies by it, so the old id would show no copies.
+  const tell = (reason: "no-copy" | "removed" | "unknown", name: string | null, projectId: string = id): AppNavigationRequest => ({
+    ...request,
+    target: { kind: "account-project", accountProjectId: projectId, name, reason },
+  });
+  switch (resolved.kind) {
+    case "removed":
+      return tell("removed", resolved.name);
+    case "unknown":
+      return owner ? request : tell("unknown", null);
+    case "noCopy":
+      return tell("no-copy", resolved.project.name, resolved.project.id);
+    case "copy": {
+      const samePair = owner?.accountMachineKey === resolved.machineKey && owner.projectId === resolved.checkoutId;
+      if (samePair) return request;
+      // The linked lane or chat is in the folder the pair names; another
+      // copy does not have it, so the old route tries that folder.
+      if (owner && target.kind !== "pr") return request;
+      const ownership: DeeplinkOwnership = {
+        accountMachineKey: resolved.machineKey,
+        projectId: resolved.checkoutId,
+        accountProjectId: resolved.project.id,
+      };
+      return { ...request, target: { ...target, ownership } as AppNavigationTarget };
+    }
+  }
 }
 
 export type OwnerNavigationFailureCopy = {

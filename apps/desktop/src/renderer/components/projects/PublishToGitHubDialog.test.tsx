@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { subscribeOpenConnectionsPanel } from "../../lib/connectionsPanel";
 import { PublishToGitHubDialog } from "./PublishToGitHubDialog";
+import { useAppStore } from "../../state/appStore";
 
+const TAB_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
 const getStatus = vi.fn();
 const publishCurrentProject = vi.fn();
 const setToken = vi.fn();
@@ -30,10 +32,13 @@ beforeEach(() => {
     github: { getStatus, setToken, publishCurrentProject },
     app: { openExternal },
   };
+  // The tab's copy of the project: GitHub is read and published there.
+  useAppStore.setState({ projectBinding: TAB_PIN });
 });
 
 afterEach(() => {
   cleanup();
+  useAppStore.setState({ projectBinding: null });
 });
 
 function renderDialog() {

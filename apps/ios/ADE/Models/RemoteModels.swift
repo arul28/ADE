@@ -257,6 +257,11 @@ struct MobileProjectSummary: Codable, Equatable, Identifiable {
   var isAvailable: Bool
   var isCached: Bool
   var isOpen: Bool?
+  /// The account project this folder is a copy of, when the host's link
+  /// belongs to the signed-in account. Older hosts omit it.
+  var accountProjectId: String? = nil
+  /// The GitHub repository id, when the host knows it.
+  var githubRepoId: Int? = nil
 
   init(
     id: String,
@@ -314,6 +319,10 @@ struct MobileProjectSwitchResultPayload: Codable, Equatable {
   var project: MobileProjectSummary?
   var connection: MobileProjectConnectionPayload?
 }
+
+/// `NSError` code (domain "ADE") for a removal reply the phone could not
+/// read: the computer may have removed the folder.
+let mobileProjectForgetUnreadableReplyCode = 45
 
 struct MobileProjectForgetResultPayload: Codable, Equatable {
   var ok: Bool
@@ -394,6 +403,17 @@ struct MobileGitHubRepoSummary: Codable, Equatable, Identifiable {
   var sshUrl: String
 }
 
+/// `github.publishCurrentProject`'s answer (desktop `PublishProjectResult`).
+struct MobilePublishProjectResult: Codable, Equatable {
+  /// `pushed` or `remote_added`.
+  var state: String
+  var owner: String
+  var name: String
+  var fullName: String
+  var htmlUrl: String
+  var isPrivate: Bool? = nil
+}
+
 struct MobileListMyGitHubReposResult: Codable, Equatable {
   var repos: [MobileGitHubRepoSummary]
 }
@@ -469,6 +489,80 @@ func adeVersionIsBetaTrack(_ version: String?) -> Bool {
   guard !adeVersionIsDevBuild(version), let dash = trimmed.firstIndex(of: "-") else { return false }
   let prerelease = trimmed[trimmed.index(after: dash)...]
   return prerelease.split(separator: ".", omittingEmptySubsequences: false).first?.lowercased() == "beta"
+}
+
+/// The same ordering as desktop's `compareUpdateVersions`
+/// (`apps/desktop/src/shared/updateVersions.ts`), step for step: numeric core
+/// first (each part read like `parseInt`, padded to three), then prerelease
+/// precedence, where a release outranks any prerelease of its core. Like the
+/// JS `split("-", 2)`, only the text between the first and second dash is the
+/// prerelease. The launch update gate (`ClientUpdateGate.swift`) decides who
+/// is blocked with this, so it must agree with the desktop exactly.
+func compareAdeVersions(_ left: String, _ right: String) -> Int {
+  /// `Number.parseInt(part, 10)`, with NaN read as 0.
+  func parseIntLikeJS(_ part: Substring) -> Int {
+    var rest = part.drop(while: { $0.isWhitespace })
+    var negative = false
+    if let sign = rest.first, sign == "-" || sign == "+" {
+      negative = sign == "-"
+      rest = rest.dropFirst()
+    }
+    let digits = rest.prefix(while: { $0.isASCII && $0.isNumber })
+    guard !digits.isEmpty, let value = Int(digits) else { return 0 }
+    return negative ? -value : value
+  }
+  func isNumericIdentifier(_ part: String) -> Bool {
+    !part.isEmpty && part.allSatisfy { $0.isASCII && $0.isNumber }
+  }
+  func parse(_ version: String) -> (core: [Int], prerelease: [String]) {
+    let text = adeVersionCore(version)
+    let dashParts = text.split(separator: "-", omittingEmptySubsequences: false)
+    let coreText = dashParts.first ?? ""
+    let prereleaseText = dashParts.count > 1 ? dashParts[1] : ""
+    let core = coreText.split(separator: ".", omittingEmptySubsequences: false).map(parseIntLikeJS)
+    let prerelease = prereleaseText.isEmpty ? [] : prereleaseText.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+    return (core, prerelease)
+  }
+  let lhs = parse(left)
+  let rhs = parse(right)
+  for index in 0..<max(lhs.core.count, rhs.core.count, 3) {
+    let delta = (index < lhs.core.count ? lhs.core[index] : 0) - (index < rhs.core.count ? rhs.core[index] : 0)
+    if delta != 0 { return delta }
+  }
+  if lhs.prerelease.isEmpty && !rhs.prerelease.isEmpty { return 1 }
+  if !lhs.prerelease.isEmpty && rhs.prerelease.isEmpty { return -1 }
+  for index in 0..<max(lhs.prerelease.count, rhs.prerelease.count) {
+    guard index < lhs.prerelease.count else { return -1 }
+    guard index < rhs.prerelease.count else { return 1 }
+    let leftPart = lhs.prerelease[index]
+    let rightPart = rhs.prerelease[index]
+    switch (isNumericIdentifier(leftPart), isNumericIdentifier(rightPart)) {
+    case (true, true):
+      // `Number(left) - Number(right)`: compared as numbers, however long.
+      let l = Double(leftPart) ?? 0
+      let r = Double(rightPart) ?? 0
+      if l != r { return l < r ? -1 : 1 }
+    case (true, false):
+      return -1
+    case (false, true):
+      return 1
+    case (false, false):
+      // `localeCompare`.
+      switch leftPart.localizedCompare(rightPart) {
+      case .orderedAscending: return -1
+      case .orderedDescending: return 1
+      case .orderedSame: break
+      }
+    }
+  }
+  return 0
+}
+
+/// True when `version` is older than `target`. A dev build or a version the
+/// phone has not heard is never "behind": nothing here can say so.
+func adeVersionIsBehind(_ version: String?, target: String) -> Bool {
+  guard let version = nonEmptyTrimmed(version), !adeVersionIsDevBuild(version) else { return false }
+  return compareAdeVersions(version, target) < 0
 }
 
 struct SyncAddressCandidate: Codable, Equatable, Identifiable {
@@ -561,23 +655,12 @@ extension SyncDomainStatus {
   }
 }
 
-extension ADEInstructionErrorCard {
-  /// The in-tab hydration-failure shape: every root screen renders the same
-  /// card from a `SyncDomainFailureNotice`, so the unpacking lives next to the
-  /// notice rather than in the shared design system.
-  init(
-    notice: SyncDomainFailureNotice,
-    retryTitle: String? = "Retry",
-    retry: (() -> Void)?
-  ) {
-    self.init(
-      title: notice.title,
-      message: notice.message,
-      nextAction: notice.nextAction,
-      technicalDetail: notice.technicalDetail,
-      retryTitle: retryTitle,
-      retry: retry
-    )
+extension ADEFlatInlineNotice {
+  /// The in-tab hydration-failure shape: one slim row above the cached rows
+  /// with Retry, and the raw host text folded behind a toggle. The unpacking
+  /// lives next to the notice rather than in the shared design system.
+  init(notice: SyncDomainFailureNotice, retry: (() -> Void)?) {
+    self.init(message: notice.title, technicalDetail: notice.technicalDetail, retry: retry)
   }
 }
 
@@ -1007,6 +1090,9 @@ struct AgentChatScheduledWorkItem: Codable, Identifiable, Equatable {
   var outcomeSummary: String?
   /// Provenance for rows ADE armed itself. Older hosts omit it.
   var source: String? = nil
+  /// The row's own pause switch (the status also reads "paused" when the
+  /// chat-wide pause holds it). Older hosts omit it.
+  var paused: Bool? = nil
 }
 
 struct AgentChatCancelScheduledWorkResult: Codable, Equatable {
@@ -1437,102 +1523,179 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// This chat's move to another machine, owned by the source brain. Absent on
   /// older hosts and for a chat that never moved.
   var crossMachineHandoff: AgentChatCrossMachineHandoffRecord? = nil
+  /// Other machines this chat works on (`ade shell|apple|android|screen … --machine`),
+  /// kept live by the chat's own brain. Older brains and a chat that never
+  /// worked elsewhere omit it.
+  var remoteWork: [AgentChatRemoteWorkUse]? = nil
   /// Batch move awaiting the person's decision in this caller chat. Older brains omit it.
   var crossMachineBatchApproval: AgentChatCrossMachineBatchMoveApproval? = nil
 
   static func == (lhs: AgentChatSessionSummary, rhs: AgentChatSessionSummary) -> Bool {
-    lhs.sessionId == rhs.sessionId
-      && lhs.compactionIdleMode == rhs.compactionIdleMode
-      && lhs.promptCache == rhs.promptCache
-      && lhs.compactFirstMinTokens == rhs.compactFirstMinTokens
-      && lhs.compactFirstIdleMs == rhs.compactFirstIdleMs
-      && lhs.manualCompactAvailable == rhs.manualCompactAvailable
-      && lhs.laneId == rhs.laneId
-      && lhs.provider == rhs.provider
-      && lhs.model == rhs.model
-      && lhs.modelId == rhs.modelId
-      && lhs.sessionProfile == rhs.sessionProfile
-      && lhs.instanceId == rhs.instanceId
-      && lhs.presetId == rhs.presetId
-      && lhs.credentialId == rhs.credentialId
-      && lhs.piProfileId == rhs.piProfileId
-      && lhs.piProviderId == rhs.piProviderId
-      && lhs.piModelId == rhs.piModelId
-      && lhs.title == rhs.title
-      && lhs.pinned == rhs.pinned
-      && lhs.goal == rhs.goal
-      && lhs.reasoningEffort == rhs.reasoningEffort
-      && lhs.codexFastMode == rhs.codexFastMode
-      && lhs.fastMode == rhs.fastMode
-      && lhs.executionMode == rhs.executionMode
-      && lhs.permissionMode == rhs.permissionMode
-      && lhs.interactionMode == rhs.interactionMode
-      && lhs.claudePermissionMode == rhs.claudePermissionMode
-      && lhs.codexApprovalPolicy == rhs.codexApprovalPolicy
-      && lhs.codexSandbox == rhs.codexSandbox
-      && lhs.codexConfigSource == rhs.codexConfigSource
-      && lhs.codexEffectiveCollaborationMode == rhs.codexEffectiveCollaborationMode
-      && lhs.codexEffectiveCollaborationModeWasCleared == rhs.codexEffectiveCollaborationModeWasCleared
-      && lhs.opencodePermissionMode == rhs.opencodePermissionMode
-      && lhs.droidPermissionMode == rhs.droidPermissionMode
-      && lhs.musePermissionMode == rhs.musePermissionMode
-      && lhs.copilotPermissionMode == rhs.copilotPermissionMode
-      && lhs.copilotContextTier == rhs.copilotContextTier
-      && lhs.copilotAutoTier == rhs.copilotAutoTier
-      && lhs.copilotAutoTierPending == rhs.copilotAutoTierPending
-      && lhs.cursorModeId == rhs.cursorModeId
-      && lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared
-      && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
-      && lhs.cursorConfigValues == rhs.cursorConfigValues
-      && lhs.acpConfigSnapshot == rhs.acpConfigSnapshot
-      && lhs.acpConfigSnapshotWasCleared == rhs.acpConfigSnapshotWasCleared
-      && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
-      && lhs.cursorRuntime == rhs.cursorRuntime
-      && lhs.computerUse == rhs.computerUse
-      && lhs.completion == rhs.completion
-      && lhs.claudeGoal == rhs.claudeGoal
-      && lhs.codexGoal == rhs.codexGoal
-      && lhs.identityKey == rhs.identityKey
-      && lhs.surface == rhs.surface
-      && lhs.automationId == rhs.automationId
-      && lhs.automationRunId == rhs.automationRunId
-      && lhs.capabilityMode == rhs.capabilityMode
-      && lhs.status == rhs.status
-      && lhs.currentTurnStartedAt == rhs.currentTurnStartedAt
-      && lhs.idleSinceAt == rhs.idleSinceAt
-      && lhs.startedAt == rhs.startedAt
-      && lhs.endedAt == rhs.endedAt
-      && lhs.archivedAt == rhs.archivedAt
-      && lhs.lastActivityAt == rhs.lastActivityAt
-      && lhs.lastOutputPreview == rhs.lastOutputPreview
-      && lhs.summary == rhs.summary
-      && lhs.awaitingInput == rhs.awaitingInput
-      && lhs.pendingInputItemId == rhs.pendingInputItemId
-      && lhs.steeringInput == rhs.steeringInput
-      && lhs.scheduledWork == rhs.scheduledWork
-      && lhs.scheduledWorkPaused == rhs.scheduledWorkPaused
-      && lhs.nextWakeAt == rhs.nextWakeAt
-      && lhs.awaitingOwnWorkAt == rhs.awaitingOwnWorkAt
-      && lhs.autoContinueAtUsageLimit == rhs.autoContinueAtUsageLimit
-      && lhs.usageLimitParkedUntil == rhs.usageLimitParkedUntil
-      && lhs.usageLimitResume == rhs.usageLimitResume
-      && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
-      && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
-      && lhs.backgroundWork == rhs.backgroundWork
-      && lhs.activePrWatch == rhs.activePrWatch
-      && lhs.pendingSettingsAfterBackground == rhs.pendingSettingsAfterBackground
-      && lhs.reasoningEffortChange == rhs.reasoningEffortChange
-      && lhs.turnOpenWorkCount == rhs.turnOpenWorkCount
-      && lhs.threadId == rhs.threadId
-      && lhs.requestedCwd == rhs.requestedCwd
-      && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
-      && lhs.launchedBySessionId == rhs.launchedBySessionId
-      && lhs.spawnKind == rhs.spawnKind
-      && lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt
-      && lhs.sideChatParentSessionId == rhs.sideChatParentSessionId
-      && lhs.sideChatSessionId == rhs.sideChatSessionId
-      && lhs.crossMachineHandoff == rhs.crossMachineHandoff
-      && lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval
+    // One guard, not a chain of `&&`: each `&&` takes its right side as an
+    // autoclosure, and across this many fields the chain copied both
+    // summaries over and over. SwiftUI runs this for every Work row on every
+    // list pass, so the copies made a pass slow.
+    guard lhs.sessionId == rhs.sessionId,
+      lhs.compactionIdleMode == rhs.compactionIdleMode,
+      lhs.promptCache == rhs.promptCache,
+      lhs.compactFirstMinTokens == rhs.compactFirstMinTokens,
+      lhs.compactFirstIdleMs == rhs.compactFirstIdleMs,
+      lhs.manualCompactAvailable == rhs.manualCompactAvailable,
+      lhs.laneId == rhs.laneId,
+      lhs.provider == rhs.provider,
+      lhs.model == rhs.model,
+      lhs.modelId == rhs.modelId,
+      lhs.sessionProfile == rhs.sessionProfile,
+      lhs.instanceId == rhs.instanceId,
+      lhs.presetId == rhs.presetId,
+      lhs.credentialId == rhs.credentialId,
+      lhs.piProfileId == rhs.piProfileId,
+      lhs.piProviderId == rhs.piProviderId,
+      lhs.piModelId == rhs.piModelId,
+      lhs.title == rhs.title,
+      lhs.pinned == rhs.pinned,
+      lhs.goal == rhs.goal,
+      lhs.reasoningEffort == rhs.reasoningEffort,
+      lhs.codexFastMode == rhs.codexFastMode,
+      lhs.fastMode == rhs.fastMode,
+      lhs.executionMode == rhs.executionMode,
+      lhs.permissionMode == rhs.permissionMode,
+      lhs.interactionMode == rhs.interactionMode,
+      lhs.claudePermissionMode == rhs.claudePermissionMode,
+      lhs.codexApprovalPolicy == rhs.codexApprovalPolicy,
+      lhs.codexSandbox == rhs.codexSandbox,
+      lhs.codexConfigSource == rhs.codexConfigSource,
+      lhs.codexEffectiveCollaborationMode == rhs.codexEffectiveCollaborationMode,
+      lhs.codexEffectiveCollaborationModeWasCleared == rhs.codexEffectiveCollaborationModeWasCleared,
+      lhs.opencodePermissionMode == rhs.opencodePermissionMode,
+      lhs.droidPermissionMode == rhs.droidPermissionMode,
+      lhs.musePermissionMode == rhs.musePermissionMode,
+      lhs.copilotPermissionMode == rhs.copilotPermissionMode,
+      lhs.copilotContextTier == rhs.copilotContextTier,
+      lhs.copilotAutoTier == rhs.copilotAutoTier,
+      lhs.copilotAutoTierPending == rhs.copilotAutoTierPending,
+      lhs.cursorModeId == rhs.cursorModeId,
+      lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared,
+      lhs.cursorModeSnapshot == rhs.cursorModeSnapshot,
+      lhs.cursorConfigValues == rhs.cursorConfigValues,
+      lhs.acpConfigSnapshot == rhs.acpConfigSnapshot,
+      lhs.acpConfigSnapshotWasCleared == rhs.acpConfigSnapshotWasCleared,
+      lhs.cursorCloudAgentId == rhs.cursorCloudAgentId,
+      lhs.cursorRuntime == rhs.cursorRuntime,
+      lhs.computerUse == rhs.computerUse,
+      lhs.completion == rhs.completion,
+      lhs.claudeGoal == rhs.claudeGoal,
+      lhs.codexGoal == rhs.codexGoal,
+      lhs.identityKey == rhs.identityKey,
+      lhs.surface == rhs.surface,
+      lhs.automationId == rhs.automationId,
+      lhs.automationRunId == rhs.automationRunId,
+      lhs.capabilityMode == rhs.capabilityMode,
+      lhs.status == rhs.status,
+      lhs.currentTurnStartedAt == rhs.currentTurnStartedAt,
+      lhs.idleSinceAt == rhs.idleSinceAt,
+      lhs.startedAt == rhs.startedAt,
+      lhs.endedAt == rhs.endedAt,
+      lhs.archivedAt == rhs.archivedAt,
+      lhs.lastActivityAt == rhs.lastActivityAt,
+      lhs.lastOutputPreview == rhs.lastOutputPreview,
+      lhs.summary == rhs.summary,
+      lhs.awaitingInput == rhs.awaitingInput,
+      lhs.pendingInputItemId == rhs.pendingInputItemId,
+      lhs.steeringInput == rhs.steeringInput,
+      lhs.scheduledWork == rhs.scheduledWork,
+      lhs.scheduledWorkPaused == rhs.scheduledWorkPaused,
+      lhs.nextWakeAt == rhs.nextWakeAt,
+      lhs.awaitingOwnWorkAt == rhs.awaitingOwnWorkAt,
+      lhs.autoContinueAtUsageLimit == rhs.autoContinueAtUsageLimit,
+      lhs.usageLimitParkedUntil == rhs.usageLimitParkedUntil,
+      lhs.usageLimitResume == rhs.usageLimitResume,
+      lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared,
+      lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount,
+      lhs.backgroundWork == rhs.backgroundWork,
+      lhs.activePrWatch == rhs.activePrWatch,
+      lhs.pendingSettingsAfterBackground == rhs.pendingSettingsAfterBackground,
+      lhs.reasoningEffortChange == rhs.reasoningEffortChange,
+      lhs.turnOpenWorkCount == rhs.turnOpenWorkCount,
+      lhs.threadId == rhs.threadId,
+      lhs.requestedCwd == rhs.requestedCwd,
+      lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId,
+      lhs.launchedBySessionId == rhs.launchedBySessionId,
+      lhs.spawnKind == rhs.spawnKind,
+      lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt,
+      lhs.sideChatParentSessionId == rhs.sideChatParentSessionId,
+      lhs.sideChatSessionId == rhs.sideChatSessionId,
+      lhs.crossMachineHandoff == rhs.crossMachineHandoff,
+      lhs.remoteWork == rhs.remoteWork,
+      lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval
+    else { return false }
+    return true
+  }
+}
+
+/// Another machine a chat works on (desktop `AgentChatRemoteWorkUse`): the
+/// project there, and the work copy's lane its simulator, emulator and screen
+/// are keyed by. `machineKey` is the account directory's key for that machine.
+///
+/// Lenient: a malformed entry decodes with empty fields rather than failing
+/// the whole chat summary.
+struct AgentChatRemoteWorkUse: Codable, Equatable, Hashable {
+  var machineKey: String
+  var machineName: String
+  var machinePlatform: String?
+  var projectId: String?
+  var projectRootPath: String?
+  var workCopyLaneId: String?
+  var usesSimulator: Bool
+  var usesAndroidEmulator: Bool
+  var usesDesktop: Bool
+  var usesAppControl: Bool
+  var lastStartedAt: String?
+
+  init(
+    machineKey: String,
+    machineName: String,
+    machinePlatform: String? = nil,
+    projectId: String? = nil,
+    projectRootPath: String? = nil,
+    workCopyLaneId: String? = nil,
+    usesSimulator: Bool = false,
+    usesAndroidEmulator: Bool = false,
+    usesDesktop: Bool = false,
+    usesAppControl: Bool = false,
+    lastStartedAt: String? = nil
+  ) {
+    self.machineKey = machineKey
+    self.machineName = machineName
+    self.machinePlatform = machinePlatform
+    self.projectId = projectId
+    self.projectRootPath = projectRootPath
+    self.workCopyLaneId = workCopyLaneId
+    self.usesSimulator = usesSimulator
+    self.usesAndroidEmulator = usesAndroidEmulator
+    self.usesDesktop = usesDesktop
+    self.usesAppControl = usesAppControl
+    self.lastStartedAt = lastStartedAt
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case machineKey, machineName, machinePlatform, projectId, projectRootPath, workCopyLaneId
+    case usesSimulator, usesAndroidEmulator, usesDesktop, usesAppControl, lastStartedAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    machineKey = (try? c.decodeIfPresent(String.self, forKey: .machineKey)) ?? ""
+    machineName = (try? c.decodeIfPresent(String.self, forKey: .machineName)) ?? ""
+    machinePlatform = try? c.decodeIfPresent(String.self, forKey: .machinePlatform)
+    projectId = try? c.decodeIfPresent(String.self, forKey: .projectId)
+    projectRootPath = try? c.decodeIfPresent(String.self, forKey: .projectRootPath)
+    workCopyLaneId = try? c.decodeIfPresent(String.self, forKey: .workCopyLaneId)
+    usesSimulator = (try? c.decodeIfPresent(Bool.self, forKey: .usesSimulator)) == true
+    usesAndroidEmulator = (try? c.decodeIfPresent(Bool.self, forKey: .usesAndroidEmulator)) == true
+    usesDesktop = (try? c.decodeIfPresent(Bool.self, forKey: .usesDesktop)) == true
+    usesAppControl = (try? c.decodeIfPresent(Bool.self, forKey: .usesAppControl)) == true
+    lastStartedAt = try? c.decodeIfPresent(String.self, forKey: .lastStartedAt)
   }
 }
 
@@ -1864,6 +2027,40 @@ struct CtoModelPreferences: Codable, Hashable {
   var provider: String
   var model: String
   var reasoningEffort: String?
+  /// The exact catalog id (`anthropic/claude-sonnet-5`). Older hosts and the
+  /// first-pick patch omit it; the host resolves it from the registry.
+  var modelId: String? = nil
+  /// Which signed-in account runs it (Claude and Codex only). Absent is the
+  /// machine's default account; a patch without it keeps the stored one.
+  var instanceId: String? = nil
+}
+
+/// Mirrors desktop `CtoAvatarLook`: how the CTO looks. Every field decodes
+/// tolerantly (a value this build does not know falls back to the default),
+/// so a newer desktop's shape or eyes never breaks the identity decode.
+struct CtoAvatarLook: Codable, Hashable {
+  var shape: String
+  var color: String
+  var eyes: String
+  var energy: String
+
+  static let `default` = CtoAvatarLook(shape: "pebble", color: "#7C9CFF", eyes: "caret", energy: "lively")
+
+  init(shape: String, color: String, eyes: String, energy: String) {
+    self.shape = shape
+    self.color = color
+    self.eyes = eyes
+    self.energy = energy
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    func str(_ key: CodingKeys) -> String? { (try? c.decodeIfPresent(String.self, forKey: key)).flatMap { $0 } }
+    shape = str(.shape) ?? Self.default.shape
+    color = str(.color) ?? Self.default.color
+    eyes = str(.eyes) ?? Self.default.eyes
+    energy = str(.energy) ?? Self.default.energy
+  }
 }
 
 /// Mirrors desktop `CtoOnboardingState`. There is no iOS setup flow any more,
@@ -1876,6 +2073,10 @@ struct CtoModelPreferences: Codable, Hashable {
 struct CtoOnboardingState: Codable, Hashable {
   var completedSteps: [String]
 }
+
+/// Backup models the CTO may have, as the host caps them (desktop
+/// `CTO_MAX_FALLBACK_MODELS`).
+let ctoMaxFallbackModels = 3
 
 /// Mirrors desktop `CtoIdentity`. The server has no top-level `id`; we
 /// derive one from `name` for SwiftUI Identifiable semantics.
@@ -1890,6 +2091,15 @@ struct CtoIdentity: Codable, Hashable, Identifiable {
   /// normalizes a preference on any other provider back to null, so this is a
   /// real state on a healthy install, not just a decoding tolerance.
   var modelPreferences: CtoModelPreferences?
+  /// Backup models, in order (at most three). Older hosts omit it.
+  var fallbackModels: [CtoModelPreferences]? = nil
+  /// How the CTO looks. Absent means the default look.
+  var avatar: CtoAvatarLook? = nil
+  /// "focused" | "friendly" | "playful". Absent means focused.
+  var personality: String? = nil
+  /// The person's IANA time zone. Routines run on it, so they keep their hour
+  /// when the CTO lives on a computer in another zone. Older hosts omit it.
+  var timeZone: String? = nil
   var updatedAt: String?
 
   /// Flat accessor used by UI code.
@@ -1911,6 +2121,10 @@ struct CtoIdentityPatch: Codable, Hashable {
   var systemPromptExtension: String?
   var onboardingState: CtoOnboardingState?
   var modelPreferences: CtoModelPreferences?
+  var fallbackModels: [CtoModelPreferences]?
+  var avatar: CtoAvatarLook?
+  var personality: String?
+  var timeZone: String? = nil
 }
 
 /// Mirrors desktop `CtoSessionLogEntry`.
@@ -1971,38 +2185,56 @@ struct CtoAttention: Codable, Hashable {
   static let idle = CtoAttention(status: .idle, awaitingInput: false, since: nil)
 }
 
-/// Returned by the `cto.getMemory` sync command: local notes, the rolling
-/// thread state, today's daily log, and the project brief, facts, and directed
-/// threads when the host sends them. Missing keys stay nil so an older host
-/// still decodes.
+/// One item of the CTO's open work (desktop `CtoOpenWorkItem`).
+struct CtoOpenWorkItem: Codable, Hashable, Identifiable {
+  var id: String
+  var text: String
+  var createdAt: String?
+  var doneAt: String?
+  var addedBy: String?
+
+  var isDone: Bool { !(doneAt ?? "").isEmpty }
+}
+
+/// Returned by `cto.getMemory`, `cto.updateNotes` and `cto.updateOpenWork`
+/// (desktop `CtoMemorySnapshot`): the project notes, the notes about the
+/// person, their hashes for conflict-safe writes, and the open work. Every
+/// key but `memory` is v2 and optional, so an older host still decodes; the
+/// v1-only keys it may still send are ignored.
 struct CtoMemory: Codable, Hashable {
   var memory: String
-  var threadState: String
-  var dailyLog: String
-  var dailyLogDate: String
+  var memoryBytes: Int?
+  var memoryLimitBytes: Int?
+  var userNotes: String?
+  var userNotesBytes: Int?
+  var userNotesLimitBytes: Int?
+  var memoryHash: String?
+  var userNotesHash: String?
+  var openWork: [CtoOpenWorkItem]?
   var updatedAt: String?
-  var projectBrief: String?
-  var projectThreads: String?
-  var projectItems: String?
 
   init(
     memory: String = "",
-    threadState: String = "",
-    dailyLog: String = "",
-    dailyLogDate: String = "",
-    updatedAt: String? = nil,
-    projectBrief: String? = nil,
-    projectThreads: String? = nil,
-    projectItems: String? = nil
+    memoryBytes: Int? = nil,
+    memoryLimitBytes: Int? = nil,
+    userNotes: String? = nil,
+    userNotesBytes: Int? = nil,
+    userNotesLimitBytes: Int? = nil,
+    memoryHash: String? = nil,
+    userNotesHash: String? = nil,
+    openWork: [CtoOpenWorkItem]? = nil,
+    updatedAt: String? = nil
   ) {
     self.memory = memory
-    self.threadState = threadState
-    self.dailyLog = dailyLog
-    self.dailyLogDate = dailyLogDate
+    self.memoryBytes = memoryBytes
+    self.memoryLimitBytes = memoryLimitBytes
+    self.userNotes = userNotes
+    self.userNotesBytes = userNotesBytes
+    self.userNotesLimitBytes = userNotesLimitBytes
+    self.memoryHash = memoryHash
+    self.userNotesHash = userNotesHash
+    self.openWork = openWork
     self.updatedAt = updatedAt
-    self.projectBrief = projectBrief
-    self.projectThreads = projectThreads
-    self.projectItems = projectItems
   }
 
   init(from decoder: Decoder) throws {
@@ -2010,25 +2242,61 @@ struct CtoMemory: Codable, Hashable {
     func str(_ key: CodingKeys) -> String? {
       (try? c.decodeIfPresent(String.self, forKey: key)).flatMap { $0 }
     }
+    func int(_ key: CodingKeys) -> Int? {
+      (try? c.decodeIfPresent(Int.self, forKey: key)).flatMap { $0 }
+    }
     memory = str(.memory) ?? ""
-    threadState = str(.threadState) ?? ""
-    dailyLog = str(.dailyLog) ?? ""
-    dailyLogDate = str(.dailyLogDate) ?? ""
+    memoryBytes = int(.memoryBytes)
+    memoryLimitBytes = int(.memoryLimitBytes)
+    userNotes = str(.userNotes)
+    userNotesBytes = int(.userNotesBytes)
+    userNotesLimitBytes = int(.userNotesLimitBytes)
+    memoryHash = str(.memoryHash)
+    userNotesHash = str(.userNotesHash)
+    openWork = (try? c.decodeIfPresent([CtoOpenWorkItem].self, forKey: .openWork)).flatMap { $0 }
     updatedAt = str(.updatedAt)
-    projectBrief = str(.projectBrief)
-    projectThreads = str(.projectThreads)
-    projectItems = str(.projectItems)
   }
 
-  /// True when the host returned no substantive memory content yet.
+  /// The project notes, one per line, without list markers.
+  var noteLines: [String] { ctoNoteLines(memory) }
+
+  /// True when the host returned no notes and no open work yet.
   var isEmpty: Bool {
     memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && threadState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && dailyLog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && (projectBrief ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && (projectThreads ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && (projectItems ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (userNotes ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (openWork ?? []).isEmpty
   }
+}
+
+/// Notes text as lines: list markers dropped, blanks skipped, and headings,
+/// rules and code fences left out (they are structure, not notes).
+func ctoNoteLines(_ text: String?) -> [String] {
+  (text ?? "")
+    .split(whereSeparator: \.isNewline)
+    .compactMap { line -> String? in
+      var value = line.trimmingCharacters(in: .whitespaces)
+      if ["#", "```", "---", "***"].contains(where: { value.hasPrefix($0) }) { return nil }
+      if value.hasPrefix("- ") || value.hasPrefix("* ") { value = String(value.dropFirst(2)) }
+      return value.trimmingCharacters(in: .whitespaces)
+    }
+    .filter { !$0.isEmpty }
+}
+
+/// The start of the error a notes write gets when the file changed since the
+/// editor loaded it (desktop `CTO_NOTES_CHANGED_ERROR`).
+let ctoNotesChangedError = "Notes changed since you opened them."
+
+/// What `cto.refreshContext` did. A busy CTO is refreshed when its turn ends.
+struct CtoRefreshContextResult: Codable, Hashable {
+  var refreshed: Bool
+  var reason: String?
+}
+
+/// What `chat.runScheduledWorkNow` answered. Not fired (the chat is busy, the
+/// row is gone) is an answer, not a throw.
+struct AgentChatRunScheduledWorkNowResult: Codable, Hashable {
+  var fired: Bool?
+  var reason: String?
 }
 
 // MARK: Linear sync
@@ -2587,6 +2855,13 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   /// "info"` with `status: "claude_keychain_retry"`; promoted so the timeline
   /// can fold the turn's FAILED rows and draw one quiet line.
   case claudeKeychainRetry = "claude_keychain_retry"
+  /// ADE gave the CTO a fresh provider thread (`status:
+  /// "cto_context_refreshed"`): one hairline, "Fresh context".
+  case ctoContextRefreshed = "cto_context_refreshed"
+  /// Claude dropped a chat to Accept edits because ADE runs as root on its
+  /// machine (`status: "claude_root_full_access"`). Promoted so the timeline
+  /// can draw the "Allow" control, not a dead sentence.
+  case claudeRootFullAccess = "claude_root_full_access"
 
   // The host's noticeKind union (see apps/desktop/src/shared/types/chat.ts) grows
   // over time. `system_notice.noticeKind` is a required, non-optional decode, so an
@@ -2632,6 +2907,8 @@ func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
   case AgentChatNoticeKind.crossMachineHandoffArrived.rawValue: return .crossMachineHandoffArrived
   case AgentChatNoticeKind.userNotified.rawValue: return .userNotified
   case AgentChatNoticeKind.claudeKeychainRetry.rawValue: return .claudeKeychainRetry
+  case AgentChatNoticeKind.ctoContextRefreshed.rawValue: return .ctoContextRefreshed
+  case AgentChatNoticeKind.claudeRootFullAccess.rawValue: return .claudeRootFullAccess
   default: return nil
   }
 }
@@ -2640,8 +2917,13 @@ func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
 /// timeline. A move's "ended" notice (`cross_machine_handoff_ended`) says it
 /// all in its message; its detail is the move record, which SyncService folds
 /// into the chat summary from the raw payload, so the decoded notice drops it.
+/// A lane share move's notice (`lane_share_moved`) also says it all in its
+/// message; its detail is only the move id, which no phone surface reads.
 func systemNoticeStatusHidesDetail(_ status: String?) -> Bool {
-  status?.trimmingCharacters(in: .whitespacesAndNewlines) == "cross_machine_handoff_ended"
+  switch status?.trimmingCharacters(in: .whitespacesAndNewlines) {
+  case "cross_machine_handoff_ended", "lane_share_moved": return true
+  default: return false
+  }
 }
 
 enum AgentChatApprovalRequestKind: String, Codable, Equatable {
@@ -3218,10 +3500,32 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// True for a `user_message` a side chat sent to this chat because the user
   /// asked it to (`metadata.sideChat`). The bubble wears a "From side chat" label.
   var userMessageFromSideChat: Bool = false
+  /// Why ADE wrote this `user_message` (`metadata.hostContinuation.reason`), or
+  /// nil. Such a message draws as an "ADE" row with that reason, never as the
+  /// reader's bubble.
+  var userMessageAdeReason: String?
+  /// The host's one line for that reason (`metadata.hostContinuation.label`);
+  /// nil from an older host, which falls back to `workAdeMessageReasonLabel`.
+  var userMessageAdeReasonLabel: String?
+  /// The name of the other person who wrote a `user_message` on a shared lane
+  /// (`metadata.author.kind == "guest"`): the bubble says "From <name>", so a
+  /// guest's message never reads as the owner's own. Empty when the guest has
+  /// no public name; nil for the owner's own messages.
+  var userMessageGuestAuthorName: String?
   /// True for the hand-off ADE sends a rebuilt provider thread
   /// (`metadata.kind == "continuity_recovery"`). Never a bubble: the user did
   /// not write it. Same rule as desktop `foldContinuityRecovery`.
   var userMessageIsRecoveryHandOff: Bool = false
+  /// True for the message that continues a chat after ADE restarted
+  /// (`metadata.scheduledWake.scheduleId` starts with `update-resume:`).
+  /// Never a bubble: the restart notice already says the agent continues.
+  /// Same rule as desktop `isRestartResumeScheduleId`.
+  var userMessageIsRestartResume: Bool = false
+  /// The send id (`clientSendId`) of the send that wrote this `user_message`;
+  /// nil from an older host, a send with no id, or a message ADE wrote. A
+  /// message ADE Cloud held for the chat carries its held message's id, so
+  /// the chat finds the real message by id, not by text.
+  var userMessageClientSendId: String?
   /// Byte offset of this row in the host's transcript, when it arrived on a
   /// `chat_history` page that reported one.
   ///
@@ -3231,6 +3535,11 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// scan: that scan is bounded to a window near the tail, and a row the
   /// reader paged back to can sit outside it.
   var sourceOffset: Int?
+  /// Set only on a stand-in for a transcript row too large to page: that
+  /// row's byte offset. Not decoded; the thread engine stamps it on. Two
+  /// stand-ins can match in every shown field, so this keeps each one's own
+  /// identity through the transcript merge.
+  var omittedRowOffset: Int?
 
   init(
     sessionId: String,
@@ -3297,7 +3606,26 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var summary: String?
     var metadataMarksAdeAuthor = false
     var metadataMarksSideChat = false
+    var metadataHostContinuationReason: String?
+    var metadataHostContinuationLabel: String?
     var metadataMarksRecoveryHandOff = false
+    var metadataMarksRestartResume = false
+    var metadataGuestAuthorName: String?
+    var clientSendId: String?
+
+    private struct MessageAuthor: Decodable {
+      var kind: String?
+      var name: String?
+    }
+
+    private struct ScheduledWake: Decodable {
+      var scheduleId: String?
+    }
+
+    private struct HostContinuation: Decodable {
+      var reason: String?
+      var label: String?
+    }
 
     private struct MetadataKey: CodingKey {
       var stringValue: String
@@ -3320,6 +3648,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       case failDetail
       case accountLabel
       case summary
+      case clientSendId
     }
 
     /// Each field is decoded on its own tolerant path, never a shared throwing
@@ -3342,6 +3671,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       accountLabel = try? container.decodeIfPresent(String.self, forKey: .accountLabel)
       failDetail = try? container.decodeIfPresent(String.self, forKey: .failDetail)
       summary = try? container.decodeIfPresent(String.self, forKey: .summary)
+      clientSendId = (try? container.decodeIfPresent(String.self, forKey: .clientSendId)).flatMap { $0 }
       if let metadata = try? container.nestedContainer(keyedBy: MetadataKey.self, forKey: .metadata) {
         metadataMarksAdeAuthor = agentChatAdeAuthoredMetadataKeys.contains { name in
           let key = MetadataKey(name)
@@ -3352,6 +3682,17 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
           && (try? metadata.decodeNil(forKey: sideChatKey)) == false
         metadataMarksRecoveryHandOff =
           (try? metadata.decodeIfPresent(String.self, forKey: MetadataKey("kind"))) == "continuity_recovery"
+        if let wake = try? metadata.decodeIfPresent(ScheduledWake.self, forKey: MetadataKey("scheduledWake")) {
+          metadataMarksRestartResume = workIsRestartResumeScheduleId(wake.scheduleId)
+        }
+        if let continuation = try? metadata.decodeIfPresent(HostContinuation.self, forKey: MetadataKey("hostContinuation")) {
+          metadataHostContinuationReason = continuation.reason ?? ""
+          metadataHostContinuationLabel = continuation.label
+        }
+        if let author = try? metadata.decodeIfPresent(MessageAuthor.self, forKey: MetadataKey("author")),
+           author.kind == "guest" {
+          metadataGuestAuthorName = (author.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
       }
     }
   }
@@ -3419,7 +3760,12 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     stopReason = rawEvent?.stopReason
     userMessageWrittenByAde = rawEvent?.type == "user_message" && rawEvent?.metadataMarksAdeAuthor == true
     userMessageFromSideChat = rawEvent?.type == "user_message" && rawEvent?.metadataMarksSideChat == true
+    userMessageAdeReason = rawEvent?.type == "user_message" ? rawEvent?.metadataHostContinuationReason : nil
+    userMessageAdeReasonLabel = rawEvent?.type == "user_message" ? rawEvent?.metadataHostContinuationLabel : nil
+    userMessageGuestAuthorName = rawEvent?.type == "user_message" ? rawEvent?.metadataGuestAuthorName : nil
     userMessageIsRecoveryHandOff = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRecoveryHandOff == true
+    userMessageIsRestartResume = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRestartResume == true
+    userMessageClientSendId = rawEvent?.type == "user_message" ? rawEvent?.clientSendId.flatMap { nonEmptyTrimmed($0) } : nil
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as
     // it does today.
@@ -3461,6 +3807,15 @@ struct ADELossyArray<Element: Decodable & Equatable>: Decodable, Equatable {
       }
     }
     wrappedValue = elements
+  }
+}
+
+extension KeyedDecodingContainer {
+  /// An optional field read leniently: nil when it is missing, null, or shaped
+  /// differently (a newer brain), so one odd field drops alone instead of
+  /// failing the whole object.
+  func lenient<T: Decodable>(_ type: T.Type, forKey key: Key) -> T? {
+    try? decodeIfPresent(type, forKey: key)
   }
 }
 
@@ -5274,6 +5629,16 @@ struct AgentChatRespondToInputRequest: Codable, Equatable {
   var decision: AgentChatApprovalDecision?
   var answers: [String: AgentChatInputAnswerValue]?
   var responseText: String?
+  /// `"new_chat"`: implement the approved Codex plan in a chat of its own.
+  /// Omitted by every other answer, so an older host still implements in place.
+  var planAction: String?
+}
+
+/// `chat.respondToInput`'s answer. Only a plan handoff fills it in; every other
+/// answer is the bare `{ok: true}` older hosts have always sent.
+struct AgentChatRespondToInputResult: Decodable, Equatable {
+  var implementationSessionId: String?
+  var ok: Bool?
 }
 
 /// Throw a non-blocking question away without answering it. The host refuses
@@ -5483,6 +5848,26 @@ struct SyncMachineInventoryPreset: Codable, Equatable, Identifiable {
 struct SyncMachineInventoryDetail: Codable, Equatable {
   var machineKey: String
   var presets: [SyncMachineInventoryPreset]
+  /// The machine's provider accounts. Absent against an older host.
+  var providers: [SyncMachineInventoryProvider]? = nil
+}
+
+/// One provider's accounts on a machine (`MachineInventoryProviderDetail`).
+struct SyncMachineInventoryProvider: Codable, Equatable {
+  var provider: String
+  var accounts: [SyncMachineInventoryAccount]
+}
+
+/// One provider account (`MachineInventoryAccount`). `instanceId` is what a
+/// launch names to run on it; the sign-in itself never leaves the machine.
+struct SyncMachineInventoryAccount: Codable, Equatable, Identifiable {
+  var instanceId: String
+  var label: String
+  var email: String?
+  var plan: String?
+  var isDefault: Bool
+
+  var id: String { instanceId }
 }
 
 /// Response envelopes for the cross-surface ModelPicker favorites/recents
@@ -5891,65 +6276,71 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var isCtoChild: Bool { parentIdentityKey == "cto" }
 
   static func == (lhs: TerminalSessionSummary, rhs: TerminalSessionSummary) -> Bool {
-    lhs.id == rhs.id
-      && lhs.laneId == rhs.laneId
-      && lhs.laneName == rhs.laneName
-      && lhs.ptyId == rhs.ptyId
-      && lhs.tracked == rhs.tracked
-      && lhs.pinned == rhs.pinned
-      && lhs.manuallyNamed == rhs.manuallyNamed
-      && lhs.goal == rhs.goal
-      && lhs.toolType == rhs.toolType
-      && lhs.title == rhs.title
-      && lhs.status == rhs.status
-      && lhs.startedAt == rhs.startedAt
-      && lhs.endedAt == rhs.endedAt
-      && lhs.lastActivityAt == rhs.lastActivityAt
-      && lhs.archivedAt == rhs.archivedAt
-      && lhs.settledAt == rhs.settledAt
-      && lhs.statusNote == rhs.statusNote
-      && lhs.activityStatus == rhs.activityStatus
-      && lhs.activityStatusChangedAt == rhs.activityStatusChangedAt
-      && lhs.attentionRequestedAt == rhs.attentionRequestedAt
-      && lhs.attentionMessage == rhs.attentionMessage
-      && lhs.attentionSource == rhs.attentionSource
-      && lhs.lastTurnFailedAt == rhs.lastTurnFailedAt
-      && lhs.settleOverride == rhs.settleOverride
-      && lhs.settleSource == rhs.settleSource
-      && lhs.snoozedUntil == rhs.snoozedUntil
-      && lhs.snoozedAt == rhs.snoozedAt
-      && lhs.wokeAt == rhs.wokeAt
-      && lhs.wokeReason == rhs.wokeReason
-      && lhs.exitCode == rhs.exitCode
-      && lhs.transcriptPath == rhs.transcriptPath
-      && lhs.headShaStart == rhs.headShaStart
-      && lhs.headShaEnd == rhs.headShaEnd
-      && lhs.lastOutputPreview == rhs.lastOutputPreview
-      && lhs.summary == rhs.summary
-      && lhs.runtimeState == rhs.runtimeState
-      && lhs.resumeCommand == rhs.resumeCommand
-      && lhs.resumeMetadata?.provider == rhs.resumeMetadata?.provider
-      && lhs.resumeMetadata?.targetKind == rhs.resumeMetadata?.targetKind
-      && lhs.resumeMetadata?.targetId == rhs.resumeMetadata?.targetId
-      && lhs.resumeMetadata?.target == rhs.resumeMetadata?.target
-      && lhs.resumeMetadata?.launch == rhs.resumeMetadata?.launch
-      && lhs.resumeMetadata?.permissionMode == rhs.resumeMetadata?.permissionMode
-      && lhs.chatIdleSinceAt == rhs.chatIdleSinceAt
-      && lhs.chatSessionId == rhs.chatSessionId
-      && lhs.pendingInputItemId == rhs.pendingInputItemId
-      && lhs.steeringInput == rhs.steeringInput
-      && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
-      && lhs.cursorRuntime == rhs.cursorRuntime
-      && lhs.parentIdentityKey == rhs.parentIdentityKey
-      && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
-      && lhs.launchedBySessionId == rhs.launchedBySessionId
-      && lhs.spawnKind == rhs.spawnKind
-      && lhs.sideChatSessionId == rhs.sideChatSessionId
-      && lhs.activeGoal == rhs.activeGoal
-      && lhs.claudeTag == rhs.claudeTag
-      && lhs.crossMachineHandoff == rhs.crossMachineHandoff
-      && lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval
-      && lhs.launchRail == rhs.launchRail
+    // One guard, not a chain of `&&`: each `&&` takes its right side as an
+    // autoclosure, and across this many fields the chain copied both
+    // summaries over and over. SwiftUI runs this for every Work row on every
+    // list pass, so the copies made a pass slow.
+    guard lhs.id == rhs.id,
+      lhs.laneId == rhs.laneId,
+      lhs.laneName == rhs.laneName,
+      lhs.ptyId == rhs.ptyId,
+      lhs.tracked == rhs.tracked,
+      lhs.pinned == rhs.pinned,
+      lhs.manuallyNamed == rhs.manuallyNamed,
+      lhs.goal == rhs.goal,
+      lhs.toolType == rhs.toolType,
+      lhs.title == rhs.title,
+      lhs.status == rhs.status,
+      lhs.startedAt == rhs.startedAt,
+      lhs.endedAt == rhs.endedAt,
+      lhs.lastActivityAt == rhs.lastActivityAt,
+      lhs.archivedAt == rhs.archivedAt,
+      lhs.settledAt == rhs.settledAt,
+      lhs.statusNote == rhs.statusNote,
+      lhs.activityStatus == rhs.activityStatus,
+      lhs.activityStatusChangedAt == rhs.activityStatusChangedAt,
+      lhs.attentionRequestedAt == rhs.attentionRequestedAt,
+      lhs.attentionMessage == rhs.attentionMessage,
+      lhs.attentionSource == rhs.attentionSource,
+      lhs.lastTurnFailedAt == rhs.lastTurnFailedAt,
+      lhs.settleOverride == rhs.settleOverride,
+      lhs.settleSource == rhs.settleSource,
+      lhs.snoozedUntil == rhs.snoozedUntil,
+      lhs.snoozedAt == rhs.snoozedAt,
+      lhs.wokeAt == rhs.wokeAt,
+      lhs.wokeReason == rhs.wokeReason,
+      lhs.exitCode == rhs.exitCode,
+      lhs.transcriptPath == rhs.transcriptPath,
+      lhs.headShaStart == rhs.headShaStart,
+      lhs.headShaEnd == rhs.headShaEnd,
+      lhs.lastOutputPreview == rhs.lastOutputPreview,
+      lhs.summary == rhs.summary,
+      lhs.runtimeState == rhs.runtimeState,
+      lhs.resumeCommand == rhs.resumeCommand,
+      lhs.resumeMetadata?.provider == rhs.resumeMetadata?.provider,
+      lhs.resumeMetadata?.targetKind == rhs.resumeMetadata?.targetKind,
+      lhs.resumeMetadata?.targetId == rhs.resumeMetadata?.targetId,
+      lhs.resumeMetadata?.target == rhs.resumeMetadata?.target,
+      lhs.resumeMetadata?.launch == rhs.resumeMetadata?.launch,
+      lhs.resumeMetadata?.permissionMode == rhs.resumeMetadata?.permissionMode,
+      lhs.chatIdleSinceAt == rhs.chatIdleSinceAt,
+      lhs.chatSessionId == rhs.chatSessionId,
+      lhs.pendingInputItemId == rhs.pendingInputItemId,
+      lhs.steeringInput == rhs.steeringInput,
+      lhs.cursorCloudAgentId == rhs.cursorCloudAgentId,
+      lhs.cursorRuntime == rhs.cursorRuntime,
+      lhs.parentIdentityKey == rhs.parentIdentityKey,
+      lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId,
+      lhs.launchedBySessionId == rhs.launchedBySessionId,
+      lhs.spawnKind == rhs.spawnKind,
+      lhs.sideChatSessionId == rhs.sideChatSessionId,
+      lhs.activeGoal == rhs.activeGoal,
+      lhs.claudeTag == rhs.claudeTag,
+      lhs.crossMachineHandoff == rhs.crossMachineHandoff,
+      lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval,
+      lhs.launchRail == rhs.launchRail
+    else { return false }
+    return true
   }
 }
 
@@ -7986,6 +8377,50 @@ struct WorkToolsAgentBrowserPresence: Codable, Equatable {
   var tabId: String?
 }
 
+/// One live picture of a desktop browser tab, from
+/// `workTools.readBrowserTabFrame`. `dataUrl` is a `data:image/jpeg;base64,…`
+/// URL; `width`/`height` are the picture's pixels.
+struct WorkToolsBrowserTabFramePicture: Codable, Equatable {
+  var dataUrl: String
+  var width: Double
+  var height: Double
+  var capturedAt: String?
+}
+
+/// The answer to `workTools.readBrowserTabFrame`. `frame` is nil while the
+/// desktop is still starting its capture loop for the tab.
+struct WorkToolsBrowserTabFrame: Codable, Equatable {
+  var tabId: String
+  var url: String?
+  var title: String?
+  var isLoading: Bool?
+  var frame: WorkToolsBrowserTabFramePicture?
+}
+
+/// A person's input for `workTools.sendBrowserTabInput`. `x` and `y` are
+/// fractions (0–1) of the frame the person saw, so the picture's size on the
+/// phone never matters. `deltaY` is positive to scroll the page down.
+enum WorkToolsBrowserTabInputEvent: Equatable {
+  case click(x: Double, y: Double)
+  case scroll(x: Double, y: Double, deltaY: Double)
+  /// One of Enter, Backspace, Tab, Delete, Up, Down, Left, Right.
+  case key(String)
+  case text(String)
+
+  var payload: [String: Any] {
+    switch self {
+    case .click(let x, let y):
+      return ["type": "click", "x": x, "y": y]
+    case .scroll(let x, let y, let deltaY):
+      return ["type": "scroll", "x": x, "y": y, "deltaY": deltaY]
+    case .key(let key):
+      return ["type": "key", "key": key]
+    case .text(let text):
+      return ["type": "text", "text": text]
+    }
+  }
+}
+
 /// The host also sends `activeToolUpdatedAt` and `capturedAt`; the phone shows
 /// live state rather than "as of" timestamps, so neither is decoded.
 struct WorkToolsLaneState: Codable, Equatable {
@@ -8885,4 +9320,53 @@ struct RestoreDeletedLaneResult: Decodable, Equatable {
   var warning: String?
   /// Other branches made for commits the lane's branch does not hold.
   var extraBranches: [String]?
+}
+
+// MARK: - Typing into a running agent CLI
+
+/// What became of a message sent to a running agent CLI (`chat.typeIntoCli`).
+enum WorkCliTypeOutcome: Equatable {
+  /// Typed at the CLI's prompt.
+  case delivered
+  /// Typed at once: the computer cannot tell when this CLI's prompt is free.
+  case typedAtOnce
+  /// The CLI is mid-turn; its computer types it when the prompt is free.
+  case heldUntilFree
+  /// The phone is offline; the message goes out when it reconnects.
+  case queuedOffline
+  /// The CLI has ended, so nothing was typed. Resume it to continue.
+  case ended
+}
+
+/// The `chat.typeIntoCli` arguments. `clientMessageId` names one message: a
+/// send repeated after a lost answer carries the same id, and the computer
+/// types the message once (it keeps typed and queued answers by this id).
+func workCliTypeArgs(sessionId: String, text: String, clientMessageId: String) -> [String: Any] {
+  ["sessionId": sessionId, "text": text, "holdUntilFree": true, "clientMessageId": clientMessageId]
+}
+
+/// Reads the host's `{ outcome }` answer, or the offline queue's `{ queued }`.
+func workCliTypeOutcome(from response: Any) throws -> WorkCliTypeOutcome {
+  guard let payload = response as? [String: Any] else {
+    throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "The computer sent an unreadable answer."])
+  }
+  if payload["queued"] as? Bool == true { return .queuedOffline }
+  switch payload["outcome"] as? String {
+  case "delivered": return payload["typedAtOnce"] as? Bool == true ? .typedAtOnce : .delivered
+  case "held": return .heldUntilFree
+  case "deferred":
+    // Only an answer to a send that did not ask the host to hold it.
+    throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "The CLI is busy. Send it again when its turn ends."])
+  case "ended": return .ended
+  default:
+    throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "The computer sent an unreadable answer."])
+  }
+}
+
+extension LaneSummary {
+  /// The name every screen shows: a project's own folder (stored as
+  /// "Primary") reads "Main checkout".
+  var displayName: String {
+    laneType == "primary" ? "Main checkout" : name
+  }
 }

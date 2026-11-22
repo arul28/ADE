@@ -329,6 +329,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
         persistLinearWebhookSecret(deps.credentialStore, secret);
         persistLinearRelayRegistration(deps.db, { webhookId: ADE_APP_WEBHOOK_ID, organizationId });
         deps.logger.info("automations.linear_relay_configured", { organizationId, webhookId: ADE_APP_WEBHOOK_ID, appManaged: true });
+        retryWakeSocketsNow();
         return getStatus();
       }
 
@@ -372,6 +373,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
         webhookId: webhook.id,
         reusedWebhook: createdWebhookId == null,
       });
+      retryWakeSocketsNow();
       return getStatus();
     } catch (error: unknown) {
       if (createdWebhookId) {
@@ -556,6 +558,10 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
   // event in the workspace). Each frame only means "poll now"; the durable
   // cursor and replay guard above stay the source of truth.
   const wakeSockets: RelayWakeSocket[] = [];
+  /** A socket that had no organization to subscribe to waits before it asks again; setup just made one. */
+  function retryWakeSocketsNow(): void {
+    for (const socket of wakeSockets) socket.retryNow();
+  }
 
   const reschedulePolling = (): void => {
     if (!pollTimer || stopped) return;
@@ -617,6 +623,8 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
 
   return {
     getStatus,
+    /** True when a rule or the Linear agent acts on this workspace's events (an ADE Cloud computer then asks to be woken for them). */
+    wantsEvents,
     setup,
     teardown,
     start,

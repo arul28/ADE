@@ -278,44 +278,21 @@ describe("checkWorkerSandbox", () => {
     expect(result.reason).toContain("protected file pattern");
   });
 
-  it("blocks PowerShell writes to protected files", () => {
-    const result = checkWorkerSandbox(
-      'powershell.exe -Command "Set-Content -Path .env -Value secret"',
-      sandboxWith({ protectedFiles: ["\\.env"] }),
-      "C:\\projects\\repo",
-    );
+  it.each([
+    ["a protected file write", 'powershell.exe -Command "Set-Content -Path .env -Value secret"', { protectedFiles: ["\\.env"] }, "protected file pattern"],
+    ["a write outside the sandbox root", 'pwsh -Command "Add-Content ..\\outside.txt secret"', { allowedPaths: ["./"] }, "Path outside sandbox"],
+    ["a registry provider mutation", 'powershell.exe -Command "Set-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar -Value 1"', {}, "non-filesystem provider path"],
+    ["a non-literal path argument", 'powershell.exe -Command "$path = \'.env\'; Set-Content -Path $path -Value secret"', {}, "non-literal path argument"],
+    ["a path hidden in a parenthesized expression", 'powershell.exe -Command "Set-Content -Path (Join-Path .. outside.txt) -Value hi"', {}, "uninspectable path argument"],
+    ["a path hidden in a subexpression", 'powershell.exe -Command "Set-Content -Path $(Join-Path .. outside.txt) -Value hi"', {}, "uninspectable path argument"],
+    ["a path hidden in an array expression", 'powershell.exe -Command "Set-Content -Path @(\'..\\outside.txt\') -Value hi"', {}, "uninspectable path argument"],
+    ["an empty path capture", 'powershell.exe -Command "Set-Content -Path -Value secret"', {}, "uninspectable path argument"],
+    ["an encoded protected file write", `powershell.exe -EncodedCommand ${Buffer.from("Set-Content -Path .env -Value secret", "utf16le").toString("base64")}`, { protectedFiles: ["\\.env"] }, "protected file pattern"],
+  ])("blocks PowerShell %s", (_label, command, sandbox, reason) => {
+    const config = Object.keys(sandbox).length ? sandboxWith(sandbox) : DEFAULT_WORKER_SANDBOX_CONFIG;
+    const result = checkWorkerSandbox(command, config, "C:\\projects\\repo");
     expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("protected file pattern");
-  });
-
-  it("blocks PowerShell writes outside the sandbox root", () => {
-    const result = checkWorkerSandbox(
-      'pwsh -Command "Add-Content ..\\outside.txt secret"',
-      sandboxWith({ allowedPaths: ["./"] }),
-      "C:\\projects\\repo",
-    );
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("Path outside sandbox");
-  });
-
-  it("blocks PowerShell registry provider mutations", () => {
-    const result = checkWorkerSandbox(
-      'powershell.exe -Command "Set-ItemProperty -Path HKCU:\\Software\\Foo -Name Bar -Value 1"',
-      DEFAULT_WORKER_SANDBOX_CONFIG,
-      "C:\\projects\\repo",
-    );
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("non-filesystem provider path");
-  });
-
-  it("blocks PowerShell mutations that use non-literal path arguments", () => {
-    const result = checkWorkerSandbox(
-      'powershell.exe -Command "$path = \'.env\'; Set-Content -Path $path -Value secret"',
-      DEFAULT_WORKER_SANDBOX_CONFIG,
-      "C:\\projects\\repo",
-    );
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("non-literal path argument");
+    expect(result.reason).toContain(reason);
   });
 
   it("blocks uninspected PowerShell -File script execution", () => {
@@ -362,50 +339,6 @@ describe("checkWorkerSandbox", () => {
     expect(result.reason).toContain("cmd.exe /c mutating payload");
   });
 
-  it("blocks PowerShell mutation paths hidden behind parenthesized expressions", () => {
-    const result = checkWorkerSandbox(
-      'powershell.exe -Command "Set-Content -Path (Join-Path .. outside.txt) -Value hi"',
-      DEFAULT_WORKER_SANDBOX_CONFIG,
-      "C:\\projects\\repo",
-    );
-
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("uninspectable path argument");
-  });
-
-  it("blocks PowerShell mutation paths hidden behind subexpressions", () => {
-    const result = checkWorkerSandbox(
-      'powershell.exe -Command "Set-Content -Path $(Join-Path .. outside.txt) -Value hi"',
-      DEFAULT_WORKER_SANDBOX_CONFIG,
-      "C:\\projects\\repo",
-    );
-
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("uninspectable path argument");
-  });
-
-  it("blocks PowerShell mutation paths hidden behind array expressions", () => {
-    const result = checkWorkerSandbox(
-      'powershell.exe -Command "Set-Content -Path @(\'..\\outside.txt\') -Value hi"',
-      DEFAULT_WORKER_SANDBOX_CONFIG,
-      "C:\\projects\\repo",
-    );
-
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("uninspectable path argument");
-  });
-
-  it("blocks PowerShell mutations with empty path captures", () => {
-    const result = checkWorkerSandbox(
-      'powershell.exe -Command "Set-Content -Path -Value secret"',
-      DEFAULT_WORKER_SANDBOX_CONFIG,
-      "C:\\projects\\repo",
-    );
-
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("uninspectable path argument");
-  });
-
   it("does not let PowerShell switch parameters consume positional mutation paths", () => {
     const result = checkWorkerSandbox(
       'powershell.exe -Command "Set-Content -NoNewline ..\\outside.txt -Value hi"',
@@ -436,17 +369,6 @@ describe("checkWorkerSandbox", () => {
     );
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("EncodedCommand payload is not inspectable");
-  });
-
-  it("blocks PowerShell encoded writes to protected files", () => {
-    const encoded = Buffer.from("Set-Content -Path .env -Value secret", "utf16le").toString("base64");
-    const result = checkWorkerSandbox(
-      `powershell.exe -EncodedCommand ${encoded}`,
-      sandboxWith({ protectedFiles: ["\\.env"] }),
-      "C:\\projects\\repo",
-    );
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("protected file pattern");
   });
 
   it("allows read-only PowerShell file reads inside the sandbox", () => {

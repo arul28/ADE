@@ -18,6 +18,9 @@ import {
 import {
   BUILT_IN_BROWSER_LIST_TABS_FOR_AGENT_METHOD,
   BUILT_IN_BROWSER_RELEASE_LANE_TABS_METHOD,
+  BUILT_IN_BROWSER_CHAT_LIFECYCLE_METHOD,
+  BUILT_IN_BROWSER_CAPTURE_TAB_FRAME_METHOD,
+  BUILT_IN_BROWSER_SEND_TAB_INPUT_METHOD,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { promisify } from "node:util";
 import type { Logger } from "../logging/logger";
@@ -54,6 +57,7 @@ import {
 } from "../../../shared/demoVideo/demoContract";
 import { DEMO_ENGINE_INPUT_EXTENSIONS } from "../demoVideo/demoMp4Source";
 import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
+import { sanitizeUpdateRequestedBy } from "../../../shared/types/remoteRuntime";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import { dispatchBuiltInBrowserAgentCall } from "./builtInBrowserAgentDispatch";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
@@ -433,7 +437,10 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
           `Action '${method}' is not exposed by the desktop bridge.`,
         );
       }
-      return await installer.install({ targetVersion: normalizedString(rawParams.targetVersion) });
+      return await installer.install({
+        targetVersion: normalizedString(rawParams.targetVersion),
+        requestedBy: sanitizeUpdateRequestedBy(rawParams.requestedBy),
+      });
     }
     // The brain's attach probe (`probeDesktopBridge`). The name predates the
     // bridge dropping its secret and is kept so older brains' probes answer.
@@ -504,6 +511,25 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     }
     if (name === BUILT_IN_BROWSER_RELEASE_LANE_TABS_METHOD) {
       return service.releaseLaneTabs({ laneId: normalizedString(rawParams.laneId) });
+    }
+    if (name === BUILT_IN_BROWSER_CAPTURE_TAB_FRAME_METHOD) {
+      const maxWidth = Number(rawParams.maxWidth);
+      return service.captureTabFrameForRuntime({
+        tabId: normalizedString(rawParams.tabId),
+        maxWidth: Number.isFinite(maxWidth) ? maxWidth : null,
+      });
+    }
+    if (name === BUILT_IN_BROWSER_SEND_TAB_INPUT_METHOD) {
+      return await service.sendTabInputForRuntime({
+        tabId: normalizedString(rawParams.tabId),
+        event: rawParams.event,
+      });
+    }
+    if (name === BUILT_IN_BROWSER_CHAT_LIFECYCLE_METHOD) {
+      return service.chatBrowserLifecycle({
+        chatSessionId: normalizedString(rawParams.chatSessionId),
+        state: normalizedString(rawParams.state),
+      });
     }
     if (
       name === "getProfileDiagnostics"
@@ -597,8 +623,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
           return await actions.copy(input as Parameters<typeof actions.copy>[0]);
         case "move":
           return await actions.move(input as Parameters<typeof actions.move>[0]);
-        case "ready_refresh":
-          return await actions.readyRefresh();
       }
     } catch (error) {
       throw new JsonRpcError(JsonRpcErrorCode.internalError, error instanceof Error ? error.message : String(error));

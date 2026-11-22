@@ -20,11 +20,19 @@
  * must never appear in a list, a log line, or a diagnostic. One table would put
  * both one query and one permission away from each other.
  *
- * What is deliberately NOT here: vendor CLI logins for Claude, Codex, and
- * Cursor. Those rotate their refresh tokens and their issuers rate-limit
- * refresh storms — ADE already carries a 24-hour rejection cooldown because of
- * it. The small set of account credentials that ARE safe to share has an
+ * Provider sign-ins (`provider_login`) are opaque here like every other value.
+ * Some of them rotate their refresh tokens, and two machines that spend one
+ * refresh token sign each other out, so this Worker never refreshes one and the
+ * renewal owner is chosen by the clients, not here: the stale-write check below
+ * keeps an old copy from replacing a newer one, and `refresh_owner` is stored
+ * and returned for the clients to read, never enforced. Each kind has an
  * explicit owner in the item-kind allowlist below.
+ *
+ * A row's `updated_at` is also its revision. Every change moves it forward, so
+ * a revision never comes back, and a write or delete can name the revision it
+ * replaces (`ifRevision`). The Worker refuses it as `stale`, with the stored
+ * row, when the row changed since then. That is what keeps a machine that
+ * decided on an old copy from writing over a newer one, a removal included.
  */
 import {
   accountPageResult,
@@ -132,6 +140,21 @@ function vaultUnavailable(): Response {
  */
 const MAX_VALUE_CHARS = 6_000;
 
+/**
+ * Kinds that need more room than `MAX_VALUE_CHARS`. A provider sign-in is a
+ * whole login file (or a few), not one token: the largest measured one is
+ * about 4 KB before the client wraps it. Sealed, the largest value is at most
+ * about 4 × 16,000 + 44 characters (UTF-8 then base64), so one row stays far
+ * under D1's limits and one item fits a single request under the 256 KiB body
+ * limit.
+ */
+const MAX_VALUE_CHARS_BY_KIND: ReadonlyMap<string, number> = new Map([
+  ["provider_login", 16_000],
+  // The CTO's account copy: its notes, open work, routines and last turns,
+  // gzipped (`shared/ctoAccountCopy.ts`). One per repository.
+  ["cto_copy", 48_000],
+]);
+
 const MAX_ITEMS_PER_ACCOUNT = 2_000;
 const MAX_ITEMS_PER_WRITE = 100;
 export const MAX_ITEMS_PER_READ = 500;
@@ -155,6 +178,13 @@ const ITEM_KINDS = new Set([
   "project_secret",
   // ADE MCP's account secret and its connections (token hashes, never tokens).
   "ade_mcp",
+  // A provider sign-in: the login a provider's CLI keeps on disk, carried to
+  // the account's other computers and ADE Cloud. The brain's sign-in sync owns
+  // the payload and the renewal rules.
+  "provider_login",
+  // The CTO's account copy (one per repository, key `cto`): what a new home
+  // machine restores it from. The brain's CTO account copy owns the payload.
+  "cto_copy",
 ]);
 
 export type AccountVaultRow = {
@@ -183,7 +213,38 @@ type ParsedVaultWrite = {
   refreshOwner: string | null;
   /** Client clock; see `staleWriteThreshold`. */
   writtenAt: unknown;
+  /** The revision this write replaces, `VAULT_REVISION_ABSENT`, or null for a write that names none. */
+  ifRevision: string | null;
 };
+
+/**
+ * `ifRevision` for "the client read no row at all". A tombstone is a row: it
+ * has a revision, and a client that read one names that.
+ */
+export const VAULT_REVISION_ABSENT = "absent";
+
+/**
+ * A client's `ifRevision`: null when it named none (the write before revisions
+ * existed), undefined when what it named is not a revision. A revision is an
+ * `updated_at` this Worker returned, so anything that does not parse as a time
+ * can never match one and is refused instead of quietly failing every time.
+ */
+function parseIfRevision(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (value === VAULT_REVISION_ABSENT) return VAULT_REVISION_ABSENT;
+  if (typeof value !== "string" || value.length > 40 || Number.isNaN(Date.parse(value))) return undefined;
+  return value;
+}
+
+/**
+ * The next `updated_at` of a row that changes: the Worker clock, or one
+ * millisecond past the stored stamp when that is not earlier. Two writes in one
+ * millisecond (or on two Worker clocks a little apart) would otherwise leave
+ * the same stamp, and a client holding that revision would replace the second
+ * write without having seen it. Binds the new stamp twice.
+ */
+const NEXT_UPDATED_AT =
+  "max(?, coalesce(strftime('%Y-%m-%dT%H:%M:%fZ', account_vault_items.updated_at, '+0.001 seconds'), ?))";
 
 /**
  * Item keys: one or more `/`-separated segments. The first is the original
@@ -191,9 +252,10 @@ type ParsedVaultWrite = {
  * the MCP server registry's `mcp/<server>/<env|header|oauth>/<name>`. No
  * segment is empty or starts with a dot, so a key never holds `..`, `//`, or a
  * leading or trailing `/`, and nothing reading one as a path can be walked out
- * of it.
+ * of it. A `#` names one credential of a provider (`openai#work`, and
+ * `openai#ade-cloud` for ADE Cloud's key), as the API key store writes it.
  */
-const ITEM_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9._:-]*)*$/;
+const ITEM_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:#-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9._:#-]*)*$/;
 
 function parseItemKey(value: unknown): string | null {
   const key = requiredString(value, MAX_ITEM_KEY_LENGTH);
@@ -217,9 +279,16 @@ function checkWriteItem(value: unknown): ItemVerdict {
   if (!key) return { ok: false, reason: "invalid key" };
   const plaintext = typeof value.value === "string" ? value.value : "";
   if (!plaintext) return { ok: false, reason: "empty value" };
-  if (plaintext.length > MAX_VALUE_CHARS) return { ok: false, reason: "value too large" };
+  if (plaintext.length > (MAX_VALUE_CHARS_BY_KIND.get(kind) ?? MAX_VALUE_CHARS)) {
+    return { ok: false, reason: "value too large" };
+  }
   const refreshOwner = requiredString(value.refreshOwner, 128);
-  return { ok: true, write: { scope, kind, key, value: plaintext, refreshOwner, writtenAt: value.writtenAt } };
+  const ifRevision = parseIfRevision(value.ifRevision);
+  if (ifRevision === undefined) return { ok: false, reason: "invalid revision" };
+  return {
+    ok: true,
+    write: { scope, kind, key, value: plaintext, refreshOwner, writtenAt: value.writtenAt, ifRevision },
+  };
 }
 
 type VaultRowRecord = {
@@ -316,6 +385,138 @@ async function handleRead(
   });
 }
 
+/**
+ * `GET vault/item?scope&kind&key`: one item, opened. The account directory
+ * reads a few named items per request; the full `GET vault` opens every item
+ * of the scope to find them. `item: null` when there is no row, so a 404 here
+ * always means a relay without this route.
+ */
+async function handleItemRead(env: VaultEnv, userId: string, url: URL): Promise<Response> {
+  const scope = parseAccountScopeKey(url.searchParams.get("scope"));
+  const kind = requiredString(url.searchParams.get("kind"), 32);
+  const itemKey = parseItemKey(url.searchParams.get("key"));
+  if (!scope || !kind || !ITEM_KINDS.has(kind) || !itemKey) {
+    return json({ ok: false, error: "invalid item" }, { status: 400 });
+  }
+  const key = await vaultKey(env);
+  if (!key) return vaultUnavailable();
+  const row = await readVaultRow(env, userId, { scope, kind, key: itemKey });
+  return json({ ok: true, item: row ? await rowToVaultItem(key, row) : null });
+}
+
+/**
+ * `GET vault/keys?scope[&kind]`: the live item keys of one scope, with no
+ * value and nothing opened. For status views (which keys are saved), so they
+ * never decrypt a credential they do not show. At most the account's item cap.
+ */
+async function handleKeysRead(env: VaultEnv, userId: string, url: URL): Promise<Response> {
+  const scope = parseAccountScopeKey(url.searchParams.get("scope"));
+  const kindParam = url.searchParams.get("kind");
+  const kind = kindParam == null ? null : requiredString(kindParam, 32);
+  if (!scope || (kindParam != null && (!kind || !ITEM_KINDS.has(kind)))) {
+    return json({ ok: false, error: "invalid scope" }, { status: 400 });
+  }
+  const rows = await env.DB.prepare(`
+    select item_kind, item_key, updated_at
+    from account_vault_items
+    where user_id = ? and scope_key = ? and deleted = 0${kind ? " and item_kind = ?" : ""}
+    order by item_kind asc, item_key asc
+    limit ?
+  `).bind(...(kind ? [userId, scope, kind] : [userId, scope]), MAX_ITEMS_PER_ACCOUNT)
+    .all<{ item_kind: string; item_key: string; updated_at: string }>();
+  return json({
+    ok: true,
+    items: rows.results.map((row) => ({ scope, kind: row.item_kind, key: row.item_key, updatedAt: row.updated_at })),
+  });
+}
+
+/**
+ * The statement for one write.
+ *
+ * - `ifRevision` names a revision: change the row only while it still has
+ *   that revision. A row this same device wrote last also passes, because the
+ *   newer revision is this device's own earlier write (still in flight when
+ *   this one was made); another machine's write in between leaves another
+ *   device as the last writer. No row at all is refused too: the client read
+ *   one, so this is not the row it decided on.
+ * - `ifRevision` is `absent`: insert only when there is no row, a tombstone
+ *   included. There is no same-device pass here: a client that read no row
+ *   may have an empty cache (just signed in), and the row it would replace can
+ *   be this device's own older one, a removal included.
+ * - No `ifRevision`: the write before revisions existed. The upsert's `where`
+ *   refuses only a write made before the stored row (`writtenAt`, with
+ *   `itemResults`). A row this same device wrote last is never "newer" than
+ *   its own write: its earlier write may still have been in flight when this
+ *   one was made. (No `deviceId`: SQL's `= null` is never true, so the full
+ *   check holds.)
+ */
+function vaultWriteStatement(
+  env: VaultEnv,
+  userId: string,
+  write: ParsedVaultWrite,
+  sealedValue: string,
+  updatedAt: string,
+  writerDeviceId: string | null,
+  itemResults: boolean,
+  clock: ReturnType<typeof writeClock>,
+): D1PreparedStatement {
+  if (write.ifRevision === VAULT_REVISION_ABSENT) {
+    return env.DB.prepare(`
+      insert into account_vault_items(
+        user_id, scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, 0)
+      on conflict(user_id, scope_key, item_kind, item_key) do nothing
+    `).bind(userId, write.scope, write.kind, write.key, sealedValue, updatedAt, writerDeviceId, write.refreshOwner);
+  }
+  if (write.ifRevision !== null) {
+    return env.DB.prepare(`
+      update account_vault_items
+      set ciphertext = ?, updated_at = ${NEXT_UPDATED_AT}, writer_device_id = ?, refresh_owner = ?, deleted = 0
+      where user_id = ? and scope_key = ? and item_kind = ? and item_key = ?
+        and (updated_at = ? or writer_device_id = ?)
+    `).bind(
+      sealedValue,
+      updatedAt,
+      updatedAt,
+      writerDeviceId,
+      write.refreshOwner,
+      userId,
+      write.scope,
+      write.kind,
+      write.key,
+      write.ifRevision,
+      writerDeviceId,
+    );
+  }
+  return env.DB.prepare(`
+    insert into account_vault_items(
+      user_id, scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, 0)
+    on conflict(user_id, scope_key, item_kind, item_key) do update set
+      ciphertext = excluded.ciphertext,
+      updated_at = ${NEXT_UPDATED_AT},
+      writer_device_id = excluded.writer_device_id,
+      refresh_owner = excluded.refresh_owner,
+      deleted = 0
+    where account_vault_items.updated_at <= ? or account_vault_items.writer_device_id = ?
+  `).bind(
+    userId,
+    write.scope,
+    write.kind,
+    write.key,
+    sealedValue,
+    updatedAt,
+    writerDeviceId,
+    write.refreshOwner,
+    updatedAt,
+    updatedAt,
+    itemResults ? staleWriteThreshold(clock, write.writtenAt) : staleWriteThreshold(clock, null),
+    writerDeviceId,
+  );
+}
+
 async function handleWrite(
   request: Request,
   env: VaultEnv,
@@ -336,13 +537,16 @@ async function handleWrite(
     return json({ ok: false, error: "too many items in one write" }, { status: 413 });
   }
   const writerDeviceId = requiredString(body.deviceId, 128);
-  // Per-item answers are opt-in. A client that does not ask treats a 200 as
-  // "every item landed", so it keeps the all-or-nothing answer: a partial
-  // success it could not see would drop the refused items from its queue.
-  const itemResults = body.itemResults === true;
   const clock = writeClock(body.sentAt);
 
   const verdicts = body.items.map(checkWriteItem);
+  // Per-item answers are opt-in. A client that does not ask treats a 200 as
+  // "every item landed", so it keeps the all-or-nothing answer: a partial
+  // success it could not see would drop the refused items from its queue.
+  // A write that names a revision can be refused on its own, so naming one
+  // asks for them too.
+  const itemResults = body.itemResults === true
+    || verdicts.some((verdict) => verdict.ok && verdict.write.ifRevision !== null);
   const firstRefusal = verdicts.find((verdict) => !verdict.ok);
   if (firstRefusal && !itemResults) {
     // All or nothing, same reasoning as settings: a caller that believes its
@@ -380,36 +584,10 @@ async function handleWrite(
   // Indexed by position, not by a recomputed composite key: the batch below
   // walks the same array in the same order, so position is already the join.
   const sealed = await Promise.all(parsed.map((write) => sealValue(key, write.value)));
-  // The conflict check is the upsert's own `where`: atomic per row, so a write
-  // racing another machine's newer one cannot slip between a read and a write.
-  // Without `itemResults` (or `writtenAt`) the threshold is never reached.
-  // A row this same device wrote last is never "newer" than its own write:
-  // its earlier write may still have been in flight when this one was made.
-  // (No `deviceId`: SQL's `= null` is never true, so the full check holds.)
-  const outcomes = await env.DB.batch(parsed.map((write, index) => env.DB.prepare(`
-    insert into account_vault_items(
-      user_id, scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted
-    )
-    values (?, ?, ?, ?, ?, ?, ?, ?, 0)
-    on conflict(user_id, scope_key, item_kind, item_key) do update set
-      ciphertext = excluded.ciphertext,
-      updated_at = excluded.updated_at,
-      writer_device_id = excluded.writer_device_id,
-      refresh_owner = excluded.refresh_owner,
-      deleted = 0
-    where account_vault_items.updated_at <= ? or account_vault_items.writer_device_id = ?
-  `).bind(
-    userId,
-    write.scope,
-    write.kind,
-    write.key,
-    sealed[index]!,
-    updatedAt,
-    writerDeviceId,
-    write.refreshOwner,
-    itemResults ? staleWriteThreshold(clock, write.writtenAt) : staleWriteThreshold(clock, null),
-    writerDeviceId,
-  )));
+  // Each check is its statement's own `where`: atomic per row, so a write
+  // racing another machine's cannot slip between a read and a write.
+  const outcomes = await env.DB.batch(parsed.map((write, index) =>
+    vaultWriteStatement(env, userId, write, sealed[index]!, updatedAt, writerDeviceId, itemResults, clock)));
 
   if (!itemResults) return json({ ok: true, written: parsed.length, updatedAt });
 
@@ -429,6 +607,12 @@ async function handleWrite(
  * a write: a machine back after days offline must not delete a value another
  * machine set since. A row the deleting device (`?deviceId=`) wrote last is
  * not refused: its own earlier write may have landed after this delete was made.
+ *
+ * With `?ifRevision=`, the rule is the write's (see `vaultWriteStatement`): the
+ * delete goes only while the row still has that revision, or this device wrote
+ * it last. `absent` deletes nothing; it answers `stale` when a live row exists.
+ * A row that is already a tombstone is not refused: what the delete wanted is
+ * already true.
  */
 async function handleDelete(
   env: VaultEnv,
@@ -444,20 +628,37 @@ async function handleDelete(
   if (!scope || !key || !kind || !ITEM_KINDS.has(kind)) {
     return json({ ok: false, error: "invalid item" }, { status: 400 });
   }
+  const ifRevision = parseIfRevision(url.searchParams.get("ifRevision"));
+  if (ifRevision === undefined) return json({ ok: false, error: "invalid revision" }, { status: 400 });
   const clock = writeClock(url.searchParams.get("sentAt"));
   const threshold = staleWriteThreshold(clock, url.searchParams.get("writtenAt"));
   const deviceId = requiredString(url.searchParams.get("deviceId"), 128);
   const updatedAt = new Date(clock.nowMs).toISOString();
-  const result = await env.DB.prepare(`
-    update account_vault_items
-    set deleted = 1, ciphertext = '', updated_at = ?, writer_device_id = ?, refresh_owner = null
-    where user_id = ? and scope_key = ? and item_kind = ? and item_key = ? and deleted = 0
-      and (updated_at <= ? or writer_device_id = ?)
-  `).bind(updatedAt, deviceId, userId, scope, kind, key, threshold, deviceId).run();
-  const deleted = (result.meta?.changes ?? 0) > 0;
-  if (!deleted && url.searchParams.has("writtenAt")) {
+  let deleted = false;
+  if (ifRevision !== VAULT_REVISION_ABSENT) {
+    const result = await env.DB.prepare(`
+      update account_vault_items
+      set deleted = 1, ciphertext = '', updated_at = ${NEXT_UPDATED_AT}, writer_device_id = ?, refresh_owner = null
+      where user_id = ? and scope_key = ? and item_kind = ? and item_key = ? and deleted = 0
+        and (updated_at ${ifRevision === null ? "<=" : "="} ? or writer_device_id = ?)
+    `).bind(
+      updatedAt,
+      updatedAt,
+      deviceId,
+      userId,
+      scope,
+      kind,
+      key,
+      ifRevision ?? threshold,
+      deviceId,
+    ).run();
+    deleted = (result.meta?.changes ?? 0) > 0;
+  }
+  const checked = ifRevision !== null || url.searchParams.has("writtenAt");
+  if (!deleted && checked) {
     const row = await readVaultRow(env, userId, { scope, kind, key });
-    if (row && !row.deleted && row.updated_at > threshold) {
+    const newer = ifRevision !== null || (row !== null && row.updated_at > threshold);
+    if (row && !row.deleted && newer) {
       const sealKey = await vaultKey(env);
       if (!sealKey) return vaultUnavailable();
       return json(
@@ -472,6 +673,12 @@ async function handleDelete(
 /**
  * Routes under `/attention/account/vault`. Returns `null` when the path is not
  * ours.
+ *
+ *   GET    vault?scope&since            items, opened, paged by revision
+ *   PUT    vault                        { items: [...] } writes
+ *   DELETE vault/<scope>/<kind>/<key>   one removal
+ *   GET    vault/item?scope&kind&key    one item, opened (never a browser)
+ *   GET    vault/keys?scope[&kind]      live keys only, no value (never a browser)
  *
  * The caller has already authenticated; `userId` is the verified account and
  * every statement is scoped to it. No route names another account, so one
@@ -492,6 +699,15 @@ export async function handleAccountVaultRoute(
   if (route.length === 1 && request.method === "PUT") {
     return await handleWrite(request, env, userId);
   }
+  if (route.length === 2 && (route[1] === "item" || route[1] === "keys") && request.method === "GET") {
+    // For the account directory's binding: a browser never reaches these
+    // (`BROWSER_ACCOUNT_ROUTES` in relay.ts refuses them first). Checked here
+    // again so a change to that list cannot open them by accident.
+    if (request.headers.has("origin")) return json({ ok: false, error: "origin not allowed" }, { status: 403 });
+    return route[1] === "item"
+      ? await handleItemRead(env, userId, url)
+      : await handleKeysRead(env, userId, url);
+  }
   // `/vault/<scope>/<kind>/<key>`. A key with `/` in it arrives encoded
   // (`%2F`) and stays one segment; one a proxy decoded on the way arrives as
   // several, and joining them gives back the same key.
@@ -507,4 +723,90 @@ export async function handleAccountVaultRoute(
     );
   }
   return null;
+}
+
+/* ---- The account directory's Linear lease (directory secret, no account token) ---- */
+
+/** The one item this route can change. */
+const LINEAR_LEASE_ITEM = { kind: "integration", key: "linear" } as const;
+
+function linearOAuthRefreshTokenOf(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown> | null;
+    if (!parsed || parsed.v !== 1 || parsed.authMode !== "oauth") return null;
+    return typeof parsed.refreshToken === "string" && parsed.refreshToken.trim() ? parsed.refreshToken.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `PUT /directory/accounts/<userId>/vault/linear-lease` from the account
+ * directory's minute cron: publish a Linear grant the directory renewed but
+ * could not publish while the person's request was open (the directory's
+ * `linearRenewal.ts`). Directory provenance is the only credential, so the
+ * route is as narrow as the job:
+ *
+ * - It changes only `integration/linear` of one repository scope.
+ * - It changes a row only while that row still holds the refresh token the
+ *   directory spent (`spentRefreshToken`). That token is dead at Linear, so
+ *   such a row can only be replaced by its next turn. A row that was deleted,
+ *   or that holds another grant (a new sign-in), is left alone.
+ * - The new value must be a Linear OAuth grant, and the row's owner becomes
+ *   `refreshOwner` (the directory), as on any renewal.
+ *
+ * A browser never reaches it: a request with an Origin is refused.
+ */
+export async function handleDirectoryLinearLeasePublish(
+  request: Request,
+  env: VaultEnv,
+  url: URL,
+  checkProvenance: (request: Request, env: VaultEnv) => { ok: true } | { response: Response },
+  accountKeysFor: (env: VaultEnv, clerkUserId: string) => Promise<string[]>,
+): Promise<Response | null> {
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length !== 5 || parts[0] !== "directory" || parts[1] !== "accounts" || parts[3] !== "vault" || parts[4] !== "linear-lease") return null;
+  if (request.headers.get("origin")) return json({ ok: false, error: "origin not allowed" }, { status: 403 });
+  if (request.method !== "PUT") return json({ ok: false, error: "not found" }, { status: 404 });
+  const provenance = checkProvenance(request, env);
+  if ("response" in provenance) return provenance.response;
+  const clerkUserId = requiredString(decodePathSegment(parts[2]), 256);
+  if (!clerkUserId) return json({ ok: false, error: "invalid account" }, { status: 400 });
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+  if (!isRecord(body)) return json({ ok: false, error: "invalid body" }, { status: 400 });
+  const scope = parseAccountScopeKey(typeof body.scope === "string" ? body.scope : null);
+  const refreshOwner = requiredString(body.refreshOwner, 128);
+  const spent = typeof body.spentRefreshToken === "string" ? body.spentRefreshToken.trim() : "";
+  const value = typeof body.value === "string" ? body.value : "";
+  const next = linearOAuthRefreshTokenOf(value);
+  if (!scope || scope === "all" || !refreshOwner || !spent || !next || next === spent || value.length > 16_384) {
+    return json({ ok: false, error: "invalid lease publish" }, { status: 400 });
+  }
+  const key = await vaultKey(env);
+  if (!key) return vaultUnavailable();
+  const accountKeys = await accountKeysFor(env, clerkUserId);
+  if (accountKeys.length === 0) return json({ ok: false, error: "account sign-in is not configured" }, { status: 503 });
+
+  const sealed = await sealValue(key, value);
+  const now = new Date().toISOString();
+  let written = 0;
+  for (const accountKey of accountKeys) {
+    const row = await readVaultRow(env, accountKey, { scope, ...LINEAR_LEASE_ITEM });
+    if (!row || row.deleted) continue;
+    if (linearOAuthRefreshTokenOf(await openValue(key, row.ciphertext)) !== spent) continue;
+    // The row's own revision guards the gap between this read and the write.
+    const result = await env.DB.prepare(`
+      update account_vault_items
+      set ciphertext = ?, updated_at = ${NEXT_UPDATED_AT}, writer_device_id = ?, refresh_owner = ?, deleted = 0
+      where user_id = ? and scope_key = ? and item_kind = ? and item_key = ? and deleted = 0 and updated_at = ?
+    `).bind(sealed, now, now, refreshOwner, refreshOwner, accountKey, scope, LINEAR_LEASE_ITEM.kind, LINEAR_LEASE_ITEM.key, row.updated_at).run();
+    written += result.meta?.changes ?? 0;
+  }
+  return json({ ok: true, written });
 }

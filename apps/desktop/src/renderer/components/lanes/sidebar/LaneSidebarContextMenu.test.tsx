@@ -43,6 +43,8 @@ function renderSingleLaneMenu() {
   const props = {
     menu: { laneId: "lane-1", x: 10, y: 10 },
     lanesById,
+    // The lane's machine: its menu actions go there.
+    runtimePin: { kind: "local", key: "local:/tmp", rootPath: "/tmp", displayName: "tmp" } as const,
     onClose: vi.fn(),
     onManage: vi.fn(),
     selectLane: vi.fn(),

@@ -27,6 +27,8 @@ export type BuiltInBrowserPageContextMenuActions = {
   copyText: (text: string) => void;
   copyImageAt: (x: number, y: number) => void;
   inspectAt: (x: number, y: number) => void;
+  /** The system print dialog for the page, as Chrome's Print… does. */
+  print?: () => void;
 };
 
 export function buildBuiltInBrowserPageContextMenuTemplate(
@@ -62,6 +64,7 @@ export function buildBuiltInBrowserPageContextMenuTemplate(
       { label: "Forward", enabled: actions.canGoForward, click: actions.forward },
       { label: "Reload", click: actions.reload },
     ]);
+    if (actions.print) groups.push([{ label: "Print…", click: actions.print }]);
   }
   groups.push([{ label: "Inspect", click: () => actions.inspectAt(params.x, params.y) }]);
 

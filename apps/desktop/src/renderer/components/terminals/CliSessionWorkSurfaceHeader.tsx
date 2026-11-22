@@ -1,4 +1,4 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { DotsThreeVertical, Info, Square } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
@@ -244,6 +244,7 @@ export function CliSessionWorkSurfaceHeader({
   prPaneOpen,
   runtimePin = null,
   prBadgeOnly = false,
+  leadingTrailingAction,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
@@ -263,6 +264,8 @@ export function CliSessionWorkSurfaceHeader({
   runtimePin?: OpenProjectBinding | null;
   /** Hide the create button until a pull request exists. */
   prBadgeOnly?: boolean;
+  /** Drawn first among the trailing actions (a running CLI's input-box toggle). */
+  leadingTrailingAction?: ReactNode;
 }) {
   const navigate = useNavigate();
   const lane = lanes.find((entry) => entry.id === session.laneId) ?? null;
@@ -315,6 +318,7 @@ export function CliSessionWorkSurfaceHeader({
       toolsPaneOpen={toolsPaneOpen}
       trailingActions={
         <>
+          {leadingTrailingAction}
           <ClaudeLoginHeaderAction session={session} runtimePin={runtimePin} />
           <CliSurfaceTrailingActions
             session={session}

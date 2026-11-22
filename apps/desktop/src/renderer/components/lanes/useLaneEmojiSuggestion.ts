@@ -23,6 +23,8 @@ async function requestLaneEmojiSuggestion(
     },
     priority: "interactive",
   };
+  // No machine to ask: no suggestion; the user picks one.
+  if (!pin) return null;
   try {
     const answer = (await window.ade.ai.jevDecide(request, pin))?.emoji;
     if (!answer || answer.type !== "choice" || answer.confidence < LANE_EMOJI_MIN_CONFIDENCE) {

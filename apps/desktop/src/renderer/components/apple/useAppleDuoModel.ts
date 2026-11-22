@@ -45,7 +45,7 @@ export function useAppleDuoModel({
 }: {
   enabled: boolean;
   pinKey: string | null;
-  runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
+  runtimePinRef: MutableRefObject<OpenProjectBinding>;
 }): Group | null {
   const [model, setModel] = useState<Group | null>(null);
   useEffect(() => {

@@ -341,6 +341,20 @@
 .ade-mpick-item > svg {
   color: var(--color-accent);
 }
+/* Providers' picker: a rule, then ADE Cloud, which is not a machine. */
+.ade-mpick-rule {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--color-border);
+}
+.ade-mpick-cloud {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent);
+}
 
 button.ade-mx-hero-chip {
   font: inherit;
@@ -572,4 +586,38 @@ button.ade-mx-hero-chip {
 .ade-mx-row-sub {
   min-width: 0;
   overflow: hidden;
+}
+
+/* Settings › Project: the computer whose copy of the project the page reads.
+   A quiet line above the page; the picker when there is more than one copy. */
+.ade-copy-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: var(--kit-text-3);
+}
+.ade-copy-scope-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-fg);
+  font-weight: 600;
+}
+
+/* The copy line above a project page sits close to the page it names. */
+.ade-copy-scope-column {
+  padding-bottom: 0;
+  /* The page stack spaces its children 32px apart; the line sits nearer both. */
+  margin-top: -12px;
+  margin-bottom: -18px;
+}
+.ade-copy-scope-block {
+  margin-bottom: -18px;
+}
+.ade-copy-scope-column .ade-copy-scope,
+.ade-copy-scope-block .ade-copy-scope {
+  margin-bottom: 0;
 }

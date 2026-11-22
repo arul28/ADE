@@ -59,11 +59,11 @@ import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
-import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
+import { selfHealBackgroundSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { requestChatActionsPane } from "./chatActionsPaneRequests";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
-import { useChatChildRoster } from "./chatSubagentRoster";
+import { useChatSubagentRows } from "./chatSubagentRoster";
 import { ChatShellsSection } from "./ChatShellsSection";
 import { TerminalWatchRow } from "./ChatTerminalWatches";
 import { Banner } from "../ui/notice";
@@ -72,6 +72,7 @@ import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared
 import { ChatWorkflowActiveCard, workflowRunTaskIds } from "./ChatWorkflowActiveCard";
 import type { ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
+import { subscribeToTicker } from "../../lib/ticker";
 
 const PANE_UI_STORAGE_PREFIX = "ade.chat.paneUi.v1";
 const PANE_CLEARED_STORAGE_PREFIX = "ade.chat.paneCleared.v1";
@@ -225,7 +226,7 @@ const COMPACT_PANE_WORD: Record<string, string> = {
   "needs you": "you",
   "need you": "you",
   failed: "fail",
-  halted: "halt",
+  stopped: "stop",
   done: "done",
   scheduled: "sched",
 };
@@ -239,25 +240,27 @@ function compactPaneHint(parts: Array<{ count: number; text: string }>): { full:
 
 /*
  * One shared 1s clock for every live timer in the pane. A row subscribes only
- * while it is running; the interval exists only while someone subscribes.
+ * while it is running; the clock runs only while someone subscribes. It rides
+ * the renderer's one-second ticker (`lib/ticker.ts`), so the pane's timers
+ * change in the same frame as every other live label, not in one of their own.
  */
 const paneClockListeners = new Set<() => void>();
 let paneClockNow = Date.now();
-let paneClockTimer: number | null = null;
+let paneClockTimer: (() => void) | null = null;
 
 function subscribePaneClock(listener: () => void): () => void {
   paneClockListeners.add(listener);
   if (paneClockTimer === null) {
     paneClockNow = Date.now();
-    paneClockTimer = window.setInterval(() => {
+    paneClockTimer = subscribeToTicker(1000, () => {
       paneClockNow = Date.now();
       for (const notify of paneClockListeners) notify();
-    }, 1000);
+    });
   }
   return () => {
     paneClockListeners.delete(listener);
     if (paneClockListeners.size === 0 && paneClockTimer !== null) {
-      window.clearInterval(paneClockTimer);
+      paneClockTimer();
       paneClockTimer = null;
     }
   };
@@ -427,7 +430,7 @@ function EarlierToggle({
       className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:text-fg/60"
     >
       <span aria-hidden>{expanded ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}</span>
-      <span className="whitespace-nowrap">Completed ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}</span>
+      <span className="whitespace-nowrap">Done ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}</span>
     </button>
   );
 }
@@ -631,7 +634,7 @@ const STATUS_LABEL: Record<ChatSubagentSnapshot["status"], string> = {
   running: "running",
   completed: "done",
   failed: "failed",
-  stopped: "halted",
+  stopped: "stopped",
 };
 
 // Elapsed-time chip for the right rail — duration only (no tool/token noise),
@@ -984,6 +987,7 @@ function SubagentRow({
   needsYou = false,
   sessionModelLabel = null,
   onStop,
+  stopsSpawnedChat = false,
 }: {
   snapshot: ChatSubagentSnapshot;
   selected: boolean;
@@ -1009,6 +1013,8 @@ function SubagentRow({
   sessionModelLabel?: string | null;
   onClick: () => void;
   onStop?: (snapshot: ChatSubagentSnapshot) => void;
+  /** `onStop` also stops a spawned child session (a CLI parent's pane). */
+  stopsSpawnedChat?: boolean;
 }) {
   const isSpawnedChat = snapshot.childSessionId != null;
   // Spawned-chat rows read as the chat they open: prefer the resolved live
@@ -1174,7 +1180,7 @@ function SubagentRow({
           ) : null}
         </span>
       </button>
-      {isRunning && onStop && !isSpawnedChat && !isSyntheticWorkflowAgent(snapshot) ? (
+      {isRunning && onStop && (!isSpawnedChat || stopsSpawnedChat) && !isSyntheticWorkflowAgent(snapshot) ? (
         <button
           type="button"
           aria-label={`Stop ${name}`}
@@ -1314,6 +1320,7 @@ export function ChatSubagentsPanel({
   onCancelScheduledWork,
   onStopBackgroundTask,
   onStopSubagent,
+  onStopSpawnedChild,
   sessionModelLabel = null,
   runtimeAlive,
   childChatStatuses,
@@ -1384,6 +1391,12 @@ export function ChatSubagentsPanel({
   /** Stop a running Codex background terminal via `thread/backgroundTerminals/terminate`. */
   onStopBackgroundTask?: (snapshot: ChatScheduledWorkSnapshot) => void;
   onStopSubagent?: (snapshot: ChatSubagentSnapshot) => void;
+  /**
+   * Stop a spawned child session from its row. A chat's pane leaves that to the
+   * child's own surface; a CLI parent's pane, which is where its children are
+   * reached, offers it.
+   */
+  onStopSpawnedChild?: (childSessionId: string) => void;
   sessionModelLabel?: string | null;
   /**
    * Whether the host still holds a provider runtime for this chat. `false`
@@ -1519,16 +1532,13 @@ export function ChatSubagentsPanel({
   // The chat's filed subagents (the Work list leaves them out) and the child
   // chats its rows name, from the sessions of the machine it runs on.
   const scope = useChatRuntimeScope();
-  const { snapshots: snapshotsWithRoster, childById, childStatuses } = useChatChildRoster(
+  // Self-healed first, so every count, cap, grouping and label below reads the
+  // truthful status rather than a "running" the event stream never closed.
+  const { rows: healedSnapshots, childById } = useChatSubagentRows(
     sessionId,
     snapshots,
     childChatStatuses,
-  );
-  // Self-heal first, so every count, cap, grouping and label below reads the
-  // truthful status rather than a "running" the event stream never closed.
-  const healedSnapshots = useMemo(
-    () => selfHealSubagentSnapshots(snapshotsWithRoster, { runtimeAlive, childChatStatuses: childStatuses }),
-    [snapshotsWithRoster, runtimeAlive, childStatuses],
+    runtimeAlive,
   );
   // The workflow card owns these rows, so it reads the same healed status:
   // a run whose runtime died must not stay "Active" with a live Stop.
@@ -1863,7 +1873,10 @@ export function ChatSubagentsPanel({
       }
       needsYou={subagentNeedsYou(snap)}
       sessionModelLabel={sessionModelLabel}
-      onStop={onStopSubagent}
+      onStop={snap.childSessionId != null && onStopSpawnedChild
+        ? () => onStopSpawnedChild(snap.childSessionId!)
+        : onStopSubagent}
+      stopsSpawnedChat={onStopSpawnedChild != null}
       onClick={() => handleRowClick(snap)}
     />
   );

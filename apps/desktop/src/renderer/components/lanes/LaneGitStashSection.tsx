@@ -40,8 +40,8 @@ export function LaneGitStashSection({
   onHide,
 }: {
   laneId: string | null;
-  /** The lane's machine; null for the tab's own. */
-  pin: OpenProjectBinding | null;
+  /** The lane's machine. */
+  pin: OpenProjectBinding;
   /** The pane's cache scope, dropped before each stash mutation. */
   projectKey: string | null;
   stashes: GitStashSummary[];

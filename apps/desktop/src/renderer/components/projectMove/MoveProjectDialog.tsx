@@ -20,7 +20,7 @@ import {
   type ProjectMoveVolume,
 } from "../../../shared/types/projectMove";
 import { Dialog } from "../ui/dialog";
-import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { localProjectBindingForRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import { issueChatLaunchArgs } from "../../lib/linearBatchLaunch";
 import { askFirstNativeControls } from "../../lib/nativeLaunchControls";
@@ -223,7 +223,9 @@ export function MoveProjectDialog({
     if (!record) return;
     setStartingCheck(true);
     try {
-      const lanes = await window.ade.lanes.list({ includeStatus: false });
+      // The moved copy is on this computer, at its new folder: the check runs there.
+      const movedPin = localProjectBindingForRoot(record.destinationRoot, projectName);
+      const lanes = await window.ade.lanes.list({ includeStatus: false }, movedPin);
       const primary = lanes.find((lane) => lane.laneType === "primary");
       if (!primary) throw new Error("The moved project's main lane isn't ready yet. Try again in a moment.");
       if (!checkModelId && !checkConfig.presetId) throw new Error("Pick a model for the agent.");
@@ -248,7 +250,7 @@ export function MoveProjectDialog({
         ...launchArgs,
         ...(permissionMode != null ? { permissionMode } : {}),
         title: "Check the project move",
-      });
+      }, movedPin);
       announceWorkChatSessionCreated(record.destinationRoot, session);
       onClose();
       window.location.hash = `#/work?sessionId=${encodeURIComponent(session.id)}&laneId=${encodeURIComponent(primary.id)}`;

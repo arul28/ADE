@@ -110,6 +110,10 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   var attentionRequestedAt: String? = nil
   var attentionMessage: String? = nil
   var lastTurnFailedAt: String? = nil
+  /// Phone-only: an ADE Cloud saved chat whose running turn ADE stopped when
+  /// its computer slept, stopped or was deleted (saved status `interrupted`).
+  /// Its Work row reads Stopped, as on desktop. Hosts never send it.
+  var stoppedForRest: Bool? = nil
   var exitCode: Int? = nil
   // Settle override + snooze visibility overlay (ADE-125 lifecycle). Same
   // additive contract: hosts that predate the fields simply omit them.
@@ -290,6 +294,10 @@ struct RemoteRosterProject: Codable, Equatable, Identifiable {
   /// Normalized git origin of the project's repository (newer hosts). The
   /// Work tab matches the same repository across machines on it.
   var repoOriginUrl: String? = nil
+  /// The account project this folder is a copy of (newer hosts, signed in to
+  /// the same account). The Hub joins on it first.
+  var accountProjectId: String? = nil
+  var githubRepoId: Int? = nil
   /// How many chats the host has for this project (`rosterChatPagesV1`):
   /// `chats` then holds only the head rows, and `roster_chats_request` returns
   /// the rest. Nil from hosts that send every chat.
@@ -603,6 +611,8 @@ struct RemoteRosterProjectHead: Codable, Equatable {
   var attentionCount: Int
   var lanes: [RemoteRosterLane]
   var repoOriginUrl: String? = nil
+  var accountProjectId: String? = nil
+  var githubRepoId: Int? = nil
   var chatTotal: Int? = nil
 }
 
@@ -628,6 +638,8 @@ extension RemoteRosterProject {
     attentionCount = head.attentionCount
     lanes = head.lanes
     repoOriginUrl = head.repoOriginUrl
+    accountProjectId = head.accountProjectId
+    githubRepoId = head.githubRepoId
     chatTotal = head.chatTotal
   }
 
@@ -751,16 +763,26 @@ extension RemoteRosterChat {
       || raw == "chat"
   }
 
-  /// Whether this row should drive an attention bubble on the hub. Only chat
-  /// rows (and shells attached to a chat) count — attention feeds the hub's
+  /// Agent CLI tool types (desktop `isTrackedAgentCliToolType`).
+  private static let agentCliToolTypes: Set<String> = [
+    "claude", "codex", "cursor-cli", "droid", "opencode", "pi", "muse", "qwen", "kimi",
+    "grok", "copilot", "devin", "claude-orchestrated", "codex-orchestrated", "opencode-orchestrated",
+  ]
+
+  /// Whether this row should drive an attention bubble on the hub. Chat rows
+  /// (and shells attached to a chat) count — attention feeds the hub's
   /// attention-first project sort, and a standalone CLI session that exited
   /// non-zero long ago must not pin its project to the top forever (CLI rows
-  /// have no mobile archive/clear affordance). Mirrors the host rosterBuilder.
+  /// have no mobile archive/clear affordance). A running agent CLI that waits
+  /// on the person (no exit code yet) counts like a chat: that hand is current.
+  /// Mirrors the host rosterBuilder.
   var needsAttention: Bool {
     guard awaitingInput == true || status == .awaiting || status == .failed else { return false }
     if isChatTool { return true }
     let parentId = chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return !parentId.isEmpty && parentId != id
+    if !parentId.isEmpty && parentId != id { return true }
+    let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    return status == .awaiting && exitCode == nil && Self.agentCliToolTypes.contains(raw)
   }
 
   var isRunning: Bool {
@@ -896,10 +918,14 @@ extension RemoteRosterChat {
   /// (session.status, session.runtimeState) pair that drives the Work row's
   /// status dot via `rawWorkChatSessionStatus`.
   private var sessionStatusStrings: (status: String, runtimeState: String) {
+    // A shell or CLI row keeps the "running" status for as long as its terminal
+    // is open, as on its own machine; only a chat rests with an "idle" status.
+    // Without this, an open shell at its prompt reads as ended.
+    let terminalRow = !isWorkChatToolType(toolType)
     switch status {
     case .running: return ("running", "running")
-    case .awaiting: return ("awaiting-input", "running")
-    case .idle: return ("idle", "idle")
+    case .awaiting: return terminalRow ? ("running", "waiting-input") : ("awaiting-input", "running")
+    case .idle: return terminalRow ? ("running", "idle") : ("idle", "idle")
     case .ended: return ("completed", "exited")
     case .failed: return ("failed", "failed")
     }
@@ -919,9 +945,10 @@ extension RemoteRosterChat {
       goal: nil,
       toolType: toolType,
       title: (title?.isEmpty == false ? title! : "Untitled chat"),
-      status: strings.status,
+      // "disposed" is the Stopped phase (`workCanonicalSessionState`).
+      status: stoppedForRest == true ? "disposed" : strings.status,
       startedAt: lifecycleTimestamp,
-      endedAt: status == .ended ? lifecycleTimestamp : nil,
+      endedAt: status == .ended || stoppedForRest == true ? lifecycleTimestamp : nil,
       lastActivityAt: lifecycleTimestamp.isEmpty ? nil : lifecycleTimestamp,
       archivedAt: archived == true ? lifecycleTimestamp : nil,
       settledAt: settledAt,
@@ -952,6 +979,12 @@ extension RemoteRosterChat {
     )
     session.spawnKind = spawnKind
     session.orchestrationParentSessionId = orchestrationParentSessionId
+    // The roster says "waiting on you" without the pending item the owning
+    // machine holds. The provider asked, so the row reads Needs you here as it
+    // does on that machine, not as a quiet chat.
+    if status == .awaiting, attentionRequestedAt == nil {
+      session.attentionSource = "provider_structured"
+    }
     return session
   }
 }
@@ -1006,4 +1039,11 @@ func rosterDerivedChatSummary(_ payload: [String: Any]) -> AgentChatSessionSumma
   else { return nil }
   summary.rosterDerived = true
   return summary
+}
+
+extension RemoteRosterLane {
+  /// The name every screen shows; the primary lane reads "Main checkout".
+  var displayName: String {
+    laneType == "primary" ? "Main checkout" : name
+  }
 }

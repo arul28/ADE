@@ -108,7 +108,6 @@ export function resolveKnownProjectRoot(
 ): string | null {
   const trimmed = typeof requested === "string" ? requested.trim() : "";
   if (!trimmed) return null;
-  const target = canonicalProjectPath(trimmed);
   const known: string[] = [];
   const openRoot = sources.openProjectRoot?.trim();
   if (openRoot) known.push(openRoot);
@@ -117,6 +116,13 @@ export function resolveKnownProjectRoot(
       if (typeof root === "string" && root.trim()) known.push(root);
     }
   }
+  // The spelling as given first: `realpath` reads every folder it names, and
+  // one of them may be on a drive that stopped answering (a project the brain
+  // refused as too slow). Only a spelling that matches nothing is canonicalized.
+  const given = path.resolve(trimmed);
+  const exact = known.find((candidate) => pathsEqual(path.resolve(candidate), given, platform));
+  if (exact) return exact;
+  const target = canonicalProjectPath(trimmed);
   // `pathsEqual` rather than `===`: realpath only case-normalizes a path that
   // exists, so on Windows and macOS two spellings of the same live directory
   // still differ whenever either side skipped the realpath (unmounted volume,

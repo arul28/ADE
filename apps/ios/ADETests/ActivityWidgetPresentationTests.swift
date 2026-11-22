@@ -136,7 +136,7 @@ final class ActivityWidgetPresentationTests: XCTestCase {
             lines.map { $0.url?.absoluteString },
             ["ade://session/s-asked", "ade://session/s-live"]
         )
-        XCTAssertEqual(lines.map(\.scope), ["Studio Mac · ADE", "Studio Mac · ADE"])
+        XCTAssertEqual(lines.map(\.scope), ["ADE", "ADE"])
     }
 
     /// A lock screen is readable by anyone holding the phone — the scope line

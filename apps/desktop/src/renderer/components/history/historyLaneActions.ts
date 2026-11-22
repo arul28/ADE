@@ -1,4 +1,4 @@
-import type { GitConflictState, GitStashSummary } from "../../../shared/types";
+import type { GitConflictState, GitStashSummary, OpenProjectBinding } from "../../../shared/types";
 import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
@@ -350,21 +350,23 @@ function stripIpcError(err: unknown): string {
   return raw.replace(/^Error invoking remote method '[^']+':\s*/i, "").trim();
 }
 
-async function getLatestBranchStash(laneId: string): Promise<GitStashSummary | null> {
-  const stashes = await window.ade.git.stashList({ laneId });
+async function getLatestBranchStash(laneId: string, pin: OpenProjectBinding): Promise<GitStashSummary | null> {
+  const stashes = await window.ade.git.stashList({ laneId }, pin);
   return stashes[0] ?? null;
 }
 
 export async function runHistoryLaneAction(args: {
   actionId: HistoryLaneActionId;
   laneId: string;
+  /** The lane's machine: every git call of the action goes there. */
+  pin: OpenProjectBinding;
   laneName?: string | null;
   onNotice?: (message: string) => void;
   onError?: (message: string) => void;
   onComplete?: () => void;
   navigate?: (path: string) => void;
 }): Promise<void> {
-  const { actionId, laneId, laneName, onNotice, onError, onComplete, navigate } =
+  const { actionId, laneId, pin, laneName, onNotice, onError, onComplete, navigate } =
     args;
   const target = laneName ? ` for ${laneName}` : "";
   const laneLabel = laneName?.trim() || laneId;
@@ -372,7 +374,7 @@ export async function runHistoryLaneAction(args: {
   try {
     switch (actionId) {
       case "fetch":
-        await window.ade.git.fetch({ laneId });
+        await window.ade.git.fetch({ laneId }, pin);
         onNotice?.("Fetched remote refs");
         onComplete?.();
         return;
@@ -380,7 +382,7 @@ export async function runHistoryLaneAction(args: {
         if (!await confirmOrCancel(`Fast-forward pull from upstream${target}? This updates the lane worktree.`)) {
           return;
         }
-        await window.ade.git.pull({ laneId, mode: "ff-only" });
+        await window.ade.git.pull({ laneId, mode: "ff-only" }, pin);
         onNotice?.("Pulled from upstream with fast-forward");
         onComplete?.();
         return;
@@ -388,7 +390,7 @@ export async function runHistoryLaneAction(args: {
         if (!await confirmOrCancel(`Pull with rebase${target}? Local commits will replay on top of upstream.`)) {
           return;
         }
-        await window.ade.git.pull({ laneId, mode: "rebase" });
+        await window.ade.git.pull({ laneId, mode: "rebase" }, pin);
         onNotice?.("Pulled with rebase");
         onComplete?.();
         return;
@@ -396,7 +398,7 @@ export async function runHistoryLaneAction(args: {
         if (!await confirmOrCancel(`Pull with merge${target}? This may create a merge commit.`)) {
           return;
         }
-        await window.ade.git.pull({ laneId, mode: "merge" });
+        await window.ade.git.pull({ laneId, mode: "merge" }, pin);
         onNotice?.("Pulled with merge");
         onComplete?.();
         return;
@@ -408,7 +410,7 @@ export async function runHistoryLaneAction(args: {
         )) {
           return;
         }
-        await window.ade.git.undoLastHeadChange({ laneId });
+        await window.ade.git.undoLastHeadChange({ laneId }, pin);
         onNotice?.("Undid last head change");
         onComplete?.();
         return;
@@ -420,7 +422,7 @@ export async function runHistoryLaneAction(args: {
         )) {
           return;
         }
-        await window.ade.git.redoLastHeadChange({ laneId });
+        await window.ade.git.redoLastHeadChange({ laneId }, pin);
         onNotice?.("Redid last head change");
         onComplete?.();
         return;
@@ -428,7 +430,7 @@ export async function runHistoryLaneAction(args: {
         if (!await confirmOrCancel(`Push this lane${target} to its upstream remote?`)) {
           return;
         }
-        await window.ade.git.push({ laneId });
+        await window.ade.git.push({ laneId }, pin);
         onNotice?.("Pushed to upstream");
         showToast({ title: `Pushed ${laneLabel}`, tone: "success" });
         onComplete?.();
@@ -437,13 +439,13 @@ export async function runHistoryLaneAction(args: {
         if (!await confirmOrCancel("Force push with lease? This can rewrite the remote branch.", { confirmLabel: "Force push", destructive: true })) {
           return;
         }
-        await window.ade.git.push({ laneId, forceWithLease: true });
+        await window.ade.git.push({ laneId, forceWithLease: true }, pin);
         onNotice?.("Force-pushed with lease");
         showToast({ title: `Force-pushed ${laneLabel}`, tone: "success" });
         onComplete?.();
         return;
       case "copy_branch_name": {
-        const remote = await window.ade.git.getOriginRemote({ laneId });
+        const remote = await window.ade.git.getOriginRemote({ laneId }, pin);
         if (!remote.branch) {
           onNotice?.("No branch name found for this lane");
           return;
@@ -454,7 +456,7 @@ export async function runHistoryLaneAction(args: {
       }
       case "open_branch":
       case "copy_branch_link": {
-        const remote = await window.ade.git.getOriginRemote({ laneId });
+        const remote = await window.ade.git.getOriginRemote({ laneId }, pin);
         const url = githubBranchUrl(remote.remoteUrl, remote.branch);
         if (!url) {
           onNotice?.("No GitHub branch link found for this lane");
@@ -470,7 +472,7 @@ export async function runHistoryLaneAction(args: {
         return;
       }
       case "open_pr": {
-        const pr = await window.ade.git.getOpenPrForBranch({ laneId });
+        const pr = await window.ade.git.getOpenPrForBranch({ laneId }, pin);
         if (!pr.prUrl) {
           onNotice?.("No open PR found for this lane branch");
           return;
@@ -480,7 +482,7 @@ export async function runHistoryLaneAction(args: {
         return;
       }
       case "copy_pr_link": {
-        const pr = await window.ade.git.getOpenPrForBranch({ laneId });
+        const pr = await window.ade.git.getOpenPrForBranch({ laneId }, pin);
         if (!pr.prUrl) {
           onNotice?.("No open PR found for this lane branch");
           return;
@@ -493,7 +495,7 @@ export async function runHistoryLaneAction(args: {
         const currentName = laneName?.trim() || "Lane";
         const nextName = await promptOrCancel("Rename lane", currentName);
         if (!nextName || nextName === currentName) return;
-        await window.ade.lanes.rename({ laneId, name: nextName });
+        await window.ade.lanes.rename({ laneId, name: nextName }, pin);
         onNotice?.(`Renamed lane to ${nextName}`);
         onComplete?.();
         return;
@@ -503,7 +505,7 @@ export async function runHistoryLaneAction(args: {
         if (!await confirmOrCancel(`Archive ${currentName}? The worktree and branch stay on disk.`)) {
           return;
         }
-        await window.ade.lanes.archive({ laneId });
+        await window.ade.lanes.archive({ laneId }, pin);
         onNotice?.("Archived lane");
         onComplete?.();
         return;
@@ -517,13 +519,13 @@ export async function runHistoryLaneAction(args: {
         )) {
           return;
         }
-        await window.ade.lanes.delete({ laneId, deleteBranch: false, force: false });
+        await window.ade.lanes.delete({ laneId, deleteBranch: false, force: false }, pin);
         onNotice?.("Deleted lane worktree");
         onComplete?.();
         return;
       }
       case "delete_lane_branch": {
-        const remote = await window.ade.git.getOriginRemote({ laneId });
+        const remote = await window.ade.git.getOriginRemote({ laneId }, pin);
         const branch = remote.branch?.trim() || "";
         const expected = branch || "delete";
         const message = branch
@@ -532,7 +534,7 @@ export async function runHistoryLaneAction(args: {
         if (!await promptConfirmOrCancel(message, expected, { confirmLabel: "Delete", destructive: true })) {
           return;
         }
-        await window.ade.lanes.delete({ laneId, deleteBranch: true, force: false });
+        await window.ade.lanes.delete({ laneId, deleteBranch: true, force: false }, pin);
         onNotice?.("Deleted lane and local branch");
         onComplete?.();
         return;
@@ -541,7 +543,7 @@ export async function runHistoryLaneAction(args: {
         if (!await confirmOrCancel(`Merge the lane base into this lane${target}?`)) {
           return;
         }
-        await window.ade.git.sync({ laneId, mode: "merge" });
+        await window.ade.git.sync({ laneId, mode: "merge" }, pin);
         onNotice?.("Merged lane base");
         showToast({ title: `Merged base into ${laneLabel}`, tone: "success" });
         onComplete?.();
@@ -550,7 +552,7 @@ export async function runHistoryLaneAction(args: {
         if (!await confirmOrCancel(`Rebase this lane${target} onto its base?`)) {
           return;
         }
-        await window.ade.git.sync({ laneId, mode: "rebase" });
+        await window.ade.git.sync({ laneId, mode: "rebase" }, pin);
         onNotice?.("Rebased onto lane base");
         showToast({ title: `Rebased ${laneLabel}`, tone: "success" });
         onComplete?.();
@@ -559,78 +561,78 @@ export async function runHistoryLaneAction(args: {
         const message = await promptOrCancel("Stash message", "ADE history stash");
         if (!message) return;
         const includeUntracked = await confirmOrCancel("Include untracked files in the stash?", { cancelLabel: "Tracked only" });
-        await window.ade.git.stashPush({ laneId, message, includeUntracked });
+        await window.ade.git.stashPush({ laneId, message, includeUntracked }, pin);
         onNotice?.("Saved stash");
         onComplete?.();
         return;
       }
       case "stash_apply_latest": {
-        const stash = await getLatestBranchStash(laneId);
+        const stash = await getLatestBranchStash(laneId, pin);
         if (!stash) {
           onNotice?.("No branch stashes saved");
           return;
         }
         if (!await confirmOrCancel(`Apply ${stash.ref}: ${stash.subject || "saved stash"}?`)) return;
-        await window.ade.git.stashApply({ laneId, stashRef: stash.ref, stashOid: stash.oid });
+        await window.ade.git.stashApply({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
         onNotice?.(`Applied ${stash.ref}`);
         onComplete?.();
         return;
       }
       case "stash_pop_latest": {
-        const stash = await getLatestBranchStash(laneId);
+        const stash = await getLatestBranchStash(laneId, pin);
         if (!stash) {
           onNotice?.("No branch stashes saved");
           return;
         }
         if (!await confirmOrCancel(`Pop ${stash.ref}: ${stash.subject || "saved stash"}? This removes it from stashes.`)) return;
-        await window.ade.git.stashPop({ laneId, stashRef: stash.ref, stashOid: stash.oid });
+        await window.ade.git.stashPop({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
         onNotice?.(`Popped ${stash.ref}`);
         onComplete?.();
         return;
       }
       case "stash_drop_latest": {
-        const stash = await getLatestBranchStash(laneId);
+        const stash = await getLatestBranchStash(laneId, pin);
         if (!stash) {
           onNotice?.("No branch stashes saved");
           return;
         }
         if (!await confirmOrCancel(`Delete ${stash.ref}: ${stash.subject || "saved stash"}?`, { confirmLabel: "Delete", destructive: true })) return;
-        await window.ade.git.stashDrop({ laneId, stashRef: stash.ref, stashOid: stash.oid });
+        await window.ade.git.stashDrop({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
         onNotice?.(`Dropped ${stash.ref}`);
         onComplete?.();
         return;
       }
       case "stash_clear": {
-        const stashes = await window.ade.git.stashList({ laneId });
+        const stashes = await window.ade.git.stashList({ laneId }, pin);
         if (stashes.length === 0) {
           onNotice?.("No branch stashes saved");
           return;
         }
         if (!await confirmOrCancel(`Delete ${stashes.length} branch stash${stashes.length === 1 ? "" : "es"}?`, { confirmLabel: "Delete", destructive: true })) return;
-        await window.ade.git.stashClear({ laneId });
+        await window.ade.git.stashClear({ laneId }, pin);
         onNotice?.("Cleared branch stashes");
         onComplete?.();
         return;
       }
       case "rebase_continue":
-        await window.ade.git.rebaseContinue({ laneId });
+        await window.ade.git.rebaseContinue({ laneId }, pin);
         onNotice?.("Continued rebase");
         onComplete?.();
         return;
       case "rebase_abort":
         if (!await confirmOrCancel("Abort the in-progress rebase?", { confirmLabel: "Abort", destructive: true })) return;
-        await window.ade.git.rebaseAbort({ laneId });
+        await window.ade.git.rebaseAbort({ laneId }, pin);
         onNotice?.("Aborted rebase");
         onComplete?.();
         return;
       case "merge_continue":
-        await window.ade.git.mergeContinue({ laneId });
+        await window.ade.git.mergeContinue({ laneId }, pin);
         onNotice?.("Continued merge");
         onComplete?.();
         return;
       case "merge_abort":
         if (!await confirmOrCancel("Abort the in-progress merge?", { confirmLabel: "Abort", destructive: true })) return;
-        await window.ade.git.mergeAbort({ laneId });
+        await window.ade.git.mergeAbort({ laneId }, pin);
         onNotice?.("Aborted merge");
         onComplete?.();
         return;

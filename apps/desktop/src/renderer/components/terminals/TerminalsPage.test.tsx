@@ -20,13 +20,7 @@ vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
   confirmDialog: vi.fn(async () => false),
 }));
 import {
-  ProjectSidebarSlotProvider,
-  useProjectSidebarSlotTarget,
-} from "../app/projectSidebar/ProjectSidebarSlot";
-import { setProjectSidebarHidden } from "../app/projectSidebar/projectSidebarPrefs";
-import {
   forgetWorkPtyLaunchPin,
-  rememberWorkPtyLaunchPin,
   workPtyLaunchPinFor,
 } from "./cliLaunch";
 import {
@@ -539,6 +533,10 @@ const floatMocks = vi.hoisted(() => ({
 vi.mock("../apple/appleMiniPlayerStore", async () => ({
   ...(await vi.importActual<typeof import("../apple/appleMiniPlayerStore")>("../apple/appleMiniPlayerStore")),
   floatAppleMiniPlayerForChat: floatMocks.floatAppleMiniPlayerForChat,
+  // A device is floating, so the Work page's floating-device host renders the
+  // player this file mocks. Whether a player exists at all is the device's own
+  // test's question.
+  useAppleMiniPlayerTarget: () => ({ laneId: "lane-1", chatSessionId: null, deviceUdid: "udid-mini" }),
 }));
 
 vi.mock("../apple/AppleDeviceMiniPlayer", () => ({
@@ -639,6 +637,13 @@ function studioMachine(laneId: string, sessions: TerminalSessionSummary[]) {
   };
 }
 
+/** The tab's copy, on this computer: its own rows act there. */
+const TAB_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+function bindTabCopy() {
+  workMocks.projectRoot = "/repo";
+  workMocks.projectBinding = TAB_PIN;
+}
+
 describe("TerminalsPage chat session activation", () => {
   afterEach(() => {
     cleanup();
@@ -665,90 +670,12 @@ describe("TerminalsPage chat session activation", () => {
     vi.clearAllMocks();
   });
 
-  /* ────────────────────────────────────────────────────────────────────────
-     The session list lives in the project sidebar. The board needs the full
-     width, so it draws in the main area: beside the list while the sidebar
-     shows, and as the whole pane when there is no sidebar on screen. Board
-     mode never drives `workSidebarWidthPct`, the user's LIST-mode layout.
-     ──────────────────────────────────────────────────────────────────────── */
-
-  function SidebarBody() {
-    const setTarget = useProjectSidebarSlotTarget();
-    return <div data-testid="sidebar-body" ref={setTarget} />;
-  }
-
-  function renderWithProjectSidebar() {
-    return render(
-      <ProjectSidebarSlotProvider>
-        <SidebarBody />
-        <TerminalsPage />
-      </ProjectSidebarSlotProvider>,
-    );
-  }
-
   function mockBrowserEvents() {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
   }
-
-  it("renders the session list in the project sidebar and only the view in the main area", async () => {
-    mockBrowserEvents();
-
-    renderWithProjectSidebar();
-
-    const sidebar = screen.getByTestId("sidebar-body");
-    const list = await screen.findByTestId("session-list-pane");
-    expect(sidebar.contains(list)).toBe(true);
-    expect(sidebar.contains(screen.getByTestId("work-view-area"))).toBe(false);
-    expect(screen.queryByTestId("work-board-surface")).toBeNull();
-    expect(sessionListPaneProps.latest?.boardHost).toBeUndefined();
-  });
-
-  it("keeps the list in the sidebar and portals the board into the main area", async () => {
-    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
-    mockBrowserEvents();
-
-    renderWithProjectSidebar();
-
-    const sidebar = screen.getByTestId("sidebar-body");
-    const board = await screen.findByTestId("work-board-surface");
-    expect(sidebar.contains(screen.getByTestId("session-list-pane"))).toBe(true);
-    expect(sidebar.contains(board)).toBe(false);
-    await waitFor(() => expect(sessionListPaneProps.latest?.boardHost).toBe(board));
-    // No chat beside the board, and the list-mode tools width is never written.
-    expect(screen.queryByTestId("work-view-area")).toBeNull();
-    expect(workMocks.currentWork.setWorkSidebarWidthPct).not.toHaveBeenCalled();
-  });
-
-  it("gives the board the whole pane while the project sidebar is hidden", async () => {
-    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
-    mockBrowserEvents();
-    setProjectSidebarHidden(true);
-    try {
-      renderWithProjectSidebar();
-
-      const board = await screen.findByTestId("work-board-surface");
-      // The pane is the board, toolbar and all, so the List/Board toggle is
-      // still reachable without the sidebar.
-      expect(board.contains(screen.getByTestId("session-list-pane"))).toBe(true);
-      expect(sessionListPaneProps.latest?.boardHost).toBeUndefined();
-    } finally {
-      setProjectSidebarHidden(false);
-    }
-  });
-
-  it("keeps a plain list column when there is no project sidebar", async () => {
-    mockBrowserEvents();
-
-    render(<TerminalsPage />);
-
-    const column = await screen.findByTestId("work-sessions-column");
-    expect(column.contains(screen.getByTestId("session-list-pane"))).toBe(true);
-    expect(screen.getByTestId("work-view-area")).toBeTruthy();
-    expect(screen.queryByTestId("work-board-surface")).toBeNull();
-  });
 
   it("opening a card from the board selects the session and returns to list mode", async () => {
     const session = workMocks.makeTerminalSession("chat-on-board", "lane-primary", "codex-chat");
@@ -910,43 +837,6 @@ describe("TerminalsPage chat session activation", () => {
 
     expect(workPtyLaunchPinFor(session)).toBeNull();
     expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)?.key).toBe(studioBinding.key);
-  });
-
-  it("leaves a session on the tab's own machine unpinned", async () => {
-    workMocks.projectRoot = "/repo";
-    workMocks.projectBinding = {
-      kind: "local",
-      key: "local:/repo",
-      rootPath: "/repo",
-      displayName: "repo",
-    };
-    // A foreign machine is present, so the lane index is non-empty and the null
-    // below is a real "this lane is on the active binding", not an empty map.
-    workMocks.crossMachineLanesByMachineId = {
-      "target-studio": studioMachine("lane-foreign", []),
-    };
-    mockBrowserEvents();
-    render(<TerminalsPage />);
-    await screen.findByTestId("session-list-pane");
-
-    const local = workMocks.makeTerminalSession("shell-local", "lane-primary", "shell");
-    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(local)).toBeNull();
-  });
-
-  it("drops a remembered pin when that binding is now active", async () => {
-    const activeBinding = STUDIO_BINDING;
-    const session = workMocks.makeTerminalSession("shell-now-active", "lane-primary", "shell");
-    // This pin was remembered while the same binding was foreign. After the
-    // project tab rebinds to it, lane routing returns null and the registry is
-    // the fallback that must also collapse to the unpinned fast path.
-    rememberWorkPtyLaunchPin(session, activeBinding);
-    workMocks.projectBinding = activeBinding;
-    mockBrowserEvents();
-
-    render(<TerminalsPage />);
-    await screen.findByTestId("session-list-pane");
-
-    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toBeNull();
   });
 
   it("opens a foreign CLI session in place even when that checkout is not an open tab", async () => {
@@ -1857,7 +1747,7 @@ describe("TerminalsPage chat session activation", () => {
     await screen.findByTestId("work-view-area");
     expect(miniPlayerProps.latest?.surface).toEqual({
       laneId: "lane-background",
-      runtimePin: null,
+      runtimePin: bound,
       boundBinding: bound,
     });
   });
@@ -2080,6 +1970,7 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   it("bulk deletes selected running chat sessions from the session list", async () => {
+    bindTabCopy();
     const runningCodexChat = workMocks.makeTerminalSession("chat-running-codex", "lane-primary", "codex-chat");
     const runningClaudeChat = workMocks.makeTerminalSession("chat-running-claude", "lane-primary", "claude-chat", {
       ptyId: null,
@@ -2117,8 +2008,8 @@ describe("TerminalsPage chat session activation", () => {
 
     await waitFor(() => {
       expect(agentChatDelete).toHaveBeenCalledTimes(2);
-      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-codex" });
-      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-claude" });
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-codex" }, TAB_PIN);
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-claude" }, TAB_PIN);
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running-codex");
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running-claude");
     });
@@ -2171,6 +2062,7 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   it("stops and deletes a single running CLI session via the context menu", async () => {
+    bindTabCopy();
     const runningCli = workMocks.makeTerminalSession("cli-single", "lane-primary", "codex");
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
     const agentChatDelete = vi.fn().mockResolvedValue(undefined);
@@ -2209,18 +2101,20 @@ describe("TerminalsPage chat session activation", () => {
     }));
 
     await waitFor(() => {
-      // The session-delete service stops the runtime and removes the record in one call;
-      // the chat-delete path must not be touched for a non-chat session.
-      expect(sessionDelete).toHaveBeenCalledWith({ sessionId: "cli-single" });
+      // An agent CLI is deleted through the chat delete, which stops it and
+      // keeps it in Recently deleted; the raw terminal delete would lose it.
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-single" }, TAB_PIN);
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-single");
       expect(workMocks.currentWork.closeTab).toHaveBeenCalledWith("cli-single");
     });
-    expect(agentChatDelete).not.toHaveBeenCalled();
+    expect(sessionDelete).not.toHaveBeenCalled();
   });
 
-  it("keeps a foreign runtime pin after the context menu closes for confirmation", async () => {
+  it("keeps a foreign runtime pin after the context menu closes, and falls back on an older machine", async () => {
     const runningCli = workMocks.makeTerminalSession("cli-studio", "lane-primary", "codex");
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    // An older ADE on that machine has no chat delete for a CLI.
+    const agentChatDelete = vi.fn().mockRejectedValue(new Error("Session 'cli-studio' is not an agent chat session."));
     vi.mocked(confirmDialog).mockResolvedValue(true);
     const binding: OpenProjectBinding = {
       kind: "remote",
@@ -2235,7 +2129,7 @@ describe("TerminalsPage chat session activation", () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
-        agentChat: { delete: vi.fn() },
+        agentChat: { delete: agentChatDelete },
         builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
         sessions: { delete: sessionDelete },
       },
@@ -2265,6 +2159,7 @@ describe("TerminalsPage chat session activation", () => {
     }));
 
     await waitFor(() => {
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-studio" }, binding);
       expect(sessionDelete).toHaveBeenCalledWith(
         { sessionId: "cli-studio" },
         binding,
@@ -2375,6 +2270,7 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   it("stops and deletes a mixed selection of running CLI and chat sessions", async () => {
+    bindTabCopy();
     const runningCli = workMocks.makeTerminalSession("cli-running", "lane-primary", "codex");
     const runningChat = workMocks.makeTerminalSession("chat-running", "lane-primary", "codex-chat", {
       ptyId: null,
@@ -2417,14 +2313,15 @@ describe("TerminalsPage chat session activation", () => {
     await waitFor(() => {
       // The running CLI session is stopped+deleted via the session-delete service,
       // and the chat is removed via the chat delete flow — both in one action.
-      expect(sessionDelete).toHaveBeenCalledWith({ sessionId: "cli-running" });
-      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running" });
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-running" }, TAB_PIN);
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running" }, TAB_PIN);
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-running");
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running");
     });
   });
 
   it("scopes right-click to the multi-selection: bulk menu inside it, the row's own menu outside it", async () => {
+    bindTabCopy();
     const atRest = workMocks.makeTerminalSession("chat-at-rest", "lane-primary", "codex-chat", {
       status: "completed", runtimeState: "exited", endedAt: "2026-05-14T18:05:00.000Z", exitCode: 0,
     });
@@ -2470,7 +2367,7 @@ describe("TerminalsPage chat session activation", () => {
     expect(settleRow.textContent).toContain("1 of 2");
     fireEvent.click(settleRow);
     await waitFor(() => expect(settle).toHaveBeenCalledTimes(1));
-    expect(settle.mock.calls[0]).toEqual(["chat-at-rest"]);
+    expect(settle.mock.calls[0]).toEqual(["chat-at-rest", undefined, TAB_PIN]);
 
     // A refused clipboard write says so instead of closing silently.
     fireEvent.click(screen.getByRole("button", { name: "context menu chat-at-rest" }));
@@ -2710,6 +2607,7 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   it("finishes a bulk delete past a row that fails, and never shows the IPC channel", async () => {
+    bindTabCopy();
     const failing = workMocks.makeTerminalSession("chat-stale", "lane-primary", "codex-chat", { ptyId: null });
     const healthy = workMocks.makeTerminalSession("chat-live", "lane-primary", "codex-chat", { ptyId: null });
     const agentChatDelete = vi.fn(async ({ sessionId }: { sessionId: string }) => {

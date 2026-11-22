@@ -16,6 +16,11 @@ export const MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION = 1;
  * restarts for each `CFBundleShortVersionString`), so the gate compares the
  * pair: an older marketing version is refused, a newer one is always let in,
  * and the same one is compared by build.
+ *
+ * Local Xcode builds report the project's own `CURRENT_PROJECT_VERSION`
+ * (apps/ios/ADE.xcodeproj); release builds pass the App Store Connect number
+ * instead. Keep the project's number at or above this minimum, or every brain
+ * refuses a simulator build made from the same source.
  */
 export const MIN_SUPPORTED_MOBILE_APP_VERSION = "1.1.10";
 export const MIN_SUPPORTED_MOBILE_APP_BUILD = 5;
@@ -55,6 +60,10 @@ export function isMobileAppBuildTooOld(peer: {
 // hello_ok.features.commandRouting.actions. They must not become part of the
 // required set below, because older mobile builds do not implement them.
 export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
+  // Text for a running agent CLI, typed only at a free prompt (held on the
+  // host while the CLI is mid-turn). Optional: a phone falls back to the
+  // terminal's raw input against a brain without it.
+  "chat.typeIntoCli",
   // Run a chat reply's shell code block in a new terminal of that chat.
   // Optional: a client hides or refuses Run against a brain without it.
   "work.runShellBlock",
@@ -111,6 +120,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // it must ask. Optional so a phone on a newer build simply never lights the
   // dot against an older brain.
   "cto.getAttention",
+  // "Update & restart" for this machine, the phone's twin of the desktop's
+  // button (`machineUpdateRemoteCommands.ts`). Optional: a phone keeps
+  // "Update ADE on that computer" against a brain that predates them.
+  "machine.updateImpact",
+  "machine.updateAndRestart",
   // The project's CTO home machine (account setting `cto.homeMachine`), so a
   // phone reaches the one CTO wherever it lives. Optional: an older brain
   // leaves the phone on its primary machine's CTO.
@@ -198,6 +212,10 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "ai.antigravitySignInStatus",
   "ai.antigravitySignInComplete",
   "ai.antigravitySignInCancel",
+  // The Free page's "Get free models": ADE's pinned OpenCode on the chat's
+  // machine. Optional: an older host leaves the page without a download.
+  "ai.pinnedToolStatus",
+  "ai.pinnedToolDownload",
   // Cursor Cloud watch/open. iOS and the web client presence-gate inbound
   // sync on these; optional so an older phone against a newer host does not
   // go limited, and an older host simply omits the actions.
@@ -226,6 +244,27 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // The phone's ADE Cloud page; optional so an older brain simply omits it.
   "cloud.read",
   "cloud.write",
+  // A kept ADE Cloud lane moved to this machine (ADE Web and the phone pin it); an older brain omits them.
+  "cloud.previewKeptLaneRestore",
+  "cloud.restoreKeptLane",
+  "cloud.getKeptLaneRestore",
+  // The account's sign-ins (Settings › Providers and the ADE Cloud page on the
+  // phone and the web app); optional so an older brain simply omits them.
+  "providerLogins.status",
+  "providerLogins.captureNow",
+  "providerLogins.use",
+  "providerLogins.setCloud",
+  "providerLogins.setCloudAll",
+  "providerLogins.setCloudBalance",
+  "providerLogins.remove",
+  // The ADE Cloud iPhone's pane on the phone and in ADE Web, through the
+  // chat's brain. Optional so an older brain simply omits the pane.
+  "cloudPhone.status",
+  "cloudPhone.view",
+  "cloudPhone.start",
+  "cloudPhone.stop",
+  "cloudPhone.keepAlive",
+  "cloudPhone.screenshot",
   "ai.cursorCloudResolveLane",
   "ai.cursorCloudPullIntoLane",
   "ai.cursorCloudStopRun",
@@ -262,6 +301,10 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // Close one of the lane's browser tabs from the phone. Optional: an older
   // brain omits it and the phone's tab rows stay read-only.
   "workTools.closeBrowserTab",
+  // A browser tab's live picture, and a tap or typing into it. Optional: an
+  // older brain omits them and the phone shows the last screenshot instead.
+  "workTools.readBrowserTabFrame",
+  "workTools.sendBrowserTabInput",
   // Edit your own PR comment. Optional: the phone hides Edit against an older brain.
   "prs.updateComment",
   // A skill chip's SKILL.md, read from the chat's machine. Optional: an older

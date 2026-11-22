@@ -99,6 +99,30 @@ function isOpenCodeExecutable(command: string | null | undefined): boolean {
   return OPENCODE_EXECUTABLE_NAMES.has(path.basename(trimmed.replace(/\\/g, "/")).toLowerCase());
 }
 
+const POSIX_SHELL_NAMES = new Set(["bash", "zsh", "sh", "dash", "ksh"]);
+
+/**
+ * Index of the command string in a POSIX shell launch (`bash -lc '<line>'`).
+ *
+ * macOS and Linux resume commands run through a login shell, so the OpenCode
+ * invocation lives in that shell's argv, not in `startupCommand`. The shell
+ * follows its own flags, then the command string.
+ */
+function posixShellCommandArgIndex(command: string | null, args: readonly string[]): number {
+  if (!command) return -1;
+  const name = path.basename(command.replace(/\\/g, "/")).toLowerCase();
+  if (!POSIX_SHELL_NAMES.has(name)) return -1;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--" || arg === "-" || !arg.startsWith("-")) return -1;
+    // `-c` can ride in a cluster (`-lc`, `-cl`); the command string follows it.
+    if (arg === "-c" || (/^-[A-Za-z]+$/.test(arg) && arg.includes("c"))) {
+      return index + 1 < args.length ? index + 1 : -1;
+    }
+  }
+  return -1;
+}
+
 type SessionSelector = { kind: "session"; id: string } | { kind: "continue" } | null;
 
 /**
@@ -230,6 +254,13 @@ export async function attachOpenCodeTerminal(args: {
   const direct = isOpenCodeExecutable(args.directCommand) ? { args: [...args.directArgs] } : null;
   const line = parseOpenCodeCommandLine(args.startupCommand);
   if (!direct && !line) return null;
+  // Refuse before acquiring a lease or creating a session: an unrecognized
+  // shell would otherwise run the untouched line against the personal store,
+  // or leave an empty ADE-owned session behind after the throw.
+  const shellCommandIndex = direct ? -1 : posixShellCommandArgIndex(args.directCommand, args.directArgs);
+  if (line && !direct && args.directCommand && shellCommandIndex < 0) {
+    throw new Error("ADE could not rewrite this OpenCode resume shell; the terminal was not started.");
+  }
   const intent = readOpenCodeLaunchIntent(args.startupCommand, args.env as Record<string, string | undefined>);
   const permissionMode = args.permissionMode ?? intent?.permissionMode ?? null;
   const agent = openCodeAgentFor(permissionMode);
@@ -311,6 +342,19 @@ export async function attachOpenCodeTerminal(args: {
     }
 
     const attachArgs = ["--server", lease.url, "--session", sessionId];
+    // Leading assignments are dropped: the environment carries what the TUI
+    // needs, and a bare argv re-renders cleanly for Windows shells.
+    const attachLine = line
+      ? commandArrayToLine([line.command, ...attachArgs, ...lineRest], { platform: "linux" })
+      : args.startupCommand;
+    // A POSIX resume runs `bash -lc '<line>'`, so the invocation is in argv.
+    // Rewriting only `startupCommand` leaves that shell line untouched and it
+    // launches OpenCode without `--server`, against the user's own store.
+    const directArgs = direct
+      ? [...attachArgs, ...rest]
+      : shellCommandIndex >= 0
+        ? args.directArgs.map((arg, index) => (index === shellCommandIndex ? attachLine : arg))
+        : [...args.directArgs];
     const env: NodeJS.ProcessEnv = { ...args.env, OPENCODE_SERVER_PASSWORD: lease.password };
     delete env.OPENCODE_PASSWORD;
     delete env[ADE_OPENCODE_LAUNCH_ENV];
@@ -318,12 +362,8 @@ export async function attachOpenCodeTerminal(args: {
       lease,
       sessionId,
       resumed,
-      directArgs: direct ? [...attachArgs, ...rest] : [...args.directArgs],
-      // Leading assignments are dropped: the environment carries what the TUI
-      // needs, and a bare argv re-renders cleanly for Windows shells.
-      startupCommand: line
-        ? commandArrayToLine([line.command, ...attachArgs, ...lineRest], { platform: "linux" })
-        : args.startupCommand,
+      directArgs,
+      startupCommand: attachLine,
       env,
     };
   } catch (error) {

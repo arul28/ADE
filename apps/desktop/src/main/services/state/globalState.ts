@@ -6,6 +6,7 @@ import type {
   AutoUpdatePreferences,
   KeepAwakePreferences,
   OpenProjectBinding,
+  PendingInstallHandoffStep,
   RecentProjectRemoteRef,
   RecentlyInstalledUpdate,
   UpdateInterruptedChat,
@@ -17,6 +18,7 @@ import type {
   BuiltInBrowserSettingsPersisted,
 } from "../../../shared/types/builtInBrowser";
 import { projectRefStateKey } from "../../../shared/projectIdentity";
+import type { SavedWindowRepositoryTabs } from "../../../shared/windowRepositoryTabs";
 import { sanitizePortableGitRemote } from "../../../shared/crossMachineHandoff";
 import type { MainWindowState } from "./mainWindowState";
 
@@ -76,6 +78,14 @@ export type PendingInstallUpdate = {
    * onto a later, unrelated update.
    */
   resumedChats?: UpdateInterruptedChat[];
+  /**
+   * How far the quit that installs got, so a launch that finds the install did
+   * not land can say where it stopped: `quit_started` (the updater was asked to
+   * quit), `native_staged` (macOS Squirrel staged the new bundle), or
+   * `quit_escalated_<reason>` (ADE force-quit a quit that would not finish).
+   * Fixed values only, never a path.
+   */
+  handoffStep?: PendingInstallHandoffStep;
 };
 
 // Consecutive installs of the same version that quit without landing. The
@@ -119,6 +129,14 @@ export type GlobalState = {
    * once, then clears this so a later ordinary launch stays on welcome.
    */
   restoreUpdateWorkspaceOnLaunch?: boolean;
+  /**
+   * The repository tabs of the window last in focus (S5, spec 5.1), by
+   * repository and with the copy each showed. The next launch's first window
+   * reopens them, also after an update. Older builds ignore it and keep
+   * reading `lastProjectRoot`, `lastRemoteProjectBinding` and
+   * `updateWorkspace`, which are still written.
+   */
+  lastRepositoryTabs?: SavedWindowRepositoryTabs;
   failedInstallAttempts?: FailedInstallAttempts;
   /**
    * The build "Go back" left because it could not start
@@ -195,10 +213,17 @@ export function writeGlobalState(filePath: string, state: GlobalState): void {
   let tempPath: string | null = null;
   let fd: number | null = null;
   try {
+    const serialized = `${JSON.stringify(state, null, 2)}\n`;
+    // The file already holds this state (the window restores the tabs it
+    // saved): two fsyncs on the main process would change nothing on disk.
+    try {
+      if (fs.readFileSync(filePath, "utf8") === serialized) return;
+    } catch {
+      // Missing or unreadable: write it.
+    }
     const dir = path.dirname(filePath);
     fs.mkdirSync(dir, { recursive: true });
     tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
-    const serialized = `${JSON.stringify(state, null, 2)}\n`;
     fd = fs.openSync(tempPath, "w");
     fs.writeFileSync(fd, serialized, "utf8");
     fs.fsyncSync(fd);

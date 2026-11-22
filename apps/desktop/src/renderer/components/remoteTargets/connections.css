@@ -191,7 +191,8 @@
 }
 .ade-cx-step-copy { flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--kit-text-2, rgba(255, 255, 255, 0.75)); }
 .ade-cx-step-copy b { color: var(--color-fg); font-weight: 600; }
-.ade-cx-email { color: var(--color-fg); font-weight: 550; }
+/* An e-mail has no break points; a long one breaks anywhere, not past the card. */
+.ade-cx-email { color: var(--color-fg); font-weight: 550; overflow-wrap: anywhere; }
 .ade-cx-chip-btn {
   flex: none;
   display: inline-flex;
@@ -427,6 +428,38 @@
   color: var(--kit-text-2, rgba(255, 255, 255, 0.7));
 }
 .ade-cx-cloud-note { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3, rgba(255, 255, 255, 0.5)); }
+/* A cloud computer's update line, where other machines have an Update button.
+   Quiet while it keeps itself current; only a failure asks for attention. */
+.ade-cx-cloud-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--kit-text-3, rgba(255, 255, 255, 0.5));
+}
+.ade-cx-cloud-update[data-tone="busy"] { color: var(--kit-text-2, rgba(255, 255, 255, 0.7)); }
+.ade-cx-cloud-update[data-tone="error"] { color: var(--color-error, #f87171); align-items: flex-start; }
+.ade-cx-cloud-update-text { min-width: 0; overflow-wrap: anywhere; }
+.ade-cx-cloud-update-retry {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 16%, transparent);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ade-cx-cloud-update-retry:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.ade-cx-cloud-update-retry:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.ade-cx-cloud-update-retry:disabled { opacity: 0.5; cursor: default; }
 .ade-cx-cloud-avatar {
   display: inline-grid;
   place-items: center;
@@ -464,4 +497,61 @@
 .ade-cx-cloud-shape-price { font-size: 12px; color: var(--kit-text-2, rgba(255, 255, 255, 0.7)); }
 @media (prefers-reduced-motion: reduce) {
   .ade-cx-cloud-wake, .ade-cx-cloud-shape { transition: none; }
+}
+/* ── narrow panel ────────────────────────────────────────────────────────
+   The panel and the machine list answer their OWN width, not the window's,
+   so ADE Web on a phone and a narrow desktop popover get the same layout.
+   At the normal width (560 px panel) none of these rules apply. */
+.ade-cx-panel { container: ade-cx-panel / inline-size; }
+.ade-cx-rows { container: ade-cx-rows / inline-size; }
+
+/* One machine row: avatar, name and status, actions. */
+.ade-cx-row-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+.ade-cx-row-actions { display: flex; justify-content: flex-end; }
+
+@container ade-cx-panel (max-width: 480px) {
+  /* Account keeps its icon and gives the name and e-mail the room. */
+  .ade-cx-head-btn-label { display: none; }
+  .ade-cx-head-btn[data-icon-only-narrow] { width: 28px; padding: 0; justify-content: center; }
+  @media (pointer: coarse) {
+    .ade-cx-head-btn { height: 34px; }
+    .ade-cx-head-close,
+    .ade-cx-head-btn[data-icon-only-narrow] { width: 34px; }
+    .ade-cx-head-btn::after { content: ""; position: absolute; inset: -5px; }
+  }
+}
+
+@container ade-cx-rows (max-width: 460px) {
+  /* A row with a button besides ⋯: the buttons move under the name and
+     status, from the text's left edge, and ⋯ stays at the row's right. The
+     name keeps one line and the status gets the row's full text width. */
+  .ade-cx-row-grid:has(> .ade-cx-row-actions > :not(.ade-cx-kebab)) {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 10px;
+  }
+  .ade-cx-row-grid > .ade-cx-row-actions:has(> :not(.ade-cx-kebab)) {
+    grid-column: 2;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .ade-cx-row-actions > .ade-cx-kebab { margin-left: auto; }
+  /* Touch: controls draw at 36 px and take touches across 44 px. */
+  @media (pointer: coarse) {
+    .ade-cx-row-actions > button,
+    .ade-cx-list-head .ade-cx-add-btn { position: relative; min-height: 36px; }
+    .ade-cx-kebab,
+    .ade-cx-icon-btn { position: relative; min-width: 36px; min-height: 36px; }
+    .ade-cx-row-actions > button::after,
+    .ade-cx-list-head .ade-cx-add-btn::after { content: ""; position: absolute; inset: -4px 0; }
+    /* Icon-only controls take touches on every side. The row-actions rule
+       above is more specific, so ⋯ in a row is named here too. */
+    .ade-cx-row-actions > .ade-cx-kebab::after,
+    .ade-cx-kebab::after,
+    .ade-cx-icon-btn::after { content: ""; position: absolute; inset: -4px; }
+  }
 }

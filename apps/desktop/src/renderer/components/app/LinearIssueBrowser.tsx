@@ -25,6 +25,7 @@ import type {
   CtoSearchLinearIssuesArgs,
   CtoSearchLinearIssuesResult,
   LaneLinearIssue,
+  OpenProjectBinding,
   LinearIssueRef,
   NormalizedLinearIssue,
 } from "../../../shared/types";
@@ -55,6 +56,7 @@ import {
   type LinearIssueEdit,
 } from "./linearIssueBrowserModel";
 import { isImeComposing } from "../../lib/imeComposition";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 
 export { linearBrowserIssueToLaneIssue } from "./linearIssueBrowserModel";
 export type { BrowserIssue } from "./linearIssueBrowserModel";
@@ -198,10 +200,11 @@ function getCtoCacheScope(cto: unknown): string {
   return String(next);
 }
 
-function browserCacheKey(projectRoot: string | null | undefined): string {
+/** One cache per project, Linear reader machine and bridge object. */
+function browserCacheKey(projectRoot: string | null | undefined, readerKey: string | null): string {
   const root = projectRoot?.trim() || "__project__";
   const cto = typeof window === "undefined" ? null : window.ade?.cto;
-  return `${root}::cto:${getCtoCacheScope(cto)}`;
+  return `${root}::reader:${readerKey ?? "none"}::cto:${getCtoCacheScope(cto)}`;
 }
 
 function emptyCatalog(): CtoGetLinearIssuePickerDataResult {
@@ -486,6 +489,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
  */
 function useLinearIssueCounts(
   cacheKey: string,
+  pin: OpenProjectBinding | null,
   queries: Record<string, CtoSearchLinearIssuesArgs> | null,
   cap: number,
   refreshNonce: number,
@@ -494,7 +498,7 @@ function useLinearIssueCounts(
   const [state, setState] = useState<{ key: string | null; counts: CtoCountLinearIssuesResult["counts"] | null }>({ key: null, counts: null });
 
   useEffect(() => {
-    if (!requestKey) return;
+    if (!requestKey || !pin) return;
     const cto = typeof window === "undefined" ? null : window.ade?.cto;
     if (!cto?.countLinearIssues) return;
     const entry = getBrowserCacheEntry(cacheKey);
@@ -504,7 +508,7 @@ function useLinearIssueCounts(
     let cancelled = false;
     const timer = window.setTimeout(() => {
       const request = JSON.parse(requestKey) as { queries: Record<string, CtoSearchLinearIssuesArgs>; cap: number };
-      const promise = cached?.promise ?? cto.countLinearIssues(request);
+      const promise = cached?.promise ?? cto.countLinearIssues(request, pin);
       entry.counts.set(requestKey, { result: cached?.result ?? null, fetchedAt: cached?.fetchedAt ?? 0, promise });
       void promise
         .then((result) => {
@@ -520,6 +524,8 @@ function useLinearIssueCounts(
       cancelled = true;
       window.clearTimeout(timer);
     };
+    // The cache key already holds the pin's key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cacheKey, requestKey, refreshNonce]);
 
   return state.key === requestKey ? state.counts : null;
@@ -582,7 +588,12 @@ export function LinearIssueBrowser({
     conflicts?: Map<string, IssueConflict>;
   };
 }) {
-  const cacheKey = browserCacheKey(projectRoot);
+  // Linear is the repository's (class A): read it from the reader copy. No
+  // copy online: nothing is read, and the browser shows its empty state.
+  const linearPin = useActiveRepositoryReader();
+  const linearPinRef = useRef(linearPin);
+  linearPinRef.current = linearPin;
+  const cacheKey = browserCacheKey(projectRoot, linearPin?.key ?? null);
   const [quickView, setQuickView] = useState<CtoLinearQuickView | null>(() => getBrowserCacheEntry(cacheKey).quickView);
   const [catalog, setCatalog] = useState<CtoGetLinearIssuePickerDataResult>(() => getBrowserCacheEntry(cacheKey).catalog ?? emptyCatalog());
   const [customViews, setCustomViews] = useState<CtoLinearCustomView[]>(() => getBrowserCacheEntry(cacheKey).views.result ?? []);
@@ -667,7 +678,8 @@ export function LinearIssueBrowser({
 
   const loadQuickView = useCallback((force = false) => {
     const entry = getBrowserCacheEntry(cacheKey);
-    if (!window.ade.cto?.getLinearQuickView) return;
+    const pin = linearPinRef.current;
+    if (!window.ade.cto?.getLinearQuickView || !pin) return;
     if (!force && entry.quickView && cacheIsFresh(entry.quickViewFetchedAt)) {
       setQuickView(entry.quickView);
       onConnectionVisibilityChange?.(entry.quickView.connection.connected === true);
@@ -681,7 +693,7 @@ export function LinearIssueBrowser({
     quickViewRequestIdRef.current = requestId;
     setLoadingQuickView(force || !entry.quickView);
     setError(null);
-    const promise = entry.quickViewPromise ?? window.ade.cto.getLinearQuickView();
+    const promise = entry.quickViewPromise ?? window.ade.cto.getLinearQuickView(pin);
     entry.quickViewPromise = promise;
     void promise
       .then((data) => {
@@ -707,10 +719,12 @@ export function LinearIssueBrowser({
   const loadCatalog = useCallback((force = false) => {
     const entry = getBrowserCacheEntry(cacheKey);
     const cto = window.ade.cto;
+    const pin = linearPinRef.current;
     if (!cto?.getLinearIssuePickerData) {
       setError("Linear controls are not available in this ADE surface.");
       return;
     }
+    if (!pin) return;
     if (!force && entry.catalog && cacheIsFresh(entry.catalogFetchedAt)) {
       setCatalog(entry.catalog);
       return;
@@ -720,7 +734,7 @@ export function LinearIssueBrowser({
     catalogRequestIdRef.current = requestId;
     setLoadingCatalog(force || !entry.catalog);
     setError(null);
-    const promise = entry.catalogPromise ?? cto.getLinearIssuePickerData();
+    const promise = entry.catalogPromise ?? cto.getLinearIssuePickerData(pin);
     entry.catalogPromise = promise;
     void promise
       .then((data) => {
@@ -747,12 +761,13 @@ export function LinearIssueBrowser({
   const loadCustomViews = useCallback((force = false) => {
     const entry = getBrowserCacheEntry(cacheKey);
     const cto = window.ade.cto;
-    if (!cto?.getLinearCustomViews) return;
+    const pin = linearPinRef.current;
+    if (!cto?.getLinearCustomViews || !pin) return;
     if (!force && entry.views.result && cacheIsFresh(entry.views.fetchedAt)) {
       setCustomViews(entry.views.result);
       return;
     }
-    const promise = entry.views.promise ?? cto.getLinearCustomViews();
+    const promise = entry.views.promise ?? cto.getLinearCustomViews(pin);
     entry.views = { ...entry.views, promise };
     void promise
       .then((views) => {
@@ -766,10 +781,12 @@ export function LinearIssueBrowser({
 
   const searchIssues = useCallback((append: boolean, force = false) => {
     const cto = window.ade.cto;
+    const pin = linearPinRef.current;
     if (!cto?.searchLinearIssues) {
       setError("Linear issue search is not available in this ADE surface.");
       return;
     }
+    if (!pin) return;
     const requestId = searchRequestIdRef.current + 1;
     searchRequestIdRef.current = requestId;
     const entry = getBrowserCacheEntry(cacheKey);
@@ -790,7 +807,7 @@ export function LinearIssueBrowser({
     setLoadingIssues(force || append || !cachedResult);
     setAppendingMore(append);
     setError(null);
-    const promise = cached?.promise ?? cto.searchLinearIssues(args);
+    const promise = cached?.promise ?? cto.searchLinearIssues(args, pin);
     entry.searches.set(key, {
       result: cachedResult,
       fetchedAt: cached?.fetchedAt ?? 0,
@@ -860,13 +877,14 @@ export function LinearIssueBrowser({
   const inboxAvailable = typeof window !== "undefined" && typeof window.ade?.cto?.getLinearInbox === "function";
   // The rail shows the unread count before the inbox is opened.
   useEffect(() => {
-    if (!inboxAvailable) return;
+    if (!inboxAvailable || !linearPin) return;
     let cancelled = false;
-    void window.ade.cto!.getLinearInbox({ first: 50 })
+    void window.ade.cto!.getLinearInbox({ first: 50 }, linearPin)
       .then((items) => { if (!cancelled) setInboxUnread(items.length); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [inboxAvailable]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inboxAvailable, linearPin?.key]);
   const displayIssues = useMemo<BrowserIssue[]>(() => {
     const visible = readyScope
       ? sorted.filter((issue) => !("hasOpenBlockers" in issue && issue.hasOpenBlockers))
@@ -984,8 +1002,9 @@ export function LinearIssueBrowser({
     const cached = entry.details.get(issueId);
     if (cached && cacheIsFresh(cached.fetchedAt)) return cached.issue;
     const fn = window.ade?.cto?.getLinearIssue;
-    if (!fn) return null;
-    const issue = await fn({ issueId });
+    const pin = linearPinRef.current;
+    if (!fn || !pin) return null;
+    const issue = await fn({ issueId }, pin);
     if (issue) rememberDetail(issue);
     return issue;
   }, [cacheKey, rememberDetail]);
@@ -1041,7 +1060,8 @@ export function LinearIssueBrowser({
   const editSequenceRef = useRef(new Map<string, number>());
   const handleEditIssue = useCallback(async (issue: BrowserIssue, edit: LinearIssueEdit) => {
     const update = window.ade?.cto?.updateLinearIssue;
-    if (!update) return;
+    const pin = linearPinRef.current;
+    if (!update || !pin) return;
     const issueId = issue.id;
     // Two quick edits on one issue: only the newest one's result (or rollback) lands.
     const sequence = (editSequenceRef.current.get(issueId) ?? 0) + 1;
@@ -1067,7 +1087,7 @@ export function LinearIssueBrowser({
     setPendingEditIds((current) => new Set(current).add(issueId));
     const entry = getBrowserCacheEntry(cacheKey);
     try {
-      const updated = await update({ issueId, ...edit });
+      const updated = await update({ issueId, ...edit }, pin);
       entry.searches.clear();
       entry.counts.clear();
       if (!isLatest()) return;
@@ -1206,8 +1226,8 @@ export function LinearIssueBrowser({
       { ...railBase, projectId: projectEntry.id },
     ]));
   }, [connected, projectFilters, railBase]);
-  const scopeCounts = useLinearIssueCounts(cacheKey, scopeCountQueries, RAIL_COUNT_CAP, countsNonce);
-  const projectCounts = useLinearIssueCounts(cacheKey, projectCountQueries, RAIL_COUNT_CAP, countsNonce);
+  const scopeCounts = useLinearIssueCounts(cacheKey, linearPin, scopeCountQueries, RAIL_COUNT_CAP, countsNonce);
+  const projectCounts = useLinearIssueCounts(cacheKey, linearPin, projectCountQueries, RAIL_COUNT_CAP, countsNonce);
 
   // List counts: only needed while more pages exist; once everything is loaded
   // the loaded rows are the exact counts.
@@ -1221,7 +1241,7 @@ export function LinearIssueBrowser({
     }
     return queries;
   }, [connected, filters, issueGroups, listIsComplete]);
-  const listCounts = useLinearIssueCounts(cacheKey, listCountQueries, LIST_COUNT_CAP, countsNonce);
+  const listCounts = useLinearIssueCounts(cacheKey, linearPin, listCountQueries, LIST_COUNT_CAP, countsNonce);
 
   const featuredExtra = featuredIssue && !issues.some((issue) => issue.id === featuredIssue.id) ? 1 : 0;
   // When Linear answered but gave no count for a key (rejected filter, or

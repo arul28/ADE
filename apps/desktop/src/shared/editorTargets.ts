@@ -69,6 +69,12 @@ export function canOfferOpenIn(args: {
 export type OpenInTarget = {
   rootPath: string;
   remote?: OpenPathInEditorRemote;
+  /**
+   * The machine the folder is on. With a pin on another computer (and no SSH
+   * editor route), the submenu says where the folder is instead of listing
+   * this computer's editors.
+   */
+  pin?: OpenProjectBinding | null;
 };
 
 function openInRemoteFromBinding(

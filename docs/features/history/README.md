@@ -9,8 +9,8 @@ which lane, and which selection are active so deep links land back on
 the same row.
 
 The Activity feed is sourced from the `operations` SQLite table plus
-in-memory adapters that synthesize timeline rows from chat sessions
-and CTO sessions. Git commits in the Commits
+in-memory adapters that synthesize timeline rows from chat sessions.
+Git commits in the Commits
 view come from `git log` on the lane's worktree, not from the
 operations table.
 
@@ -35,7 +35,7 @@ the user's local machine — the runtime returns the rows, then the
 desktop's IPC handler writes the CSV/JSON to disk through the native
 save dialog.
 
-Supplemental activity sources (chat sessions, CTO snapshot) are
+Supplemental activity sources (chat sessions) are
 fetched directly from the renderer through the existing per-feature
 preload bridges and merged into the timeline at render time; they are
 not persisted into `operations`.
@@ -47,6 +47,26 @@ slow runtime does not hold back the other machines' results. Mutating git
 actions are disabled for a foreign lane; the timeline can still show its
 commits and events with the owning machine identified.
 
+### With no computer awake
+
+An ADE Cloud lane whose computer is at rest has an account-answered pin
+(`isAccountAnsweredPin`, `shared/adeCloud/binding.ts`). History reads it with
+no computer awake:
+
+- The Commits view reads the lane branch's pushed commits from GitHub through
+  the account reader (`git.listRecentCommits`, `shared/adeCloud/accountReader.ts`),
+  with the account's GitHub App sign-in. Unpushed commits show when the
+  computer is on.
+- A read that GitHub cannot answer shows the reader's sentence, for example
+  "Connect GitHub to your ADE account to see this repository's files with no
+  computer on." It is an expected state, not a failure to report.
+- `CloudGitAsOf` (`renderer/components/adeCloud/CloudGitAsOf.tsx`) shows above
+  the commits when the pin is account-answered: "As of 3:12 PM, saved by its
+  computer at rest." It reads `adeCloud.projectOverview({origin})` once when
+  the view opens. It does not show while the computer is awake.
+- Git actions that change the lane are "do" actions: they wake the lane's
+  computer first.
+
 ## Source file map
 
 Main process / runtime services:
@@ -56,11 +76,13 @@ Main process / runtime services:
 | `apps/desktop/src/main/services/history/operationService.ts` | CRUD for `operations` rows; the canonical entry point for `record`, `start`, `finish`, `list`, `get`, `listHeadChanges`, and `pruneOld`. Same source backs the ADE runtime and the desktop fallback path. |
 | `apps/desktop/src/main/services/state/kvDb.ts` | Schema for `operations`, `checkpoints`, `pack_events`, `pack_versions`, `pack_heads`, `terminal_sessions`, and related tables. |
 | `apps/desktop/src/main/services/git/gitOperationsService.ts` | Brackets every git operation with `operationService.start` / `finish`, captures pre/post HEAD SHAs, and owns the per-lane undo/redo head-change pipeline (`undoLastHeadChange`, `redoLastHeadChange`, `createTag`, `resetToCommit`, `pull` with `ff-only` / `rebase` / `merge` modes). Before lane git mutations or lane git reads, it verifies that the saved `worktreePath` is still the Git top-level for that lane; stale paths that resolve to the primary checkout are rejected as missing lane worktrees so History and Git Actions do not read or mutate the wrong branch. Undo selection is branch-aware: it ignores checkout/undo rows, requires the recorded operation's `metadata.branchRef` to match the lane's current branch, and rechecks the branch before running `reset --hard`. |
-| `apps/desktop/src/main/services/lanes/laneService.ts` | Lane CRUD now accepts `CreateLaneArgs.startPoint`, used by the Commits view's "Create lane here" affordance to fork a new lane from a specific commit. |
+| `apps/desktop/src/main/services/lanes/laneService.ts` | Lane CRUD accepts `CreateLaneArgs.startPoint`, used by "Create lane here" to fork a lane from a commit. |
+| `apps/desktop/src/shared/adeCloud/accountReader.ts` | Answers `git.listRecentCommits` and the commit reads for an account-answered pin from GitHub. |
+| `apps/desktop/src/renderer/components/adeCloud/CloudGitAsOf.tsx` | The "As of …, saved by its computer at rest" line, from the project overview. Mounted in `CommitHistoryView.tsx` and `LaneGitActionsPane.tsx`. |
 | `apps/desktop/src/main/services/prs/prService.ts` | Records PR creation as an operation. |
 | `apps/desktop/src/main/services/conflicts/conflictService.ts` | Records rebase operations. |
 | `apps/desktop/src/main/services/sessions/sessionService.ts` | Terminal session lifecycle (separate `terminal_sessions` table). |
-| `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.history.listOperations`, `ade.history.exportOperations`, plus the new git IPC channels surfaced by the History toolbar (`ade.git.createTag`, `ade.git.resetToCommit`, `ade.git.undoLastHeadChange`, `ade.git.redoLastHeadChange`, the `ff-only`/`rebase`/`merge` variants of `ade.git.pull`). |
+| `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.history.listOperations`, `ade.history.exportOperations`, plus the git IPC channels the History toolbar uses (`ade.git.createTag`, `ade.git.resetToCommit`, `ade.git.undoLastHeadChange`, `ade.git.redoLastHeadChange`, the `ff-only`/`rebase`/`merge` variants of `ade.git.pull`). |
 
 Renderer components (`apps/desktop/src/renderer/components/history/`):
 
@@ -70,8 +92,8 @@ Renderer components (`apps/desktop/src/renderer/components/history/`):
 | `useHistoryLaneSync.ts` | Keeps History's focused lane and the lane list held under it (the Lanes or Work sidebar) on one selection, in both directions. The list's selection is the store's lane on this machine, or the Lanes list's `machineId:laneId` row for a lane on another machine, through the shared `useForeignLaneSelection` store. |
 | `useTimelineStore.ts` | Zustand store: raw + enriched events, WIP-by-lane nodes, surface, focus lane, selected commit/event, view mode, scope level, filters, lane visibility, columns. `fetchEvents` merges `history.listOperations` with `fetchSupplementalTimelineRecords` and sorts/dedupes via `sortTimelineRecords`. |
 | `timelineTypes.ts` | `HistorySurface = "activity" \| "commits"`, `ViewMode = "graph" \| "list" \| "compact"`, `TimelineEvent` (enriched `OperationRecord`), `LaneTrack`, `GraphLayout`, `TimelineFilters`, `LaneVisibility`, `ColumnConfig`, `WIPNode`, `MinimapBucket`. `DEFAULT_COLUMNS` order is timestamp → graph → event → lane → author → status → duration → sha. |
-| `eventTaxonomy.ts` | Source of truth for event categories, importance levels, node shapes, and the per-kind `EVENT_KIND_META` table that every renderer (graph, list, compact, detail panel) consults. Adds taxonomy entries for the new git head-change kinds (`git_undo_head_change`, `git_redo_head_change`, `git_tag_create`, `git_reset_soft`/`_mixed`/`_hard`) and the unified-feed kinds (`chat.session`, `cto.session`). |
-| `historyActivitySources.ts` | Pure mappers + the single `fetchSupplementalTimelineRecords(limit)` entry point that builds synthetic `OperationRecord` rows from `agentChat.list` and `cto.getState`. Synthetic IDs are namespaced (`chat:`, `cto-session:`) and the actor/eventLabel are embedded in `metadataJson` so the detail panel + graph can render them uniformly. |
+| `eventTaxonomy.ts` | Source of truth for event categories, importance levels, node shapes, and the per-kind `EVENT_KIND_META` table that every renderer (graph, list, compact, detail panel) consults. Adds taxonomy entries for the new git head-change kinds (`git_undo_head_change`, `git_redo_head_change`, `git_tag_create`, `git_reset_soft`/`_mixed`/`_hard`) and the unified-feed kind (`chat.session`). |
+| `historyActivitySources.ts` | Pure mappers + the single `fetchSupplementalTimelineRecords(pin)` entry point that builds synthetic `OperationRecord` rows from `agentChat.list`. Synthetic IDs are namespaced (`chat:`) and the actor/eventLabel are embedded in `metadataJson` so the detail panel + graph can render them uniformly. |
 | `historySearch.ts` | Tokenizer + matcher behind the Commits view search input. Supports bare full-text, quoted phrases, and the `message:` / `msg:` / `=` / `author:` / `@` / `commit:` / `sha:` / `#` / `branch:` / `ref:` / `parent:` / `is:` / `type:` keys (e.g. `is:merge`, `is:local`, `type:pushed`). |
 | `commitGraphLayout.ts` | Pure graph algorithms. `buildCommitGraphLayout(rows, { trunkSha, gapAfterRow, gapHeight })` takes `GraphCommit[]` (wrap raw rows with `toGraphCommits`) and assigns columns newest-first (each column waits for one sha; the first parent stays in its column so a trunk stays straight; `trunkSha` pins the base branch to column 0). `contractCommitGraph(commits, keep)` hides commits while keeping the graph connected: kept commits' parents are rewritten to the nearest kept ancestors and each edge records how many commits it folds. `branchTipKeep` is the "fold to branch tips" predicate (refs, merges, roots, fork points). `assignCommitOwners` maps commits to lanes: base history to the base, each lane tip its first-parent run. `computeDividerAfterRow` places the lane/base divider under the lane's oldest own commit (-1 above row 0 for a lane with none; null while searching, in All lanes, or on a Primary lane that is on its base branch). `commitEdgePathD` draws an edge; `rowTop` / `rowCenter` place rows around the optional divider gap. |
 | `CommitHistoryView.tsx` | Virtualized commit graph. Pages `git.listRecentCommits` 100 at a time with `skip` (no cap), in `lane` or `lanes` scope; `git.listBranches` for ref badges. Colours nodes and edges by owning lane, folds or filters through `contractCommitGraph`, keeps the scroll anchor by sha across refreshes, and adapts columns to the pane width. Row presentation lives in `CommitRow.tsx`. Enter / double-click opens the commit's changes full-page; transient action results go through the shared toast. |
@@ -183,7 +205,7 @@ without leaving the History tab.
 ### Activity
 
 Unified operations feed combining recorded `OperationRecord` rows with
-synthesized rows from chat sessions and CTO snapshots (see
+synthesized rows from chat sessions (see
 `historyActivitySources.ts`). `fetchEvents` merges them in
 `useTimelineStore`, deduplicates by `id`, and sorts by `startedAt`
 descending before clamping to `limit`.
@@ -232,7 +254,7 @@ runs the save dialog locally and writes the file. The button shows
 ## What history captures
 
 History records **operations** — discrete, typed actions that changed
-state — plus synthesized rows from the chat and CTO feeds
+state — plus synthesized rows from the chat feed
 that pretend to be operations for rendering purposes only. Synthesized
 rows are not written into the `operations` table; they are rebuilt on
 every refresh.
@@ -273,7 +295,6 @@ the activity feed and the detail panel; they will never appear in
 | Kind | Source | Metadata highlights |
 |---|---|---|
 | `chat.session` | `agentChat.list({ includeAutomation: true })` | `sessionId`, `title`, `provider`, `model`, `chatStatus`, `awaitingInput`, `automationId` |
-| `cto.session` | `cto.getState({ recentLimit }).recentSessions` | `sessionId`, `summary`, `provider`, `model`, `capabilityMode` |
 
 ### Status
 
@@ -341,7 +362,7 @@ Sessions are owned by `sessionService.ts`; their full transcript is on
 disk at `transcript_path`. Terminal sessions do **not** synthesize
 rows into the activity feed yet — chat sessions do.
 
-### Checkpoints (Phase 8)
+### Checkpoints
 
 `checkpoints` (schema in `kvDb.ts`):
 
@@ -350,7 +371,7 @@ rows into the activity feed yet — chat sessions do.
 - Surfaced internally via `packService` compatibility paths but not
   through a public `ade.packs.*` IPC.
 
-### Pack events (Phase 8)
+### Pack events
 
 `pack_events`:
 
@@ -358,7 +379,7 @@ rows into the activity feed yet — chat sessions do.
   updated, conflict detected, etc.).
 - Event-specific payload stored as JSON.
 
-### Pack versions (Phase 8)
+### Pack versions
 
 `pack_versions`, `pack_heads`:
 
@@ -504,7 +525,7 @@ these are surfaced on the Activity surface as synthesized rows:
 - **CSV export escaping.** The export path embeds metadata JSON; CSV
   escaping must survive nested quotes. Validate with round-trip
   tests when adjusting export formats.
-- **Synthesized rows do not export.** Chat / CTO
+- **Synthesized rows do not export.** Chat
   rows are renderer-side only. They appear in the Activity feed and
   the detail panel but never in `ade.history.exportOperations`
   output. Treat the export as the operations table, not the unified
@@ -519,8 +540,8 @@ these are surfaced on the Activity surface as synthesized rows:
   `Start point not found for new lane: …` synchronously; callers in
   `historyGitActions.create_lane` rely on that error to surface a
   notice.
-- **Pack/checkpoint data exists but is hidden.** Phase 8 tables are
-  populated but the History UI does not surface them. Any new IPC
+- **Pack/checkpoint data exists but is hidden.** The pack and checkpoint
+  tables are populated, but the History UI does not surface them. Any new IPC
   that exposes them must also respect the visibility/focus polling
   guards already in place for operations.
 
@@ -536,11 +557,11 @@ these are surfaced on the Activity surface as synthesized rows:
 - [Lanes README](../lanes/README.md) -- `CreateLaneArgs.startPoint` is
   documented there alongside the rest of the lane creation flow.
 - [Sync remote commands](../sync-and-multi-device/remote-commands.md)
-  -- the new git head-change / tag / reset actions are exposed to iOS
+  -- the git head-change, tag and reset actions are exposed to iOS
   and peer desktops through `SyncRemoteCommandAction`.
 - [Chat README](../chat/README.md) -- chat transcript persistence is
   separate from the operations timeline but parallel in intent, and
   chat sessions also synthesize Activity feed rows.
-- [Agents README](../agents/README.md) -- CTO session logs are tracked
-  in `cto_session_logs`; the CTO snapshot synthesizes rows into the
-  Activity feed.
+- [Agents README](../agents/README.md) -- the CTO keeps no session log; its
+  conversation lives in the chat transcripts, and `readHistory` reads them.
+  `cto.getState` sends no list of past sessions.

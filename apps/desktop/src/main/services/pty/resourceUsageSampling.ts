@@ -17,15 +17,27 @@ export type ProcessMetricRow = {
   ppid: number;
   cpuPercent: number;
   rssKB: number;
-  /** The executable's file name (`ps` comm), when the sample has it. */
+  /** The executable's file name (`ps` comm; macOS: ucomm, at most 16 characters), when the sample has it. */
   command?: string;
 };
 
 const PROCESS_SAMPLE_TIMEOUT_MS = 1_000;
 const PROCESS_SAMPLE_MAX_STDOUT_BYTES = 2 * 1024 * 1024;
 const PROCESS_TREE_MAX_DEPTH = 12;
-/** The Android emulator launcher and its QEMU process (Linux truncates comm to 15 characters). */
+/** The Android emulator launcher and its QEMU process (Linux truncates comm to 15 characters, macOS ucomm to 16). */
 const ANDROID_EMULATOR_COMMAND = /^(?:emulator|qemu-system-[\w-]*)$/u;
+
+/**
+ * macOS asks for `ucomm`, the kernel's short process name: `comm` makes `ps`
+ * read every process's arguments for the full path, which doubled its CPU
+ * (about 24 ms against 12 ms for 850 processes) and its output (90 KB against
+ * 35 KB, all parsed in Electron main). Only the file name is ever used, and a
+ * truncated `qemu-system-aarch64` still matches `ANDROID_EMULATOR_COMMAND`.
+ * Linux `comm` is already the short name.
+ */
+function processSampleFormat(platform: NodeJS.Platform): string {
+  return platform === "darwin" ? "pid=,ppid=,pcpu=,rss=,ucomm=" : "pid=,ppid=,pcpu=,rss=,comm=";
+}
 
 export function parseProcessMetricRows(stdout: string): ProcessMetricRow[] {
   return stdout
@@ -156,7 +168,7 @@ export function createProcessMetricRowsCollector(
     };
 
     try {
-      child = spawnImpl("ps", ["-axo", "pid=,ppid=,pcpu=,rss=,comm="], {
+      child = spawnImpl("ps", ["-axo", processSampleFormat(platform)], {
         stdio: ["ignore", "pipe", "ignore"],
         windowsHide: true,
       });
@@ -495,6 +507,37 @@ function electronRoleUsage(
     cpuPercent: sumMetricCpu(metrics),
     memoryMB: sumMetricMemoryMB(metrics),
   };
+}
+
+/**
+ * The machine-wide `ps` behind a resource sample costs Electron main about
+ * 17 ms of CPU (a process spawn plus a parse of every process on the
+ * machine). A calm-ok caller (the top bar's pressure check) may reuse the
+ * last `ps` for a while, depending on what that `ps` showed:
+ * - The process trees (the brain, terminals, agents) were far below every
+ *   pressure line: reuse it for 30 s. The hidden chip samples on that period
+ *   only to decide whether to show itself.
+ * - Their CPU was far below the CPU lines, but their memory was not: reuse it
+ *   for 10 s. A shown chip samples every 2 s, and with agents holding memory
+ *   on a small Mac it can stay shown at rest; memory moves slowly, so a fresh
+ *   `ps` on every sample bought nothing but CPU.
+ * Electron's own numbers and system memory are read fresh on every call, and
+ * a fresh caller (Settings > Health) always gets a new `ps`.
+ */
+const CALM_PROCESS_SAMPLE_REUSE_MS = 30_000;
+const CPU_CALM_PROCESS_SAMPLE_REUSE_MS = 10_000;
+
+/**
+ * How long a calm-ok caller may reuse the `ps` behind `snapshot`. Calm means
+ * the process trees are far below the top bar's first pressure level (30% CPU,
+ * 8% of RAM for the whole app).
+ */
+export function processSampleReuseMs(snapshot: AppResourceUsageSnapshot): number {
+  if (snapshot.processSample?.status !== "ok") return 0;
+  if ((snapshot.ptyCpuPercent ?? 0) >= 10 || (snapshot.cpuPercent ?? 0) >= 20) return 0;
+  const total = snapshot.totalMemoryMB ?? 0;
+  if (total > 0 && (snapshot.ptyMemoryMB ?? 0) / total < 0.03) return CALM_PROCESS_SAMPLE_REUSE_MS;
+  return CPU_CALM_PROCESS_SAMPLE_REUSE_MS;
 }
 
 export async function computeAppResourceUsageSnapshot(

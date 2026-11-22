@@ -33,7 +33,31 @@ import type { MachinePlacementPreference, MachineStats } from "../../../shared/t
 // with two different id values is what made the divergence guard able to warn
 // that This computer diverged from itself. Re-exported here for existing callers.
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { adeCloudLaneComputerForMachine, adeCloudMachineLabel, type AdeCloudIndexState, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 export { THIS_MACHINE_ID, THIS_MACHINE_NAME };
+
+/**
+ * A lane's own ADE Cloud computer (one lane per computer). It is never a
+ * place for a NEW lane: pickers that make a lane drop it (only the single
+ * "ADE Cloud" entry, a new computer, shows there) and Auto never picks it.
+ * Pickers that open an existing lane or its chat keep it.
+ *
+ * `computers` defaults to the last read of the account's lane computers.
+ */
+export function isAdeCloudLaneComputer(
+  machine: { hostname?: string | null; machineKey?: string | null },
+  computers?: readonly AdeCloudLaneComputer[],
+): boolean {
+  return adeCloudLaneComputerForMachine(machine, computers) != null;
+}
+
+/** The machines a NEW lane may go on: every one but a lane's own ADE Cloud computer. */
+export function withoutAdeCloudLaneComputers<T extends { hostname?: string | null; machineKey?: string | null }>(
+  machines: readonly T[],
+  computers?: readonly AdeCloudLaneComputer[],
+): T[] {
+  return machines.filter((machine) => !isAdeCloudLaneComputer(machine, computers));
+}
 
 /**
  * Free-disk headroom below which a machine row reads as a warning. Matches the
@@ -54,9 +78,10 @@ export type LaneMachineProjectRef = {
   rootPath: string;
   displayName: string;
   /**
-   * How this checkout was tied to the current repo. `"origin"` is proof;
-   * `"name"` is a guess from the folder name and must not, on its own, drive an
-   * action that rebinds the app to this project.
+   * How this checkout was tied to the current repo. `"origin"` is proof (a
+   * matching account project id, or a matching git origin); `"name"` is a
+   * guess from the folder name and must not, on its own, drive an action that
+   * rebinds the app to this project.
    */
   matchedBy: "origin" | "name";
 };
@@ -96,6 +121,11 @@ export type LaneMachineOption = {
   stats?: MachineStats | null;
   /** How often new work should go here. Missing reads as Normal. */
   preference?: MachinePlacementPreference;
+  /**
+   * The tab's machine dropped and ADE is dialing it again. It stays the
+   * draft's machine meanwhile; a send waits for it or comes back not sent.
+   */
+  reconnecting?: boolean;
 };
 
 export type LaneMachineDerivationInput = {
@@ -107,6 +137,12 @@ export type LaneMachineDerivationInput = {
   boundProject?: LaneMachineProjectRef | null;
   /** `origin` URL of the repo lanes are created for, when known. */
   repoOriginUrl?: string | null;
+  /**
+   * The account project (`ap_…`) of the repo, when the tab's machine reports
+   * one. A machine joins when its project row has the same id OR the same
+   * origin; the id never removes an origin join.
+   */
+  repoAccountProjectId?: string | null;
   /** Repo folder name — the fallback identity when no origin URL is known. */
   repoDisplayName?: string | null;
   /** Local project roots already open in this window (in-memory state only). */
@@ -128,6 +164,12 @@ export type LaneMachineDerivationInput = {
    * as zero.
    */
   machineActiveLaneCounts?: Readonly<Record<string, number | null>> | null;
+  /**
+   * The account's ADE Cloud computers, as a React caller subscribes to them
+   * (`useAdeCloudLaneComputers`); defaults to the last read. An ADE Cloud
+   * computer reads "ADE Cloud", never its instance id.
+   */
+  cloudIndex?: Pick<AdeCloudIndexState, "computers" | "cloudComputers">;
 };
 
 /**
@@ -156,6 +198,19 @@ export function resetGitRemoteIdentityCache(): void {
 
 const originByLocalRoot = new Map<string, string>();
 const originByRemoteKey = new Map<string, string>();
+let originMemoryVersion = 0;
+const originMemoryListeners = new Set<() => void>();
+
+/** Calls `listener` after the origin memory changes. Returns the unsubscribe. */
+export function subscribeProjectOriginMemory(listener: () => void): () => void {
+  originMemoryListeners.add(listener);
+  return () => originMemoryListeners.delete(listener);
+}
+
+/** A number that moves each time the origin memory changes (a `useSyncExternalStore` snapshot). */
+export function projectOriginMemoryVersion(): number {
+  return originMemoryVersion;
+}
 
 /**
  * Recents and connection snapshots are the union's origin source. Local tab
@@ -171,10 +226,29 @@ export function rememberProjectOriginSummaries(
   projects: readonly Pick<RecentProjectSummary, "rootPath" | "kind" | "remote" | "gitOriginUrl">[],
   options?: { replace?: boolean },
 ): void {
+  const before = originMemorySignature();
   if (options?.replace) {
     originByLocalRoot.clear();
     originByRemoteKey.clear();
   }
+  try {
+    rememberOrigins(projects, options);
+  } finally {
+    if (originMemorySignature() !== before) {
+      originMemoryVersion += 1;
+      for (const listener of originMemoryListeners) listener();
+    }
+  }
+}
+
+function originMemorySignature(): string {
+  return JSON.stringify([[...originByLocalRoot], [...originByRemoteKey]]);
+}
+
+function rememberOrigins(
+  projects: readonly Pick<RecentProjectSummary, "rootPath" | "kind" | "remote" | "gitOriginUrl">[],
+  options?: { replace?: boolean },
+): void {
   for (const project of projects) {
     const origin = (project.gitOriginUrl ?? project.remote?.gitOriginUrl ?? "").trim();
     const remote = project.kind === "remote" ? project.remote : undefined;
@@ -187,6 +261,11 @@ export function rememberProjectOriginSummaries(
     if (origin) originByLocalRoot.set(project.rootPath, origin);
     else if (options?.replace) originByLocalRoot.delete(project.rootPath);
   }
+}
+
+/** The origin the memory holds for a folder on this computer, or null. */
+export function rememberedLocalOrigin(rootPath: string | null | undefined): string | null {
+  return rootPath ? originByLocalRoot.get(rootPath) ?? null : null;
 }
 
 /** Origin stamped on the binding, else the recents/snapshot identity for that checkout. */
@@ -237,21 +316,30 @@ function resolveProjectMatch(
     rootPath: string;
     displayName: string;
     gitOriginUrl: string | null;
+    accountProjectId?: string;
   } & RegisteredCheckoutRank>,
   repoIdentity: string | null,
   repoDisplayName: string | null,
+  repoAccountProjectId: string | null = null,
 ): LaneMachineProjectRef | null {
-  if (repoIdentity) {
+  // Two checkouts are one repository when their account project ids are equal
+  // OR their origins are equal. The id adds a join (a rename or transfer seen on
+  // one machine only); it never removes the origin join, so machines signed in
+  // to different accounts still join on the origin, as before. Both joins rank
+  // as one set, so a deleted checkout that carries the id cannot hide a live
+  // one that matches only on the origin.
+  if (repoAccountProjectId || repoIdentity) {
     // Same rule as `--machine` calls from the CLI: the live checkout, not the
     // first registry entry, which is often a deleted temp copy of the repo.
-    const byOrigin = pickLiveCheckout(projects.filter(
-      (project) => cachedGitRemoteIdentity(project.gitOriginUrl) === repoIdentity,
+    const joined = pickLiveCheckout(projects.filter((project) =>
+      (!!repoAccountProjectId && project.accountProjectId === repoAccountProjectId)
+      || (!!repoIdentity && cachedGitRemoteIdentity(project.gitOriginUrl) === repoIdentity),
     ));
-    if (byOrigin) {
+    if (joined) {
       return {
-        projectId: byOrigin.projectId,
-        rootPath: byOrigin.rootPath,
-        displayName: byOrigin.displayName,
+        projectId: joined.projectId,
+        rootPath: joined.rootPath,
+        displayName: joined.displayName,
         matchedBy: "origin",
       };
     }
@@ -279,6 +367,38 @@ function resolveProjectMatch(
     // Callers that mutate global state on selection must not act on this alone.
     matchedBy: "name",
   };
+}
+
+/**
+ * Every other checkout of the repository on one machine, beside `keepProjectId`
+ * (the one already read for it). Only proven joins count (the account project
+ * id or the git origin), and only folders that exist and that a person opened,
+ * so a deleted temp copy or a folder something ran ADE in adds no rows.
+ */
+export function otherMatchedCheckouts(
+  projects: ReadonlyArray<{
+    projectId: string;
+    rootPath: string;
+    displayName: string;
+    gitOriginUrl: string | null;
+    accountProjectId?: string;
+  } & RegisteredCheckoutRank>,
+  repoIdentity: string | null,
+  repoAccountProjectId: string | null,
+  keepProjectId: string | null,
+): Array<{ projectId: string; rootPath: string; displayName: string }> {
+  if (!repoIdentity && !repoAccountProjectId) return [];
+  return projects
+    .filter((project) =>
+      project.projectId !== keepProjectId
+      && project.exists !== false
+      && project.catalogVisibility !== "system"
+      && (
+        (!!repoAccountProjectId && project.accountProjectId === repoAccountProjectId)
+        || (!!repoIdentity && cachedGitRemoteIdentity(project.gitOriginUrl) === repoIdentity)
+      ))
+    .map((project) => ({ projectId: project.projectId, rootPath: project.rootPath, displayName: project.displayName }))
+    .sort((a, b) => a.projectId.localeCompare(b.projectId));
 }
 
 function repoMatchFor(
@@ -387,11 +507,18 @@ export function deriveLaneMachineOptions(
   for (const connection of input.connections) {
     if (connection.state !== "connected") continue;
     const isBound = input.boundTargetId === connection.target.id;
-    const matched = resolveProjectMatch(connection.projects ?? [], repoIdentity, repoDisplayName);
+    const matched = resolveProjectMatch(
+      connection.projects ?? [],
+      repoIdentity,
+      repoDisplayName,
+      input.repoAccountProjectId?.trim() || null,
+    );
     const project = isBound ? (input.boundProject ?? matched) : matched;
+    const hostname = connection.target.hostname ?? null;
+    const machineKey = connection.target.pairedMachine?.machineKey?.trim() || connection.target.id;
     options.push({
       id: connection.target.id,
-      name: connection.target.name,
+      name: adeCloudMachineLabel({ hostname, machineKey }, input.cloudIndex) ?? connection.target.name,
       targetId: connection.target.id,
       hostname: connection.target.hostname ?? null,
       transport: connection.target.transport ?? "ssh",
@@ -448,14 +575,17 @@ function chooseLaneMachineByLoad(options: readonly LaneMachineOption[]): string 
  * can is Manual only.
  */
 export function autoLaneMachine(options: readonly LaneMachineOption[]): LaneMachineOption | null {
-  if (options.filter(canCreateLaneOnMachine).length < 2) return null;
+  if (options.filter((option) => canCreateLaneOnMachine(option) && !isAdeCloudLaneComputer(option)).length < 2) return null;
   const id = chooseLaneMachineByLoad(options);
   return id ? options.find((machine) => machine.id === id) ?? null : null;
 }
 
-/** A machine automatic placement may choose: it can host the lane and is not Manual only. */
+/**
+ * A machine automatic placement may choose: it can host the lane, is not
+ * Manual only, and is not a lane's own ADE Cloud computer.
+ */
 export function canAutoPlaceOnMachine(option: LaneMachineOption): boolean {
-  return canCreateLaneOnMachine(option) && option.preference !== "manual";
+  return canCreateLaneOnMachine(option) && option.preference !== "manual" && !isAdeCloudLaneComputer(option);
 }
 
 const PREFERENCE_WEIGHT: Record<Exclude<MachinePlacementPreference, "manual">, number> = {
@@ -552,4 +682,17 @@ export function canCreateLaneOnMachine(option: LaneMachineOption): boolean {
 /** True when the machine's free-disk headroom should read as a warning. */
 export function isLowLaneMachineDisk(freeBytes: number | null): boolean {
   return typeof freeBytes === "number" && freeBytes <= LANE_MACHINE_LOW_DISK_BYTES;
+}
+
+/** What a lane action says when its lane has no machine to send to. */
+export const LANE_MACHINE_NOT_CONNECTED = "This lane's computer is not connected.";
+
+/**
+ * The pin of a lane write, or a clear error when the lane has no machine to
+ * send to. A write is never sent without a pin: that would reach whatever
+ * machine the tab happens to be on.
+ */
+export function requireLanePin(pin: OpenProjectBinding | null | undefined): OpenProjectBinding {
+  if (!pin) throw new Error(LANE_MACHINE_NOT_CONNECTED);
+  return pin;
 }

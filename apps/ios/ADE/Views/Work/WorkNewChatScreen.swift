@@ -4,6 +4,7 @@ import SwiftUI
 import os
 
 private let workAutoLaneNamingLog = Logger(subsystem: "com.ade.ios", category: "AutoLaneNaming")
+private let workLaunchIssueLog = Logger(subsystem: "com.ade.ios", category: "WorkLaunch")
 
 struct WorkAutoLaneNameSuggestion {
   let name: String
@@ -659,8 +660,13 @@ struct WorkNewChatScreen: View {
   /// open the chat (session id = launch id) right away; the host is still
   /// setting the lane up.
   let onLaunchStarted: @MainActor (ChatLaunchSnapshot) async -> Void
+  /// A chat started on ADE Cloud: open its page (its launch id), which shows
+  /// the setup steps and becomes the chat once its computer runs it.
+  let onCloudLaunchStarted: @MainActor (String) async -> Void
 
   @State private var selectedLaneId: String = ""
+  @ObservedObject private var cloudLaunches = AccountCloudLaunchStore.shared
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
   /// The machine the chat starts on. Nil = the primary (focused) machine.
   @State private var selectedMachineKey: String?
   /// That machine's lanes (namespaced ids), when it is not the primary one.
@@ -696,6 +702,17 @@ struct WorkNewChatScreen: View {
   /// The Custom harness the next launch runs under, when the user picked one
   /// from the Custom section. Cleared by any manual model choice.
   @State private var selectedPreset: SyncMachineInventoryPreset?
+  /// The selected provider's real accounts on the chosen machine, from the
+  /// account commands (Claude and Codex only). Not the machine inventory's
+  /// sign-in rows: those include a provider's own logins (OpenCode's Anthropic,
+  /// OpenAI…), which no launch can switch to.
+  @State private var launchAccountState = WorkLaunchAccountState()
+  /// The account the next launch runs on; nil = the machine picks its default.
+  @State private var selectedLaunchAccountId: String?
+  /// Issues the next launch starts with, from the menu's issue-context section.
+  @State private var launchIssues: [WorkLaunchIssue] = []
+  @State private var linearIssuePickerPresented = false
+  @State private var githubIssuePickerPresented = false
   /// The preset id the persisted composer preference last sent with. Resolved
   /// against the connected machine's list once it arrives, then dropped, so a
   /// relaunch keeps the harness the user chose instead of silently falling back
@@ -727,6 +744,18 @@ struct WorkNewChatScreen: View {
   /// replace it while the user has not picked anything here yet.
   private let openingSelection: WorkComposerPreferences.Selection
   @State private var hostLaunchDefaultsChecked = false
+  /// The free model ADE started this chat on because nothing is signed in on
+  /// the chosen machine. ADE chose it, not the person, so it is never saved as
+  /// the remembered model; any pick here clears it.
+  @State private var freeDefaultSelection: WorkComposerPreferences.Selection?
+  /// The person picked a model or a harness on this page.
+  @State private var modelPickedByPerson = false
+  /// The chosen machine's free-models answer, and the free model it would
+  /// start on (for the "Use a free model" action beside the account hint).
+  @State private var freeModelsStatus: WorkFreeModelsStatus?
+  @State private var freeDefaultModelId: String?
+  /// Tells the page when a machine's free models were read again.
+  @ObservedObject private var freeModelsStore = WorkFreeModelsStatusStore.shared
 
   init(
     lanes: [LaneSummary],
@@ -737,7 +766,9 @@ struct WorkNewChatScreen: View {
     onCliStarted: @escaping @MainActor (TerminalSessionSummary) async -> Void,
     onChatImported: @escaping @MainActor (AgentChatSessionSummary) async -> Void = { _ in },
     onRefreshLanes: @escaping @MainActor () async -> Void,
-    onLaunchStarted: @escaping @MainActor (ChatLaunchSnapshot) async -> Void = { _ in }
+    onLaunchStarted: @escaping @MainActor (ChatLaunchSnapshot) async -> Void = { _ in },
+    // Required: a host that drops it would clear the composer and open nothing.
+    onCloudLaunchStarted: @escaping @MainActor (String) async -> Void
   ) {
     self.lanes = lanes
     self.preferredLaneId = preferredLaneId
@@ -748,6 +779,7 @@ struct WorkNewChatScreen: View {
     self.onChatImported = onChatImported
     self.onRefreshLanes = onRefreshLanes
     self.onLaunchStarted = onLaunchStarted
+    self.onCloudLaunchStarted = onCloudLaunchStarted
     // Restore the last-used model + access mode so a fresh New Chat screen opens
     // on the user's most recent choices. Seeding the @State initial values here
     // (rather than assigning in onAppear) avoids the provider/model onChange
@@ -849,6 +881,32 @@ struct WorkNewChatScreen: View {
     selectedLaneId == workAutoCreateLaneSentinelId
   }
 
+  /// Whether the chat starts on ADE Cloud (through the account server).
+  private var isCloudSelected: Bool { selectedMachineKey == ADECloudMachine.id }
+
+  /// The model ADE Cloud runs, from the server's catalog.
+  private var cloudProviderEntry: CloudCatalogProvider? {
+    cloudLaunches.catalog?.providers.first { $0.provider == provider }
+  }
+
+  /// The footnote under the composer while ADE Cloud is picked: why it
+  /// can't start work now, or what a model that signs in on the desktop needs.
+  private var cloudFootnote: String? {
+    guard isCloudSelected else { return nil }
+    if let refusal = cloudStore.doingRefusal { return refusal }
+    if let entry = cloudProviderEntry, entry.remoteSignIn == "desktop" {
+      // The desktop's sign-in already reached ADE Cloud: nothing to do.
+      if cloudLaunches.carriedSignIns[entry.provider] == true {
+        return "Uses your \(entry.label) sign-in from ADE desktop."
+      }
+      return cloudDesktopSignInSentence(label: entry.label)
+    }
+    if cloudLaunches.catalog != nil, cloudProviderEntry?.models.contains(where: { $0.id == modelId }) != true {
+      return "Pick a model ADE Cloud runs."
+    }
+    return nil
+  }
+
   /// The lanes of the chosen machine.
   private var visibleLanes: [LaneSummary] {
     selectedMachineKey == nil ? lanes : remoteLanes
@@ -880,13 +938,14 @@ struct WorkNewChatScreen: View {
     selectedMachineKey.flatMap { syncService.remoteLaneRepo(machineKey: $0) }
   }
 
+  /// ADE Cloud takes files through the account server, so it needs no
+  /// connected machine; any other target stages them on its machine.
   private var attachmentsAvailable: Bool {
-    syncService.supportsViewerRemoteAction("chat.saveTempAttachment")
+    isCloudSelected || syncService.supportsViewerRemoteAction("chat.saveTempAttachment")
   }
 
   private var canUploadAttachments: Bool {
-    attachmentsAvailable
-      && syncService.connectionState == .connected
+    isCloudSelected || (attachmentsAvailable && syncService.connectionState == .connected)
   }
 
   /// Fast mode only applies to in-app chat sessions on fast-tier models. The
@@ -954,6 +1013,18 @@ struct WorkNewChatScreen: View {
         // Left-aligned in one row, on the prompt box's own left edge.
         laneSelector
           .padding(.horizontal, 10)
+
+        if let cloudFootnote {
+          Text(cloudFootnote)
+            .font(.caption)
+            .foregroundStyle(cloudStore.doingRefusal != nil ? ADEColor.warning : ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .adeInspectable("Work.NewChat.CloudFootnote")
+        }
+
+        launchSelectionRow
 
         if let autoCreateStatus, busy {
           HStack(spacing: 8) {
@@ -1038,6 +1109,10 @@ struct WorkNewChatScreen: View {
       }
     }
     .onAppear {
+      // No computer of the person's own serves this project: start on ADE Cloud.
+      if selectedMachineKey == nil, workNewChatPrefersCloud(syncService: syncService) {
+        selectMachine(workNewChatCloudOption())
+      }
       // A lane of another machine opens the page on that machine.
       if selectedMachineKey == nil,
          let preferredLaneId,
@@ -1061,9 +1136,36 @@ struct WorkNewChatScreen: View {
     }
     .onChange(of: composerSelection) { _, newValue in
       // Persist the full selection without deriving one setting from another.
+      // A free model ADE picked is not the person's choice: never remember it,
+      // also after a change to another setting such as the access mode.
+      guard !isOnFreeDefault else { return }
       WorkComposerPreferences.save(newValue)
     }
+    // A machine with nothing signed in starts the chat on a free model.
+    .task(id: freeDefaultTaskKey) { await applyFreeDefaultIfNeeded() }
+    .onChange(of: sessionMode) { _, mode in
+      guard mode == .cli else { return }
+      // The CLI start records Linear links only. A GitHub choice made in chat
+      // mode must not ride the prompt with no session link behind it.
+      launchIssues.removeAll { issue in
+        if case .github = issue { return true }
+        return false
+      }
+    }
+    .onChange(of: launchAccountProvider) { _, _ in
+      // An id belongs to one provider. The read failure path may keep a valid
+      // same-provider pick, but a provider switch must never forward the old id
+      // (the host would treat it as an explicit choice and skip Smart balance).
+      selectedLaunchAccountId = nil
+    }
     .task { await applyHostLaunchDefaults() }
+    .task(id: launchAccountsTaskKey) { await loadLaunchAccounts() }
+    .sheet(isPresented: $linearIssuePickerPresented) {
+      WorkLinearIssuePickerSheet(syncService: syncService, onPick: addLinearLaunchIssue)
+    }
+    .sheet(isPresented: $githubIssuePickerPresented) {
+      WorkGitHubIssuePickerSheet(syncService: syncService, onPick: addGitHubLaunchIssue)
+    }
     .sheet(isPresented: $modelPickerPresented) {
       WorkModelPickerSheet(
         currentModelId: modelId,
@@ -1074,10 +1176,12 @@ struct WorkNewChatScreen: View {
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         lanes: visibleLanes,
         // Custom harnesses are the connected host's own; another machine's list
-        // would offer a preset this launch cannot resolve.
+        // (or ADE Cloud) would offer a preset this launch cannot resolve.
         harnessPresets: selectedMachineKey == nil ? harnessPresets : [],
         isBusy: false,
         onSelectPreset: { preset in
+          modelPickedByPerson = true
+          freeDefaultSelection = nil
           selectedPreset = preset
           selectedModelOption = nil
           modelId = preset.model
@@ -1095,7 +1199,14 @@ struct WorkNewChatScreen: View {
           copilotContextTier = context
           copilotAutoTier = auto
         },
+        // ADE Cloud lists its own models; an empty list until it arrives, never
+        // the connected machine's.
+        cloudCatalog: isCloudSelected ? (cloudLaunches.catalog ?? .pending) : nil,
+        // Free models are read and downloaded on the chosen machine only.
+        freeModelsMachine: selectedMachineHost.map { WorkFreeModelsMachine.host($0) } ?? .unreachable,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
+          modelPickedByPerson = true
+          freeDefaultSelection = nil
           selectedPreset = nil
           selectedModelOption = option
           modelId = option.id
@@ -1111,6 +1222,139 @@ struct WorkNewChatScreen: View {
     .task(id: syncService.focusedHostInventoryMachineKey ?? "") {
       await loadHarnessPresets()
     }
+  }
+
+  /// The chosen machine's connection: the primary one, or the roster
+  /// connection to another machine. Nil for ADE Cloud and for a machine the
+  /// phone has no connection to.
+  private var selectedMachineHost: ProviderAccountsHost? {
+    guard !isCloudSelected else { return nil }
+    guard let selectedMachineKey else { return syncService }
+    return machineFleet.connection(for: selectedMachineKey)
+  }
+
+  private var freeDefaultTaskKey: String {
+    let phase = selectedMachineKey
+      .flatMap { machineFleet.connection(for: $0) }
+      .map { String(describing: $0.phase) }
+      ?? String(describing: syncService.connectionState)
+    // A new free list (OpenCode finished downloading), a sign-in on this
+    // machine and the end of a launch all run the free default again.
+    // The machine itself, too: the primary connection can move to another one.
+    let host = selectedMachineHost
+    let machine = host.map { WorkFreeModelsStatusStore.key(for: $0) } ?? "none"
+    let generation = host.map { freeModelsStore.generation(for: $0) } ?? 0
+    return "\(machine)|\(phase)|\(sessionMode)|\(generation)|\(busy)"
+  }
+
+  /// Nothing signed in on the chosen machine: start on its free default (the
+  /// manifest's preferred free model it lists, else its first), unless the
+  /// person already picked something here. A machine with a provider signed
+  /// in, or an older one, leaves the page as it always was, and takes back a
+  /// free model ADE chose for another machine.
+  @MainActor
+  private func applyFreeDefaultIfNeeded() async {
+    guard let host = selectedMachineHost else {
+      freeModelsStatus = nil
+      freeDefaultModelId = nil
+      revertFreeDefaultUnlessBusy()
+      return
+    }
+    let status = await WorkFreeModelsStatusStore.shared.status(for: host)
+    guard !Task.isCancelled else { return }
+    freeModelsStatus = status
+    guard let status, status.nothingSignedIn else {
+      freeDefaultModelId = nil
+      revertFreeDefaultUnlessBusy()
+      return
+    }
+    // A launch reads the composer, so nothing changes while one runs, and the
+    // free list is not read either. The task runs again when it ends.
+    guard !busy else { return }
+    let pick = await workFreeDefaultModelId(on: host, status: status)
+    guard !Task.isCancelled else { return }
+    freeDefaultModelId = pick
+    // This machine has no free model to start on.
+    guard let pick else {
+      revertFreeDefaultUnlessBusy()
+      return
+    }
+    guard !busy, sessionMode == .chat, !modelPickedByPerson, selectedPreset == nil,
+          isOnFreeDefault || !workIsFreeModel(modelId),
+          !(isOnFreeDefault && modelId == pick)
+    else { return }
+    let selection = freeModelSelection(pick)
+    // Set before the fields change, so the save on change sees it.
+    freeDefaultSelection = selection
+    applyFreeModelSelection(selection)
+  }
+
+  /// A free model's composer selection: OpenCode, its default mode, no effort.
+  private func freeModelSelection(_ id: String) -> WorkComposerPreferences.Selection {
+    WorkComposerPreferences.Selection(
+      provider: "opencode",
+      modelId: id,
+      runtimeMode: workDefaultRuntimeMode(provider: "opencode"),
+      reasoningEffort: "",
+      codexFastMode: false
+    )
+  }
+
+  private func applyFreeModelSelection(_ selection: WorkComposerPreferences.Selection) {
+    selectedModelOption = nil
+    provider = selection.provider
+    modelId = selection.modelId
+    runtimeMode = selection.runtimeMode
+    reasoningEffort = selection.reasoningEffort
+    codexFastMode = selection.codexFastMode
+    machineModelHint = nil
+  }
+
+  /// The composer still runs the free model ADE chose. Another setting (the
+  /// access mode) can change; the model stays ADE's choice until the person
+  /// picks a model or a harness, which clears `freeDefaultSelection`.
+  private var isOnFreeDefault: Bool {
+    guard let freeDefaultSelection, selectedPreset == nil else { return false }
+    return provider == freeDefaultSelection.provider && modelId == freeDefaultSelection.modelId
+  }
+
+  /// Puts back what the page opened on when the free model ADE chose no
+  /// longer applies (another machine, no machine, someone signed in).
+  private func revertFreeDefault() {
+    guard isOnFreeDefault else {
+      freeDefaultSelection = nil
+      return
+    }
+    freeDefaultSelection = nil
+    provider = openingSelection.provider
+    modelId = openingSelection.modelId
+    runtimeMode = openingSelection.runtimeMode
+    reasoningEffort = openingSelection.reasoningEffort
+    codexFastMode = openingSelection.codexFastMode
+    checkModelOnMachine()
+  }
+
+  /// A launch reads the composer: the revert waits until it ends.
+  private func revertFreeDefaultUnlessBusy() {
+    guard !busy else { return }
+    revertFreeDefault()
+  }
+
+  /// A brand-new person whose chosen model has no account here: the hint
+  /// offers the machine's free model instead.
+  private var freeModelOfferId: String? {
+    guard freeModelsStatus?.isNewPerson == true, sessionMode == .chat,
+          let freeDefaultModelId, !workIsFreeModel(modelId) else { return nil }
+    return freeDefaultModelId
+  }
+
+  private func useFreeModel(_ id: String) {
+    // A launch in progress keeps the model it started with.
+    guard !busy else { return }
+    modelPickedByPerson = true
+    freeDefaultSelection = nil
+    selectedPreset = nil
+    applyFreeModelSelection(freeModelSelection(id))
   }
 
   @ViewBuilder
@@ -1140,6 +1384,7 @@ struct WorkNewChatScreen: View {
           selected: selectedMachineOption,
           onSelect: selectMachine
         )
+        .disabled(busy)
         .layoutPriority(1)
         if remoteLanesLoading {
           ProgressView().controlSize(.small)
@@ -1157,11 +1402,22 @@ struct WorkNewChatScreen: View {
       // the container's width, so nothing above it can grow.
       .frame(maxWidth: .infinity, alignment: .leading)
       if let machineModelHint {
-        Text(machineModelHint)
-          .font(.caption)
-          .foregroundStyle(ADEColor.warning)
-          .lineLimit(2)
-          .padding(.horizontal, 4)
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+          Text(machineModelHint)
+            .font(.caption)
+            .foregroundStyle(ADEColor.warning)
+            .lineLimit(2)
+          if let freeId = freeModelOfferId {
+            Button("Use a free model") { useFreeModel(freeId) }
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(ADEColor.accent)
+              .buttonStyle(.plain)
+              .fixedSize()
+              .disabled(busy)
+              .accessibilityIdentifier("Work.NewChat.UseFreeModel")
+          }
+        }
+        .padding(.horizontal, 4)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1170,10 +1426,30 @@ struct WorkNewChatScreen: View {
   /// A new machine: its lanes and accounts. A machine that is not connected is
   /// reconnected; its lanes load once it is live.
   private func selectMachine(_ option: WorkNewChatMachineOption) {
+    // A send in flight has already read its machine, account and issues.
+    guard !busy else { return }
     errorMessage = nil
     guard option.machineKey != selectedMachineKey else { return }
     selectedMachineKey = option.machineKey
+    // The account id and issue links name things on the previous machine;
+    // neither may ride along to the next launch.
+    selectedLaunchAccountId = nil
+    launchIssues.removeAll()
+    launchAccountState.clear()
     let keepsAutoCreate = isAutoCreateLane
+    if option.isCloud {
+      // ADE Cloud: a new cloud lane by default, or one of the project's
+      // cloud lanes. Its models come from the server's catalog.
+      selectedPreset = nil
+      remoteLanes = syncService.cloudLanesForActiveProject()
+      selectedLaneId = workAutoCreateLaneSentinelId
+      machineModelHint = nil
+      Task {
+        await cloudLaunches.loadCatalogIfNeeded(using: syncService)
+        pickCloudModelIfNeeded()
+      }
+      return
+    }
     if option.machineKey == nil {
       remoteLanes = []
       selectedLaneId = keepsAutoCreate ? workAutoCreateLaneSentinelId : (workNewChatPrimaryLane(lanes)?.id ?? "")
@@ -1188,9 +1464,20 @@ struct WorkNewChatScreen: View {
     checkModelOnMachine()
   }
 
+  /// Keeps the model on one ADE Cloud runs: the last cloud pick, else the
+  /// catalog's default.
+  private func pickCloudModelIfNeeded() {
+    guard isCloudSelected, cloudProviderEntry?.models.contains(where: { $0.id == modelId }) != true,
+          let pick = cloudLaunches.defaultModel() else { return }
+    provider = pick.provider
+    modelId = pick.modelId
+    reasoningEffort = ""
+    codexFastMode = false
+  }
+
   @MainActor
   private func loadRemoteLanes(keepSelection: Bool) async {
-    guard let key = selectedMachineKey else { return }
+    guard let key = selectedMachineKey, key != ADECloudMachine.id else { return }
     remoteLanesLoading = true
     defer { remoteLanesLoading = false }
     // A machine that is not connected is connected now (a pick reconnects it).
@@ -1244,6 +1531,230 @@ struct WorkNewChatScreen: View {
     }
   }
 
+  /// The account provider the chosen model runs on, when that provider keeps
+  /// real accounts. A Custom harness names its own sign-in, so it has no account
+  /// to pick.
+  private var launchAccountProvider: ProviderAccountProvider? {
+    guard selectedPreset == nil else { return nil }
+    return ProviderAccountProvider(rawValue: workResolveCliProvider(for: modelId, provider: provider).lowercased())
+  }
+
+  /// The signed-in accounts the chosen machine can run this model on. The
+  /// choice appears when there is a real one: more than one, or one that is
+  /// not the machine's default.
+  private var launchAccountChoices: [ProviderAccount] {
+    launchAccountState.choices
+  }
+
+  private var selectedLaunchAccount: ProviderAccount? {
+    guard let selectedLaunchAccountId else { return nil }
+    return launchAccountChoices.first { $0.id == selectedLaunchAccountId }
+  }
+
+  private var launchAccountsScope: String {
+    WorkLaunchAccountState.scope(
+      provider: launchAccountProvider,
+      machineKey: selectedMachineKey
+    )
+  }
+
+  private var launchAccountsTaskKey: String {
+    let hostPhase = selectedMachineKey
+      .flatMap { machineFleet.connection(for: $0) }
+      .map { String(describing: $0.phase) } ?? "none"
+    return "\(launchAccountsScope)|\(hostPhase)"
+  }
+
+  /// Adds a picked issue to the launch, once per issue. Split out of the
+  /// sheet closures so the screen's modifier chain stays checkable.
+  private func addLinearLaunchIssue(_ issue: NormalizedLinearIssue) {
+    let picked = WorkLaunchIssue.linear(issue)
+    if !launchIssues.contains(where: { $0.id == picked.id }) {
+      launchIssues.append(picked)
+    }
+    linearIssuePickerPresented = false
+  }
+
+  private func addGitHubLaunchIssue(_ issue: GitHubIssueRow, repo: GitHubRepoRefDTO) {
+    let picked = WorkLaunchIssue.github(issue, owner: repo.owner, repo: repo.name)
+    if !launchIssues.contains(where: { $0.id == picked.id }) {
+      launchIssues.append(picked)
+    }
+    githubIssuePickerPresented = false
+  }
+
+  /// The chosen machine's real accounts for the model's provider. Read from the
+  /// account commands, not the machine inventory: the inventory also lists a
+  /// provider's own CLI logins (OpenCode's Anthropic, OpenAI…), which are not
+  /// accounts any launch can switch to.
+  @MainActor
+  private func loadLaunchAccounts() async {
+    await launchAccountState.load(
+      provider: launchAccountProvider,
+      machineKey: selectedMachineKey,
+      machineFleet: machineFleet,
+      syncService: syncService
+    )
+    guard !launchAccountState.error,
+          launchAccountState.loadedScope == launchAccountsScope else { return }
+    if let selectedLaunchAccountId,
+       !launchAccountState.accounts.contains(where: { $0.id == selectedLaunchAccountId && $0.canTakeChats }) {
+      self.selectedLaunchAccountId = nil
+    }
+  }
+
+  /// A new-chat issue row calls a host attach command, not just the tracker
+  /// reader. An older host that can list Linear/GitHub cannot record the link,
+  /// so the row must be absent rather than silently pretend it worked.
+  private var canAttachLinearLaunchIssue: Bool {
+    selectedMachineKey == nil
+      && syncService.canInvokeRemoteAction("lanes.attachLinearIssueToSession")
+  }
+
+  private var canAttachGitHubLaunchIssue: Bool {
+    selectedMachineKey == nil
+      && sessionMode == .chat
+      && syncService.canInvokeRemoteAction("lanes.attachGitHubIssueToSession")
+  }
+
+  private var githubIssuesAvailable: Bool {
+    // The issue pickers read the focused machine's project. A chat on another
+    // machine would show that machine's repo, so the phone offers no issue
+    // context there until its pickers are machine-scoped.
+    guard canAttachGitHubLaunchIssue,
+          syncService.supportsGitHubIssuesPane,
+          let projectId = activeProjectId
+    else { return false }
+    return syncService.githubIssuesMenuProjectIds.contains(projectId)
+  }
+
+  /// What the next launch carries beyond the lane and the prompt: the account
+  /// it runs on and the issues it starts with. Only the picks that are set draw
+  /// a pill; the controls themselves live in the composer's ⋯ menu.
+  @ViewBuilder
+  private var launchSelectionRow: some View {
+    if selectedLaunchAccount != nil || !launchIssues.isEmpty {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+          if let account = selectedLaunchAccount {
+            Button {
+              selectedLaunchAccountId = nil
+            } label: {
+              launchOptionPill(systemImage: "person.crop.circle", title: account.displayName)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Account: \(account.displayName)")
+            .accessibilityHint("Removes the pick; the machine's default account is used.")
+            .accessibilityIdentifier("Work.NewChat.Account")
+          }
+          ForEach(launchIssues) { issue in
+            Button {
+              launchIssues.removeAll { $0.id == issue.id }
+            } label: {
+              launchOptionPill(systemImage: issue.symbolName, title: issue.identifier)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(issue.providerLabel) issue \(issue.identifier)")
+          }
+        }
+        .padding(.horizontal, 10)
+      }
+    }
+  }
+
+  /// The launch options, drawn by the composer's ⋯ menu: which account the run
+  /// starts on, and the issues it starts with.
+  @ViewBuilder
+  private var launchOptionsMenu: some View {
+    let accounts = launchAccountChoices
+    // ADE Cloud signs its computer in with your logins; there is no machine
+    // account list to pick from.
+    if !isCloudSelected, launchAccountState.error || !accounts.isEmpty {
+      Section("Account") {
+        Button {
+          selectedLaunchAccountId = nil
+        } label: {
+          launchMenuRow("Default (machine picks)", checked: selectedLaunchAccountId == nil)
+        }
+        if let failure = launchAccountState.failure {
+          if failure == .retryable {
+            Button {
+              Task { await loadLaunchAccounts() }
+            } label: {
+              Label("Couldn't load accounts. Retry", systemImage: "arrow.clockwise")
+            }
+            .accessibilityIdentifier("Work.NewChat.AccountRetry")
+          } else {
+            Text("Accounts aren't available on this machine.")
+          }
+        } else {
+          ForEach(accounts) { account in
+            Button {
+              selectedLaunchAccountId = account.id
+            } label: {
+              launchMenuRow(
+                account.displayName + (account.isDefault ? " (default)" : ""),
+                checked: selectedLaunchAccount?.id == account.id
+              )
+            }
+          }
+        }
+      }
+    }
+    if (canAttachLinearLaunchIssue && syncService.linearConnected)
+        || githubIssuesAvailable
+        || !launchIssues.isEmpty {
+      Section("Issue context") {
+        if canAttachLinearLaunchIssue && syncService.linearConnected {
+          Button {
+            linearIssuePickerPresented = true
+          } label: {
+            Label("Linear issue…", systemImage: "circle.dashed")
+          }
+          .accessibilityIdentifier("Work.NewChat.LinearIssue")
+        }
+        if githubIssuesAvailable {
+          Button {
+            githubIssuePickerPresented = true
+          } label: {
+            Label("GitHub issue…", systemImage: "smallcircle.filled.circle")
+          }
+          .accessibilityIdentifier("Work.NewChat.GitHubIssue")
+        }
+        ForEach(launchIssues) { issue in
+          Button(role: .destructive) {
+            launchIssues.removeAll { $0.id == issue.id }
+          } label: {
+            Label("Remove \(issue.identifier)", systemImage: "xmark")
+          }
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func launchMenuRow(_ title: String, checked: Bool) -> some View {
+    if checked {
+      Label(title, systemImage: "checkmark")
+    } else {
+      Text(title)
+    }
+  }
+
+  private func launchOptionPill(systemImage: String, title: String) -> some View {
+    HStack(spacing: 5) {
+      Image(systemName: systemImage)
+        .font(.system(size: 11, weight: .semibold))
+      Text(title)
+        .font(.system(size: 12, weight: .semibold))
+        .lineLimit(1)
+    }
+    .foregroundStyle(ADEColor.textSecondary)
+    .padding(.horizontal, 11)
+    .frame(minHeight: 30)
+    .adeKitPill()
+  }
+
   /// Re-adopt the harness the last send ran under, once the machine's list
   /// proves the preset still exists and is bound. A manual pick already made
   /// while the fetch was in flight wins, and a preset only belongs to the
@@ -1270,6 +1781,8 @@ struct WorkNewChatScreen: View {
   /// default model and say so.
   private func checkModelOnMachine() {
     machineModelHint = nil
+    // A free model needs no account: it runs in the machine's OpenCode.
+    if workIsFreeModel(modelId) { return }
     let machineName = selectedMachineOption.name
     let mode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
     switch workNewChatModelCheck(
@@ -1434,7 +1947,10 @@ struct WorkNewChatScreen: View {
       codexFastMode: $codexFastMode,
       fastModeAllowed: fastModeAllowed,
       composerFocused: $composerFocused,
-      onOpenModelPicker: { modelPickerPresented = true },
+      onOpenModelPicker: {
+        modelPickerPresented = true
+      },
+      launchMenu: AnyView(launchOptionsMenu),
       onSubmit: submit(openingMessage:attachments:)
     )
   }
@@ -1529,10 +2045,91 @@ struct WorkNewChatScreen: View {
   }
 
   @MainActor
+  /// Starts the chat on ADE Cloud through the account server: on a new cloud
+  /// lane, or on the picked cloud lane (with or without a computer). Its page
+  /// opens at once, as a launch on a computer of your own does: the message,
+  /// the setup steps (with Retry when the start fails), then the chat.
+  private func submitOnCloud(opener: String, rawText: String, attachments: [WorkChatInputAttachment]) async -> Bool {
+    if let refusal = cloudStore.doingRefusal {
+      errorMessage = refusal
+      return false
+    }
+    guard sessionMode == .chat else {
+      errorMessage = "ADE Cloud starts chats from the phone. Switch to Chat."
+      return false
+    }
+    // The files go up with the launch, from the bytes on this phone. A file
+    // restored from a draft lives only on the machine that saved it.
+    var files: [(name: String, contentType: String, data: Data)] = []
+    for attachment in attachments {
+      guard let data = attachment.uploadData ?? attachment.image?.jpegData(compressionQuality: 0.85) else {
+        errorMessage = "\(attachment.filename) is on the machine that saved this draft. Remove it and attach it again to send it to ADE Cloud."
+        return false
+      }
+      let isJPEG = attachment.uploadData == nil
+      files.append((
+        name: attachment.filename,
+        contentType: isJPEG ? "image/jpeg" : attachment.mimeType,
+        data: data
+      ))
+    }
+    guard let project = syncService.activeAccountProjectForCloud else {
+      errorMessage = "Add this project to your account to use ADE Cloud."
+      return false
+    }
+    guard let entry = cloudProviderEntry, entry.models.contains(where: { $0.id == modelId }) else {
+      errorMessage = "Pick a model ADE Cloud runs."
+      return false
+    }
+    let existingLane: (id: String, name: String)? = isAutoCreateLane ? nil : visibleLanes
+      .first { $0.id == selectedLaneId }
+      .map { lane in (workParseRemoteLaneId(lane.id)?.laneId ?? lane.id, lane.name) }
+    if !isAutoCreateLane, existingLane == nil {
+      errorMessage = "Pick a lane."
+      return false
+    }
+    busy = true
+    errorMessage = nil
+    if !isOnFreeDefault { WorkComposerPreferences.save(composerSelection) }
+    let launchId = await cloudLaunches.start(
+      accountProjectId: project.id,
+      origin: "\(project.host)/\(project.owner)/\(project.name)",
+      prompt: opener,
+      provider: entry.provider,
+      modelId: modelId,
+      effort: reasoningEffort,
+      // Only a model ADE Cloud runs fast; the saved preference stays.
+      fast: codexFastMode && fastModeAllowed && entry.models.contains { $0.id == modelId && $0.fast },
+      files: files,
+      existingLane: existingLane,
+      newLaneName: existingLane == nil ? autoCreatedLaneName(opener: rawText) : nil,
+      using: syncService
+    )
+    busy = false
+    let launch = cloudLaunches.entries.first { $0.launchId == launchId }
+    if let startError = launch?.startError, launch?.startNeverReached == true, launch?.record == nil {
+      // ADE Cloud surely kept nothing: the message stays here (false
+      // restores the draft), with the reason, for a send again. A start with
+      // no answer may run: its page opens with Retry under the same id.
+      ADEHaptics.error()
+      cloudLaunches.discardFailedStart(launchId)
+      errorMessage = startError
+      return false
+    }
+    ADEHaptics.success()
+    // A start ADE Cloud kept opens its page; a later failure shows there with Retry.
+    await onCloudLaunchStarted(launchId)
+    return true
+  }
+
   private func submit(openingMessage: String, attachments inputAttachments: [WorkChatInputAttachment]) async -> Bool {
     let readyAttachments = workChatInputReadyAttachments(inputAttachments)
     let rawText = openingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     let opener = workChatOutgoingText(openingMessage, attachmentCount: readyAttachments.count)
+    // A chat's first message carries the issue references the menu attached,
+    // the same way desktop's does; the transcript still names the launch with
+    // the person's own words.
+    let chatOpener = workLaunchChatOpener(opener, issues: launchIssues)
     guard !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
     guard !opener.isEmpty && !modelId.isEmpty else { return false }
     let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
@@ -1542,26 +2139,39 @@ struct WorkNewChatScreen: View {
         : "This model is available for CLI only. Choose a chat-capable model."
       return false
     }
+    if isCloudSelected {
+      return await submitOnCloud(opener: chatOpener, rawText: rawText, attachments: readyAttachments)
+    }
     guard readyAttachments.isEmpty || canUploadAttachments else {
       errorMessage = "Reconnect to attach images."
       return false
     }
-    // Another machine: its checkout of this project. CLI sessions stream from
-    // the primary machine only for now.
+    // Another machine: its checkout of this project. Chats and CLI sessions
+    // both start there, scoped to that checkout and sent over that machine's
+    // own connection.
     let remoteRepo = selectedRemoteRepo
     if selectedMachineKey != nil {
       guard remoteRepo != nil else {
         errorMessage = "That machine has no checkout of this project."
         return false
       }
-      guard sessionMode == .chat else {
-        errorMessage = "Start CLI sessions on the primary machine for now."
-        return false
-      }
     }
+    // The machine pill stays tappable while the composer is busy; capture the
+    // launch's inputs once so a late tap cannot move the lane, drop the account,
+    // or empty the issue list between here and the first await.
+    let launchRemoteRepo = remoteRepo
+    let launchSessionMode = sessionMode
+    let launchIsAutoCreateLane = isAutoCreateLane
+    let launchLaneId = selectedLaneId
+    let launchPresetId = selectedPreset?.id
+    // The raw id, not the resolved row: a failed refresh empties the display
+    // rows but the person's pick is still the account the host should resolve.
+    let launchAccountId = selectedLaunchAccountId
+    let launchIssuesSnapshot = launchIssues
     // Anchor the "last time you sent a message" choice — covers the case where
     // the user sent with the restored/default selection without changing it.
-    WorkComposerPreferences.save(composerSelection)
+    // Not a free model ADE picked: that was never the person's choice.
+    if !isOnFreeDefault { WorkComposerPreferences.save(composerSelection) }
     busy = true
     errorMessage = nil
     let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
@@ -1585,16 +2195,19 @@ struct WorkNewChatScreen: View {
       modelId: modelId,
       reasoningEffort: reasoningEffort,
       codexFastMode: codexFastMode,
-      presetId: selectedPreset?.id,
+      presetId: launchPresetId,
       piMetadata: piMetadata,
       wire: wire,
       projectId: activeProjectId,
       projectRootPath: activeProjectRootPath,
       originClientId: syncService.pairingDeviceId,
-      isAutoCreateLane: isAutoCreateLane,
-      isChatSession: sessionMode == .chat,
+      isAutoCreateLane: launchIsAutoCreateLane,
+      isChatSession: launchSessionMode == .chat,
       cursorCloudMode: false,
-      hostCanStartLaunch: remoteRepo == nil && syncService.canStartChatLaunch
+      // Issue links need the chained flow's post-create attach; the host-owned
+      // launch has no issue-link field. Account selection travels on both.
+      hostCanStartLaunch: launchRemoteRepo == nil && syncService.canStartChatLaunch && launchIssuesSnapshot.isEmpty,
+      instanceId: launchAccountId
     ) {
       let syncService = syncService
       let attachmentsToStage = readyAttachments
@@ -1625,7 +2238,7 @@ struct WorkNewChatScreen: View {
     var createdLaneId: String?
     var autoCreatedFallbackName: String?
     var autoCreatedTemporaryBranch: String?
-    if isAutoCreateLane {
+    if launchIsAutoCreateLane {
       withAnimation(.snappy(duration: 0.16)) {
         autoCreateStatus = "Creating lane…"
       }
@@ -1635,8 +2248,8 @@ struct WorkNewChatScreen: View {
           name: laneName,
           description: opener.isEmpty ? "" : String(opener.prefix(280)),
           autoNamedBranch: true,
-          targetProjectId: remoteRepo?.markedProjectId,
-          targetProjectRootPath: remoteRepo?.rootPath,
+          targetProjectId: launchRemoteRepo?.markedProjectId,
+          targetProjectRootPath: launchRemoteRepo?.rootPath,
           setUpLane: true
         )
         targetLaneId = lane.id
@@ -1654,10 +2267,10 @@ struct WorkNewChatScreen: View {
         return false
       }
     } else {
-      targetLaneId = selectedLaneId
-      targetLaneForScope = visibleLanes.first { $0.id == selectedLaneId }
+      targetLaneId = launchLaneId
+      targetLaneForScope = visibleLanes.first { $0.id == launchLaneId }
     }
-    let targetScope = remoteRepo.map {
+    let targetScope = launchRemoteRepo.map {
       WorkProjectCommandScope(
         projectId: $0.markedProjectId,
         projectRootPath: $0.rootPath
@@ -1681,16 +2294,8 @@ struct WorkNewChatScreen: View {
         targetProjectRootPath: targetScope.projectRootPath
       )
       namingAttachmentRefs = attachmentRefs
-      if sessionMode == .cli {
+      if launchSessionMode == .cli {
         let cliProvider = workResolveCliProvider(for: modelId, provider: provider)
-        if cliProvider == "antigravity" {
-          // Google ships Antigravity's agent for ACP only: there is no terminal CLI.
-          throw NSError(
-            domain: "ADE.Work",
-            code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Antigravity runs as a chat only. Switch to Chat to use this model."]
-          )
-        }
         let cliReasoningEffort = workCliSupportsReasoningSelection(provider: cliProvider) && !normalizedReasoning.isEmpty
           ? normalizedReasoning
           : nil
@@ -1699,13 +2304,19 @@ struct WorkNewChatScreen: View {
           provider: cliProvider,
           permissionMode: workCliPermissionMode(provider: cliProvider, runtimeMode: runtimeMode),
           title: workCliInitialSessionTitle(provider: cliProvider, opener: opener),
-          initialInput: workCliInitialInput(text: rawText, attachments: attachmentRefs),
+          initialInput: workLaunchCliInitialInput(text: rawText, attachments: attachmentRefs, issues: launchIssuesSnapshot),
           modelId: modelId,
           reasoningEffort: cliReasoningEffort,
           fastMode: fastModeSupported ? codexFastMode : nil,
-          presetId: selectedPreset?.id,
+          presetId: launchPresetId,
+          instanceId: launchAccountId,
+          linearIssues: launchIssuesSnapshot.compactMap(\.linearIssue),
           cols: 48,
-          rows: 24
+          rows: 24,
+          // Same scope as a chat: another machine's checkout routes the start
+          // (and the reply's lane ids) through that machine.
+          targetProjectId: targetScope.projectId,
+          targetProjectRootPath: targetScope.projectRootPath
         )
         if let session = result.session {
           await onCliStarted(session)
@@ -1770,25 +2381,46 @@ struct WorkNewChatScreen: View {
         targetProjectId: targetScope.projectId,
         targetProjectRootPath: targetScope.projectRootPath,
         pendingDisplayName: opener,
-        presetId: selectedPreset?.id
+        presetId: launchPresetId,
+        instanceId: launchAccountId
       )
       createdChatSummary = summary
       createdChatAttachments = attachmentRefs
-      if let remoteRepo {
+      if let launchRemoteRepo {
         // The chat lives on that machine: its reads, sends and stream go there.
         syncService.setRemoteMachineChatScope(
           sessionId: summary.sessionId,
-          machineKey: remoteRepo.machineKey,
-          projectId: remoteRepo.projectId,
-          projectRootPath: remoteRepo.rootPath
+          machineKey: launchRemoteRepo.machineKey,
+          projectId: launchRemoteRepo.projectId,
+          projectRootPath: launchRemoteRepo.rootPath
         )
       }
+      // Record the picked issues on the chat (and its lane) the way desktop's
+      // attach does, so the lane's linked-issue list and a PR's "Closes"
+      // references are right. Runs after the remote scope is set, so a chat on
+      // another machine takes its links there. The first message already names
+      // them; a failed link must not cost the person their chat, but it must
+      // not disappear either.
+      for issue in launchIssuesSnapshot {
+        do {
+          switch issue {
+          case .linear(let linear):
+            try await syncService.attachLinearIssueToChat(chatSessionId: summary.sessionId, issue: linear)
+          case .github:
+            if let payload = issue.githubIssuePayload {
+              try await syncService.attachGitHubIssueToChat(chatSessionId: summary.sessionId, issues: [payload])
+            }
+          }
+        } catch {
+          workLaunchIssueLog.warning("issue_link_failed provider=\(issue.providerLabel, privacy: .public) id=\(issue.identifier, privacy: .public) error=\(String(describing: error), privacy: .private)")
+        }
+      }
       if attachmentRefs.isEmpty {
-        await onStarted(summary, opener, false, nil, [])
+        await onStarted(summary, chatOpener, false, nil, [])
       } else {
         let delivery = try await syncService.sendChatMessage(
           sessionId: summary.sessionId,
-          text: opener,
+          text: chatOpener,
           attachments: attachmentRefs,
           targetProjectId: targetScope.projectId,
           targetProjectRootPath: targetScope.projectRootPath
@@ -1797,13 +2429,14 @@ struct WorkNewChatScreen: View {
         switch delivery {
         case .queued:
           deliveryState = "queued"
-        case .sent, .dropped:
-          // `.dropped` (queue_full) is steer-only; a new chat's opener goes
-          // through sendChatMessage, so it is unreachable here. Fold it into the
-          // delivered path to keep the switch exhaustive.
+        case .sent, .dropped, .heldByServer:
+          // `.dropped` (queue_full) is steer-only, and `.heldByServer` needs
+          // an asleep cloud chat with no files; a new chat's opener with
+          // files is neither. Fold both into the delivered path to keep the
+          // switch exhaustive.
           deliveryState = nil
         }
-        await onStarted(summary, opener, true, deliveryState, attachmentRefs)
+        await onStarted(summary, chatOpener, true, deliveryState, attachmentRefs)
       }
       if let createdLaneId, let autoCreatedFallbackName {
         startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName, temporaryBranch: autoCreatedTemporaryBranch, attachments: namingAttachmentRefs)
@@ -1919,7 +2552,7 @@ struct WorkNewChatScreen: View {
 
 private func workCliSupportsReasoningSelection(provider: String) -> Bool {
   let family = providerFamilyKey(provider)
-  return family == "claude" || family == "codex" || family == "muse" || family == "droid" || family == "pi"
+  return family == "claude" || family == "codex" || family == "muse" || family == "droid" || family == "pi" || family == "antigravity"
 }
 
 private func workCliInitialSessionTitle(provider: String, opener: String) -> String {
@@ -1962,6 +2595,7 @@ private func workCliToolType(provider: String) -> String {
   case "kimi": return "kimi"
   case "grok": return "grok"
   case "copilot": return "copilot"
+  case "antigravity": return "antigravity"
   case "shell": return "shell"
   default: return "opencode"
   }
@@ -1994,6 +2628,9 @@ private struct WorkNewChatComposerBar: View {
   /// Owned by the screen so the lane sheet can park and restore keyboard focus.
   @Binding var composerFocused: Bool
   let onOpenModelPicker: () -> Void
+  /// Launch options the ⋯ menu draws (account, issue context), owned by the
+  /// screen so the picks survive the composer's own state.
+  var launchMenu: AnyView? = nil
   let onSubmit: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
 
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
@@ -2070,7 +2707,8 @@ private struct WorkNewChatComposerBar: View {
           ),
           provider: provider,
           modelId: modelId,
-          runtimeMode: runtimeMode
+          runtimeMode: runtimeMode,
+          extraMenuContent: launchMenu
         )
       },
       controls: {
@@ -2178,8 +2816,20 @@ struct WorkNewChatPreviewHost: View {
   /// layout fixes are about, provable with no pairing.
   let usesGatewayModelFixture: Bool
 
-  init(usesGatewayModelFixture: Bool = false) {
+  init(usesGatewayModelFixture: Bool = false, freeModelsFixture: Bool = false) {
     self.usesGatewayModelFixture = usesGatewayModelFixture
+    if freeModelsFixture {
+      // A new person's computer: nothing signed in, so the page starts on the
+      // free default and never saves it as the remembered model.
+      WorkFreeModelsStatusStore.shared.pinPreview(
+        status: WorkFreeModelsPreviewData.status,
+        freeModelIds: WorkFreeModelsPreviewData.freeModelIds
+      )
+      if let catalog = WorkFreeModelsPreviewData.catalog(includeFree: true) {
+        SyncMenuSafePublisher.shared.service.seedPreviewChatModelCatalog(catalog)
+        WorkModelMentionDirectory.shared.record(catalog: catalog)
+      }
+    }
     MobileUsageQuotaStore.shared.pinPreviewSnapshot(WorkNewChatPreviewFixtures.quotaSnapshot())
     WorkUsageActivityCarousel.previewStats = WorkNewChatPreviewFixtures.stats()
     if usesGatewayModelFixture {
@@ -2207,7 +2857,8 @@ struct WorkNewChatPreviewHost: View {
         activeProjectRootPath: "/Users/preview/Projects/ADE",
         onStarted: { _, _, _, _, _ in },
         onCliStarted: { _ in },
-        onRefreshLanes: {}
+        onRefreshLanes: {},
+        onCloudLaunchStarted: { _ in }
       )
     }
   }

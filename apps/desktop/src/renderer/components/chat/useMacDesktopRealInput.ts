@@ -6,16 +6,18 @@ import type {
 } from "react";
 
 import type { OpenProjectBinding } from "../../../shared/types";
-import type {
-  MacDesktopClickArgs,
-  MacDesktopDragArgs,
-  MacDesktopInputResult,
-  MacDesktopMoveArgs,
-  MacDesktopPressArgs,
-  MacDesktopReleaseCursorArgs,
-  MacDesktopReleaseInputArgs,
-  MacDesktopScrollArgs,
-  MacDesktopTypeArgs,
+import { parseCodedErrorMessage } from "../../../shared/codedError";
+import {
+  MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
+  type MacDesktopClickArgs,
+  type MacDesktopDragArgs,
+  type MacDesktopInputResult,
+  type MacDesktopMoveArgs,
+  type MacDesktopPressArgs,
+  type MacDesktopReleaseCursorArgs,
+  type MacDesktopReleaseInputArgs,
+  type MacDesktopScrollArgs,
+  type MacDesktopTypeArgs,
 } from "../../../shared/types/macDesktop";
 import { macDesktopApi } from "./macDesktopApi";
 import { macDesktopErrorText, type MacDesktopErrorTextOptions } from "./macDesktopErrorText";
@@ -346,6 +348,14 @@ export function macDesktopInputRefusal(
   return `Input refused: ${peeled || "unknown error"}`;
 }
 
+/** The host has no lease for this caller: the pane's idea of control is stale. */
+function isLeaseRequiredRefusal(error: unknown): boolean {
+  if (parseCodedErrorMessage(error).code === MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE) return true;
+  // A remote call can bury the code mid-message (behind a transport's own prefix).
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE);
+}
+
 export type UseMacDesktopRealInput = {
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
@@ -374,6 +384,21 @@ export type UseMacDesktopRealInput = {
    * the transport is the thing that is wedged.
    */
   cancelInput: () => boolean;
+  /** Sends one call as the handlers do (a takeover's held gesture). */
+  sendInput: (call: MacDesktopInputCall) => void;
+  /**
+   * Starts a press the handlers did not see (the takeover's held press): the
+   * next pointerup ends it as a click or a drag from `from`.
+   */
+  holdPress: (from: MacDesktopPoint | null) => void;
+  /**
+   * The host granted the lease: the handlers' gate opens now, before React
+   * renders the new lease, so the rest of the gesture that took control is
+   * not dropped. The next render reads the lease itself again.
+   */
+  openGateUntilRender: () => void;
+  /** The handlers' gate: the rendered lease, or a grant ahead of the render that carries it. */
+  gateOpen: () => boolean;
 };
 
 /**
@@ -531,12 +556,19 @@ export function useMacDesktopRealInput(args: {
    * so they pass false and the driver keeps the hold it recorded itself.
    */
   reportCursorHome?: boolean;
+  /**
+   * The host refused an event because nobody holds the lease. The pane
+   * believed it held control, so its lease is stale: it drops it and shows
+   * the normal "take control" state, not an error.
+   */
+  onLeaseRequired?: () => void;
 }): UseMacDesktopRealInput {
   const {
     controllerId,
     enabled,
     forwardPointerMoves = false,
     laneId,
+    onLeaseRequired,
     reportCursorHome = true,
     runtimePin,
     sender,
@@ -563,6 +595,16 @@ export function useMacDesktopRealInput(args: {
   const captureRef = useRef<{ node: Element; pointerId: number } | null>(null);
   const loggedRef = useRef<string | null>(null);
   const [inputError, setInputError] = useState<string | null>(null);
+  // The handlers' gate: the rendered lease, or a grant that came before the
+  // render that carries it (`openGateUntilRender`). Each render clears the
+  // grant and reads the lease itself again.
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+  const grantedAheadRef = useRef(false);
+  grantedAheadRef.current = false;
+  const gateOpen = useCallback(() => enabledRef.current || grantedAheadRef.current, []);
+  const onLeaseRequiredRef = useRef(onLeaseRequired);
+  onLeaseRequiredRef.current = onLeaseRequired;
 
   // One feed for the life of the hook: the cursor component subscribes to it
   // once, and a new object per render would resubscribe on every keystroke.
@@ -582,7 +624,13 @@ export function useMacDesktopRealInput(args: {
         // "Input refused" right after the person handed control back was a
         // false alarm.
         const release = call.kind === "releaseInput" || call.kind === "releaseCursor";
-        if (!release) setInputError(line);
+        if (!release && isLeaseRequiredRefusal(caught)) {
+          // Nobody holds the lease on the host, so this view does not either.
+          // That is the "take control" state, not an error to show.
+          onLeaseRequiredRef.current?.();
+        } else if (!release) {
+          setInputError(line);
+        }
         // Once per distinct refusal: a held key against a lost lease would
         // otherwise write a log line per repeat.
         if (loggedRef.current !== line) {
@@ -622,7 +670,7 @@ export function useMacDesktopRealInput(args: {
   useEffect(() => () => movePumpRef.current?.stop(), []);
 
   const onPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!enabled) return;
+    if (!gateOpen()) return;
     homeRef.current = { x: event.screenX, y: event.screenY };
     const point = toDisplayPoint(event.clientX, event.clientY);
     // The local glyph is the pointer the person sees. Hover `CGEvent`s are
@@ -633,7 +681,7 @@ export function useMacDesktopRealInput(args: {
     if (point) cursorFeed.publish(point);
     if (!point || !forwardPointerMoves) return;
     movePumpRef.current?.push(point);
-  }, [cursorFeed, enabled, forwardPointerMoves, toDisplayPoint]);
+  }, [gateOpen, cursorFeed, forwardPointerMoves, toDisplayPoint]);
 
   const onPointerLeave = useCallback(() => {
     // The system cursor may leave this element for the length of a posted
@@ -641,7 +689,7 @@ export function useMacDesktopRealInput(args: {
   }, []);
 
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!enabled) return;
+    if (!gateOpen()) return;
     homeRef.current = { x: event.screenX, y: event.screenY };
     event.currentTarget.focus({ preventScroll: true });
     // Restore-after-post warps the system cursor off this element for a beat
@@ -657,10 +705,10 @@ export function useMacDesktopRealInput(args: {
       // Capture failed; continue with the gesture.
     }
     dragStartRef.current = toDisplayPoint(event.clientX, event.clientY);
-  }, [enabled, toDisplayPoint]);
+  }, [gateOpen, toDisplayPoint]);
 
   const onPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!enabled) return;
+    if (!gateOpen()) return;
     const from = dragStartRef.current;
     dragStartRef.current = null;
     captureRef.current = null;
@@ -670,20 +718,20 @@ export function useMacDesktopRealInput(args: {
       { laneId, chatSessionId: sessionId, controllerId },
       { from, to, button: event.button, detail: event.detail },
     ));
-  }, [controllerId, enabled, laneId, send, sessionId, toDisplayPoint]);
+  }, [controllerId, gateOpen, laneId, send, sessionId, toDisplayPoint]);
 
   const onWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!enabled) return;
+    if (!gateOpen()) return;
     const point = toDisplayPoint(event.clientX, event.clientY);
     if (!point) return;
     send(macDesktopWheelCall(
       { laneId, chatSessionId: sessionId, controllerId },
       { point, deltaX: event.deltaX, deltaY: event.deltaY },
     ));
-  }, [controllerId, enabled, laneId, send, sessionId, toDisplayPoint]);
+  }, [controllerId, gateOpen, laneId, send, sessionId, toDisplayPoint]);
 
   const onKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!enabled) return;
+    if (!gateOpen()) return;
     const call = macDesktopKeyCall({ laneId, chatSessionId: sessionId, controllerId }, {
       key: event.key,
       metaKey: event.metaKey,
@@ -694,7 +742,7 @@ export function useMacDesktopRealInput(args: {
     if (!call) return;
     event.preventDefault();
     send(call);
-  }, [controllerId, enabled, laneId, send, sessionId]);
+  }, [controllerId, gateOpen, laneId, send, sessionId]);
 
   const clearInputError = useCallback(() => {
     loggedRef.current = null;
@@ -745,6 +793,14 @@ export function useMacDesktopRealInput(args: {
     return hadPress;
   }, []);
 
+  const holdPress = useCallback((from: MacDesktopPoint | null) => {
+    dragStartRef.current = from;
+  }, []);
+
+  const openGateUntilRender = useCallback(() => {
+    grantedAheadRef.current = true;
+  }, []);
+
   return {
     onPointerDown,
     onPointerMove,
@@ -757,5 +813,9 @@ export function useMacDesktopRealInput(args: {
     clearInputError,
     releaseCursor,
     cancelInput,
+    sendInput: send,
+    holdPress,
+    openGateUntilRender,
+    gateOpen,
   };
 }

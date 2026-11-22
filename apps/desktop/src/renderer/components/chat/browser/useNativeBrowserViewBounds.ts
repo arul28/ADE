@@ -14,6 +14,7 @@ import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
 } from "../../../lib/workSidebarBrowserResize";
 import { FLOATS_OVER_BROWSER_ATTR } from "../../ui/overlayState";
+import { publishBrowserPageRect } from "../../app/toast/cornerNoticeDock";
 import type { BrowserFrame } from "./browserPanelTypes";
 
 /**
@@ -227,6 +228,12 @@ export type NativeBrowserViewBoundsOptions = {
   /** A data URL for the frozen frame, or null when the page refused. */
   captureFrame: () => Promise<string | null>;
   onError: (message: string) => void;
+  /**
+   * This panel's id in the notice corner's page registry. While the page is
+   * meant to be on screen its rect is published there, so the bottom-right
+   * notices move into this browser's toolbar instead of covering the page.
+   */
+  pageId?: string;
 };
 
 export type NativeBrowserViewBounds = {
@@ -253,6 +260,7 @@ export function useNativeBrowserViewBounds({
   stopInspect,
   captureFrame,
   onError,
+  pageId,
 }: NativeBrowserViewBoundsOptions): NativeBrowserViewBounds {
   const latestBoundsRef = useRef<BrowserBounds | null>(null);
   /*
@@ -297,6 +305,28 @@ export function useNativeBrowserViewBounds({
         && measured.visible
       ),
     };
+    if (pageId) {
+      // Published from the page's *intended* visibility, not its current one:
+      // a menu or a drag hides the live view for a moment (`visibleOverride`
+      // false, occlusion), and dropping out of the registry then would bring
+      // the notices back into the corner for the length of the menu and flap.
+      // Only a page that is genuinely gone (launchpad, crop, a collapsed or
+      // unmounted pane) leaves it.
+      const onScreen = !captureModeRef.current
+        && !launchpadVisibleRef.current
+        && measured.visible;
+      if (onScreen) {
+        const rect = element.getBoundingClientRect();
+        publishBrowserPageRect(pageId, {
+          left: Math.round(rect.left),
+          top: Math.round(rect.top),
+          right: Math.round(rect.right),
+          bottom: Math.round(rect.bottom),
+        });
+      } else {
+        publishBrowserPageRect(pageId, null);
+      }
+    }
     // A dropped or rejected `setBounds` would otherwise be cached as applied and
     // never retried, so a drag re-sends unconditionally.
     if (!options?.force && boundsEqual(latestBoundsRef.current, next)) return;
@@ -308,7 +338,12 @@ export function useNativeBrowserViewBounds({
       if (latestBoundsRef.current === next) latestBoundsRef.current = null;
       onError(error instanceof Error ? error.message : String(error));
     });
-  }, [enabled, launchpadVisibleRef, captureModeRef, onError, panelRef, setBounds, surfaceRef, viewScaleRef, viewportRef]);
+  }, [enabled, launchpadVisibleRef, captureModeRef, onError, pageId, panelRef, setBounds, surfaceRef, viewScaleRef, viewportRef]);
+
+  useEffect(() => {
+    if (!pageId) return undefined;
+    return () => publishBrowserPageRect(pageId, null);
+  }, [pageId]);
 
   const hideNativeBrowserView = useCallback(async () => {
     if (!enabled) return;

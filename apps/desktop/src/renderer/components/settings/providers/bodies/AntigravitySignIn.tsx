@@ -1,22 +1,25 @@
 /**
  * Antigravity sign-in on the machine the Settings page shows.
  *
- * Google's Antigravity agent has no terminal login: sign-in is its ACP
- * `authenticate` request, which ADE runs with its pinned agent on that
- * machine (`ai.antigravitySignIn*`, routed by `useSettingsMachineScope().pin`;
- * start, status reads, a pasted address and cancel all go to that one
- * machine). For a Google account the agent waits for Google to send the
- * browser back to a 127.0.0.1 address on that machine:
+ * ADE runs the sign-in with its pinned Antigravity CLI on that machine
+ * (`ai.antigravitySignIn*`, routed by `useSettingsMachineScope().pin`; start,
+ * status reads, the pasted code and cancel all go to that one machine).
  *
- * - This computer: ADE opens the Google page; the browser lands on the
- *   agent's listener by itself.
- * - Another machine (or the web client): open the page anywhere, then paste
- *   the full address the browser ends on (it will not load). ADE checks it
- *   and hands it to the agent there.
+ * - Google account: the CLI's `agy acp --login`. Google's page shows a code
+ *   once the person approves, in a browser on any computer; it is pasted
+ *   here and ADE hands it to the CLI there.
+ * - Gemini Enterprise: the agent's ACP `authenticate`, which opens a browser
+ *   on that machine and waits for Google to come back to it there.
+ *
+ * The page keeps the method and the flow; a running sign-in shows in the
+ * shared sign-in sheet (`AntigravitySignInSheetView`). Closing the sheet
+ * mid-flow stops the sign-in on that machine.
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowSquareOut, Copy, SignIn, X } from "@phosphor-icons/react";
-import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../../../lanes/laneDesignTokens";
+import { SignIn, X } from "@phosphor-icons/react";
+import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
+import { AntigravitySignInSheetView } from "../ProviderSignInSheet";
+import { signInMachineWords } from "../signInSheetParts";
 import { Banner } from "../../../ui/notice";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { useSettingsAction } from "../../useSettingsAction";
@@ -27,11 +30,12 @@ import type { ProvidersViewContext } from "../types";
 const POLL_MS = 1_000;
 
 const METHODS: ReadonlyArray<{ id: AntigravityAuthMethod; label: string; hint: string }> = [
-  { id: "oauth-personal", label: "Google account", hint: "Sign in with your Google account in a browser." },
+  { id: "oauth-personal", label: "Google account", hint: "Sign in with your Google account in a browser on any computer, then paste the code Google shows." },
   {
     id: "oauth-business",
     label: "Gemini Enterprise",
-    hint: "Sign in with your work account, then choose your license on the page Antigravity serves. That page opens only in a browser on the machine that runs Antigravity.",
+    hint: "Sign in with your work account. Antigravity opens the browser itself, so this finishes only on the machine that runs it. "
+      + "If it finds no license, set gcp.project and gcp.location (global, us or eu) in its settings.json.",
   },
   { id: "gemini-api-key", label: "Gemini API key", hint: "Uses the Gemini API key saved under API keys on this page." },
   {
@@ -59,20 +63,31 @@ const textInput: React.CSSProperties = {
 
 export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
   const { pin, isThisMachine, machineName } = useSettingsMachineScope();
+  /** The machine inside a sentence: "this computer" here, else its name. */
+  const where = signInMachineWords(isThisMachine, machineName);
   const pinRef = useRef(pin);
   pinRef.current = pin;
   const pinKey = pin?.key ?? null;
   const action = useSettingsAction();
   const runAction = action.run;
   const refreshStatus = ctx.actions.refreshStatus;
+  const verifySignIn = ctx.actions.verifySignIn;
   const [state, setState] = useState<AntigravitySignInState | null>(null);
   const [method, setMethod] = useState<AntigravityAuthMethod>("oauth-personal");
   const [project, setProject] = useState("");
   const [location, setLocation] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [returnUrl, setReturnUrl] = useState("");
+  /**
+   * The sheet is up. A fresh sheet shows only a state newer than the one on
+   * screen when it opened (`since`, the old state itself), so an earlier
+   * flow's end is not read as this one's; a sheet opened to watch a running
+   * flow shows the current one.
+   */
+  const [sheet, setSheet] = useState<{ fresh: true; since: AntigravitySignInState | null } | { fresh: false } | null>(null);
   const openedFlowRef = useRef<string | null>(null);
   const finishedFlowRef = useRef<string | null>(null);
+  /** The flow this page watched run, so an old success read on open does not start a check. */
+  const watchedFlowRef = useRef<string | null>(null);
   const supported = Boolean(window.ade?.ai?.antigravitySignInStatus);
 
   const apply = useCallback((next: AntigravitySignInState | null) => {
@@ -86,11 +101,14 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
       openedFlowRef.current = next.flowId;
       if (isThisMachine) void window.ade?.app?.openExternal?.(next.authorizationUrl);
     }
+    if (next.flowId && isAntigravitySignInRunning(next)) watchedFlowRef.current = next.flowId;
     if (next.phase === "succeeded" && next.flowId && finishedFlowRef.current !== next.flowId) {
       finishedFlowRef.current = next.flowId;
-      void refreshStatus({ force: true, silent: true });
+      void (watchedFlowRef.current === next.flowId
+        ? verifySignIn("antigravity")
+        : refreshStatus({ force: true, silent: true }));
     }
-  }, [isThisMachine, refreshStatus]);
+  }, [isThisMachine, refreshStatus, verifySignIn]);
 
   // One read per machine.
   useEffect(() => {
@@ -117,8 +135,7 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
 
   const start = useCallback(() => runAction("start", async () => {
     const begin = window.ade?.ai?.antigravitySignInStart;
-    if (!begin) throw new Error(`ADE on ${machineName} cannot sign in to Antigravity yet. Update ADE there and try again.`);
-    setReturnUrl("");
+    if (!begin) throw new Error(`ADE on ${where} cannot sign in to Antigravity yet. Update ADE there and try again.`);
     apply(await begin({
       method,
       ...(method === "agent-platform"
@@ -126,7 +143,7 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
         : {}),
     }, pinRef.current));
     setApiKey("");
-  }), [runAction, apply, apiKey, location, machineName, method, project]);
+  }), [runAction, apply, apiKey, location, where, method, project]);
 
   const cancel = useCallback(() => runAction("cancel", async () => {
     const flowId = state?.flowId;
@@ -135,13 +152,22 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
     apply(await stop({ flowId }, pinRef.current));
   }), [runAction, apply, state?.flowId]);
 
-  const complete = useCallback(() => runAction("complete", async () => {
+  const complete = useCallback((address: string) => runAction("complete", async () => {
     const flowId = state?.flowId;
     const send = window.ade?.ai?.antigravitySignInComplete;
     if (!flowId || !send) return;
-    apply(await send({ flowId, callbackUrl: returnUrl.trim() }, pinRef.current));
-    setReturnUrl("");
-  }), [runAction, apply, returnUrl, state?.flowId]);
+    apply(await send({ flowId, callbackUrl: address.trim() }, pinRef.current));
+  }), [runAction, apply, state?.flowId]);
+
+  const openSheetAndStart = useCallback(() => {
+    setSheet({ fresh: true, since: state });
+    void start();
+  }, [start, state]);
+
+  const closeSheet = useCallback(() => {
+    if (isAntigravitySignInRunning(state)) void cancel();
+    setSheet(null);
+  }, [cancel, state]);
 
   if (!supported) {
     return (
@@ -154,8 +180,13 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
   const busy = isAntigravitySignInRunning(state);
   const methodHint = METHODS.find((entry) => entry.id === method)?.hint ?? "";
   const signedInLine = state?.signedIn && state.recordedMethod
-    ? `Signed in on ${machineName} with ${METHOD_LABEL[state.recordedMethod]}.`
+    ? `Signed in on ${where} with ${METHOD_LABEL[state.recordedMethod]}.`
     : null;
+  const sheetState = !sheet
+    ? null
+    : sheet.fresh
+      ? state && state !== sheet.since ? state : null
+      : state;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -188,7 +219,7 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
           <button
             type="button"
             disabled={action.busy === "start"}
-            onClick={() => void start()}
+            onClick={openSheetAndStart}
             style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
           >
             <SignIn size={13} />{" "}
@@ -197,80 +228,38 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
               : "Connect"}
           </button>
           <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            Runs ADE's copy of Antigravity on {machineName} (downloading it first if needed). The login is the
+            Runs ADE's copy of Antigravity on {where} (downloading it first if needed). The login is the
             agent's own, shared with other apps that use it there.
           </div>
         </>
       ) : null}
 
-      {busy && state ? (
+      {busy && state && !sheet ? (
+        // A sign-in already running (started from a chat, or before the page opened).
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: 1.5 }}>
-            {state.message ?? "Working…"}
+            A sign-in to Antigravity is running on {where}.
           </div>
-          {state.authorizationUrl ? (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              <button
-                type="button"
-                onClick={() => void window.ade?.app?.openExternal?.(state.authorizationUrl!)}
-                style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
-              >
-                <ArrowSquareOut size={13} /> Open Google sign-in
-              </button>
-              <button
-                type="button"
-                onClick={() => void navigator.clipboard?.writeText(state.authorizationUrl!).catch(() => undefined)}
-                style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
-              >
-                <Copy size={13} /> Copy link
-              </button>
-            </div>
-          ) : null}
-          {state.licensePickerUrl ? (
-            <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5, overflowWrap: "anywhere" }}>
-              License page (open it in a browser on {machineName}):{" "}
-              <code style={{ fontFamily: MONO_FONT }}>{state.licensePickerUrl}</code>
-            </div>
-          ) : null}
-          {state.acceptsCallbackUrl ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                {isThisMachine
-                  ? "If the browser you signed in with is on another computer, its last page will not load. Paste that page's full address here."
-                  : `Google sends the browser back to an address on ${machineName}, so the last page will not load here. Paste its full address (starting with http://127.0.0.1) and choose Continue. It holds a one-time sign-in code: paste it only here.`}
-              </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <input
-                  aria-label="Return address"
-                  placeholder="http://127.0.0.1:…/?state=…&code=…"
-                  value={returnUrl}
-                  onChange={(event) => setReturnUrl(event.target.value)}
-                  style={{ ...textInput, flex: 1 }}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-                <button
-                  type="button"
-                  disabled={!returnUrl.trim() || action.busy === "complete"}
-                  onClick={() => void complete()}
-                  style={primaryButton({ height: 28, padding: "0 12px", fontSize: 12 })}
-                >
-                  Continue
-                </button>
-              </div>
-            </div>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => void cancel()}
-            style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
-          >
-            <X size={13} /> Cancel
-          </button>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <button
+              type="button"
+              onClick={() => setSheet({ fresh: false })}
+              style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
+            >
+              <SignIn size={13} /> Show the sign-in
+            </button>
+            <button
+              type="button"
+              onClick={() => void cancel()}
+              style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
+            >
+              <X size={13} /> Cancel
+            </button>
+          </div>
         </div>
       ) : null}
 
-      {!busy && state && (state.phase === "failed" || state.phase === "succeeded" || state.phase === "cancelled") && state.message ? (
+      {!busy && !sheet && state && (state.phase === "failed" || state.phase === "succeeded" || state.phase === "cancelled") && state.message ? (
         <Banner
           layout="inline"
           model={{
@@ -280,7 +269,20 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
           }}
         />
       ) : null}
-      {action.error ? <Banner layout="inline" model={{ id: "antigravity-sign-in-error", tone: "error", title: action.error }} /> : null}
+      {action.error && !sheet ? <Banner layout="inline" model={{ id: "antigravity-sign-in-error", tone: "error", title: action.error }} /> : null}
+
+      {sheet ? (
+        <AntigravitySignInSheetView
+          state={sheetState}
+          starting={action.busy === "start" || (sheet.fresh && !sheetState && !action.error)}
+          machine={{ pin, isThisMachine, machineName }}
+          submitting={action.busy === "complete"}
+          onSubmitAddress={(address) => void complete(address)}
+          onClose={closeSheet}
+          onTryAgain={openSheetAndStart}
+          error={action.error}
+        />
+      ) : null}
     </div>
   );
 }

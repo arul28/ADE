@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { ToolTargetPin } from "./manifest";
 
 const MIB = 1024 * 1024;
 
@@ -22,6 +23,24 @@ export type FreeSpaceReader = (dirPath: string) => number | null;
 export function estimateToolRequiredBytes(archiveBytes: number | null): number {
   const bytes = archiveBytes && archiveBytes > 0 ? archiveBytes : TOOL_DEFAULT_ARCHIVE_BYTES;
   return bytes * TOOL_UNPACK_RATIO + TOOL_SPACE_HEADROOM_BYTES;
+}
+
+/**
+ * Roughly what a pin takes once installed, for a budget check before its
+ * download: the same ratio and default as the download's own preflight
+ * (an npm tarball pin carries no size, so it is taken at the default).
+ */
+export function estimateInstalledToolBytes(targetPin: ToolTargetPin): number {
+  switch (targetPin.format) {
+    case "file":
+      return targetPin.size;
+    case "archive":
+      return targetPin.size * TOOL_UNPACK_RATIO;
+    case "npm-tree":
+      return targetPin.unpackedSize + targetPin.packages.reduce((sum, entry) => sum + entry.size, 0);
+    default:
+      return TOOL_DEFAULT_ARCHIVE_BYTES * TOOL_UNPACK_RATIO;
+  }
 }
 
 /**

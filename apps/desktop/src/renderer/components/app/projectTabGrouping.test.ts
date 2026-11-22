@@ -4,7 +4,6 @@ import {
   groupRecentProjects,
   groupProjectTabs,
   remoteBindingFromRecent,
-  localCheckoutForRemote,
   resolveProjectTabFallback,
   LOCAL_MACHINE_NAME,
 } from "./projectTabGrouping";
@@ -134,11 +133,9 @@ describe("groupProjectTabs", () => {
     ]);
   });
 
-  it("keeps two open tabs on two machines independent when they share an origin", () => {
-    // The owner's repro: two projects the user opened deliberately, on two
-    // machines, that happen to be checkouts of one repo. Collapsing them left a
-    // single tab whose machine followed whichever tab was active, so the tab
-    // being left looked like it jumped to the other machine.
+  it("shows two open copies of one repository on two machines as one tab", () => {
+    // One tab per repository: the tab names both machines, and the active
+    // machine follows the copy the tab is bound to.
     const origin = "git@github.com:arul28/ADE.git";
     const studio = { ...remote("studio", "project-1", "Mac Studio"), gitOriginUrl: origin };
     const laptop = { ...remote("laptop", "project-2", "MacBook Pro"), gitOriginUrl: origin };
@@ -150,12 +147,13 @@ describe("groupProjectTabs", () => {
         remoteOriginByKey: { [studio.key]: origin, [laptop.key]: origin },
         activeBindingKey,
       });
-      expect(groups).toHaveLength(2);
-      return groups.map((group) => activeMachineForGroup(group)?.machineName);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].machines.map((machine) => machine.machineName).sort()).toEqual(["Mac Studio", "MacBook Pro"]);
+      return activeMachineForGroup(groups[0])?.machineName;
     };
 
-    expect(shown(studio.key)).toEqual(["Mac Studio", "MacBook Pro"]);
-    expect(shown(laptop.key)).toEqual(["Mac Studio", "MacBook Pro"]);
+    expect(shown(studio.key)).toBe("Mac Studio");
+    expect(shown(laptop.key)).toBe("MacBook Pro");
   });
 
   it("tracks which machine the active tab is bound to", () => {
@@ -346,33 +344,6 @@ describe("groupRecentProjects", () => {
     // was used last.
     expect(groups[0].primary.machineName).toBe(LOCAL_MACHINE_NAME);
     expect(groups[0].primary.summary.rootPath).toBe("/Users/me/ADE");
-  });
-});
-
-describe("localCheckoutForRemote", () => {
-  const ORIGIN = "https://github.com/arul28/ADE";
-  const SSH_ORIGIN = "git@github.com:arul28/ADE.git";
-  const worktree = { ...local("/Users/me/.ade/worktrees/x", SSH_ORIGIN), worktreeOf: { rootPath: "/Users/me/ADE" } } as RecentProjectSummary;
-  const missing = { ...local("/Users/me/Gone", SSH_ORIGIN), exists: false };
-
-  it.each([
-    { name: "finds a recent checkout of the same repo", open: [], known: [local("/Users/me/ADE", SSH_ORIGIN)], expected: "/Users/me/ADE" },
-    { name: "prefers an open tab over a recent", open: [local("/Users/me/Open", SSH_ORIGIN)], known: [local("/Users/me/ADE", SSH_ORIGIN)], expected: "/Users/me/Open" },
-    { name: "never uses a lane worktree", open: [worktree], known: [], expected: null },
-    { name: "skips a checkout missing on disk", open: [], known: [missing], expected: null },
-    { name: "ignores a different repo", open: [], known: [local("/Users/me/Other", "git@github.com:arul28/other.git")], expected: null },
-    { name: "ignores a recent with no origin", open: [], known: [local("/Users/me/ADE")], expected: null },
-    { name: "ignores another machine's recent", open: [], known: [remoteRecent("studio", "ade", "Mac Studio", SSH_ORIGIN, "")], expected: null },
-  ])("$name", ({ open, known, expected }) => {
-    expect(localCheckoutForRemote({ remoteOrigin: ORIGIN, openLocalTabs: open, knownLocalTabs: known })).toBe(expected);
-  });
-
-  it("returns nothing when the remote project's repo is unknown", () => {
-    expect(localCheckoutForRemote({
-      remoteOrigin: null,
-      openLocalTabs: [local("/Users/me/ADE", SSH_ORIGIN)],
-      knownLocalTabs: [],
-    })).toBeNull();
   });
 });
 

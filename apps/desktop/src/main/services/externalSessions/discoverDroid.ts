@@ -21,10 +21,12 @@ import {
   slugMatchesScopeRoots,
   sortDiscoveryRecords,
   EXTERNAL_SESSION_READ_BUDGET_MULTIPLIER,
+  type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import { adeHarnessConfigHomes, uniqueByPath } from "./adeConfigHomes";
 
 /**
  * Name of the per-project directory Droid creates under `~/.factory/sessions`.
@@ -62,7 +64,11 @@ export function droidProjectSlugForCwd(cwd: string): string {
  * begins with the escaped separator. Anything else is a shape ADE cannot map back
  * to a path, so only the file's own `session_start` row can place it.
  */
-type DroidCandidate = ExternalSessionFileCandidate<{ inRequestedScope: boolean }>;
+type DroidCandidate = ExternalSessionFileCandidate<{
+  inRequestedScope: boolean;
+  /** Set for a session in one of ADE's own homes; null in Droid's default home. */
+  configHome: ExternalSessionConfigHome | null;
+}>;
 
 function droidDirectoryNamesAPath(directoryName: string): boolean {
   return directoryName.startsWith("-");
@@ -79,47 +85,67 @@ function droidSlugForComparison(slug: string): string {
   return process.platform === "win32" ? slug.toLowerCase() : slug;
 }
 
+/**
+ * Every `sessions` folder Droid can be writing to: the default home, then each
+ * preset, route and API-key home ADE runs Droid on. `FACTORY_HOME_OVERRIDE`
+ * replaces HOME, so an ADE home holds its sessions under `<home>/.factory`.
+ */
+function droidSessionStores(
+  args: ExternalSessionDiscoveryArgs,
+): Array<{ sessionsDir: string; configHome: ExternalSessionConfigHome | null }> {
+  const stores: Array<{ sessionsDir: string; configHome: ExternalSessionConfigHome | null }> = [{
+    sessionsDir: path.join(factoryConfigHome({ homeDir: resolveHomeDir(args) }), "sessions"),
+    configHome: null,
+  }];
+  for (const configHome of adeHarnessConfigHomes("droid", args)) {
+    stores.push({ sessionsDir: path.join(configHome.dir, ".factory", "sessions"), configHome });
+  }
+  return uniqueByPath(stores, (store) => store.sessionsDir);
+}
+
 export async function discoverDroidSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
-  const sessionsDir = path.join(factoryConfigHome({ homeDir: resolveHomeDir(args) }), "sessions");
   const lookupId = args.sessionId?.trim() || null;
   // A session id can be written under more than one escaped cwd; keeping one
   // candidate per id stops duplicates from spending the read budget twice and
   // from reaching the caller as two rows for one session.
   const candidatesById = new Map<string, DroidCandidate>();
 
-  for (const projectEntry of safeReadDir(sessionsDir)) {
-    if (!projectEntry.isDirectory()) continue;
-    const namesAPath = droidDirectoryNamesAPath(projectEntry.name);
-    // Must use droidProjectSlugForCwd, not slashEscapedCwd: the latter yields
-    // "C:-Users-..." on Windows, a name NTFS can never hold, so every project
-    // directory failed this filter and no Droid session was ever importable.
-    // Verified byte-exact against droid v0.186.0's own on-disk directory names.
-    const inRequestedScope = slugMatchesScopeRoots(
-      droidSlugForComparison(projectEntry.name),
-      args.scopeRoots,
-      droidProjectSlugForCwd,
-    );
-    // Out-of-project directories are ruled out here, before the mtime cut that
-    // would otherwise let heavy usage elsewhere crowd in-project sessions out.
-    if (namesAPath && !inRequestedScope) continue;
-    const projectDir = path.join(sessionsDir, projectEntry.name);
-    const fileNames = lookupId
-      ? [`${lookupId}.jsonl`]
-      : safeReadDir(projectDir)
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
-        .map((entry) => entry.name);
-    for (const fileName of fileNames) {
-      const id = path.basename(fileName, ".jsonl");
-      if (!id) continue;
-      const candidate = sessionFileCandidate(path.join(projectDir, fileName), {
-        inRequestedScope: namesAPath && inRequestedScope,
-      });
-      if (!candidate) continue;
-      const existing = candidatesById.get(id);
-      candidatesById.set(id, existing ? moreCompleteDroidCandidate(existing, candidate) : candidate);
+  for (const { sessionsDir, configHome } of droidSessionStores(args)) {
+    for (const projectEntry of safeReadDir(sessionsDir)) {
+      if (!projectEntry.isDirectory()) continue;
+      const namesAPath = droidDirectoryNamesAPath(projectEntry.name);
+      // Must use droidProjectSlugForCwd, not slashEscapedCwd: the latter yields
+      // "C:-Users-..." on Windows, a name NTFS can never hold, so every project
+      // directory failed this filter and no Droid session was ever importable.
+      // Verified byte-exact against droid v0.186.0's own on-disk directory names.
+      const inRequestedScope = slugMatchesScopeRoots(
+        droidSlugForComparison(projectEntry.name),
+        args.scopeRoots,
+        droidProjectSlugForCwd,
+      );
+      // Out-of-project directories are ruled out here, before the mtime cut that
+      // would otherwise let heavy usage elsewhere crowd in-project sessions out.
+      if (namesAPath && !inRequestedScope) continue;
+      const projectDir = path.join(sessionsDir, projectEntry.name);
+      const fileNames = lookupId
+        ? [`${lookupId}.jsonl`]
+        : safeReadDir(projectDir)
+          .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+          .map((entry) => entry.name);
+      for (const fileName of fileNames) {
+        const id = path.basename(fileName, ".jsonl");
+        if (!id) continue;
+        const candidate = sessionFileCandidate(path.join(projectDir, fileName), {
+          inRequestedScope: namesAPath && inRequestedScope,
+          configHome,
+        });
+        if (!candidate) continue;
+        const existing = candidatesById.get(id);
+        candidatesById.set(id, existing ? moreCompleteDroidCandidate(existing, candidate) : candidate);
+      }
     }
   }
 
@@ -181,6 +207,8 @@ export async function discoverDroidSessions(
       sourceMtimeMs: candidate.mtimeMs,
     });
     record.sizeBytes = candidate.size;
+    // The ADE home the session lives in, so an import resumes it there.
+    if (candidate.configHome) record.configHome = candidate.configHome;
     recordsById.set(id, record);
   }
 

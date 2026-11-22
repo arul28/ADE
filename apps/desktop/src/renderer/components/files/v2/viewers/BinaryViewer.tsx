@@ -4,11 +4,16 @@ import { COLORS } from "../../../lanes/laneDesignTokens";
 import type { ViewerProps } from "./types";
 import { isWebClientMode } from "../../../../lib/webClientMode";
 import { formatBytes } from "../../../../../shared/formatting";
+import { runPathActionHere } from "../../pathOnThisComputer";
 
 /** Fallback for unpreviewable binary files — offers revealing in Finder. */
-export function BinaryViewer({ rootPath, tab, content }: ViewerProps) {
+export function BinaryViewer({ rootPath, pathPin, tab, content }: ViewerProps) {
   const openExternally = () => {
-    void window.ade.app.openPathInEditor?.({ rootPath, relativePath: tab.path, target: "finder" }).catch(() => {});
+    runPathActionHere(
+      pathPin,
+      () => window.ade.app.openPathInEditor({ rootPath, relativePath: tab.path, target: "finder" }, pathPin),
+      { failTitle: `Could not open "${tab.title}"` },
+    );
   };
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">

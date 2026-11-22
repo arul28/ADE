@@ -1,4 +1,5 @@
 import type {
+  AgentChatCrossMachineHandoffRecord,
   AgentChatIdentityKey,
   AgentChatSessionSummary,
   ListSessionsArgs,
@@ -6,6 +7,7 @@ import type {
   TerminalSessionDetail,
   TerminalSessionSummary,
 } from "../../../shared/types";
+import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
 import { getErrorMessage } from "../shared/utils";
 import { activeRemoteWork } from "../../../shared/chatRemoteWork";
@@ -27,6 +29,8 @@ type ChatProjectionServices = {
     getSessionSummary(sessionId: string): Promise<AgentChatSessionSummary | null>;
     getSessionIdentityKey(sessionId: string): Promise<AgentChatIdentityKey | null>;
     getSessionSideChatParentId(sessionId: string): Promise<string | null>;
+    /** Each tracked agent CLI row's latest move to another machine (a chat's rides its summary). */
+    getCliCrossMachineMoves?(sessionIds: readonly string[]): Map<string, AgentChatCrossMachineHandoffRecord>;
   } | null;
   logger: {
     warn(event: string, data: Record<string, unknown>): void;
@@ -380,7 +384,36 @@ export async function listSessionsWithChatProjection(
       });
     }
   }
-  return projectChatSummariesOntoSessions(sessions, allChats);
+  return withCliCrossMachineMoves(services, projectChatSummariesOntoSessions(sessions, allChats));
+}
+
+/**
+ * A tracked agent CLI row carries its latest move to another machine the way
+ * a chat's row does (`crossMachineHandoff`): the Work menu, the row's chip
+ * and its moved-away state read it.
+ */
+function withCliCrossMachineMoves(
+  services: ChatProjectionServices,
+  sessions: TerminalSessionSummary[],
+): TerminalSessionSummary[] {
+  const read = services.agentChatService?.getCliCrossMachineMoves;
+  if (!read) return sessions;
+  const cliIds = sessions
+    .filter((session) => session.tracked && isTrackedAgentCliToolType(session.toolType ?? null))
+    .map((session) => session.id);
+  if (!cliIds.length) return sessions;
+  let moves: Map<string, AgentChatCrossMachineHandoffRecord>;
+  try {
+    moves = read.call(services.agentChatService, cliIds);
+  } catch (error) {
+    services.logger.warn("sessions.cli_move_projection_failed", { error: getErrorMessage(error) });
+    return sessions;
+  }
+  if (!moves.size) return sessions;
+  return sessions.map((session) => {
+    const record = moves.get(session.id);
+    return record ? { ...session, crossMachineHandoff: record } : session;
+  });
 }
 
 export async function getSessionWithChatProjection(
@@ -401,7 +434,7 @@ export async function getSessionWithChatProjection(
     }
   }
   const session = services.ptyService?.enrichSessions([persisted])[0] ?? persisted;
-  if (!isChatToolType(session.toolType)) return session;
+  if (!isChatToolType(session.toolType)) return withCliCrossMachineMoves(services, [session])[0] ?? session;
   try {
     const chat = await services.agentChatService?.getSessionSummary(sessionId);
     if (!chat) return fallbackUnprojectedChatSession(session);

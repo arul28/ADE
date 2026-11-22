@@ -14,7 +14,8 @@ import { LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
 import { toneText } from "../lanes/laneDesignTokens";
 import { Banner } from "../ui/notice";
 import { useAppStore } from "../../state/appStore";
-import type { PrSummary } from "../../../shared/types";
+import type { OpenProjectBinding, PrSummary } from "../../../shared/types";
+import { requireChatPin } from "./chatMachinePin";
 import { branchNameFromRef, resolveLaneBaseBranch } from "../prs/shared/laneBranchTargets";
 import { buildLinearPrReference } from "../../../shared/linearMagicWords";
 import { extractError } from "../../lib/format";
@@ -52,6 +53,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
   sessionTitle,
   sessionId = null,
   onCreated,
+  pin,
 }: {
   laneId: string;
   branchName?: string | null;
@@ -72,12 +74,14 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
    * it would leave the button stuck "Creating…".
    */
   onCreated: (pr: PrSummary) => void;
+  /** The chat's machine, which runs the create. Null: none known. */
+  pin: OpenProjectBinding | null;
 }) {
   const navigate = useNavigate();
   // The tab's lanes are the right ones here: `ChatPrPane` only renders this
-  // creator for an unpinned chat, because `createFromLane` is not pinnable and
-  // the derivation below (branch, base, Linear link, primary lane) needs the
-  // whole lane list of the machine that would run it.
+  // creator for a chat on the tab's copy, and the derivation below (branch,
+  // base, Linear link, primary lane) needs the whole lane list of the machine
+  // that runs it.
   // eslint-disable-next-line no-restricted-syntax
   const lanes = useAppStore((s) => s.lanes);
 
@@ -181,7 +185,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
         draft: false,
         ...(linearIssue ? { closeLinearIssueOnMerge: true } : {}),
         ...(resolvedBaseBranch ? { baseBranch: resolvedBaseBranch } : {}),
-      });
+      }, requireChatPin(pin));
       // createFromLane has already persisted the PR row and returns the full
       // summary — hand it straight to the parent so it swaps to the details view
       // in real time. We deliberately leave busy=true: onCreated unmounts this
@@ -197,7 +201,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
       setError(cleanError(err));
       setBusy(false);
     }
-  }, [body, defaultTitle, laneId, linearIssue, onCreated, resolvedBaseBranch, sessionId, title]);
+  }, [body, defaultTitle, laneId, linearIssue, onCreated, pin, resolvedBaseBranch, sessionId, title]);
 
   // The full composer lives in the PRs tab; this hands off with the lane
   // pre-selected.

@@ -28,6 +28,8 @@ import { RuleSentence } from "../list/RuleSentence";
 import { TriggerCard } from "./TriggerCard";
 import { LaneTargeting } from "./LaneTargeting";
 import { ChatTargetField } from "./ChatTargetField";
+import { RuleCloudField } from "./RuleCloudField";
+import { automationCloudProblem } from "../../../../shared/automationCloud";
 import { StepStack } from "./StepStack";
 import { TestRunButton, type TestKind } from "./TestRunControls";
 import { applyStepsToDraft, draftToSteps, laneComesFromEvent, readLaneMode, type WorkflowStep } from "./draftBridge";
@@ -325,6 +327,26 @@ export function RuleBuilder({
 
           <Section icon={meta.icon} title="Trigger" hint={meta.hint}>
             {machineField}
+            <RuleCloudField
+              value={draft.execution?.cloud ?? null}
+              problem={automationCloudProblem(draft.execution)}
+              disabled={saving}
+              onChange={(cloud) => {
+                const current = draft.execution ?? { kind: "agent-session" as const };
+                const next = { ...current };
+                if (cloud) {
+                  next.cloud = cloud;
+                  // A run on ADE Cloud needs a new lane: start from the closest lane choice.
+                  if (next.laneMode !== "create" && next.laneMode !== "pr-branch") {
+                    next.laneMode = "create";
+                    delete next.targetLaneId;
+                  }
+                } else {
+                  delete next.cloud;
+                }
+                setDraft({ ...draft, execution: next });
+              }}
+            />
             <TriggerCard
               trigger={primaryTrigger}
               ingressStatus={ingressStatus}

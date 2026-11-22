@@ -1,7 +1,11 @@
 -- Wrangler applies remote migrations through D1's query endpoint, whose
 -- multi-statement parser cannot preserve trigger-body semicolons. This
 -- idempotent sidecar is installed through D1's SQL file ingestion endpoint.
-create trigger if not exists attention_devices_enforce_user_limit
+-- The count is of live leases, matching the app's pre-check: an expired row is
+-- swept later and must not hold a slot against a new registration.
+drop trigger if exists attention_devices_enforce_user_limit;
+
+create trigger attention_devices_enforce_user_limit
 before insert on attention_devices
 when not exists (
   select 1
@@ -12,6 +16,25 @@ and (
   select count(*)
   from attention_devices
   where user_id = new.user_id
+    and lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+) >= 32
+begin
+  select raise(abort, 'attention account device limit reached');
+end;
+
+-- An expired row that renews becomes live again, so the same live-lease limit
+-- applies. An already-live row may renew freely.
+drop trigger if exists attention_devices_enforce_user_limit_update;
+
+create trigger attention_devices_enforce_user_limit_update
+before update of lease_expires_at on attention_devices
+when old.lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  and new.lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+and (
+  select count(*)
+  from attention_devices
+  where user_id = new.user_id
+    and lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 ) >= 32
 begin
   select raise(abort, 'attention account device limit reached');

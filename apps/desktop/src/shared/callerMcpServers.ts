@@ -187,6 +187,10 @@ const REGISTRY_ONLY_MCP_SUPPORT: Readonly<Record<string, { unsupportedTransports
   // Copilot: the SDK session's `mcpServers` (stdio, HTTP and SSE). The servers
   // in Copilot's own `mcp-config.json` and the workspace `.mcp.json` also load.
   copilot: { unsupportedTransports: [] },
+  // Antigravity: ACP `session/new` `mcpServers`. `agy acp` advertises no
+  // `mcpCapabilities`, so it takes stdio servers only. The servers in its own
+  // `mcp_config.json` also load.
+  antigravity: { unsupportedTransports: ["http", "sse"] },
 };
 
 /** Every provider the registry can reach: the caller-MCP table plus the registry-only rows. */
@@ -1023,9 +1027,16 @@ export function callerMcpClaudeDisallowedTools(servers: CallerMcpServers | null 
  * OpenCode 2.0 config shape (`mcp.servers.<name>`): an HTTP/SSE server is
  * "remote", a stdio server is "local" with `command` as a single argv array.
  */
+/**
+ * OpenCode 2.x `Mcp.TimeoutConfig`: milliseconds per phase. A bare number is
+ * NOT accepted: OpenCode skips the whole server as malformed (logged only as a
+ * "configuration normalization diagnostic"), so its tools silently vanish.
+ */
+export type OpenCodeMcpTimeoutConfig = { startup?: number; catalog?: number; execution?: number };
+
 export type OpenCodeMcpServerConfig =
-  | { type: "local"; command: string[]; environment?: Record<string, string>; disabled: false; codemode?: boolean }
-  | { type: "remote"; url: string; headers?: Record<string, string>; disabled: false; codemode?: boolean };
+  | { type: "local"; command: string[]; environment?: Record<string, string>; disabled: false; codemode?: boolean; timeout?: OpenCodeMcpTimeoutConfig }
+  | { type: "remote"; url: string; headers?: Record<string, string>; disabled: false; codemode?: boolean; timeout?: OpenCodeMcpTimeoutConfig };
 
 export function callerMcpServersToOpenCodeConfig(
   servers: CallerMcpServers,

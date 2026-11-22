@@ -1,4 +1,5 @@
 import type { AgentChatFileRef, DraftEntry, DraftStatus } from "../../../shared/types";
+import { parseMessageAuthor } from "../../../shared/messageAuthor";
 
 /**
  * The draft list's pure presentation helpers: text shaping, relative time, and
@@ -116,5 +117,8 @@ export function draftMetaLine(entry: DraftEntry): string {
     if (status === "sending") return "Sending now…";
     return fireTimeLabel(entry.scheduledAt) || "Scheduled";
   }
-  return relativeTime(entry.updatedAt ?? entry.createdAt);
+  // Lane sharing: a guest's draft names its author (set by the host); only the owner sends it.
+  const author = parseMessageAuthor(entry.author);
+  const when = relativeTime(entry.updatedAt ?? entry.createdAt);
+  return author?.kind === "guest" ? `From ${author.name?.trim() || "a guest"} · ${when}` : when;
 }

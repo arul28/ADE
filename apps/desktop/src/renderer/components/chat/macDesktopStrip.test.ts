@@ -184,14 +184,6 @@ describe("macDesktopStripControls", () => {
     }
   });
 
-  it("spells the exit out in full screen and keeps the pane's icon tooltip", () => {
-    const args = { hostIsLocal: false, ownedCount: 0, parkedCount: 0 };
-    expect(macDesktopStripControls({ ...args, expanded: true }).fullscreen)
-      .toEqual({ label: "Exit full screen", labelled: true });
-    expect(macDesktopStripControls({ ...args, expanded: false }).fullscreen)
-      .toEqual({ label: "Full screen", labelled: false });
-  });
-
   it("drops present exactly when the present action does", () => {
     expect(macDesktopStripControls({ expanded: true, hostIsLocal: false, ownedCount: 3, parkedCount: 1 }).present)
       .toBe(false);

@@ -39,7 +39,8 @@ export function isPtyContextInsertableToolType(toolType: TerminalSessionSummary[
     || toolType === "kimi"
     || toolType === "grok"
     || toolType === "copilot"
-    || toolType === "devin";
+    || toolType === "devin"
+    || toolType === "antigravity";
 }
 
 /**
@@ -223,6 +224,7 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "grok") return "Grok CLI session";
   if (toolType === "copilot") return "Copilot CLI session";
   if (toolType === "devin") return "Devin CLI session";
+  if (toolType === "antigravity") return "Antigravity CLI session";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   return "Session";
@@ -347,6 +349,7 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "grok") return "Grok CLI session";
   if (toolType === "copilot") return "Copilot CLI session";
   if (toolType === "devin") return "Devin CLI session";
+  if (toolType === "antigravity") return "Antigravity CLI session";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   if (toolType === "shell") return "Terminal session";

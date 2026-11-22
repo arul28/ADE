@@ -516,7 +516,9 @@ func workPreviewChatSessionView(
   onOpenSideChat: (() -> Void)? = nil,
   provider: String? = nil,
   providerSignInHost: ProviderAccountsHost? = nil,
-  providerSignInMachineName: String? = nil
+  providerSignInMachineName: String? = nil,
+  isStreaming: Bool = false,
+  ctoLive: CtoLiveModel? = nil
 ) -> WorkChatSessionView {
   var summary = WorkPreviewData.chatSummary
   if let provider {
@@ -546,7 +548,8 @@ func workPreviewChatSessionView(
       sessionId: WorkPreviewData.terminalSession.id,
       transcript: transcript,
       artifacts: [WorkPreviewData.artifact],
-      provider: WorkPreviewData.chatSummary.provider
+      provider: WorkPreviewData.chatSummary.provider,
+      isStreaming: isStreaming
     ),
     artifacts: [WorkPreviewData.artifact],
     cardExpansionSnapshot: WorkCardExpansionState(expandedIds: ["cmd-1"]),
@@ -596,7 +599,7 @@ func workPreviewChatSessionView(
     onDispatchSteerInline: nil,
     onDispatchSteerInterrupt: nil,
     onMoveSteer: nil,
-    onSelectModel: { _ in },
+    onSelectModel: { _ in true },
     onSelectRuntimeMode: { _ in true },
     onSelectEffort: { _ in },
     onSelectCodexFastMode: { _ in true },
@@ -611,6 +614,7 @@ func workPreviewChatSessionView(
     previewLaneTools: laneTools
   )
   view.onOpenSideChat = onOpenSideChat
+  view.ctoLive = ctoLive
   view.providerSignInHost = providerSignInHost
   if let providerSignInMachineName { view.providerSignInMachineName = providerSignInMachineName }
   return view
@@ -660,7 +664,8 @@ func workPreviewThreadModel(
   sessionId: String,
   transcript: [WorkChatEnvelope],
   artifacts: [ComputerUseArtifactSummary],
-  provider: String
+  provider: String,
+  isStreaming: Bool = false
 ) -> ChatThreadModel {
   let key = ChatThreadKey(machineKey: "preview", sessionId: sessionId, scope: .project("preview"))
   let model = ChatThreadModel(key: key, engine: ChatThreadEngine(key: key, store: nil), registry: nil)
@@ -693,7 +698,7 @@ func workPreviewThreadModel(
     canonicalPendingInputs: pending,
     pendingInputs: pending,
     pendingSteers: snapshot.pendingSteers,
-    isStreamingTurn: false,
+    isStreamingTurn: isStreaming,
     streamingAssistantMessageId: nil,
     activityPresentation: nil,
     claudeGoal: nil,
@@ -864,7 +869,8 @@ private func workPreviewOversizedQuestion() -> WorkPendingQuestionModel {
       activeProjectRootPath: nil,
       onStarted: { _, _, _, _, _ in },
       onCliStarted: { _ in },
-      onRefreshLanes: {}
+      onRefreshLanes: {},
+      onCloudLaunchStarted: { _ in }
     )
     .environmentObject(WorkPreviewData.syncService)
     .environmentObject(WorkPreviewData.dictationController)
@@ -1447,6 +1453,7 @@ enum ADEPreviewScreen: String, CaseIterable {
   case toolsClose = "tools-close"
   /// The same, opened with one tab's close waiting on Undo.
   case toolsClosePending = "tools-close-pending"
+  case toolsLive = "tools-live"
   /// The real chat with the lane tool chips (simulator, browser, App Control)
   /// in its floating badge row.
   case toolChips = "tool-chips"
@@ -1496,6 +1503,18 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The real model picker with fixture Custom harnesses. See
   /// `WorkModelPickerPreviewHost`.
   case modelPicker = "model-picker"
+  /// The picker on a machine with nothing signed in: it opens on the Free
+  /// page listing OpenCode Zen's free models. See `WorkFreeModelsPreviewHost`.
+  case modelPickerFree = "model-picker-free"
+  /// The Free page on a machine without OpenCode: "Get free models".
+  case modelPickerFreeSetup = "model-picker-free-setup"
+  /// The Free page while OpenCode downloads: "Getting free models…".
+  case modelPickerFreeDownloading = "model-picker-free-downloading"
+  /// New Chat on a machine with nothing signed in: it starts on the free
+  /// default.
+  case newChatFree = "new-chat-free"
+  /// A new person's sign-in card before a send, with "Use a free model".
+  case chatSignInFree = "chat-signin-free"
   /// The Hub's glass composer over a scrolling list; `-adePreviewFocusComposer`
   /// opens it. See `HubComposerPreviewHost` in `WorkNewChatScreen.swift`.
   case hubComposer = "hub-composer"
@@ -1512,6 +1531,18 @@ enum ADEPreviewScreen: String, CaseIterable {
   case settingsMachines = "settings-machines"
   /// One machine's page. See `SettingsMachinesPreviewHost`.
   case settingsMachinePage = "settings-machine-page"
+  /// A machine page whose last connect failed: one status, one action.
+  case settingsMachinePageFailing = "settings-machine-page-failing"
+  /// Machines behind on their track: Update on each row, "Update all", and
+  /// the ask before a restart. See `SettingsMachinesPreviewHost`.
+  case settingsMachineUpdates = "settings-machine-updates"
+  /// The Mac Studio's page with its ADE card and Update & restart.
+  case settingsMachineUpdatePage = "settings-machine-update-page"
+  /// The Work list's slim "Couldn't load your chats" notice. See
+  /// `WorkLoadNoticePreviewHost`.
+  case workLoadNotice = "work-load-notice"
+  /// Every kind of toast pill. See `ADEToastPreviewHost`.
+  case toasts = "toasts"
   /// The Files workspace sheet. See `FilesWorkspacePickerPreviewHost`.
   case filesPicker = "files-picker"
   /// The flat PR list, detail tabs and diff page. See `PrFlatPreviews.swift`.
@@ -1548,6 +1579,13 @@ enum ADEPreviewScreen: String, CaseIterable {
   case sideChat = "side-chat"
   /// The same main chat with the panel down: the chip and the label.
   case sideChatMain = "side-chat-main"
+  /// A chat ADE continued after a restart: one restart line with its time;
+  /// no "Woke at" line and no resume message. A later ordinary wake keeps
+  /// its look. Read through the saved-transcript parser. See
+  /// `WorkRestartResumePreviewData`.
+  case chatRestart = "chat-restart"
+  /// The same events read through the live event decoder.
+  case chatRestartLive = "chat-restart-live"
   /// A Muse chat whose turn stopped because Muse is signed out on its
   /// machine: the sign-in card in the composer's place. See
   /// `WorkProviderSignInPreviewMachine`.
@@ -1557,6 +1595,42 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// A Muse chat before anything is sent: the machine says Muse has no login,
   /// so the card shows before a send.
   case chatSignInBeforeSend = "chat-signin-before-send"
+  /// A Claude chat on an ADE Cloud computer whose turn stopped because Claude
+  /// ended the account's pass: the pass card, not a sign-in on the computer.
+  /// See `WorkCloudClaudePassPreviewMachine`.
+  case chatSignInCloudPass = "chat-signin-cloud-pass"
+  /// The same chat before anything is sent: the pass card holds the send.
+  case chatSignInCloudPassBeforeSend = "chat-signin-cloud-pass-before-send"
+  /// Settings › Account signed in, with three account machines. See
+  /// `SettingsAccountPreviewHost`.
+  case settingsAccount = "settings-account"
+  /// The real Hub over a seeded account project list
+  /// (`-adeHubAccountState <state>`). See `HubAccountPreviews.swift`.
+  case hubAccount = "hub-account"
+  /// Every Hub status line and empty grid of the account project list.
+  case hubAccountStates = "hub-account-states"
+  /// Settings › Account › Passwords over fixture items. See `PasswordsPreviewHost`.
+  case passwords = "passwords"
+  /// One fixture login's detail, with its live authenticator code.
+  case passwordDetail = "password-detail"
+  /// The CTO v2 surfaces. See `CtoPreviews.swift`.
+  case ctoAvatar = "cto-avatar"
+  case ctoWelcome = "cto-welcome"
+  case ctoThread = "cto-thread"
+  case ctoProfile = "cto-profile"
+  case ctoProfileLibrary = "cto-profile-library"
+  case ctoSettingsLook = "cto-settings-look"
+  case ctoSettingsBrain = "cto-settings-brain"
+  case ctoSettingsMemory = "cto-settings-memory"
+  case ctoOffline = "cto-offline"
+  /// The launch update gate: the phone's cover (App Store, TestFlight) and a
+  /// machine's card (from the phone, too old, ADE Cloud). See `UpdateGateViews.swift`.
+  case updateGatePhone = "update-gate-phone"
+  case updateGatePhoneTestFlight = "update-gate-phone-testflight"
+  case updateGatePhoneBeta = "update-gate-phone-beta"
+  case updateGateMachine = "update-gate-machine"
+  case updateGateMachineOld = "update-gate-machine-old"
+  case updateGateCloud = "update-gate-cloud"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1665,6 +1739,16 @@ struct ADEPreviewScreenHost: View {
       SettingsMachinesPreviewHost()
     case .settingsMachinePage:
       SettingsMachinesPreviewHost(showsPage: true)
+    case .settingsMachinePageFailing:
+      SettingsMachinesPreviewHost(showsFailingPage: true)
+    case .settingsMachineUpdates:
+      SettingsMachinesPreviewHost(showsUpdates: true)
+    case .settingsMachineUpdatePage:
+      SettingsMachinesPreviewHost(showsPage: true, showsUpdates: true)
+    case .workLoadNotice:
+      WorkLoadNoticePreviewHost()
+    case .toasts:
+      ADEToastPreviewHost()
     case .filesPicker:
       FilesWorkspacePickerPreviewHost()
     case .prsList:
@@ -1729,6 +1813,14 @@ struct ADEPreviewScreenHost: View {
         previewAllowsTabClose: true,
         previewPendingCloseTabId: WorkProofPreviewData.toolsState.browser?.tabs.last?.id
       )
+    case .toolsLive:
+      WorkToolsSheet(
+        laneId: WorkProofPreviewData.laneId,
+        tool: .browser,
+        previewState: WorkProofPreviewData.toolsState,
+        previewFrame: WorkProofPreviewData.toolsFrame,
+        previewLiveBrowser: true
+      )
     case .chatLinks:
       NavigationStack {
         workPreviewChatSessionView(transcript: WorkProofPreviewData.linksTranscript)
@@ -1785,6 +1877,16 @@ struct ADEPreviewScreenHost: View {
       WorkNewChatPreviewHost(usesGatewayModelFixture: true)
     case .modelPicker:
       WorkModelPickerPreviewHost()
+    case .modelPickerFree:
+      WorkFreeModelsPickerPreviewHost(opencode: .ready)
+    case .modelPickerFreeSetup:
+      WorkFreeModelsPickerPreviewHost(opencode: .missing)
+    case .modelPickerFreeDownloading:
+      WorkFreeModelsPickerPreviewHost(opencode: .downloading)
+    case .newChatFree:
+      WorkNewChatPreviewHost(freeModelsFixture: true)
+    case .chatSignInFree:
+      WorkFreeModelsSignInPreviewHost()
     case .hubComposer:
       HubComposerPreviewHost()
     case .handoffSheet:
@@ -1799,13 +1901,114 @@ struct ADEPreviewScreenHost: View {
       WorkSideChatPreviewHost(panelPresented: true)
     case .sideChatMain:
       WorkSideChatPreviewHost(panelPresented: false)
+    case .chatRestart:
+      NavigationStack {
+        workPreviewChatSessionView(transcript: WorkRestartResumePreviewData.savedTranscript)
+      }
+      .environmentObject(WorkPreviewData.syncService)
+      .environmentObject(WorkPreviewData.dictationController)
+    case .chatRestartLive:
+      NavigationStack {
+        workPreviewChatSessionView(transcript: WorkRestartResumePreviewData.liveTranscript)
+      }
+      .environmentObject(WorkPreviewData.syncService)
+      .environmentObject(WorkPreviewData.dictationController)
     case .chatSignIn:
       WorkProviderSignInPreviewHost()
     case .chatSignInRecovered:
       WorkProviderSignInPreviewHost(recovered: true)
     case .chatSignInBeforeSend:
       WorkProviderSignInPreviewHost(beforeSend: true)
+    case .chatSignInCloudPass:
+      WorkCloudClaudePassPreviewHost(beforeSend: false)
+    case .chatSignInCloudPassBeforeSend:
+      WorkCloudClaudePassPreviewHost(beforeSend: true)
+    case .settingsAccount:
+      SettingsAccountPreviewHost()
+    case .hubAccount:
+      HubAccountPreviewHost()
+    case .hubAccountStates:
+      HubAccountStatesPreviewHost()
+    case .passwords:
+      PasswordsPreviewHost(detail: false)
+    case .passwordDetail:
+      PasswordsPreviewHost(detail: true)
+    case .ctoAvatar, .ctoWelcome, .ctoThread, .ctoProfile, .ctoProfileLibrary,
+         .ctoSettingsLook, .ctoSettingsBrain, .ctoSettingsMemory, .ctoOffline:
+      CtoPreviewHost(screen: screen)
+    case .updateGatePhone:
+      PhoneUpdateGatePreviewHost()
+    case .updateGatePhoneTestFlight:
+      PhoneUpdateGatePreviewHost(source: .testFlight)
+    case .updateGatePhoneBeta:
+      PhoneUpdateGatePreviewHost(source: .betaApp)
+    case .updateGateMachine:
+      MachineVersionGatePreviewHost()
+    case .updateGateMachineOld:
+      MachineVersionGatePreviewHost(variant: .tooOld)
+    case .updateGateCloud:
+      MachineVersionGatePreviewHost(variant: .cloud)
     }
+  }
+}
+
+/// `settings-account`: seeds a signed-in account and three account machines
+/// (online, asleep, offline), then mounts the real Account page. The GitHub
+/// notice does not show: it needs a live machine with an open project.
+private struct SettingsAccountPreviewHost: View {
+  @EnvironmentObject private var fleet: MachineFleet
+  @StateObject private var machineController = SettingsMachineController()
+  @State private var seeded = false
+
+  var body: some View {
+    Group {
+      if seeded {
+        NavigationStack {
+          SettingsAccountPage(
+            syncService: WorkPreviewData.syncService,
+            machineController: machineController,
+            onSignIn: {},
+            machinesPage: { AnyView(Text("Machines")) },
+            integrationsPage: { AnyView(Text("Integrations")) }
+          )
+        }
+        .environmentObject(WorkPreviewData.syncService)
+      } else {
+        ADEColor.surfaceBackground.ignoresSafeArea()
+      }
+    }
+    .task {
+      SettingsAccountPreviewData.seed()
+      machineController.bind(syncService: WorkPreviewData.syncService, fleet: fleet)
+      seeded = true
+    }
+  }
+}
+
+private enum SettingsAccountPreviewData {
+  static let identity = AccountIdentity(
+    userId: "user_2pQx7Lm9RkVa4TfB8cZy1HnE",
+    displayName: "Sam Rivera",
+    email: "sam.rivera@example.com",
+    imageURL: nil,
+    providerLabel: "GitHub",
+    providerId: "github"
+  )
+
+  static var machines: [AccountMachine] {
+    let now = Date().timeIntervalSince1970 * 1000
+    let rows = [
+      #"{"machineKey":"preview-studio","deviceId":"preview-studio-device","name":"Mac Studio","channel":"stable","platform":"darwin","deviceType":"desktop","online":true,"lastSeenAt":\#(now),"power":{"onExternalPower":true}}"#,
+      #"{"machineKey":"preview-macbook","deviceId":"preview-macbook-device","name":"MacBook Pro","channel":"beta","platform":"darwin","deviceType":"laptop","online":false,"sleepState":"asleep","sleepStateAt":\#(now - 1_800_000),"lastSeenAt":\#(now - 1_800_000),"power":{"batteryPercent":64,"charging":false}}"#,
+      #"{"machineKey":"preview-linux","deviceId":"preview-linux-device","name":"build-box","platform":"linux","deviceType":"server","online":false,"lastSeenAt":\#(now - 259_200_000)}"#,
+    ]
+    return rows.map { try! JSONDecoder().decode(AccountMachine.self, from: Data($0.utf8)) }
+  }
+
+  @MainActor
+  static func seed() {
+    AccountService.shared.seedPreviewSignedIn(identity)
+    AccountService.shared.seedPreviewMachines(machines)
   }
 }
 
@@ -2910,6 +3113,45 @@ private enum WorkSideChatPreviewData {
   }
 }
 
+/// `chat-restart`: the events a host writes when ADE restarts during a turn
+/// and continues the chat (desktop `restartInterruptedNotice`, the
+/// `update-resume:` wake), then an ordinary wake-up later.
+@MainActor
+enum WorkRestartResumePreviewData {
+  static var lines: [String] {
+    let session = WorkPreviewData.chatSummary.sessionId
+    func at(_ minutesAgo: Int) -> String { WorkPreviewData.iso(minutesAgo: minutesAgo) }
+    let events: [(Int, String)] = [
+      (40, #"{"type":"user_message","text":"Make the Hub list come from the account only.","turnId":"t-1"}"#),
+      (39, #"{"type":"text","text":"Reading `HubScreen.swift` and the account store first.","turnId":"t-1","itemId":"a-1"}"#),
+      (31, #"{"type":"system_notice","noticeKind":"info","message":"ADE restarted while this response was running. The agent picks up where it stopped.","turnId":"t-1"}"#),
+      (31, #"{"type":"scheduled_work_update","id":"update-resume:\#(session)","kind":"wakeup","status":"fired","reason":"Resume after ADE restart","prompt":"ADE restarted, so your last turn ended early. Continue the task from where it stopped; do not restart work that already completed.","firedAt":"\#(at(31))","late":true,"durable":true,"turnId":"t-2"}"#),
+      (31, #"{"type":"user_message","text":"ADE restarted, so your last turn ended early. Continue the task from where it stopped; do not restart work that already completed.","metadata":{"scheduledWake":{"scheduleId":"update-resume:\#(session)","kind":"wakeup","firedAt":"\#(at(31))","reason":"Resume after ADE restart","late":true}},"turnId":"t-2"}"#),
+      (30, #"{"type":"text","text":"Continuing: the main list now reads the account projects only.","turnId":"t-2","itemId":"a-2"}"#),
+      (30, #"{"type":"done","turnId":"t-2","status":"completed"}"#),
+      (12, #"{"type":"scheduled_work_update","id":"wake-ci","kind":"wakeup","status":"fired","reason":"Check CI","prompt":"Check whether CI passed.","firedAt":"\#(at(12))","turnId":"t-3"}"#),
+      (12, #"{"type":"user_message","text":"Check whether CI passed.","metadata":{"scheduledWake":{"scheduleId":"wake-ci","kind":"wakeup","firedAt":"\#(at(12))","reason":"Check CI"}},"turnId":"t-3"}"#),
+      (11, #"{"type":"text","text":"CI passed on all shards.","turnId":"t-3","itemId":"a-3"}"#),
+      (11, #"{"type":"done","turnId":"t-3","status":"completed"}"#),
+    ]
+    return events.enumerated().map { index, entry in
+      #"{"sessionId":"\#(session)","timestamp":"\#(at(entry.0))","sequence":\#(index + 1),"event":\#(entry.1)}"#
+    }
+  }
+
+  /// Through `parseWorkChatTranscript`, as a chat opened from history.
+  static var savedTranscript: [WorkChatEnvelope] {
+    parseWorkChatTranscript(lines.joined(separator: "\n"))
+  }
+
+  /// Through the wire decoder, as a live chat.
+  static var liveTranscript: [WorkChatEnvelope] {
+    let decoder = JSONDecoder()
+    let entries = lines.compactMap { try? decoder.decode(AgentChatEventEnvelope.self, from: Data($0.utf8)) }
+    return makeWorkChatTranscript(from: entries)
+  }
+}
+
 /// Rows hosted the way `WorkChatTranscriptCollectionView` hosts them: a
 /// collection view whose cells carry a `UIHostingConfiguration`.
 struct WorkPreviewTranscriptList: UIViewRepresentable {
@@ -3005,6 +3247,86 @@ private struct WorkProviderSignInPreviewHost: View {
   }
 }
 
+/// `chat-signin-cloud-pass`: a Claude chat on an ADE Cloud computer after
+/// Claude ended the account's pass. The card points at the pass, and its
+/// button opens Settings › Providers › ADE Cloud › Claude.
+private struct WorkCloudClaudePassPreviewHost: View {
+  let beforeSend: Bool
+  @StateObject private var machine = WorkCloudClaudePassPreviewMachine()
+
+  private static let transcript: [WorkChatEnvelope] = {
+    let sessionId = WorkPreviewData.chatSummary.sessionId
+    let stamp = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-120))
+    var failure = WorkChatEnvelope(
+      sessionId: sessionId,
+      timestamp: stamp,
+      sequence: 2,
+      event: .error(
+        message: "Claude Code is not signed in.",
+        detail: nil,
+        category: "auth",
+        turnId: "turn-1",
+        title: "Authentication issue",
+        nextAction: ""
+      )
+    )
+    failure.signedOutAgent = "claude"
+    return [
+      WorkChatEnvelope(sessionId: sessionId, timestamp: stamp, sequence: 1, event: .userMessage(text: "Add a dark mode switch to the settings screen", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: true)),
+      failure,
+    ]
+  }()
+
+  var body: some View {
+    NavigationStack {
+      cloudChat
+    }
+  }
+
+  private var cloudChat: WorkChatSessionView {
+    var view = workPreviewChatSessionView(
+      transcript: beforeSend ? [] : Self.transcript,
+      provider: "claude",
+      providerSignInHost: machine,
+      providerSignInMachineName: "ADE Cloud"
+    )
+    view.providerSignInIsAdeCloud = true
+    view.adeCloudSignInReadHosts = [machine]
+    return view
+  }
+}
+
+/// The account as an ADE Cloud computer reads it: sign-ins shared with ADE
+/// Cloud, and one Claude pass that Claude ended two days ago.
+@MainActor
+private final class WorkCloudClaudePassPreviewMachine: ObservableObject, ProviderAccountsHost {
+  var supportsProviderAccounts: Bool { true }
+  var canChangeProviderAccounts: Bool { true }
+  var providerAccountsConnected: Bool { true }
+
+  func runProviderAccountsCommand(_ action: String, args: [String: Any]) async throws -> Any {
+    guard action == "providerLogins.status" else { return [String: Any]() }
+    let endedAt = Date().addingTimeInterval(-2 * 86_400).timeIntervalSince1970 * 1000
+    return [
+      "thisComputer": ["capture": "on", "reason": NSNull(), "message": NSNull(), "label": "ADE Cloud", "cloudComputer": true],
+      "cloud": ["enabled": true, "inUse": [String: String]()],
+      "signIns": [Any](),
+      "providers": [Any](),
+      "claudePasses": [[
+        "key": "claude-pass/0123456789ab",
+        "unreadable": false,
+        "label": "Claude pass",
+        "email": "sam@example.com",
+        "on": true,
+        "newChats": true,
+        "endsInDays": 0,
+        "state": "ended",
+        "endedAt": endedAt,
+      ]],
+    ]
+  }
+}
+
 /// A machine that answers the CLI sign-in commands the way `muse login` does:
 /// a device code at once, then signed in about 25 seconds after the start.
 @MainActor
@@ -3048,4 +3370,191 @@ private final class WorkProviderSignInPreviewMachine: ObservableObject, Provider
     ]
   }
 }
+
+// MARK: - Free models fixtures
+
+/// A machine with nothing signed in, as a new person's first computer:
+/// `ai.getStatus` carries the free-models block, the catalog lists OpenCode
+/// Zen's free models, and OpenCode is ready, missing or downloading.
+@MainActor
+final class WorkFreeModelsPreviewMachine: ObservableObject, ProviderAccountsHost {
+  enum OpenCode { case ready, missing, downloading }
+
+  private var opencode: OpenCode
+  private var received: Double = 18_400_000
+  private let total: Double = 52_600_000
+
+  init(opencode: OpenCode) { self.opencode = opencode }
+
+  var supportsProviderAccounts: Bool { true }
+  var canChangeProviderAccounts: Bool { true }
+  var providerAccountsConnected: Bool { true }
+
+  func runProviderAccountsCommand(_ action: String, args: [String: Any]) async throws -> Any {
+    switch action {
+    case "ai.getStatus":
+      return [
+        "providerConnections": [
+          "claude": ["runtimeDetected": true, "authAvailable": false, "runtimeAvailable": false],
+          "muse": ["runtimeDetected": true, "authAvailable": false, "runtimeAvailable": false],
+        ],
+        "freeModels": WorkFreeModelsPreviewData.statusBlock,
+      ]
+    case "ai.pinnedToolDownload":
+      if opencode == .missing { opencode = .downloading }
+      return pinnedStatus()
+    case "ai.pinnedToolStatus":
+      if opencode == .downloading { received = min(received + 1_900_000, total - 1) }
+      return pinnedStatus()
+    case "personalChats.modelCatalog":
+      // As the seed: free models only once OpenCode is on the machine.
+      return WorkFreeModelsPreviewData.catalogJSON(includeFree: opencode == .ready)
+    default:
+      return [String: Any]()
+    }
+  }
+
+  private func pinnedStatus() -> [String: Any] {
+    var status: [String: Any] = [
+      "provider": "opencode", "tool": "opencode", "label": "OpenCode",
+      "version": "1.4.2", "fetchAllowed": true,
+    ]
+    switch opencode {
+    case .ready:
+      status["state"] = "ready"
+      status["downloading"] = false
+    case .missing:
+      status["state"] = "missing"
+      status["downloading"] = false
+    case .downloading:
+      status["state"] = "downloading"
+      status["downloading"] = true
+      status["receivedBytes"] = received
+      status["totalBytes"] = total
+    }
+    return status
+  }
+}
+
+@MainActor
+enum WorkFreeModelsPreviewData {
+  static let defaultFreeModelId = "opencode/opencode/big-pickle"
+
+  static var statusBlock: [String: Any] {
+    ["nothingSignedIn": true, "everSignedIn": false, "preferredDefaultModelIds": [defaultFreeModelId]]
+  }
+
+  static let status = WorkFreeModelsStatus(
+    nothingSignedIn: true,
+    everSignedIn: false,
+    preferredDefaultModelIds: [defaultFreeModelId]
+  )
+
+  static let freeModelIds = [
+    "opencode/opencode/big-pickle",
+    "opencode/opencode/nemotron-3-ultra-free",
+    "opencode/opencode/minimax-m3-free",
+    "opencode/opencode/grok-code-fast-free",
+  ]
+
+  /// The host's `chat.modelCatalog` for that machine, in the wire's JSON
+  /// shape: Claude and Codex not signed in, OpenCode's Zen and Go providers.
+  static func catalogJSON(includeFree: Bool) -> Any {
+    func model(_ id: String, _ name: String, provider: String, providerKey: String, group: String, available: Bool) -> [String: Any] {
+      [
+        "id": id, "runtimeModelId": id.split(separator: "/").last.map(String.init) ?? id,
+        "provider": provider, "providerKey": providerKey, "groupKey": group,
+        "displayName": name, "isDefault": false, "family": provider,
+        "supportsTools": true, "isAvailable": available,
+      ]
+    }
+    let free: [[String: Any]] = includeFree ? [
+      model("opencode/opencode/big-pickle", "Big Pickle", provider: "opencode", providerKey: "opencode", group: "opencode", available: true),
+      model("opencode/opencode/nemotron-3-ultra-free", "Nemotron 3 Ultra", provider: "opencode", providerKey: "opencode", group: "opencode", available: true),
+      model("opencode/opencode/minimax-m3-free", "MiniMax M3", provider: "opencode", providerKey: "opencode", group: "opencode", available: true),
+      model("opencode/opencode/grok-code-fast-free", "Grok Code Fast", provider: "opencode", providerKey: "opencode", group: "opencode", available: true),
+    ] : []
+    var opencodeProviders: [[String: Any]] = []
+    if !free.isEmpty {
+      opencodeProviders.append([
+        "key": "opencode", "displayName": "OpenCode Zen", "badgeColor": "#22C55E", "modelCount": free.count,
+        "subsections": [["key": "opencode", "label": "OpenCode Zen", "models": free]],
+      ])
+    }
+    opencodeProviders.append([
+      "key": "opencode-go", "displayName": "OpenCode Go", "badgeColor": "#4D6BFE", "modelCount": 1,
+      "subsections": [["key": "opencode-go", "label": "OpenCode Go", "models": [
+        model("opencode/opencode-go/deepseek-v4.1-flash", "DeepSeek V4.1 Flash", provider: "opencode", providerKey: "opencode-go", group: "opencode", available: false),
+      ]]],
+    ])
+    return [
+      "fetchedAt": "2026-11-20T00:00:00.000Z",
+      "groups": [
+        ["key": "claude", "displayName": "Claude", "providers": [[
+          "key": "anthropic", "displayName": "Anthropic", "badgeColor": "#D97757", "modelCount": 2,
+          "subsections": [["key": "anthropic", "label": "Anthropic", "models": [
+            model("claude-sonnet-5", "Claude Sonnet 5", provider: "claude", providerKey: "anthropic", group: "claude", available: false),
+            model("claude-opus-5-5", "Claude Opus 5.5", provider: "claude", providerKey: "anthropic", group: "claude", available: false),
+          ]]],
+        ]]],
+        ["key": "opencode", "displayName": "OpenCode", "providers": opencodeProviders],
+      ],
+    ]
+  }
+
+  static func catalog(includeFree: Bool) -> AgentChatModelCatalog? {
+    do {
+      let data = try JSONSerialization.data(withJSONObject: catalogJSON(includeFree: includeFree))
+      return try JSONDecoder().decode(AgentChatModelCatalog.self, from: data)
+    } catch {
+      // A fixture that no longer decodes would show empty previews.
+      assertionFailure("The free-models preview catalog does not decode: \(error)")
+      return nil
+    }
+  }
+}
+
+/// The real picker on the fixture machine. `.ready` lists the free models;
+/// `.missing` and `.downloading` list none, so the Free page shows its setup.
+private struct WorkFreeModelsPickerPreviewHost: View {
+  @StateObject private var machine: WorkFreeModelsPreviewMachine
+
+  init(opencode: WorkFreeModelsPreviewMachine.OpenCode) {
+    _machine = StateObject(wrappedValue: WorkFreeModelsPreviewMachine(opencode: opencode))
+    if let catalog = WorkFreeModelsPreviewData.catalog(includeFree: opencode == .ready) {
+      SyncMenuSafePublisher.shared.service.seedPreviewChatModelCatalog(catalog)
+    }
+  }
+
+  var body: some View {
+    NavigationStack {
+      WorkModelPickerSheet(
+        currentModelId: "claude-sonnet-5",
+        currentProvider: "claude",
+        isBusy: false,
+        freeModelsMachine: .host(machine),
+        onSelect: { _, _, _, _ in }
+      )
+      .environmentObject(WorkPreviewData.syncService)
+    }
+  }
+}
+
+/// A Claude chat on a new person's machine before anything is sent: Claude
+/// has no login there, so the sign-in card shows, with the free model offer.
+private struct WorkFreeModelsSignInPreviewHost: View {
+  @StateObject private var machine = WorkFreeModelsPreviewMachine(opencode: .ready)
+
+  var body: some View {
+    NavigationStack {
+      workPreviewChatSessionView(
+        transcript: [],
+        provider: "muse",
+        providerSignInHost: machine,
+        providerSignInMachineName: "MacBook Air"
+      )
+    }
+  }
+}
+
 #endif

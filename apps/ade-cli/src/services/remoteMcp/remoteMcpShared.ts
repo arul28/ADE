@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readAccountProjectState } from "../projects/accountProjectSync";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { ProjectRegistry } from "../projects/projectRegistry";
 import { resolveDeviceDisplayName } from "../sync/deviceRegistryService";
@@ -11,10 +12,8 @@ import {
 import { AccountMachineDirectoryService } from "../account/accountMachineDirectoryService";
 import { getMachineAccountStores } from "../account/machineAccountStores";
 import { accountMachineDisplayName } from "../../../../desktop/src/shared/accountDirectory";
-import { readChatLaunchDefaults } from "../../../../desktop/src/main/services/chat/chatLaunchDefaults";
 import { createRemoteMcpService, type RemoteMcpService } from "./remoteMcpService";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
-import { resolveModelSlug, type ModelProviderGroup } from "../../../../desktop/src/shared/modelRegistry";
 
 /**
  * The machine's one ADE MCP service. Machine-level like the relay
@@ -64,16 +63,14 @@ export function getSharedRemoteMcpService(logger?: RemoteMcpLogger): RemoteMcpSe
       rootPath: record.rootPath,
       displayName: record.displayName,
       lastOpenedAt: record.lastOpenedAt,
+      accountProjectId: record.accountProjectId ?? null,
+      gitOriginUrl: record.gitOriginUrl ?? null,
     })),
-    // chat_start opens on the model a new chat in ADE would.
-    launchDefaults: () => {
-      const defaults = readChatLaunchDefaults(layout.adeDir);
-      if (!defaults?.provider || !defaults.modelId) return null;
-      // A saved pick may predate full model names (`opus`); requests must
-      // carry the full name, so the saved one is resolved here.
-      // The saved provider is a provider group; an unknown one only skips the hint.
-      const model = resolveModelSlug(defaults.modelId, defaults.provider as ModelProviderGroup) ?? defaults.modelId;
-      return { provider: defaults.provider, model, reasoningEffort: defaults.reasoningEffort };
+    // `project` may name an account project; it resolves against the list
+    // this computer last read (merges followed, removals told).
+    accountProjects: () => {
+      const state = readAccountProjectState(layout.adeDir);
+      return state.userId === null ? null : state.projects;
     },
     // The same account, Clerk client and attestation the relay's phone hellos
     // use: an app may connect only after its person signs in as this account.

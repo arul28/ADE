@@ -6,8 +6,11 @@ import type {
   LaneBranchDriftKind,
   LaneBranchDriftResolution,
   LaneLifecycleEvent,
+  OpenProjectBinding,
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
+import { useTabCopyPin } from "../../state/repositoryScope";
+import { useChatRuntimeScope } from "../chat/ChatRuntimeScope";
 import { showToast } from "../app/toast/toastStore";
 import { cn } from "../ui/cn";
 import { StatusChip, type StatusChipAction } from "../ui/notice";
@@ -98,48 +101,68 @@ const ADOPTION_NOTICE_MS = 10 * 60_000;
 
 type BranchAdoption = { previousBranchRef: string; branchRef: string; at: number };
 
+/** Keyed `<machine key>::<lane id>`: a lane id can exist on two machines. */
 const recentAdoptions = new Map<string, BranchAdoption>();
 const adoptionListeners = new Set<() => void>();
-let adoptionFeedStarted = false;
+/** The machines whose lifecycle feed is already followed. */
+const adoptionFeedPins = new Set<string>();
+
+function adoptionKey(pinKey: string, laneId: string): string {
+  return `${pinKey}::${laneId}`;
+}
 
 function emitAdoptionChange(): void {
   for (const listener of [...adoptionListeners]) listener();
 }
 
 /**
- * One app-wide subscription, started by the first chip that mounts, so an
- * adoption that lands while another chat is open is still shown on return.
+ * One app-wide subscription for each machine, started by the first chip of
+ * that machine that mounts, so an adoption that lands while another chat is
+ * open is still shown on return.
  */
-function ensureAdoptionFeed(): void {
-  if (adoptionFeedStarted || typeof window === "undefined" || !window.ade?.lanes?.onLifecycleEvent) return;
-  adoptionFeedStarted = true;
+function ensureAdoptionFeed(pin: OpenProjectBinding): void {
+  if (adoptionFeedPins.has(pin.key) || typeof window === "undefined" || !window.ade?.lanes?.onLifecycleEvent) return;
+  adoptionFeedPins.add(pin.key);
   window.ade.lanes.onLifecycleEvent((event: LaneLifecycleEvent) => {
     if (event.type !== "lane-branch-updated" || !event.previousBranchRef || !event.branchRef) return;
+    const key = adoptionKey(pin.key, event.laneId);
     if (event.adoptedByAgent) {
-      recentAdoptions.set(event.laneId, {
+      recentAdoptions.set(key, {
         previousBranchRef: event.previousBranchRef,
         branchRef: event.branchRef,
         at: Date.now(),
       });
     } else {
-      recentAdoptions.delete(event.laneId);
+      recentAdoptions.delete(key);
     }
     emitAdoptionChange();
-  });
+  }, pin);
 }
 
-function dismissAdoption(laneId: string): void {
-  if (recentAdoptions.delete(laneId)) emitAdoptionChange();
+function dismissAdoption(pin: OpenProjectBinding, laneId: string): void {
+  if (recentAdoptions.delete(adoptionKey(pin.key, laneId))) emitAdoptionChange();
 }
 
 function subscribeAdoptions(listener: () => void): () => void {
-  ensureAdoptionFeed();
   adoptionListeners.add(listener);
   return () => { adoptionListeners.delete(listener); };
 }
 
-function useRecentBranchAdoption(laneId: string | null | undefined, branchRef: string | null): BranchAdoption | null {
-  const getSnapshot = useCallback(() => (laneId ? recentAdoptions.get(laneId) ?? null : null), [laneId]);
+function useRecentBranchAdoption(
+  pin: OpenProjectBinding | null,
+  laneId: string | null | undefined,
+  branchRef: string | null,
+): BranchAdoption | null {
+  const pinKey = pin?.key ?? null;
+  useEffect(() => {
+    if (pin) ensureAdoptionFeed(pin);
+    // `pinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinKey]);
+  const getSnapshot = useCallback(
+    () => (laneId && pinKey ? recentAdoptions.get(adoptionKey(pinKey, laneId)) ?? null : null),
+    [laneId, pinKey],
+  );
   const adoption = useSyncExternalStore(subscribeAdoptions, getSnapshot, getSnapshot);
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -159,7 +182,7 @@ function useRecentBranchAdoption(laneId: string | null | undefined, branchRef: s
  * `⎇ Now on X · Switch back ×` after ADE moved the lane to the branch its agent
  * switched to. The lane's name stays; its PRs stay linked to the chat.
  */
-function LaneBranchAdoptedChip({ laneId, adoption }: { laneId: string; adoption: BranchAdoption }) {
+function LaneBranchAdoptedChip({ laneId, adoption, pin }: { laneId: string; adoption: BranchAdoption; pin: OpenProjectBinding }) {
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const [pending, setPending] = useState(false);
   const [forceable, setForceable] = useState(false);
@@ -172,8 +195,8 @@ function LaneBranchAdoptedChip({ laneId, adoption }: { laneId: string; adoption:
         branchName: adoption.previousBranchRef,
         mode: "existing",
         ...(acknowledgeActiveWork ? { acknowledgeActiveWork: true } : {}),
-      });
-      dismissAdoption(laneId);
+      }, pin);
+      dismissAdoption(pin, laneId);
       await refreshLanes({ includeStatus: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -200,7 +223,7 @@ function LaneBranchAdoptedChip({ laneId, adoption }: { laneId: string; adoption:
         disabled: pending,
         onClick: () => { void switchBack(forceable); },
       }]}
-      onDismiss={() => dismissAdoption(laneId)}
+      onDismiss={() => dismissAdoption(pin, laneId)}
     />
   );
 }
@@ -265,20 +288,29 @@ export function LaneBranchComposerChip({
 }: {
   laneId: string | null | undefined;
 }) {
-  const storeDrift = useLaneBranchDrift(laneId);
+  // The chip reads the tab copy's lane list, so it speaks for a chat of the
+  // tab's copy only. A chat on another machine shows none. The scope pin also
+  // names the tab's own copy, so the test is `isActiveBinding`, not the pin.
+  const chatOnTabCopy = useChatRuntimeScope().isActiveBinding;
+  const tabPin = useTabCopyPin();
+  const pin = chatOnTabCopy ? tabPin : null;
+  const pinKey = pin?.key ?? null;
+  const storeDrift = useLaneBranchDrift(pin ? laneId : null);
   const armed = useLaneBranchDriftArmed(laneId);
   // The lane list's status can be minutes old. Once something is about to act
   // on the branch, read HEAD now so a fresh switch is caught before it acts.
   const [freshDrift, setFreshDrift] = useState<{ laneId: string; drift: LaneBranchDrift | null } | null>(null);
   useEffect(() => {
     const readDrift = window.ade?.lanes?.getBranchDrift;
-    if (!laneId || !armed || typeof readDrift !== "function") return undefined;
+    if (!laneId || !armed || !pin || typeof readDrift !== "function") return undefined;
     let cancelled = false;
-    void Promise.resolve(readDrift({ laneId }))
+    void Promise.resolve(readDrift({ laneId }, pin))
       .then((drift) => { if (!cancelled) setFreshDrift({ laneId, drift }); })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [armed, laneId, storeDrift?.headBranchRef]);
+    // `pinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [armed, laneId, pinKey, storeDrift?.headBranchRef]);
   const drift = freshDrift && freshDrift.laneId === laneId ? freshDrift.drift : storeDrift;
   // `switched` is the shape every reader saw before kinds existed, so it stays
   // the fallback: the recorded branch exists and switching back is a real way
@@ -286,7 +318,7 @@ export function LaneBranchComposerChip({
   const driftKind: LaneBranchDriftKind = drift?.kind ?? "switched";
   const laneBranchRef = useAppStore((state) =>
     laneId ? state.lanes.find((lane) => lane.id === laneId)?.branchRef ?? null : null);
-  const adoption = useRecentBranchAdoption(laneId, laneBranchRef);
+  const adoption = useRecentBranchAdoption(pin, laneId, laneBranchRef);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const [pending, setPending] = useState<LaneBranchDriftResolution | null>(null);
   const [forceable, setForceable] = useState<LaneBranchDriftResolution | null>(null);
@@ -304,7 +336,7 @@ export function LaneBranchComposerChip({
     resolution: LaneBranchDriftResolution,
     acknowledgeActiveWork = false,
   ) => {
-    if (!laneId || !drift) return;
+    if (!laneId || !drift || !pin) return;
     setPending(resolution);
     setForceable(null);
     try {
@@ -313,7 +345,7 @@ export function LaneBranchComposerChip({
         resolution,
         expectedHeadBranchRef: drift.headBranchRef,
         ...(acknowledgeActiveWork ? { acknowledgeActiveWork: true } : {}),
-      });
+      }, pin);
       disarmLaneBranchDriftWarning(laneId);
       setFreshDrift(null);
       await refreshLanes({ includeStatus: true });
@@ -328,7 +360,7 @@ export function LaneBranchComposerChip({
     } finally {
       setPending(null);
     }
-  }, [drift, laneId, refreshLanes]);
+  }, [drift, laneId, pin, refreshLanes]);
 
   const message = useMemo(() => {
     if (!drift) return "";
@@ -342,7 +374,7 @@ export function LaneBranchComposerChip({
   }, [drift, driftKind]);
 
   if (!visible || !drift) {
-    return adoption && laneId ? <LaneBranchAdoptedChip laneId={laneId} adoption={adoption} /> : null;
+    return adoption && laneId && pin ? <LaneBranchAdoptedChip laneId={laneId} adoption={adoption} pin={pin} /> : null;
   }
 
   const busy = pending != null;

@@ -14,6 +14,10 @@
  * No Electron here: the desktop and the brain's `cloud` actions share it.
  */
 
+import { CLOUD_PLAN_PAST_DUE_SENTENCE, isCloudRefusalCode, type CloudAgentLimitsUpdate } from "../../../../../account-directory/src/cloud/contract";
+import { CloudApiError, type CloudApiClient } from "../../../shared/cloudApiClient";
+import { cloudAgentExtraDiskCentsOf } from "../../../shared/adeCloud/accountCalls";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   CLOUD_BACKSTOP_SLEEP_MINUTES,
   CLOUD_DEFAULT_AGENT_LIMITS,
@@ -21,19 +25,14 @@ import {
   CLOUD_WAKE_PORT_LABEL,
   cloudShape,
   type CloudAgentLimits,
-  type CloudSleepPolicy,
   type CloudWakeForUseResult,
 } from "../../../shared/adeCloud";
 import { getErrorMessage } from "../shared/utils";
 import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger } from "./cloudProvider";
 import type { CloudVault } from "./cloudAccess";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
-import { wakeThroughTransition } from "./cloudReadyClaim";
-
-/** How a box sleeps, read from the provider (the setting lives there, so every computer agrees). */
-export function cloudSleepPolicyOf(instance: Pick<CloudInstance, "autoSleep">): CloudSleepPolicy {
-  return instance.autoSleep ? { state: "auto" } : { state: "pending" };
-}
+import { wakeThroughTransition } from "./cloudInstanceOps";
+import { cloudSleepPolicyOf } from "../../../shared/cloudMachineOfInstance";
 
 /**
  * Hands the box its wake URL and reads whether its brain keeps it awake:
@@ -51,14 +50,8 @@ function handOverWakeUrlCommand(instanceId: string, url: string): string {
   ].join(" && ");
 }
 
-/** Shell: keeps the computer awake for `reason` (`holdCloudBusy` in cloudKeepAwake.ts); expires by itself. */
-export function cloudHoldCommand(reason: string, ttlMs: number): string {
-  return `d="$ADE_HOME/cloud/holds"; mkdir -p "$d"; printf '{"reason":"${reason}","until":%s}' "$(( $(date +%s%3N) + ${Math.round(ttlMs)} ))" > "$d/${reason}.json"`;
-}
-
-export function cloudReleaseHoldCommand(reason: string): string {
-  return `rm -f "$ADE_HOME/cloud/holds/${reason}.json"`;
-}
+/** Shell holds on sleep (`holdCloudBusy` in cloudKeepAwake.ts): one copy, shared with the server's move. */
+export { cloudHoldCommand, cloudReleaseHoldCommand } from "../../../../../account-directory/src/cloud/computerCommands";
 
 export type CloudEnableSleepResult =
   /** The provider's timer is on at its floor (`CLOUD_BACKSTOP_SLEEP_MINUTES`); the box's brain sleeps it sooner. */
@@ -160,22 +153,32 @@ export async function wakeCloudMachineForUse(
   }
   const instance = cloudInstanceForMachine(instances, machine.machineKey, machine.hostname);
   if (!instance) return { state: "not_cloud" };
-  if (instance.status === "running") return { state: "awake", instanceId: instance.id };
+  // The idle cleanup's own short wake makes a computer read running. A use
+  // then still calls the start: the server records the use and calls the
+  // delete off, or refuses with `computer_deleting`.
+  const idleSaving = instance.idleSaving === true;
+  if (instance.status === "running" && !idleSaving) return { state: "awake", instanceId: instance.id };
   // Already coming up (another wake, or the provider's own): its ADE answers in a
   // few seconds, so the caller waits for it the same as after our wake.
-  if (instance.status === "starting" || instance.status === "waking") {
+  if ((instance.status === "starting" || instance.status === "waking") && !idleSaving) {
     return { state: "woken", instanceId: instance.id, wakeMs: 0 };
   }
   if (instance.pastDue) {
-    return { state: "refused", message: "ADE Cloud suspended this machine, so ADE can't wake it right now." };
+    // The server's sentence for `plan_past_due`; the computer list already says it.
+    return { state: "refused", code: "plan_past_due", message: CLOUD_PLAN_PAST_DUE_SENTENCE };
   }
   const started = now();
   try {
     await wakeThroughTransition(client, instance.id, now);
   } catch (error) {
-    if (error instanceof CloudProviderError && error.code === "out_of_hours") return { state: "refused", message: error.message };
+    // Hours, disk, a block, too many awake, a delete under way: every refusal
+    // carries the server's code and sentence, and the caller shows the sentence.
+    if (error instanceof CloudProviderError && isCloudRefusalCode(error.code)) {
+      return { state: "refused", code: error.code, message: error.message };
+    }
     throw error;
   }
+  if (instance.status === "running") return { state: "awake", instanceId: instance.id };
   options.logger?.info?.("cloud.machine_woken_for_use", { instanceId: instance.id, wakeMs: now() - started });
   return { state: "woken", instanceId: instance.id, wakeMs: now() - started };
 }
@@ -197,6 +200,7 @@ function parseAgentLimits(raw: unknown): CloudAgentLimits {
     unattendedSpend: typeof value.unattendedSpend === "boolean" ? value.unattendedSpend : fallback.unattendedSpend,
     machinesPerDay: typeof perDay === "number" && Number.isInteger(perDay) && perDay >= 0 && perDay <= 100 ? perDay : fallback.machinesPerDay,
     maxShape: cloudShape(typeof value.maxShape === "string" ? value.maxShape : null)?.id ?? fallback.maxShape,
+    extraDiskMonthCents: cloudAgentExtraDiskCentsOf(value.extraDiskMonthCents),
   };
 }
 
@@ -214,15 +218,30 @@ function parseStoredLimits(raw: string | null | undefined): CloudAgentLimits | n
 
 export type CloudAgentLimitsStore = {
   read(): Promise<CloudAgentLimits>;
+  /** The whole value to the account vault item and this computer's copy: for a signed-out ADE or an older server. */
   write(limits: CloudAgentLimits): Promise<CloudAgentLimits>;
+  /**
+   * Saves only the changed fields on the account server (`PUT /cloud/limits`),
+   * which merges them into the stored value (a newer ADE's fields stay) and
+   * refuses a change made in between (`ifRevision`). This computer's copy
+   * changes only after the server accepts. Null: signed out, or an older
+   * server without the route, so the caller uses `write`. A refusal or a
+   * failure throws the sentence (an expected error), and nothing is saved.
+   */
+  save?(changes: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null>;
 };
 
-/** From the account when it answers, else this computer's copy, else the default. */
+/** The account server's limits routes; null when signed out or with no account service here. */
+type CloudAgentLimitsApi = Pick<CloudApiClient, "agentLimits" | "saveAgentLimits">;
+
+/** From the account when it answers, else this computer's copy, else the default (marked `fallback` when the account didn't answer). */
 export function createCloudAgentLimitsStore(deps: {
   vault: () => CloudVault | null;
   machineStore: () => { getSync(key: string): string | null; setSync(key: string, value: string): void } | null;
+  /** The account server, for `save`; null signed out. Left out: `save` always answers null. */
+  accountApi?: () => CloudAgentLimitsApi | null;
   logger?: CloudLogger;
-}): CloudAgentLimitsStore {
+}): Required<CloudAgentLimitsStore> {
   const local = () => {
     try {
       return deps.machineStore();
@@ -230,6 +249,17 @@ export function createCloudAgentLimitsStore(deps: {
       deps.logger?.warn?.("cloud.agent_limits_local_unavailable", { error: getErrorMessage(error) });
       return null;
     }
+  };
+  /** This computer's copy only, after the account server saved the value itself. */
+  const keepHere = (limits: CloudAgentLimits): CloudAgentLimits => {
+    const next = parseAgentLimits(limits);
+    try {
+      local()?.setSync(CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY, JSON.stringify({ v: 3, agents: next }));
+    } catch (error) {
+      // The account holds the value; this copy only answers while the account can't.
+      deps.logger?.warn?.("cloud.agent_limits_local_write_failed", { error: getErrorMessage(error) });
+    }
+    return next;
   };
   return {
     async read() {
@@ -243,7 +273,10 @@ export function createCloudAgentLimitsStore(deps: {
         : { ok: false as const };
       const fromAccount = got.ok ? parseStoredLimits(got.value) : null;
       if (fromAccount) return fromAccount;
-      return parseStoredLimits(local()?.getSync(CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY)) ?? CLOUD_DEFAULT_AGENT_LIMITS;
+      const here = parseStoredLimits(local()?.getSync(CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY)) ?? CLOUD_DEFAULT_AGENT_LIMITS;
+      // The account answered and has nothing saved: these are the limits. Else
+      // another computer may have saved stricter ones (`fallback`).
+      return got.ok && got.value == null ? here : { ...here, fallback: true };
     },
     async write(limits) {
       const next = parseAgentLimits(limits);
@@ -266,5 +299,37 @@ export function createCloudAgentLimitsStore(deps: {
       if (!saved && !savedHere) throw new Error("ADE couldn't save that to your account or this computer. Try again.");
       return next;
     },
+    async save(changes) {
+      const api = deps.accountApi?.() ?? null;
+      if (!api) return null;
+      try {
+        const current = await api.agentLimits();
+        if (!current) return null;
+        // Nothing changed: the stored value is the answer (the server refuses an empty change).
+        if (Object.keys(changes).length === 0) return keepHere({ ...current.limits } as CloudAgentLimits);
+        const saved = await api.saveAgentLimits({
+          limits: changes as CloudAgentLimitsUpdate["limits"],
+          ifRevision: current.revision,
+        });
+        return saved ? keepHere({ ...saved.limits } as CloudAgentLimits) : null;
+      } catch (error) {
+        if (error instanceof CloudApiError && error.status >= 400 && error.status < 500 && error.message) {
+          // The server's own sentence (`limits_changed`, `limits_unreadable`, a blocked account): no Report.
+          throw Object.assign(new AdeExpectedError(error.message, "user"), { code: error.code || null });
+        }
+        deps.logger?.warn?.("cloud.agent_limits_server_write_failed", { error: getErrorMessage(error) });
+        throw new AdeExpectedError("ADE couldn't reach your ADE account to save your agent limits. Try again.", "network");
+      }
+    },
   };
+}
+
+/** The fields of `next` that differ from `current`: what a save sends, so the server keeps every other field. */
+export function cloudAgentLimitsChanges(current: CloudAgentLimits, next: CloudAgentLimits): Partial<CloudAgentLimits> {
+  const changes: Partial<CloudAgentLimits> = {};
+  if (next.unattendedSpend !== current.unattendedSpend) changes.unattendedSpend = next.unattendedSpend;
+  if (next.machinesPerDay !== current.machinesPerDay) changes.machinesPerDay = next.machinesPerDay;
+  if (next.maxShape !== current.maxShape) changes.maxShape = next.maxShape;
+  if ((next.extraDiskMonthCents ?? null) !== (current.extraDiskMonthCents ?? null)) changes.extraDiskMonthCents = next.extraDiskMonthCents ?? null;
+  return changes;
 }

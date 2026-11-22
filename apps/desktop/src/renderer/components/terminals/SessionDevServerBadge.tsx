@@ -1,7 +1,7 @@
 import React from "react";
 import { ArrowSquareOut, Globe } from "@phosphor-icons/react";
 import type { DevServerRecord, OpenProjectBinding } from "../../../shared/types";
-import { machineNameForBinding } from "../../../shared/machineIdentity";
+import { useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { refreshDevServersForMachine, useSessionDevServers } from "../../lib/laneDevServers";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { showToast } from "../app/toast/toastStore";
@@ -9,6 +9,8 @@ import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { MENU_LABEL_CLASS, MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { cn } from "../ui/cn";
 import { workToolDefinition } from "./workTools";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { requireChatPin } from "../chat/chatMachinePin";
 
 /** `localhost:5173`, the way every surface names a dev server. */
 export function devServerLabel(server: Pick<DevServerRecord, "url" | "port">): string {
@@ -31,7 +33,7 @@ function keepFromRow(event: React.SyntheticEvent): void {
  * The list is the machine's own (see `useSessionDevServers`): no request per
  * row, no timer. Nothing renders until the chat has a server. The mark opens
  * a small menu: a server opens in the ADE Browser, and Stop asks the chat's
- * machine to stop it (`runtimePin` is the row's machine; null keeps the tab's).
+ * machine to stop it (`runtimePin` is the row's copy, the tab's own included).
  * That machine checks again that the process on the port is still this
  * chat's, so a port taken over by something else is refused there.
  */
@@ -50,11 +52,14 @@ export function SessionDevServerBadge({
   size?: number;
 }) {
   const servers = useSessionDevServers(sessionId, runtimePin);
+  const runsOnTab = usePinTargetsTab(runtimePin);
   const [open, setOpen] = React.useState(false);
   const [stopping, setStopping] = React.useState<ReadonlySet<number>>(() => new Set());
   const anchorRef = React.useRef<HTMLButtonElement | null>(null);
   const pinRef = React.useRef(runtimePin);
   pinRef.current = runtimePin;
+
+  const machine = useMachineLabelForBinding(runtimePin);
 
   React.useEffect(() => {
     if (servers.length === 0) setOpen(false);
@@ -71,7 +76,7 @@ export function SessionDevServerBadge({
     try {
       const result = await stopDevServer(
         { chatSessionId: sessionId, port: server.port, laneId: server.source.laneId },
-        pinRef.current,
+        requireChatPin(pinRef.current),
       );
       if (result.ok) {
         showToast({
@@ -99,7 +104,6 @@ export function SessionDevServerBadge({
 
   if (servers.length === 0) return null;
   const labels = servers.map(devServerLabel);
-  const machine = machineNameForBinding(runtimePin);
   const title = servers.length === 1
     ? `${labels[0]} is running, started by this chat`
     : `${servers.length} servers running, started by this chat: ${labels.join(", ")}`;
@@ -149,7 +153,7 @@ export function SessionDevServerBadge({
       >
         {/* The globe's tooltip already says who started these; a heading is
             only worth its row when the servers are on another machine. */}
-        {runtimePin ? <div className={MENU_LABEL_CLASS}>{`On ${machine}`}</div> : null}
+        {!runsOnTab ? <div className={MENU_LABEL_CLASS}>{`On ${machine}`}</div> : null}
         {servers.map((server) => {
           const label = devServerLabel(server);
           const busy = stopping.has(server.port);

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
+import { windowsScaledTimeout } from "../../../vitest.timeouts";
 import {
   createSyncService,
   shouldReclaimStaleViewerDraftAfterTransportFailure,
@@ -330,7 +331,7 @@ describe("createSyncService", () => {
       await service.dispose();
       db.close();
     }
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("refuses an explicit host transfer from a runtime that may not host, leaving the record alone", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-non-host-transfer-");
@@ -365,7 +366,7 @@ describe("createSyncService", () => {
       await service.dispose();
       db.close();
     }
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("keeps the local device registry when connectToBrain fails before handshake", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-connect-fail-");
@@ -659,10 +660,19 @@ describe("createSyncService", () => {
     });
 
     try {
-      const snapshot = await service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true });
+      // Fake timeouts stand in for its bounded wait: the read must return within
+      // a fixed 3 s of fake time (the bound is 2 s), not merely eventually.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      let settled = false;
+      const read = service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true })
+        .finally(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(settled).toBe(true);
+      const snapshot = await read;
       expect(snapshot.transferReadiness.ready).toBe(false);
       expect(snapshot.transferReadiness.blockers).toEqual([]);
     } finally {
+      vi.useRealTimers();
       await service.dispose();
       db.close();
     }
@@ -916,7 +926,7 @@ describe("syncRouteHealth", () => {
     expect(health.listener.lastSuccessAt).toBe("2026-07-16T00:00:00.000Z");
   });
 
-  it("borrows the loopback failure time only while relay is enabled and skipped", () => {
+  it("borrows the listener failure time only while relay is enabled and skipped", () => {
     const base = {
       relayConfigured: true,
       loopbackAdeValidated: false,
@@ -934,14 +944,31 @@ describe("syncRouteHealth", () => {
       lastFailureAtFallback: null,
     });
 
-    expect(skipped.skipReason)
-      .toBe("Relay route is unusable because 127.0.0.1:8791 did not answer as ADE.");
+    expect(skipped.skipReason).toBe("Relay tunnel status is unavailable in this ADE process.");
     expect(skipped.lastFailureAt).toBe("2026-07-15T00:00:00.000Z");
     // Relay is not enabled at all, so there is no relay failure to date-stamp.
     expect(signedOut.skipReason).toBe("Sign in to ADE to use ADE Relay.");
     expect(signedOut.lastFailureAt).toBeNull();
     // A caller with no probe history reports no time rather than borrowing one.
     expect(noFallback.lastFailureAt).toBeNull();
+  });
+
+  // Relay pipes are handed to the listener in process, so another program on
+  // 127.0.0.1:<port> must not take the relay route down with it.
+  it("keeps relay usable while another program shadows the loopback port", () => {
+    const health = buildRelayRouteHealth({
+      relayConfigured: true,
+      relayAccountSignedIn: true,
+      loopbackAdeValidated: false,
+      listenerReason: "Expected ADE 426 Upgrade Required on 127.0.0.1:8787, received 404 Not Found.",
+      listenerPort: 8787,
+      tunnelStatus: tunnelStatus({ connected: true, relayBridgeValidated: true }),
+      lastFailureAtFallback: "2026-07-15T00:00:00.000Z",
+    });
+
+    expect(health.skipReason).toBeNull();
+    expect(health.relayControlConnected).toBe(true);
+    expect(health.relayBridgeValidated).toBe(true);
   });
 
   it("ranks the 4505 eviction reason above the raw close text", () => {

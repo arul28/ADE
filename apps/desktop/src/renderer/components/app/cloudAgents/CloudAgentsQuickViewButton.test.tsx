@@ -20,7 +20,13 @@ describe("Cursor Cloud connection-gated shell entry point", () => {
     vi.useFakeTimers();
     useAppStore.setState({
       project: { rootPath: "/tmp/cursor-cloud-project", displayName: "Project" } as any,
-      projectBinding: null,
+      // The tab's copy: the Cursor connection is checked there.
+      projectBinding: {
+        kind: "local",
+        key: "local:/tmp/cursor-cloud-project",
+        rootPath: "/tmp/cursor-cloud-project",
+        displayName: "Project",
+      },
     } as any);
   });
 

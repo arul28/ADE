@@ -4,6 +4,8 @@ import { AnimatePresence } from "framer-motion";
 import { HomePage } from "./pages/HomePage";
 import { OpenPage } from "./pages/OpenPage";
 import { PairPage } from "./pages/PairPage";
+import { InvitePage } from "./pages/InvitePage";
+import { PricingPage } from "./pages/PricingPage";
 import { PrivacyPage } from "./pages/PrivacyPage";
 import { TermsPage } from "./pages/TermsPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -43,6 +45,9 @@ export function SiteRoutes() {
         <Route path="/_og" element={<OgImage />} />
         <Route path="/open" element={<OpenPage />} />
         <Route path="/pair" element={<PairPage />} />
+        <Route path="/pricing" element={<PricingPage />} />
+        {/* ADE Cloud invites, opened from the link an account shares. */}
+        <Route path="/invite/:code" element={<InvitePage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/terms" element={<TermsPage />} />
         <Route path="*" element={<NotFoundPage />} />

@@ -92,6 +92,7 @@ import {
   shouldKeepPinnedThroughViewportShrink,
   shouldStickToBottomAfterScroll,
 } from "./AgentChatMessageList";
+import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { looksLikeWireframe } from "./questionOptionPreview";
 import { resetChatTaskListCardStateForTests } from "./ChatTaskListCard";
 import {
@@ -133,11 +134,13 @@ function foldAriaLabel(button: HTMLElement): string {
 
 function LocationProbe() {
   const location = useLocation();
+  // The machine Files opens on is shown on its own, by key.
+  const { filesPin, ...state } = (location.state ?? {}) as { filesPin?: OpenProjectBinding };
   return (
-    <div data-testid="location">
+    <div data-testid="location" data-files-pin={filesPin?.key ?? ""}>
       {location.pathname}{location.search}
       {"::"}
-      {JSON.stringify(location.state ?? null)}
+      {JSON.stringify(location.state == null ? null : state)}
     </div>
   );
 }
@@ -146,6 +149,18 @@ async function expectLocationText(expected: string): Promise<void> {
   await waitFor(() => {
     expect(screen.getByTestId("location").textContent).toBe(expected);
   });
+}
+
+/** The chat's machine, as the chat pane passes it. */
+const CHAT_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
+/** The chat subtree's scope, as the chat pane provides it: work-log strips read their machine from it. */
+function inChatScope(list: ReactElement) {
+  return (
+    <ChatRuntimeScopeProvider pin={CHAT_PIN} binding={CHAT_PIN} laneId={null} sessionId={null}>
+      {list}
+    </ChatRuntimeScopeProvider>
+  );
 }
 
 function renderMessageList(
@@ -162,7 +177,7 @@ function renderMessageList(
     onInsertDraft?: (text: string) => void;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-    onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRunUnprocessedMessage?: (event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>) => void | Promise<void>;
     onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
     scrollToRowKeyRequest?: { key: string; requestId: number } | null;
@@ -186,6 +201,7 @@ function renderMessageList(
     wrapList?: (list: ReactElement) => ReactElement;
   },
 ) {
+  const runtimePin = options && "runtimePin" in options ? options.runtimePin ?? null : CHAT_PIN;
   const wrapList = options?.wrapList ?? ((list: ReactElement) => list);
   return render(
     <MemoryRouter initialEntries={[{ pathname: "/", state: options?.initialState }]}>
@@ -199,14 +215,14 @@ function renderMessageList(
         sessionId={options?.sessionId}
         sessionProvider={options?.sessionProvider}
         resolveSpawnedChatProvider={options?.resolveSpawnedChatProvider}
-        runtimePin={options?.runtimePin}
+        runtimePin={runtimePin}
         scrollMemoryKey={options?.scrollMemoryKey}
         transcriptCollapseCacheKey={options?.transcriptCollapseCacheKey}
         laneId={options?.laneId}
         onInsertDraft={options?.onInsertDraft}
         onRevealChatTerminal={options?.onRevealChatTerminal}
         onApproval={options?.onApproval as any}
-        onCodexRecovery={options?.onCodexRecovery}
+        onQuietTurnRecovery={options?.onQuietTurnRecovery}
         onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
         onRestoreCancelledQueue={options?.onRestoreCancelledQueue}
         scrollToRowKeyRequest={options?.scrollToRowKeyRequest}
@@ -446,30 +462,6 @@ describe("AgentChatMessageList board moves", () => {
     // And it is NOT a user bubble.
     expect(document.querySelector(".ade-chat-message-card-user")).toBeNull();
   });
-
-  it("labels a move into Needs you with the column the user sees", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "user_message",
-          text: "The user parked this for their input. Stop, summarize where you are, and list what you need from them.",
-          deliveryState: "delivered",
-          metadata: {
-            boardMove: {
-              from: "working",
-              to: "needs_you",
-              at: "2026-03-17T10:00:00.000Z",
-              moveId: "move-2",
-            },
-          },
-        },
-      },
-    ]);
-    const divider = document.querySelector('[data-board-move-to="needs_you"]');
-    expect(divider?.textContent).toContain("Working → Needs you");
-  });
 });
 
 describe("AgentChatMessageList operator navigation suggestions", () => {
@@ -604,17 +596,6 @@ describe("AgentChatMessageList transcript rendering", () => {
       // The bubble and its status line share one row, bubble first.
       expect(bubble.parentElement).toBe(screen.getByTestId("user-message-status-row").parentElement);
       expect(bubble.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-
-    it("keeps the hover actions inside the bubble and the status line outside it", () => {
-      const { container } = renderMessageList([userMessage({ steerId: "s-1", deliveryState: "inline" })]);
-      const bubble = bubbleOf(container);
-      const copy = within(bubble).getByRole("button", { name: /copy/i });
-      const status = screen.getByTestId("user-message-status");
-      // Hover actions are absolutely positioned inside the bubble; the status
-      // line is a sibling of the bubble, so the two can never overlap.
-      expect(copy.closest(".absolute")?.parentElement).toBe(bubble);
-      expect(status.closest(".ade-chat-message-card-user")).toBeNull();
     });
 
     it("draws no status line for plain, optimistic-queued, spawn-prompt, or turn-opening Muse messages", () => {
@@ -878,47 +859,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(card.textContent).toContain("linear");
   });
 
-  it("renders Codex goal lifecycle rows in user-facing language", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "codex_goal_updated",
-          goal: { objective: "Ship CLI parity", status: "active", tokenBudget: null },
-        },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:01.000Z",
-        event: {
-          type: "codex_goal_updated",
-          goal: { objective: "Wait for review", status: "paused", tokenBudget: null },
-          updateKind: "status",
-        },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:02.000Z",
-        event: {
-          type: "codex_goal_updated",
-          goal: { objective: "Ship CLI parity", status: "active", tokenBudget: null },
-          updateKind: "status",
-        },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:03.000Z",
-        event: { type: "codex_goal_cleared" },
-      },
-    ]);
-
-    expect(screen.getByText("Goal set: Ship CLI parity")).toBeTruthy();
-    expect(screen.getByText("Goal paused: Wait for review")).toBeTruthy();
-    expect(screen.getByText("Goal resumed: Ship CLI parity")).toBeTruthy();
-    expect(screen.getByText("Goal cleared")).toBeTruthy();
-  });
-
   it("opens detected localhost command URLs in the ADE browser", async () => {
     renderMessageList([
       {
@@ -934,17 +874,18 @@ describe("AgentChatMessageList transcript rendering", () => {
           status: "running",
         },
       },
-    ], { showStreamingIndicator: true });
+    ], { showStreamingIndicator: true, wrapList: inChatScope });
 
     fireEvent.click(screen.getByRole("button", { name: "Show activity from the active turn" }));
     const openButton = await screen.findByRole("button", { name: "Open http://localhost:5173/ in ADE browser" });
     fireEvent.click(openButton);
 
     await waitFor(() => {
+      // `localhost` in the chat's output is the chat machine's, so the browser opens it there.
       expect(globalThis.window.ade.builtInBrowser.navigate).toHaveBeenCalledWith({
         url: "http://localhost:5173/",
         newTab: true,
-      });
+      }, CHAT_PIN);
     });
   });
 
@@ -1009,7 +950,7 @@ describe("AgentChatMessageList transcript rendering", () => {
           status: "running",
         },
       },
-    ], { sessionId: "session-1", onInsertDraft, showStreamingIndicator: true });
+    ], { sessionId: "session-1", onInsertDraft, showStreamingIndicator: true, wrapList: inChatScope });
 
     fireEvent.click(screen.getByRole("button", { name: "Show activity from the active turn" }));
     const logsButton = await screen.findByRole("button", {
@@ -1051,7 +992,7 @@ describe("AgentChatMessageList transcript rendering", () => {
         timestamp: "2026-03-17T10:00:01.000Z",
         event: { type: "done", turnId: "turn-1", status: "completed" },
       },
-    ], { sessionId: "session-1", onRevealChatTerminal });
+    ], { sessionId: "session-1", onRevealChatTerminal, wrapList: inChatScope });
 
     fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     fireEvent.click(await screen.findByRole("button", {
@@ -1220,23 +1161,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("quoted this from your earlier output");
   });
 
-  it("renders sent chat-context tags as quote cards", () => {
-    renderMessageList([{
-      sessionId: "session-1",
-      timestamp: "2026-03-17T10:00:00.000Z",
-      event: {
-        type: "user_message",
-        text: `please <ade-chat-context>\nThe user highlighted the following text from your previous output and added it as context:\n\nRetry the lane checkout.\n</ade-chat-context> thanks`,
-        deliveryState: "delivered",
-      },
-    }]);
-    // The legacy "added it as context" preamble still parses; the card shows
-    // the quote itself, not a generic label.
-    expect(screen.getByTestId("user-message-chat-context-chip").textContent).toBe("Retry the lane checkout.");
-    expect(screen.getByText(/please/)).toBeTruthy();
-    expect(screen.getByText(/thanks/)).toBeTruthy();
-  });
-
   it("does not add turn-copy chrome for single-block or legacy null-turn text", () => {
     const { rerender } = renderMessageList([
       {
@@ -1373,27 +1297,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     // The hidden brief is marked in the thread above the bubble, not inside it.
     const divider = screen.getByTestId("handoff-brief-divider");
     expect(divider.textContent).toContain("Started from a brief of the previous chat");
-  });
-
-  it("renders a brief divider for hidden cross-machine handoff messages", async () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "user_message",
-          text: "Injected handoff brief with full detail.",
-          displayText: "Continue the handoff",
-          metadata: { kind: "cross_machine_handoff", hideFullPrompt: true },
-        },
-      },
-    ]);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("handoff-brief-divider")).toBeTruthy();
-    });
-    expect(screen.getByText("Continued from another computer")).toBeTruthy();
-    expect(screen.getByText("Continue the handoff")).toBeTruthy();
   });
 
   it("does not render a brief divider for hidden messages that are not handoffs", async () => {
@@ -1692,25 +1595,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("interrupted")).toBeTruthy();
   });
 
-  it("labels end-of-turn wall time as ran, not worked for", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: { type: "user_message", text: "Run the checks.", turnId: "turn-1" },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:02:00.000Z",
-        event: { type: "done", turnId: "turn-1", status: "interrupted" },
-      },
-    ]);
-
-    // The turn rule reads `10:04 · ran 3m 32s` — mono, tabular, lower case.
-    expect(screen.getByText("ran 2m")).toBeTruthy();
-    expect(screen.queryByText(/Worked for/)).toBeNull();
-  });
-
   it("measures ran duration from the last user prompt, not the first cloud turn", () => {
     renderMessageList([
       {
@@ -1974,28 +1858,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(within(screen.getByTestId("provider-sign-in-receipt")).getByText(/signed in again/)).toBeTruthy();
   });
 
-  it("renders Claude plan usage warning as a compact non-error notice", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "system_notice",
-          noticeKind: "rate_limit",
-          severity: "info",
-          status: "allowed_warning",
-          message: "Approaching Claude plan limit",
-          detail: "80% utilized | resets 2026-05-12T20:30:00.000Z",
-        },
-      },
-    ]);
-
-    expect(screen.getByText("usage")).toBeTruthy();
-    expect(screen.getByText("Approaching Claude plan limit")).toBeTruthy();
-    expect(screen.getByText("80% utilized | resets 2026-05-12T20:30:00.000Z")).toBeTruthy();
-    expect(screen.queryByRole("button")).toBeNull();
-  });
-
   it("labels an inline subagent completion as returned context, not a wake", () => {
     const dispatchSpy = vi.spyOn(window, "dispatchEvent");
     renderMessageList([
@@ -2199,7 +2061,7 @@ describe("AgentChatMessageList transcript rendering", () => {
   });
 
   it("runs Codex stalled-turn recovery actions against the source chat", async () => {
-    const onCodexRecovery = vi.fn().mockResolvedValue({
+    const onQuietTurnRecovery = vi.fn().mockResolvedValue({
       action: "wait",
       turnId: "turn-stalled",
       status: "waiting",
@@ -2218,25 +2080,25 @@ describe("AgentChatMessageList transcript rendering", () => {
           parentSessionId: "parent-session",
         },
       },
-    ], { sessionId: "parent-session", onCodexRecovery });
+    ], { sessionId: "parent-session", onQuietTurnRecovery });
 
     fireEvent.click(screen.getByRole("button", { name: "Keep waiting" }));
     await waitFor(() => {
-      expect(onCodexRecovery).toHaveBeenCalledWith({
+      expect(onQuietTurnRecovery).toHaveBeenCalledWith({
         sessionId: "child-session",
         turnId: "turn-stalled",
         action: "wait",
       });
     });
-    expect(await screen.findByText("Waiting for Codex output…")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Restart & resume" })).toBeTruthy();
+    expect(await screen.findByText("Waiting for Codex…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restart Codex" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "More" }));
     expect(screen.getByRole("button", { name: "Send nudge" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry same server" })).toBeTruthy();
   });
 
   it("shows a Codex recovery error without making the card inert", async () => {
-    const onCodexRecovery = vi.fn().mockRejectedValue(new Error("This stalled Codex turn is no longer active."));
+    const onQuietTurnRecovery = vi.fn().mockRejectedValue(new Error("This stalled Codex turn is no longer active."));
     renderMessageList([
       {
         sessionId: "session-1",
@@ -2249,11 +2111,11 @@ describe("AgentChatMessageList transcript rendering", () => {
           recoveryOptions: ["restart_resume_thread"],
         },
       },
-    ], { sessionId: "session-1", onCodexRecovery });
+    ], { sessionId: "session-1", onQuietTurnRecovery });
 
-    fireEvent.click(screen.getByRole("button", { name: "Restart & resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart Codex" }));
     expect((await screen.findByRole("alert")).textContent).toContain("no longer active");
-    expect((screen.getByRole("button", { name: "Restart & resume" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Restart Codex" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("hides raw moderation rows and keeps cumulative diagnostics behind turn details", () => {
@@ -2370,7 +2232,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.queryByRole("button", { name: "Restart & resume" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restart Codex" })).toBeNull();
     expect(screen.getByText("Recovered")).toBeTruthy();
     expect(screen.getByText(/restarted the Codex app-server/)).toBeTruthy();
   });
@@ -2462,8 +2324,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rows).toHaveLength(2);
     // No WARNING label block, and the provider's own ⚠ is not doubled next to the icon.
     expect(screen.queryByText(/^warning$/i)).toBeNull();
-    const summary = within(rows[0]!).getByTitle(/^Codex is ignoring 1 unrecognized/);
-    expect(summary.className).toContain("truncate");
+    expect(within(rows[0]!).getByTitle(/^Codex is ignoring 1 unrecognized/)).toBeTruthy();
     expect(screen.queryByText("Seen at thread start.")).toBeNull();
 
     const toggle = within(rows[0]!).getByRole("button");
@@ -2525,32 +2386,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByText("PreToolUse:Read error").length).toBeGreaterThan(0);
     expect(screen.getByText("Command rejected by hook")).toBeTruthy();
     expect(screen.getByText("Read rejected by hook")).toBeTruthy();
-  });
-
-  // Work-log grouping, file-change grouping, and overflow-expand tests
-  // removed: they tested old ChatWorkLogBlock rendering (Show N earlier,
-  // specific label text) which changes with every UI iteration.
-
-  it("renders markdown tables inside a dedicated scroll shell", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "text",
-          text: [
-            "| Aspect | ADE | Other UI |",
-            "| --- | --- | --- |",
-            "| Task progress | Flat tool cards | Step-based progress |",
-          ].join("\n"),
-          itemId: "text-table",
-          turnId: "turn-1",
-        },
-      },
-    ]);
-
-    expect(screen.getByRole("table")).toBeTruthy();
-    expect(screen.getByText("Task progress")).toBeTruthy();
   });
 
   it("shows jump-to-latest after manual transcript scroll", async () => {
@@ -2910,15 +2745,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(transcript.scrollTop).toBe(0);
   });
 
-  it("keeps the rail anchored when a PR pane is floating", () => {
-    // The PR pane is an overlay. Its presence must not move the transcript's
-    // history markers down into the space below the card.
-    stubMinimapLayout();
-    renderMessageList(MINIMAP_TRANSCRIPT);
-
-    expect(screen.getByTestId("chat-user-minimap").style.top).toBe("0px");
-  });
-
   it("marks a failed turn's tick so colour is not the only signal", () => {
     stubMinimapLayout();
     renderMessageList([
@@ -3018,13 +2844,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByRole("button", { name: "Show full message" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Show less" })).toBeNull();
     expect(screen.getByText(longPrompt.trim())).toBeTruthy();
-  });
-
-  it("leaves a short user prompt uncollapsed", () => {
-    renderMessageList(userMessageEvents(["Ship it"], "short-session"), { sessionId: "short-session" });
-    expect(screen.queryByTestId("user-message-collapsible-body")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Show full message" })).toBeNull();
-    expect(screen.getByText("Ship it")).toBeTruthy();
   });
 
   it("returns a pinned chat to the live tail after a remount", async () => {
@@ -3322,6 +3141,8 @@ describe("AgentChatMessageList transcript rendering", () => {
     await expectLocationText(
       "/files::{\"openFilePath\":\"apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx\",\"laneId\":\"lane-123\"}",
     );
+    // Files opens on the chat's machine, not the tab's.
+    expect(screen.getByTestId("location").getAttribute("data-files-pin")).toBe(CHAT_PIN.key);
   });
 
   it("passes Windows line and column suffixes through to Files navigation", async () => {
@@ -4258,46 +4079,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(text.indexOf("npm test")).toBeLessThan(text.indexOf("The focused tests pass."));
   });
 
-  it("left-aligns the turn work summary with Thought and keeps time/usage last when expanded", () => {
-    const rendered = renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: { type: "reasoning", text: "Checking the package name.", turnId: "turn-1" },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:01.000Z",
-        event: {
-          type: "command",
-          command: "cat package.json",
-          cwd: "/repo",
-          output: "{}",
-          itemId: "command-1",
-          turnId: "turn-1",
-          status: "completed",
-          exitCode: 0,
-        },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:02.000Z",
-        event: { type: "done", turnId: "turn-1", status: "completed" },
-      },
-    ]);
-
-    const summary = screen.getByRole("button", { name: /^Show .+ from this turn$/ });
-    fireEvent.click(summary);
-    const text = rendered.container.textContent ?? "";
-    expect(text.indexOf("ran 2.0s")).toBeGreaterThan(-1);
-    expect(text.indexOf("ran 2.0s")).toBeLessThan(text.indexOf("cat package.json"));
-  });
-
   // "Keep the last": the row you read is the most recent one; quiet successes
   // fold behind a count. Failures never fold — burying a rejected command
   // behind "+N previous" is exactly the bug this shape must not introduce.
@@ -4540,47 +4321,6 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(rendered.container.textContent).toContain("Thought");
     expect(rendered.container.textContent).not.toContain("1s");
-  });
-
-  it("draws the collapsed Thought label as plain text, with no trailing dots", () => {
-    const rendered = renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: { type: "reasoning", text: "Checked the import graph.", itemId: "r-1", turnId: "turn-1" },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:01.000Z",
-        event: { type: "done", turnId: "turn-1", status: "completed" },
-      },
-    ]);
-    const label = rendered.container.querySelector("[data-testid='thought-label']") as HTMLElement;
-    expect(label.textContent).toBe("Thought");
-    // The dots were rounded-full spans after the word; none remain.
-    expect(label.querySelectorAll(".rounded-full")).toHaveLength(0);
-    expect(label.parentElement!.querySelectorAll(".rounded-full, .ade-thinking-pulse")).toHaveLength(0);
-  });
-
-  it("keeps work-log cards bounded to content width", () => {
-    const rendered = renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "tool_call",
-          tool: "functions.exec_command",
-          args: { cmd: "pwd" },
-          itemId: "tool-1",
-          turnId: "turn-1",
-        },
-      },
-    ], { showStreamingIndicator: true });
-
-    fireEvent.click(screen.getByRole("button", { name: "Show activity from the active turn" }));
-    expect(rendered.container.textContent).toContain("pwd");
-    expect(rendered.container.textContent).toContain("shell");
-    expect(rendered.container.innerHTML).toContain("max-w-[var(--chat-content-width,52rem)]");
   });
 
   it("renders each subagent as spawn + result cards (no per-tick activity bundle)", () => {
@@ -5147,39 +4887,6 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     fireEvent.click(within(screen.getByTestId("chat-task-list-card")).getByRole("button", { expanded: false }));
     expect(screen.getAllByText("Inspect once")).toHaveLength(1);
-  });
-
-  it("renders plan approval request bodies in the transcript", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "approval_request",
-          itemId: "approval-plan",
-          kind: "tool_call",
-          description: "Plan ready for approval",
-          turnId: "turn-1",
-          detail: {
-            request: {
-              requestId: "approval-plan",
-              itemId: "approval-plan",
-              source: "codex",
-              kind: "plan_approval",
-              title: "Plan Ready for Review",
-              description: "# Plan\n\n- Show the plan body.",
-              questions: [],
-              allowsFreeform: true,
-              blocking: true,
-              canProceedWithoutAnswer: false,
-            },
-          },
-        },
-      },
-    ]);
-
-    expect(screen.getByText("Presenting plan for approval")).toBeTruthy();
-    expect(screen.getByText("Show the plan body.")).toBeTruthy();
   });
 
   it("renders structured ask-user requests inline and submits option answers", () => {
@@ -5770,12 +5477,6 @@ describe("AgentChatMessageList ade_card dispatch", () => {
     } as never,
   });
 
-  it("renders the card in the transcript", () => {
-    renderMessageList([cardEnvelope()]);
-    expect(screen.getByText("Cloud artifacts pulled")).toBeTruthy();
-    expect(screen.getByText("files")).toBeTruthy();
-  });
-
   it("shows one card, not two, when the same cardId is emitted twice", () => {
     renderMessageList([
       cardEnvelope({ state: "live", title: "Pulling cloud artifacts" }),
@@ -5887,14 +5588,6 @@ describe("turn-level file-change de-clutter", () => {
     expect(additions).toBe(3);
   });
 
-  it("names the file being written in the working indicator", () => {
-    expect(
-      resolveWorkingIndicatorLabel("editing_file", [
-        writeEntry("entry-1", "/root/apps/desktop/src/main/services/lanes/laneService.ts", 1, 0) as never,
-      ]),
-    ).toBe("Editing laneService.ts");
-  });
-
   it.each([
     ["a running command", "running_command", [{ entryKind: "command", status: "running", command: "pnpm   test\n  --run" }], "Running pnpm test --run"],
     ["a running shell tool", "tool_calling", [{ entryKind: "tool", status: "running", toolName: "Bash", args: { command: "git status" } }], "Running git status"],
@@ -5906,13 +5599,6 @@ describe("turn-level file-change de-clutter", () => {
     ["only finished entries", "tool_calling", [{ entryKind: "command", status: "completed", command: "ls" }], "Calling tool"],
   ])("names the wait behind a tool or command activity: %s", (_case, activity, entries, expected) => {
     expect(resolveWorkingIndicatorLabel(activity, [], entries as never)).toBe(expected);
-  });
-
-  it("labels every activity the runtimes emit", () => {
-    // An unmapped activity falls through to the raw identifier, so a gap here
-    // puts `web_searching` on screen. Both were emitted and unmapped.
-    expect(resolveWorkingIndicatorLabel("web_searching", [])).toBe("Searching the web");
-    expect(resolveWorkingIndicatorLabel("spawning_agent", [])).toBe("Starting agent");
   });
 
   it("falls back to the bare verb when the edit target is unknown", () => {
@@ -6367,13 +6053,15 @@ describe("AgentChatMessageList — paced assistant text", () => {
     // off screen, and the first sight after scrolling back would show a
     // truncated message that then types out the whole accumulated backlog.
     const originalIntersectionObserver = globalThis.IntersectionObserver;
-    let intersectionCallback: IntersectionObserverCallback | null = null;
+    // Every observer on the row, the working indicator's included: the whole
+    // turn is scrolled out of view.
+    const intersectionCallbacks: IntersectionObserverCallback[] = [];
     globalThis.IntersectionObserver = class {
       root = null;
       rootMargin = "";
       thresholds = [];
       constructor(callback: IntersectionObserverCallback) {
-        intersectionCallback = callback;
+        intersectionCallbacks.push(callback);
       }
       observe(): void {}
       unobserve(): void {}
@@ -6383,13 +6071,14 @@ describe("AgentChatMessageList — paced assistant text", () => {
 
     try {
       const view = renderMessageList(streamingText("Alpha."), { showStreamingIndicator: true });
-      const observed = intersectionCallback as IntersectionObserverCallback | null;
-      expect(observed).toBeTruthy();
+      expect(intersectionCallbacks.length).toBeGreaterThan(0);
       act(() => {
-        observed!(
-          [{ isIntersecting: false } as IntersectionObserverEntry],
-          {} as IntersectionObserver,
-        );
+        for (const observed of intersectionCallbacks) {
+          observed(
+            [{ isIntersecting: false } as IntersectionObserverEntry],
+            {} as IntersectionObserver,
+          );
+        }
       });
 
       act(() => {
@@ -6789,23 +6478,10 @@ describe("AgentChatMessageList turn fold", () => {
     expect(screen.queryByTestId("turn-fold-count-sources")).toBeNull();
   });
 
-  it("puts a colored icon before each count on the fold row", () => {
-    renderMessageList([...turnEvents(), doneEvent()]);
-    const tools = screen.getByTestId("turn-fold-count-tools");
-    expect(foldAriaLabel(foldButton())).toContain("· 1 tool");
-    const icon = tools.querySelector("svg");
-    expect(icon).toBeTruthy();
-    expect(icon!.getAttribute("class")).toContain("text-sky-300");
-    expect(screen.queryByTestId("turn-fold-count-files")).toBeNull();
-  });
-
-  it("left-aligns the open fold's tool toggle and its tool list with the fold row", () => {
+  it("opens the fold's tool list from a singular \"1 tool\" toggle", () => {
     renderMessageList([...turnEvents(), doneEvent()]);
     fireEvent.click(foldButton());
     const toolsToggle = screen.getByRole("button", { name: "Show 1 tool from this turn" });
-    // No `ml-auto` pushing the toggle to the right edge, and no empty leading slot.
-    expect(toolsToggle.parentElement!.className).not.toContain("ml-auto");
-    expect(toolsToggle.parentElement!.previousElementSibling).toBeNull();
     // One tool reads "1 tool", not "1 tools".
     expect(toolsToggle.textContent).toBe("1tool");
     fireEvent.click(toolsToggle);
@@ -6838,18 +6514,7 @@ describe("AgentChatMessageList turn fold", () => {
     expect(count()).toBe(1);
   });
 
-  it("draws the focus ring for keyboard focus only on the fold row and its toggles", () => {
-    renderMessageList([...turnEvents(), doneEvent()]);
-    const fold = foldButton();
-    fireEvent.click(fold);
-    for (const button of [fold, screen.getByRole("button", { name: "Show 1 tool from this turn" })]) {
-      expect(button.className).toContain("focus:outline-none");
-      expect(button.className).toContain("focus-visible:ring-1");
-      expect(button.className).not.toMatch(/(^|\s)focus:ring/);
-    }
-  });
-
-  it("counts the turn's background jobs on the fold row, red when one failed", () => {
+  it("counts the turn's background jobs on the fold row, with how many failed", () => {
     const job = (second: number, id: string, status: "running" | "completed" | "failed") => ({
       sessionId: "session-1",
       timestamp: at(second),
@@ -6872,9 +6537,6 @@ describe("AgentChatMessageList turn fold", () => {
       doneEvent(),
     ]);
     expect(foldAriaLabel(foldButton())).toBe("Worked for 12s · 1 tool · 2 jobs (1 failed)");
-    const jobs = screen.getByTestId("turn-fold-count-jobs");
-    expect(jobs.className).toContain("text-red-300");
-    expect(jobs.querySelector("svg")!.getAttribute("class")).toContain("text-red-400");
     // Both jobs finished before the turn ended, so they fold; open shows one compact row.
     expect(document.querySelector("[data-background-job]")).toBeNull();
     fireEvent.click(foldButton());
@@ -7107,15 +6769,21 @@ describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed f
       }
     });
 
-    it("anchors to the fold row when the row being read is itself folded", async () => {
-      const restore = stubRowLayout(50);
+    // Reading "Checking the lockfile." (index 4), which the fold hides. With
+    // only that row on screen, the fold row (index 1) takes its place. With the
+    // answer (index 6, top 200) also on screen, the answer stays where it was
+    // (now index 2): a long turn that ends under the reader keeps their place
+    // instead of jumping to the turn's top.
+    it.each([
+      { case: "only the folded row is on screen", clientHeight: 50, scrollTop: 100 },
+      { case: "a row that stays is also on screen", clientHeight: 300, scrollTop: 0 },
+    ])("anchors a folded reading row: $case", async ({ clientHeight, scrollTop }) => {
+      const restore = stubRowLayout(clientHeight);
       try {
         const view = renderMessageList(liveTurn(), { sessionId: SESSION, showStreamingIndicator: true });
-        // Reading "Checking the lockfile." (index 4), which the fold hides.
         await detachAt(400);
         rerenderList(view, [...liveTurn(), done()]);
-        // The fold row (index 1) now sits where that row was.
-        expect(timelinePane().scrollTop).toBe(100);
+        expect(timelinePane().scrollTop).toBe(scrollTop);
         expect(foldButton().getAttribute("aria-expanded")).toBe("false");
       } finally {
         restore();

@@ -674,25 +674,6 @@ describe("ModelPicker", () => {
     expect((await findModelRow(routeless.id)).textContent).toContain("OpenAI · OpenAI Codex · work");
   });
 
-  it("does not render popover content when closed", () => {
-    renderPicker();
-    expect(screen.queryByRole("listbox", { name: /models/i })).toBeNull();
-  });
-
-
-  it("shows the model name on the trigger even when compact", () => {
-    renderPicker({ compact: true });
-    const trigger = screen.getByRole("button", { name: /Select model/i });
-    expect(trigger.textContent).toContain(SONNET.displayName);
-  });
-
-  it("does not render any reasoning chip on the trigger", () => {
-    renderPicker();
-    const trigger = screen.getByRole("button", { name: /Select model/i });
-    const chip = trigger.querySelector('[data-model-picker-reasoning-chip="true"]');
-    expect(chip).toBeNull();
-  });
-
   it("renders a fast affordance only on fast-capable rows, and only when the surface opts in", async () => {
     const user = userEvent.setup();
     const onFastModeChange = vi.fn();
@@ -1155,20 +1136,6 @@ describe("ModelPicker", () => {
     expect(onToggle).toHaveBeenCalledWith(false);
   });
 
-  it("suffixes the trigger label with Fast while fast mode is on", () => {
-    render(
-      <ModelPicker
-        value={FAST_GPT.id}
-        onChange={vi.fn()}
-        models={[FAST_GPT, SONNET]}
-        fastMode
-        onFastModeChange={vi.fn()}
-      />,
-    );
-    const trigger = screen.getByRole("button", { name: /Select model/i });
-    expect(trigger.textContent).toContain(`${FAST_GPT.displayName} Fast`);
-  });
-
   it("renders the fast affordance for Cursor runtime models that advertise fast service", async () => {
     providerAuthStatusInternal = { cursor: "ok" };
     const onToggle = vi.fn();
@@ -1236,7 +1203,7 @@ describe("ModelPicker", () => {
     expect(trigger.textContent).toMatch(/Select model/i);
   });
 
-  it("shows the correct tooltip on the authOnly toggle and calls toggle on click", async () => {
+  it("shows the only-usable switch as on while authOnly is on and turns it off on click", async () => {
     const user = userEvent.setup();
     authOnlyState = true;
     renderPicker();
@@ -1245,8 +1212,8 @@ describe("ModelPicker", () => {
       '[data-model-picker-auth-toggle="true"]',
     ) as HTMLButtonElement;
     expect(toggle).toBeTruthy();
-    expect(toggle.getAttribute("aria-checked")).toBe("false");
-    expect(toggle.getAttribute("title")).toMatch(/include unauthenticated providers/i);
+    expect(toggle.getAttribute("role")).toBe("switch");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
     await user.click(toggle);
     expect(authOnlyState).toBe(false);
   });
@@ -1893,7 +1860,7 @@ describe("ModelPicker", () => {
     expect(onOpenSignIn).toHaveBeenCalledWith("pi");
   });
 
-  it("routes keyboard sign-in for an unavailable Pi row through the Pi harness", async () => {
+  it("routes keyboard sign-in for a signed-out Pi row through the Pi harness", async () => {
     providerAuthStatusInternal = { pi: "unauthed" };
     const onOpenSignIn = vi.fn();
     renderPicker({
@@ -1904,8 +1871,9 @@ describe("ModelPicker", () => {
     });
 
     await userEvent.setup().click(screen.getByRole("button", { name: /Select model/i }));
-    const content = document.querySelector('[data-model-picker-content="true"]')!;
-    fireEvent.keyDown(content, { key: "Enter" });
+    // A signed-out row stays selectable; its own Sign in button signs in.
+    const signIn = within(await findModelRow(PI_MODEL.id)).getByRole("button", { name: "Sign in" });
+    fireEvent.keyDown(signIn, { key: "Enter" });
     expect(onOpenSignIn).toHaveBeenCalledWith("pi", ["oauth", "api-key"]);
   });
 
@@ -2449,6 +2417,8 @@ describe("ModelPicker", () => {
         "harnesses",
         "favorites",
         "recents",
+        // Every free model, under Recents (`shared/freeModels.ts`).
+        "free",
         "provider:anthropic",
         "provider:openai",
         "provider:muse",

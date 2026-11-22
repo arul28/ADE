@@ -11,6 +11,7 @@ import { OAuthConnectModal } from "./OAuthConnectModal";
 import { ModernRow, ModernRows, ModernSection, SettingsSegmented, SettingsToggle } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { useChatConfigToggle } from "./useChatConfigToggle";
+import { requirePin } from "../../state/repositoryScope";
 
 type HintMode = NonNullable<AiChatConfig["modelHintMode"]>;
 
@@ -279,7 +280,7 @@ function ModelHintRow() {
   useEffect(() => {
     let cancelled = false;
     setMode(null);
-    void window.ade.projectConfig.get(pin).catch(() => null).then((config) => {
+    void Promise.resolve().then(() => window.ade.projectConfig.get(requirePin(pin))).catch(() => null).then((config) => {
       if (cancelled) return;
       const next = config ? config.effective.ai?.chat?.modelHintMode ?? "model_and_effort" : null;
       setMode(next);

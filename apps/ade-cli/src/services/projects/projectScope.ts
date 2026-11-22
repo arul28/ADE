@@ -1,14 +1,51 @@
 import type { CrossMachineHandoffTransport } from "../../../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
+import type { ChatLaunchServiceDeps } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import type { AdeRuntime, AdeRuntimeSyncOptions } from "../../bootstrap";
 import type { SyncCommandPayload, SyncFileRequest } from "../../../../desktop/src/shared/types";
+import type { RemoteWorkChatEnded, RemoteWorkTurnRelease } from "../../../../desktop/src/shared/chatRemoteWork";
 import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteCommandService";
+import type { TerminalInputDedupeLedger } from "../sync/syncHostService";
 import type { SyncHostBlocker } from "../sync/syncService";
 import type { BrainKeepAwakeService } from "../power/brainKeepAwakeService";
 import type { RuntimeDisposeReason } from "../runtime/startupTeardown";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
 import { captureProblem, sendSentryLog } from "../../../../desktop/src/shared/sentry/capture";
+import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
 import { createReportOnce, PROJECT_REGISTRY_ATTACH, wasRemovedFromRegistry } from "./projectRegistryJournal";
+import { createPhaseClock, type PhaseClock } from "../../../../desktop/src/shared/phaseClock";
+import { resolveBrainLoopWatchdogThresholdMs, trackBrainLoopWatchdogProjectOpen } from "../runtime/brainLoopWatchdog";
+import { logSlowProjectOpen } from "./projectFilesystemKind";
+import { QUEUED_OPEN_PHASE, type ProjectOpenStrikes } from "./projectOpenStrikes";
+
+type ScopeLogger = {
+  warn: (event: string, meta?: Record<string, unknown>) => void;
+  info: (event: string, meta?: Record<string, unknown>) => void;
+};
+
+/**
+ * How long a cold open waits its turn behind a project opening alone: the
+ * freeze guard's threshold on this platform, plus a margin. A freeze longer
+ * than that has already been killed; an open still running is not freezing
+ * the loop, so the queued open goes ahead (a later kill finds the stuck open
+ * in an old step, which the strike rules skip).
+ */
+const OPEN_TURN_MARGIN_MS = 15_000;
+
+async function waitForOpenTurn(waitFor: Promise<unknown>[], turnMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    await Promise.race([
+      Promise.allSettled(waitFor),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, turnMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 type SwitchSyncHostOptions = {
   deactivatePreviousHost?: boolean;
@@ -27,6 +64,12 @@ type SwitchSyncHostOptions = {
    * because there is no host to bring up.
    */
   purpose?: "host" | "serve";
+  /**
+   * Who asked for the switch, written to the brain log when the host changes.
+   * A phone on one project while the machine hosts another sees every
+   * project-scoped request refused, so the log has to say why the host moved.
+   */
+  reason?: "client_switch" | "startup" | "most_recent_fallback";
 };
 
 const SYNC_HOST_COLD_BOOT_TIMEOUT_MS = 60_000;
@@ -194,6 +237,7 @@ export class ProjectScopeRegistry {
    */
   private readonly failedSyncHostPhases = new Map<string, FailedAttempt>();
   private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
+  private readonly syncScopeReadyListeners = new Set<() => void>();
   private readonly reportUnknownProjectIdOnce = createReportOnce();
   private readonly logUnknownPeerProjectIdOnce = createReportOnce();
   private syncHostProjectId: ProjectId | null = null;
@@ -236,9 +280,19 @@ export class ProjectScopeRegistry {
        * the bridge is built after this registry.
        */
       crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
+      /** Lets go of the devices a chat drove on other machines when its turn ends (the brain owns the bridge). */
+      releaseRemoteWorkDevices?: (event: RemoteWorkTurnRelease) => void;
+      /** Removes what an archived or deleted chat added on other machines (the brain owns the bridge). */
+      releaseRemoteWorkOfEndedChat?: (event: RemoteWorkChatEnded) => void;
       /** One machine service shared by all scopes hosted by this brain. */
       keepAwakeService?: BrainKeepAwakeService | null;
+      /** An ADE Cloud computer grows its disk when a lane launch's setup fills it (the brain owns the grower). */
+      laneSetupDisk?: ChatLaunchServiceDeps["environmentDisk"];
+      /** The brain's phone input ledger, shared with each project's sync host. */
+      terminalInputDedupeLedger?: TerminalInputDedupeLedger;
       onDisposeProject?: (projectId: ProjectId) => void;
+      /** A project's scope opened (its first open, or a re-open after a dispose). Never awaited; must not throw. */
+      onProjectOpened?: (projectRoot: string) => void;
       /**
        * Stops the devices a removed project's earlier teardown handed off:
        * one that a removal joined while it ran, or a brain exit's, when the
@@ -246,10 +300,56 @@ export class ProjectScopeRegistry {
        * Injected so this module does not depend on device code.
        */
       onUnregisterAfterHandOff?: (projectRoot: string) => Promise<void>;
+      /**
+       * Freeze kills counted against projects (see `projectOpenStrikes.ts`).
+       * A project with enough of them is refused here, for every caller: a
+       * window, a phone, an automation, a timer, a restart's recovery.
+       */
+      openStrikes?: ProjectOpenStrikes | null;
+      /**
+       * The freeze guard's threshold, resolved once by the brain, which bounds
+       * how long a cold open waits behind a project opening alone. Defaults to
+       * this platform's default threshold.
+       */
+      freezeThresholdMs?: number;
+      /** The brain's log, for `project.open_slow`. */
+      logger?: ScopeLogger | null;
       /** Injectable clock for the failed-boot backoff. Tests only. */
       now?: () => number;
     } = {},
-  ) {}
+  ) {
+    this.options.openStrikes?.prewarm((projectId) => this.projectRegistry.get(projectId));
+  }
+
+  /** Cold opens in flight, so a project with strikes can open alone. */
+  private readonly openingNow = new Set<Promise<unknown>>();
+  /** The open running alone, which later cold opens wait for. */
+  private soloOpen: Promise<unknown> | null = null;
+
+  /**
+   * A person asked to open a refused project again: forget its strikes and the
+   * failed-boot backoff, so the next `get` really opens it. Opening it is the
+   * caller's next step. Returns whether it was refused.
+   */
+  retryOpen(projectId: ProjectId): { wasBlocked: boolean; strikesCleared: boolean } {
+    const outcome = this.options.openStrikes?.clear(projectId, "retry") ?? { wasBlocked: false, cleared: false };
+    this.failedScopes.delete(projectId);
+    return { wasBlocked: outcome.wasBlocked, strikesCleared: outcome.cleared };
+  }
+
+  /** The `project_folder_too_slow` error opening this project would throw now, or null. */
+  openRefusal(projectId: ProjectId): Error | null {
+    return this.options.openStrikes?.refusal(projectId, () => this.projectRegistry.get(projectId)) ?? null;
+  }
+
+  /**
+   * Whether this project is refused right now, for the brain's readers that
+   * would otherwise read its folder without opening it (roster, catalog, chat
+   * owner lookup, search).
+   */
+  isOpenBlocked(projectId: ProjectId): boolean {
+    return Boolean(this.options.openStrikes?.blocked(projectId));
+  }
 
   private nowMs(): number {
     return (this.options.now ?? Date.now)();
@@ -355,7 +455,7 @@ export class ProjectScopeRegistry {
    * adds nothing. A project the user removed is not a failure: a window or
    * phone that still holds its id is told so and moves on.
    */
-  private reportUnknownProjectId(projectId: ProjectId): void {
+  private reportUnknownProjectId(projectId: ProjectId, requestedBy: string | undefined): void {
     if (!this.reportUnknownProjectIdOnce(projectId)) return;
     try {
       if (wasRemovedFromRegistry(this.projectRegistry.path, projectId)) return;
@@ -365,6 +465,8 @@ export class ProjectScopeRegistry {
         tags: { [DIAGNOSTIC_ATTACH_TAG]: PROJECT_REGISTRY_ATTACH },
         extra: {
           projectId,
+          // The RPC method that carried the id, when the caller named it.
+          requestedBy: requestedBy ?? null,
           // This machine opened the project's database before, so the
           // project was registered here once and has since gone from the list.
           openedHereBefore: this.projectRegistry.readDatabaseIdentity(projectId) !== null,
@@ -385,6 +487,30 @@ export class ProjectScopeRegistry {
     return () => {
       this.disposeListeners.delete(listener);
     };
+  }
+
+  /**
+   * A scope that can answer sync calls appeared: a project finished opening,
+   * or a project became the sync host. Called synchronously; a listener that
+   * throws is logged and never fails the open or the switch.
+   */
+  onSyncScopeReady(listener: () => void): () => void {
+    this.syncScopeReadyListeners.add(listener);
+    return () => {
+      this.syncScopeReadyListeners.delete(listener);
+    };
+  }
+
+  private notifySyncScopeReady(): void {
+    for (const listener of this.syncScopeReadyListeners) {
+      try {
+        listener();
+      } catch (error) {
+        this.options.logger?.warn("project_scope.sync_scope_ready_listener_failed", {
+          error: error instanceof Error ? error.name : "unknown",
+        });
+      }
+    }
   }
 
   /**
@@ -409,6 +535,11 @@ export class ProjectScopeRegistry {
     };
   }
 
+  /** Every scope whose boot has completed, without opening any. */
+  listReady(): ProjectScope[] {
+    return [...this.readyScopes.values()];
+  }
+
   /** Return only a scope whose boot has already completed. */
   getIfReady(projectId: ProjectId): ProjectScope | null {
     return this.readyScopes.get(projectId) ?? null;
@@ -416,10 +547,15 @@ export class ProjectScopeRegistry {
 
   async get(
     projectId: ProjectId,
-    options: { touch?: boolean } = {},
+    options: { touch?: boolean; requestedBy?: string } = {},
   ): Promise<ProjectScope> {
     const cached = this.scopes.get(projectId);
     if (cached) return await cached;
+
+    // A refused project never reaches `createAdeRuntime`. One in-memory
+    // lookup on the healthy path.
+    const refusal = this.openRefusal(projectId);
+    if (refusal) throw refusal;
 
     // A project whose boot just failed is very likely to fail the same way
     // again, and a full boot is expensive: it opens the project database and
@@ -436,12 +572,72 @@ export class ProjectScopeRegistry {
       // project it now names instead of being told the project is unknown.
       const movedTo = this.projectRegistry.resolveMovedProjectId(projectId);
       if (movedTo && movedTo !== projectId) return await this.get(movedTo, options);
-      this.reportUnknownProjectId(projectId);
+      // A window that knows the project only from the account names its
+      // repository; this machine's one checkout of it is that project.
+      const checkouts = this.projectRegistry.repositoryCheckouts(projectId);
+      if (checkouts?.length === 1) return await this.get(checkouts[0]!.projectId, options);
+      if (checkouts) {
+        // No checkout of that repository here, or two this machine will not
+        // guess between: an answer for the window, not a lost registration.
+        // "Unknown projectId" stays in the text for older callers that read it.
+        sendSentryLog("warn", "brain.repository_project_unresolved", {
+          checkouts: checkouts.length,
+          requestedBy: options.requestedBy ?? null,
+        });
+        throw markExpected(new Error(checkouts.length === 0
+          ? `This project is not on this ADE machine (Unknown projectId: ${projectId}). Open it on this machine once, then try again.`
+          : `This project has ${checkouts.length} copies on this ADE machine, and ADE does not guess which one you mean (Unknown projectId: ${projectId}). Open the copy you want from this machine's project list.`), "user");
+      }
+      this.reportUnknownProjectId(projectId, options.requestedBy);
       throw new Error(`Unknown projectId: ${projectId}`);
     }
 
-    this.projectRegistry.assertProjectDataAvailable(record);
+    // One clock for the whole open, which also tells the freeze guard each
+    // step, so a kill names the project and the step. Started before the first
+    // read of the folder: on a hung mount that read is the freeze.
+    const openTracker = trackBrainLoopWatchdogProjectOpen(projectId);
+    const timing = createPhaseClock<string>("prepare");
+    const openClock: PhaseClock<string> = {
+      enter: (phase) => {
+        timing.enter(phase);
+        openTracker.phase(phase);
+      },
+      current: () => timing.current(),
+      timings: () => timing.timings(),
+      totalMs: () => timing.totalMs(),
+      summary: () => timing.summary(),
+    };
+    try {
+      this.projectRegistry.assertProjectDataAvailable(record);
+    } catch (error) {
+      openTracker.done();
+      // A check that was itself slow (a drive that barely answers) is a slow open too.
+      logSlowProjectOpen({
+        logger: this.options.logger,
+        clock: openClock,
+        projectRoot: record.rootPath,
+        fields: { projectId, outcome: "failed" },
+      });
+      throw error;
+    }
+    // A project with strikes opens alone: other cold opens wait for it, and it
+    // waits for those already running, so a freeze during it is its own.
+    const solo = this.options.openStrikes?.opensAlone(projectId) ?? false;
+    let waitFor: Promise<unknown>[] = [];
+    if (solo) {
+      waitFor = [...this.openingNow];
+    } else if (this.soloOpen) {
+      waitFor = [this.soloOpen];
+    }
     const pending = (async () => {
+      if (waitFor.length > 0) {
+        openClock.enter(QUEUED_OPEN_PHASE);
+        await waitForOpenTurn(
+          waitFor,
+          (this.options.freezeThresholdMs ?? resolveBrainLoopWatchdogThresholdMs(undefined)) + OPEN_TURN_MARGIN_MS,
+        );
+        openClock.enter("prepare");
+      }
       // A teardown of this project's previous scope may still be waiting on
       // its disposers (up to the drain's cap); its database closes last, so
       // the new runtime opens the project only after the old one let go.
@@ -467,10 +663,21 @@ export class ProjectScopeRegistry {
         ...(this.options.crossMachineHandoffTransport
           ? { crossMachineHandoffTransport: this.options.crossMachineHandoffTransport }
           : {}),
+        ...(this.options.releaseRemoteWorkDevices
+          ? { releaseRemoteWorkDevices: this.options.releaseRemoteWorkDevices }
+          : {}),
+        ...(this.options.releaseRemoteWorkOfEndedChat
+          ? { releaseRemoteWorkOfEndedChat: this.options.releaseRemoteWorkOfEndedChat }
+          : {}),
         ...(this.options.keepAwakeService
           ? { keepAwakeService: this.options.keepAwakeService }
           : {}),
+        ...(this.options.laneSetupDisk
+          ? { laneSetupDisk: this.options.laneSetupDisk }
+          : {}),
+        openClock,
       });
+      openClock.enter("identity");
       try {
         this.projectRegistry.recordDatabaseIdentity(projectId);
       } catch (error) {
@@ -484,6 +691,21 @@ export class ProjectScopeRegistry {
       });
     })();
     this.scopes.set(projectId, pending);
+    this.openingNow.add(pending);
+    if (solo) this.soloOpen = pending;
+    const settle = (outcome: "opened" | "failed"): void => {
+      this.openingNow.delete(pending);
+      if (this.soloOpen === pending) this.soloOpen = null;
+      openTracker.done();
+      // Logged here, on the brain's own disk, so failed and killed opens are covered.
+      logSlowProjectOpen({
+        logger: this.options.logger,
+        clock: openClock,
+        projectRoot: record.rootPath,
+        fields: { projectId, outcome },
+      });
+    };
+    void pending.then(() => settle("opened"), () => settle("failed"));
 
     try {
       const scope = await pending;
@@ -493,6 +715,17 @@ export class ProjectScopeRegistry {
       if (this.scopes.get(projectId) === pending) {
         this.readyScopes.set(projectId, scope);
         this.failedScopes.delete(projectId);
+        // It opened, so whatever froze it before is not freezing it now.
+        this.options.openStrikes?.clear(projectId, "opened");
+        this.notifySyncScopeReady();
+        try {
+          this.options.onProjectOpened?.(record.rootPath);
+        } catch (hookError) {
+          // A hook never fails an open.
+          this.options.logger?.warn("project_scope.open_hook_failed", {
+            error: hookError instanceof Error ? hookError.name : "unknown",
+          });
+        }
       }
       return scope;
     } catch (error) {
@@ -637,6 +870,10 @@ export class ProjectScopeRegistry {
     }
     if (this.syncHostProjectId === projectId) {
       this.syncHostProjectId = null;
+      this.options.logger?.info("project_scope.sync_host_released", {
+        projectId,
+        reason: entry.reason,
+      });
     }
     this.options.onDisposeProject?.(projectId);
     for (const listener of this.disposeListeners) {
@@ -726,7 +963,8 @@ export class ProjectScopeRegistry {
   ): Promise<ProjectScope | null> {
     if (!this.options.syncRuntime?.enabled) return null;
     const existingHostId = this.syncHostProjectId;
-    if (existingHostId) {
+    // A refused project cannot host; asking for it would only be refused again.
+    if (existingHostId && !this.isOpenBlocked(existingHostId)) {
       try {
         return await this.get(existingHostId);
       } catch {
@@ -746,17 +984,27 @@ export class ProjectScopeRegistry {
         return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
       })
       .find((candidate) => {
+        if (this.isOpenBlocked(candidate.projectId)) return false;
         if (!this.projectRegistry.isProjectDataMissing(candidate)) return true;
         onSkippedMissingProject?.(candidate);
         return false;
       });
     // This caller reads: it wants whatever owns sync on this machine, and a
     // project that follows another machine is a legitimate answer to that.
-    return record ? this.switchSyncHost(record.projectId, { purpose: "serve" }) : null;
+    return record
+      ? this.switchSyncHost(record.projectId, { purpose: "serve", reason: "most_recent_fallback" })
+      : null;
   }
 
-  /** Return a cached sync scope without booting it or running host activation. */
-  async resolveBootedSyncScope(): Promise<ProjectScope | null> {
+  /**
+   * A sync scope that has already finished opening, for a sync read. It never
+   * boots a scope, never runs host activation and never waits on a scope that
+   * is still opening (a read that waited answered late, or with nothing when
+   * that open failed while another scope was ready). The known sync host's
+   * ready scope wins; then the most recently opened ready scope; then any
+   * other ready scope. Null when none is ready.
+   */
+  resolveReadySyncScope(): ProjectScope | null {
     if (!this.options.syncRuntime?.enabled) return null;
     const preferredIds = [
       this.syncHostProjectId,
@@ -767,11 +1015,12 @@ export class ProjectScopeRegistry {
           return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
         })
         .map((record) => record.projectId),
+      ...this.readyScopes.keys(),
     ];
     for (const projectId of new Set(preferredIds)) {
       if (!projectId) continue;
-      const cached = this.getIfBooted(projectId);
-      if (cached) return await cached;
+      const ready = this.getIfReady(projectId);
+      if (ready) return ready;
     }
     return null;
   }
@@ -980,6 +1229,13 @@ export class ProjectScopeRegistry {
       // Publish authority only after the target has fully activated. Until
       // this assignment every failure/timeout still resolves to the old host.
       this.syncHostProjectId = projectId;
+      this.options.logger?.info("project_scope.sync_host_switched", {
+        from: previousHostId,
+        to: projectId,
+        reason: options.reason ?? null,
+        viewer: blocker != null,
+      });
+      this.notifySyncScopeReady();
       return scope;
     } catch (error) {
       await rollback();
@@ -998,6 +1254,11 @@ export class ProjectScopeRegistry {
   ): void {
     if (!pending || this.scopes.get(projectId) !== pending) return;
     this.scopes.delete(projectId);
+    // A scope that finished its boot is in `readyScopes` too (only the attempt
+    // that owns the cache entry is ever put there, so this entry is this
+    // scope's). Left there, `resolveReadySyncScope` would hand out a runtime
+    // that is being torn down.
+    this.readyScopes.delete(projectId);
     // The scope this project failed to boot is gone, so the phases recorded
     // against it describe a host that no longer exists. Same reason `dispose`
     // clears them.
@@ -1099,6 +1360,9 @@ export class ProjectScopeRegistry {
       projectScopes: {
         getIfBooted: (peerProjectId: string) =>
           this.getIfBooted(this.projectRegistry.resolveMovedProjectId(peerProjectId) ?? peerProjectId),
+        ...(this.options.terminalInputDedupeLedger
+          ? { terminalInputDedupeLedger: this.options.terminalInputDedupeLedger }
+          : {}),
       },
     };
   }

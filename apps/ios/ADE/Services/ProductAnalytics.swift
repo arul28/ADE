@@ -1,4 +1,6 @@
+import AuthenticationServices
 import CryptoKit
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -78,6 +80,24 @@ enum ADEAnalyticsFeature: String, CaseIterable {
   case appClipHandoff = "app_clip_handoff"
   /// A person took Control of a Mac's simulator from the phone.
   case simulatorControl = "simulator_control"
+  /// The ADE Cloud invite funnel (the desktop's `lib/invitePill.ts` names).
+  case cloudInvite = "cloud_invite"
+  /// How a GitHub connect of the ADE account, started on the phone, ended.
+  case githubConnect = "github_connect"
+  /// An ADE Cloud plan landed (bought, or moved up) and the phone said so: `completed` only.
+  case cloudPlan = "cloud_plan"
+}
+
+/// What the person did in the invite funnel, in the desktop's action names.
+enum ADEAnalyticsInviteAction: String, CaseIterable {
+  case linkCopied = "invite_link_copied"
+  case codeEntered = "invite_code_entered"
+}
+
+/// The invite funnel's outcomes. Never a code, a link, an email or the friend.
+enum ADEAnalyticsInviteOutcome {
+  static let refusalReasons = ["invalid_code", "unknown_code", "own_code", "already_referred", "too_late", "mutual", "rate_limited", "unavailable"]
+  static let allowed: Set<String> = Set(["from_dashboard", "shared_from_dashboard", "accepted"] + refusalReasons.map { "refused_\($0)" })
 }
 
 enum ADEAnalyticsOutcome: String, CaseIterable {
@@ -94,6 +114,50 @@ enum ADEAnalyticsSignInOutcome: String, CaseIterable {
   case newAccount = "new_account"
   case returningUser = "returning_user"
   case failed = "failure"
+}
+
+/// How the person tried to sign in. Closed so a failure cannot carry an email or a token.
+enum ADEAnalyticsSignInProvider: String, CaseIterable {
+  case email
+  case apple
+  case google
+  case github
+  case oauth
+}
+
+/// Why a sign-in failed, in words a dashboard can group. Not Clerk's message.
+enum ADEAnalyticsSignInFailureReason: String, CaseIterable {
+  case cancelled
+  case network
+  case invalidCode = "invalid_code"
+  case expired
+  case notStarted = "not_started"
+  case unavailable
+  case oauthFailed = "oauth_failed"
+  case other
+}
+
+/// Apple's review and TestFlight processing farm. `hw.machine` is `iPhone99,10`
+/// (and the iPad and iPod 99 series), which is not a model Apple sells. A
+/// missing classic receipt on current iOS made these look like App Store
+/// installs (`distribution: app_store`). Real TestFlight testers keep a
+/// sandbox receipt and a real model, so they stay countable.
+enum ADEAnalyticsReviewContext: String {
+  case appReview = "app_review"
+
+  static var current: ADEAnalyticsReviewContext? {
+    hardwareMachine().range(of: #"^(iPhone|iPad|iPod)99,"#, options: .regularExpression) != nil
+      ? .appReview
+      : nil
+  }
+
+  static func hardwareMachine() -> String {
+    var systemInfo = utsname()
+    uname(&systemInfo)
+    return withUnsafePointer(to: &systemInfo.machine) {
+      $0.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
+    }
+  }
 }
 
 enum ADEAnalyticsMachineAdoptionOutcome: String, CaseIterable {
@@ -306,7 +370,9 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
   }
 
   /// Added to every event this sink sends: which surface, app and build sent
-  /// it. No `is_internal`: a phone has no team-install marker to read.
+  /// it. `is_internal` is set for Apple's review farm and for a debug or
+  /// simulator run that was explicitly allowed to send. A person's phone has
+  /// no team-install marker, and iOS never writes a person profile.
   private static func commonProperties(interactive: Bool) -> [String: Any] {
     var properties: [String: Any] = [
       "surface": "mobile",
@@ -317,11 +383,41 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       "build_number": buildNumber(),
       "distribution": distribution.rawValue,
       "release_channel": distribution.releaseChannel,
+      "environment": telemetryEnvironment,
       "$process_person_profile": false,
       "$geoip_disable": true,
     ]
     if let machineID { properties["machine_id"] = machineID }
+    if let review = ADEAnalyticsReviewContext.current {
+      properties["review_context"] = review.rawValue
+      properties["is_internal"] = true
+    }
+    if sendsAsDevelopment {
+      properties["is_internal"] = true
+    }
     return properties
+  }
+
+  /// A debug or simulator run that opted in. The test host does not, so its
+  /// fixtures stay a normal install. The flag is on the event only.
+  private static var sendsAsDevelopment: Bool {
+    #if DEBUG || targetEnvironment(simulator)
+    return ProductAnalytics.isTruthyFlag(ProcessInfo.processInfo.environment["ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT"])
+    #else
+    return false
+    #endif
+  }
+
+  /// Same words as desktop Sentry: stable is `production`, and a simulator
+  /// is `development` even for a Release build. A shipped phone keeps its
+  /// channel.
+  private static var telemetryEnvironment: String {
+    #if targetEnvironment(simulator)
+    return "development"
+    #else
+    let channel = distribution.releaseChannel
+    return channel == "stable" ? "production" : channel
+    #endif
   }
 
   func captureException(properties: [String: Any]) {
@@ -493,6 +589,15 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       return ["screen": screen]
 
     case .featureUsed:
+      // The invite funnel: its own action and outcome words, from closed lists.
+      if properties["feature"] as? String == ADEAnalyticsFeature.cloudInvite.rawValue {
+        guard let action = enumString("action", as: ADEAnalyticsInviteAction.self),
+              let outcome = properties["outcome"] as? String,
+              ADEAnalyticsInviteOutcome.allowed.contains(outcome) else {
+          return nil
+        }
+        return ["feature": ADEAnalyticsFeature.cloudInvite.rawValue, "action": action, "outcome": outcome]
+      }
       guard let feature = enumString("feature", as: ADEAnalyticsFeature.self),
             let outcome = enumString("outcome", as: ADEAnalyticsOutcome.self) else {
         return nil
@@ -511,7 +616,21 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       guard let outcome = enumString("outcome", as: ADEAnalyticsSignInOutcome.self) else {
         return nil
       }
-      return ["outcome": outcome]
+      var sanitized: [String: Any] = ["outcome": outcome]
+      guard outcome == ADEAnalyticsSignInOutcome.failed.rawValue else {
+        return sanitized
+      }
+      guard let provider = enumString("provider", as: ADEAnalyticsSignInProvider.self),
+            let reason = enumString("reason", as: ADEAnalyticsSignInFailureReason.self) else {
+        return nil
+      }
+      sanitized["provider"] = provider
+      sanitized["reason"] = reason
+      if let code = properties["error_code"] as? String,
+         code.range(of: #"^[a-z0-9_]{1,64}$"#, options: .regularExpression) != nil {
+        sanitized["error_code"] = code
+      }
+      return sanitized
 
     case .machineAdoptionOutcome:
       guard let outcome = enumString("outcome", as: ADEAnalyticsMachineAdoptionOutcome.self) else {
@@ -720,10 +839,95 @@ final class ProductAnalytics {
   }
 
   /// Analytics (and Sentry, which follows it) is always on in shipped builds.
-  /// Only `DO_NOT_TRACK=1` in the launch environment, a developer run from
-  /// Xcode, turns it off. An opt-out stored by an earlier build is ignored.
+  /// `DO_NOT_TRACK=1` turns it off. A run from Xcode (Debug, or the simulator)
+  /// is off too, unless this process is the test suite or
+  /// `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`. An opt-out stored by an
+  /// earlier build is ignored.
   static func isOptedOut(defaults _: UserDefaults) -> Bool {
-    isTruthyFlag(ProcessInfo.processInfo.environment["DO_NOT_TRACK"])
+    if isTruthyFlag(ProcessInfo.processInfo.environment["DO_NOT_TRACK"]) { return true }
+    let environment = ProcessInfo.processInfo.environment
+    let developerRun: Bool = {
+      #if DEBUG
+      return true
+      #else
+      #if targetEnvironment(simulator)
+      return true
+      #else
+      return false
+      #endif
+      #endif
+    }()
+    guard developerRun else { return false }
+    if isRunningTests { return false }
+    return !isTruthyFlag(environment["ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT"])
+  }
+
+  /// XCTest sets this on the host process. The app binary does not link XCTest,
+  /// so a normal Xcode run is not a test.
+  private static var isRunningTests: Bool {
+    ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+      || NSClassFromString("XCTestCase") != nil
+  }
+
+  /// A sign-in failure's `reason` and `error_code`. `clerkCode` is Clerk's
+  /// snake_case code when the error is one; anything else is dropped. The
+  /// code is a closed token (`form_code_incorrect`), never a message.
+  static func signInFailure(
+    provider: ADEAnalyticsSignInProvider,
+    error: Error,
+    clerkCode: String?
+  ) -> (provider: ADEAnalyticsSignInProvider, reason: ADEAnalyticsSignInFailureReason, errorCode: String) {
+    let nsError = error as NSError
+    let code = sanitizedErrorCode(clerkCode)
+      ?? (nsError.domain == NSURLErrorDomain ? "url_error" : nil)
+      ?? (nsError.domain == ASAuthorizationError.errorDomain ? "authorization_error" : nil)
+      ?? "unknown"
+    if error is CancellationError {
+      return (provider, .cancelled, code == "unknown" ? "cancelled" : code)
+    }
+    // Google and GitHub use ASWebAuthenticationSession. Dismissing that sheet
+    // is canceledLogin, and the callback sometimes surfaces as URLError.cancelled.
+    // Both are the person stopping, not a broken provider.
+    if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin
+      || (nsError.domain == ASWebAuthenticationSessionError.errorDomain
+        && nsError.code == ASWebAuthenticationSessionError.Code.canceledLogin.rawValue) {
+      return (provider, .cancelled, "web_auth_canceled")
+    }
+    if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
+      return (provider, .cancelled, "url_canceled")
+    }
+    if nsError.domain == NSURLErrorDomain {
+      return (provider, .network, "url_error")
+    }
+    if nsError.domain == ASAuthorizationError.errorDomain,
+       nsError.code == ASAuthorizationError.canceled.rawValue {
+      return (provider, .cancelled, "authorization_canceled")
+    }
+    let reason: ADEAnalyticsSignInFailureReason
+    switch code {
+    case "form_code_incorrect":
+      reason = .invalidCode
+    case "form_code_expired", "verification_expired":
+      reason = .expired
+    case "network_error":
+      reason = .network
+    default:
+      if code.contains("cancel") {
+        reason = .cancelled
+      } else if provider == .email {
+        reason = .other
+      } else {
+        reason = .oauthFailed
+      }
+    }
+    return (provider, reason, code)
+  }
+
+  private static func sanitizedErrorCode(_ code: String?) -> String? {
+    guard let code, code.range(of: #"^[a-z0-9_]{1,64}$"#, options: .regularExpression) != nil else {
+      return nil
+    }
+    return code
   }
 
   /// `1`, `true` or `yes`, in any case: the same reading as desktop's `doNotTrack.ts`.
@@ -744,7 +948,10 @@ final class ProductAnalytics {
       projectToken = environment["ADE_POSTHOG_DEV_TOKEN"] ?? projectToken
     }
     #endif
-    postHogSink.configure(projectToken: projectToken, host: host, enabled: isEnabled)
+    // The test host launches the app, and `isOptedOut` stays false there so
+    // the suite can assert the default-on policy against a fake sink. The
+    // production sink stays off, or that launch would send.
+    postHogSink.configure(projectToken: projectToken, host: host, enabled: isEnabled && !Self.isRunningTests)
   }
 
   /// The project token and ingestion host session replay may use: present
@@ -849,10 +1056,30 @@ final class ProductAnalytics {
     )
   }
 
-  func captureSignInOutcome(_ outcome: ADEAnalyticsSignInOutcome) {
+  /// One step of the invite funnel (`feature: cloud_invite`). An outcome
+  /// outside the closed list is dropped by the sanitizer.
+  func captureInvite(_ action: ADEAnalyticsInviteAction, outcome: String) {
+    capture(
+      .featureUsed,
+      properties: ["feature": ADEAnalyticsFeature.cloudInvite.rawValue, "action": action.rawValue, "outcome": outcome],
+      // Every entered code counts; a copy counts once a session.
+      foregroundDeduplicationKey: action == .codeEntered ? nil : "invite:\(action.rawValue):\(outcome)"
+    )
+  }
+
+  func captureSignInOutcome(
+    _ outcome: ADEAnalyticsSignInOutcome,
+    provider: String? = nil,
+    reason: String? = nil,
+    errorCode: String? = nil
+  ) {
+    var properties: [String: Any] = ["outcome": outcome.rawValue]
+    if let provider { properties["provider"] = provider }
+    if let reason { properties["reason"] = reason }
+    if let errorCode { properties["error_code"] = errorCode }
     capture(
       .signInOutcome,
-      properties: ["outcome": outcome.rawValue],
+      properties: properties,
       foregroundDeduplicationKey: "sign_in:\(outcome.rawValue)"
     )
   }

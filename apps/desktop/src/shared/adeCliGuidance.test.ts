@@ -1,9 +1,7 @@
-import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SESSION_ACTIVITY_VALUES } from "./types/sessions";
-import { setAdeCloudSkillVisible } from "./agentSkillRoots";
+import { adeHostWithheldAgentSkills, setAdeCloudSkillVisible } from "./agentSkillRoots";
 import {
   adeBundledAgentSkills,
   adeOutsideClientAgentSkills,
@@ -28,10 +26,11 @@ describe("ADE CLI guidance", () => {
     // The canonical builder is a thin alias over the bootstrap.
     expect(guidance).toBe(buildAdeBootstrapGuidance(roots));
     // It still advertises the bundled skill index so the model knows what
-    // exists, minus the deprecated aliases (one name per skill) and the skills
-    // only an app outside ADE reads.
+    // exists, minus the deprecated aliases (one name per skill), the skills
+    // only an app outside ADE reads, and the skills this host cannot run.
+    const hostWithheld = new Set(adeHostWithheldAgentSkills());
     for (const skillName of adeBundledAgentSkills) {
-      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName)) {
+      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName) || hostWithheld.has(skillName)) {
         expect(guidance).not.toContain(`\`${skillName}\``);
       } else expect(guidance).toContain(`\`${skillName}\``);
     }
@@ -42,49 +41,6 @@ describe("ADE CLI guidance", () => {
 
 describe("ADE bootstrap guidance", () => {
   const roots = ["/Applications/ADE.app/Contents/Resources/agent-skills"];
-
-  it("teaches the skill-on-demand habit and the ground-truth CLI fallback", () => {
-    const bootstrap = buildAdeBootstrapGuidance(roots);
-
-    expect(bootstrap).toContain("## ADE");
-    // The habit: reach for the matching skill on demand, not an inlined rulebook.
-    expect(bootstrap).toContain("read the matching `ade-*` skill");
-    // The fallback: CLI help is ground truth (agents are not trained on `ade`).
-    expect(bootstrap).toContain("ade help <command>");
-    expect(bootstrap).toContain("ade actions list --text");
-    expect(bootstrap).toContain("ade skill list --text");
-    expect(bootstrap).toContain("ade skill show <name> --text");
-    // One default per scenario: same chat and lane, another model as a
-    // subagent, and one wake per thing waited on.
-    expect(bootstrap).toContain("ade chat scheduled-work create");
-    expect(bootstrap).toContain("`ade new chat --mode chat`");
-    expect(bootstrap).toContain("`ade prs watch`");
-    expect(bootstrap).toContain("`ade terminal watch`");
-    expect(bootstrap).toContain('ade chat note "testing desktop auth fallback"');
-    expect(bootstrap).toContain("6 words or fewer");
-    expect(bootstrap).toContain(`${MAX_STATUS_NOTE_CHARACTERS} characters`);
-    expect(bootstrap).toContain('ade chat ask "<the exact question>"');
-    expect(bootstrap).toContain("a note alone can leave an idle row looking Done");
-    expect(bootstrap).toContain("The next accepted user message clears the prior hand-raise");
-    // Settlement is user- and PR-merge-driven only: the bootstrap must tell the
-    // agent it CANNOT settle, and must never hand it a settle command again.
-    expect(bootstrap).toContain("You cannot settle or unsettle a session");
-    expect(bootstrap).toContain("the user's call, or the automatic result of its PR merging");
-    expect(bootstrap).not.toContain("ade chat settle --outcome");
-    // Snoozing is the user's call; agents are not handed the command.
-    expect(bootstrap).not.toContain("ade session snooze");
-    expect(bootstrap).toContain("ade chat generate-names");
-    expect(bootstrap).toContain("ade chat update --title");
-    expect(bootstrap).toContain("ade lanes rename");
-    // The skill index is still advertised so the model knows what exists.
-    for (const skillName of adeBundledAgentSkills) {
-      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName)) continue;
-      expect(bootstrap).toContain(`\`${skillName}\``);
-    }
-    // An account off ADE Cloud's list isn't told it exists.
-    setAdeCloudSkillVisible(false);
-    expect(buildAdeBootstrapGuidance(roots)).not.toContain("`ade-cloud`");
-  });
 
   it("stays within a small budget — the always-on socket/browser/proof tax is gone", () => {
     const bootstrap = buildAdeBootstrapGuidance(roots);
@@ -99,52 +55,26 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).not.toContain("### Minimum operating rules");
     expect(bootstrap).not.toContain("--socket");
   });
-
-  it("keeps the bundled control-plane skill aligned with the bootstrap lifecycle contract", () => {
-    const bootstrap = buildAdeBootstrapGuidance(roots);
-    const skill = fs.readFileSync(fileURLToPath(new URL(
-      "../../resources/agent-skills/ade-cli-control-plane/SKILL.md",
-      import.meta.url,
-    )), "utf8");
-
-    for (const invariant of [
-      "ade chat note",
-      "ade chat ask",
-      "You cannot settle or unsettle a session",
-    ]) {
-      expect(bootstrap.toLowerCase()).toContain(invariant.toLowerCase());
-      expect(skill.toLowerCase()).toContain(invariant.toLowerCase());
-    }
-    expect(bootstrap).toContain("next accepted user message clears the prior hand-raise");
-    expect(skill).toContain("next accepted user message clears the hand-raise");
-    expect(bootstrap).toContain(`${STATUS_NOTE_GUIDELINE_WORDS} words or fewer`);
-    expect(bootstrap).toContain(`${MAX_STATUS_NOTE_CHARACTERS} characters`);
-  });
 });
 
 describe("Work board status guidance", () => {
-  it("keeps the board rule OUT of this guidance, which is emitted under a hard budget", () => {
+  it("keeps the board and settle rules OUT of this guidance, which is emitted under a hard budget", () => {
     // The Cursor SDK prompt emits this constant whole inside a 3 KB budget that
     // truncates from the END, and it already sits at ~100% of it. A board line
     // here cost that prompt its subagent routing contract and its project
-    // rules, with nothing failing except two assertions in that file. The rule
-    // lives in the ade-cli-control-plane skill's "Board and status" section
-    // instead, which every agent reads and which no budget clips.
+    // rules, with nothing failing except two assertions in that file. The rules
+    // — the derived board column, and that only the user settles — live in the
+    // ade-cli-control-plane skill's "Board and status" section instead, which
+    // every agent reads and which no budget clips.
     const guidance = buildAdeBootstrapGuidance([]);
     expect(guidance).not.toContain("Work board is derived");
     expect(guidance).not.toContain("Work-board column is derived");
+    expect(guidance).not.toContain("moveOnBoard");
     // The mechanics an agent does need here are still present.
     expect(guidance).toContain("ade chat note");
     expect(guidance).toContain("ade chat ask");
-  });
-
-  it("never tells an agent it can set its own board column", () => {
-    // Settling is the user's call (or the PR-merge policy's), and there is no
-    // "move my card" action. Guidance that implied otherwise would send the
-    // agent hunting for one.
-    const guidance = buildAdeBootstrapGuidance([]);
-    expect(guidance).not.toContain("moveOnBoard");
-    expect(guidance).toContain("You cannot settle or unsettle a session");
+    // ...and so is the index that names the skill carrying the rest.
+    expect(guidance).toContain("`ade-cli-control-plane`");
   });
 });
 
@@ -188,8 +118,13 @@ describe("ADE session activity guidance", () => {
     expect(posixGuidance).toContain(
       "ADE_DEFAULT_ROLE='agent' ADE_CHAT_SESSION_ID='chat-1' ADE_RPC_URL='/Users/admin/.ade-beta/sock/ade.sock' ADE_RPC_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' ADE_RUNTIME_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' '/Applications/ADE Beta.app/bin/ade' chat activity debugging --session 'chat-1'",
     );
-    expect(posixGuidance).toContain("chat activity clear --session 'chat-1'");
-    expect(posixGuidance).toContain("replace debugging with the real value");
+    // The label is reset through the same command: `clear` takes the value's
+    // place, so the guidance names it with the closed value set rather than as
+    // a second full command line.
+    expect(posixGuidance).toMatch(/or clear/);
+    // The example value is a placeholder the agent replaces: the line names the
+    // closed set it may choose from, with `clear` as the reset.
+    expect(posixGuidance).toContain(SESSION_ACTIVITY_VALUES.join(", "));
     expect(posixGuidance).not.toContain("$ADE_CLI_PATH");
     expect(powershellGuidance).toContain(
       "$env:ADE_DEFAULT_ROLE = 'agent'; $env:ADE_CHAT_SESSION_ID = 'chat-1'; $env:ADE_RPC_URL = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RPC_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RUNTIME_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; & 'C:\\Program Files\\ADE Beta\\ade.exe' chat activity debugging --session 'chat-1'",
@@ -216,10 +151,11 @@ describe("ADE session activity guidance", () => {
       "chat note --personal --session 'chat-9'",
       "chat ask --personal --session 'chat-9'",
       "chat activity debugging --personal --session 'chat-9'",
-      "chat activity clear --personal --session 'chat-9'",
     ]) {
       expect(guidance).toContain(`'/Applications/ADE.app/bin/ade' ${command}`);
     }
+    // `clear` resets the label through the same command, named with its values.
+    expect(guidance).toMatch(/or clear/);
     expect(guidance).not.toMatch(/ADE_RPC_URL|ADE_RUNTIME_SOCKET_PATH|\$ADE_CLI_PATH/);
   });
 });

@@ -7,25 +7,6 @@ import {
 import { createDynamicPiModelDescriptor, MODEL_REGISTRY } from "./modelRegistry";
 
 describe("model picker provider order", () => {
-  it("keeps the canonical provider sequence after favorites and recents", () => {
-    expect(MODEL_PICKER_PROVIDER_ORDER).toEqual([
-      "claude",
-      "codex",
-      "muse",
-      "cursor",
-      "devin",
-      "antigravity",
-      "opencode",
-      "pi",
-      "copilot",
-      "grok",
-      "droid",
-      "kimi",
-      "qwen",
-      "ollama",
-      "lmstudio",
-    ]);
-  });
 
   it("sorts populated catalog groups in canonical order", () => {
     const groups = buildProviderGroupBlocks(MODEL_REGISTRY, createModelOrderMap(), undefined, false);

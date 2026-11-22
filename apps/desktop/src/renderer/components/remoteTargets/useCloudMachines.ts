@@ -1,6 +1,11 @@
 import { useSyncExternalStore } from "react";
 import { cloudMachineSettling, type CloudMachinesResult } from "../../../shared/adeCloud";
+import { captureError } from "../../../shared/sentry/capture";
 import { extractError } from "../../lib/format";
+import { cloudLaneIndexFresh, noteCloudLaneMachines } from "../../state/adeCloudLaneIndex";
+import { noteCloudAccountRead, setCloudAccountFed } from "../../state/cloudAccountStore";
+import { chatLaunchStore } from "../../state/chatLaunchStore";
+import { isChatLaunchSucceeded } from "../../../shared/chatLaunch";
 
 /** While a box is waking, sleeping or resizing, how often its state is read again. */
 const SETTLING_POLL_MS = 4_000;
@@ -24,6 +29,12 @@ const EMPTY: Snapshot = { result: null, loading: false, loadError: null };
 
 let snapshot = EMPTY;
 const listeners = new Set<() => void>();
+/**
+ * Surfaces that want the quick re-reads while a box settles (the machine
+ * cards). A surface that only needs the list in memory (the composer's Run
+ * on menu) subscribes without them, so it never starts that timer itself.
+ */
+let settlingSubscribers = 0;
 let generation = 0;
 let lastReadAt = 0;
 let settlingSince: number | null = null;
@@ -42,7 +53,7 @@ function clearSettlingTimer(): void {
 
 function scheduleSettlingRead(result: CloudMachinesResult | null): void {
   clearSettlingTimer();
-  if (!result?.machines.some((machine) => cloudMachineSettling(machine.state))) {
+  if (settlingSubscribers === 0 || !result?.machines.some((machine) => cloudMachineSettling(machine.state))) {
     settlingSince = null;
     return;
   }
@@ -60,6 +71,11 @@ function load(): void {
   void listMachines().then(
     (result) => {
       if (current !== generation) return;
+      // The lane computers outlive this read, for the composer and chat chips.
+      // An unread list (the web app with no computer online) is not "no computers": keep the last index.
+      if (result?.state === "ok" && !result.computersUnread) noteCloudLaneMachines(result.machines);
+      // And the account, for the header, the invite pill and Settings › Account.
+      noteCloudAccountRead(result);
       publish({ result, loadError: null });
       scheduleSettlingRead(result);
     },
@@ -74,20 +90,30 @@ function load(): void {
 function startWatching(): void {
   const off = window.ade?.cloud?.onStatusChanged?.(load);
   window.addEventListener("focus", load);
+  setCloudAccountFed(true);
   stopWatching = () => {
     off?.();
     window.removeEventListener("focus", load);
+    setCloudAccountFed(false);
     stopWatching = null;
   };
 }
 
-function subscribe(listener: () => void): () => void {
+function subscribeWith(listener: () => void, settle: boolean): () => void {
   const first = listeners.size === 0;
   listeners.add(listener);
+  if (settle) settlingSubscribers += 1;
   if (first) startWatching();
   if (first || Date.now() - lastReadAt > JOIN_LAST_READ_MS) load();
   return () => {
     listeners.delete(listener);
+    if (settle) {
+      settlingSubscribers -= 1;
+      if (settlingSubscribers === 0) {
+        clearSettlingTimer();
+        settlingSince = null;
+      }
+    }
     if (listeners.size > 0) return;
     stopWatching?.();
     clearSettlingTimer();
@@ -97,6 +123,87 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+/**
+ * The list as last read, while some surface keeps it current (it is read again
+ * on cloud events and window focus). Null when nothing watches it, since a
+ * snapshot nobody refreshes can predate a create or a move.
+ */
+export function watchedCloudMachines(): CloudMachinesResult | null {
+  return listeners.size > 0 ? snapshot.result : null;
+}
+
+/**
+ * Reads the list again now, after an action taken where no surface watches it
+ * (a cloud lane's chat header). With a surface open this is its own read;
+ * without one, a single read that only refreshes the lane computer index and
+ * the account, so a menu built from them stops offering what was just done.
+ */
+export function refreshCloudMachines(): void {
+  if (listeners.size > 0) {
+    load();
+    return;
+  }
+  const listMachines = window.ade?.cloud?.listMachines;
+  if (!listMachines) return;
+  void listMachines().then(
+    (result) => {
+      // An unread list (the web app with no computer online) is not "no computers": keep the last index.
+      if (result?.state === "ok" && !result.computersUnread) noteCloudLaneMachines(result.machines);
+      noteCloudAccountRead(result);
+    },
+    (error: unknown) => captureError(error, { fingerprint: ["cloud", "machines_refresh"], handled: true }),
+  );
+}
+
+/** The least time between two reads that `refreshCloudMachinesIfStale` starts. */
+const STALE_REFRESH_GAP_MS = 60_000;
+let staleRefreshAt = 0;
+
+/**
+ * Reads the list once when no read in this window is fresh, at most once a
+ * minute: a page that names a copy's computer (the no-machine page, the
+ * copies menu) must know an ADE Cloud computer from its first render, not only
+ * after Connections opened.
+ */
+export function refreshCloudMachinesIfStale(): void {
+  if (cloudLaneIndexFresh()) return;
+  const now = Date.now();
+  if (now - staleRefreshAt < STALE_REFRESH_GAP_MS) return;
+  staleRefreshAt = now;
+  refreshCloudMachines();
+}
+
+/**
+ * A desktop launch to ADE Cloud that just got its computer's project (clone
+ * done) or its agent: read the account's computers again, once for each. The
+ * lane index then knows the new computer, so its lane reads "on ADE Cloud"
+ * and its main checkout stays out of the lane lists. Without this, a launch
+ * made while no Connections surface was open left the index at its last read
+ * (the second of two parallel lanes showed as a plain machine). ADE Web's
+ * launches do the same in `accountCloudLaunches`.
+ */
+const cloudLaunchReadsDone = new Set<string>();
+if (typeof window !== "undefined") {
+  chatLaunchStore.subscribe((state) => {
+    let read = false;
+    for (const entry of Object.values(state.entries)) {
+      const launch = entry.snapshot;
+      if (!launch.cloud) continue;
+      if (launch.cloud.binding && !cloudLaunchReadsDone.has(`${launch.launchId}:binding`)) {
+        cloudLaunchReadsDone.add(`${launch.launchId}:binding`);
+        read = true;
+      }
+      if (isChatLaunchSucceeded(launch) && !cloudLaunchReadsDone.has(`${launch.launchId}:started`)) {
+        cloudLaunchReadsDone.add(`${launch.launchId}:started`);
+        read = true;
+      }
+    }
+    if (read) refreshCloudMachines();
+  });
+}
+
+const subscribe = (listener: () => void) => subscribeWith(listener, true);
+const subscribeQuiet = (listener: () => void) => subscribeWith(listener, false);
 const subscribeNothing = () => () => undefined;
 const readSnapshot = () => snapshot;
 const readEmpty = () => EMPTY;
@@ -110,7 +217,12 @@ const readEmpty = () => EMPTY;
  * poll; only while a box is moving between states does it read again every few
  * seconds, until the box settles.
  */
-export function useCloudMachines(enabled: boolean): CloudMachinesState {
-  const state = useSyncExternalStore(enabled ? subscribe : subscribeNothing, enabled ? readSnapshot : readEmpty, readEmpty);
+export function useCloudMachines(enabled: boolean, options?: { settle?: boolean }): CloudMachinesState {
+  const settle = options?.settle ?? true;
+  const state = useSyncExternalStore(
+    enabled ? (settle ? subscribe : subscribeQuiet) : subscribeNothing,
+    enabled ? readSnapshot : readEmpty,
+    readEmpty,
+  );
   return { ...state, refresh: load };
 }

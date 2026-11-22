@@ -17,6 +17,7 @@ import {
   isBuiltInBrowserRemoteBroadcastMethod,
   isBuiltInBrowserRemoteCallMethod,
   type BuiltInBrowserRemoteAgentCallOutcome,
+  type BuiltInBrowserRemoteBroadcastMethod,
   type BuiltInBrowserRemoteCallFile,
 } from "../../../shared/types/builtInBrowserRemote";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
@@ -87,6 +88,29 @@ function machineName(): string {
 }
 
 /** Run one command for an agent on another machine. A failure is an outcome, never a throw. */
+/** One broadcast method on this desktop's browser; exhaustive over the broadcast list. */
+function runBroadcastMethod(
+  service: BuiltInBrowserService,
+  method: BuiltInBrowserRemoteBroadcastMethod,
+  input: Record<string, unknown>,
+): unknown {
+  switch (method) {
+    case "listTabsForAgent":
+      return service.listTabsForAgent(input);
+    case "chatBrowserLifecycle":
+      return service.chatBrowserLifecycle({
+        chatSessionId: typeof input.chatSessionId === "string" ? input.chatSessionId : null,
+        state: typeof input.state === "string" ? input.state : null,
+      });
+    case "releaseLaneTabs":
+      return service.releaseLaneTabs({ laneId: typeof input.laneId === "string" ? input.laneId : null });
+    default: {
+      const unhandled: never = method;
+      throw new Error(`Unhandled browser broadcast method: ${String(unhandled)}`);
+    }
+  }
+}
+
 export async function runRemoteAgentBrowserCall(args: {
   service: BuiltInBrowserService;
   method: string;
@@ -96,10 +120,7 @@ export async function runRemoteAgentBrowserCall(args: {
   // builds nothing, and a lane's release.
   if (isBuiltInBrowserRemoteBroadcastMethod(args.method)) {
     try {
-      const result = args.method === "listTabsForAgent"
-        ? args.service.listTabsForAgent(args.input)
-        : args.service.releaseLaneTabs({ laneId: typeof args.input.laneId === "string" ? args.input.laneId : null });
-      return { ok: true, result, files: [], machineName: machineName() };
+      return { ok: true, result: runBroadcastMethod(args.service, args.method, args.input), files: [], machineName: machineName() };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error), machineName: machineName() };
     }

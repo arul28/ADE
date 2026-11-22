@@ -1,0 +1,9 @@
+{
+  "hints": [
+    { "match": "\\b(screenshot|screen|click|window|app)\\b", "hint": "Screens and apps: read the ade-computer-use skill first (`ade screen`, `ade app-control`, `ade browser`)." },
+    { "match": "\\b(pull request|PR|gh)\\b", "hint": "Pull requests: read the ade-pr-workflows skill first (`ade prs create`, `ade prs body`)." },
+    { "match": "\\b(simulator|iOS|iPhone)\\b", "hint": "iOS: read the ade-apple skill first (`ade apple`)." },
+    { "match": "\\b(Linear|issue)\\b", "hint": "Linear: read the ade-linear skill first (`ade linear`)." },
+    { "match": "\\b(later|tomorrow|hours?|schedule)\\b", "hint": "Later work: read the ade-cli-control-plane skill first (`ade chat scheduled-work`, `ade drafts`)." }
+  ]
+}

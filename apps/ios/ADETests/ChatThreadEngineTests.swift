@@ -306,6 +306,31 @@ final class ChatThreadEngineTests: XCTestCase {
     XCTAssertEqual(sequences, [50, 51])
   }
 
+  func testEmptySnapshotKeepsCachedRowsUnlessHistoryWasReset() async {
+    let store = makeStore()
+    await store.append(key.logKey, events: [user(1, "kept"), text(2, "kept answer")].map(stored), generation: 1)
+    await store.flush()
+    let engine = makeEngine(store: store)
+    await engine.loadCache()
+    _ = await engine.flush()
+
+    // A host that could not fit its tail (one event over the size cap) sends
+    // an empty gap snapshot of the same history: the thread must not blank.
+    await engine.ingest(snapshot([], generation: 1, gap: true))
+    _ = await engine.flush()
+    let kept = await engine.currentFrame
+    XCTAssertEqual(texts(kept), ["user:kept", "assistant:kept answer"])
+    await engine.flushPersistence()
+    let storedAfterEmpty = await storedSequences(store)
+    XCTAssertEqual(storedAfterEmpty, [1, 2])
+
+    // A new history generation (the chat was cleared) still empties it.
+    await engine.ingest(snapshot([], generation: 2))
+    _ = await engine.flush()
+    let cleared = await engine.currentFrame
+    XCTAssertEqual(texts(cleared), [])
+  }
+
   func testHoleBetweenCacheAndSnapshotIsTreatedAsGap() async {
     let engine = makeEngine()
     await engine.ingest(.cached(meta: nil, events: [user(1, "cached"), text(2, "cached answer")].map(stored)))
@@ -662,6 +687,52 @@ final class ChatThreadEngineTests: XCTestCase {
     XCTAssertEqual(fields["sinceSeq"] as? Int, 42)
     XCTAssertNil(fields["sinceSequence"])
     XCTAssertNil(fields["chatLogV2"])
+  }
+
+  // MARK: - 22b. Stand-in for a row too large to page
+
+  func testOlderPageShowsOmittedRowNoticeInPlaceWithoutPersistingIt() async {
+    let store = makeStore()
+    let engine = makeEngine(store: store)
+    await engine.ingest(snapshot([user(10, "newer question")], hasOlder: true))
+    _ = await engine.flush()
+
+    // Two stand-ins identical in every shown field (timestamp, message,
+    // detail) and with no page offsets (a service-backed page): only their
+    // rows' offsets differ, and each keeps its own warning.
+    let notices = [100, 9_000_000].map { offset in
+      event(nil, [
+        "type": "system_notice",
+        "noticeKind": "info",
+        "status": "history_row_omitted",
+        "message": "fixture-omitted-row",
+        "detail": "The entry is 3.0 MB.",
+        "omittedRow": ["offset": offset, "bytes": 3_000_000],
+      ], at: 8)
+    }
+    await engine.ingest(.olderPage(ChatThreadOlderPageInput(
+      sessionId: sessionId,
+      events: [user(7, "older question")] + notices,
+      hasMore: true
+    )))
+    let frame = await engine.flush()
+    let order = (frame?.transcript ?? []).map { entry -> String in
+      if case .systemNotice(_, let message, _, _, _) = entry.event { return "notice:\(message)" }
+      return "seq:\(entry.sequence ?? -1)"
+    }
+    XCTAssertEqual(order, ["seq:7", "notice:fixture-omitted-row", "notice:fixture-omitted-row", "seq:10"])
+    let noticeIds = (frame?.transcript ?? []).filter {
+      if case .systemNotice = $0.event { return true }
+      return false
+    }.map(\.id)
+    XCTAssertEqual(Set(noticeIds).count, 2, "each warning keeps its own list identity")
+
+    // Display-only: not in the durable log, and not the next cursor.
+    await engine.flushPersistence()
+    let sequences = await storedSequences(store)
+    XCTAssertEqual(sequences, [7, 10])
+    let request = await engine.beginOlderHostRequest()
+    XCTAssertEqual(request, .beforeSequence(7))
   }
 
   // MARK: - 23. Local echo and optimistic steer

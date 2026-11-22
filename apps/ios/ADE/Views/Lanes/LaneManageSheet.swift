@@ -44,11 +44,26 @@ struct LaneManageSheet: View {
 
   private var isPrimary: Bool { snapshot.lane.laneType == "primary" }
 
+  /// The lane lives on an ADE Cloud computer that is not up: only its
+  /// computer and its delete work without a wake.
+  private var restsOnCloud: Bool { laneRestsOnCloud(snapshot.lane.id, sync: syncService) }
+
+  /// The lane lives on its own ADE Cloud computer: its delete is the
+  /// account's (the computer goes with it), never the host's.
+  private var cloudDelete: CloudLaneDeleteTarget? {
+    cloudLaneDeleteTarget(laneId: snapshot.lane.id, laneName: snapshot.lane.name, sync: syncService) { [dismiss, onDeleted, onComplete] in
+      dismiss()
+      if let onDeleted { await onDeleted() } else { await onComplete() }
+    }
+  }
+
+  /// The ADE Cloud computer the lane lives on, awake or asleep.
+  private var cloudComputerId: String? { cloudLaneComputer(snapshot.lane.id, sync: syncService)?.id }
+
   private var availableTabs: [ManageLaneTab] {
-    var tabs: [ManageLaneTab] = [.delete]
-    tabs.append(.appearance)
-    tabs.append(.archive)
-    return tabs
+    // Appearance and archive run on the lane's computer.
+    if restsOnCloud { return [.delete] }
+    return [.delete, .appearance, .archive]
   }
 
   private var canArchive: Bool { !isPrimary }
@@ -58,7 +73,7 @@ struct LaneManageSheet: View {
   }
 
   private var showsRenameControl: Bool {
-    LaneManageRename.showsRenameControl(
+    !restsOnCloud && LaneManageRename.showsRenameControl(
       laneType: snapshot.lane.laneType,
       hostSupportsRename: syncService.canInvokeRemoteAction("lanes.rename")
     )
@@ -81,6 +96,7 @@ struct LaneManageSheet: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 16) {
           if !syncService.connectionState.isHostUnreachable,
+            !restsOnCloud,
             let liveActionNoticePresentation
           {
             ADENoticeCard(
@@ -102,11 +118,14 @@ struct LaneManageSheet: View {
           laneInfoHeader
 
           if isPrimary {
-            Text("The primary lane cannot be archived or deleted.")
+            Text("The main checkout can't be archived or deleted.")
               .font(.system(size: 12.5))
               .foregroundStyle(ADEColor.textMuted)
               .padding(.horizontal, 4)
             appearanceTab
+          } else if restsOnCloud {
+            // Asleep: the lane's computer and its delete, no tabs.
+            deleteTab
           } else {
             manageTabBar
             tabContent
@@ -155,6 +174,8 @@ struct LaneManageSheet: View {
         }
       }
     }
+    // A cloud lane's delete and its computer's page open over this sheet.
+    .cloudLaneActionsHost()
   }
 
   @ViewBuilder
@@ -281,7 +302,48 @@ struct LaneManageSheet: View {
     .adeKitSegmentTrack()
   }
 
+  @ViewBuilder
   private var deleteTab: some View {
+    if let cloudDelete {
+      cloudDeleteCard(cloudDelete)
+    } else if restsOnCloud {
+      ADESettingsNotice(message: "ADE can't find this lane's computer on your account right now. Pull down on Lanes to refresh, then try again.", tone: .warn)
+    } else {
+      hostDeleteTab
+    }
+  }
+
+  /// A cloud lane's delete: the account deletes its computer, and the lane
+  /// and its chats with it. Its computer's page is one tap away.
+  private func cloudDeleteCard(_ target: CloudLaneDeleteTarget) -> some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text(restsOnCloud
+        ? "This lane's computer is asleep. You can delete the lane or manage its computer without waking it."
+        : "This lane has its own ADE Cloud computer. Deleting the lane deletes the computer and the lane's chats too.")
+        .font(.system(size: 12.5))
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+      if let cloudComputerId {
+        Button {
+          CloudLaneActions.shared.manageComputer(instanceId: cloudComputerId)
+        } label: {
+          Label("Manage computer", systemImage: "slider.horizontal.3")
+        }
+        .buttonStyle(ADEKitButtonStyle(wide: true))
+        .disabled(busyAction != nil)
+      }
+      Button {
+        CloudLaneActions.shared.delete(target)
+      } label: {
+        Label("Delete lane", systemImage: "trash")
+      }
+      .buttonStyle(ADEKitButtonStyle(tone: .crit, wide: true))
+      .disabled(busyAction != nil)
+    }
+    .adeKitCard(padding: 14)
+  }
+
+  private var hostDeleteTab: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("Removes what you pick. Work only this lane holds is kept for 30 days: Lanes › Archived › Recently deleted.")
         .font(.system(size: 12.5))

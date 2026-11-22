@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { app } from "electron";
-import { autoUpdater, type UpdateInfo } from "electron-updater";
+import type { AppUpdater, UpdateInfo } from "electron-updater";
 import {
   DEFAULT_AUTO_UPDATE_PREFERENCES,
+  isPendingInstallHandoffStep,
+  type PendingInstallHandoffStep,
   type AutoUpdateErrorDetails,
   type AutoUpdateErrorKind,
   type AutoUpdateInstallAbortReason,
@@ -52,9 +54,10 @@ import {
 import { startDownloadStallWatchdog, type DownloadStallWatchdog } from "./downloadStallWatchdog";
 import { updateTrackOfVersion, type UpdateTrack } from "../../../shared/updateTrack";
 import { createTrackFeedPolicy } from "./updateTrackFeed";
-import type { LatestByTrackReader } from "./latestByTrack";
+import type { LatestByTrackReader } from "../../../shared/latestByTrack";
 import type { UpdateTrackSwitchResult } from "../../../shared/types";
 import { InstallOnQuitDeferredError } from "./installOnQuit";
+import { updateBlockCause } from "../../../shared/updateBlock";
 import { RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
@@ -116,7 +119,7 @@ type CancellationTokenLike = {
 };
 
 type AutoUpdaterLike = {
-  logger: typeof autoUpdater.logger;
+  logger: AppUpdater["logger"];
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
   disableDifferentialDownload?: boolean;
@@ -162,6 +165,90 @@ function resolveNativeUpdater(): NativeUpdaterLike | null {
   }
 }
 
+/**
+ * electron-updater's `autoUpdater`, loaded at its first real use.
+ *
+ * Requiring electron-updater, and the platform updater its `autoUpdater`
+ * getter builds, ran on every launch before the first window, while the
+ * first check waits seconds (`startupDelayMs`). Until the first real use, the
+ * fields the service sets (`logger`, `autoDownload`, ...), the listeners it
+ * adds or removes, and the feed it points the updater at (`setFeedURL`, which
+ * the track policy calls at construction on every Beta build) are kept, and
+ * replayed in the same order onto the real updater when it loads. Any other
+ * use (a check, a download, a read of a field not set here, the net recovery
+ * reading its executor) loads it first, so everything after the load talks to
+ * the real updater as before.
+ */
+function lazyElectronAutoUpdater(logger?: Pick<Logger, "warn">): AutoUpdaterLike {
+  let real: AutoUpdaterLike | null = null;
+  const written = new Map<PropertyKey, unknown>();
+  const replay: Array<(updater: AutoUpdaterLike) => void> = [];
+  const load = (): AutoUpdaterLike => {
+    if (real) return real;
+    // Resolved through require so the module stays external and loads here.
+    const loaded = (require("electron-updater") as { autoUpdater: AppUpdater }).autoUpdater as unknown as AutoUpdaterLike;
+    real = loaded;
+    for (const apply of replay.splice(0)) apply(loaded);
+    written.clear();
+    return loaded;
+  };
+  const read = (target: AutoUpdaterLike, key: PropertyKey): unknown => {
+    const value: unknown = Reflect.get(target, key);
+    return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+  };
+  const kept = {
+    on: (event: string, listener: (...args: any[]) => void): unknown => {
+      if (real) return real.on(event, listener);
+      replay.push((updater) => updater.on(event, listener));
+      return proxy;
+    },
+    removeListener: (event: string, listener: (...args: any[]) => void): unknown => {
+      if (real) return real.removeListener(event, listener);
+      replay.push((updater) => updater.removeListener(event, listener));
+      return proxy;
+    },
+    setFeedURL: (options: Parameters<NonNullable<AutoUpdaterLike["setFeedURL"]>>[0]): void => {
+      if (real) {
+        real.setFeedURL?.(options);
+        return;
+      }
+      replay.push((updater) => {
+        // Called at construction inside the service's own try/catch, which
+        // logs a failure and keeps the packaged feed. Replayed here, the same
+        // failure is logged the same way and does not stop the load.
+        try {
+          updater.setFeedURL?.(options);
+        } catch (error) {
+          logger?.warn("autoUpdate.feed_config_failed", {
+            message: error instanceof Error ? error.message : String(error),
+            deferred: true,
+          });
+        }
+      });
+    },
+  };
+  const proxy = new Proxy({} as AutoUpdaterLike, {
+    get(_target, key) {
+      if (real) return read(real, key);
+      if (key === "on" || key === "removeListener" || key === "setFeedURL") return kept[key];
+      if (written.has(key)) return written.get(key);
+      return read(load(), key);
+    },
+    set(_target, key, value) {
+      if (real) return Reflect.set(real, key, value);
+      written.set(key, value);
+      replay.push((updater) => {
+        Reflect.set(updater, key, value);
+      });
+      return true;
+    },
+    has(_target, key) {
+      return key in load();
+    },
+  });
+  return proxy;
+}
+
 type CreateAutoUpdateServiceArgs = {
   logger: Logger;
   currentVersion: string;
@@ -199,6 +286,13 @@ type CreateAutoUpdateServiceArgs = {
   forceQuit?: (args: { blockedPhase: string; blockedMs: number }) => void;
   getRuntimeActivitySummary?: () => Promise<{ idle: boolean }>;
   productAnalyticsService?: Pick<ProductAnalyticsService, "captureInternal">;
+  /**
+   * The Windows installer's report of what held the install folder's files
+   * when an update could not replace them (`build/ade-update-holders.ps1`),
+   * parsed; null when there is none. Read only by the launch that finds a
+   * failed install.
+   */
+  readUpdateBlockReport?: () => unknown;
   now?: () => string;
   nowMs?: () => number;
   releaseNotesBaseUrl?: string;
@@ -451,7 +545,10 @@ function reconcilePersistedUpdateState(args: {
   changed: boolean;
   recentlyInstalled: RecentlyInstalledUpdate | null;
   cacheCleanupReason: string | null;
-  failedInstall: { targetVersion: string; attempt: number } | null;
+  /** `requestedAt` only on the launch that found it: when that install was asked for. */
+  failedInstall: { targetVersion: string; attempt: number; requestedAt?: string } | null;
+  /** Where the failed install's quit stopped, and how long before this launch it began. */
+  failedInstallHandoff: { step: PendingInstallHandoffStep | null; ageMs: number | null } | null;
   /**
    * This launch is the one that found `failedInstall` (its pending install did
    * not land). False when the failure is only carried over from an earlier
@@ -468,8 +565,9 @@ function reconcilePersistedUpdateState(args: {
   let landedQuitInstall: { requestedAt: string } | null = null;
   let landedTrackSwitch = false;
   let cacheCleanupReason: string | null = null;
-  let failedInstall: { targetVersion: string; attempt: number } | null = null;
+  let failedInstall: { targetVersion: string; attempt: number; requestedAt?: string } | null = null;
   let failedInstallFoundNow = false;
+  let failedInstallHandoff: { step: PendingInstallHandoffStep | null; ageMs: number | null } | null = null;
 
   if (
     nextState.recentlyInstalledUpdate
@@ -540,8 +638,16 @@ function reconcilePersistedUpdateState(args: {
         count: attempt,
         lastFailedAt: args.now,
       };
-      failedInstall = { targetVersion: pendingInstall.targetVersion, attempt };
+      failedInstall = { targetVersion: pendingInstall.targetVersion, attempt, requestedAt: pendingInstall.requestedAt };
       failedInstallFoundNow = true;
+      const requestedAtMs = Date.parse(pendingInstall.requestedAt);
+      const nowMsValue = Date.parse(args.now);
+      failedInstallHandoff = {
+        step: isPendingInstallHandoffStep(pendingInstall.handoffStep) ? pendingInstall.handoffStep : null,
+        ageMs: Number.isFinite(requestedAtMs) && Number.isFinite(nowMsValue)
+          ? Math.max(0, nowMsValue - requestedAtMs)
+          : null,
+      };
       // First failure: the archive passed its checksum before it ever went
       // "ready", so the quit lost a race rather than the bytes being bad.
       // Keeping it turns a retry into a click instead of a fresh download of
@@ -576,6 +682,7 @@ function reconcilePersistedUpdateState(args: {
     cacheCleanupReason,
     failedInstall,
     failedInstallFoundNow,
+    failedInstallHandoff,
     landedQuitInstall,
     landedTrackSwitch,
   };
@@ -598,7 +705,7 @@ export function createAutoUpdateService({
   logger,
   currentVersion,
   globalStatePath,
-  updater = autoUpdater as unknown as AutoUpdaterLike,
+  updater = lazyElectronAutoUpdater(logger),
   beforeQuitAndInstall,
   stopOwnedRuntimeCooperatively,
   rollbackQuitAndInstall,
@@ -641,6 +748,7 @@ export function createAutoUpdateService({
   readSelectedTrack,
   writeSelectedTrack,
   latestByTrack,
+  readUpdateBlockReport,
 }: CreateAutoUpdateServiceArgs) {
   updater.logger = null;
   // Manual download is required so ADE can preflight the updater cache volume
@@ -727,16 +835,35 @@ export function createAutoUpdateService({
     // Reported by the launch that found it. The failure stays saved for the
     // notice (and the retry count), and later launches that only carry it
     // over used to report the same failure again every time.
+    // Only a report written during this attempt: a retry that failed before
+    // the installer ran must not blame what blocked the last one.
+    const blockedBy = updateBlockCause(
+      readUpdateBlockReport?.() ?? null,
+      initialState.failedInstall.targetVersion,
+      Date.parse(initialState.failedInstall.requestedAt ?? ""),
+    );
     logger.error("autoUpdate.install_did_not_land", {
       targetVersion: initialState.failedInstall.targetVersion,
+      blockedBy,
       currentVersion,
       attempt: initialState.failedInstall.attempt,
       downloadPreserved: initialState.cacheCleanupReason == null,
+      // Where the quit stopped: no step means the updater was never asked to
+      // quit (ADE closed another way first); `quit_started` without
+      // `native_staged` on macOS means Squirrel never staged the bundle;
+      // `native_staged` means the installer ran after the quit and failed.
+      handoffStep: initialState.failedInstallHandoff?.step ?? "none",
+      handoffAgeMs: initialState.failedInstallHandoff?.ageMs ?? null,
+      platform,
     });
     productAnalyticsService?.captureInternal({
       event: "ade_update_install_did_not_land",
       surface: "desktop",
-      properties: { attempt: initialState.failedInstall.attempt },
+      properties: {
+        attempt: initialState.failedInstall.attempt,
+        handoff_step: initialState.failedInstallHandoff?.step ?? "none",
+        blocked_by: blockedBy,
+      },
     });
   }
 
@@ -789,7 +916,9 @@ export function createAutoUpdateService({
     installMode: manualInstallOnly ? "manual" : "automatic",
     downloadUrl: manualInstallOnly ? `https://github.com/${releaseRepository}/releases/latest` : null,
     recentlyInstalled: initialState.recentlyInstalled,
-    lastInstallFailed: initialState.failedInstall,
+    lastInstallFailed: initialState.failedInstall
+      ? { targetVersion: initialState.failedInstall.targetVersion, attempt: initialState.failedInstall.attempt }
+      : null,
     ...trackPatch(),
     ...(latestByTrack ? { latestByTrack: { ...latestByTrack.current() } } : {}),
   };
@@ -869,6 +998,20 @@ export function createAutoUpdateService({
   let archiveRestoreInProgress = false;
   let staleHandoffRecoveriesThisInstall = 0;
   let staleHandoffRecoveryInProgress = false;
+  /**
+   * What the armed install was asked for, so a stale-handoff retry asks for
+   * the same: the person's "resume chats", a remote request, a quit-install,
+   * and the chats the first attempt listed (the brain it stopped has none
+   * running any more, so a fresh list would be empty).
+   */
+  let armedInstallRequest: {
+    resumeChats: boolean;
+    requestedRemotely: boolean;
+    closeAfterInstall: boolean;
+    resumedChats: UpdateInterruptedChat[];
+  } | null = null;
+  /** Chats a stale-handoff retry carries into its own install record. */
+  let carriedResumedChats: UpdateInterruptedChat[] = [];
   // Fresh updater sessions handed out so far; each needs its own partition name.
   let netSessionGeneration = 0;
   // Neither a fresh session nor Node transport was available for this
@@ -905,6 +1048,21 @@ export function createAutoUpdateService({
     emit();
     if (snapshot.status === "ready" && previousStatus !== "ready") {
       scheduleAutoApply(0);
+    }
+  }
+
+  /** Record how far the install's quit got in the pending record (see `PendingInstallUpdate.handoffStep`). */
+  function notePendingInstallHandoff(step: PendingInstallHandoffStep): void {
+    try {
+      const currentState = readGlobalState(globalStatePath);
+      const pending = currentState.pendingInstallUpdate;
+      if (!pending || pending.handoffStep === step) return;
+      writeGlobalState(globalStatePath, {
+        ...currentState,
+        pendingInstallUpdate: { ...pending, handoffStep: step },
+      });
+    } catch {
+      // A note for the next launch's report; the install never waits on it.
     }
   }
 
@@ -1931,7 +2089,10 @@ export function createAutoUpdateService({
         return;
       }
       patchSnapshot({ autoApplyPending: null });
-      const started = await quitAndInstall();
+      // Resume on: the feed refresh inside the install takes seconds after the
+      // idle check, and a turn that starts meanwhile must still be continued
+      // after the update. With nothing running the list is empty.
+      const started = await quitAndInstall(true);
       if (!started) return;
       productAnalyticsService?.captureInternal({
         event: "ade_update_auto_applied",
@@ -2150,8 +2311,11 @@ export function createAutoUpdateService({
 
   async function recoverStaleInstallHandoff(): Promise<void> {
     const readySnapshot = installReadySnapshot ?? cloneSnapshot(snapshot);
+    const request = armedInstallRequest;
     logger.warn("autoUpdate.stale_handoff_recovering", {
       version: readySnapshot.version,
+      resumeChats: request?.resumeChats ?? false,
+      resumedChats: request?.resumedChats.length ?? 0,
     });
     await unwindArmedInstall("handoff_stale_archive");
     patchSnapshot({
@@ -2180,8 +2344,13 @@ export function createAutoUpdateService({
         return;
       }
       if (installQuitArmed) return;
-      await quitAndInstall();
+      carriedResumedChats = request?.resumedChats ?? [];
+      await quitAndInstall(request?.resumeChats ?? false, {
+        ...(request?.requestedRemotely ? { requestedRemotely: true } : {}),
+        ...(request?.closeAfterInstall ? { closeAfterInstall: true } : {}),
+      });
     } finally {
+      carriedResumedChats = [];
       staleHandoffRecoveryInProgress = false;
     }
   }
@@ -2244,6 +2413,7 @@ export function createAutoUpdateService({
         native_staging_completed: nativeStagingCompleted,
       },
     });
+    notePendingInstallHandoff(`quit_escalated_${reason}`);
     // forceQuit ends the process outright, and log writes are batched onto an
     // async stream — without this the record above dies with the process and
     // the escalation leaves no trace at all.
@@ -2271,6 +2441,7 @@ export function createAutoUpdateService({
     if (!installQuitArmed || nativeStagingCompleted) return;
     nativeStagingCompleted = true;
     logger.info("autoUpdate.native_staging_complete", { elapsedMs: quitBlockedMs() });
+    notePendingInstallHandoff("native_staged");
     armEscalation(quitPostStagingDeadlineMs, "post_staging");
   }
 
@@ -2410,6 +2581,11 @@ export function createAutoUpdateService({
           return await abortInstall("prepare_timeout", installReadySnapshot);
         }
         resumedChats = Array.isArray(prepareResult.value) ? prepareResult.value : [];
+        // A stale-handoff retry keeps the chats the first attempt stopped.
+        if (carriedResumedChats.length > 0) {
+          const listed = new Set(resumedChats.map((chat) => chat.sessionId));
+          resumedChats = [...resumedChats, ...carriedResumedChats.filter((chat) => !listed.has(chat.sessionId))];
+        }
       } catch (error) {
         if (error instanceof InstallOnQuitDeferredError) {
           // Work started on the brain while the quit-install got ready. Not a
@@ -2454,6 +2630,12 @@ export function createAutoUpdateService({
         recentlyInstalledUpdate: undefined,
         restoreUpdateWorkspaceOnLaunch: true,
       });
+      armedInstallRequest = {
+        resumeChats,
+        requestedRemotely: options.requestedRemotely === true,
+        closeAfterInstall: options.closeAfterInstall === true,
+        resumedChats,
+      };
       logger.info("autoUpdate.quit_and_install", { version: snapshot.version ?? installVersion });
       patchSnapshot({
         status: "installing",
@@ -2499,6 +2681,7 @@ export function createAutoUpdateService({
         // synchronously, and ADE's before-quit handler must recognize this
         // consented path instead of opening the normal quit confirmation.
         armQuitDeadline();
+        notePendingInstallHandoff("quit_started");
         // NSIS BaseUpdater latches quitAndInstallCalled on the first call and
         // silently ignores later ones. A parked retry or stale-handoff recovery
         // must clear that latch or Windows never launches the installer again.

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
+import { useDeviceMachinePin } from "../apple/useDeviceMachinePin";
 
 /**
  * Can the lane's runtime host run the Android emulator at all?
@@ -11,8 +11,8 @@ import { useAppStore } from "../../state/appStore";
  * the gate, because a missing SDK keeps the tool (the panel shows the setup
  * card) and the panel re-reads it on use.
  *
- * Shaped like `useMacDesktopSupport`, keyed the same way: per pin, or per bound
- * project when there is no pin.
+ * Shaped like `useMacDesktopSupport`, keyed per machine: the host's pin, else
+ * the tab's copy (`useDeviceMachinePin`).
  */
 
 export type AndroidEmulatorSupport = {
@@ -41,11 +41,12 @@ export function useAndroidEmulatorSupport(args: {
   /** The surface that needs the answer is on screen. Nothing is read otherwise. */
   enabled: boolean;
 }): AndroidEmulatorSupport | null {
-  const boundKey = useAppStore((state) => state.projectBinding?.key ?? "");
-  const key = args.runtimePin?.key ?? `bound:${boundKey}`;
-  const [support, setSupport] = useState<AndroidEmulatorSupport | null>(() => cache.get(key) ?? null);
-  const pinRef = useRef(args.runtimePin);
-  pinRef.current = args.runtimePin;
+  // The lane's machine, the tab's copy included. No machine: no read.
+  const pin = useDeviceMachinePin(args.runtimePin);
+  const key = pin?.key ?? "";
+  const [support, setSupport] = useState<AndroidEmulatorSupport | null>(() => (key ? cache.get(key) ?? null : null));
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
 
   useEffect(() => {
     const cached = cache.get(key);
@@ -54,7 +55,7 @@ export function useAndroidEmulatorSupport(args: {
       return;
     }
     setSupport(null);
-    if (!args.enabled) return;
+    if (!args.enabled || !key) return;
     // Optional, not asserted: a shell whose `window.ade` predates the namespace
     // loses the answer (the tool stays visible), not the whole Work pane.
     const api = window.ade?.androidEmulator;
@@ -62,8 +63,10 @@ export function useAndroidEmulatorSupport(args: {
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const read = (attempt: number): void => {
+      const machinePin = pinRef.current;
+      if (!machinePin) return;
       void api
-        .getStatus({}, pinRef.current)
+        .getStatus({}, machinePin)
         .then((status) => {
           const answer: AndroidEmulatorSupport = {
             supported: status.platformSupported,

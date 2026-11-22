@@ -7,6 +7,7 @@ import type { AndroidRunningEmulator } from "../../../shared/types/androidEmulat
 import type { Logger } from "../logging/logger";
 import { killWindowsProcessTreeAsync, terminateProcessTree } from "../shared/processExecution";
 import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
+import { androidLowDiskSentence, parseEmulatorUserdataSpace } from "../../../shared/androidDisk";
 import { readAdbDevices, restartAdbServer, runAdb, runAdbText } from "./adb";
 import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
@@ -544,6 +545,9 @@ function lastAndroidEmulatorLogError(logPath: string): string | null {
 function exitedFailure(launch: AndroidEmulatorLaunch, info: AndroidEmulatorExit): AndroidEmulatorFailure {
   const how = info.error ? info.error : info.signal ? `signal ${info.signal}` : `code ${info.code}`;
   const reason = lastAndroidEmulatorLogError(launch.logPath);
+  // The emulator's own disk check: the same plain refusal as the disk guard's.
+  const space = parseEmulatorUserdataSpace(reason);
+  if (space) return new AndroidEmulatorFailure("ANDROID_LOW_DISK", androidLowDiskSentence(space.neededMb, space.freeMb), launch.logPath, false, space);
   return new AndroidEmulatorFailure(
     "ANDROID_EMULATOR_EXITED",
     `The emulator for ${androidAvdDisplayName(launch.avdName)} exited (${how}) before it finished booting.${reason ? ` ${reason}` : ""}`,

@@ -5,7 +5,8 @@ private let settingsGeneralLog = Logger(subsystem: "com.ade.ios", category: "Set
 
 // Settings › General, where Settings opens. The desktop's General page
 // (`GeneralPage.tsx`) on the phone, in the same order: what needs attention,
-// then "You" and "This machine" (side by side where the window is wide
+// then "You" and "Machines" (the desktop's "This machine": on the
+// phone that name reads as the phone; side by side where the window is wide
 // enough), then ADE itself with every machine's version. Each block is one
 // panel of rows, as on every other Settings page: a lead row that says who or
 // what, then one row per fact, each opening the page that owns it.
@@ -27,6 +28,7 @@ struct SettingsGeneralPage: View {
   let connection: (_ machineShownAbove: Bool) -> AnyView
 
   @ObservedObject private var account = AccountService.shared
+  @ObservedObject private var machineUpdates = MachineUpdateStore.shared
   @EnvironmentObject private var appUpdateAdvisor: AppUpdateAdvisor
   @State private var aiStatus: SettingsAiStatus?
   @State private var aiLoading = false
@@ -56,6 +58,8 @@ struct SettingsGeneralPage: View {
         advancedPage: advancedPage
       )
     }
+    .task { await machineUpdates.refreshLatestBuilds() }
+    .machineUpdateConfirmation(origin: SettingsAdeHeroCard.updateOrigin)
     .task(id: "\(syncService.connectionState.rawValue):\(primary?.id ?? "-")") {
       await load()
     }
@@ -146,15 +150,24 @@ struct SettingsGeneralPage: View {
     .accessibilityLabel(weekTotals.map { "\(adeUsageCompact($0.reduce(0, +))) tokens" } ?? "No usage yet")
   }
 
-  // MARK: This machine
+  // MARK: Machines
+
+  /// The machines the phone works on. Two or more read as one set: the
+  /// section names them all and Machines owns each one's actions, so the
+  /// machine the phone happens to be focused on is never singled out.
+  private var connectedMachines: [SettingsMachine] { machines.filter(\.isConnectedSet) }
 
   private var machineSection: some View {
-    ADESettingsSection("This machine") {
+    let several = connectedMachines.count > 1
+    return ADESettingsSection("Machines") {
       ADESettingsRows {
         ADESettingsPageLink(title: SettingsRoute.machines.title, destination: machinesPage) { _, pushes in
-          SettingsGeneralLeadRow(title: primary?.name ?? "No machine yet", subtitle: machineSubtitle) {
+          SettingsGeneralLeadRow(
+            title: several ? "\(connectedMachines.count) computers" : (primary?.name ?? "No computer yet"),
+            subtitle: several ? connectedMachines.map(\.title).joined(separator: ", ") : machineSubtitle
+          ) {
             ADESettingsIconTile(
-              symbol: primary?.symbol ?? "desktopcomputer",
+              symbol: several ? "desktopcomputer" : (primary?.symbol ?? "desktopcomputer"),
               tint: primary == nil ? .slate : .accent,
               size: 44
             )
@@ -162,9 +175,11 @@ struct SettingsGeneralPage: View {
             if pushes { ADESettingsChevron() }
           }
         }
-        connection(primary != nil)
-          .padding(.horizontal, ADEKit.inset)
-          .padding(.vertical, 12)
+        if !several {
+          connection(primary != nil)
+            .padding(.horizontal, ADEKit.inset)
+            .padding(.vertical, 12)
+        }
       }
     }
   }
@@ -207,6 +222,10 @@ struct SettingsGeneralPage: View {
     if let counts = providerCounts, counts.detected > counts.signedIn {
       let count = counts.detected - counts.signedIn
       items.append(.init(text: "\(count) \(count == 1 ? "provider needs" : "providers need") sign-in", tone: .warn))
+    }
+    for machine in machines where !machineUpdates.isBusy(machine) {
+      guard let target = machineUpdates.target(for: machine) else { continue }
+      items.append(.init(id: "machine-update:\(machine.id)", text: "\(machine.title) can update to \(target.targetVersion)", tone: .warn))
     }
     for machine in machines where !machine.isPrimary && machine.isConnectedSet && machine.subtitleIsProblem {
       // Two machines can share a name, so the machine's id keeps each row its own.
@@ -449,6 +468,7 @@ struct SettingsAdeHeroCard: View {
   let compatibility: SyncHostCompatibilityMode
   let advancedPage: () -> AnyView
   @EnvironmentObject private var appUpdateAdvisor: AppUpdateAdvisor
+  @ObservedObject private var machineUpdates = MachineUpdateStore.shared
   @Environment(\.openURL) private var openURL
 
   private var state: String {
@@ -462,10 +482,14 @@ struct SettingsAdeHeroCard: View {
       hero
       if !machines.isEmpty {
         VStack(alignment: .leading, spacing: 0) {
-          ADEEyebrow("Every machine")
-            .padding(.horizontal, ADEKit.inset)
-            .padding(.top, 14)
-            .padding(.bottom, 6)
+          HStack(spacing: 8) {
+            ADEEyebrow("Every machine")
+            Spacer(minLength: 8)
+            SettingsMachineUpdateAllButton(machines: machines, origin: Self.updateOrigin)
+          }
+          .padding(.horizontal, ADEKit.inset)
+          .padding(.top, 14)
+          .padding(.bottom, 6)
           ForEach(Array(machines.enumerated()), id: \.element.id) { index, machine in
             if index > 0 {
               Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, ADEKit.inset)
@@ -567,18 +591,24 @@ struct SettingsAdeHeroCard: View {
         .font(.adeMono(12))
         .foregroundStyle(ADEColor.textSecondary)
         .lineLimit(1)
-      if let status = status(machine) {
+      if machineUpdates.isBusy(machine) || machineUpdates.target(for: machine) != nil {
+        SettingsMachineUpdateControl(machine: machine, origin: Self.updateOrigin)
+      } else if let status = status(machine) {
         ADESettingsStatus(text: status.text, tone: status.tone)
       }
     }
     .padding(.horizontal, ADEKit.inset)
     .frame(minHeight: 46)
-    .accessibilityElement(children: .combine)
+    .accessibilityElement(children: .contain)
   }
+
+  static let updateOrigin = "settings.general"
 
   private func status(_ machine: SettingsMachine) -> (text: String, tone: ADEKitTone)? {
     if machine.isPrimary, compatibility == .limited { return ("Update", .warn) }
     if case .connected(.needsUpdate, _) = machine.link { return ("Update", .warn) }
+    // Behind, but too old to take an update from here: say so instead of "Live".
+    if machineUpdates.needsUpdateOnMachine(machine) { return ("Update on it", .warn) }
     if machine.isLive { return ("Live", .ok) }
     if machine.isAsleep { return ("Asleep", .neutral) }
     return machine.online ? nil : ("Offline", .neutral)

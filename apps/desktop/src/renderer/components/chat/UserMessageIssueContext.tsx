@@ -8,6 +8,7 @@ import { openIssueRef } from "../../lib/issueNavigation";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { withChatPin } from "./chatMachinePin";
 
 export function UserMessageIssueContext({
   attachments,
@@ -54,10 +55,12 @@ export function UserMessageIssueContext({
     if (attachment.type === "linear_issue" && !isAdeAvailable(window.ade?.lanes?.detachLinearIssueFromSession)) return;
     setHiddenContextKeys((current) => [...current, key]);
     if (attachment.type === "linear_issue") {
-      void window.ade.lanes.detachLinearIssueFromSession({
+      void withChatPin(machinePin, (chatPin) => window.ade.lanes.detachLinearIssueFromSession({
         chatSessionId: sessionId,
         issueId: attachment.issue.id,
-      }, machinePin);
+      }, chatPin));
+    } else if (!machinePin) {
+      return;
     } else if (attachment.type === "github_issue") {
       void window.ade?.lanes?.detachGitHubIssueFromSession?.({
         chatSessionId: sessionId,

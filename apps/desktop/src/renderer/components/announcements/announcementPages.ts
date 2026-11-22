@@ -6,12 +6,13 @@ import { lazy, type ComponentType, type LazyExoticComponent } from "react";
  * pages in the catalogue when a version is cut ship with it.
  *
  * Who sees what (`announcementSeen.ts`):
- * - a page shows by itself for 45 days after its `added` date, then only in
+ * - a page shows by itself for 21 days after its `added` date, then only in
  *   Help › What's new;
  * - a computer never shows the same page twice, wherever it showed first;
- * - at most 3 pages at a time, newest first: after an update (with the
- *   release notes as an "And more" page) or, at most once a day, inside a
- *   project. Pages left over show on a later day.
+ * - at most 2 pages at a time, newest first: after an update (with the
+ *   release notes as an "And more" page) or, at most once a week, inside a
+ *   project, within the shared unasked budget (`unaskedBudget.ts`). Pages
+ *   left over show on a later week.
  *
  * Pages load lazily, so an entry costs nothing until it is shown.
  */
@@ -32,6 +33,24 @@ export type AnnouncementPageDef = {
 };
 
 export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
+  {
+    id: "ade-cloud",
+    added: "2026-11-18",
+    title: "ADE Cloud",
+    Page: lazy(() => import("./pages/AdeCloudAnnouncement")),
+  },
+  {
+    id: "passwords",
+    added: "2026-11-18",
+    title: "Passwords & Secrets",
+    Page: lazy(() => import("./pages/PasswordsAnnouncement")),
+  },
+  {
+    id: "cto-v2",
+    added: "2026-11-18",
+    title: "A CTO that remembers",
+    Page: lazy(() => import("./pages/CtoAnnouncement")),
+  },
   {
     id: "subagents-any-model",
     added: "2026-11-04",
@@ -61,12 +80,6 @@ export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
     added: "2026-11-04",
     title: "ADE Beta",
     Page: lazy(() => import("./pages/BetaAnnouncement")),
-  },
-  {
-    id: "performance-vs-t3-code",
-    added: "2026-10-31",
-    title: "Half the CPU of T3 Code",
-    Page: lazy(() => import("./pages/PerformanceAnnouncement")),
   },
   {
     id: "manage-provider-accounts",

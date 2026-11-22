@@ -27,9 +27,18 @@ const routerLocation = {
   hash: "",
 };
 
+const FAKE_TAB_BINDING = {
+  kind: "local" as const,
+  key: "local:/fake/project",
+  rootPath: "/fake/project",
+  displayName: "project",
+};
+
 function resetFakeAppStoreState() {
   fakeAppStoreState = {
     project: { rootPath: "/fake/project" },
+    // Work sits under an open project; its calls go to that copy.
+    projectBinding: FAKE_TAB_BINDING,
     lanes: [{ id: "lane-1", name: "Lane 1" }],
     focusSession: focusSessionSpy,
     focusedSessionId: null,
@@ -179,6 +188,12 @@ import {
 } from "../lanes/laneMachines";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
+  LAUNCH_URL_OPEN_PARAM,
+  markNewDraftRequests,
+  noteLaunchUrlOpen,
+  noteNewDraftRequested,
+} from "../../lib/draftLaunchJobs";
+import {
   resetCrossMachineLaneSyncForTest,
   seedCrossMachineOptimisticSession,
 } from "../../state/crossMachineLanes";
@@ -297,7 +312,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     });
 
     act(() => {
-      applyChatLaunchSnapshot(null, launch());
+      applyChatLaunchSnapshot(FAKE_TAB_BINDING, launch());
     });
     const pending = result.current.sessionsById.get("launch-1");
     expect(pending).toMatchObject({ laneId: "lane-new", laneName: "Fix Login Redirect", title: "Fix the login redirect" });
@@ -319,7 +334,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
       await new Promise((r) => setTimeout(r, 10));
     });
     act(() => {
-      applyChatLaunchSnapshot(null, launch());
+      applyChatLaunchSnapshot(FAKE_TAB_BINDING, launch());
     });
     expect(result.current.sessionsById.has("launch-1")).toBe(true);
 
@@ -327,7 +342,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     // closes the tab — no separate scan at tab-prune time.
     setWorkViewStateSpy.mockClear();
     act(() => {
-      applyChatLaunchSnapshot(null, launch({ phase: "cancelled", sequence: 4 }));
+      applyChatLaunchSnapshot(FAKE_TAB_BINDING, launch({ phase: "cancelled", sequence: 4 }));
     });
     expect(result.current.sessionsById.has("launch-1")).toBe(false);
     // The close notice is posted synchronously with the store write, so its
@@ -377,7 +392,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
 
     // The active binding's own failed launch keeps its row until the host lists the chat.
     act(() => {
-      applyChatLaunchSnapshot(null, launch({ launchId: "launch-2", sessionId: "launch-2", phase: "failed", sequence: 2 }));
+      applyChatLaunchSnapshot(FAKE_TAB_BINDING, launch({ launchId: "launch-2", sessionId: "launch-2", phase: "failed", sequence: 2 }));
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
 
@@ -386,7 +401,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     // or archived then cannot come back as a ghost (see chatLaunchAwaitsHostRow).
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     act(() => {
-      applyChatLaunchSnapshot(null, launch({
+      applyChatLaunchSnapshot(FAKE_TAB_BINDING, launch({
         launchId: "launch-2",
         sessionId: "launch-2",
         phase: "completed",
@@ -413,7 +428,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     await act(async () => {
       await result.current.refresh({ showLoading: false });
     });
-    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, { force: true });
+    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
     await act(async () => {
       await result.current.refresh({ showLoading: false });
@@ -514,7 +529,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       expect.objectContaining({
         initialInput: "queued prompt",
         initialInputDelayMs: 750,
-      }),
+      }), FAKE_TAB_BINDING,
     );
     expect((window as any).ade.pty.create.mock.calls.at(-1)?.[0]).not.toHaveProperty("awaitInitialInput");
 
@@ -535,6 +550,18 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(openTabIdx).toBeGreaterThanOrEqual(0);
     expect(focusIdx).toBeLessThan(refreshDoneIdx);
     expect(openTabIdx).toBeLessThan(refreshDoneIdx);
+
+    // A launch from the new-chat box whose project asked for a new draft after
+    // its Send starts, but leaves the screen on that draft.
+    callOrder.length = 0;
+    listSessionsCachedMock.mockResolvedValue([]);
+    const markAtSend = markNewDraftRequests("/fake/project");
+    noteNewDraftRequested("/fake/project");
+    await act(async () => {
+      await result.current.launchPtySession({ laneId: "lane-1", profile: "claude", newDraftMarkAtSend: markAtSend });
+    });
+    expect((window as any).ade.pty.create).toHaveBeenCalledTimes(2);
+    expect(callOrder).not.toContain("focusSession");
   });
 
   it("lightly refreshes lanes when Work sessions load before lane state recovers", async () => {
@@ -598,7 +625,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       laneId: "lane-1",
       toolType: "codex",
       startupCommand: expect.stringContaining("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request"),
-    }));
+    }), FAKE_TAB_BINDING);
   });
 
   it("routes provider launch intent for the runtime host to materialize", async () => {
@@ -628,7 +655,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         provider: "droid",
         initialPrompt: "Inspect the remote lane.",
       }),
-    }));
+    }), FAKE_TAB_BINDING);
     const createArgs = (window as any).ade.pty.create.mock.calls.at(-1)?.[0];
     expect(createArgs).not.toHaveProperty("command");
     expect(createArgs).not.toHaveProperty("startupCommand");
@@ -706,7 +733,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       });
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
     expect(result.current.sessions).toEqual([
       expect.objectContaining({
         id: "new-pty-session",
@@ -743,12 +770,12 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     await waitFor(() => {
-      expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+      expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
     });
     expect((window as any).ade.pty.dispose).toHaveBeenCalledWith({
       ptyId: "pty-stop",
       sessionId: "session-stop",
-    });
+    }, FAKE_TAB_BINDING);
     expect(result.current.sessions[0]).toMatchObject({
       id: "session-stop",
       ptyId: null,
@@ -791,7 +818,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         runtimeState: "running",
       });
     });
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
   });
 
   it("keeps a runtime row stopped when dispose reports the pty is already gone", async () => {
@@ -828,7 +855,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         exitCode: null,
       });
     });
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
   });
 
   it("restores a runtime row when dispose reports a session mismatch", async () => {
@@ -864,7 +891,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         runtimeState: "running",
       });
     });
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
   });
 
   it("launchPtySession can start a terminal in the background without changing the active tab", async () => {
@@ -1525,7 +1552,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
   });
 
-  it("collapses a remembered pin to null after the tab rebinds to that machine", async () => {
+  it("resolves a remembered pin to the tab's copy after the tab rebinds to that machine", async () => {
     const activeBinding = {
       kind: "remote",
       key: "remote:target-b:project-b",
@@ -1551,7 +1578,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       result.current.machineRouter.rememberSessionPin(session, activeBinding);
     });
 
-    expect(result.current.resolveSessionRuntimePin(session)).toBeNull();
+    expect(result.current.resolveSessionRuntimePin(session)?.key).toBe(activeBinding.key);
     act(() => {
       result.current.machineRouter.forgetSessionPin(session);
     });
@@ -1591,7 +1618,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     const { result, rerender } = renderHook(() => useWorkSessions());
     await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
-    expect(result.current.resolveSessionRuntimePin(session)).toBeNull();
+    expect(result.current.resolveSessionRuntimePin(session)?.key).toBe(studioBinding.key);
     act(() => {
       result.current.machineRouter.rememberSessionPin(session, null);
     });
@@ -1648,7 +1675,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     const { result, rerender } = renderHook(() => useWorkSessions());
     await waitFor(() => expect(result.current.sessionsById.get(session.id)).toBe(session));
-    expect(result.current.resolveSessionRuntimePin(session)).toBeNull();
+    expect(result.current.resolveSessionRuntimePin(session)?.key).toBe(studioBinding.key);
 
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2095,39 +2122,10 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     await waitFor(() => expect(result.current.sessions).toContainEqual(localSession));
 
     expect(result.current.resolveSessionRuntimePin(foreignSession)).toBe(foreignBinding);
-    expect(result.current.resolveSessionRuntimePin(localSession)).toBeNull();
+    expect(result.current.resolveSessionRuntimePin(localSession)?.key).toBe("local:/fake/project");
   });
 
-  it("keeps an active-binding session stop on the unpinned fast path", async () => {
-    const localSession = makeSession("active-local", "lane-1", {
-      ptyId: "pty-active-local",
-      toolType: "codex",
-    });
-    fakeAppStoreState = {
-      ...fakeAppStoreState,
-      projectBinding: {
-        kind: "local",
-        key: "local:/fake/project",
-        rootPath: "/fake/project",
-        displayName: "Fake",
-      },
-    };
-    listSessionsCachedMock.mockResolvedValue([localSession]);
-
-    const { result } = renderHook(() => useWorkSessions());
-    await waitFor(() => expect(result.current.sessions).toContainEqual(localSession));
-
-    await act(async () => {
-      await result.current.stopRuntime("pty-active-local", "active-local");
-    });
-
-    expect((window as any).ade.pty.dispose).toHaveBeenLastCalledWith({
-      ptyId: "pty-active-local",
-      sessionId: "active-local",
-    });
-  });
-
-  it("stopAllRuntimes stops local and foreign PTYs, pinning only the foreign row", async () => {
+  it("stopAllRuntimes stops each PTY on its own copy", async () => {
     const foreignBinding = {
       kind: "remote",
       key: "remote:target-b:project-b",
@@ -2175,7 +2173,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect((window as any).ade.pty.dispose).toHaveBeenCalledWith({
       ptyId: "pty-stop-all-local",
       sessionId: "stop-all-local",
-    });
+    }, expect.objectContaining({ key: "local:/fake/project" }));
     expect((window as any).ade.pty.dispose).toHaveBeenCalledWith({
       ptyId: "pty-stop-all-foreign",
       sessionId: "stop-all-foreign",
@@ -2568,7 +2566,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     await waitFor(() => {
       expect(listSessionsCachedMock).toHaveBeenCalled();
     });
-    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
   });
 
   it("recomputes snooze filing when Work re-enters after the deadline elapsed off-route", async () => {
@@ -2667,6 +2665,60 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(workState.openItemIds).toContain("session-1");
     expect(workState.activeItemId).toBe("session-1");
     expect(workState.selectedItemId).toBe("session-1");
+  });
+
+  it.each([
+    { name: "a launch's URL after a new draft keeps the draft", marked: true, newDraft: true, opens: false },
+    { name: "a launch's URL with no new draft opens its chat", marked: true, newDraft: false, opens: true },
+    { name: "a plain URL to that chat still opens it", marked: false, newDraft: true, opens: true },
+  ])("opens a launch's URL session only while no new draft was asked for since: $name", async ({ marked, newDraft, opens }) => {
+    // A launch writes the URL at its open; the list (and so the URL's apply)
+    // comes later, and a new draft asked for in between keeps the screen.
+    const session = makeSession(`session-url-${marked}-${newDraft}`, "lane-1");
+    listSessionsCachedMock.mockResolvedValue([session]);
+    noteLaunchUrlOpen(session.id, "/fake/project");
+    if (newDraft) noteNewDraftRequested("/fake/project");
+    useSearchParamsMock.mockReturnValue([
+      new URLSearchParams(`laneId=lane-1&sessionId=${session.id}${marked ? `&${LAUNCH_URL_OPEN_PARAM}=1` : ""}`),
+      vi.fn(),
+    ]);
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [{ id: "lane-1", name: "Lane 1" }],
+      workViewByProject: { "/fake/project": workState },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+
+    renderHook(() => useWorkSessions());
+
+    // The URL is stripped once the session is listed, opened or not.
+    await waitFor(() => {
+      expect(navigateSpy).toHaveBeenCalledWith("/work", { replace: true });
+    });
+    if (opens) {
+      await waitFor(() => {
+        expect(focusSessionSpy).toHaveBeenCalledWith(session.id);
+      });
+      expect(workState.selectedItemId).toBe(session.id);
+    } else {
+      expect(focusSessionSpy).not.toHaveBeenCalledWith(session.id);
+      expect(workState.selectedItemId).toBeNull();
+      expect(workState.openItemIds).not.toContain(session.id);
+    }
   });
 
   it("opens a foreign URL session from the union without selecting its lane locally", async () => {
@@ -3507,7 +3559,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       await new Promise((r) => setTimeout(r, 120));
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
     expect(invalidateSessionListCache).toHaveBeenCalled();
   });
 
@@ -3545,7 +3597,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       await new Promise((r) => setTimeout(r, 60));
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
   });
 
   it("refetches visible Work when the window regains focus", async () => {
@@ -3564,7 +3616,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(invalidateSessionListCache).toHaveBeenCalled();
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
   });
 
   it("does not refetch remote Work on focus without hidden changes", async () => {
@@ -3597,7 +3649,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
   });
 
   it("does not subscribe or refresh while the kept-alive Work surface is inactive", async () => {
-    const windowAddEventListenerSpy = vi.spyOn(window, "addEventListener");
     const documentAddEventListenerSpy = vi.spyOn(document, "addEventListener");
 
     renderHook(() => useWorkSessions({ active: false }));
@@ -3610,10 +3661,14 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect((window as any).ade.pty.onExit).not.toHaveBeenCalled();
     expect((window as any).ade.agentChat.onEvent).not.toHaveBeenCalled();
     expect((window as any).ade.sessions.onChanged).not.toHaveBeenCalled();
-    expect(windowAddEventListenerSpy).not.toHaveBeenCalledWith("focus", expect.any(Function));
     expect(documentAddEventListenerSpy).not.toHaveBeenCalledWith("visibilitychange", expect.any(Function));
+    // Focus wakes app-wide watchers, but never an inactive Work list.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await new Promise((r) => setTimeout(r, 140));
+    });
+    expect(listSessionsCachedMock).not.toHaveBeenCalled();
 
-    windowAddEventListenerSpy.mockRestore();
     documentAddEventListenerSpy.mockRestore();
   });
 
@@ -3642,7 +3697,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(invalidateSessionListCache).toHaveBeenCalled();
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
   });
 
   it("shows an announced headless chat before session-list propagation completes", async () => {
@@ -3707,7 +3762,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       });
 
       expect(invalidateSessionListCache).toHaveBeenCalled();
-      expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+      expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
       expect(unhandled).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener("unhandledrejection", unhandled);
@@ -4066,8 +4121,8 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
     await waitFor(() => {
       expect(setWorkViewStateSpy.mock.calls.some(([, next]) => typeof next === "function")).toBe(true);
     });
-    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-running", pinned: true });
-    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-snoozed", pinned: true });
+    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-running", pinned: true }, FAKE_TAB_BINDING);
+    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-snoozed", pinned: true }, FAKE_TAB_BINDING);
     // A row not loaded yet (another machine's) is not written now.
     expect(updateMeta.mock.calls.some(([args]) => args.sessionId === "session-not-loaded")).toBe(false);
     const updater = setWorkViewStateSpy.mock.calls.filter(([, next]) => typeof next === "function").at(-1)?.[1] as

@@ -9,6 +9,7 @@ import { showToast } from "../app/toast/toastStore";
 import { relativeWhen } from "../../lib/format";
 import { OUTCOME_STYLES, dotCls, panelCls, rowHoverCls, tagCls, toneTextCls } from "./webhookSurface";
 import { WebhookDeliveries } from "./builder/WebhookDeliveries";
+import { useTabCopyPin } from "../../state/repositoryScope";
 
 /**
  * Read-only view of every webhook automation: its URL, whether its signing
@@ -24,16 +25,24 @@ export function WebhookOverview({ intro }: { intro?: string }) {
   // The open hook, tracked outside render state so a slow response can tell
   // whether the panel it was fetched for is still the one on screen.
   const openHookIdRef = useRef<string | null>(null);
+  // The webhooks of the machine this tab reads.
+  const tabPin = useTabCopyPin();
 
   const load = useCallback(async () => {
+    if (!tabPin) {
+      setEntries([]);
+      setError("No computer with this project is online.");
+      return;
+    }
     try {
-      setEntries((await window.ade.automations.webhooks.list()) ?? []);
+      setEntries((await window.ade.automations.webhooks.list(tabPin)) ?? []);
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       setEntries([]);
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabPin?.key]);
 
   useEffect(() => {
     void load();
@@ -48,8 +57,9 @@ export function WebhookOverview({ intro }: { intro?: string }) {
     openHookIdRef.current = hookId;
     setOpenHookId(hookId);
     setDeliveries([]);
+    if (!tabPin) return;
     try {
-      const result = await window.ade.automations.webhooks.listDeliveries({ hookId, limit: 20 });
+      const result = await window.ade.automations.webhooks.listDeliveries({ hookId, limit: 20 }, tabPin);
       // A response for a hook that is no longer open must not land in the
       // panel now showing a different hook.
       if (openHookIdRef.current === hookId) setDeliveries(result);
@@ -145,7 +155,7 @@ export function WebhookOverview({ intro }: { intro?: string }) {
                         </span>
                       )}
                     </div>
-                    <WebhookDeliveries hookId={entry.hookId} deliveries={deliveries} readOnly onChanged={() => undefined} />
+                    <WebhookDeliveries hookId={entry.hookId} deliveries={deliveries} runtimePin={tabPin} readOnly onChanged={() => undefined} />
                   </div>
                 ) : null}
               </li>

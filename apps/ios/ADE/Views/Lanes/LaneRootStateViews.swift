@@ -32,7 +32,9 @@ extension LanesTabView {
   }
 
   var showsLaneLoadingSkeletons: Bool {
-    laneSnapshots.isEmpty && (
+    // The account view loads no computer's lanes: its rows are other
+    // computers' (ADE Cloud), listed as they arrive.
+    !syncService.isAccountProjectScope && laneSnapshots.isEmpty && (
       syncService.connectionState == .connecting
         || laneStatus.phase == .hydrating
         || laneStatus.phase == .syncingInitialData

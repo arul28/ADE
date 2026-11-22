@@ -1,6 +1,6 @@
 ---
 name: ade-webhooks
-description: Use this skill when an agent should run whenever something happens in another service (a GitHub issue or PR, a Stripe payment, a Sentry error, a failed deploy, any app that can call a URL), or someone asks for a webhook or callback URL. Covers `ade automations webhook create`, the signing secret, conditions, testing and delivery logs.
+description: "Run an agent whenever another service calls a URL (a GitHub issue or PR, a Stripe payment, a Sentry error, a failed deploy, any app), or when asked for a webhook or callback URL: `ade automations webhook create`, signing secret, conditions, tests, delivery logs."
 ---
 
 # ADE webhooks
@@ -24,7 +24,7 @@ hand-written trigger JSON, a polling loop, or a tunnel you start yourself. Use
 2. **Create it** (one command, URL + rule):
 
    ```bash
-   ade automations webhook create --preset github \
+   ade automations webhook create --service github \
      --name "Triage new GitHub issues" \
      --filter headers.x-github-event=issues --filter body.action=opened \
      --prompt "Triage GitHub issue #{{trigger.body.issue.number}} in {{trigger.body.repository.full_name}}: {{trigger.body.issue.title}}
@@ -69,9 +69,9 @@ hand-written trigger JSON, a polling loop, or a tunnel you start yourself. Use
    into the real service, read `deliveries` again to see its first request.
 6. `ade chat note "webhook: <service> → <what it does>"` and report.
 
-## Presets (`--preset`)
+## Services (`--service`)
 
-| preset | signature (verified by ADE) | secret comes from | default conditions | event shown as |
+| service | signature (verified by ADE) | secret comes from | default conditions | event shown as |
 |---|---|---|---|---|
 | `github` | `x-hub-signature-256`, `sha256=` hex | you (`--generate`) | `x-github-event` is `issues`, `action` is `opened` | `issues.opened` |
 | `stripe` | `stripe-signature` (`t=…,v1=…`, 5-minute tolerance) | Stripe (`whsec_…`) | `type` is `invoice.payment_failed` | `invoice.payment_failed` |
@@ -89,13 +89,13 @@ event the native triggers do not cover, or exact control over the payload.
 | flag | meaning |
 |---|---|
 | `--filter <cond>` (repeat) | all must pass. `body.<path>=v`, `headers.<name>=v`, `query.<name>=v`; `!=` not equal, `~` contains, `^=` regex, bare path = present. Arrays: `body.commits.0.id` |
-| `--any-request` | no conditions (overrides the preset's) |
-| `--prompt "…"` | `{{trigger.body.<path>}}`, `{{trigger.headers.<name>}}`, `{{trigger.query.<name>}}`, `{{trigger.body}}` (whole body), `{{trigger.summary}}` (e.g. `issues.opened`). Omitted: the preset's prompt |
+| `--any-request` | no conditions (overrides the service's) |
+| `--prompt "…"` | `{{trigger.body.<path>}}`, `{{trigger.headers.<name>}}`, `{{trigger.query.<name>}}`, `{{trigger.body}}` (whole body), `{{trigger.summary}}` (e.g. `issues.opened`). Omitted: the service's prompt |
 | `--in-this-chat` | every delivery arrives as a new turn in your current chat, which keeps the history. You may bind only your own chat |
 | `--chat <id>` | the same for another chat (users and the CTO only) |
-| `--model <id>` `--effort <level>` | the agent for new-chat runs |
+| `--model <id>` `--effort <level>` | the model of the chat each delivery starts. Required unless `--in-this-chat` or `--chat` |
 | `--no-signature` | accept unsigned requests (say plainly that anyone with the URL can then start runs) |
-| `--secret-name NAME` | project secret to verify with (default per preset, e.g. `GITHUB_WEBHOOK_SECRET`) |
+| `--secret-name NAME` | project secret to verify with (default per service, e.g. `GITHUB_WEBHOOK_SECRET`) |
 | `--confirm <key>` | answer a confirmation the planner asked for (the error names the key) |
 | `--disabled` | create it switched off |
 

@@ -109,12 +109,41 @@ export function buildPackagedSyncHostConflictDialogContent(args: {
   };
 }
 
+/** Whether this launch runs the gate at all: a packaged app, not a test, not switched off. */
+function launchGateApplies(isPackaged: boolean, env: NodeJS.ProcessEnv): boolean {
+  return isPackaged && env.NODE_ENV !== "test" && env.ADE_DISABLE_SYNC_HOST_LAUNCH_GATE !== "1";
+}
+
+/**
+ * Starts the conflict check before `app.whenReady()`. It needs no Electron API,
+ * only the lock file and the `lsof`/`ps` listener scan, so it runs while
+ * Chromium starts, and the gate at ready reads its answer instead of waiting
+ * for those processes before the first window (up to ~75 ms on a cold disk).
+ * Null when the gate does not apply. Call it after the channel defaults are in
+ * the environment: the same-channel test reads them.
+ */
+export function startCrossChannelSyncHostConflictCheck(args: {
+  isPackaged: boolean;
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+}): Promise<SyncHostSingletonConflict | null> | null {
+  const env = args.env ?? process.env;
+  if (!launchGateApplies(args.isPackaged, env)) return null;
+  const pending = detectCrossChannelSyncHostConflict(env, args.platform);
+  // Awaited at ready, which rethrows as the gate always did; this only keeps a
+  // failure before then from being reported as an unhandled rejection.
+  pending.catch(() => {});
+  return pending;
+}
+
 export type PackagedSyncHostLaunchGateDeps = {
   isPackaged: boolean;
   channel: "alpha" | null;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   detectConflict?: (env: NodeJS.ProcessEnv) => SyncHostSingletonConflict | null | undefined;
+  /** The check `startCrossChannelSyncHostConflictCheck` began before ready; when absent, the gate runs it now. */
+  pendingConflict?: Promise<SyncHostSingletonConflict | null> | null;
   showDialog?: (content: PackagedSyncHostConflictDialogContent) => void;
   copyToClipboard?: (text: string) => void | Promise<void>;
   quit?: () => void;
@@ -124,16 +153,21 @@ export async function blockPackagedLaunchForCrossChannelSyncConflict(
   deps: PackagedSyncHostLaunchGateDeps,
 ): Promise<boolean> {
   const env = deps.env ?? process.env;
-  if (!deps.isPackaged) return false;
-  if (env.NODE_ENV === "test") return false;
-  if (env.ADE_DISABLE_SYNC_HOST_LAUNCH_GATE === "1") return false;
+  if (!launchGateApplies(deps.isPackaged, env)) return false;
 
   // See `detectCrossChannelSyncHostConflict` for why Windows answers from the
   // lock file on this path and awaits its identity probe off the main thread.
+  const pending = deps.detectConflict ? null : deps.pendingConflict;
   const conflict = deps.detectConflict
     ? resolveCrossChannelSyncHostConflict(deps.detectConflict(env) ?? null, env)
-    : await detectCrossChannelSyncHostConflict(env, deps.platform);
+    : pending
+      ? await pending
+      : await detectCrossChannelSyncHostConflict(env, deps.platform);
   if (!conflict) return false;
+  // The early check runs while Chromium starts, so the other channel can exit
+  // before ready. Only a positive answer is re-read (a fast lock-file probe):
+  // its stale "already running" would quit this launch for nothing.
+  if (pending && !(await detectCrossChannelSyncHostConflict(env, deps.platform))) return false;
 
   const content = buildPackagedSyncHostConflictDialogContent({
     launchingAppName: resolveLaunchingDesktopAppName(deps.channel, env),

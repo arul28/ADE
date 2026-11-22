@@ -37,7 +37,7 @@ struct WorkLanePickerDropdown: View {
 
   private var triggerTitle: String {
     if isAutoCreateSelected { return "Auto-create lane" }
-    return selectedLane?.name ?? emptySelectionTitle
+    return selectedLane?.displayName ?? emptySelectionTitle
   }
 
   private var triggerBranchLabel: String? {
@@ -344,7 +344,7 @@ struct WorkLanePickerMenu: View {
           .padding(.top, 2)
           .opacity(disabled ? 0.45 : 1)
         VStack(alignment: .leading, spacing: 2) {
-          Text(lane.name)
+          Text(lane.displayName)
             .font(.system(size: 15, weight: isSelected ? .semibold : .regular))
             .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
             .lineLimit(1)

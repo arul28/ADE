@@ -29,6 +29,7 @@ and proof files are in the [Mac Desktop map](../mac-desktop/README.md#source-fil
 | `.../src/lane/observe.rs` | The element map for `observe`: the AT-SPI walk, the element list and its JSON, the observation screenshot and map, handle and text resolution. |
 | `.../src/lane/input.rs` | Input dispatch: click, type, `setValue`, press, scroll, drag, move and buttons, and `wait`. |
 | `.../src/lane/windows.rs` | The window list and its JSON, the window verbs (`focus`, `minimize`, `close`), screenshots, and the window signature. |
+| `.../src/wallpaper.rs` | ADE's wallpaper on the lane's root window, painted once (`assets/ade-mark.png` is compiled in). |
 | `.../src/xconn.rs` | The X11 connection (x11rb): window list (EWMH), XTEST input, keymap and scratch-keycode typing, `GetImage`/MIT-SHM capture, the XFixes cursor overlay. |
 | `.../src/atspi.rs` | The AT-SPI client on the lane's own accessibility bus (zbus): the breadth-first concurrent walk with its node cap and time budget, element actions. |
 | `.../src/media.rs` | The live view and recording: XDamage-driven capture, the system `ffmpeg` encoder, access-unit framing, the loopback byte server, the MP4 recorder. |
@@ -54,8 +55,17 @@ and proof files are in the [Mac Desktop map](../mac-desktop/README.md#source-fil
    it is a link or belongs to another user), asks it for the accessibility bus
    (D-Bus activates `at-spi-bus-launcher`), and switches accessibility on
    (`org.a11y.Status.IsEnabled` and `ScreenReaderEnabled`).
-3. Starts `openbox`, waits until it manages the screen, and paints a plain
-   backdrop.
+3. Starts `openbox`, waits until it manages the screen, and paints ADE's
+   wallpaper (`src/wallpaper.rs`): the dark canvas (`#0C0B10`) lit by the
+   violet, indigo and lavender lobes of ADE's backdrop gradient, a soft
+   vignette, and the ADE mark at 55% in the middle, sized to the screen. It is
+   drawn once into the root window's background pixmap, so the X server
+   repaints it alone: no timer, no idle CPU, a still picture for the encoder,
+   and nothing in the window list or the accessibility tree. The mark is a
+   39 KB PNG compiled into the helper and decoded with the `png` crate it
+   already uses. If the picture cannot be painted, the screen stays the flat
+   base colour. The pixmap costs the X server one frame of memory (8 MB at
+   1920x1080).
 
 Every child gets its own process group and a parent-death signal tied to the
 lane's worker thread, which lives as long as the lane: if the lane's worker goes
@@ -120,6 +130,15 @@ WebGL keeps working. A Chromium profile lock left by a Chrome that is gone (a
 killed helper, a reboot, a cloud VM resumed under a new hostname) is removed
 before launch; otherwise Chrome exits with "profile in use" and no window.
 
+Common names open the first app of that kind the machine has: `browser`
+(Chrome, Chromium, Edge, Brave, Firefox), `terminal` (`x-terminal-emulator`,
+then xfce4-terminal, gnome-terminal, konsole, xterm), `files` (nautilus,
+thunar, pcmanfm, dolphin, nemo, caja). The pane's buttons use these names. A
+machine with none of a kind answers with one sentence, such as "No file
+manager is installed on this Linux machine." xterm gets `-fa Monospace -fs 11`:
+a lane screen has no core X fonts, and xterm's default would be the X server's
+tiny built-in bitmap font.
+
 Measured on a 2-vCPU box: Chrome on a Wikipedia article, 383 elements in about
 0.3–0.6 s.
 
@@ -132,7 +151,10 @@ second so a viewer's picture stays fresh.
 
 Encoding is the system's `ffmpeg`: libx264 on Debian, Ubuntu and Arch,
 libopenh264 on Fedora. ADE ships no codec of its own. The live encoder runs
-ultrafast/zerolatency with no B-frames and in-band SPS/PPS; the helper splits
+ultrafast/zerolatency with no B-frames and in-band SPS/PPS, its two threads as
+slices of one frame: frame threading would hold each picture in the encoder
+until the next one, and frames come only on damage, so the result of a key or a
+click would wait for the next change or the heartbeat. The helper splits
 its byte stream into access units at the delimiter, or when the encoder goes
 quiet, and sends them in the same 12-byte record framing the other drivers use,
 so every viewer (desktop, web, phone) decodes it unchanged. A new reader, or

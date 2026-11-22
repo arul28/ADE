@@ -17,6 +17,8 @@ import { useAppStore } from "./appStore";
 const TTL_MS = 5_000;
 /** Past the brain's own 5 s answer cache, so the follow-up gets a new answer. */
 const SLOW_FOLLOW_UP_MS = 6_000;
+/** How long a cache entry survives after its read, before the sweep drops it. */
+const CACHE_ENTRY_MAX_AGE_MS = 60_000;
 
 type Entry = { at: number; value: Promise<MachineStats | null> };
 const cache = new Map<string, Entry>();
@@ -35,6 +37,11 @@ export function readMachineStats(
   pin: OpenProjectBinding | null,
   options?: { fresh?: boolean; tabKey?: string | null },
 ): Promise<MachineStats | null> {
+  // Evict stale entries so closed tabs / changed bindings don't leak.
+  const now = Date.now();
+  for (const [k, v] of cache) {
+    if (now - v.at > CACHE_ENTRY_MAX_AGE_MS) cache.delete(k);
+  }
   const key = cacheKey(pin, options?.tabKey ?? null);
   const hit = cache.get(key);
   if (!options?.fresh && hit && Date.now() - hit.at < TTL_MS) return hit.value;

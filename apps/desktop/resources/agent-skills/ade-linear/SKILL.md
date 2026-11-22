@@ -1,6 +1,6 @@
 ---
 name: ade-linear
-description: Use this skill whenever your task is a Linear issue (or an ADE chat/lane launched with a Linear issue attached) and you need to read or update that issue — change its workflow state, comment progress, assign it, add a label, or read its comments. ADE routes all of this through its own Linear connection via the `ade linear` CLI, so you have effective Linear write access with no API key. If Linear is not connected, ask with `ade integrations connect linear`.
+description: "Any Linear issue task, also a chat or lane launched with one: read it or its comments, change its state, comment, assign, label, via `ade linear` (ADE's own connection, no API key). Not connected: `ade integrations connect linear`."
 ---
 
 # ADE Linear
@@ -94,11 +94,9 @@ ade linear label ENG-431 "needs-review"          # add a label by name
 ```
 
 Notes:
-- `set-state` takes a **workflow state id**, not a free-text name. To discover
-  the valid states/ids (and users) for the issue picker, run
-  `ade linear picker-data --text` (you may need to prefix `--role cto`:
-  `ade --role cto linear picker-data --text`). The state id can also be passed
-  via `--state-id <id>`.
+- `set-state` takes a state name (`"In Progress"`, matched within the issue's
+  team) or a state id (`--state-id <id>`). `ade linear picker-data --text`
+  lists the states and users.
 - `comment`, `set-state`, `assign`, and `label` all accept the value via a flag
   too (`--message/-m`, `--state-id`, `--assignee`, `--label`) if a positional is
   ambiguous.

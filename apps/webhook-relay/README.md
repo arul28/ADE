@@ -1,275 +1,145 @@
 # ADE webhook relay
 
-This is the cheap hosted ingress for ADE GitHub, Linear, and Cursor Cloud events. Providers
-deliver webhooks to a Cloudflare Worker, the Worker verifies the provider HMAC
-signature, writes the event into D1, and ADE polls the newest events with a
-monotonic cursor. A repo-scoped hibernating Durable Object also sends connected
-ADE daemons a debounced WebSocket wake-up; the frame is never the durable event
-transport.
+A Cloudflare Worker (`ade-github-webhook-relay`) that receives events for ADE:
 
-No user repository needs ADE-specific code. The repo-side step is installing the
-ADE GitHub App on the repositories the user wants ADE to track.
+- GitHub App webhooks (pull requests, reviews, checks, workflow runs).
+- Linear webhooks and the Linear agent (`actor=app`).
+- Cursor Cloud `statusChange` webhooks.
+- Custom webhook URLs that any service can call to run an ADE automation.
 
-## Why this shape
+The Worker checks each provider's signature, writes the event to D1, and ADE
+reads the new events with a monotonic cursor. A hibernating Durable Object
+(`RepoEventsDurableObject`) sends connected ADE brains a short WebSocket
+wake-up. The wake-up is never the event transport.
 
-- One Worker, one D1 database, and one hibernating Durable Object per active
-  repository; no always-on server, queues, or per-user process. Its only cron
-  is the Beta timer (below), which has nothing to do with webhooks.
-- GitHub webhook writes are idempotent by delivery id.
-- ADE polls with `after=<last-cursor>`, where new cursors are monotonic
-  `seq:<n>` values. Legacy delivery-id cursors still work during migration.
-- ADE checks per-repo GitHub App status at
-  `GET /github/repos/:owner/:repo/status`. Hosted ADE clients authenticate this
-  route with an expiring ADE GitHub App user access token from GitHub's device
-  flow, not the user's general PAT/OAuth token. If GitHub App API credentials
-  are configured, the relay only calls GitHub when D1 has no installed state
-  yet or the user explicitly presses Refresh.
-- If the hosted relay fails, ADE keeps using the current GitHub polling/snapshot
-  path.
-- Linear webhook signing secrets are scoped per organization and stored in D1;
-  Linear API/OAuth tokens are used only to verify organization ownership and
-  are never stored.
+For ADE Cloud, the relay also wakes resting cloud computers for Linear and
+custom-webhook deliveries, and forwards a custom webhook whose automation runs
+on ADE Cloud to the account directory (see "ADE Cloud").
 
-Cloudflare pricing changes, so check the official pages before launch:
+A user repository needs no ADE code. The person installs the ADE GitHub App on
+the repositories ADE should track.
 
-- Workers: https://developers.cloudflare.com/workers/platform/pricing/
-- D1: https://developers.cloudflare.com/d1/platform/pricing/
-- D1 limits: https://developers.cloudflare.com/d1/platform/limits/
+## Design
 
-The relay bounds D1 work with paged reads, seven-day default retention, and
-payload slimming for check-family events. WebSocket fanout uses hibernation and
-coalesces repository bursts to at most one delivery frame per second.
+- One Worker, one D1 database, one hibernating Durable Object per active
+  repository or topic. No always-on server, no queues, no process per user.
+- GitHub writes are idempotent by delivery id. Linear deliveries dedupe by
+  `Linear-Delivery`.
+- ADE reads with `after=seq:<n>`. Old delivery-id cursors still work.
+- If the relay fails, ADE keeps its GitHub polling path.
+- D1 bills rows scanned, so every hot query is an index seek (check with
+  `EXPLAIN QUERY PLAN`). Retention deletes run at most once per 10 minutes per
+  isolate (`claimPeriodicRun`). Events are kept 7 days by default
+  (`EVENT_RETENTION_DAYS`).
+- Check-family events are slimmed before storage. WebSocket fan-out sends at
+  most one frame per second per repository.
 
-## Local development
+Check Cloudflare's current [Workers](https://developers.cloudflare.com/workers/platform/pricing/)
+and [D1](https://developers.cloudflare.com/d1/platform/pricing/) pricing before a launch.
 
-```sh
-(cd apps/webhook-relay && npm install)
-npm --prefix apps/webhook-relay run typecheck
-npm --prefix apps/webhook-relay run test
-npm --prefix apps/webhook-relay run build
-npm --prefix apps/webhook-relay run dev
-```
+## Endpoints
 
-## Cloudflare setup
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/health` | none | Liveness. |
+| POST | `/github/webhook` | GitHub HMAC | GitHub App deliveries. |
+| GET | `/github/repos/:owner/:repo/status` | GitHub App user token or account token | Installation status for one repository. |
+| GET | `/github/repos/:owner/:repo/events` | same | Stored repository events after a cursor. |
+| WebSocket | `/github/repos/:owner/:repo/subscribe` | same | Wake-up frames for one repository. |
+| POST | `/github/repos/:owner/:repo/webhook/heal` | GitHub App user token, admin | Repair the App webhook. |
+| GET | `/github/repos/:owner/:repo/webhook/deliveries` | GitHub App user token, admin | List recent App webhook deliveries. |
+| GET, DELETE | `/account/integrations` | account token | List, or unlink, the account's repositories and Linear organizations. |
+| POST | `/linear/webhook` | Linear HMAC | Linear deliveries. |
+| POST | `/linear/orgs/register` | Linear token | Store an organization's webhook signing secret. |
+| GET | `/linear/orgs/:organizationId/events` | Linear token or account token | Stored Linear events after a cursor. |
+| WebSocket | `/linear/orgs/:organizationId/subscribe` | same | Wake-up frames for one organization. |
+| GET | `/linear/oauth/callback` | none | Sends a Linear OAuth code on to `ade://linear-oauth`. |
+| various | `/linear/agent/(install\|status\|members/register\|settings\|subscribe)`, `/linear/agent/sessions/:id/(claim\|activities\|update\|start)` | account token | The Linear agent (see "Linear agent"). |
+| POST | `/cursor/register` | none | Register a Cursor webhook signing secret. |
+| POST | `/cursor/webhook` | Cursor HMAC | Cursor `statusChange` deliveries. |
+| GET | `/cursor/events` | bearer = the signing secret | Stored Cursor events after a cursor. |
+| GET, POST, PUT, PATCH | `/hooks/:hookId/:token` | the URL token | A custom webhook delivery. |
+| POST, DELETE | `/hooks/register` | account token | Create, rotate or remove a custom webhook. |
+| POST | `/hooks/forward` | account token | Point a custom webhook at ADE Cloud, or back at the machines. |
+| GET | `/hooks/events?hooks=<ids>` | account token | Held custom-webhook deliveries. |
+| POST | `/hooks/ack` | account token | Delete the deliveries ADE processed. |
+| WebSocket | `/hooks/subscribe` | account token | Wake-up frames for the account's custom webhooks. |
+| POST | `/projects/:id/github/webhook`, GET `/projects/:id/github/events` | legacy project token | Self-hosted legacy routes. |
 
-If the Cloudflare account has never used Workers before, open Workers & Pages in
-the Cloudflare dashboard once and register a `workers.dev` subdomain. Wrangler
-cannot publish a public `workers.dev` URL until that account-level onboarding is
-done.
+"Account token" is the Clerk access token in `x-ade-account-token`.
 
-Create the D1 database, paste the returned database id into `wrangler.jsonc`,
-then apply D1 migrations. The repo-events Durable Object binding and its SQLite
-class migration live in `wrangler.jsonc` and are applied by the coordinator's
-normal Worker deployment. The package-owned deploy command applies the remote
-D1 migrations before publishing the Worker, so use it for every deployment:
+## GitHub
 
-```sh
-cd apps/webhook-relay
-npx wrangler d1 create ade-github-relay
-npm run deploy
-```
+### Authorization
 
-Set Worker secrets. Do not commit these values:
+1. The person installs the ADE GitHub App for all repositories, or for some.
+2. ADE gets a GitHub App user access token: the account directory's web flow,
+   or GitHub's device flow on older desktops. ADE keeps the token locally.
+3. ADE sends that expiring App user token, never the person's general GitHub
+   token, as `Authorization: Bearer <token>` to the repository routes.
 
-```sh
-cd apps/webhook-relay
-printf '%s' "$GITHUB_WEBHOOK_SECRET" | npx wrangler secret put GITHUB_WEBHOOK_SECRET
-printf '%s' "$GITHUB_APP_ID" | npx wrangler secret put GITHUB_APP_ID
-printf '%s' "$GITHUB_APP_PRIVATE_KEY" | npx wrangler secret put GITHUB_APP_PRIVATE_KEY
-printf '%s' "$CLERK_JWKS_URL" | npx wrangler secret put CLERK_JWKS_URL
-printf '%s' "$CLERK_ISSUER" | npx wrangler secret put CLERK_ISSUER
-printf '%s' "$CLERK_OAUTH_CLIENT_ID" | npx wrangler secret put CLERK_OAUTH_CLIENT_ID
-printf '%s' "$CLERK_SECONDARY_JWKS_URL" | npx wrangler secret put CLERK_SECONDARY_JWKS_URL
-printf '%s' "$CLERK_SECONDARY_ISSUER" | npx wrangler secret put CLERK_SECONDARY_ISSUER
-printf '%s' "$CLERK_SECONDARY_OAUTH_CLIENT_ID" | npx wrangler secret put CLERK_SECONDARY_OAUTH_CLIENT_ID
-npm run deploy
-```
+The relay sends the token to GitHub only to check access. It never stores,
+logs or echoes it. It refuses a caller without push, maintain or admin access,
+so a stranger cannot read a public repository's webhook history.
 
-`GITHUB_WEBHOOK_SECRET` must match the GitHub App webhook secret.
-`GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are optional but recommended. They
-let the relay verify a repository installation live through GitHub's App API
-when webhook state has not arrived yet or the user presses Refresh in Settings.
-`GITHUB_APP_PRIVATE_KEY` should be the private key PEM downloaded from the
-GitHub App settings.
+A signed-in client can send the account token in `x-ade-account-token` next to
+the GitHub header. A matching account can read a repository or Linear
+organization that is already linked to it. `DELETE /account/integrations`
+unlinks them and writes a tombstone, so a later request cannot link them again
+by itself. It does not delete events, signing secrets or legacy access.
 
-`CLERK_JWKS_URL`, `CLERK_ISSUER`, and `CLERK_OAUTH_CLIENT_ID` enable the
-additive account integration path. Signed-in ADE clients send the Clerk access
-token in `x-ade-account-token` alongside the existing GitHub or Linear
-`Authorization` header. A matching Clerk `sub` can read a repository or Linear
-organization already associated with that account; callers without this header
-continue through the legacy authorization paths unchanged. `GET /account/integrations`
-lists only the caller's associated repositories and
-Linear organizations. `DELETE /account/integrations` clears those account
-associations and records an account-specific unlink tombstone, so subsequent
-dual-credential requests cannot silently restore them. It does not delete
-provider mappings, events, signing secrets, or legacy access.
+### The access cache
 
-During the development-to-production migration, the optional
-`CLERK_SECONDARY_JWKS_URL`, `CLERK_SECONDARY_ISSUER`, and
-`CLERK_SECONDARY_OAUTH_CLIENT_ID` triple allows the relay to accept one more
-explicitly pinned Clerk instance. All three values are required together. Each
-token must still pass RS256 verification, exact issuer validation, expiry and
-subject checks, and the OAuth client binding for the same Clerk instance.
+The checks are cached, so a 30-second poll does not spend the account's GitHub
+REST quota:
 
-Legacy Linear support requires no additional Wrangler secrets. Each ADE client
-generates its own webhook signing secret and registers it into the
-`linear_organizations` D1 table through the authenticated registration route.
-For local tests or a Linear-compatible proxy, `LINEAR_API_BASE_URL` overrides
-the default `https://api.linear.app/graphql` endpoint. It may be the GraphQL URL
-itself or an origin, in which case the Worker appends `/graphql`.
+- An allow is cached 5 minutes in the isolate and 60 minutes in D1
+  (`github_repo_auth_cache`), keyed by a SHA-256 of the token, the repository
+  and the access level. The token is never stored. A read revocation can take
+  up to 60 minutes.
+- Admin checks (webhook heal) are never cached.
+- A denial (404, too little access) is cached 5 minutes in the isolate only.
+  Denials never go to D1, because a caller picks the token.
+- Transport failures and GitHub 5xx are never cached.
+- When GitHub rate-limits a check, the relay records the reset in
+  `github_token_rate_limits`. A known allow keeps working for up to 24 hours
+  (`github_repo_auth_stale_served`). An unknown token is refused with
+  `Retry-After`, so a quota outage never fails open.
+- A GitHub 401 deletes the D1 rows for that token and the isolate's copy.
+  Other isolates can keep their copy for up to 5 more minutes.
 
-Cursor Cloud webhooks use a separate D1 table (`cursor_events`) and do not
-reuse `linear_events`. Cursor POSTs `statusChange` to `POST /cursor/webhook`
-with `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body),
-`X-Webhook-ID`, and `X-Webhook-Event: statusChange`. ADE registers the signing
-secret at `POST /cursor/register` and polls `GET /cursor/events?after=seq:N`.
-Bad signatures return 401. Optional worker secret: `CURSOR_WEBHOOK_SECRET`.
-ADE only registers and polls while a project has an enabled `cursor.*`
-automation rule. Poll auth is an indexed lookup of the bearer secret, which is
-stamped `last_polled_at` at most hourly. Unowned secrets idle for 30 days are
-swept on registration; a returning client gets a 401 and re-registers its
-stored secret.
+### Repository events: wake-up and gap-free reads
 
-D1 reads are billed per row scanned, so every hot query must be an index seek
-(check with `EXPLAIN QUERY PLAN` against the migrations). Retention deletes run
-at most once per 10 minutes per isolate (`claimPeriodicRun`), not per webhook.
-
-Only self-hosted legacy project-token routes need `RELAY_ACCESS_TOKEN`:
-
-```sh
-printf '%s' "$ADE_GITHUB_RELAY_TOKEN" | npx wrangler secret put RELAY_ACCESS_TOKEN
-```
-
-`ADE_GITHUB_RELAY_TOKEN` is the relay root secret stored in Cloudflare. Legacy
-ADE clients send a project-scoped `ade_proj_...` token derived from that secret
-and `remoteProjectId`; if ADE is configured with an already-derived
-`ade_proj_...` token it sends that value as-is.
-
-## Beta timer
-
-The Worker's cron (`17,47 * * * *`) starts ADE's own Beta workflow
-(`.github/workflows/beta.yml`) through the GitHub API (`src/betaTimer.ts`).
-GitHub's `schedule` trigger ran hours late for the ADE repo and dropped the
-ticks it missed, so betas came every 3.5–7.5 hours instead of at most every 3.
-The workflow still decides whether a beta is due; the timer only starts it,
-and skips a tick while a Beta run (not a preview) is queued or building.
-
-It needs one secret, a fine-grained GitHub token for `arul28/ADE` with
-**Actions: read and write** and nothing else:
-
-```sh
-cd apps/webhook-relay
-npx wrangler secret put GITHUB_BETA_DISPATCH_TOKEN
-```
-
-Unset, the timer does nothing. A refused token (expired or revoked) throws on
-every tick and reaches Sentry; replace it the same way. Cloudflare's dashboard
-lists past cron runs and their outcome on the Worker's page (cron
-events). This Worker keeps no Workers Logs, so its `beta_timer.` lines show only
-in `npx wrangler tail`.
-
-## ADE project config
-
-Normal ADE users should not edit project files for realtime GitHub updates. ADE
-uses the hosted relay by default. The hosted auth path is:
-
-1. Install the ADE GitHub App for all repositories, or for the selected
-   repositories that should receive realtime updates.
-2. In ADE, authorize the ADE GitHub App. Desktop/headless ADE uses GitHub's
-   device flow and stores the returned GitHub App user access token locally.
-3. ADE sends that expiring app/user token, never the user's general ADE GitHub
-   PAT/OAuth/`gh auth` token, as `Authorization: Bearer <GitHub App user token>`
-   for:
-
-- `GET https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/:owner/:repo/status`
-- `GET https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/:owner/:repo/events`
-- `WebSocket wss://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/:owner/:repo/subscribe`
-
-The relay forwards the token to GitHub's REST API only for authorization checks
-and does not store, log, or echo it. It rejects callers unless GitHub reports
-push/write, maintain, or admin access for the authenticated user, so public-repo
-webhook history is not readable by arbitrary GitHub accounts.
-
-Those checks are cached so a 30-second poll does not spend a GitHub REST request
-per repository per machine against the account's shared 5,000/hour quota:
-
-- A positive read/write verdict is cached in the isolate for five minutes and in
-  D1 (`github_repo_auth_cache`) for sixty minutes, keyed by a SHA-256 digest of
-  the token plus the repository and access level. The token itself is never
-  stored. Sixty minutes is therefore the worst-case revocation latency for read
-  access, and the durable row is what survives Cloudflare isolate recycling.
-- Admin-level checks (webhook heal) are never cached and always go back to
-  GitHub, so a push/write verdict cannot authorize webhook management.
-- Definitive denials (404, insufficient permission) are cached for five minutes
-  in isolate memory only, so a token that genuinely cannot reach a repository
-  stops hammering GitHub. Denials are never written to D1: the caller chooses
-  the token, so persisting them would let anonymous callers mint unbounded rows.
-  Transport failures and GitHub 5xx responses are never cached at all.
-- When GitHub rate-limits a verification call (403/429 with
-  `x-ratelimit-remaining: 0`, a `retry-after` header, or a rate-limit message),
-  the relay records the reset in `github_token_rate_limits` and stops verifying
-  that token digest until it passes. A previously verified allow keeps working
-  for up to 24 hours during the outage and is logged as
-  `github_repo_auth_stale_served`. A token the relay has never verified for that
-  repository is refused, so a quota outage never fails open; that refusal
-  carries `Retry-After` set from the recorded reset, which is what ADE's ingress
-  backs off on.
-- A GitHub 401 (revoked or expired credential) purges the D1 rows for that token
-  digest and the serving isolate's copy, and is never served stale. Other live
-  isolates can still serve their own cached allow for up to five more minutes,
-  so a purge is immediate in D1 but not instantaneous fleet-wide.
-
-Keep the ADE GitHub App's repository permissions read-only so the token the
-hosted relay sees cannot write repository data; it is app-limited and
-user-scoped, and ADE refreshes it locally when GitHub marks it near expiry.
-
-## Repo event push and gap-free cursor draining
-
-The WebSocket is a wake-up channel only. Connect to
-`wss://<relay>/github/repos/:owner/:repo/subscribe` with `Upgrade: websocket`
-and the same credentials accepted by the repo events route: either the ADE
-GitHub App user token in `Authorization: Bearer ...`, or the additive Clerk
-account token in `x-ade-account-token` for an account already associated with
-the repository.
-
-The Durable Object sends one text frame after a roughly one-second debounce,
-regardless of how many webhook deliveries arrived for the repo in that window:
+Connect to `wss://<relay>/github/repos/:owner/:repo/subscribe` with the same
+credentials as the events route. After about one second of debounce, the
+Durable Object sends one frame for any number of deliveries:
 
 ```json
 {"t":"github_delivery","repo":"owner/repo"}
 ```
 
-It never sends event payloads or cursors. On connection and after every wake-up,
-drain D1 with:
+The frame has no payload and no cursor. On connect and after each frame, read:
 
 ```text
 GET /github/repos/:owner/:repo/events?after=seq:<n>&order=asc&limit=100
 ```
 
-Process `events` in the returned order (do not reverse them), persist
-`nextCursor` only after the page is processed, and immediately request the next
-page while `hasMore` is true. Stop when `hasMore` is false (or an empty page is
-returned). `order=asc` is required for the gap-free protocol: it pages forward
-from the cursor, so a burst larger than the limit cannot make the client jump
-over unseen rows. The default response remains descending and omits `hasMore`
-for compatibility with deployed clients.
+1. Process `events` in the order they come.
+2. Save `nextCursor` only after the page is processed.
+3. Read the next page while `hasMore` is true.
 
-Open the socket before the initial drain, keep a 30-second safety poll, and
-treat every frame as permission to coalesce another drain locally. Reconnect
-with exponential backoff plus jitter (for example 1 second up to 30 seconds),
-resetting the backoff after a stable connection. The server closes each socket
-after about four hours with code `4401` so credentials are revalidated; reconnect
-normally. Native WebSocket protocol pings are handled without waking the
-Durable Object. Clients that need application-level heartbeats can send the
-text frame `ping` and receive `pong` through the same edge auto-response.
+`order=asc` is required for gap-free reads. The default order is descending
+with no `hasMore`, for older clients.
 
-If the App is installed for all repositories, every GitHub project opened in ADE
-can use the relay automatically. If the App is installed for selected
-repositories, Settings shows whether the current repository is selected.
+Open the socket before the first read. Keep a 30-second safety poll. Reconnect
+with exponential backoff and jitter (1 s to 30 s). The server closes each
+socket after about four hours with code `4401`, so credentials are checked
+again. The text frame `ping` gets `pong` without waking the Durable Object.
 
-For self-hosted relay development, or for legacy project-partitioned deployments,
-you can still put explicit relay settings in the ADE project's local secret
-config, not in source:
+### Self-hosted and legacy project tokens
+
+A self-hosted relay can use project tokens. Put the settings in the project's
+local secret config, not in source:
 
 ```yaml
 automations:
@@ -279,155 +149,267 @@ automations:
     accessToken: ${env:ADE_GITHUB_RELAY_TOKEN}
 ```
 
-`remoteProjectId` is only a legacy relay partition key. It can be a generated
-UUID or a stable ADE project slug.
+The env vars `ADE_GITHUB_RELAY_API_BASE_URL`,
+`ADE_GITHUB_RELAY_REMOTE_PROJECT_ID` and `ADE_GITHUB_RELAY_ACCESS_TOKEN` do the
+same. ADE derives a project token `ade_proj_...` from the relay's
+`RELAY_ACCESS_TOKEN` and `remoteProjectId`, or sends a derived token as it is.
 
-Self-hosted legacy project-token routes do not use the hosted app-user token and
-continue to authenticate with the derived `ade_proj_...` relay token.
-The `ade_proj_...` scheme remains supported alongside account authentication;
-account re-keying does not replace or retire it.
+## Linear
 
-For dev/runtime launches, ADE also accepts env vars instead of
-`local.secret.yaml`. Setting these opts the runtime into the legacy
-project-token route for self-hosted relays:
+### Organization webhooks
 
-```sh
-ADE_GITHUB_RELAY_API_BASE_URL=https://ade-github-webhook-relay.<your-subdomain>.workers.dev
-ADE_GITHUB_RELAY_REMOTE_PROJECT_ID=<stable-project-id>
-ADE_GITHUB_RELAY_ACCESS_TOKEN=<relay-token>
-```
+After the person connects a workspace with an admin API key or an OAuth token
+with the `admin` scope:
+
+1. ADE makes a 32-byte signing secret and a Linear webhook that targets
+   `https://ade-github-webhook-relay.arulsharma1028.workers.dev/linear/webhook`.
+2. ADE calls `POST /linear/orgs/register` with `{ "secret": "…" }` and the
+   Linear authorization header.
+3. The relay asks Linear for `viewer.organization.id` and stores the secret for
+   that organization. It does not store the token.
+4. ADE reads `GET /linear/orgs/:organizationId/events?after=seq:<n>`. The relay
+   checks that the token belongs to the organization, and caches the answer 5
+   minutes in memory.
+
+The webhook covers `Issue`, `Comment` and `IssueLabel` for all public teams.
+The relay refuses a bad raw-body HMAC and a `webhookTimestamp` more than 60 s
+from its clock. It acknowledges an unknown organization without storage, so
+Linear does not turn the webhook off during setup.
+
+`LINEAR_API_BASE_URL` points the Worker at a Linear-compatible server for
+tests (a GraphQL URL, or an origin to which it adds `/graphql`).
+
+### ADE Linear OAuth app deliveries
+
+The ADE Linear OAuth app signs every workspace's deliveries with one app
+secret. With `LINEAR_APP_WEBHOOK_SECRET` set, the relay stores app-signed
+deliveries with no organization registration. The payload's `organizationId`
+scopes them. The app needs the `admin` scope for data-change webhooks.
+
+### Linear agent
+
+The ADE agent (Linear `actor=app`) uses `/linear/agent/*`. The relay keeps each
+workspace's app token, sealed with `LINEAR_AGENT_TOKEN_KEY` (base64, 32 bytes).
+It sends each `AgentSessionEvent` to the account of the person who delegated or
+mentioned the agent. A machine of that account claims the session (the first
+claim wins) and posts agent activities back through the relay. The brain never
+holds the app token. `LINEAR_APP_CLIENT_ID` (a var) is the app's public PKCE
+client id, for app token refresh. Without the key, the routes answer `503
+agent_not_configured`.
+
+## Cursor Cloud
+
+Cursor deliveries use their own table (`cursor_events`).
+
+- Cursor posts `statusChange` to `POST /cursor/webhook` with
+  `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body),
+  `X-Webhook-ID` and `X-Webhook-Event: statusChange`. A bad signature gets
+  `401`.
+- ADE registers the secret at `POST /cursor/register` and reads
+  `GET /cursor/events?after=seq:N`, only while a project has an enabled
+  `cursor.*` automation rule.
+- The read looks up the bearer secret by index and stamps `last_polled_at` at
+  most hourly. Registration sweeps secrets unused for 30 days. A client with a
+  swept secret gets `401` and registers it again.
 
 ## Custom webhook URLs
 
-Any service can ring an automation's URL: `GET|POST|PUT|PATCH /hooks/:hookId/:token`
-(`src/customHooks.ts`, D1 tables from `migrations/0010_custom_hooks.sql`).
+Any service can call an automation's URL: `GET|POST|PUT|PATCH
+/hooks/:hookId/:token` (`src/customHooks.ts`).
 
-- **The relay is a mailbox, not a judge.** It stores only a SHA-256 of the
-  token and compares it in constant time; a wrong token and an unknown hook are
-  the same `404`. It never sees the signing secret: the ADE machine that runs
-  the automation verifies signatures after it drains the request.
-- **Held until drained.** Each request (method, query, headers minus
-  `cf-*`/`x-forwarded-*`/cookies/hop-by-hop, raw body; base64 when it is not
-  UTF-8) is written to `custom_hook_events` and answered `202 {queued:true}`.
-  Limits: 1 MiB per body (`413`), 200 undelivered requests per hook
-  (`503 inbox_full`), 100 hooks per account. Undelivered requests expire after
-  3 days.
-- **Drain, then acknowledge.** `GET /hooks/events?hooks=<ids>` (account
-  token) returns every request still held for those hooks, oldest first. ADE
-  processes them, then `POST /hooks/ack {eventIds}` deletes exactly those. There
-  is no cursor, so a lost or stale cursor can neither skip a request nor delete
-  one ADE has not seen; a lost acknowledgement only redelivers, and ADE's
-  duplicate check (keyed on the relay's delivery id) keeps it from running twice.
-- **Wake-ups.** `GET /hooks/subscribe` (WebSocket, account token) joins the
-  `hooks-account:<accountId>` topic on `RepoEventsDurableObject`; every delivery
-  sends one `hook_delivery` hint after the response.
-- **Registration.** `POST /hooks/register {hookId, token, label?}` (account
-  token) creates or rotates a hook; rotating replaces the hash so the old URL
-  dies at once. `DELETE` removes the hook and everything it holds. Unlinking the
-  account through `DELETE /account/integrations` removes all of its hooks.
+- **The relay stores; ADE judges.** The relay keeps only a SHA-256 of the URL
+  token and compares it in constant time. A wrong token and an unknown hook
+  both get `404`. The relay never sees the automation's signing secret: the
+  machine that runs the automation checks signatures.
+- **Held until read.** Each request (method, query, headers without `cf-*`,
+  `x-forwarded-*`, `proxy-*`, cookies and hop-by-hop headers, and the raw body,
+  base64 when not UTF-8) goes to `custom_hook_events`. The relay answers
+  `202 {queued: true}` at once. Limits: 1 MiB per body (`413`), 200 held
+  requests per hook (`503 inbox_full`), 100 hooks per account. Held requests
+  expire after 3 days.
+- **Read, then acknowledge.** `GET /hooks/events?hooks=<ids>` returns the held
+  requests, oldest first. ADE processes them, then `POST /hooks/ack {eventIds}`
+  deletes exactly those. There is no cursor. A lost acknowledgement only
+  delivers again, and ADE's duplicate check stops a second run.
+- **Wake-ups.** `GET /hooks/subscribe` joins the `hooks-account:<accountId>`
+  topic. Each delivery sends one `hook_delivery` frame after the response.
+- **Registration.** `POST /hooks/register {hookId, token, label?}` creates or
+  rotates a hook. A rotation replaces the hash, so the old URL stops at once.
+  `DELETE` removes the hook and what it holds. `DELETE /account/integrations`
+  removes all of the account's hooks.
 
-## Linear setup
+## ADE Cloud
 
-ADE performs the Linear setup flow after the user connects a workspace with a
-workspace-admin API key or OAuth token carrying the `admin` scope:
+### Forwarded custom webhooks
 
-1. ADE creates a 32-byte random signing secret and creates a Linear webhook
-   targeting
-   `https://ade-github-webhook-relay.arulsharma1028.workers.dev/linear/webhook`.
-2. ADE calls `POST /linear/orgs/register` with `{ "secret": "…" }` and the
-   user's Linear authorization header. API keys are sent raw; OAuth tokens are
-   sent as `Bearer <token>`.
-3. The Worker asks Linear for `viewer.organization.id`, then upserts the secret
-   for that organization. It does not store or log the authorization token.
-4. ADE polls `GET /linear/orgs/:organizationId/events?after=seq:<n>`. The Worker
-   rechecks that the caller's Linear token belongs to the requested organization
-   and caches that token-to-organization verdict in memory for five minutes.
+When a custom webhook's automation runs on ADE Cloud, the person's brain calls
+`POST /hooks/forward { hookId, forward: { url, secret } | null }`. The URL
+token stays the same, so the public URL keeps working.
 
-Configure the Linear webhook for `Issue`, `Comment`, and `IssueLabel` resources,
-with all public teams enabled. The single global ingest URL is:
+- The forward URL must be an account directory's
+  `/cloud/automations/:ruleId/deliveries/:hookId` route. The relay reaches it
+  through the `ACCOUNT_DIRECTORY` or `ACCOUNT_DIRECTORY_PRODUCTION` binding.
+- Each delivery goes in one signed POST (`x-ade-hook-id`,
+  `x-ade-hook-timestamp`, `x-ade-hook-signature`: HMAC-SHA256 of
+  `<timestamp>.<body>` with the hook's forward key). The relay keeps it until
+  the directory answers 2xx.
+- The relay tries held deliveries again on the hook's next delivery and from
+  the cron (`17,47 * * * *`): 20 hooks and 10 deliveries per hook in each pass.
+- A `410` means the rule left ADE Cloud. The relay clears the forward, and the
+  machines read the hook again. A `400`, `413` or refused signature drops that
+  one delivery (logged and reported).
+- Machines never list a forwarded hook's deliveries, so each delivery runs in
+  one place.
+
+### Event wakes
+
+A resting ADE Cloud computer holds no socket, so a wake-up frame cannot reach
+it. After the relay stores a Linear delivery or a delivery for a custom webhook
+that is not forwarded, it names the delivery's topics to each account
+directory (`src/cloudEventWakes.ts`):
 
 ```text
-https://ade-github-webhook-relay.arulsharma1028.workers.dev/linear/webhook
+POST /cloud/internal/event-wake   { topic }   header x-ade-event-wake-secret
 ```
 
-Incoming deliveries are deduplicated by `Linear-Delivery`, retained according
-to `EVENT_RETENTION_DAYS` (7 days by default), and rejected when the raw-body
-HMAC is invalid or `webhookTimestamp` is more than 60 seconds from the Worker
-clock. An unknown organization receives a successful acknowledgement without
-storage so Linear does not disable the webhook while setup is still converging.
+- Topics: `linear-org:<organizationId>`, `linear-account:<accountId>` (a routed
+  agent session) and `hooks-account:<accountId>`. A topic is an id; the relay
+  sends nothing of the event.
+- The directory wakes the computers that listen to the topic, at most once
+  every 5 minutes each. The computer reads the stored events when it is up.
+- A topic with no listener is not asked about again for 60 s in that isolate.
+- GitHub repository events do not wake cloud computers. Their timed wakes and
+  people's actions wake them.
+- The call runs after the response. A failure only logs.
 
-### Linear OAuth app deliveries (optional)
+Without `CLOUD_EVENT_WAKE_SECRET` (see "Secrets"), no event wakes a resting
+cloud computer.
 
-An ADE Linear OAuth application signs every workspace's deliveries with one
-app-level signing secret instead of a per-organization secret. To accept
-those, store the app's signing secret on the Worker:
+## Beta timer
 
-```bash
-npx wrangler secret put LINEAR_APP_WEBHOOK_SECRET
+The cron (`17,47 * * * *`) also starts ADE's Beta workflow
+(`.github/workflows/beta.yml`) through the GitHub API (`src/betaTimer.ts`). The
+workflow decides if a beta is due. The timer skips a tick while a Beta run (not
+a preview) is queued or building.
+
+`GITHUB_BETA_DISPATCH_TOKEN` is a fine-grained token for `arul28/ADE` with
+**Actions: read and write** only. With no token, the timer does nothing; a
+refused token reaches Sentry on each tick.
+
+## Setup
+
+### Local development
+
+The five Workers are one npm workspace, so one `npm install` at the repo root
+installs this one too (from the root `package-lock.json`).
+
+```sh
+npm install
+npm --prefix apps/webhook-relay run typecheck
+npm --prefix apps/webhook-relay run test
+npm --prefix apps/webhook-relay run build
+npm --prefix apps/webhook-relay run dev
 ```
 
-App-signed deliveries are stored without prior `POST /linear/orgs/register`
-(the payload's `organizationId` scopes them), and per-organization workspace
-webhooks keep working alongside. When creating the OAuth app in Linear
-(Settings → API → OAuth applications), enable webhooks with the same ingest
-URL above; data-change webhook categories require the app to request the
-`admin` scope.
+### Cloudflare
 
-### Linear agent (optional)
+If the Cloudflare account never used Workers, open Workers & Pages once and
+register a `workers.dev` subdomain. Create the D1 database, put its id in
+`wrangler.jsonc`, then deploy. `npm run deploy` applies the remote D1
+migrations before it publishes the Worker, so use it for every deploy.
 
-The ADE agent (Linear `actor=app`) needs one more Worker secret, a base64
-32-byte AES-GCM key that encrypts each workspace's app token at rest:
-
-```bash
-openssl rand -base64 32 | npx wrangler secret put LINEAR_AGENT_TOKEN_KEY
+```sh
+cd apps/webhook-relay
+npx wrangler d1 create ade-github-relay
+npm run deploy
 ```
 
-`LINEAR_APP_CLIENT_ID` (a plain var in `wrangler.jsonc`) is the ADE Linear
-app's public PKCE client id; the relay uses it to refresh app tokens. Without
-the key, the `/linear/agent/*` routes answer 503 `agent_not_configured`.
-Migration `0009_linear_agent.sql` adds the install, member, and session tables.
+### Secrets
+
+Do not commit these values.
+
+| Secret | Needed for |
+|---|---|
+| `GITHUB_WEBHOOK_SECRET` | GitHub deliveries. Same value as the GitHub App's webhook secret. |
+| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | Optional. A live installation check through GitHub's App API when no webhook state has arrived, or on Refresh. The key is the App's PEM. |
+| `CLERK_JWKS_URL`, `CLERK_ISSUER`, `CLERK_OAUTH_CLIENT_ID` | Account tokens. |
+| `CLERK_SECONDARY_JWKS_URL`, `CLERK_SECONDARY_ISSUER`, `CLERK_SECONDARY_OAUTH_CLIENT_ID` | Optional. One more Clerk instance; all three or none. |
+| `LINEAR_APP_WEBHOOK_SECRET` | Optional. ADE Linear OAuth app deliveries. |
+| `LINEAR_AGENT_TOKEN_KEY` | Optional. The Linear agent. |
+| `CURSOR_WEBHOOK_SECRET` | Optional. Cursor deliveries. |
+| `CLOUD_EVENT_WAKE_SECRET` | Optional. ADE Cloud event wakes; same value on both account directories. |
+| `GITHUB_BETA_DISPATCH_TOKEN` | Optional. The Beta timer. |
+| `RELAY_ACCESS_TOKEN` | Only for self-hosted legacy project tokens. |
+
+Set each with `printf '%s' "$NAME" | npx wrangler secret put NAME`, then
+`npm run deploy`. An account token must pass RS256, the exact issuer, expiry,
+subject and the OAuth client of its Clerk instance.
 
 ## GitHub App setup
 
-Create or edit a GitHub App. Use the user-facing name `ADE`:
+Create or edit a GitHub App named `ADE`:
 
 - Webhook URL:
-  `https://ade-github-webhook-relay.<your-subdomain>.workers.dev/github/webhook`
-- Webhook secret: the same `GITHUB_WEBHOOK_SECRET` stored in Cloudflare.
-- SSL verification: enabled.
-- Device flow: enabled.
-- Expire user authorization tokens: enabled.
-- Request user authorization (OAuth) during installation: optional. ADE starts
-  device authorization itself, so this is not required for the hosted relay to
-  work; enabling it can reduce a later authorization step for some users.
-- Repository permissions:
-  - Metadata: read-only
-  - Pull requests: read-only
-  - Checks: read-only
-  - Commit statuses: read-only
-  - Actions: read-only
-  - Issues: read-only, for PR issue comments and labels
-- Subscribe to events:
-  - Pull request
-  - Pull request review
-  - Pull request review comment
-  - Issue comment
-  - Check run
-  - Check suite
-  - Status
-  - Workflow run
-  - Meta
+  `https://ade-github-webhook-relay.<your-subdomain>.workers.dev/github/webhook`.
+- Webhook secret: the `GITHUB_WEBHOOK_SECRET` value. SSL verification on.
+- Device flow: on (older desktops sign in with it).
+- Expire user authorization tokens: on.
+- Callback URL:
+  `https://ade-account-directory-production.arulsharma1028.workers.dev/github/app/callback`
+  and the development Worker's `/github/app/callback`, with wildcard matching
+  off. The account directory's web sign-in uses it.
+- Setup URL:
+  `https://ade-account-directory-production.arulsharma1028.workers.dev/github/app/installed`,
+  with "Redirect on update" on.
+- Request user authorization during installation: off. A code with no ADE
+  state cannot be tied to an ADE account.
+- Client secret: only in the account directory's `GITHUB_APP_CLIENT_SECRET`.
+- Repository permissions: Contents, Pull requests, Issues, Actions and
+  Workflows read and write; Checks, Commit statuses and Metadata read-only.
+  The App also asks for Actions variables, organization Actions variables,
+  organization secrets and organization self-hosted runners; no ADE code uses
+  them.
+- Events: Pull request, Pull request review, Pull request review comment,
+  Issue comment, Check run, Check suite, Status, Workflow run, Meta.
 
-Install the GitHub App only on the repositories ADE should track. Keep the
-current GitHub auth path enabled as fallback.
+GitHub also sends `installation` and `installation_repositories` deliveries
+without a checkbox. `Meta` tells ADE when the App webhook was removed, so
+Settings can show that live PR updates are off. If ADE still shows a
+repository as not installed, change the App's repository selection once, or
+check the App's Recent deliveries for a failed delivery.
 
-GitHub also sends GitHub App install-status deliveries such as `installation`
-and `installation_repositories`. Those are not shown as normal selectable event
-checkboxes in the GitHub App "Subscribe to events" list, and the visible
-`Installation target` event is not required for ADE repository status. `Meta` is
-useful because it tells ADE when the App webhook itself was removed, so Settings
-can show that realtime PR updates are off even if the App is still installed on
-a repo. If ADE still shows a repository as not installed after the App is
-installed, open the App's installation settings in GitHub and change the
-repository selection once or check the GitHub App's Recent deliveries for a
-failed install-status delivery.
+## Logs
+
+The Worker writes single-line JSON to `npx wrangler tail`. ADE Cloud lines:
+
+- `cloud_event_wake_sent` (`directory`, `topicKind`, `woken`).
+- `cloud_event_wake_refused`, `cloud_event_wake_failed`.
+- `hook_forward_refused`, `hook_forward_failed`, `hook_forward_dropped`
+  (Sentry too), `hook_forward_gone`, `hook_forward_key_refused`.
+
+## Source file map
+
+| File | What |
+|---|---|
+| `src/index.ts` | The Worker entry and the cron (Beta timer, forward retries). |
+| `src/relay.ts` | Routing, GitHub deliveries and reads, the access cache, account integrations. |
+| `src/repoEventsDurableObject.ts` | Wake-up sockets for repositories and topics. |
+| `src/linearEvents.ts` | Linear deliveries, organization registration and reads. |
+| `src/linearAgent.ts`, `linearAgentCore.ts` | The Linear agent. |
+| `src/cursorEvents.ts` | Cursor Cloud deliveries. |
+| `src/customHooks.ts` | Custom webhook URLs and ADE Cloud forwards. |
+| `src/cloudEventWakes.ts` | ADE Cloud event wakes. |
+| `src/betaTimer.ts` | The Beta timer. |
+| `src/auth.ts` | Account token checks. |
+| `src/shared.ts` | The Worker env and shared helpers. |
+| `src/cloudflareTransient.ts`, `sentry.ts`, `sentryScrub.ts`, `posthogLogs.ts` | D1 retries, error reports and logs. |
+| `migrations/` | D1 schema (`0015_custom_hook_forward.sql` adds the forward columns). |
+
+## Gotchas
+
+- **A wake-up frame is a hint.** Clients always read D1 after a frame and on
+  connect.
+- **A forwarded hook is invisible to machines.** If the directory keeps
+  failing, its deliveries wait here for up to 3 days.
+- **The event-wake quiet cache is per isolate**, so a new listener can miss
+  one wake for up to 60 s.

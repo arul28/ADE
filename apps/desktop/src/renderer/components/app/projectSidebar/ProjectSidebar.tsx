@@ -2,19 +2,23 @@ import React, { startTransition, useCallback, useEffect, useRef, useState } from
 import { useNavigate } from "react-router-dom";
 import { GearSix } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
-import { useAppStore } from "../../../state/appStore";
+import { selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
 import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../../lib/webClientMode";
 import { pressActivation } from "../../../lib/pressActivation";
+import { preloadRoute } from "../../../lib/routePreload";
 import { readStoredProjectSettingsRoute } from "../projectRouteStorage";
 import { HelpMenu } from "../../onboarding/HelpMenu";
 import {
   commitProjectSidebarWidth,
   getProjectSidebarPrefs,
+  setProjectSidebarDrawerOpen,
   setProjectSidebarWidth,
   useProjectSidebarPrefs,
 } from "./projectSidebarPrefs";
 import { useProjectSidebarSlotTarget } from "./ProjectSidebarSlot";
 import { StarRepoPill } from "./StarRepoPill";
+import { InviteFriendsPill } from "./InviteFriendsPill";
+import { ProjectComputersTag } from "./ProjectComputersTag";
 import { lastSettingsRoute, rememberProjectRoute, settingsReturnRoute } from "./settingsReturnRoute";
 import {
   PROJECT_SIDEBAR_FOOTER_TABS,
@@ -25,6 +29,8 @@ import {
   visibleProjectSidebarTabs,
 } from "./projectSidebarTabs";
 import { cssZoomOf } from "../../../lib/webZoom";
+import { CtoAvatar } from "../../cto/avatar/CtoAvatar";
+import { useRememberedCtoLook } from "../../cto/ctoLook";
 
 export { projectSidebarTabForPath };
 
@@ -36,7 +42,7 @@ export { projectSidebarTabForPath };
  */
 export function ProjectSidebar({ route, heldRoute = null }: { route: string; heldRoute?: string | null }) {
   const navigate = useNavigate();
-  const { width, hidden: hiddenByPreference } = useProjectSidebarPrefs();
+  const { width, hidden: hiddenByPreference, drawer, drawerOpen } = useProjectSidebarPrefs();
   const setSlotTarget = useProjectSidebarSlotTarget();
   // Select scalars only: the sidebar sits beside every tab page, and a wide
   // selector here would re-render it on every unrelated store write.
@@ -45,18 +51,23 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
   const workIndicator = useAppStore((s) => s.terminalAttention.indicator);
   const needsYouCount = useAppStore((s) => s.terminalAttention.needsAttentionCount);
   const ctoAwaitingInput = useAppStore((s) => s.ctoAttention.awaitingInput);
+  // The CTO entry wears the CTO's own look (the last one its page saw here).
+  const ctoLook = useRememberedCtoLook(useAppStore(selectActiveProjectStateKey));
   const keybindings = useAppStore((s) => s.keybindings);
   const pathname = route.split(/[?#]/, 1)[0] || "/work";
   const activeTab = projectSidebarTabForPath(pathname);
   const heldTab = heldRoute ? projectSidebarTabForPath(heldRoute.split(/[?#]/, 1)[0] || "/work") : null;
   const settingsActive = pathname === "/settings" || pathname.startsWith("/settings/");
-  // Settings keeps the sidebar open. The saved preference is left alone, so
-  // leaving Settings restores the sidebar the way the user had it.
-  const hidden = hiddenByPreference && !settingsActive;
+  // Settings keeps the docked sidebar open. The saved preference is left
+  // alone, so leaving Settings restores the sidebar the way the user had it.
+  // The phone-width drawer opens and closes on Settings too: it lies over the
+  // page, so the page keeps its width either way.
+  const hidden = drawer ? !drawerOpen : hiddenByPreference && !settingsActive;
   const settingsVisible = !isWebClientMode() || WEB_CLIENT_TAB_PATHS.has("/settings");
   const routeKey = bindingKey ?? (projectRoot ? `local:${projectRoot}` : null);
   // The star pill is a desktop-only nudge, shown under the Work session list.
-  const starPillSlotActive = !isWebClientMode() && !heldRoute && activeTab === "/work";
+  // Only while the sidebar shows: a nudge mounted in a hidden sidebar would spend the unasked budget unseen.
+  const starPillSlotActive = !hidden && !isWebClientMode() && !heldRoute && activeTab === "/work";
 
   // The tab a click asked for, shown before the route commits. The tab strip
   // starts its animation on the click, and the new page mounts after it.
@@ -71,6 +82,28 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
   useEffect(() => {
     rememberProjectRoute(routeKey, route);
   }, [route, routeKey]);
+
+  // The drawer closes once a pick inside its list changed the page (a
+  // Settings section, a lane), so the page shows. A tab press keeps it open
+  // on that tab's list.
+  const drawerRouteRef = useRef(route);
+  useEffect(() => {
+    const previous = drawerRouteRef.current;
+    drawerRouteRef.current = route;
+    if (!drawer || previous === route) return;
+    const tabOf = (value: string) => projectSidebarTabForPath(value.split(/[?#]/, 1)[0] || "/work");
+    if (tabOf(previous) === tabOf(route)) setProjectSidebarDrawerOpen(false);
+  }, [drawer, route]);
+
+  useEffect(() => {
+    if (!drawer || !drawerOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      setProjectSidebarDrawerOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [drawer, drawerOpen]);
 
   const goTo = useCallback(
     (target: string) => {
@@ -116,6 +149,24 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
     return () => bodyElement.removeEventListener("click", onClick);
   }, [bodyElement, heldRoute, heldTab, navigate]);
 
+  // A chat picked from the drawer's Work list opens without a route change,
+  // so the drawer closes on the row itself.
+  useEffect(() => {
+    if (!bodyElement || !drawer) return;
+    const onClick = (event: MouseEvent) => {
+      if (event.button !== 0) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target?.closest("[data-session-row]")) return;
+      // The row's face (`data-session-row-action`) selects the chat; the
+      // controls inside it (snooze, settle, menus) keep the drawer open.
+      if (target.closest("button, a[href], [aria-haspopup], [role='menu'], [role='menuitem'], input, textarea")) return;
+      if (!target.closest("[role='button']")?.hasAttribute("data-session-row-action")) return;
+      setProjectSidebarDrawerOpen(false);
+    };
+    bodyElement.addEventListener("click", onClick);
+    return () => bodyElement.removeEventListener("click", onClick);
+  }, [bodyElement, drawer]);
+
   const openSettings = useCallback(() => {
     // The cog is a toggle: from Settings it returns to where you were.
     if (settingsActive) {
@@ -130,10 +181,21 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
   }, [navigate, projectRoot, routeKey, settingsActive]);
 
   return (
+    <>
+    {drawer && !hidden ? (
+      <button
+        type="button"
+        className="ade-project-sidebar-scrim"
+        aria-label="Close sidebar"
+        tabIndex={-1}
+        onClick={() => setProjectSidebarDrawerOpen(false)}
+      />
+    ) : null}
     <aside
       className="ade-project-sidebar relative flex h-full min-h-0 shrink-0 flex-col"
       hidden={hidden}
-      style={{ width, display: hidden ? "none" : undefined }}
+      style={{ width: drawer ? undefined : width, display: hidden ? "none" : undefined }}
+      data-drawer={drawer ? "true" : undefined}
       data-tour="app.sidebar"
       data-testid="project-sidebar"
     >
@@ -160,6 +222,9 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
               aria-current={active ? "page" : undefined}
               aria-label={tab.label}
               title={`${tab.label}${attentionLabel}${shortcut ? `  ${shortcut}` : ""}`}
+              // The page's code starts to load before the press.
+              onPointerEnter={() => preloadRoute(tab.to)}
+              onFocus={() => preloadRoute(tab.to)}
               // A tab opens on the press. The click it replaces fires on mouse-up.
               {...pressActivation(() => openTab(tab.to))}
             >
@@ -178,11 +243,14 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
             </button>
           );
         })}
+        {/* The computers with a copy (the Home row's chip); opens the copies menu. */}
+        <ProjectComputersTag />
       </nav>
 
       <div ref={setBodyRef} className="ade-project-sidebar-body relative flex min-h-0 flex-1 flex-col" />
 
       {starPillSlotActive ? <StarRepoPill /> : null}
+      {starPillSlotActive ? <InviteFriendsPill /> : null}
 
       <div className="ade-project-sidebar-footer shrink-0" data-ph-unmask="">
         {visibleProjectSidebarTabs(PROJECT_SIDEBAR_FOOTER_TABS).map((item) => {
@@ -197,15 +265,21 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
               data-active={active ? "true" : undefined}
               aria-current={active ? "page" : undefined}
               title={waiting ? "The CTO is waiting on you" : undefined}
+              onPointerEnter={() => preloadRoute(item.to)}
+              onFocus={() => preloadRoute(item.to)}
               // Pressing the open item keeps it open (CTO stays on its thread);
               // the held tab above, or a chat in its list, leads back.
               {...pressActivation(() => {
+                // CTO and History fill the page; the drawer gets out of their way.
+                if (drawer) setProjectSidebarDrawerOpen(false);
                 if (active) return;
                 openTab(item.to);
               })}
             >
               <span className="relative inline-flex shrink-0">
-                <item.icon size={15} weight={active ? "fill" : "regular"} />
+                {item.to === "/cto"
+                  ? <CtoAvatar look={ctoLook} state={waiting ? "waiting" : "idle"} size={15} motion="static" />
+                  : <item.icon size={15} weight={active ? "fill" : "regular"} />}
                 {waiting ? (
                   <span className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning" />
                 ) : null}
@@ -236,8 +310,9 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
         ) : null}
       </div>
 
-      <ProjectSidebarResizeHandle />
+      {drawer ? null : <ProjectSidebarResizeHandle />}
     </aside>
+    </>
   );
 }
 

@@ -37,9 +37,12 @@ export function PrReviewerPicker({
   }, [authorLogin, entries]);
 
   React.useEffect(() => {
+    const searchPin = scope?.pin ?? null;
+    // No machine online: nothing is asked.
+    if (!searchPin) return undefined;
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      window.ade.prs.searchMentionables({ repoOwner, repoName, query, includeTeams: true }, scope?.pin ?? null)
+      window.ade.prs.searchMentionables({ repoOwner, repoName, query, includeTeams: true }, searchPin)
         .then((next) => {
           if (cancelled) return;
           setResults(next);

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,7 +48,8 @@ function printHelp() {
     "Usage: node scripts/build-static.mjs [--target darwin-arm64] [--out-dir dist-static]",
     "",
     "Builds an ADE runtime executable with Node SEA. Cross-target builds require",
-    "ADE_STATIC_NODE_BINARY to point at a matching Node executable.",
+    "ADE_STATIC_NODE_BINARY to point at a matching Node executable. darwin-x64 builds",
+    "on Apple Silicon also need Rosetta 2, which runs that Node to write the SEA blob.",
     "",
   ].join("\n"));
 }
@@ -63,6 +64,23 @@ function validateTarget(target) {
   if (!/^(?:(?:darwin|linux)-(?:arm64|x64)|win32-x64)$/.test(target)) {
     throw new Error(`Unsupported runtime target '${target}'. Expected darwin-arm64, darwin-x64, linux-arm64, linux-x64, or win32-x64.`);
   }
+}
+
+let rosettaAvailable = null;
+
+/**
+ * True when this machine can run a binary built for `target`: its own target,
+ * or darwin-x64 on Apple Silicon with Rosetta 2 installed. The release builds
+ * the darwin-x64 runtime on an Apple Silicon runner this way, so the version
+ * checks below still run the binary they check.
+ */
+function canExecuteTarget(target) {
+  if (target === currentTarget()) return true;
+  if (process.platform !== "darwin" || process.arch !== "arm64" || target !== "darwin-x64") return false;
+  if (rosettaAvailable === null) {
+    rosettaAvailable = spawnSync("/usr/bin/arch", ["-x86_64", "/usr/bin/true"]).status === 0;
+  }
+  return rosettaAvailable;
 }
 
 async function assertHostOrExplicitBinary(target) {
@@ -151,7 +169,7 @@ async function assertEmbeddedNodeVersion(binaryPath, target) {
   let version = null;
   if (binaryPath === process.execPath) {
     version = process.version;
-  } else if (target === currentTarget()) {
+  } else if (canExecuteTarget(target)) {
     version = (await execFileAsync(binaryPath, ["--version"], { cwd: packageRoot })).stdout.trim();
   }
   if (version === null) {
@@ -264,7 +282,7 @@ async function adHocSignIfNeeded(binaryPath) {
 }
 
 async function assertStaticRuntimeVersion(binaryPath, expectedVersion, target) {
-  if (target !== currentTarget()) return;
+  if (!canExecuteTarget(target)) return;
   const { stdout } = await execFileAsync(binaryPath, ["--version"], {
     cwd: packageRoot,
     env: {
@@ -502,6 +520,15 @@ async function main() {
   const seaEntryPath = await writeSeaEntry(workDir, sentryDir);
   const sourceNodeBinary = process.env.ADE_STATIC_NODE_BINARY || process.execPath;
   await assertSeaCapableNodeBinary(sourceNodeBinary);
+  // The SEA Node writes its own blob below. The blob is portable across
+  // architectures (no code cache, no snapshot), but this step still has to run
+  // that Node here.
+  if (sourceNodeBinary !== process.execPath && !canExecuteTarget(args.target)) {
+    throw new Error(
+      `Cannot run the ${args.target} Node (${sourceNodeBinary}) on ${currentTarget()} to write the SEA blob.`
+        + (args.target === "darwin-x64" ? " Install Rosetta 2: softwareupdate --install-rosetta --agree-to-license." : ""),
+    );
+  }
 
   const seaConfigPath = path.join(workDir, "sea-config.json");
   const blobPath = path.join(workDir, "ade.blob");
@@ -509,6 +536,8 @@ async function main() {
     main: seaEntryPath,
     output: blobPath,
     disableExperimentalSEAWarning: true,
+    // Both stay off: either one makes the blob specific to the architecture
+    // that wrote it, and the darwin-x64 runtime is built on Apple Silicon.
     useCodeCache: false,
     useSnapshot: false,
     // Node 24's V8 sizes the young generation by the machine's memory, which

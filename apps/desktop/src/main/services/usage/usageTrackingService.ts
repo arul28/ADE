@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type {
@@ -28,7 +28,9 @@ import type {
   AdeUsageModelSummary,
   AdeUsageProviderSummary,
   AdeUsageRangePreset,
+  AdeUsageActivityDatabase,
   AdeUsageRollup,
+  AdeUsageRollupActivity,
   AdeUsageRollupRow,
   AdeUsageScope,
   AdeUsageStats,
@@ -62,6 +64,7 @@ import {
   usageProviderAccountUrl,
 } from "../../../shared/types";
 import { finiteNumberOrNull, isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
+import { launchQuietRemainingMs, runAfterLaunchQuiet } from "../shared/launchQuiet";
 import {
   decodeOpenCodeRegistryId,
   getModelById,
@@ -90,6 +93,13 @@ import {
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore, sameLoginOwner } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { claudePassKeyOfAccountId } from "../../../shared/types/providerLogins";
+import {
+  claudePassUsageWindows,
+  claudePassUseOf,
+  claudePassVerifiedEmail,
+} from "../claudePass/claudePassUse";
+import type { ClaudePassCheck } from "../../../shared/cloudSignIns";
 import { machineProviderUsageHomes } from "./providerUsageHomes";
 import {
   accountBalanceModelWeight,
@@ -113,7 +123,7 @@ import {
 import { listLinkedLaneWorktreeRoots } from "../projects/worktreeParent";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
-import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
+import { requireInstalledPinnedProviderExecutable } from "../ai/pinnedProviderTools";
 import { CODEX_APP_SERVER_STARTUP_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
@@ -163,9 +173,12 @@ import {
   MAX_LIVE_QUOTA_WINDOWS,
   buildRollupRows,
   mergeAccountUsageStats,
+  mergeOwnActivity,
+  omitUnknownAccountCounts,
   type AccountUsageContribution,
 } from "./accountUsageRollup";
 import { createPeerLiveQuota, type AccountLiveQuotaFetcher } from "./peerLiveQuota";
+import type { AccountResetCreditSpender } from "./accountUsageLiveRefresh";
 import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
 import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "../../../shared/usageCostSplit";
 import { buildCostBreakdown } from "./usageCostBreakdown";
@@ -188,6 +201,8 @@ import {
 } from "./accountUsageRollupStore";
 import {
   collectAdeDatabaseUsageStats,
+  collectDatabaseActivityDays,
+  readActivityDatabaseId,
   type AdeDatabaseUsageStats,
 } from "./usageStatsStore";
 import {
@@ -274,6 +289,11 @@ const COST_REFRESH_RETRY_MAX_MS = 15 * 60_000;
 const CODEX_CLI_RPC_TIMEOUT_MS = 10_000;
 const CLAUDE_CLI_USAGE_TIMEOUT_MS = 16_000;
 const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
+/**
+ * A spend sent to the machine that holds the credit: the claim (up to 25 s for
+ * Claude) plus that machine's quota re-read (up to 20 s), with room for the hop.
+ */
+const PEER_RESET_CREDIT_TIMEOUT_MS = 60_000;
 /**
  * Schema *and computation* version of the persisted usage snapshot.
  *
@@ -624,7 +644,7 @@ function parseClaudeCliUsage(text: string): UsageWindow[] {
 async function captureClaudeCliUsage(logger: Logger, configHome?: string): Promise<string> {
   const module = await import("node-pty");
   const nodePty = ((module as unknown as { default?: typeof module }).default ?? module);
-  const resolved = await requirePinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable());
+  const resolved = requireInstalledPinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable());
   const env = {
     ...process.env,
     ...providerSelfUpdateEnv("claude"),
@@ -850,14 +870,29 @@ function scopedConfigHome(
  * background poll that refuses the Keychain can never see it. The read is
  * cached per account, so the Keychain is opened once per process, then the
  * cache serves every later poll.
+ *
+ * The cache holds a token for about eight hours. Without another Keychain
+ * read, the default account's background polls then stop, and its meters
+ * freeze until the user refreshes. So once a poll in this process has read
+ * the default login from the Keychain (`defaultKeychainRead`), background
+ * polls may read it again: the user has already allowed that lookup.
  */
 export function claudePollAllowsKeychain(
   reason: UsageProviderPollContext["reason"],
   configHome: string | undefined,
+  defaultKeychainRead = defaultClaudeKeychainRead,
 ): boolean {
   if (configHome?.trim()) return true;
-  return reason === "user";
+  return reason === "user" || defaultKeychainRead;
 }
+
+/**
+ * True after a poll in this process opened the Keychain for the default
+ * Claude account and found its login there. False again after a read that
+ * the Keychain refused. Process-local: a new brain waits for the next user
+ * poll before it reads that Keychain item in the background.
+ */
+let defaultClaudeKeychainRead = false;
 
 /**
  * Per-account rate-limit memory for multi-account providers.
@@ -971,8 +1006,10 @@ export async function recheckSignedOutLogins(
 ): Promise<string[]> {
   if (args.provider && args.provider !== "claude") return [];
   const wanted = args.instanceId?.trim();
-  const targets = getMachineProviderInstanceStore().list("claude").filter((instance) => (
-    wanted ? instance.id === wanted : instance.loginBroken === true
+  const store = getMachineProviderInstanceStore();
+  // A Claude pass account has no login file to read (its token joins at the spawn).
+  const targets = store.list("claude").filter((instance) => (
+    (wanted ? instance.id === wanted : instance.loginBroken === true) && !store.cloudPassOf(instance.id)
   ));
   const restored: string[] = [];
   await Promise.all(targets.map(async (instance) => {
@@ -990,9 +1027,25 @@ export async function recheckSignedOutLogins(
   return restored;
 }
 
-function attachAccountLogins(accounts: UsageAccount[]): void {
+/**
+ * Each account's login state on this machine. A poll's reading wins. With
+ * none, an account the registry counts as signed in here (its email is known
+ * and no poll found the login broken) is `ok`: Codex polls never record a
+ * state, and a Codex login kept in the keyring has no file to read, so its row
+ * said "Unknown" while Settings said "Signed in" for the same account.
+ */
+function attachAccountLogins(
+  accounts: UsageAccount[],
+  listInstances: (provider: QuotaInstanceProvider) => QuotaInstance[],
+): void {
+  const signedInHere = new Set<string>();
+  for (const provider of ["claude", "codex"] as const) {
+    for (const instance of listInstances(provider)) {
+      if (instance.signedIn === true) signedInHere.add(usageAccountId({ provider, instanceId: instance.id }));
+    }
+  }
   for (const account of accounts) {
-    const login = accountLogins.get(account.id);
+    const login = accountLogins.get(account.id) ?? (signedInHere.has(account.id) ? "ok" : undefined);
     if (login) account.login = login;
   }
 }
@@ -1266,8 +1319,9 @@ async function pollQuotaInstances(
  *
  * The next background poll reads the refreshed login: a scoped account's own
  * Keychain item, or the credentials file the CLI rewrites off macOS. The base
- * account on macOS is left out: its background poll skips the Keychain, so a
- * refresh there would respawn the CLI on every allowance without being read.
+ * account on macOS is left out until a poll has read its Keychain item: before
+ * that its background poll skips the Keychain, so a refresh there would
+ * respawn the CLI on every allowance without being read.
  */
 async function refreshClaudeLoginInBackground(
   logger: Logger,
@@ -1277,7 +1331,7 @@ async function refreshClaudeLoginInBackground(
   configHome: string | undefined,
 ): Promise<FreshUsageProviderPollResult | null> {
   if (context.reason === "user") return null;
-  if (configHome === undefined && process.platform === "darwin") return null;
+  if (configHome === undefined && process.platform === "darwin" && !defaultClaudeKeychainRead) return null;
   if (!claimClaudeBackgroundRefresh(accountId)) return null;
   const refreshed = await measureUsagePhase(
     logger,
@@ -1295,6 +1349,33 @@ async function refreshClaudeLoginInBackground(
   return refreshed;
 }
 
+function claudePassOfInstance(instanceId: string): { key: string; email: string | null; check: ClaudePassCheck } | null {
+  try {
+    return getMachineProviderInstanceStore().cloudPassOf(instanceId);
+  } catch {
+    return null;
+  }
+}
+
+function isClaudePassAccount(instanceId: string): boolean {
+  return claudePassOfInstance(instanceId) !== null;
+}
+
+function claudePassUsageIdentity(pass: { email: string | null; check: ClaudePassCheck }): ProviderAccountIdentity {
+  const email = claudePassVerifiedEmail(pass);
+  return email ? { email } : {};
+}
+
+function claudePassMachines(pass: { key: string }, machineLabel: string): UsageAccount["machines"] {
+  const use = claudePassUseOf(pass.key);
+  return [{ label: machineLabel, ...(use.state === "seen" ? { checkedAt: new Date(use.lastSeenAt).toISOString() } : {}) }];
+}
+
+function withoutEmail(account: UsageAccount): UsageAccount {
+  const { email: _email, ...rest } = account;
+  return rest;
+}
+
 /**
  * Quota for ONE Claude account. `null` = this account's config home holds no
  * login, so it has nothing to report.
@@ -1304,6 +1385,14 @@ async function pollClaudeInstance(
   context: UsageProviderPollContext,
   instance: QuotaInstance,
 ): Promise<UsageProviderPollResult | null> {
+  // A Claude pass account (cloud computer) has no login file or Keychain item
+  // to read, so a read would mark it signed out. Its limits come from its own
+  // turns (`rate_limit_event`, claudePassUse.ts): memory only, no read, no
+  // network. Nothing seen yet → null, which shows no number, never 0 %.
+  if (isClaudePassAccount(instance.id)) {
+    const windows = claudePassUsageWindows(instance.id);
+    return windows.length > 0 ? { windows, extraUsage: null, errors: [] } : null;
+  }
   // The CLI probe is for a user who just asked — background polls must not
   // spawn Claude. The Keychain is narrower: the default account still skips
   // it on background polls (that lookup can prompt), but a scoped account's
@@ -1325,6 +1414,14 @@ async function pollClaudeInstance(
       ...(configHome ? { configHome } : {}),
     }),
   );
+  if (!configHome && allowKeychain) {
+    // Only a login that came out of the Keychain counts. A file login, or a
+    // file found after the Keychain timed out or the prompt was cancelled,
+    // says nothing about whether a background read would prompt.
+    const source = login.state === "ok" ? login.credentials.source : login.state === "expired" ? login.source : undefined;
+    if (source === "macos-keychain") defaultClaudeKeychainRead = true;
+    else if (login.state === "unreadable") defaultClaudeKeychainRead = false;
+  }
   // On macOS the login lives in the Keychain. A read that skipped it saw only
   // the credentials file, so its miss says nothing about the account.
   if (login.state !== "unreadable" && (allowKeychain || process.platform !== "darwin" || login.state === "ok")) {
@@ -1496,6 +1593,11 @@ async function pollCodexInstance(
   instance: QuotaInstance,
 ): Promise<FreshUsageProviderPollResult | null> {
   const configHome = scopedConfigHome("codex", instance);
+  // Windows read with this account's own login prove the login works. A miss
+  // proves nothing: a login kept in the keyring has no auth.json to read.
+  const loginWorked = (): void => {
+    noteAccountLogin(usageAccountId({ provider: "codex", instanceId: instance.id }), instance.id, "ok");
+  };
   const creds = await measureUsagePhase(
     logger,
     { provider: "codex", phase: "credentials", reason: context.reason },
@@ -1523,6 +1625,7 @@ async function pollCodexInstance(
     if (result.ok && isRecord(result.data)) {
       const snapshot = parseCodexRateLimitSnapshot(result.data);
       if (snapshot.windows.length > 0) {
+        loginWorked();
         return { ...snapshot, source: "http", errors: [] };
       }
       const fallback = await measureUsagePhase(
@@ -1530,6 +1633,7 @@ async function pollCodexInstance(
         { provider: "codex", phase: "cli_rpc_fallback", reason: context.reason },
         () => pollCodexViaCliRpc(logger, configHome),
       );
+      if (fallback.windows.length > 0) loginWorked();
       return fallback.windows.length > 0
         ? { ...fallback, source: "cli", errors: [] }
         : {
@@ -1545,7 +1649,10 @@ async function pollCodexInstance(
         { provider: "codex", phase: "cli_rpc_fallback", reason: context.reason },
         () => pollCodexViaCliRpc(logger, configHome),
       );
-      if (fallback.windows.length > 0) return { ...fallback, source: "cli", errors: [] };
+      if (fallback.windows.length > 0) {
+        loginWorked();
+        return { ...fallback, source: "cli", errors: [] };
+      }
       return {
         ...fallback,
         source: "cli",
@@ -1649,8 +1756,8 @@ async function runCodexAppServerJsonRpc(args: {
 }): Promise<Map<number, Record<string, unknown>>> {
   const { logger, configHome, requests } = args;
   const timeoutMs = args.timeoutMs ?? CODEX_CLI_RPC_TIMEOUT_MS;
-  // ADE's pinned Codex, downloaded first if this machine never used it.
-  const codexPath = (await requirePinnedProviderExecutable("codex", () => resolveCodexExecutable())).path;
+  // ADE's pinned Codex when it is here. A usage read never downloads it.
+  const codexPath = requireInstalledPinnedProviderExecutable("codex", () => resolveCodexExecutable()).path;
   const lines = [
     JSON.stringify({
       jsonrpc: "2.0",
@@ -1894,7 +2001,8 @@ const CODEX_RESET_CREDIT_PROBE_INTERVAL_MS = 15 * 60_000;
 const CODEX_RESET_CREDIT_CONSUME_TIMEOUT_MS = 20_000;
 
 type CodexResetCreditCacheEntry = {
-  credits: CodexResetCredits;
+  /** Null until a read succeeds: a failed first read is not a count of zero. */
+  credits: CodexResetCredits | null;
   readAt: number;
 };
 
@@ -1966,7 +2074,7 @@ async function probeCodexResetCredits(args: {
       // spawn a process on every snapshot. The previous reading is kept when
       // there was one; only the clock moves.
       codexResetCreditCache.set(key, {
-        credits: cached?.credits ?? { availableCount: 0 },
+        credits: cached?.credits ?? null,
         readAt: Date.now(),
       });
     } finally {
@@ -2098,7 +2206,8 @@ const CODEX_RESET_CREDIT_OUTCOME_MESSAGE: Record<
 const CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS = 15 * 60_000;
 
 type ClaudeResetCreditCacheEntry = {
-  credits: ClaudeResetCredits;
+  /** Null until a read succeeds: a failed first read is not a count of zero. */
+  credits: ClaudeResetCredits | null;
   readAt: number;
 };
 
@@ -2163,7 +2272,7 @@ async function probeClaudeResetCredits(args: {
       claudeResetCreditCache.set(key, {
         credits: read.status === "ok"
           ? read.credits ?? { availableCount: 0 }
-          : cached?.credits ?? { availableCount: 0 },
+          : cached?.credits ?? null,
         readAt: Date.now(),
       });
     } catch (error) {
@@ -2174,7 +2283,7 @@ async function probeClaudeResetCredits(args: {
       // re-send on every snapshot. The previous reading is kept when there was
       // one; only the clock moves.
       claudeResetCreditCache.set(key, {
-        credits: cached?.credits ?? { availableCount: 0 },
+        credits: cached?.credits ?? null,
         readAt: Date.now(),
       });
     } finally {
@@ -3678,9 +3787,15 @@ async function stampProviderAccounts(
       // a scoped home reports a signed-in machine as signed out), and every
       // other row is read from its own home (stamping the base email on a
       // promoted secondary shows one account under another's address).
-      const identity = isBaseProviderInstance({ id: instance.id, provider: key })
-        ? baseIdentity
-        : await readInstanceAccountIdentity(key, instance);
+      // A Claude pass has no account file: its identity is the email Claude
+      // named at the check, never a typed one, so peers' readings of that
+      // account pool onto it (smart balance before its first turn).
+      const pass = key === "claude" ? claudePassOfInstance(instance.id) : null;
+      const identity = pass
+        ? claudePassUsageIdentity(pass)
+        : isBaseProviderInstance({ id: instance.id, provider: key })
+          ? baseIdentity
+          : await readInstanceAccountIdentity(key, instance);
       if (instance.isDefault) defaultIdentity = identity;
       if (identity.email && instance.account?.email
         && identity.email.trim().toLowerCase() !== instance.account.email.trim().toLowerCase()) {
@@ -3704,7 +3819,8 @@ async function stampProviderAccounts(
         instanceId: instance.id,
         label: instance.label,
         ...(instance.accentColor ? { accentColor: instance.accentColor } : {}),
-        machines,
+        // A pass's reading is as old as its last turn, not as the poll that copied it.
+        machines: pass ? claudePassMachines(pass, machineLabel) : machines,
         ...(url ? { url } : {}),
         ...(resetCredits ? { resetCredits } : {}),
       });
@@ -4127,6 +4243,27 @@ let cachedLocalMachineKey: string | null = null;
  * skipped, `getUsageRollup` answers null, and the next scan tries again because
  * the failure is not memoized.
  */
+let deviceDisplayName: (() => string) | null = null;
+let deviceDisplayNameLoad: Promise<void> | null = null;
+
+/**
+ * The name the person gave this computer ("Arul's Mac Studio"), as the machine
+ * picker shows it; peers print it in "via". The network hostname ("Mac.lan")
+ * stands in until the name is known. The device registry loads on first use,
+ * as the brain loads it: at module load it would bring the Tailscale probe in.
+ */
+function localMachineLabel(): string {
+  if (!deviceDisplayName && !deviceDisplayNameLoad) {
+    deviceDisplayNameLoad = import("../../../../../ade-cli/src/services/sync/deviceRegistryService")
+      .then((module) => {
+        deviceDisplayName = module.resolveDeviceDisplayName;
+        deviceDisplayName();
+      })
+      .catch(() => undefined);
+  }
+  return deviceDisplayName?.() ?? os.hostname();
+}
+
 function defaultLocalMachineIdentity(): LocalMachineIdentity | null {
   if (!cachedLocalMachineKey) {
     try {
@@ -4138,7 +4275,7 @@ function defaultLocalMachineIdentity(): LocalMachineIdentity | null {
   if (!cachedLocalMachineKey) return null;
   return {
     machineKey: cachedLocalMachineKey,
-    label: os.hostname(),
+    label: localMachineLabel(),
     platform: process.platform,
   };
 }
@@ -4327,6 +4464,12 @@ export function createUsageTrackingService({
   const githubStatsInFlight = new Map<string, Promise<GitHubActivityStats>>();
   const statsRefreshInFlight = new Map<string, Promise<void>>();
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * A poll round finished, so an empty panel now means "nothing to show", not
+   * "not read yet". A snapshot loaded from disk counts: its readings are a
+   * completed poll's, and a demand read must not start one at launch.
+   */
+  let hasCompletedPoll = lastSnapshot.windows.length > 0;
   let pollingEnabled = false;
   let inFlightPoll: Promise<UsageSnapshot> | null = null;
   let inFlightPollReason: UsageRefreshReason | null = null;
@@ -4592,10 +4735,52 @@ export function createUsageTrackingService({
    * needs the key every peer files this machine under, and any other key is a
    * phantom computer. See `defaultLocalMachineIdentity`.
    */
+  /**
+   * This machine's chats, shells, commits and PRs per day, per project
+   * database, as last read. Refreshed by `refreshLocalActivity` on the ledger
+   * scan's publish; null until the first read in this process.
+   */
+  let cachedLocalActivity: AdeUsageRollupActivity | null = null;
+
+  /**
+   * Re-read the activity of every attached project database.
+   *
+   * Rides the scan's publish (and runs once lazily before the first one), so
+   * it adds no cadence of its own: three plain scans per attached database
+   * per ledger scan. Databases not attached right now keep their last counts
+   * (`mergeOwnActivity`), from this process's cache or, after a restart, from
+   * this machine's own stored meta row.
+   */
+  function refreshLocalActivity(nowMs: number, machineKey: string): AdeUsageRollupActivity {
+    const oldestDay = rollupOldestDay(nowMs);
+    let previous = cachedLocalActivity;
+    if (!previous) {
+      previous = accountRollupStore.readAll().find((stored) => stored.machineKey === machineKey)?.activity ?? null;
+    }
+    const fresh: AdeUsageActivityDatabase[] = [];
+    for (const scope of allScopes()) {
+      try {
+        const counted = collectDatabaseActivityDays(scope.db, oldestDay);
+        if (!counted) continue;
+        const folder = scopeRootKey(scope.projectRoot) || scope.key;
+        fresh.push({
+          id: counted.id,
+          scope: createHash("sha256").update(folder).digest("hex").slice(0, 16),
+          days: counted.days,
+        });
+      } catch (error) {
+        logger.warn("usage.account.activity_read_failed", { error: getErrorMessage(error) });
+      }
+    }
+    cachedLocalActivity = mergeOwnActivity(previous, fresh, oldestDay);
+    return cachedLocalActivity;
+  }
+
   function buildLocalRollup(nowMs: number): AdeUsageRollup | null {
     const identity = readLocalMachineIdentity();
     if (!identity) return null;
     const rows = buildRollupRows(cachedCosts, { oldestDay: rollupOldestDay(nowMs) });
+    const activity = cachedLocalActivity ?? refreshLocalActivity(nowMs, identity.machineKey);
     return {
       version: 1,
       machineKey: identity.machineKey,
@@ -4608,11 +4793,14 @@ export function createUsageTrackingService({
       // Bounded here too, so an unbounded snapshot cannot ride the wire.
       windows: lastSnapshot.windows.slice(0, MAX_LIVE_QUOTA_WINDOWS),
       accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS),
+      activity,
     };
   }
 
   function publishLocalRollup(nowMs: number): void {
     try {
+      const machineKey = readLocalMachineIdentity()?.machineKey;
+      if (machineKey) refreshLocalActivity(nowMs, machineKey);
       const rollup = buildLocalRollup(nowMs);
       // No identity, no publish. A hostname-keyed rollup replicates to every
       // machine on the account as a second computer that never reconciles with
@@ -4639,6 +4827,12 @@ export function createUsageTrackingService({
 
   function setAccountRollupFetcher(fetcher: AccountRollupFetcher | null): void {
     fetchAccountRollups = fetcher;
+  }
+
+  /** How a reset banked on another machine is spent there; null until the brain installs it. */
+  let spendPeerResetCredit: AccountResetCreditSpender | null = null;
+  function setAccountResetCreditSpender(spender: AccountResetCreditSpender | null): void {
+    spendPeerResetCredit = spender;
   }
 
   /**
@@ -4826,7 +5020,7 @@ export function createUsageTrackingService({
     const localKey = identity?.machineKey ?? `unidentified:${os.hostname()}`;
     const contributions: AccountUsageContribution[] = [{
       machineKey: localKey,
-      label: identity?.label ?? os.hostname(),
+      label: identity?.label ?? localMachineLabel(),
       platform: identity?.platform ?? process.platform,
       isLocal: true,
       origin: "live",
@@ -5823,7 +6017,7 @@ export function createUsageTrackingService({
         ]);
         const { accounts, defaultAccountIdByProvider, duplicateAccountIds } = await stampProviderAccounts(
           providerStatus,
-          readLocalMachineIdentity()?.label ?? os.hostname(),
+          readLocalMachineIdentity()?.label ?? localMachineLabel(),
           new Set(allWindows.map((window) => window.accountId).filter((id): id is string => Boolean(id))),
           readQuotaInstances,
         );
@@ -5836,7 +6030,7 @@ export function createUsageTrackingService({
         // default account's before the notice decides the account has nothing.
         attachAccountRateLimitNotices(accounts, allWindows);
         stampAccountReadTimes(accounts, allWindows);
-        attachAccountLogins(accounts);
+        attachAccountLogins(accounts, readQuotaInstances);
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
@@ -5856,6 +6050,7 @@ export function createUsageTrackingService({
         };
 
         const published = publishSnapshot(snapshot);
+        hasCompletedPoll = true;
         void writeCachedUsageSnapshot(published, logger);
 
         logger.debug("usage.poll.complete", {
@@ -5922,6 +6117,20 @@ export function createUsageTrackingService({
       scheduleNextPoll(FIRST_AUTOMATIC_POLL_DELAY_MS);
       return;
     }
+    if (firstStart && launchQuietRemainingMs() > 0) {
+      // Nothing on disk to show, and the launch is still on: the poll starts
+      // Codex's app-server and Claude's CLI, which read 75 MB each from a cold
+      // disk while the person opens their first thread. It runs once the
+      // launch is over (`launchQuiet.ts`); asking for usage sooner
+      // (`noteQuotaDemand`, a Refresh) still polls at once.
+      void runAfterLaunchQuiet(async () => {
+        if (!pollingEnabled || pollTimer) return;
+        await poll({ reason: "automatic" }).catch(() => {});
+      }).finally(() => {
+        if (pollingEnabled && !pollTimer) scheduleNextPoll();
+      });
+      return;
+    }
     scheduleNextPoll();
     void poll({ reason: "automatic" })
       .catch(() => {})
@@ -5948,7 +6157,11 @@ export function createUsageTrackingService({
     demandLeaseUntilMs = nowMs + QUOTA_DEMAND_LEASE_MS;
     if (pollTimer) scheduleNextPoll();
     const snapshot = getUsageSnapshot();
-    if (nowMs - Date.parse(snapshot.lastPolledAt) > ACTIVE_POLL_INTERVAL_MS) {
+    // A poll that has not finished (a fresh launch, or the first one still
+    // waiting out the launch quiet period) leaves the panel empty: the person
+    // is looking at it, so poll now. A completed poll that legitimately found
+    // no windows is not a reason to poll again on every open.
+    if (!hasCompletedPoll || nowMs - Date.parse(snapshot.lastPolledAt) > ACTIVE_POLL_INTERVAL_MS) {
       void poll({ reason: "automatic" }).catch(() => {});
     }
     // Someone is looking at limits: pull the other machines' readings too, so a
@@ -5980,6 +6193,7 @@ export function createUsageTrackingService({
       return quotaForDisplay(await poll(options));
     },
     setAccountLiveQuotaFetcher: peerQuota.setFetcher,
+    setAccountResetCreditSpender,
     getOwnLiveQuota,
   };
 
@@ -6047,6 +6261,53 @@ export function createUsageTrackingService({
     // caller sent — a missing one must answer like every other bad account id
     // rather than throwing a TypeError out of the RPC.
     const accountId = typeof args?.accountId === "string" ? args.accountId.trim() : "";
+    // A login whose banked resets only another machine can read: that machine
+    // holds the working login, so the claim has to run there.
+    const shown = accountId
+      ? quotaForDisplay(lastSnapshot).accounts?.find((account) => account.id === accountId)
+      : undefined;
+    const lentFrom = shown?.resetCreditsOn;
+    if (lentFrom) return await consumePeerResetCredit(accountId, lentFrom, shown?.email?.trim() ?? "");
+    return await consumeOwnResetCredit({ accountId });
+  }
+
+  /**
+   * Spend a reset that a peer holds, on that peer, then read its quota again
+   * so the lent count and the windows catch up.
+   */
+  async function consumePeerResetCredit(
+    accountId: string,
+    lentFrom: NonNullable<UsageAccount["resetCreditsOn"]>,
+    email: string,
+  ): Promise<UsageResetCreditResult> {
+    const provider = resetCreditProviderForAccountId(accountId) ?? undefined;
+    const result = spendPeerResetCredit
+      ? await spendPeerResetCredit({ ...lentFrom, email, timeoutMs: PEER_RESET_CREDIT_TIMEOUT_MS })
+      : {
+        ok: false,
+        status: "failure" as const,
+        message: `This reset is banked on ${lentFrom.label}, and ADE here cannot reach it. Spend it there.`,
+      };
+    if (result.status === "failure") {
+      logger.warn("usage.peer_reset_credit_failed", { provider, error: result.message ?? null });
+    }
+    // Wait for the peer's new count, so the row stops offering the credit
+    // that was just spent before a second click can claim another one. The
+    // old count goes first: a read that fails must not bring it back.
+    if (result.status !== "failure") peerQuota.forgetResetCredits(lentFrom.machineKey, lentFrom.accountId);
+    await peerQuota.refreshNow();
+    captureResetCreditOutcome(result, provider);
+    return result;
+  }
+
+  /**
+   * Spend one of this machine's own banked resets. A peer that sends the spend
+   * here calls this directly, so a claim never travels on to a third machine.
+   */
+  async function consumeOwnResetCredit(
+    args: { accountId: string; email?: string },
+  ): Promise<UsageResetCreditResult> {
+    const accountId = typeof args?.accountId === "string" ? args.accountId.trim() : "";
     if (!accountId) {
       const failure: UsageResetCreditResult = {
         ok: false,
@@ -6074,6 +6335,20 @@ export function createUsageTrackingService({
         message: "That account is not signed in on this computer.",
       };
       captureResetCreditOutcome(failure, provider ?? undefined);
+      return failure;
+    }
+    // A peer names the login its row showed. The same id can hold another
+    // login now (a new sign-in in the account's folder), and that login's
+    // reset is not the one the user asked to spend.
+    const expectedEmail = typeof args?.email === "string" ? args.email.trim().toLowerCase() : "";
+    const heldEmail = lastSnapshot?.accounts?.find((account) => account.id === accountId)?.email?.trim().toLowerCase() ?? "";
+    if (expectedEmail && heldEmail !== expectedEmail) {
+      const failure: UsageResetCreditResult = {
+        ok: false,
+        status: "failure",
+        message: "That login is no longer signed in on this computer. Nothing was spent.",
+      };
+      captureResetCreditOutcome(failure, provider);
       return failure;
     }
     const configHome = scopedConfigHome(provider, instance);
@@ -6342,12 +6617,14 @@ export function createUsageTrackingService({
         localStats: stats,
         contributions: collectAccountContributions(nowMs),
         nowMs,
+        localDatabaseId: readActivityDatabaseId(forScope.db),
       });
     } catch (error) {
       // Account scope is additive. If the merge itself fails, the honest answer
       // is this machine's numbers with an explanation — not an empty page.
       logger.warn("usage.account.merge_failed", { error: getErrorMessage(error) });
       stats.scope = "account";
+      omitUnknownAccountCounts(stats);
       stats.sourceNotes = [
         ...(stats.sourceNotes ?? []),
         "Couldn't add up the other computers — showing this one only.",
@@ -6364,7 +6641,10 @@ export function createUsageTrackingService({
   function getOwnLiveQuota(): { windows: UsageWindow[]; accounts: UsageAccount[] } {
     return {
       windows: lastSnapshot.windows.slice(0, MAX_LIVE_QUOTA_WINDOWS),
-      accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS),
+      // A Claude pass gives peers no email, as before: its own numbers reach
+      // the person's computers through its status, named as the pass's.
+      accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS)
+        .map((account) => (account.email && claudePassKeyOfAccountId(account.instanceId) ? withoutEmail(account) : account)),
     };
   }
 
@@ -6578,6 +6858,7 @@ export function createUsageTrackingService({
       ...accountQuotaReads,
       noteQuotaDemand,
       consumeResetCredit,
+      consumeOwnResetCredit,
       getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
       getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args, scope),
       getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args, scope),
@@ -6622,6 +6903,7 @@ export function createUsageTrackingService({
     ...accountQuotaReads,
     noteQuotaDemand,
     consumeResetCredit,
+    consumeOwnResetCredit,
     getAdeUsageStats,
     getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args),
     getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args),

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type { KeybindingsSnapshot } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { caretChordIsClaimed, keyChordIsClaimed } from "../../lib/keyboardClaims";
@@ -99,13 +100,6 @@ function visibleWorkSessionRows(root: ParentNode = document): HTMLElement[] {
   return rows.filter((row) => row.getClientRects().length > 0);
 }
 
-function findVisibleElement(selector: string): HTMLElement | null {
-  for (const element of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
-    if (element.getClientRects().length > 0) return element;
-  }
-  return null;
-}
-
 /**
  * Put the caret back where a person types: the chat's prompt box, or the
  * terminal's own input for a CLI session.
@@ -116,8 +110,7 @@ function findVisibleElement(selector: string): HTMLElement | null {
 export function focusWorkInputSoon(attempts = 30): void {
   let remaining = attempts;
   const tick = () => {
-    const target = findVisibleElement("[data-chat-composer-text]")
-      ?? findVisibleElement(".xterm textarea");
+    const target = findWorkInputIn(document);
     if (target) {
       target.focus({ preventScroll: true });
       return;
@@ -126,6 +119,195 @@ export function focusWorkInputSoon(attempts = 30): void {
     if (remaining > 0) requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
+}
+
+/**
+ * Opens a new draft (`open`) and gives its prompt box the keyboard in the same
+ * task. The draft renders synchronously, so its box is in the page when
+ * `open` returns. A key the person typed while the draft rendered then goes
+ * to the new box: a focus on the next frame came after that key, which went to
+ * the chat that just left. If the box is not there yet, the frame retry of
+ * `focusWorkInputSoon` takes over.
+ */
+export function openDraftAndFocusWorkInput(open: () => void): void {
+  flushSync(open);
+  const target = findWorkInputIn(document);
+  if (target) target.focus({ preventScroll: true });
+  else focusWorkInputSoon();
+}
+
+/** The window's last pointer press or key press, for "did a click cause this?". */
+let lastWorkInput: { kind: "pointer" | "key"; at: number } | null = null;
+let workInputTrackerInstalled = false;
+/**
+ * The first Work view of the window gives the prompt box the keyboard once,
+ * within a few seconds; a chat the restore selects meanwhile carries it on.
+ * `done` means the person put the keyboard somewhere else. `focused` names the
+ * chat and the view layer that got it: a relaunch shows the new-chat draft
+ * until the session list has the remembered chat, then swaps in the chat
+ * itself, and that swap (same chat, new layer) carries the keyboard on too.
+ */
+let launchPromptFocus: {
+  until: number;
+  done: boolean;
+  focused: { chatKey: string | null; layerKey: string | null } | null;
+} | null = null;
+/**
+ * A chat that a send from the new-chat box opened while its prompt box held
+ * the keyboard (`noteSentDraftKeepsKeyboard`). The box leaves the screen with
+ * the send, so its focus goes nowhere; the chat's own prompt box takes it on.
+ */
+let sentDraftPromptFocus: { chatKey: string; until: number } | null = null;
+/** A chat switch this soon after a pointer press counts as made by the pointer. */
+const POINTER_SWITCH_WINDOW_MS = 1_000;
+/** How long the opened chat may take to show its prompt box after the send. */
+const SENT_DRAFT_PROMPT_FOCUS_WAIT_MS = 3_000;
+const LAUNCH_PROMPT_FOCUS_WAIT_MS = 5_000;
+const POINTER_PROMPT_FOCUS_WAIT_MS = 1_000;
+
+function installWorkInputTracker(): void {
+  if (workInputTrackerInstalled || typeof window === "undefined") return;
+  workInputTrackerInstalled = true;
+  const note = (kind: "pointer" | "key") => () => {
+    lastWorkInput = { kind, at: performance.now() };
+  };
+  window.addEventListener("pointerdown", note("pointer"), { capture: true, passive: true });
+  window.addEventListener("keydown", note("key"), { capture: true, passive: true });
+}
+
+function isEditableElement(element: Element): boolean {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+    return true;
+  }
+  if (element instanceof HTMLElement && element.isContentEditable) return true;
+  return element.closest(".xterm") != null;
+}
+
+/**
+ * Whether the keyboard is somewhere the prompt box may take it from: nowhere
+ * (the page body), or a control the person clicked. Never from a field, a
+ * terminal, a dialog or menu, a keyboard-focused control (Tab, arrows), or a
+ * text selection.
+ */
+function promptBoxMayTakeFocus(): boolean {
+  const selection = window.getSelection?.();
+  if (selection && selection.rangeCount > 0 && !selection.isCollapsed) return false;
+  const active = document.activeElement;
+  if (!active || active === document.body || active === document.documentElement) return true;
+  // A field in a layer that is leaving (inert) takes no keys: nobody holds the keyboard.
+  if (active.closest("[inert]")) return true;
+  if (isEditableElement(active)) return false;
+  if (active.closest("[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], [aria-modal='true']")) {
+    return false;
+  }
+  try {
+    if (active.matches(":focus-visible")) return false;
+  } catch {
+    // An engine without `:focus-visible`: treat the control as clicked.
+  }
+  return true;
+}
+
+function findWorkInputIn(root: ParentNode): HTMLElement | null {
+  for (const selector of ["[data-chat-composer-text]", ".xterm textarea"]) {
+    for (const element of Array.from(root.querySelectorAll<HTMLElement>(selector))) {
+      // A pane that is animating out is inert (WorkViewArea) and cannot take focus.
+      if (element.closest("[inert]")) continue;
+      if (element.getClientRects().length > 0) return element;
+    }
+  }
+  return null;
+}
+
+/**
+ * The new-chat box sent its prompt and opens `chatKey` now. When the box's
+ * prompt held the keyboard, the chat's prompt box takes it as soon as it
+ * shows, so the person keeps typing where they were. Call before the switch.
+ */
+export function noteSentDraftKeepsKeyboard(chatKey: string, draftRoot: Element | null): void {
+  if (typeof document === "undefined") return;
+  const active = document.activeElement;
+  if (!active || !draftRoot?.contains(active) || !active.closest("[data-chat-composer-text]")) return;
+  sentDraftPromptFocus = { chatKey, until: performance.now() + SENT_DRAFT_PROMPT_FOCUS_WAIT_MS };
+}
+
+/**
+ * Gives the visible prompt box (or the CLI terminal) in `root` the keyboard
+ * once the Work view shows a chat after launch, after a send from the new-chat
+ * box opens it, and after a pointer click switches the chat. Any other switch
+ * made with the keyboard keeps the focus where it is, and nothing takes the
+ * focus from a field, a dialog or a selection.
+ * `layerKey` names the view layer that shows the chat (the draft, a single
+ * chat): at launch the keyboard follows the chat from the draft to its own
+ * layer when the restore swaps them.
+ */
+export function useWorkInputFocusOnChatSwitch(
+  rootRef: { readonly current: HTMLElement | null },
+  chatKey: string | null,
+  active: boolean,
+  layerKey: string | null = null,
+): void {
+  const previousKeyRef = useRef<{ key: string | null } | null>(null);
+  useEffect(() => {
+    installWorkInputTracker();
+  }, []);
+  useEffect(() => {
+    if (!active) return;
+    const previous = previousKeyRef.current;
+    previousKeyRef.current = { key: chatKey };
+    const now = performance.now();
+    launchPromptFocus ??= { until: now + LAUNCH_PROMPT_FOCUS_WAIT_MS, done: false, focused: null };
+    const launch = launchPromptFocus;
+    const launchPending = !launch.done && now < launch.until && (
+      launch.focused == null
+      || (launch.focused.chatKey === chatKey && launch.focused.layerKey !== layerKey)
+    );
+    const sent = sentDraftPromptFocus;
+    const sendPending = sent != null && sent.chatKey === chatKey && now < sent.until;
+    let deadline: number;
+    if (launchPending) {
+      deadline = launch.until;
+    } else if (sendPending) {
+      deadline = sent.until;
+    } else if (
+      previous
+      && previous.key !== chatKey
+      && lastWorkInput?.kind === "pointer"
+      && now - lastWorkInput.at <= POINTER_SWITCH_WINDOW_MS
+    ) {
+      deadline = now + POINTER_PROMPT_FOCUS_WAIT_MS;
+    } else {
+      return;
+    }
+    let frame = 0;
+    const tick = () => {
+      frame = 0;
+      if (!promptBoxMayTakeFocus()) {
+        // The person put the keyboard somewhere first: launch focus is over.
+        if (launchPending) launch.done = true;
+        // The new-chat box can stay on screen until the session list has the
+        // chat, with its prompt box still holding the keyboard. The keyboard
+        // moves on when that box leaves (the layer changes and this runs again).
+        const stillInPromptBox = document.activeElement?.closest("[data-chat-composer-text]") != null
+          && rootRef.current?.contains(document.activeElement) === true;
+        if (sendPending && sentDraftPromptFocus === sent && !stillInPromptBox) sentDraftPromptFocus = null;
+        return;
+      }
+      const root = rootRef.current;
+      const target = root ? findWorkInputIn(root) : null;
+      if (target) {
+        target.focus({ preventScroll: true });
+        if (launchPending) launch.focused = { chatKey, layerKey };
+        if (sendPending && sentDraftPromptFocus === sent) sentDraftPromptFocus = null;
+        return;
+      }
+      if (performance.now() < deadline) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [active, chatKey, layerKey, rootRef]);
 }
 
 /** Put the keyboard inside the tools pane once it is on screen. */
@@ -288,8 +470,7 @@ export function useWorkShortcuts(args: WorkShortcutArgs): WorkShortcuts {
         event.preventDefault();
         event.stopPropagation();
         if (event.repeat) return;
-        onNewChat();
-        focusWorkInputSoon();
+        openDraftAndFocusWorkInput(onNewChat);
         return;
       }
       if (eventMatchesBinding(event, keys.toggleTools)) {

@@ -23,7 +23,9 @@ export type FeatureAnalyticsName =
   | "attention"
   | "home"
   | "mcp_servers"
-  | "ade_mcp";
+  | "ade_mcp"
+  | "connections"
+  | "passwords";
 
 export type FeatureAnalyticsAction =
   | "account_created"
@@ -61,6 +63,7 @@ export type FeatureAnalyticsAction =
   | "connect_requested"
   | "mcp_server_requested"
   | "mcp_server_remove_requested"
+  | "machine_removal_requested"
   | "notification_sent"
   | "settled_lane_released"
   | "music_connected"
@@ -68,7 +71,16 @@ export type FeatureAnalyticsAction =
   | "server_toggled"
   | "app_connected"
   | "token_created"
-  | "connection_removed";
+  | "connection_removed"
+  | "github_cli_shared"
+  | "github_cli_removed"
+  | "github_app_connected"
+  | "github_app_disconnected"
+  | "passwords_switched"
+  | "logins_imported"
+  | "agent_signed_in"
+  | "agent_signed_up"
+  | "secrets_exec";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -287,6 +299,56 @@ export function captureMcpServerSignInAnalytics(args: {
   captureFeatureUsedAnalytics({ ...args, feature: "mcp_servers", action: "sign_in" });
 }
 
+/**
+ * The person shared this computer's `gh` sign-in with the account, or took it
+ * off, and the vault accepted the change. Settings reaches it through the IPC
+ * handler or the runtime action (pinned or bound), never both, so each of
+ * them records it once.
+ */
+export function captureGhAccountSharingAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  enabled: boolean;
+}): void {
+  captureFeatureUsedAnalytics({
+    analytics: args.analytics,
+    surface: args.surface,
+    feature: "connections",
+    action: args.enabled ? "github_cli_shared" : "github_cli_removed",
+    outcome: "completed",
+  });
+}
+
+/**
+ * How a connect of the account's ADE GitHub App sign-in ended, read in
+ * Settings once the server settles it: completed (connected), cancelled (the
+ * person declined on GitHub or on ADE's confirm page, or let the link run
+ * out), failed. Or the person disconnected it. Never the login, the account,
+ * or an error.
+ */
+export function captureGithubAppConnectionAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  action: "github_app_connected" | "github_app_disconnected";
+  outcome: "completed" | "cancelled" | "failed";
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "connections" });
+}
+
+/**
+ * Passwords (feature "passwords"): turned on or off on a computer, a CSV
+ * import, and an agent's sign-in, sign-up or `secrets exec`. Never the site,
+ * the account, the item, the command, a count, or an error.
+ */
+export function capturePasswordsAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  action: "passwords_switched" | "logins_imported" | "agent_signed_in" | "agent_signed_up" | "secrets_exec";
+  outcome: "enabled" | "disabled" | "completed" | "cancelled" | "failed";
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "passwords" });
+}
+
 /** A private webhook URL was made (with or without its automation). */
 export function captureWebhookUrlCreatedAnalytics(args: {
   analytics: FeatureAnalytics | null | undefined;
@@ -337,21 +399,29 @@ export function captureSecretRequestedAnalytics(args: {
   captureFeatureUsedAnalytics({ ...args, feature: "chat", action: "secret_requested", outcome: args.outcome });
 }
 
+const AGENT_CARD_ACTIONS = {
+  connect: "connect_requested",
+  mcp_server: "mcp_server_requested",
+  mcp_server_remove: "mcp_server_remove_requested",
+  machine_removal: "machine_removal_requested",
+} as const satisfies Record<string, FeatureAnalyticsAction>;
+
 /**
- * How a connect card or an MCP server card an agent raised ended. Never the
- * integration's account, the server's name, its command or URL, or the chat.
+ * How a connect card, an MCP server card or a computer removal card an agent
+ * raised ended. Never the integration's account, the server's name, its
+ * command or URL, the computer, or the chat.
  */
 export function captureAgentCardAnalytics(args: {
   analytics: FeatureAnalytics | null | undefined;
   surface: ProductAnalyticsSurface;
-  card: "connect" | "mcp_server" | "mcp_server_remove";
+  card: "connect" | "mcp_server" | "mcp_server_remove" | "machine_removal";
   outcome: Extract<FeatureAnalyticsOutcome, "completed" | "kept" | "cancelled" | "failed">;
 }): void {
   captureFeatureUsedAnalytics({
     analytics: args.analytics,
     surface: args.surface,
     feature: "chat",
-    action: args.card === "connect" ? "connect_requested" : args.card === "mcp_server" ? "mcp_server_requested" : "mcp_server_remove_requested",
+    action: AGENT_CARD_ACTIONS[args.card],
     outcome: args.outcome,
   });
 }

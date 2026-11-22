@@ -45,15 +45,26 @@ export function formatStorageBytes(bytes: number, platform: string | null | unde
  * slower on Windows (a 110-label sort: 1.40 ms with options, 0.023 ms through a
  * collator built once). The chat pane sorts its model labels on every mount.
  */
-const INSENSITIVE_COLLATOR = new Intl.Collator(undefined, { sensitivity: "base" });
-const NATURAL_COLLATOR = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+// Built at the first comparison, not when the module loads: the first
+// collator loads ICU's collation data (4.8 ms in a Node measure), and this module is on the
+// boot path of main and the renderer, which often compare nothing yet.
+let insensitiveCollator: Intl.Collator | null = null;
+let naturalCollator: Intl.Collator | null = null;
 
 /** Same order as `localeCompare(b, undefined, { sensitivity: "base" })`. */
 export function compareTextInsensitive(left: string, right: string): number {
-  return INSENSITIVE_COLLATOR.compare(left, right);
+  insensitiveCollator ??= new Intl.Collator(undefined, { sensitivity: "base" });
+  return insensitiveCollator.compare(left, right);
 }
 
 /** Same order as `localeCompare(b, undefined, { sensitivity: "base", numeric: true })`. */
 export function compareTextNatural(left: string, right: string): number {
-  return NATURAL_COLLATOR.compare(left, right);
+  naturalCollator ??= new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+  return naturalCollator.compare(left, right);
+}
+
+/** Megabytes as gigabytes for a sentence: "20", "1.5". Whole numbers from 10 GB up. */
+export function formatGb(mb: number): string {
+  const value = mb / 1024;
+  return value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/u, "");
 }

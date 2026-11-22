@@ -4,14 +4,16 @@
  * brain of choice. Everything runs here except the one step only the person
  * can do, approving the new machine joining their account. That goes out as a
  * sign-in link (the phone opens it natively, any signed-in browser works): to
- * the agent's chat as a notice, and to `status` for a caller (the phone) that
- * started the job in the background and shows the link itself.
+ * the agent's chat as a notice, to `status` for a caller (the phone) that
+ * started the job in the background and shows the link itself, and as a push
+ * to the person's phones, which open their own approval sheet.
  */
 
 import { randomUUID } from "node:crypto";
 import {
-  CLOUD_MADE_BY_CHAT_METADATA,
+  cloudMadeByMetadata,
   cloudUnattendedHoursBlock,
+  type CloudAgentMaker,
   type CloudAccountState,
   type CloudCreateMachineArgs,
   type CloudCreateProgress,
@@ -40,10 +42,14 @@ export type CloudMakeJob = {
 };
 
 export type CloudMakeInput = (
-  | { kind: "create"; machine: CloudCreateMachineArgs; madeByChat?: string | null }
-  | { kind: "copy"; instanceId: string; name?: string | null; shape?: CloudShapeId | null; madeByChat?: string | null }
-  | { kind: "move"; instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null; madeByChat?: string | null }
+  | { kind: "create"; machine: CloudCreateMachineArgs }
+  | { kind: "copy"; instanceId: string; name?: string | null; shape?: CloudShapeId | null }
+  | { kind: "move"; instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null }
 ) & {
+  /** The agent's chat that asked, if any. */
+  madeByChat?: string | null;
+  /** The kind of agent that asked (a chat, an automation, ADE MCP); null for a person. */
+  madeByAgent?: CloudAgentMaker | null;
   /**
    * The yes came from what the person lets unattended agents do (a full-auto
    * chat or an automation, within the agent limits): this brain
@@ -57,28 +63,26 @@ const FINISHED_JOB_TTL_MS = 30 * 60_000;
 /** A self-approval comes this soon after its create started, or not at all. */
 const SELF_APPROVAL_WINDOW_MS = 20 * 60_000;
 
-export function createCloudBrainMaker(deps: {
-  /** The creator's deps without a window: the approval is handed off. */
-  base: Omit<CloudCopyDeps, "approveInWindow" | "handOffApproval" | "selfApproval"> & {
-    /** Plan and hours, for a sign-in the brain approves itself. */
-    account?: () => Promise<CloudAccountState | null>;
-  };
-  logger?: {
-    info?(event: string, meta?: Record<string, unknown>): void;
-    warn?(event: string, meta?: Record<string, unknown>): void;
-  };
+type BrainLogger = {
+  info?(event: string, meta?: Record<string, unknown>): void;
+  warn?(event: string, meta?: Record<string, unknown>): void;
+};
+
+/**
+ * Whether this brain may approve a new machine's sign-in itself, with no
+ * tap: the machine carries the request id of a make this brain started with
+ * an unattended yes, the make is recent, it is the first ask for that
+ * request, and the account still has hours. Every answer is logged. Shared by
+ * the maker here and the brain's ADE Cloud lane launches.
+ */
+export function createCloudSelfApproval(deps: {
+  client: CloudCopyDeps["client"];
+  account?: () => Promise<CloudAccountState | null>;
+  logger?: BrainLogger;
 }) {
-  const jobs = new Map<string, CloudMakeJob>();
   /** Requests whose sign-in this brain already approved itself: once each. */
   const selfApproved = new Set<string>();
-
-  /**
-   * Whether this brain may approve `instanceId`'s sign-in itself, with no
-   * tap: the machine carries the request id of a make this brain started
-   * with an unattended yes, the make is recent, it is the first ask for that
-   * request, and the account still has hours. Every answer is logged.
-   */
-  const allowSelfApproval = async (
+  return async (
     input: { requestId: string; instanceId: string },
     make: { selfApprove: boolean; startedAt: number },
   ): Promise<boolean> => {
@@ -93,15 +97,69 @@ export function createCloudBrainMaker(deps: {
       deps.logger?.warn?.("cloud.self_approval_read_failed", { ...input, read, error: error instanceof Error ? error.message : String(error) });
       return null;
     };
-    const client = await deps.base.client().catch(readFailed("client"));
+    const client = await deps.client().catch(readFailed("client"));
     const instance = client ? await client.getInstance(input.instanceId).catch(readFailed("instance")) : null;
     if (instance?.metadata?.ade_request_id !== input.requestId) return refuse("request_id_mismatch");
-    const blocked = cloudUnattendedHoursBlock(await deps.base.account?.().catch(readFailed("account")));
+    const blocked = cloudUnattendedHoursBlock(await deps.account?.().catch(readFailed("account")));
     if (blocked) return refuse(blocked);
     selfApproved.add(input.requestId);
     deps.logger?.info?.("cloud.self_approval_used", input);
     return true;
   };
+}
+
+/**
+ * A push to this brain's phones (`ade serve` sets it): the person is needed
+ * to approve a machine joining. The push rules apply (notifications off,
+ * quiet hours, the chat's mute when `chatSessionId` names one).
+ */
+export type CloudJoinApprovalPush = (input: { dedupeKey: string; title: string; body: string; deepLink: string; chatSessionId: string | null }) => void;
+
+let joinApprovalPush: CloudJoinApprovalPush | null = null;
+
+export function setCloudJoinApprovalPush(next: CloudJoinApprovalPush | null): void {
+  joinApprovalPush = next;
+}
+
+/** The phone's own approval sheet for this code (`ade://device?user_code=…`), whatever host the account service answers from. */
+export function phoneApprovalLink(url: string): string | null {
+  try {
+    const code = new URL(url).searchParams.get("user_code")?.trim();
+    return code ? `ade://device?user_code=${encodeURIComponent(code)}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One push per sign-in code: a fresh code (a sign-in started again) is news again. */
+function pushJoinApproval(input: { requestId: string; url: string; name: string; chatSessionId: string | null }, logger?: BrainLogger): void {
+  const deepLink = phoneApprovalLink(input.url);
+  if (!joinApprovalPush || !deepLink) return;
+  try {
+    joinApprovalPush({
+      dedupeKey: `cloud-join-approval:${input.requestId}:${deepLink}`,
+      title: `Approve ${input.name} joining your ADE account`,
+      body: "A new ADE Cloud computer waits for you. Tap to approve it.",
+      deepLink,
+      chatSessionId: input.chatSessionId,
+    });
+  } catch (error) {
+    logger?.warn?.("cloud.join_approval_push_failed", { requestId: input.requestId, error: getErrorMessage(error) });
+  }
+}
+
+/** The creator's deps a brain fills in with no window: the approval is handed off. */
+export type CloudBrainMakerBase = Omit<CloudCopyDeps, "approveInWindow" | "handOffApproval" | "selfApproval"> & {
+  /** Plan and hours, for a sign-in the brain approves itself. */
+  account?: () => Promise<CloudAccountState | null>;
+};
+
+export function createCloudBrainMaker(deps: {
+  base: CloudBrainMakerBase;
+  logger?: BrainLogger;
+}) {
+  const jobs = new Map<string, CloudMakeJob>();
+  const allowSelfApproval = createCloudSelfApproval({ client: deps.base.client, account: deps.base.account, logger: deps.logger });
 
   const prune = () => {
     const now = Date.now();
@@ -138,16 +196,19 @@ export function createCloudBrainMaker(deps: {
     const startedAt = Date.now();
     const creatorDeps: CloudCopyDeps = {
       ...deps.base,
-      handOffApproval: ({ url, name }) => onApproval?.(url, name),
+      handOffApproval: ({ url, name }) => {
+        pushJoinApproval({ requestId, url, name, chatSessionId: input.madeByChat ?? null }, deps.logger);
+        onApproval?.(url, name);
+      },
       selfApproval: (args) => allowSelfApproval(args, { selfApprove: input.selfApprove === true, startedAt }),
     };
-    const madeBy = input.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: input.madeByChat } : null;
+    const madeBy = cloudMadeByMetadata(input);
     const work = (async (): Promise<unknown> => {
       if (input.kind === "create") {
-        return await createCloudMachine(creatorDeps as CloudMachineCreatorDeps, requestId, input.machine, onProgress, madeBy ? { metadata: madeBy } : {});
+        return await createCloudMachine(creatorDeps as CloudMachineCreatorDeps, requestId, input.machine, onProgress, Object.keys(madeBy).length ? { metadata: madeBy } : {});
       }
       if (input.kind === "copy") {
-        return await copyCloudMachine(creatorDeps, { instanceId: input.instanceId, requestId, name: input.name ?? null, shape: input.shape ?? null, madeByChat: input.madeByChat ?? null }, onProgress);
+        return await copyCloudMachine(creatorDeps, { instanceId: input.instanceId, requestId, name: input.name ?? null, shape: input.shape ?? null, madeByChat: input.madeByChat ?? null, madeByAgent: input.madeByAgent ?? null }, onProgress);
       }
       return await moveCloudMachine(creatorDeps, {
         instanceId: input.instanceId,
@@ -156,6 +217,9 @@ export function createCloudBrainMaker(deps: {
         machineKey: input.machineKey ?? null,
         shape: input.shape ?? null,
         madeByChat: input.madeByChat ?? null,
+        madeByAgent: input.madeByAgent ?? null,
+        // An unattended agent's move runs here: the server moves only for a person.
+        selfApprove: input.selfApprove === true,
       }, onProgress);
     })();
     const done = work.then(

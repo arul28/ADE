@@ -517,7 +517,9 @@ func workChildChatInfoStatus(_ phase: CanonicalSessionPhase) -> WorkSubagentSnap
 /// transcript has no row for (a grandchild, a peer turned subagent, a spawn
 /// windowed out of the transcript) is appended in filing order, and any row
 /// whose child chat waits on the user reads "Needs you", even after its spawn
-/// result landed. `summary` returns the freshest summary the caller holds.
+/// result landed. A row's status follows its child chat unless the child is
+/// working (desktop `settleChildRowsLikeCards`). `summary` returns the
+/// freshest summary the caller holds.
 func workChatInfoSubagentsWithChildChats(
   _ snapshots: [WorkSubagentSnapshot],
   roster: WorkChatChildRoster,
@@ -535,7 +537,16 @@ func workChatInfoSubagentsWithChildChats(
           let child = roster.childrenById[childId]
     else { return snapshot }
     var next = snapshot
-    next.needsInput = phase(child) == .needsYou
+    let childPhase = phase(child)
+    next.needsInput = childPhase == .needsYou
+    // The row says what the child chat's card and Work row say. A row the
+    // transcript left "running" (a child that never got a prompt, or whose
+    // turn ended without a report) follows the child, which is idle. A child
+    // that is working leaves the row as the transcript wrote it.
+    let childStatus = workChildChatInfoStatus(childPhase)
+    if childStatus != .running {
+      next.status = childStatus
+    }
     return next
   }
   for child in roster.filed where !named.contains(child.id) {

@@ -1,7 +1,18 @@
+import {
+  emptySlowLinkMeasure,
+  normalizeSlowLinkPreference,
+  noteSlowLinkDrop,
+  noteSlowLinkRtt,
+  percentileMs,
+  slowLinkStatus,
+  type ClientLinkReport,
+  type SlowLinkMeasure,
+  type SlowLinkPreference,
+} from "../../../shared/slowLinkMode";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { syncDeviceTelemetryRef } from "../analytics/machineTelemetryId";
 import fs from "node:fs";
-import { captureError } from "../../../shared/sentry/capture";
+import { addSentryBreadcrumb, captureError } from "../../../shared/sentry/capture";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import type {
   AdeActionRegistryEntry,
@@ -18,6 +29,7 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionRecovery,
   RemoteRuntimeConnectionState,
+  RemoteRuntimeCapabilities,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeConnectErrorInfo,
   RemoteRuntimeConnectResult,
@@ -37,11 +49,13 @@ import type {
   RemoteRuntimeStreamEventsResult,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeTarget,
+  RuntimePingReply,
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
 } from "../../../shared/types";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
+import type { RemotePtyDataFilter } from "../pty/ptyDataSubscriptions";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   MAX_CHAT_ATTACHMENT_BYTES,
@@ -51,21 +65,39 @@ import {
 } from "../../../shared/chatAttachmentLimits";
 import {
   capRemoteRuntimeErrorDetail,
+  isPersonFixConnectionFailure as isPersonFixFailure,
+  REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE,
   REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE,
+  REMOTE_TARGET_NOT_FOUND_MESSAGE,
   RemoteRuntimeConnectError,
 } from "../../../shared/types";
 import { coerceProjectIcon, coerceProjects } from "./remoteBootstrap";
+import type {
+  ProjectRemovalOutcome,
+  ProjectRemovalReport,
+  ProjectRemovalRequest,
+  RemoteProjectRemovalInspection,
+} from "../../../shared/projectRemoval";
+
+/** A permanent delete of a large folder runs in a separate process with retries; it can take minutes. */
+const PROJECT_REMOVAL_TIMEOUT_MS = 10 * 60_000;
 import {
   parseRemoteAttachmentUploadTicket,
   uploadRemoteAttachment,
   withTempAttachmentFile,
 } from "./attachmentUploadClient";
 import {
+  isDedupedSend,
   isRemoteRuntimeConnectionError,
   type RemoteConnectionPool,
 } from "./remoteConnectionPool";
 import type { Logger } from "../logging/logger";
 import { RemoteDialTelemetry, type RemoteDialOutcome } from "./remoteDialTelemetry";
+import {
+  REMOTE_RUNTIME_EVENT_SETUP_SLOW_MS,
+  runWithEventSetupDeadline,
+  type RemoteEventSetupPhase,
+} from "./remoteEventSetup";
 import { HostReturnWatches } from "./remoteHostReturnWatch";
 import { CloudAsleepChecks } from "./remoteCloudAsleepChecks";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
@@ -103,8 +135,24 @@ import {
 import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import { findMachineProject } from "../../../shared/projectIdentity";
+import { isMachineScopeOlderBrainError, MACHINE_SCOPE_PROJECT_ID, machineScopeDomainAnswered, machineScopeUpdateMessage } from "../../../shared/machineScope";
+// How long a woken machine gets to come back online before the call fails as usual.
+import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
+
+/** One link summary line per machine this often (`remote.link_summary`). */
+const LINK_SUMMARY_INTERVAL_MS = 5 * 60_000;
+const LINK_SUMMARY_MAX_SAMPLES = 60;
+
+type LinkSummaryPeriod = {
+  startedAt: number;
+  rttMs: number[];
+  drops: number;
+  switches: number;
+  /** The connection's byte counters at the start of the period. */
+  traffic: { bytesIn: number; bytesOut: number } | null;
+};
 
 type RemoteConnectionServiceOptions = {
   /** Receives one line per outage saying which routes were tried and how each ended. */
@@ -149,10 +197,14 @@ type RemoteConnectionServiceOptions = {
    * a bounded lookup. Such a machine then takes the normal failure path.
    */
   asleepForUse?: (target: RemoteRuntimeTarget) => Promise<boolean | null> | null;
+  /**
+   * A cloud computer started or ended a rest (found asleep, or answering
+   * again). Once per change. The owner tells the windows, whose view of the
+   * computer is otherwise read only when a wake or a cloud action changes it.
+   */
+  onCloudRestChanged?: (targetId: string, resting: boolean) => void;
 };
 
-/** How long a woken machine gets to come back online before the call fails as usual. */
-const WOKEN_MACHINE_CONNECT_WAIT_MS = 45_000;
 const WOKEN_MACHINE_RETRY_MS = 1_500;
 /**
  * How often a cloud computer found asleep is asked about again, so one that
@@ -163,8 +215,7 @@ const CLOUD_ASLEEP_RECHECK_MS = 5 * 60_000;
 /** After a link dropped and the computer still read as awake: when to ask again. */
 const CLOUD_ASLEEP_FOLLOW_UP_MS = [45_000, 90_000];
 
-const EXPLICIT_CONNECT_ONLY_MESSAGE =
-  "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
+const EXPLICIT_CONNECT_ONLY_MESSAGE = REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE;
 
 export type AccountMachineReconciliationResult = {
   removedTargetIds: string[];
@@ -189,6 +240,12 @@ type RemoteConnectionDisconnectOptions = {
 
 type RemoteConnectionConnectOptions = {
   explicit?: boolean;
+  /**
+   * With `explicit`: a window asked for the machine, but no person did (a
+   * project tab joining every computer with a copy). It neither wakes a
+   * sleeping cloud computer nor starts the machine's brain.
+   */
+  background?: boolean;
 };
 
 // A machine that restarts for an update is back in one to two minutes; a
@@ -208,6 +265,26 @@ const MAX_LAST_ERROR_CHARS = 500;
  */
 const HOST_RETURN_FIRST_ATTEMPT_MS = 1_000;
 const HOST_RETURN_WATCH_MS = 10 * 60_000;
+/**
+ * A link that was up and dropped is most often a short break: Wi-Fi that
+ * roams, a plane's link that drops for a minute. For this long after such a
+ * drop, the redials come every FAST_REDIAL_INTERVAL_MS, so the link is back
+ * within about two seconds of the network. Each redial goes out only after
+ * the one before it failed, so a dead link costs one dial per interval, never
+ * a tight loop; after the window the backoff above takes over.
+ */
+const FAST_REDIAL_WINDOW_MS = 3 * 60_000;
+const FAST_REDIAL_INTERVAL_MS = 2_000;
+/**
+ * While a dropped link redials, windows still see the machine as connected
+ * for this long (`reconnectingSinceMs`), so an open chat and the Work list
+ * stay as they are through a short break. A call made meanwhile waits for the
+ * redial, up to RECONNECT_CALL_WAIT_MS, instead of failing at once.
+ */
+const RECONNECT_HOLD_MS = 20_000;
+const RECONNECT_CALL_WAIT_MS = 8_000;
+/** Network changes that come together (a Wi-Fi rejoin) redial once. */
+const NETWORK_CHANGE_DEBOUNCE_MS = 1_000;
 const DISCOVERED_ENDPOINT_REFRESH_INTERVAL_MS = 60_000;
 
 function errorMessage(error: unknown): string {
@@ -353,19 +430,36 @@ function sameStatusValue(a: unknown, b: unknown): boolean {
 }
 
 /**
- * After a wake, may this call go out again? Replay-safe actions may. A chat send
- * may when it carries a client id and the brain says it recognizes a retry of one
- * it already took, so a message caught by a sleep is delivered, and never twice.
+ * A failure as a window acts on it: each dial gives its error a new
+ * diagnostic id and new route timings, so a redial every 2 s that fails the
+ * same way would otherwise count as a change and reach every window.
  */
-function isRetriableAfterSleep(request: RemoteRuntimeActionRequest, brainDedupesSends: boolean): boolean {
-  if (isReplaySafeAdeAction(request.domain, request.action)) return true;
-  if (!brainDedupesSends || request.domain !== "chat" || request.action !== "sendMessage") return false;
-  const args = request.args as { clientSendId?: unknown } | undefined;
-  return typeof args?.clientSendId === "string" && args.clientSendId.length > 0;
+function errorInfoForCompare(info: unknown): unknown {
+  if (info === null || typeof info !== "object") return info;
+  const { correlationId: _correlationId, attempts, ...rest } = info as RemoteRuntimeConnectErrorInfo;
+  return {
+    ...rest,
+    attempts: attempts?.map(({ startedAt: _startedAt, durationMs: _durationMs, ...attempt }) => attempt),
+  };
+}
+
+/**
+ * After a wake, may this call go out again? Replay-safe actions may. A send may
+ * when it carries a client id the brain recognizes a retry of (`isDedupedSend`),
+ * so a message caught by a sleep is delivered, and never twice.
+ */
+function isRetriableAfterSleep(
+  request: RemoteRuntimeActionRequest,
+  capabilities: RemoteRuntimeCapabilities | null | undefined,
+): boolean {
+  return isReplaySafeAdeAction(request.domain, request.action) || isDedupedSend(request, capabilities);
 }
 
 export class RemoteConnectionService {
   private readonly statusById = new Map<string, StatusPatch>();
+  /** Measured round trips and drops per machine, for slow-connection mode. */
+  private readonly slowLinkMeasures = new Map<string, SlowLinkMeasure>();
+  private readonly linkSummaries = new Map<string, LinkSummaryPeriod>();
   private readonly manuallyDisconnectedTargetIds = new Set<string>();
   /** With `explicitConnectOnly`: machines the person connected in this app. */
   private readonly explicitlyConnectedTargetIds = new Set<string>();
@@ -381,11 +475,20 @@ export class RemoteConnectionService {
       stillWanted: (target) => Boolean(this.registry.get(target.id)) && !this.isManuallyDisconnected(target),
       linkIsDown: (targetId) => this.statusById.get(targetId)?.state === "error",
       rest: (target) => this.restAsleep(target),
+      restChanged: (targetId, resting) => this.options.onCloudRestChanged?.(targetId, resting),
     },
     CLOUD_ASLEEP_FOLLOW_UP_MS,
   );
   private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly latencyProbeTargetIds = new Set<string>();
+  /** Until when a dropped link redials fast (FAST_REDIAL_WINDOW_MS), by target. */
+  private readonly fastRedialUntilByTargetId = new Map<string, number>();
+  /** When a held link dropped (RECONNECT_HOLD_MS), by target. */
+  private readonly reconnectHoldSinceByTargetId = new Map<string, number>();
+  private readonly reconnectHoldTimers = new Map<string, NodeJS.Timeout>();
+  /** Calls waiting for a held link to come back. */
+  private readonly reconnectWaiters = new Map<string, Set<() => void>>();
+  private networkChangeTimer: NodeJS.Timeout | null = null;
   /** Redials for each dropped link, until the machine is back or the time is up. */
   private readonly hostReturnWatches = new HostReturnWatches(
     {
@@ -408,8 +511,18 @@ export class RemoteConnectionService {
     (snapshot: RemoteRuntimeConnectionSnapshot) => void
   >();
   private autoconnectTimer: NodeJS.Timeout | null = null;
+  /** The signed-in account when a machine's sign-in failure stopped its redials (`waitsForPersonFix`). */
+  private readonly personFixAccountByTargetId = new Map<string, string | null>();
+  /**
+   * The sign-in failure that a change of account released: the maintenance
+   * pass and every call after it may dial until a new attempt records a new
+   * failure (a new `lastErrorInfo` object) or connects.
+   */
+  private readonly personFixReleasedFailureByTargetId = new Map<string, unknown>();
   /** Strictly increasing, so a window can always tell the newer of two snapshots. */
   private lastSnapshotAt = 0;
+  /** Machine and id pairs already logged by `noteUnroutedProjectId`. */
+  private readonly unroutedProjectIdsLogged = new Set<string>();
   private readonly inFlightStreamEvents = new Map<
     string,
     Promise<RemoteRuntimeStreamEventsResult>
@@ -427,6 +540,7 @@ export class RemoteConnectionService {
       onOutcome: this.options.onDialOutcome,
     });
     this.pool.onDialFailed((targetId, error) => this.dialTelemetry.noteFailed(targetId, error));
+    this.pool.setLinkRoundTripReader?.((targetId) => this.linkRoundTripMs(targetId));
     // A call that finds the machine gone reconnects on its own, without
     // `connect()`. The machine may have restarted on a new version (an update
     // it was just sent), so what it reports now replaces what it reported at
@@ -436,13 +550,23 @@ export class RemoteConnectionService {
       this.dialTelemetry.noteConnected(targetId, result.route);
       // The machine is back, whoever dialed it.
       this.hostReturnWatches.stop(targetId);
+      // A connect() in flight ends the hold when it writes "connected";
+      // ending it here showed its "connecting" for a moment first.
+      if (this.statusById.get(targetId)?.state !== "connecting") this.endDropRecovery(targetId);
       // A connect that finishes after the machine was removed or disconnected
       // by hand must not write it back.
       if (!this.registry.get(targetId) || this.manuallyDisconnectedTargetIds.has(targetId)) return;
+      // A quiet redial (see connect()) left the status at "error". Ending the
+      // hold above would show that error for the moment until connect() writes
+      // "connected", so the machine reads as connected in this same update.
+      const backFromError = this.statusById.get(targetId)?.state === "error";
       this.mergeStatus(targetId, {
+        ...(backFromError ? { state: "connected" as const, lastError: null } : {}),
         version: result.version,
         // Read with the version, so a brain that stopped reporting it clears it.
         appVersion: result.appVersion ?? null,
+        hostStartedAt: result.hostStartedAt ?? null,
+        hostUpdateBlock: result.hostUpdateBlock ?? null,
         updateInstallMode: result.updateInstallMode,
         downloadUrl: result.downloadUrl ?? null,
         arch: result.arch,
@@ -456,6 +580,16 @@ export class RemoteConnectionService {
         hostStorageWait: result.hostStorageWait ?? null,
         connectedAt: result.target.lastConnectedAt ?? Date.now(),
       });
+      // The dial's round trip is the first sample: a far machine is known slow
+      // at once. Without one, the person's own setting still applies now.
+      const dialLatencyMs = typeof result.route?.latencyMs === "number" && Number.isFinite(result.route.latencyMs)
+        ? result.route.latencyMs
+        : null;
+      this.noteSlowLink(
+        targetId,
+        (measure) => (dialLatencyMs === null ? measure : noteSlowLinkRtt(measure, dialLatencyMs, Date.now())),
+        dialLatencyMs === null ? {} : { rttMs: dialLatencyMs },
+      );
     });
     // A project folder there stopped (or started again) answering while the
     // connection stayed up: the machine row says so at once.
@@ -471,6 +605,10 @@ export class RemoteConnectionService {
       // The host answered and refused one reply as too large. The next call
       // opens a new channel, so the machine is still reachable.
       if (isPairedRuntimeRpcOverBudgetError(error)) return;
+      // A link that broke under the app, not a handover to another app.
+      if (!isPairedRuntimeSupersededError(error)) {
+        this.noteSlowLink(targetId, (measure) => noteSlowLinkDrop(measure, Date.now()), { drop: true });
+      }
       if (isPairedRuntimeSupersededError(error)) {
         this.explicitlyConnectedTargetIds.delete(targetId);
         // Another client with this computer's pairing took the connection.
@@ -479,6 +617,7 @@ export class RemoteConnectionService {
         // to the saved machine, and Connect takes the connection back.
         this.manuallyDisconnectedTargetIds.add(targetId);
         this.hostReturnWatches.stop(targetId);
+        this.endDropRecovery(targetId);
         this.mergeStatus(targetId, {
           state: "error",
           ...errorStatusPatch(
@@ -512,8 +651,14 @@ export class RemoteConnectionService {
         recovery,
       });
       // A cloud computer that went to sleep closes its link the same way; it
-      // then rests instead of showing an error and redialing.
-      void this.asleepAfterFailure(targetId, error);
+      // then rests instead of showing an error and redialing (the rest ends
+      // the fast redials). A cloud computer found running keeps its fast
+      // redials, but not the hold: the windows see its drop as before.
+      void this.asleepAfterFailure(targetId, error)?.then(() => {
+        if (!this.asleepChecks.isCloud(targetId) || !this.reconnectHoldSinceByTargetId.has(targetId)) return;
+        this.endReconnectHold(targetId);
+        this.emit();
+      });
     });
   }
 
@@ -535,6 +680,16 @@ export class RemoteConnectionService {
    */
   isConnected(targetId: string): boolean {
     return this.statusById.get(targetId)?.state === "connected";
+  }
+
+  /**
+   * Whether the connected brain runs `chat.createSessionAndSend`. False while
+   * the machine is not connected or predates the action: the caller then
+   * makes the create and the send as two calls.
+   */
+  supportsChatCreateAndSend(targetId: string): boolean {
+    const status = this.statusById.get(targetId);
+    return status?.state === "connected" && status.capabilities?.chatCreateAndSend === true;
   }
 
   /**
@@ -581,12 +736,17 @@ export class RemoteConnectionService {
       this.bumpDisconnectGeneration(targetId);
       this.pool.disconnect(targetId);
       this.statusById.delete(targetId);
+      this.slowLinkMeasures.delete(targetId);
+      this.linkSummaries.delete(targetId);
       this.manuallyDisconnectedTargetIds.delete(targetId);
       this.explicitlyConnectedTargetIds.delete(targetId);
       this.clearAutomaticReconnectState(targetId);
+      this.endDropRecovery(targetId);
       this.pool.clearConnectFailure(targetId);
       this.latencyProbeTargetIds.delete(targetId);
       this.pairedFallbackSshTrustByTargetId.delete(targetId);
+      this.personFixAccountByTargetId.delete(targetId);
+      this.personFixReleasedFailureByTargetId.delete(targetId);
     }
     for (const targetId of disconnectedRelayTargetIds) {
       if (removedTargetIds.has(targetId)) continue;
@@ -633,6 +793,108 @@ export class RemoteConnectionService {
     const currentOwnerUserId = await this.options.getAuthorizedAccountOwnerId()
       .catch(() => null);
     return this.reconcileAccountOwnership(currentOwnerUserId);
+  }
+
+  /** The last measured round trip to a connected machine, or null. */
+  linkRoundTripMs(targetId: string): number | null {
+    const status = this.statusById.get(targetId);
+    if (status?.state !== "connected") return null;
+    return status.slowLink?.rttMs ?? status.route?.latencyMs ?? null;
+  }
+
+  /** The person's slow-connection setting for one machine: "auto", "on" or "off". */
+  setSlowLinkMode(targetId: string, mode: SlowLinkPreference): RemoteRuntimeTarget {
+    const target = this.requireTarget(targetId);
+    const updated = this.registry.update(target.id, { slowLinkMode: mode === "auto" ? undefined : mode });
+    this.noteSlowLink(target.id, (measure) => measure);
+    this.emit();
+    return updated;
+  }
+
+  /** Feeds one measurement to the machine's slow-connection rule and shows the result. */
+  private noteSlowLink(
+    targetId: string,
+    update: (measure: SlowLinkMeasure) => SlowLinkMeasure,
+    sample: { rttMs?: number; drop?: boolean } = {},
+  ): void {
+    const target = this.registry.get(targetId);
+    if (!target) return;
+    const measure = update(this.slowLinkMeasures.get(targetId) ?? emptySlowLinkMeasure());
+    this.slowLinkMeasures.set(targetId, measure);
+    const summary = this.linkSummaryFor(targetId);
+    if (typeof sample.rttMs === "number") {
+      summary.rttMs.push(Math.round(sample.rttMs));
+      if (summary.rttMs.length > LINK_SUMMARY_MAX_SAMPLES) summary.rttMs.shift();
+    }
+    if (sample.drop) summary.drops += 1;
+    const next = slowLinkStatus(measure, normalizeSlowLinkPreference(target.slowLinkMode));
+    const current = this.statusById.get(targetId)?.slowLink;
+    if (
+      current
+      && current.active === next.active
+      && current.reason === next.reason
+      && current.rttMs === next.rttMs
+      && current.far === next.far
+    ) return;
+    if ((current?.active ?? false) !== next.active) {
+      // Rare by design (hysteresis): one line per switch.
+      summary.switches += 1;
+      this.options.logger?.info("remote.slow_link_switch", {
+        targetId,
+        active: next.active,
+        reason: next.reason,
+        rttMs: next.rttMs,
+        recentDrops: measure.dropAt.length,
+      });
+    }
+    this.mergeStatus(targetId, { slowLink: next });
+  }
+
+  private linkSummaryFor(targetId: string): LinkSummaryPeriod {
+    let summary = this.linkSummaries.get(targetId);
+    if (!summary) {
+      summary = { startedAt: Date.now(), rttMs: [], drops: 0, switches: 0, traffic: null };
+      this.linkSummaries.set(targetId, summary);
+    }
+    return summary;
+  }
+
+  /** What this desktop tells the machine about the link on the maintenance ping. */
+  private clientLinkReport(targetId: string): ClientLinkReport {
+    const summary = this.linkSummaryFor(targetId);
+    return {
+      rttP50Ms: percentileMs(summary.rttMs, 50),
+      rttP95Ms: percentileMs(summary.rttMs, 95),
+      drops: summary.drops,
+      slow: this.statusById.get(targetId)?.slowLink?.active === true,
+    };
+  }
+
+  /** One line per machine connection every `LINK_SUMMARY_INTERVAL_MS`; no per-request lines. */
+  private maybeLogLinkSummary(targetId: string): void {
+    const summary = this.linkSummaryFor(targetId);
+    const now = Date.now();
+    if (now - summary.startedAt < LINK_SUMMARY_INTERVAL_MS) return;
+    const traffic = this.pool.connectionTraffic(targetId);
+    const previous = summary.traffic;
+    // A new connection starts its counters at zero.
+    const fresh = !previous || !traffic || traffic.bytesIn < previous.bytesIn || traffic.bytesOut < previous.bytesOut;
+    this.options.logger?.info("remote.link_summary", {
+      targetId,
+      route: this.statusById.get(targetId)?.route?.kind ?? null,
+      periodMs: now - summary.startedAt,
+      rttSamples: summary.rttMs.length,
+      rttP50Ms: percentileMs(summary.rttMs, 50),
+      rttP95Ms: percentileMs(summary.rttMs, 95),
+      rttMaxMs: summary.rttMs.length ? Math.max(...summary.rttMs) : null,
+      drops: summary.drops,
+      slow: this.statusById.get(targetId)?.slowLink?.active === true,
+      slowReason: this.statusById.get(targetId)?.slowLink?.reason ?? null,
+      switches: summary.switches,
+      bytesIn: traffic ? traffic.bytesIn - (fresh ? 0 : previous!.bytesIn) : null,
+      bytesOut: traffic ? traffic.bytesOut - (fresh ? 0 : previous!.bytesOut) : null,
+    });
+    this.linkSummaries.set(targetId, { startedAt: now, rttMs: [], drops: 0, switches: 0, traffic });
   }
 
   setAutoConnect(targetId: string, enabled: boolean): RemoteRuntimeTarget {
@@ -882,9 +1144,14 @@ export class RemoteConnectionService {
     this.disconnect(targetId);
     this.manuallyDisconnectedTargetIds.delete(targetId);
     this.clearAutomaticReconnectState(targetId);
+    this.endDropRecovery(targetId);
     this.pool.clearConnectFailure(targetId);
     this.pairedFallbackSshTrustByTargetId.delete(targetId);
+    this.personFixAccountByTargetId.delete(targetId);
+    this.personFixReleasedFailureByTargetId.delete(targetId);
     this.statusById.delete(targetId);
+    this.slowLinkMeasures.delete(targetId);
+    this.linkSummaries.delete(targetId);
     const removed = this.registry.remove(targetId);
     if (removed && pairedCredentials) {
       this.pairedStore.remove(pairedCredentials.hostIdentity.deviceId);
@@ -943,14 +1210,21 @@ export class RemoteConnectionService {
     const connections = targets
       .map((target): RemoteRuntimeConnectionStatus => {
         const status = this.statusById.get(target.id) ?? {};
+        // A link that dropped a moment ago and is redialing still reads as
+        // connected, with when it dropped (see RECONNECT_HOLD_MS).
+        const held = this.isReconnectHeld(target.id);
+        const live = held || status.state === "connected";
         return {
           target,
-          state: status.state ?? (target.lastConnectedAt ? "idle" : "idle"),
+          state: held ? "connected" : status.state ?? "idle",
+          ...(held ? { reconnectingSinceMs: this.reconnectHoldSinceByTargetId.get(target.id) ?? null } : {}),
           arch: status.arch ?? target.lastSeenArch,
           version: status.version ?? target.runtimeBinaryVersion,
           // Only beside the live version it was read with, never beside the
           // persisted one, which can be from another connection.
           appVersion: status.version != null ? status.appVersion ?? null : null,
+          hostStartedAt: status.version != null ? status.hostStartedAt ?? null : null,
+          hostUpdateBlock: status.version != null ? status.hostUpdateBlock ?? null : null,
           updateInstallMode: status.version != null ? status.updateInstallMode : undefined,
           downloadUrl: status.version != null ? status.downloadUrl ?? null : null,
           ...(status.route ? { route: status.route } : {}),
@@ -967,7 +1241,10 @@ export class RemoteConnectionService {
           // Live state, so only while connected: an old wait must not linger on a dropped machine.
           ...(status.hostStorageWait && status.state === "connected" ? { hostStorageWait: status.hostStorageWait } : {}),
           reconnectBlocked: this.isManuallyDisconnected(target) ? "disconnected" : null,
-          ...(status.recovery && status.state === "error" ? { recovery: status.recovery } : {}),
+          ...(status.disconnectedAt != null && !held ? { disconnectedAt: status.disconnectedAt } : {}),
+          ...(status.recovery && status.state === "error" && !held ? { recovery: status.recovery } : {}),
+          // Live state of this connection, like the route.
+          ...(status.slowLink && live ? { slowLink: status.slowLink } : {}),
         };
       });
     this.lastSnapshotAt = Math.max(Date.now(), this.lastSnapshotAt + 1);
@@ -1013,6 +1290,9 @@ export class RemoteConnectionService {
   stopHostReturnWatches(): void {
     this.hostReturnWatches.stopAll();
     this.asleepChecks.stopAll();
+    for (const targetId of [...this.reconnectHoldTimers.keys()]) this.endDropRecovery(targetId);
+    if (this.networkChangeTimer) clearTimeout(this.networkChangeTimer);
+    this.networkChangeTimer = null;
   }
 
   async connect(
@@ -1024,33 +1304,58 @@ export class RemoteConnectionService {
     // lands during the ownership check still stops this attempt.
     const disconnectGeneration = this.getDisconnectGeneration(target.id);
     await this.assertAccountOwnershipAuthorized(target);
+    const explicit = options.explicit === true;
+    const unattended = explicit && options.background === true;
+    // Only a person's connect dials a machine that waits for them to fix it.
+    const personFixGate = !explicit || unattended ? this.personFixGate(target.id) : null;
+    if (personFixGate) await personFixGate;
     if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
       throw new Error(
         "Remote target was disconnected before ADE finished connecting.",
       );
     }
     this.pairedFallbackSshTrustByTargetId.delete(target.id);
-    const explicit = options.explicit === true;
-    if (explicit) {
+    if (unattended) {
+      // Nobody asked: the person's Disconnect stands, and a build that dials
+      // only what the person connected here (`explicitConnectOnly`) does not
+      // take a machine on its own.
+      if (this.options.explicitConnectOnly && !this.explicitlyConnectedTargetIds.has(target.id)) {
+        throw new Error(EXPLICIT_CONNECT_ONLY_MESSAGE);
+      }
+      if (this.isManuallyDisconnected(target)) throw new Error(REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE);
+    } else if (explicit) {
       this.manuallyDisconnectedTargetIds.delete(target.id);
       this.clearAutomaticReconnectState(target.id);
     } else {
       this.assertImplicitReconnectAllowed(target.id);
     }
-    this.mergeStatus(target.id, {
-      state: "connecting",
-      lastAttemptedAt: Date.now(),
-      lastError: null,
-    });
+    // A background redial of a dropped link keeps showing "reconnecting":
+    // every 2 s it would otherwise flip the windows to "connecting" and back.
+    const quietRedial = (!explicit || unattended)
+      && this.inFastRedial(target.id)
+      && this.statusById.get(target.id)?.state === "error";
+    this.mergeStatus(target.id, quietRedial
+      ? { lastAttemptedAt: Date.now() }
+      : { state: "connecting", lastAttemptedAt: Date.now(), lastError: null });
     try {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
       // open until a call times out. Only cloud boxes cost a lookup.
-      const woke = explicit && this.options.wakeForUse ? await this.options.wakeForUse(target) : false;
+      // No await without a wake hook: a pending connect's timing is part of the disconnect race.
+      const woke = explicit && !unattended && this.options.wakeForUse ? await this.wakeForUse(target, { via: "connect" }) : false;
+      // An explicit connect counts as the person asking for this machine
+      // (Connect, Test, Try again, and opening or switching to one of its
+      // projects), so it may start the machine's brain. Unattended
+      // reconnects, the event pump and autoconnect dial as "background".
       const result = woke
         ? await this.connectWokenMachine(target)
         : explicit
-          ? await this.pool.connect(target, { bypassFailureBackoff: true })
-          : await this.pool.connect(target);
+          ? await this.pool.connect(target, { bypassFailureBackoff: true, initiatedBy: unattended ? "background" : "user" })
+          // A fast redial is the one dial per interval; the pool's own
+          // backoff would stretch it to 15 s.
+          : await this.pool.connect(target, {
+            initiatedBy: "background",
+            ...(this.inFastRedial(target.id) ? { bypassFailureBackoff: true } : {}),
+          });
       if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
         if (this.manuallyDisconnectedTargetIds.has(target.id)) {
           this.pool.disconnect(target.id);
@@ -1079,6 +1384,8 @@ export class RemoteConnectionService {
         arch: connectedResult.arch,
         version: connectedResult.version,
         appVersion: connectedResult.appVersion ?? null,
+        hostStartedAt: connectedResult.hostStartedAt ?? null,
+        hostUpdateBlock: connectedResult.hostUpdateBlock ?? null,
         updateInstallMode: connectedResult.updateInstallMode,
         downloadUrl: connectedResult.downloadUrl ?? null,
         route: connectedResult.route,
@@ -1093,8 +1400,9 @@ export class RemoteConnectionService {
       });
       this.clearAutomaticReconnectState(connectedResult.target.id);
       this.hostReturnWatches.stop(connectedResult.target.id);
+      this.endDropRecovery(connectedResult.target.id);
       this.pairedFallbackSshTrustByTargetId.delete(connectedResult.target.id);
-      if (explicit) this.explicitlyConnectedTargetIds.add(connectedResult.target.id);
+      if (explicit && !unattended) this.explicitlyConnectedTargetIds.add(connectedResult.target.id);
       return connectedResult;
     } catch (error) {
       if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
@@ -1116,11 +1424,23 @@ export class RemoteConnectionService {
       const lastError = explicit
         ? errorMessage(error)
         : this.recordImplicitFailure(target.id, error);
+      let statusError = errorStatusPatch(error, this.withRetryNotice(target.id, lastError));
+      // While a dropped link is redialed, the headline stays "Lost the link …
+      // reconnects on its own" (hostReturnAttemptFailed). Writing the dial's
+      // own text first flipped it twice per redial, and each flip re-rendered
+      // every window.
+      if (
+        !explicit
+        && this.hostReturnWatches.has(target.id)
+        && this.hostReturnCanContinue(target.id, error, statusError.lastErrorInfo?.failure)
+      ) {
+        statusError = errorStatusPatch(error, describeHostWentAway(target.name, "reconnecting"));
+      }
       this.mergeStatus(target.id, {
         state: "error",
-        ...errorStatusPatch(error, this.withRetryNotice(target.id, lastError)),
+        ...statusError,
         lastAttemptedAt: Date.now(),
-        recovery: this.recoveryAfterFailure(target.id),
+        recovery: this.recoveryAfterFailure(target.id, statusError.lastErrorInfo?.failure),
       });
       // A redial that found a cloud computer asleep ends the redials. A
       // person's Connect woke it first, so its failure is a real one.
@@ -1151,6 +1471,7 @@ export class RemoteConnectionService {
     this.bumpDisconnectGeneration(targetId);
     // Disconnect, Cancel and Remove all end the redials for a dropped link.
     this.hostReturnWatches.stop(targetId);
+    this.endDropRecovery(targetId);
     this.pool.disconnect(targetId);
     this.mergeStatus(targetId, { state: "idle", lastError: null });
     // Windows stop calling a machine they see as disconnected. The status may
@@ -1274,6 +1595,79 @@ export class RemoteConnectionService {
     return icon;
   }
 
+  /**
+   * The state of a host's copy of a project, for the remove dialog. Asked
+   * only of a machine that is connected now: this never dials, reconnects or
+   * wakes one. A host without `projects.inspectRemoval` answers
+   * `supported: false`, and the dialog offers entry-only removal there.
+   */
+  async inspectProjectRemoval(
+    targetId: string,
+    projectId: string,
+  ): Promise<RemoteProjectRemovalInspection> {
+    const target = this.requireConnectedTargetForRemoval(targetId);
+    if (this.statusById.get(target.id)?.capabilities?.machineProjects?.removeCopy !== true) {
+      return { supported: false, entryOnly: true };
+    }
+    const value = await this.callMachine(target, "projects.inspectRemoval", { projectId }, {
+      retryOnConnectionError: false,
+    });
+    return { supported: true, report: value as ProjectRemovalReport };
+  }
+
+  /**
+   * Removes a project from a host: its entry, and its folder when asked (the
+   * host deletes it for good: it has no trash). The host checks the copy
+   * again right before a delete and refuses when it changed. A host without
+   * `projects.removeCopy` gets the old `projects.remove` for an entry-only
+   * removal, and a clear refusal for a delete.
+   */
+  async removeProjectCopy(
+    targetId: string,
+    projectId: string,
+    request: ProjectRemovalRequest,
+  ): Promise<ProjectRemovalOutcome> {
+    const target = this.requireConnectedTargetForRemoval(targetId);
+    const machineName = target.name || target.hostname;
+    const supported = this.statusById.get(target.id)?.capabilities?.machineProjects?.removeCopy === true;
+    let outcome: ProjectRemovalOutcome;
+    if (!supported) {
+      if (request.deleteFolder) {
+        return { status: "refused", code: "unsupported", reason: `Update ADE on ${machineName} to delete its folder from here.` };
+      }
+      await this.callMachine(target, "projects.remove", { projectId }, { retryOnConnectionError: false });
+      outcome = { status: "removed", folder: "kept", outsideLaneFolders: [] };
+    } else {
+      outcome = (await this.callMachine(target, "projects.removeCopy", {
+        projectId,
+        deleteFolder: request.deleteFolder,
+        stateToken: request.stateToken,
+        acceptWork: request.acceptWork,
+      }, {
+        // A delete is never replayed: a second try after a dropped answer
+        // could act on a copy nobody checked.
+        retryOnConnectionError: false,
+        timeoutMs: PROJECT_REMOVAL_TIMEOUT_MS,
+      })) as ProjectRemovalOutcome;
+    }
+    if (outcome.status !== "refused") this.dropProject(target.id, projectId);
+    return outcome;
+  }
+
+  private requireConnectedTargetForRemoval(targetId: string): RemoteRuntimeTarget {
+    const target = this.requireTarget(targetId);
+    if (this.statusById.get(target.id)?.state !== "connected") {
+      throw new AdeExpectedError(`${target.name || target.hostname} is offline. It keeps its copy and its entry.`, "user");
+    }
+    return target;
+  }
+
+  private dropProject(targetId: string, projectId: string): void {
+    const projects = this.statusById.get(targetId)?.projects;
+    if (!projects?.some((project) => project.projectId === projectId)) return;
+    this.mergeStatus(targetId, { projects: projects.filter((project) => project.projectId !== projectId) });
+  }
+
   private async callProjectIconMethod(
     targetId: string,
     method: "projects.setIcon" | "projects.removeIcon",
@@ -1381,7 +1775,8 @@ export class RemoteConnectionService {
     );
     const project = coerceConnectionProject(value);
     this.upsertProject(targetId, project);
-    return project;
+    // Said once, to the caller of this clone; the stored project list never keeps it.
+    return asRecord(value).githubSignInMissing === true ? { ...project, githubSignInMissing: true } : project;
   }
 
   async listMyGitHubRepos(
@@ -1547,14 +1942,39 @@ export class RemoteConnectionService {
     projectId: string,
     projectRootPath: string | null | undefined,
     known: readonly RemoteRuntimeProjectRecord[] | null = null,
+    onPhase?: (phase: RemoteEventSetupPhase) => void,
   ): Promise<string> {
-    if (!projectRootPath) return projectId;
+    if (!projectRootPath) return this.noteUnroutedProjectId(target.id, projectId, false);
     let projects = known;
     if (!projects && !this.statusById.get(target.id)?.projects?.length) {
-      projects = coerceProjects(await this.pool.projectsForTarget(target));
+      projects = coerceProjects(await this.pool.projectsForTarget(target, { onPhase }));
       this.mergeStatus(target.id, { projects: [...projects] });
     }
-    return this.projectIdOnMachine(target.id, projectId, projectRootPath, projects);
+    return this.noteUnroutedProjectId(
+      target.id,
+      this.projectIdOnMachine(target.id, projectId, projectRootPath, projects),
+      true,
+    );
+  }
+
+  /**
+   * A machine names its projects `project_<hash>`. An id of another shape (the
+   * app's own project id) that found no record by folder goes out as asked, and
+   * the machine refuses it as an unknown project. Log the first one for each
+   * machine and id, with the pin's shape, to find the caller that sent it.
+   */
+  private noteUnroutedProjectId(targetId: string, projectId: string, hadRootPath: boolean): string {
+    if (projectId.startsWith("project_")) return projectId;
+    const key = `${targetId}\u0000${projectId}`;
+    if (this.unroutedProjectIdsLogged.has(key)) return projectId;
+    this.unroutedProjectIdsLogged.add(key);
+    this.options.logger?.info("remote.project_id_unrouted", {
+      targetId,
+      projectId,
+      hadRootPath,
+      knownProjectCount: this.statusById.get(targetId)?.projects?.length ?? 0,
+    });
+    return projectId;
   }
 
   /** A machine woken for a call lists its projects, as a Connect does. */
@@ -1563,6 +1983,54 @@ export class RemoteConnectionService {
       this.mergeStatus(targetId, { projects: result.projects });
     }
     return result.projects;
+  }
+
+  /**
+   * A machine-scope call (a computer's own settings, `shared/machineScope.ts`)
+   * to a brain that predates the route: it would answer "unknown project", so
+   * it gets the sentence that says what to do instead. Null for any other
+   * call. Before the machine's capabilities are known, only its answer
+   * (`error`, "unknown project") tells.
+   */
+  private machineScopeRefusal(targetId: string, projectId: string, error?: unknown, domain?: string): Error | null {
+    if (projectId !== MACHINE_SCOPE_PROJECT_ID) return null;
+    const capabilities = this.statusById.get(targetId)?.capabilities;
+    // A brain of the route's first version answers it, but not a domain
+    // added since (Keep awake, Android, Passwords), nor an action added to a
+    // domain it answers (usage.getUsageSnapshot): only its refusal tells.
+    const older = (capabilities
+      ? capabilities.machineScope !== true || !machineScopeDomainAnswered(capabilities.machineScopeDomains, domain)
+      : false) || (error !== undefined && isMachineScopeOlderBrainError(error));
+    if (!older) return null;
+    const known = this.registry.get(targetId);
+    // The person updates ADE on that computer: an answer, not an ADE fault.
+    return new AdeExpectedError(machineScopeUpdateMessage(known?.name?.trim() || known?.hostname?.trim() || "That computer"), "environment");
+  }
+
+  /**
+   * `run` for a call that may be a machine-scope call (`machineScopeRefusal`):
+   * refused up front when the machine is known to predate the route, and its
+   * "unknown project" answer turned into that sentence. Any other failure
+   * goes to `onFailure` (a refusal is the machine answering, not a failed
+   * connection) and is thrown as it was.
+   */
+  private async withMachineScopeRefusal<T>(
+    targetId: string,
+    projectId: string,
+    run: () => Promise<T>,
+    onFailure: (error: unknown) => void,
+    domain?: string,
+  ): Promise<T> {
+    const refusedBefore = this.machineScopeRefusal(targetId, projectId, undefined, domain);
+    if (refusedBefore) throw refusedBefore;
+    try {
+      return await run();
+    } catch (error) {
+      const refused = this.machineScopeRefusal(targetId, projectId, error, domain);
+      if (refused) throw refused;
+      onFailure(error);
+      throw error;
+    }
   }
 
   async callAction(
@@ -1590,30 +2058,33 @@ export class RemoteConnectionService {
         }
         if (this.isManuallyDisconnected(sleeping)) throw new Error(REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE);
       }
-      if (sleeping && await this.wakeForUse(sleeping)) {
+      if (sleeping && await this.wakeForUse(sleeping, { via: "action", action: `${request.domain}.${request.action}` })) {
         this.clearAutomaticReconnectState(targetId);
         wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(sleeping));
-      } else if (this.asleepChecks.isResting(targetId)) {
-        // Not woken by this app: another device woke it already. The rest
-        // ends, and the dial below finds out (a failed one asks again).
+      } else if (sleeping && this.asleepChecks.isResting(targetId)) {
+        // Not woken by this app: another device woke it, or the provider
+        // already says "running" while ADE there is still starting. Its link
+        // comes back a few seconds after that, so the call waits for it as for
+        // its own wake, instead of failing on the first dial ("Can't reach").
         this.clearAutomaticReconnectState(targetId);
+        wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(sleeping));
       }
     }
     const target = await this.requireTargetForImplicitUse(targetId);
-    try {
+    return await this.withMachineScopeRefusal(targetId, projectId, async () => {
       let result: RemoteRuntimeActionResult;
       try {
-        result = await this.pool.callActionForTarget(target, await routedProjectId(target), request);
+        result = await this.sendThroughShortDrop(target, request, () => routedProjectId(target));
       } catch (error) {
         // A connection that looked open to a box that is asleep: wake it. The
         // call is sent once more only when sending it twice is safe, or when
         // it never went out; otherwise its unknown outcome stands, and the
         // person's retry reaches the woken machine.
-        if (!wakes || !(await this.wakeForUse(target))) throw error;
+        if (!wakes || !(await this.wakeForUse(target, { via: "action_retry", action: `${request.domain}.${request.action}` }))) throw error;
         this.clearAutomaticReconnectState(targetId);
         wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(target));
         if (error instanceof RemoteActionOutcomeUnknownError
-          && !isRetriableAfterSleep(request, this.statusById.get(targetId)?.capabilities?.clientSendDedupe === true)) throw error;
+          && !isRetriableAfterSleep(request, this.statusById.get(targetId)?.capabilities)) throw error;
         result = await this.pool.callActionForTarget(target, await routedProjectId(target), request);
       }
       this.mergeStatus(targetId, {
@@ -1623,9 +2094,31 @@ export class RemoteConnectionService {
       });
       this.clearAutomaticReconnectState(targetId);
       return result;
+    }, (error) => this.markCallFailure(targetId, error), request.domain);
+  }
+
+  /**
+   * A deduped send whose link dropped under it: when the link comes back
+   * within the reconnect hold, the send goes once more with the same id (the
+   * machine keeps one copy), so a short break costs no error at all.
+   */
+  private async sendThroughShortDrop(
+    target: RemoteRuntimeTarget,
+    request: RemoteRuntimeActionRequest,
+    projectId: () => Promise<string>,
+  ): Promise<RemoteRuntimeActionResult> {
+    try {
+      return await this.pool.callActionForTarget(target, await projectId(), request);
     } catch (error) {
-      this.markCallFailure(targetId, error);
-      throw error;
+      if (!(error instanceof RemoteActionOutcomeUnknownError) || error.reconnected !== false) throw error;
+      if (!isDedupedSend(request, this.statusById.get(target.id)?.capabilities)) throw error;
+      await this.waitForHeldReconnect(target.id);
+      if (!this.pool.hasEntry(target.id)) throw error;
+      // The machine may have updated while the link was down. A brain that no
+      // longer answers a repeated id would type a second copy, so the retry is
+      // only safe while it says it dedupes this request.
+      if (!isDedupedSend(request, this.statusById.get(target.id)?.capabilities)) throw error;
+      return await this.pool.callActionForTarget(target, await projectId(), request);
     }
   }
 
@@ -1647,6 +2140,8 @@ export class RemoteConnectionService {
       request.limit ?? null,
       request.category ?? null,
       request.replay ?? null,
+      // Windows that show different terminals do not share a filtered read.
+      request.ptyDataIds ?? null,
     ]);
     const inFlight = this.inFlightStreamEvents.get(key);
     if (inFlight) return inFlight;
@@ -1663,24 +2158,69 @@ export class RemoteConnectionService {
     request: RemoteRuntimeStreamEventsRequest,
     options?: { projectRootPath?: string | null },
   ): Promise<RemoteRuntimeStreamEventsResult> {
-    const target = await this.requireTargetForImplicitUse(targetId);
-    try {
-      const result = await this.pool.streamEventsForTarget(
-        target,
-        await this.routedProjectId(target, projectId, options?.projectRootPath),
-        request,
-      );
-      this.mergeStatus(targetId, {
-        state: "connected",
-        lastError: null,
-        lastAttemptedAt: Date.now(),
+    // A read that finishes after its deadline changes no status: a newer
+    // poll owns the machine's status by then.
+    return await this.withEventSetupDeadline(targetId, "read", async (notePhase, gaveUp) => {
+      const target = await this.requireTargetForImplicitUse(targetId);
+      return await this.withMachineScopeRefusal(targetId, projectId, async () => {
+        const result = await this.pool.streamEventsForTarget(
+          target,
+          await this.routedProjectId(target, projectId, options?.projectRootPath, null, notePhase),
+          request,
+          { onPhase: notePhase },
+        );
+        if (gaveUp()) return result;
+        this.mergeStatus(targetId, {
+          state: "connected",
+          lastError: null,
+          lastAttemptedAt: Date.now(),
+        });
+        this.clearAutomaticReconnectState(targetId);
+        return result;
+      }, (error) => {
+        if (!gaveUp()) this.markCallFailure(targetId, error);
       });
-      this.clearAutomaticReconnectState(targetId);
-      return result;
-    } catch (error) {
-      this.markCallFailure(targetId, error);
-      throw error;
-    }
+    });
+  }
+
+  /**
+   * An event read or subscription, bounded as a whole. Every step under it
+   * has its own bound, but a dial can try several routes or join a long SSH
+   * install, and a renderer poll must not sit on that: past
+   * REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS it fails naming the step it was on,
+   * and the pump polls again (joining the dial, which keeps going).
+   */
+  private withEventSetupDeadline<T>(
+    targetId: string,
+    kind: "read" | "subscribe",
+    run: (notePhase: (phase: RemoteEventSetupPhase) => void, isAbandoned: () => boolean) => Promise<T>,
+    onLateResult?: (value: T) => void,
+  ): Promise<T> {
+    const known = this.registry.get(targetId);
+    const machineName = known?.name?.trim() || known?.hostname?.trim() || "that computer";
+    return runWithEventSetupDeadline({
+      machineName,
+      run,
+      onLateResult,
+      onSettled: ({ timedOut, clock }) => {
+        const totalMs = clock.totalMs();
+        if (!timedOut && totalMs < REMOTE_RUNTIME_EVENT_SETUP_SLOW_MS) return;
+        const meta = {
+          kind,
+          transport: known?.transport ?? "ssh",
+          phase: clock.current(),
+          totalMs,
+          phases: clock.summary(),
+        };
+        if (timedOut) {
+          // Breadcrumb plus a budgeted Sentry Log, keyed by the step that hung.
+          forwardSignalToSentry("remote.event_setup_timed_out", meta, `remote.event_setup_timed_out:${meta.phase}`);
+          this.options.logger?.info("remote.event_setup_timed_out", { targetId, ...meta });
+        } else {
+          addSentryBreadcrumb("remote", "remote.event_setup_slow", meta);
+        }
+      },
+    });
   }
 
   async subscribeEvents(
@@ -1690,29 +2230,45 @@ export class RemoteConnectionService {
     onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
     onEnded?: () => void,
     onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
-    options?: { projectRootPath?: string | null },
+    options?: { projectRootPath?: string | null; ptyDataFilter?: RemotePtyDataFilter },
   ): Promise<() => void> {
-    const target = await this.requireTargetForImplicitUse(targetId);
-    try {
-      const cleanup = await this.pool.subscribeEventsForTarget(
-        target,
-        await this.routedProjectId(target, projectId, options?.projectRootPath),
-        request,
-        onEvent,
-        onEnded,
-        onSubscribed,
-      );
-      this.mergeStatus(targetId, {
-        state: "connected",
-        lastError: null,
-        lastAttemptedAt: Date.now(),
-      });
-      this.clearAutomaticReconnectState(targetId);
-      return cleanup;
-    } catch (error) {
-      this.markCallFailure(targetId, error);
-      throw error;
-    }
+    // A subscription acknowledged after the deadline is closed again
+    // (`onLateResult`): the caller gave up on it and holds no handle to it.
+    return await this.withEventSetupDeadline(
+      targetId,
+      "subscribe",
+      async (notePhase, gaveUp) => {
+        const target = await this.requireTargetForImplicitUse(targetId);
+        return await this.withMachineScopeRefusal(targetId, projectId, async () => {
+          const cleanup = await this.pool.subscribeEventsForTarget(
+            target,
+            await this.routedProjectId(target, projectId, options?.projectRootPath, null, notePhase),
+            request,
+            (event, eventEpoch) => {
+              if (!gaveUp()) onEvent(event, eventEpoch);
+            },
+            () => {
+              if (!gaveUp()) onEnded?.();
+            },
+            (result) => {
+              if (!gaveUp()) onSubscribed?.(result);
+            },
+            { onPhase: notePhase, ptyDataFilter: options?.ptyDataFilter },
+          );
+          if (gaveUp()) return cleanup;
+          this.mergeStatus(targetId, {
+            state: "connected",
+            lastError: null,
+            lastAttemptedAt: Date.now(),
+          });
+          this.clearAutomaticReconnectState(targetId);
+          return cleanup;
+        }, (error) => {
+          if (!gaveUp()) this.markCallFailure(targetId, error);
+        });
+      },
+      (lateCleanup) => lateCleanup(),
+    );
   }
 
   async listActionRegistry(
@@ -1790,10 +2346,11 @@ export class RemoteConnectionService {
   private async maintainSavedConnections(
     options: { pingTimeoutMs?: number } = {},
   ): Promise<void> {
-    await this.reconcileAuthorizedAccountOwnership();
+    const { currentOwnerUserId } = await this.reconcileAuthorizedAccountOwnership();
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
       if (this.isManuallyDisconnected(target) || this.isHeldForUserAction(target.id)) continue;
+      if (this.waitsForPersonFix(target.id, currentOwnerUserId)) continue;
       if (!this.automaticReconnectRetryIsDue(target.id)) continue;
       if (this.asleepChecks.isResting(target.id)) {
         // Still asleep: no dial, ask again later. Awake (something else woke
@@ -1813,23 +2370,31 @@ export class RemoteConnectionService {
         this.latencyProbeTargetIds.add(target.id);
         const startedAt = Date.now();
         try {
-          await this.pool.callMachineForTarget(
+          const pong = await this.pool.callMachineForTarget(
             target,
             "ping",
-            {},
+            // An older machine ignores the report; a newer one logs it.
+            { link: this.clientLinkReport(target.id) },
             {
               timeoutMs: options.pingTimeoutMs,
             },
           );
+          // A machine whose ADE froze answers late, and says so: that round
+          // trip measured the freeze, not the network, so it is not a sample.
+          const hostFrozenMs = Number((pong as Partial<RuntimePingReply> | null | undefined)?.hostFrozenMs);
+          if (Number.isFinite(hostFrozenMs) && hostFrozenMs > 0) continue;
+          const latencyMs = Date.now() - startedAt;
           const currentRoute = this.statusById.get(target.id)?.route;
           if (currentRoute) {
             this.mergeStatus(target.id, {
               route: {
                 ...currentRoute,
-                latencyMs: Math.max(0, Date.now() - startedAt),
+                latencyMs,
               },
             });
           }
+          this.noteSlowLink(target.id, (measure) => noteSlowLinkRtt(measure, latencyMs, Date.now()), { rttMs: latencyMs });
+          this.maybeLogLinkSummary(target.id);
           continue;
         } catch (error) {
           if (await this.asleepAfterFailure(target.id, error)) continue;
@@ -1858,11 +2423,23 @@ export class RemoteConnectionService {
     params: Record<string, unknown>,
     options: { retryOnConnectionError?: boolean; timeoutMs?: number } = {},
   ): Promise<unknown> {
+    // Taken before the first await, as in requireTargetForImplicitUse: a
+    // Remove during the held-reconnect wait must cancel this call.
+    const disconnectGeneration = this.getDisconnectGeneration(target.id);
     await this.assertAccountOwnershipAuthorized(target);
-    this.assertImplicitReconnectAllowed(target.id);
+    await this.waitForHeldReconnect(target.id);
+    const personFixGate = this.personFixGate(target.id);
+    if (personFixGate) await personFixGate;
+    const savedTarget = this.requireTarget(target.id);
+    if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
+      throw new Error(
+        "Remote target was disconnected before ADE finished connecting.",
+      );
+    }
+    this.assertImplicitReconnectAllowed(savedTarget.id);
     try {
       const result = await this.pool.callMachineForTarget(
-        target,
+        savedTarget,
         method,
         params,
         options,
@@ -1883,7 +2460,7 @@ export class RemoteConnectionService {
     const target = this.registry.get(targetId);
     // Removed (or never saved here) while a view still held its id: the
     // caller's to fix, as `requireRemoteTarget` in runtimeBridge says.
-    if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
+    if (!target) throw new AdeExpectedError(REMOTE_TARGET_NOT_FOUND_MESSAGE, "user");
     return target;
   }
 
@@ -1909,9 +2486,130 @@ export class RemoteConnectionService {
     targetId: string,
   ): Promise<RemoteRuntimeTarget> {
     const target = this.requireTarget(targetId);
+    // Taken before the first await: a Remove or a cancelled call during the
+    // held-reconnect wait releases the wait, and the resumed call must not
+    // dial the target it captured.
+    const disconnectGeneration = this.getDisconnectGeneration(target.id);
     await this.assertAccountOwnershipAuthorized(target);
-    this.assertImplicitReconnectAllowed(target.id);
-    return target;
+    await this.waitForHeldReconnect(target.id);
+    const personFixGate = this.personFixGate(target.id);
+    if (personFixGate) await personFixGate;
+    const current = this.requireTarget(target.id);
+    if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
+      throw new Error(
+        "Remote target was disconnected before ADE finished connecting.",
+      );
+    }
+    this.assertImplicitReconnectAllowed(current.id);
+    return current;
+  }
+
+  /**
+   * A call to a machine whose link dropped a moment ago, while windows still
+   * show it connected: wait for the redial (bounded) so the call goes out on
+   * the new link instead of failing with "can't reach".
+   */
+  private async waitForHeldReconnect(targetId: string): Promise<void> {
+    if (!this.isReconnectHeld(targetId) || this.pool.hasEntry(targetId)) return;
+    const since = this.reconnectHoldSinceByTargetId.get(targetId) ?? Date.now();
+    const waitMs = Math.min(RECONNECT_CALL_WAIT_MS, since + RECONNECT_HOLD_MS - Date.now());
+    if (waitMs <= 0) return;
+    await new Promise<void>((resolve) => {
+      let waiters = this.reconnectWaiters.get(targetId);
+      if (!waiters) {
+        waiters = new Set();
+        this.reconnectWaiters.set(targetId, waiters);
+      }
+      const done = () => {
+        clearTimeout(timer);
+        waiters?.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(done, waitMs);
+      timer.unref?.();
+      waiters.add(done);
+    });
+  }
+
+  /** Whether windows are shown this dropped link as connected right now. */
+  private isReconnectHeld(targetId: string): boolean {
+    const since = this.reconnectHoldSinceByTargetId.get(targetId);
+    if (since == null || Date.now() - since >= RECONNECT_HOLD_MS) return false;
+    const state = this.statusById.get(targetId)?.state;
+    return state === "error" || state === "connecting";
+  }
+
+  private inFastRedial(targetId: string): boolean {
+    return (this.fastRedialUntilByTargetId.get(targetId) ?? 0) > Date.now();
+  }
+
+  /**
+   * A link that was up dropped and will be redialed: redial fast for a while,
+   * and keep showing the machine connected for a short hold.
+   */
+  private beginDropRecovery(targetId: string, options: { hold: boolean }): void {
+    const now = Date.now();
+    this.fastRedialUntilByTargetId.set(targetId, now + FAST_REDIAL_WINDOW_MS);
+    // A failed redial before the drop must not hold the first fast one back.
+    this.automaticReconnectFailuresByTargetId.delete(targetId);
+    this.automaticReconnectRetryAtByTargetId.delete(targetId);
+    this.pool.clearConnectFailure(targetId);
+    if (options.hold && !this.reconnectHoldSinceByTargetId.has(targetId)) {
+      this.reconnectHoldSinceByTargetId.set(targetId, now);
+      const timer = setTimeout(() => {
+        this.reconnectHoldTimers.delete(targetId);
+        this.releaseReconnectWaiters(targetId);
+        // The hold ran out: windows now see the link as it is.
+        if (this.reconnectHoldSinceByTargetId.has(targetId)) this.emit();
+      }, RECONNECT_HOLD_MS + 50);
+      timer.unref?.();
+      this.reconnectHoldTimers.set(targetId, timer);
+    }
+  }
+
+  /** The link is back, or the person ended it: no fast redials and no hold. */
+  private endDropRecovery(targetId: string): void {
+    this.fastRedialUntilByTargetId.delete(targetId);
+    this.endReconnectHold(targetId);
+  }
+
+  /** Windows see the link as it is again; held calls go on now. */
+  private endReconnectHold(targetId: string): void {
+    this.reconnectHoldSinceByTargetId.delete(targetId);
+    const timer = this.reconnectHoldTimers.get(targetId);
+    if (timer) clearTimeout(timer);
+    this.reconnectHoldTimers.delete(targetId);
+    this.releaseReconnectWaiters(targetId);
+  }
+
+  private releaseReconnectWaiters(targetId: string): void {
+    const waiters = this.reconnectWaiters.get(targetId);
+    if (!waiters) return;
+    this.reconnectWaiters.delete(targetId);
+    for (const done of [...waiters]) done();
+  }
+
+  /**
+   * This computer's network changed (a window saw it come online or switch).
+   * A dropped link redials now instead of at its next backoff, and a live link
+   * is pinged, since a link on the old network may be dead without knowing it.
+   */
+  noteNetworkChanged(): void {
+    if (this.networkChangeTimer) return;
+    this.networkChangeTimer = setTimeout(() => {
+      this.networkChangeTimer = null;
+      for (const target of this.registry.list()) {
+        const status = this.statusById.get(target.id);
+        if (status?.state !== "error" || status.recovery !== "reconnecting") continue;
+        if (this.isManuallyDisconnected(target) || this.isHeldForUserAction(target.id)) continue;
+        if (!this.canWatchForHostReturn(target)) continue;
+        // Fast redials, but no hold: the machine has read as away for a while.
+        this.beginDropRecovery(target.id, { hold: false });
+        this.hostReturnWatches.start(target.id);
+      }
+      this.probeSavedConnections();
+    }, NETWORK_CHANGE_DEBOUNCE_MS);
+    this.networkChangeTimer.unref?.();
   }
 
   private assertImplicitReconnectAllowed(targetId: string): void {
@@ -1943,6 +2641,7 @@ export class RemoteConnectionService {
         retryAt,
       );
     }
+    if (this.inFastRedial(targetId)) return;
     this.pool.assertConnectNotBackingOff(targetId);
   }
 
@@ -1958,6 +2657,62 @@ export class RemoteConnectionService {
   /** Says so in the status when ADE stopped retrying after this failure. */
   private withRetryNotice(targetId: string, message: string): string {
     return this.isHeldForUserAction(targetId) ? `${message} ${REMOTE_CONNECT_STOPPED_NOTICE}` : message;
+  }
+
+  /**
+   * The machine's last connect failed in a way no redial fixes: it rejected
+   * this device's pairing or identity (Pair again), or the account would not
+   * vouch for it. The 30 s maintenance leaves it alone until the person acts
+   * (Connect, Pair again, an edit) or, for a sign-in failure, until the
+   * signed-in account changes.
+   */
+  private waitsForPersonFix(targetId: string, currentOwnerUserId: string | null): boolean {
+    const status = this.statusById.get(targetId);
+    const failure = status?.state === "error" ? status.lastErrorInfo?.failure : undefined;
+    if (failure !== "authentication") {
+      this.personFixAccountByTargetId.delete(targetId);
+      this.personFixReleasedFailureByTargetId.delete(targetId);
+    }
+    if (!isPersonFixFailure(failure)) return false;
+    if (failure !== "authentication") return true;
+    // Released by an account change: stays released until the next attempt
+    // records its own result, so the call right after maintenance dials too.
+    const info = status?.lastErrorInfo;
+    if (this.personFixReleasedFailureByTargetId.get(targetId) === info) return false;
+    this.personFixReleasedFailureByTargetId.delete(targetId);
+    if (!this.personFixAccountByTargetId.has(targetId)) {
+      this.personFixAccountByTargetId.set(targetId, currentOwnerUserId);
+      return true;
+    }
+    if (this.personFixAccountByTargetId.get(targetId) === currentOwnerUserId) return true;
+    this.personFixAccountByTargetId.delete(targetId);
+    this.personFixReleasedFailureByTargetId.set(targetId, info);
+    return false;
+  }
+
+  /**
+   * A call or implicit connect to a machine whose last connect failed in a way
+   * only the person can fix (`waitsForPersonFix`) throws that failure without
+   * dialing: a pinned poll would otherwise redial a broken pairing every few
+   * seconds. Explicit connects (Try again, Pair again) skip this. Null (no
+   * wait at all) for a machine with no such failure, the common case.
+   */
+  private personFixGate(targetId: string): Promise<void> | null {
+    if (this.pool.hasEntry(targetId)) return null;
+    const status = this.statusById.get(targetId);
+    const failure = status?.state === "error" ? status.lastErrorInfo?.failure : undefined;
+    if (!isPersonFixFailure(failure)) return null;
+    return (async () => {
+      // Only a sign-in failure is released by the account changing.
+      const currentOwnerUserId = failure === "authentication" && this.options.getAuthorizedAccountOwnerId
+        ? (await this.options.getAuthorizedAccountOwnerId().catch(() => null))?.trim() || null
+        : null;
+      if (!this.waitsForPersonFix(targetId, currentOwnerUserId)) return;
+      throw new RemoteConnectBackoffError(
+        status?.lastErrorInfo?.message ?? status?.lastError ?? "the machine refused this device",
+        null,
+      );
+    })();
   }
 
   /**
@@ -1990,8 +2745,20 @@ export class RemoteConnectionService {
   private beginRecoveryAfterDrop(
     target: RemoteRuntimeTarget,
   ): { recovery: HostWentAwayRecovery; watching: boolean } {
-    if (this.savedConnectionMaintenanceOwns(target)) return { recovery: "reconnecting", watching: false };
-    if (!this.canWatchForHostReturn(target)) return { recovery: "waiting_for_user", watching: false };
+    const maintenanceOwns = this.savedConnectionMaintenanceOwns(target);
+    if (!this.canWatchForHostReturn(target)) {
+      return { recovery: maintenanceOwns ? "reconnecting" : "waiting_for_user", watching: false };
+    }
+    // A link that was up: fast redials, also where the 30 s maintenance owns
+    // the machine (it takes over when the fast window ends), and the hold.
+    // A dial that never finished keeps the old path.
+    // A resting cloud computer gets no fast redials. A cloud computer gets
+    // them (the drop is often this computer's own network) but no hold, so
+    // the windows see its drop and, if its status then says asleep, its rest.
+    const fast = this.statusById.get(target.id)?.state === "connected"
+      && !this.asleepChecks.isResting(target.id);
+    if (!fast && maintenanceOwns) return { recovery: "reconnecting", watching: false };
+    if (fast) this.beginDropRecovery(target.id, { hold: !this.asleepChecks.isCloud(target.id) });
     this.hostReturnWatches.start(target.id);
     return { recovery: "reconnecting", watching: true };
   }
@@ -2028,34 +2795,56 @@ export class RemoteConnectionService {
         recovery: "reconnecting",
       });
     }
+    // Past the fast window, the 30 s maintenance redials a machine it owns.
+    if (!this.inFastRedial(targetId) && target && this.savedConnectionMaintenanceOwns(target)) return null;
     const retryAt = this.automaticReconnectRetryAtByTargetId.get(targetId);
     const now = Date.now();
     return retryAt != null && retryAt > now ? retryAt - now : automaticReconnectBackoffMs(attempts);
   }
 
   /** A failure the machine coming back can fix, as opposed to one only the person can. */
-  private hostReturnCanContinue(targetId: string, error: unknown): boolean {
-    if (isConnectionBackoffThrottle(error)) return !this.pool.needsUserAction(targetId);
+  private hostReturnCanContinue(
+    targetId: string,
+    error: unknown,
+    failure = this.statusById.get(targetId)?.lastErrorInfo?.failure,
+  ): boolean {
+    if (isConnectionBackoffThrottle(error)) return !this.pool.needsUserAction(targetId) && !isPersonFixFailure(failure);
     if (error instanceof PairedRuntimeRelayAuthRequiredError) return false;
     if (!this.isConnectionFailure(targetId, error) || this.pool.needsUserAction(targetId)) return false;
-    const failure = this.statusById.get(targetId)?.lastErrorInfo?.failure;
-    return failure !== "pairing" && failure !== "authentication" && failure !== "identity";
+    return !isPersonFixFailure(failure);
   }
 
-  /** What a failed call or connect leaves in `recovery`. */
-  private recoveryAfterFailure(targetId: string): RemoteRuntimeConnectionRecovery | null {
+  /**
+   * What a failed call or connect leaves in `recovery`. A failure only the
+   * person can fix (pair again, sign in) is not "reconnecting": no redial
+   * fixes it, and the windows show the failure itself with its action.
+   */
+  private recoveryAfterFailure(
+    targetId: string,
+    failure = this.statusById.get(targetId)?.lastErrorInfo?.failure,
+  ): RemoteRuntimeConnectionRecovery | null {
     const target = this.registry.get(targetId);
     if (!target || this.isHeldForUserAction(targetId) || this.isManuallyDisconnected(target)) return null;
+    if (isPersonFixFailure(failure)) return null;
     if (this.hostReturnWatches.has(targetId) || this.savedConnectionMaintenanceOwns(target)) {
       return "reconnecting";
     }
     return this.statusById.get(targetId)?.recovery === "waiting_for_user" ? "waiting_for_user" : null;
   }
 
-  /** Whether a sleeping cloud machine was woken for this use (see the option). */
-  private async wakeForUse(target: RemoteRuntimeTarget): Promise<boolean> {
+  /**
+   * Wakes a sleeping cloud box for a use, and logs what asked for it: the
+   * server records a person's wake with no cause, so this line is the only
+   * answer to "what woke my computer".
+   */
+  private async wakeForUse(
+    target: RemoteRuntimeTarget,
+    cause: { via: "connect" | "action" | "action_retry"; action?: string },
+  ): Promise<boolean> {
     if (!this.options.wakeForUse) return false;
-    return await this.options.wakeForUse(target);
+    const woke = await this.options.wakeForUse(target);
+    if (woke) this.options.logger?.info("remote.cloud_woken_for_use", { targetId: target.id, via: cause.via, action: cause.action ?? null });
+    return woke;
   }
 
   /** Connects a machine that is waking: its relay route comes back a few seconds after the wake. */
@@ -2063,7 +2852,7 @@ export class RemoteConnectionService {
     const deadline = Date.now() + WOKEN_MACHINE_CONNECT_WAIT_MS;
     for (;;) {
       try {
-        return await this.pool.connect(target, { bypassFailureBackoff: true });
+        return await this.pool.connect(target, { bypassFailureBackoff: true, initiatedBy: "user" });
       } catch (error) {
         // Waiting fixes a relay that isn't up yet, not a sign-in or a pairing.
         if (error instanceof PairedRuntimeRelayAuthRequiredError || this.pool.needsUserAction(target.id)) throw error;
@@ -2104,6 +2893,7 @@ export class RemoteConnectionService {
   private restAsleep(target: RemoteRuntimeTarget): void {
     this.pool.disconnect(target.id);
     this.hostReturnWatches.stop(target.id);
+    this.endDropRecovery(target.id);
     this.automaticReconnectFailuresByTargetId.delete(target.id);
     this.automaticReconnectRetryAtByTargetId.set(target.id, Date.now() + CLOUD_ASLEEP_RECHECK_MS);
     this.mergeStatus(target.id, { state: "idle", lastError: null, recovery: null });
@@ -2155,14 +2945,15 @@ export class RemoteConnectionService {
     // A refusal to dial changes nothing; the status already holds the failure
     // that started the wait, with its kind (SSH sign-in, unreachable).
     if (isConnectionBackoffThrottle(error)) return;
+    const statusError = errorStatusPatch(
+      error,
+      this.withRetryNotice(targetId, this.noteAutomaticReconnectFailure(targetId, error)),
+    );
     this.mergeStatus(targetId, {
       state: "error",
-      ...errorStatusPatch(
-        error,
-        this.withRetryNotice(targetId, this.noteAutomaticReconnectFailure(targetId, error)),
-      ),
+      ...statusError,
       lastAttemptedAt: Date.now(),
-      recovery: this.recoveryAfterFailure(targetId),
+      recovery: this.recoveryAfterFailure(targetId, statusError.lastErrorInfo?.failure),
     });
   }
 
@@ -2184,6 +2975,11 @@ export class RemoteConnectionService {
     // or a burst of polls would jump the wait straight to its maximum.
     const pendingRetryAt = this.automaticReconnectRetryAtByTargetId.get(targetId);
     if (pendingRetryAt != null && pendingRetryAt > Date.now()) return errorMessage(error);
+    if (this.inFastRedial(targetId)) {
+      // Not counted: the backoff after the fast window starts from its base.
+      this.automaticReconnectRetryAtByTargetId.set(targetId, Date.now() + FAST_REDIAL_INTERVAL_MS);
+      return errorMessage(error);
+    }
     const failureCount =
       (this.automaticReconnectFailuresByTargetId.get(targetId) ?? 0) + 1;
     this.automaticReconnectFailuresByTargetId.set(targetId, failureCount);
@@ -2269,7 +3065,21 @@ export class RemoteConnectionService {
     // Who brings a failed link back means nothing once it is up or idle, and
     // must not come back with a later, unrelated failure.
     if (next.state === "connected" || next.state === "idle") next.recovery = null;
+    // "Last seen" is when the link ended, so stamp the moment it leaves
+    // `connected`; a live link has no end yet.
+    if (next.state === "connected") next.disconnectedAt = null;
+    else if (current.state === "connected") next.disconnectedAt = Date.now();
     this.statusById.set(targetId, next);
+    // A failure no redial fixes (a rejected pairing or sign-in) ends the
+    // reconnect hold: windows show it with its action at once, and held calls
+    // stop waiting for a redial that will not come.
+    if (
+      next.state === "error"
+      && isPersonFixFailure(next.lastErrorInfo?.failure)
+      && this.reconnectHoldSinceByTargetId.has(targetId)
+    ) {
+      this.endReconnectHold(targetId);
+    }
     // Every successful call re-stamps `lastAttemptedAt` on a healthy machine.
     // Broadcasting that told every window "the connections changed", and the
     // cross-machine lane union answered each one with a status read of every
@@ -2278,9 +3088,14 @@ export class RemoteConnectionService {
     // A re-read project list or error is a fresh object even when nothing in
     // it changed, so structured fields compare by content.
     const previous: Record<string, unknown> = current;
-    const meaningful = Object.entries(next).some(
-      ([key, value]) => key !== "lastAttemptedAt" && !sameStatusValue(previous[key], value),
-    );
+    // A failure repeated by a redial (same kind, message and routes, new
+    // diagnostic id and timings) is not a change either; the status keeps
+    // the newest, and the next broadcast or read carries it.
+    const meaningful = Object.entries(next).some(([key, value]) => {
+      if (key === "lastAttemptedAt") return false;
+      if (key === "lastErrorInfo") return !sameStatusValue(errorInfoForCompare(previous[key]), errorInfoForCompare(value));
+      return !sameStatusValue(previous[key], value);
+    });
     if (meaningful) this.emit();
   }
 

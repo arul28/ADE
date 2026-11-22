@@ -110,6 +110,8 @@ export type BrowserToolbarRowProps = {
   overflow: ReactNode;
   /** The pane's own preview/maximize controls, drawn at the far right. */
   previewControls?: ReactNode;
+  /** Passwords' key button, right after the address field. */
+  passwords?: ReactNode;
 };
 
 /** Back, forward and reload with nowhere to go look inactive, not merely dim. */
@@ -139,6 +141,7 @@ export function BrowserToolbarRow({
   reduceMotion,
   overflow,
   previewControls,
+  passwords,
 }: BrowserToolbarRowProps) {
   const {
     toolbar,
@@ -302,6 +305,8 @@ export function BrowserToolbarRow({
           </button>
         ) : null}
       </form>
+
+      {passwords}
 
       {toolbar.showDevice ? (
         <DropdownMenu.Root open={deviceMenuOpen} onOpenChange={onDeviceMenuOpenChange}>

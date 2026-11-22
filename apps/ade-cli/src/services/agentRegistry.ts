@@ -1,6 +1,7 @@
 import { CURSOR_CLI_EXECUTABLES } from "../../../desktop/src/shared/providerCliExecutables";
 import { resolveProviderRemediation } from "../../../desktop/src/shared/providerRemediation";
 import type { ShippedProvider } from "../../../desktop/src/shared/providers";
+import { classifyProviderAccountRefusal, isProviderAuthRefusalText } from "../../../desktop/src/shared/providerAccountRefusal";
 
 export type AgentCliErrorCategory = "missing" | "unauthenticated";
 
@@ -117,6 +118,10 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
       /\bfactory\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
       /\b(?:invalid|missing|no)\s+factory(?:_api_key| api key)\b/i,
       /\bfactory(?:_api_key| api key)\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
+      // The Droid SDK's whole error on a computer with no Droid sign-in (a new
+      // ADE Cloud computer the sign-in was not carried to). It names no agent,
+      // so it counts only for a Droid chat.
+      /^no access token available\.?$/i,
     ],
   },
   {
@@ -183,13 +188,14 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
   {
     agent: "antigravity",
     displayName: "Antigravity",
-    binaryNames: ["agy_acp_server"],
-    // No terminal login: ADE runs the agent's own ACP `authenticate` from
-    // Settings > Providers > Antigravity on the machine that runs the chat.
+    // `agy` only: `antigravity` is also the Antigravity editor's launcher.
+    binaryNames: ["agy"],
+    // Sign-in is Settings > Providers > Antigravity on the machine that runs
+    // the chat (`agy acp --login`, a code pasted back), not a command to run.
     authCommand: "",
     notAuthErrorPatterns: [
-      // agy_acp_server 1.4.1: unauthenticated `session/new` is -32000
-      // "Authentication required", data.message "No authentication method selected. …".
+      // agy 1.5: "You are not logged into Antigravity." 1.4: "No authentication method selected. …".
+      /\bnot logged into antigravity\b/i,
       /\bno authentication method selected\b/i,
       /\bantigravity\b.*\b(not logged in|not authenticated|unauthorized|authentication (?:failed|required)|login required|sign\s*in)\b/i,
       /\bgemini[_ ]api[_ ]key\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
@@ -318,6 +324,10 @@ export function classifyAgentCliError(message: string, preferredAgent?: string |
   // The chat's own agent could not start because ADE's copy is not on this
   // machine yet: the card offers the download instead of a red crash frame.
   if (preferred && isPinnedToolNotReadyMessage(text)) return toMatch(preferred, "missing", text);
+  // Signed in, but the plan does not include this (Kimi's 403 also says
+  // "authentication required"): a sign-in card would send the person to fix
+  // the wrong thing.
+  if (classifyProviderAccountRefusal(text) === "plan") return null;
   const candidates = preferred
     ? [preferred, ...AGENT_CLI_REGISTRY.filter((descriptor) => descriptor !== preferred)]
     : AGENT_CLI_REGISTRY;
@@ -347,11 +357,11 @@ export function classifyAgentCliError(message: string, preferredAgent?: string |
     }
     // A bare 401/403 anywhere in the text is not a sign-in failure: 403 is as
     // often a region, plan or balance refusal, and a number can be a line or
-    // PR number. Only an HTTP 401 or an explicit auth phrase counts.
-    if (
-      /\b(not logged in|not authenticated|unauthorized|authentication failed|login required|invalid api key)\b/i.test(text)
-      || /\b(?:status(?:\s+code)?|http(?:\s+status)?|error)\s*[:=]?\s*401\b/i.test(text)
-    ) {
+    // PR number. Only an HTTP 401 or an explicit auth phrase counts: the
+    // words provider health reads (an invalid token, "send failed: 401", a
+    // Chinese provider's wording). Read directly, not as the verdict, which
+    // puts a model refusal before a sign-in.
+    if (isProviderAuthRefusalText(text)) {
       return toMatch(preferred, "unauthenticated", text);
     }
   }

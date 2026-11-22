@@ -9,6 +9,7 @@ import type {
   PtySendToSessionArgs,
   TerminalResumeLaunchConfig,
   TerminalResumeMetadata,
+  TerminalResumeProvider,
   TerminalSessionSummary,
   TerminalToolType,
   WindowsShellKind,
@@ -26,6 +27,7 @@ import {
   museCliApprovalFlag,
 } from "./types/chat";
 import { codexCliApprovalFlagValue } from "./codexApprovalPolicy";
+import { codexSandboxCliArgs } from "./pinnedToolSpawnEnv";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   filterAdeAgentSkillRoots,
@@ -63,7 +65,8 @@ export type CliProvider =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 export type LaunchProfile = CliProvider | "shell";
 export type TrackedCliLaunchCommand = {
   command?: string;
@@ -74,6 +77,11 @@ export type TrackedCliLaunchCommand = {
   env?: Record<string, string>;
   /** Provider-native session id ADE assigned at launch, when the CLI accepts one. */
   assignedSessionId?: string;
+  /**
+   * The prompt rides on the command line instead of being typed in, so the
+   * launch itself starts a turn that no Enter keystroke will mark.
+   */
+  promptInArgs?: boolean;
 };
 
 export type CodexComputerUseCliConfig = {
@@ -95,6 +103,8 @@ export type TrackedCliUserMcp = {
   codex?: Record<string, Record<string, unknown>> | null;
   /** A private ADE-owned file holding Claude's servers, for `--mcp-config <path>`. */
   claudeConfigPath?: string | null;
+  /** A private ADE-owned file holding Copilot's servers, for `--additional-mcp-config @<path>`. */
+  copilotConfigPath?: string | null;
 };
 
 const TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
@@ -129,6 +139,9 @@ export function trackedCliUserMcpFlags(provider: string, userMcp: TrackedCliUser
   }
   if (provider === "claude" && userMcp?.claudeConfigPath) {
     return ["--mcp-config", userMcp.claudeConfigPath];
+  }
+  if (provider === "copilot" && userMcp?.copilotConfigPath) {
+    return [`--additional-mcp-config=@${userMcp.copilotConfigPath}`];
   }
   return [];
 }
@@ -291,6 +304,7 @@ export const LAUNCH_PROFILES = [
   "grok",
   "copilot",
   "devin",
+  "antigravity",
   "shell",
 ] as const satisfies readonly LaunchProfile[];
 export const TRACKED_CLI_PERMISSION_MODES = AGENT_CHAT_PERMISSION_MODE_VALUES;
@@ -318,6 +332,7 @@ export const LAUNCH_PROFILE_TOOL_TYPE: Record<LaunchProfile, TerminalToolType> =
   grok: "grok",
   copilot: "copilot",
   devin: "devin",
+  antigravity: "antigravity",
   shell: "shell",
 };
 
@@ -335,6 +350,7 @@ export const LAUNCH_PROFILE_TITLE: Record<LaunchProfile, string> = {
   grok: "Grok CLI",
   copilot: "GitHub Copilot CLI",
   devin: "Devin CLI",
+  antigravity: "Antigravity CLI",
   shell: "Shell",
 };
 
@@ -498,6 +514,7 @@ const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType
   grok: ["grok", "grok-chat"],
   copilot: ["copilot", "copilot-chat"],
   devin: ["devin", "devin-chat"],
+  antigravity: ["antigravity", "antigravity-chat"],
   shell: ["shell"],
 };
 
@@ -565,6 +582,15 @@ export function validateLaunchProfilePermissionMode(
     // passthrough: normal / accept-edits / smart / plan / bypass all map.
     if (mode === "config-toml") {
       throw new Error(`permissionMode ${mode} is not supported for Devin CLI sessions.`);
+    }
+    return;
+  }
+  if (profile === "antigravity") {
+    // `agy --mode` takes accept-edits / auto / plan, no flag is its ask-first
+    // default, and `--dangerously-skip-permissions` is full access. There is
+    // no raw-config passthrough.
+    if (mode === "config-toml") {
+      throw new Error(`permissionMode ${mode} is not supported for Antigravity CLI sessions.`);
     }
     return;
   }
@@ -756,6 +782,37 @@ export function withClaudeSessionIdInCommandLine(commandLine: string, sessionId:
 
 function claudeArgsCarrySessionId(args: readonly string[]): boolean {
   return args.some((arg) => arg === "--session-id" || arg.startsWith("--session-id="));
+}
+
+/**
+ * Rewrite the `--settings` value of the `claude` invocation in a shell command
+ * line, or add one right after the `claude` token. Claude reads only the last
+ * `--settings`, so a value it already passes is merged, not shadowed. `merge`
+ * gets the current value (null when there is none) and returns the new one, or
+ * null to leave the line as it is. Only that one word is rewritten; the rest of
+ * the line keeps its own quoting.
+ */
+export function withClaudeSettingsInCommandLine(
+  commandLine: string,
+  merge: (existing: string | null) => string | null,
+): string {
+  const invocation = claudeInvocationInCommandLine(commandLine);
+  if (!invocation) return commandLine;
+  const settingsIndex = invocation.claudeArgs.findIndex((arg) => arg === "--settings" || arg.startsWith("--settings="));
+  if (settingsIndex < 0) {
+    const value = merge(null);
+    return value == null ? commandLine : withArgsAfterClaudeToken(commandLine, invocation.claudeIndex, ["--settings", value]);
+  }
+  const flag = invocation.claudeArgs[settingsIndex]!;
+  const inline = flag.startsWith("--settings=");
+  const existing = inline ? flag.slice("--settings=".length) : invocation.claudeArgs[settingsIndex + 1] ?? null;
+  const value = merge(existing);
+  if (value == null) return commandLine;
+  const wordIndex = invocation.claudeIndex + 1 + settingsIndex + (inline ? 0 : 1);
+  const span = shellWordSpans(commandLine)[wordIndex];
+  if (!span) return commandLine;
+  const word = commandArrayToLine([inline ? `--settings=${value}` : value]);
+  return `${commandLine.slice(0, span.start)}${word}${commandLine.slice(span.end)}`;
 }
 
 /**
@@ -1005,6 +1062,7 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   if (provider === "grok") return "grok --no-alt-screen";
   if (provider === "copilot") return "copilot";
   if (provider === "devin") return "devin";
+  if (provider === "antigravity") return ANTIGRAVITY_CLI_COMMAND;
   return "claude";
 }
 
@@ -1332,7 +1390,7 @@ export function buildTrackedCliLaunchCommand(args: {
       command: "codex",
       args: commandArgs,
       startupCommand: commandArrayToLine(["codex", ...commandArgs], { platform: "linux" }),
-      ...(usePromptArg ? {} : { initialInput, initialInputDelayMs: 750 }),
+      ...(usePromptArg ? { promptInArgs: true } : { initialInput, initialInputDelayMs: 750 }),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
@@ -1570,6 +1628,7 @@ export function buildTrackedCliLaunchCommand(args: {
     commandArgs.push(...copilotModelFlags(modelForLaunch));
     commandArgs.push(...copilotReasoningEffortFlags(args.reasoningEffort));
     commandArgs.push(...permissionModeToCopilotFlags(permissionMode));
+    commandArgs.push(...trackedCliUserMcpFlags("copilot", args.userMcp));
     // Copilot has no flag for system text, so ADE's guidance rides in front of
     // the first message. An empty launch stays idle, as Cursor's does.
     const copilotFirstMessage = initialPrompt
@@ -1620,6 +1679,39 @@ export function buildTrackedCliLaunchCommand(args: {
       // As for Copilot: the typed fallback line carries the user's prompt only.
       startupCommand: commandArrayToLine(
         ["devin", ...commandArgs.map((arg) => (arg === devinFirstMessage && initialPrompt ? initialPrompt : arg))],
+        { platform: "linux" },
+      ),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+    };
+  }
+
+  if (args.provider === "antigravity") {
+    const commandArgs: string[] = [
+      ...antigravityModelFlags(modelForLaunch, passthroughModelId),
+      ...antigravityEffortFlags(args.reasoningEffort),
+      ...permissionModeToAntigravityFlags(permissionMode),
+    ];
+    // Devin's shape: `agy` is a native binary on every platform (no `.cmd`
+    // shim), so argv carries the first message safely on Windows too. It has
+    // no flag for system text, so ADE's guidance rides in front of the first
+    // message (`-i` starts the TUI on it and keeps the session open). An
+    // empty launch stays idle. Antigravity cannot be handed a conversation id
+    // at launch, so no `assignedSessionId` is returned.
+    const antigravityFirstMessage = initialPrompt
+      ? workTabCliPrompt(initialPrompt, sessionGuidance, activityGuidance)
+      : null;
+    if (antigravityFirstMessage) {
+      commandArgs.push("-i", antigravityFirstMessage);
+    }
+    return {
+      command: ANTIGRAVITY_CLI_COMMAND,
+      args: commandArgs,
+      // As for Devin: the typed fallback line carries the user's prompt only.
+      startupCommand: commandArrayToLine(
+        [
+          ANTIGRAVITY_CLI_COMMAND,
+          ...commandArgs.map((arg) => (arg === antigravityFirstMessage && initialPrompt ? initialPrompt : arg)),
+        ],
         { platform: "linux" },
       ),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
@@ -2064,9 +2156,9 @@ function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | nu
   if (permissionMode === "full-auto") return ["--dangerously-bypass-approvals-and-sandbox"];
   // The CLI flag has no value between "ask" and "never", so both rungs match.
   if (permissionMode === "default" || permissionMode === "edit") {
-    return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
+    return [...codexSandboxCliArgs("workspace-write"), "--ask-for-approval", "on-request"];
   }
-  if (permissionMode === "plan") return ["--sandbox", "read-only", "--ask-for-approval", "on-request"];
+  if (permissionMode === "plan") return [...codexSandboxCliArgs("read-only"), "--ask-for-approval", "on-request"];
   return [];
 }
 
@@ -2078,7 +2170,7 @@ function codexResumePermissionFlags(args: {
 }): string[] {
   if (args.configSource === "config-toml") return [];
   if (args.approvalPolicy && args.sandbox) {
-    return ["--sandbox", args.sandbox, "--ask-for-approval", codexCliApprovalFlagValue(args.approvalPolicy)];
+    return [...codexSandboxCliArgs(args.sandbox), "--ask-for-approval", codexCliApprovalFlagValue(args.approvalPolicy)];
   }
   if (args.approvalPolicy || args.sandbox) return [];
   return permissionModeToCodexFlags(args.permissionMode);
@@ -2150,6 +2242,31 @@ function copilotModelFlags(model: string | null | undefined): string[] {
 function devinModelFlags(model: string | null | undefined): string[] {
   const resolved = resolveDevinCliModelForLaunch(model);
   return resolved ? ["--model", resolved] : [];
+}
+
+/** The command word of an Antigravity terminal; the PTY host swaps in ADE's pinned `antigravity` binary. */
+export const ANTIGRAVITY_CLI_COMMAND = "agy";
+
+/** ADE's Antigravity rows are `antigravity/<id>`; `agy --model` takes the bare id. */
+export function resolveAntigravityCliModelForLaunch(model: string | null | undefined): string | null {
+  return stripRegistryPrefix(model, "antigravity");
+}
+
+/** A preset with `passthroughModelId` hands its model to `agy` exactly as written. */
+function antigravityModelFlags(model: string | null | undefined, passthrough = false): string[] {
+  const resolved = passthrough ? normalizeCliFlagValue(model) : resolveAntigravityCliModelForLaunch(model);
+  return resolved ? ["--model", resolved] : [];
+}
+
+/** `agy --effort` values (1.5.6). */
+const ANTIGRAVITY_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+/** ADE's effort as an `agy --effort` value; a level past Antigravity's lands on `max`, an unknown one is dropped. */
+export function antigravityEffortFlags(reasoningEffort: string | null | undefined): string[] {
+  const effort = normalizeCliFlagValue(reasoningEffort)?.toLowerCase();
+  if (!effort) return [];
+  const mapped = effort === "ultracode" || effort === "ultra" ? "max" : effort;
+  return (ANTIGRAVITY_REASONING_EFFORTS as readonly string[]).includes(mapped) ? ["--effort", mapped] : [];
 }
 
 const GROK_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
@@ -2258,6 +2375,22 @@ export function permissionModeToDevinFlags(
   if (permissionMode === "edit") return ["--permission-mode", "accept-edits"];
   if (permissionMode === "plan") return ["--permission-mode", "plan"];
   return ["--permission-mode", "normal"];
+}
+
+/**
+ * `agy --mode` takes accept-edits, auto and plan; leaving it off is the CLI's
+ * ask-first default. Full access is its own switch, not a mode.
+ * `config-toml` is already rejected upstream: Antigravity has no raw-config
+ * passthrough.
+ */
+export function permissionModeToAntigravityFlags(
+  permissionMode: AgentChatPermissionMode | null | undefined,
+): string[] {
+  if (permissionMode === "full-auto") return ["--dangerously-skip-permissions"];
+  if (permissionMode === "auto") return ["--mode", "auto"];
+  if (permissionMode === "edit") return ["--mode", "accept-edits"];
+  if (permissionMode === "plan") return ["--mode", "plan"];
+  return [];
 }
 
 function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
@@ -2536,6 +2669,22 @@ export function trackedCliResumeCredentialId(
     if (trimmed.length) return trimmed;
   }
   return null;
+}
+
+/** A route home's folder name: `r` and 16 hex digits (`routeConfigHomeId`). */
+export function isRouteHomeId(value: unknown): value is string {
+  return typeof value === "string" && /^r[0-9a-f]{16}$/u.test(value);
+}
+
+/**
+ * The ADE route home a tracked CLI resumes in when no account, preset or key
+ * names its launch (an Import from a route home ADE could not name again).
+ */
+export function trackedCliResumeRouteHomeId(
+  metadata: Pick<TerminalResumeMetadata, "launch"> | null | undefined,
+): string | null {
+  const value = metadata?.launch?.routeHomeId;
+  return isRouteHomeId(value) ? value : null;
 }
 
 export function buildTrackedCliResumeLaunchCommand(
@@ -2890,6 +3039,7 @@ function buildProviderResumeLaunchCommand(
       ...copilotModelFlags(modelForLaunch),
       ...copilotReasoningEffortFlags(reasoningEffort),
       ...permissionModeToCopilotFlags(permissionMode),
+      ...trackedCliUserMcpFlags("copilot", overrides.userMcp),
     ];
     if (targetId) parts.push(`--resume=${targetId}`);
     else parts.push("--continue");
@@ -2914,6 +3064,25 @@ function buildProviderResumeLaunchCommand(
     if (targetId) parts.push("--resume", targetId);
     else parts.push("--continue");
     if (prompt) parts.push("--", prompt);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+    };
+  }
+
+  if (metadata.provider === "antigravity") {
+    const parts = [
+      ANTIGRAVITY_CLI_COMMAND,
+      ...antigravityModelFlags(modelForLaunch, passthroughModelId),
+      ...antigravityEffortFlags(reasoningEffort),
+      ...permissionModeToAntigravityFlags(permissionMode),
+    ];
+    // `--conversation <id>` reopens one conversation; `--continue` the most
+    // recent one. The same `-i` argv prompt as a fresh launch.
+    if (targetId) parts.push("--conversation", targetId);
+    else parts.push("--continue");
+    if (prompt) parts.push("-i", prompt);
     return {
       command: parts[0]!,
       args: parts.slice(1),
@@ -3015,4 +3184,26 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
     ...(defaultLaunch.initialInput !== undefined ? { initialInput: defaultLaunch.initialInput } : {}),
     ...(defaultLaunch.initialInputDelayMs !== undefined ? { initialInputDelayMs: defaultLaunch.initialInputDelayMs } : {}),
   };
+}
+
+/**
+ * The agent CLIs whose free prompt ADE can read on screen
+ * (`providerReadyMarkerVisible` in `ptyService.ts`; keep the two the same).
+ * A message from the Work input box or the phone waits for that prompt. For
+ * any other CLI (Qwen, Kimi, Grok, Copilot, Antigravity, Devin) ADE cannot
+ * tell when it is free, so the message is typed at once, as the person's own
+ * keys would be, instead of waiting for a prompt ADE never sees.
+ */
+const FREE_PROMPT_PROVIDERS: ReadonlySet<string> = new Set([
+  "claude",
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
+  "pi",
+  "muse",
+] as const satisfies readonly TerminalResumeProvider[]);
+
+export function agentCliReadsFreePrompt(provider: string | null | undefined): boolean {
+  return provider != null && FREE_PROMPT_PROVIDERS.has(provider);
 }

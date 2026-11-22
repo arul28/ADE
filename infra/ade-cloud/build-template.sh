@@ -8,6 +8,10 @@
 #              Use something like "ade-a1-test" for a trial build.
 # ade-version  the ADE release baked in; default "latest".
 #
+# ADE_BAKED_TOOLS="codex claude-code" (env) picks which of that release's
+# pinned agents are baked in; the Dockerfile's default is codex, claude-code
+# and opencode.
+#
 # Building an existing name publishes a new revision, its build number. The
 # last line printed is `name@N`. Boxes already made from the template keep
 # their image until they are updated.
@@ -25,17 +29,26 @@ if [ -z "${AGENT37_API_KEY:-}" ]; then
 fi
 command -v npx >/dev/null 2>&1 || { echo "build-template: needs Node's npx." >&2; exit 1; }
 
-# The build context is the template folder only: Dockerfile + entrypoint.
-# Copy it so a stray file next to them never ships in the image.
+# The build context is the template folder only: Dockerfile, entrypoint, the
+# bwrap wrapper and the login-shell PATH fix. Copy it so a stray file next to them never ships in the image.
 work="$(mktemp -d "${TMPDIR:-/tmp}/ade-cloud-template.XXXXXX")"
 trap 'rm -rf "$work"' EXIT INT TERM
 context="$work/context"
 mkdir "$context"
-cp "$here/template/Dockerfile" "$here/template/ade-entrypoint.sh" "$context/"
+cp "$here/template/Dockerfile" "$here/template/ade-entrypoint.sh" "$here/template/bwrap-gvisor.sh" "$here/template/ade-shims-profile.sh" "$context/"
 if [ "$ade_version" != "latest" ]; then
   # A pinned release goes in as the Dockerfile's default, so the cloud build
   # needs no build-arg support.
   sed "s/^ARG ADE_VERSION=latest$/ARG ADE_VERSION=$ade_version/" "$here/template/Dockerfile" > "$context/Dockerfile"
+fi
+# ADE_BAKED_TOOLS (space-separated tool names, "" for none) replaces the
+# agents baked into the image, the same way.
+if [ "${ADE_BAKED_TOOLS+set}" = set ]; then
+  case "$ADE_BAKED_TOOLS" in
+    *[!a-z0-9\ -]*) echo "build-template: ADE_BAKED_TOOLS takes tool names (a-z, 0-9, -) separated by spaces." >&2; exit 1 ;;
+  esac
+  sed "s/^ARG ADE_BAKED_TOOLS=.*$/ARG ADE_BAKED_TOOLS=\"$ADE_BAKED_TOOLS\"/" "$context/Dockerfile" > "$context/Dockerfile.next"
+  mv "$context/Dockerfile.next" "$context/Dockerfile"
 fi
 
 echo "Building ADE Cloud template \"$name\" (ADE $ade_version)…" >&2

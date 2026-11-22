@@ -1,6 +1,7 @@
 import React from "react";
-import type { ChatLaunchStage } from "../../../../shared/types";
+import type { ChatLaunchStageStatus } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
+import "../../remoteTargets/cloudBrand.css";
 
 /**
  * The segmented launch progress rail: one segment per stage, shared by the
@@ -18,7 +19,10 @@ import { cn } from "../../ui/cn";
  * draws actually moved.
  */
 
-function fillScale(stage: ChatLaunchStage): number {
+/** What the rail reads of a step: a launch's stage or an ADE Cloud job's step. */
+export type LaunchRailStage = { id: string; status: ChatLaunchStageStatus; percent?: number | null };
+
+function fillScale(stage: LaunchRailStage): number {
   switch (stage.status) {
     case "done":
     case "warning":
@@ -32,7 +36,7 @@ function fillScale(stage: ChatLaunchStage): number {
   }
 }
 
-const FILL_TONE: Record<ChatLaunchStage["status"], string> = {
+const FILL_TONE: Record<ChatLaunchStageStatus, string> = {
   done: "bg-emerald-400/70",
   warning: "bg-amber-300/70",
   failed: "bg-amber-400/80",
@@ -41,7 +45,7 @@ const FILL_TONE: Record<ChatLaunchStage["status"], string> = {
   pending: "bg-transparent",
 };
 
-const TRACK_TONE: Record<ChatLaunchStage["status"], string> = {
+const TRACK_TONE: Record<ChatLaunchStageStatus, string> = {
   done: "bg-emerald-400/20",
   warning: "bg-amber-300/20",
   failed: "bg-amber-400/20",
@@ -53,9 +57,12 @@ const TRACK_TONE: Record<ChatLaunchStage["status"], string> = {
 export const LaunchProgressRail = React.memo(function LaunchProgressRail({
   stages,
   className,
+  cloud = false,
 }: {
-  stages: readonly ChatLaunchStage[];
+  stages: readonly LaunchRailStage[];
   className?: string;
+  /** An ADE Cloud launch: the running step is the Night sky blue (cloudBrand.css). */
+  cloud?: boolean;
 }) {
   return (
     <div className={cn("flex w-full gap-[3px]", className)} aria-hidden data-testid="launch-rail">
@@ -65,13 +72,13 @@ export const LaunchProgressRail = React.memo(function LaunchProgressRail({
           data-stage-status={stage.status}
           className={cn(
             "relative h-[3px] min-w-0 flex-1 overflow-hidden rounded-full transition-colors duration-300",
-            TRACK_TONE[stage.status],
+            cloud && stage.status === "running" ? "adec-rail-track" : TRACK_TONE[stage.status],
           )}
         >
           <span
             className={cn(
               "absolute inset-0 origin-left rounded-full transition-[transform,background-color] duration-300 ease-out",
-              FILL_TONE[stage.status],
+              cloud && stage.status === "running" ? "adec-rail-fill" : FILL_TONE[stage.status],
             )}
             style={{ transform: `scaleX(${fillScale(stage)})` }}
           />

@@ -9,6 +9,11 @@ import type { EditorTab } from "../editorGroupsStore";
 import { buildHtmlPreviewDocument, HtmlViewer } from "./HtmlViewer";
 import type { ViewerProps } from "./types";
 
+import type { OpenProjectBinding } from "../../../../../shared/types";
+/** The machine whose files the editor shows. */
+const FILES_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
+
 vi.mock("./CodeViewer", () => ({
   CodeViewer: () => <div data-testid="html-source-editor" />,
 }));
@@ -27,9 +32,10 @@ const tab: EditorTab = {
 
 function props(source: string): ViewerProps {
   return {
-    files: createPinnedFilesApi(null),
+    files: createPinnedFilesApi(FILES_PIN),
     workspaceId: "workspace-a",
     rootPath: "/repo",
+    pathPin: FILES_PIN,
     tab,
     content: {
       content: source,

@@ -241,8 +241,10 @@ export async function floatAndroidMiniPlayerForChat(args: {
   let device = args.auto ? null : laneDevice(args);
   if (!device) {
     const api = window.ade?.androidEmulator;
-    if (!api?.getStatus) return false;
-    const status = await api.getStatus({ laneId }, args.runtimePin).catch((cause: unknown) => {
+    // The emulator's machine: the caller's pin, else the tab's copy. None: nothing floats.
+    const machinePin = effectiveRuntimeBinding(args.runtimePin, boundBinding());
+    if (!api?.getStatus || !machinePin) return false;
+    const status = await api.getStatus({ laneId }, machinePin).catch((cause: unknown) => {
       // Nothing floats: the pane went, and the emulator's state is unknown.
       logRendererDebugEvent("android.mini_player_status_failed", { error: cause instanceof Error ? cause.message : String(cause) });
       return null;

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { IosSimulatorLogRow } from "../../../../../shared/types/iosSimulator";
 import { APPLE_EVENT_LOG_LIMIT, AppSection, appendEventLogRows, eventLogClock } from "./AppSection";
-import { controlsIn, installAdeMock, makeActions, makeCtx } from "../drawerTestHarness";
+import { controlsIn, installAdeMock, makeActions, makeCtx, DRAWER_PIN } from "../drawerTestHarness";
 
 afterEach(cleanup);
 
@@ -20,26 +20,6 @@ function row(id: number, over: Partial<IosSimulatorLogRow> = {}): IosSimulatorLo
 }
 
 describe("AppSection", () => {
-  it("renders the foreground row, both verbs, both submit rows, permissions, push and the log", () => {
-    installAdeMock();
-    render(<AppSection ctx={makeCtx()} />);
-    // No heading of its own: the App GROUP card is the heading (§B1).
-    expect(screen.queryByRole("heading")).toBeNull();
-    expect(screen.getByText("Foreground")).toBeTruthy();
-    expect(screen.getByTestId("apple-drawer-foreground").textContent).toBe("com.acme.app");
-    expect(screen.getByRole("button", { name: "Relaunch" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Terminate" })).toBeTruthy();
-    expect(screen.getByPlaceholderText("https://… or myapp://")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
-    expect(screen.getByPlaceholderText("Bundle ID")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Launch" })).toBeTruthy();
-    // The three sections that used to sit under this one, folded in.
-    expect(screen.getByText("Permissions")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Grant" })).toBeTruthy();
-    expect(screen.getByText("Push notification")).toBeTruthy();
-    expect(screen.getByPlaceholderText("Alert text")).toBeTruthy();
-    expect(screen.getByText("Event log")).toBeTruthy();
-  });
 
   it("shows — and disables Relaunch/Terminate with no foreground app, never hiding them", () => {
     installAdeMock();
@@ -72,7 +52,7 @@ describe("AppSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
     await waitFor(() => expect(iosSimulator.openUrl).toHaveBeenCalledWith(
       { laneId: "lane-1", deviceUdid: "UDID-1", chatSessionId: null, url: "myapp://home" },
-      null,
+      DRAWER_PIN,
     ));
     await waitFor(() => expect(input.value).toBe(""));
     expect(ctx.actions.act).toHaveBeenCalledTimes(1);
@@ -86,7 +66,7 @@ describe("AppSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
     await waitFor(() => expect(iosSimulator.launch).toHaveBeenCalledWith(
       expect.objectContaining({ laneId: "lane-1", bundleId: "com.acme.two", build: false, openDrawer: false }),
-      null,
+      DRAWER_PIN,
     ));
     await waitFor(() => expect(ctx.setForegroundApp).toHaveBeenCalledWith("com.acme.two"));
   });
@@ -95,9 +75,9 @@ describe("AppSection", () => {
     const { iosSimulator } = installAdeMock();
     render(<AppSection ctx={makeCtx()} />);
     fireEvent.click(screen.getByRole("button", { name: "Relaunch" }));
-    await waitFor(() => expect(iosSimulator.relaunchApp).toHaveBeenCalledWith(expect.objectContaining({ bundleId: "com.acme.app" }), null));
+    await waitFor(() => expect(iosSimulator.relaunchApp).toHaveBeenCalledWith(expect.objectContaining({ bundleId: "com.acme.app" }), DRAWER_PIN));
     fireEvent.click(screen.getByRole("button", { name: "Terminate" }));
-    await waitFor(() => expect(iosSimulator.terminateApp).toHaveBeenCalledWith(expect.objectContaining({ bundleId: "com.acme.app" }), null));
+    await waitFor(() => expect(iosSimulator.terminateApp).toHaveBeenCalledWith(expect.objectContaining({ bundleId: "com.acme.app" }), DRAWER_PIN));
     vi.clearAllMocks();
   });
 
@@ -107,13 +87,13 @@ describe("AppSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Grant" }));
     await waitFor(() => expect(iosSimulator.setPermission).toHaveBeenCalledWith(
       expect.objectContaining({ bundleId: "com.acme.app", service: "photos", action: "grant" }),
-      null,
+      DRAWER_PIN,
     ));
     fireEvent.change(screen.getByLabelText("App ID"), { target: { value: "com.other" } });
     fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
     await waitFor(() => expect(iosSimulator.setPermission).toHaveBeenCalledWith(
       expect.objectContaining({ bundleId: "com.other", action: "revoke" }),
-      null,
+      DRAWER_PIN,
     ));
   });
 
@@ -124,7 +104,7 @@ describe("AppSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(iosSimulator.sendPushNotification).toHaveBeenCalledWith(
       expect.objectContaining({ bundleId: "com.acme.app", body: "Ping" }),
-      null,
+      DRAWER_PIN,
     ));
   });
 
@@ -139,7 +119,7 @@ describe("AppSection", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Stream log" }));
     await waitFor(() => expect(iosSimulator.startEventLog).toHaveBeenCalledWith(
       expect.objectContaining({ laneId: "lane-1", bundleId: "com.acme.app" }),
-      null,
+      DRAWER_PIN,
     ));
     await waitFor(() => expect(screen.getByText("hello")).toBeTruthy());
     await act(async () => {

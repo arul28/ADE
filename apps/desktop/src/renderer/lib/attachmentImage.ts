@@ -103,9 +103,11 @@ async function readUncached(
 ): Promise<{ dataUrl: string }> {
   const runtimeRead = window.ade?.agentChat?.getImageDataUrl;
   const localRead = window.ade?.app?.getImageDataUrl;
-  if (runtimeRead) {
+  // The chat's machine reads its own file. With no pin, only this computer's
+  // reader can answer, and only for a file it owns.
+  if (runtimeRead && pin) {
     try {
-      return await runtimeRead(path, pin ?? undefined);
+      return await runtimeRead(path, pin);
     } catch (error) {
       if (!ownedHere || !localRead || FINAL_FILE_ANSWER.test(errorText(error))) throw error;
       return await localRead(path).catch(() => {

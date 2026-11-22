@@ -267,6 +267,24 @@ function resolveGitFilePath(worktreePath: string, filePath: string): { absPath: 
 }
 
 /**
+ * A lane-sharing guest's read (`refuseIgnored`): refuses a file under `.ade/`
+ * (ADE's own state), a file git ignores (`.env`, keys), and a link that
+ * resolves to either. Both the path as asked and the path it resolves to are
+ * checked. When git cannot answer, the read is refused.
+ */
+async function assertSharedDiffPath(worktreePath: string, filePath: string, gitPath: string): Promise<void> {
+  const refuse = (): never => {
+    throw new AdeExpectedError("That file is not shared on this lane.", "user");
+  };
+  const asked = filePath.replace(/\\/g, "/").split("/").filter((segment) => segment !== "" && segment !== ".").join("/");
+  const candidates = [...new Set([asked, gitPath].filter(Boolean))];
+  if (candidates.some((rel) => rel.split("/")[0]?.toLowerCase() === ".ade")) refuse();
+  // Exit 0: at least one path is ignored. Exit 1: none is. Anything else: no answer.
+  const res = await runGit(["check-ignore", "--quiet", "--", ...candidates], { cwd: worktreePath, timeoutMs: 10_000 });
+  if (res.exitCode !== 1) refuse();
+}
+
+/**
  * The ref a branch diff compares with, and the commit it starts from.
  *
  * A lane compares with its base branch. A lane that IS its base (the primary
@@ -476,16 +494,19 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       filePath,
       mode,
       compareRef,
-      compareTo
+      compareTo,
+      refuseIgnored
     }: {
       laneId: string;
       filePath: string;
       mode: DiffMode;
       compareRef?: string;
       compareTo?: "worktree" | "parent";
+      refuseIgnored?: boolean;
     }): Promise<FileDiff> {
       const { worktreePath, baseRef, branchRef } = laneService.getLaneBaseAndBranch(laneId);
       const { absPath, gitPath } = resolveGitFilePath(worktreePath, filePath);
+      if (refuseIgnored) await assertSharedDiffPath(worktreePath, filePath, gitPath);
 
       if (mode === "branch") {
         // The file at the lane's starting point against its last commit.
@@ -563,16 +584,19 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       filePath,
       mode,
       compareRef,
-      compareTo
+      compareTo,
+      refuseIgnored
     }: {
       laneId: string;
       filePath: string;
       mode: DiffMode;
       compareRef?: string;
       compareTo?: "worktree" | "parent";
+      refuseIgnored?: boolean;
     }): Promise<FilePatch> {
       const { worktreePath, baseRef, branchRef } = laneService.getLaneBaseAndBranch(laneId);
       const { gitPath } = resolveGitFilePath(worktreePath, filePath);
+      if (refuseIgnored) await assertSharedDiffPath(worktreePath, filePath, gitPath);
       let args: string[];
 
       if (mode === "branch") {

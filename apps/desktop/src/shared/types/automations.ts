@@ -141,6 +141,33 @@ export type AutomationRuleSummary = AutomationRule & {
   homeGaps?: string[];
   /** `account`: the rule follows the account (every computer with the repository sees it). */
   source: "local" | "shared" | "merged" | "account";
+  /**
+   * For a rule whose home is ADE Cloud (C9): what ADE Cloud's server says,
+   * read when rules are listed (at most once a minute). Null until the first
+   * read answers; absent for any other rule.
+   */
+  cloud?: AutomationCloudHomeState | null;
+};
+
+/** A cloud-homed rule as ADE Cloud's server has it, and its last runs there. */
+export type AutomationCloudHomeState = {
+  /** False while the server has no copy yet (the brain that saved it hasn't synced). */
+  registered: boolean;
+  enabled: boolean;
+  /** `storm`: paused after too many runs in an hour; saving the rule again turns it back on. */
+  pausedReason: "storm" | null;
+  nextFireAt: string | null;
+  runs: Array<{
+    runId: string;
+    trigger: string;
+    state: "queued" | "starting" | "running" | "finishing" | "done" | "failed" | "skipped";
+    reason: string | null;
+    laneId: string | null;
+    computer: "freed" | "kept" | null;
+    startedAt: string | null;
+    endedAt: string | null;
+    createdAt: string;
+  }>;
 };
 
 export type AutomationDeleteRuleRequest = {
@@ -619,7 +646,7 @@ export type AutomationRuleDraft = {
    * home is the computer that saves it. Ignored for a rule kept on this
    * computer only.
    */
-  home?: AutomationRuleHome | "this-computer" | null;
+  home?: AutomationRuleHome | "this-computer" | "ade-cloud" | null;
 };
 
 export type AutomationRuleDraftNormalized = Omit<AutomationRule, "id" | "legacy"> & {

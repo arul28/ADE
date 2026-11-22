@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, Github, Star } from "lucide-react";
+import { Link, useLocation } from "react-router-dom";
+import { ArrowUpRight, Download, Github, Menu, Star, X } from "lucide-react";
+import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import type { InstallPlatform } from "../../lib/installTargets";
 import {
@@ -32,8 +34,13 @@ function formatStars(count: number): string {
  */
 function useGithubStars(): number | null {
   const [stars, setStars] = useState<number | null>(() => {
-    const cached = typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(STARS_CACHE_KEY);
-    return cached ? Number(cached) : null;
+    try {
+      const cached = sessionStorage.getItem(STARS_CACHE_KEY);
+      return cached ? Number(cached) : null;
+    } catch {
+      // A browser that denies site data throws on the property access itself.
+      return null;
+    }
   });
   useEffect(() => {
     if (stars !== null) return;
@@ -42,7 +49,11 @@ function useGithubStars(): number | null {
       .then((res) => (res.ok ? res.json() : null))
       .then((data: { stargazers_count?: unknown } | null) => {
         if (typeof data?.stargazers_count !== "number") return;
-        sessionStorage.setItem(STARS_CACHE_KEY, String(data.stargazers_count));
+        try {
+          sessionStorage.setItem(STARS_CACHE_KEY, String(data.stargazers_count));
+        } catch {
+          // A browser that denies site data throws here too; the count still shows.
+        }
         setStars(data.stargazers_count);
       })
       .catch(() => undefined);
@@ -51,34 +62,70 @@ function useGithubStars(): number | null {
   return stars;
 }
 
-const linkClass = "text-[13px] text-white/60 transition-colors hover:text-white";
+const linkClass = "rounded-md text-[13px] text-white/60 transition-colors hover:text-white focus-ring";
 
+const CHANGELOG_URL = `${LINKS.docs}/changelog`;
+
+/**
+ * The site's one header, on every page: the logo, three links, and the
+ * download button. Below `md` the links move into a menu.
+ */
 export function SiteNav() {
   const { openInstall } = useInstallDialog();
   const platform = guessPlatform();
   const stars = useGithubStars();
+  const location = useLocation();
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => setMenuOpen(false), [location.pathname, location.hash]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    // Widening past `md` hides the menu and its toggle: close it, so the page doesn't stay locked.
+    const desktop = window.matchMedia("(min-width: 768px)");
+    const onDesktop = () => {
+      if (desktop.matches) setMenuOpen(false);
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKeyDown);
+    desktop.addEventListener("change", onDesktop);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+      desktop.removeEventListener("change", onDesktop);
+    };
+  }, [menuOpen]);
+
+  const onPricing = location.pathname === "/pricing";
 
   return (
-    <header className="sticky top-0 z-50 border-b border-white/[0.07] bg-[#0a0a0f]/75 backdrop-blur-xl">
+    <header className="sticky top-0 z-50 border-b border-white/[0.07]">
+      {/* The blur is its own layer: a filter on the header itself would pin the fixed menu below to the header's box. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-[#0a0a0f]/75 backdrop-blur-xl" />
       <div className="mx-auto flex h-[60px] max-w-[1320px] items-center gap-7 px-5 sm:px-8">
-        <a href="/" aria-label="ADE home" className="flex shrink-0 items-center">
+        <Link to="/" aria-label="ADE home" className="focus-ring flex shrink-0 items-center rounded-md">
           <img src="/logo.png" alt="ADE" className="h-[22px] w-auto" />
-        </a>
+        </Link>
 
-        <nav className="hidden items-center gap-6 md:flex">
-          <a
-            href={LINKS.docs}
-            target="_blank"
-            rel="noreferrer"
-            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOCS}
-            className={linkClass}
+        <nav className="hidden items-center gap-6 md:flex" aria-label="Main">
+          <Link
+            to="/pricing"
+            aria-current={onPricing ? "page" : undefined}
+            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}
+            className={cn(linkClass, onPricing && "text-white")}
           >
+            Pricing
+          </Link>
+          <a href={LINKS.docs} target="_blank" rel="noreferrer" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOCS} className={linkClass}>
             Docs
           </a>
-          <a href={`${LINKS.docs}/changelog`} target="_blank" rel="noreferrer" className={linkClass}>
+          <a href={CHANGELOG_URL} target="_blank" rel="noreferrer" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_RELEASES} className={linkClass}>
             Changelog
           </a>
-
         </nav>
 
         <div className="ml-auto flex items-center gap-3">
@@ -88,13 +135,7 @@ export function SiteNav() {
             rel="noopener noreferrer"
             className="hidden transition-transform duration-200 hover:-translate-y-px lg:inline-flex"
           >
-            <img
-              alt="ADE on Product Hunt"
-              width={150}
-              height={32}
-              src={PRODUCT_HUNT_BADGE}
-              className="h-[32px] w-auto"
-            />
+            <img alt="ADE on Product Hunt" width={150} height={32} src={PRODUCT_HUNT_BADGE} className="h-[32px] w-auto" />
           </a>
           <a
             href={LINKS.github}
@@ -120,9 +161,9 @@ export function SiteNav() {
             data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
             data-ade-analytics-cta={MARKETING_CTA_LABELS.OPEN_WEB_CLIENT}
             data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
-            className="inline-flex h-9 items-center gap-1.5 rounded-full border border-white/20 bg-white/[0.07] px-4 text-[14px] font-medium text-white transition-colors hover:border-white/40 hover:bg-white/[0.12]"
+            className="focus-ring hidden h-10 items-center gap-1.5 rounded-full bg-white px-[18px] text-[15px] font-semibold text-[#0a0a0f] shadow-[0_0_0_1px_rgba(255,255,255,0.25),0_6px_24px_-6px_rgba(255,255,255,0.45)] transition-[background-color,transform] duration-200 hover:-translate-y-px hover:bg-white/90 md:inline-flex"
           >
-            Open web app <ArrowUpRight className="h-4 w-4" />
+            Open web app <ArrowUpRight className="h-4 w-4" strokeWidth={2.4} />
           </a>
           <button
             type="button"
@@ -131,12 +172,78 @@ export function SiteNav() {
               platform === "windows" ? MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS : MARKETING_CTA_LABELS.DOWNLOAD_MAC
             }
             data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
-            className="h-9 rounded-full bg-[color:var(--color-violet-bright)] px-5 text-[14px] font-medium text-[#0a0a0f] transition-colors hover:bg-[#c4b5fd]"
+            className="focus-ring inline-flex h-10 items-center gap-2 rounded-full bg-[color:var(--color-violet-bright)] px-[18px] text-[15px] font-semibold text-[#0a0a0f] shadow-[0_0_0_1px_rgba(196,181,253,0.4),0_6px_28px_-4px_rgba(167,139,250,0.75)] transition-[background-color,transform] duration-200 hover:-translate-y-px hover:bg-[#c4b5fd]"
           >
+            <Download className="h-4 w-4" strokeWidth={2.4} />
             Download
+          </button>
+          <button
+            type="button"
+            onClick={() => setMenuOpen((open) => !open)}
+            aria-label={menuOpen ? "Close menu" : "Open menu"}
+            aria-expanded={menuOpen}
+            aria-controls="ade-site-menu"
+            className="focus-ring -mr-1 inline-flex h-9 w-9 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white md:hidden"
+          >
+            {menuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
         </div>
       </div>
+
+      {menuOpen && (
+        <div className="fixed inset-x-0 bottom-0 top-[60px] z-40 md:hidden">
+          <button type="button" aria-label="Close menu" className="absolute inset-0 bg-black/60" onClick={() => setMenuOpen(false)} />
+          <nav
+            id="ade-site-menu"
+            aria-label="Main"
+            className="relative border-b border-white/[0.08] bg-[#0c0c12] px-5 pb-6 pt-3"
+          >
+            <MenuLink to="/pricing" feature={MARKETING_FEATURES.VIEW_PRICING}>Pricing</MenuLink>
+            <MenuLink href={LINKS.docs} feature={MARKETING_FEATURES.VIEW_DOCS}>Docs</MenuLink>
+            <MenuLink href={CHANGELOG_URL} feature={MARKETING_FEATURES.VIEW_RELEASES}>Changelog</MenuLink>
+            <MenuLink href={LINKS.github} feature={MARKETING_FEATURES.VIEW_GITHUB}>GitHub</MenuLink>
+            <a
+              href={LINKS.webClient}
+              target="_blank"
+              rel="noreferrer"
+              data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
+              data-ade-analytics-cta={MARKETING_CTA_LABELS.OPEN_WEB_CLIENT}
+              data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
+              className="mt-4 flex h-11 items-center justify-center gap-1.5 rounded-full border border-white/20 bg-white/[0.06] text-[15px] font-medium text-white"
+            >
+              Open web app <ArrowUpRight className="h-4 w-4" />
+            </a>
+          </nav>
+        </div>
+      )}
     </header>
+  );
+}
+
+function MenuLink({
+  to,
+  href,
+  feature,
+  children,
+}: {
+  to?: string;
+  href?: string;
+  feature: (typeof MARKETING_FEATURES)[keyof typeof MARKETING_FEATURES];
+  children: string;
+}) {
+  const className =
+    "focus-ring flex items-center justify-between border-b border-white/[0.06] py-3.5 font-display text-[26px] leading-none text-white";
+  if (to) {
+    return (
+      <Link to={to} data-ade-analytics-feature={feature} className={className}>
+        {children}
+      </Link>
+    );
+  }
+  return (
+    <a href={href} target="_blank" rel="noreferrer" data-ade-analytics-feature={feature} className={className}>
+      {children}
+      <ArrowUpRight className="h-5 w-5 text-white/40" />
+    </a>
   );
 }

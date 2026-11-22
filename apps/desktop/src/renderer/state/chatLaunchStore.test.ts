@@ -112,18 +112,21 @@ describe("chatLaunchStore", () => {
     expect(getChatLaunchEntry("launch-1")).toBeNull();
   });
 
-  it("marks a rejected start as failed on its first open stage and can reset it for retry", () => {
+  it("marks a rejected start as failed without blaming a step it never ran, and can reset it for retry", () => {
     insertOptimisticChatLaunch(BINDING_A, optimistic("launch-1"));
     markChatLaunchStartFailed("launch-1", "Runtime disconnected");
     const failed = getChatLaunchEntry("launch-1")!;
     expect(failed.startError).toBe("Runtime disconnected");
     expect(failed.snapshot.phase).toBe("failed");
-    expect(failed.snapshot.stages[0]).toMatchObject({ id: "fetch", status: "failed", error: "Runtime disconnected" });
+    expect(failed.snapshot.error).toBe("Runtime disconnected");
+    // The refusal came before any step ran: every step reads not started.
+    expect(failed.snapshot.stages.every((stage) => stage.status === "pending" && stage.error == null)).toBe(true);
 
     resetChatLaunchStartFailure("launch-1");
     const reset = getChatLaunchEntry("launch-1")!;
     expect(reset.startError).toBeNull();
     expect(reset.snapshot.phase).toBe("running");
+    expect(reset.snapshot.error).toBeNull();
     expect(reset.snapshot.stages[0]?.status).toBe("pending");
   });
 

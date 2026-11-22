@@ -1,0 +1,46 @@
+/*
+ * The size cards (CloudSizeCards): the ADE Cloud page's Sizes and the
+ * change-size dialog. Their own container, so the cards wrap by the width
+ * they get wherever they sit: four across, two when narrow, one in a sliver.
+ */
+
+.adecd-sizes-wrap {
+  container: adecdsizes / inline-size;
+  min-width: 0;
+  /* The kit's accent tag ("Default", "Now") in ADE Cloud's violet, in the dialog too. */
+  --kit-tag-accent: var(--adec-300);
+}
+[data-theme="light"] .adecd-sizes-wrap { --kit-tag-accent: var(--adec-600); }
+.adecd-sizes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+/* 730px: the page's old 760px break less the card's padding, so the page wraps where it did. */
+@container adecdsizes (max-width: 730px) { .adecd-sizes { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container adecdsizes (max-width: 340px) { .adecd-sizes { grid-template-columns: minmax(0, 1fr); } }
+.adecd-sizecard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 14px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.adecd-sizecard:hover { background: var(--kit-hover); }
+.adecd-sizecard:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecd-sizecard[aria-checked="true"] {
+  border-color: color-mix(in srgb, var(--adec-400) 50%, transparent);
+  background:
+    radial-gradient(120% 70% at 100% 0%, color-mix(in srgb, var(--adec-500) 16%, transparent), transparent 70%),
+    var(--kit-panel-bg);
+}
+.adecd-sizecard-top { display: flex; align-items: center; gap: 8px; }
+.adecd-sizecard-top b { font-size: 13.5px; font-weight: 600; }
+.adecd-sizecard-top b { white-space: nowrap; }
+.adecd-sizecard-pick { gap: 3px; margin-left: auto; }
+.adecd-sizecard-fact { white-space: nowrap; }
+.adecd-sizecard-full { align-self: flex-start; }
+.adecd-sizecard-rate { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 6px; }
+.adecd-sizecard-rate b { font-size: 30px; line-height: 34px; font-weight: 600; letter-spacing: -0.03em; color: var(--adec-mark); }
+.adecd-sizecard-rate > span { font-size: 12px; color: var(--kit-text-3); }
+.adecd-sizecard-specs { font-size: 12px; line-height: 1.5; color: var(--kit-text-2); }

@@ -124,8 +124,8 @@ describe("resolveChatRuntimePin", () => {
     expect(s.openBindings).toEqual([machineA, machineB]);
   });
 
-  it("returns null for a chat on the active binding so callers take the cheap path", () => {
-    expect(resolveChatRuntimePin(state(), "lane-a1")).toBeNull();
+  it("pins a chat on the active binding to the tab's own copy, not to an unknown address", () => {
+    expect(resolveChatRuntimePin(state(), "lane-a1")).toBe(machineA);
   });
 
   it("returns null when the lane's owner is unknown", () => {
@@ -168,7 +168,7 @@ describe("createChatMachineRouter", () => {
     const second = router.pinForLane("lane-b1");
     expect(first).toBe(machineB);
     expect(second).toBe(first);
-    expect(router.pinForLane("lane-a1")).toBeNull();
+    expect(router.pinForLane("lane-a1")).toBe(machineA);
     expect(router.pinForLane(null)).toBeNull();
   });
 

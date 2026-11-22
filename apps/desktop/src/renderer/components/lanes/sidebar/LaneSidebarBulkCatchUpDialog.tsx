@@ -101,11 +101,12 @@ export function LaneSidebarBulkCatchUpDialog({
     }
     let cancelled = false;
     // Each lane by its machine, already narrowed to the ones that can run.
-    const byMachine = new Map<string, { pin: OpenProjectBinding | null; lanes: { laneId: string; key: string }[] }>();
+    const byMachine = new Map<string, { pin: OpenProjectBinding; lanes: { laneId: string; key: string }[] }>();
     for (const item of targets) {
       const target = item.target;
-      if (!target.ok) continue;
-      const machineKey = target.pin?.key ?? "tab";
+      // A lane with no machine online cannot run; it is left out.
+      if (!target.ok || !target.pin) continue;
+      const machineKey = target.pin.key;
       const group = byMachine.get(machineKey) ?? { pin: target.pin, lanes: [] };
       group.lanes.push({ laneId: target.laneId, key: item.key });
       byMachine.set(machineKey, group);
@@ -118,7 +119,7 @@ export function LaneSidebarBulkCatchUpDialog({
     });
     void Promise.all(groups.map(async ({ pin, lanes }) => {
       const statuses = await window.ade.git
-        .getSyncStatuses({ laneIds: lanes.map((lane) => lane.laneId) }, pin)
+        .getSyncStatuses({ laneIds: lanes.map((lane) => lane.laneId), skipRecommendation: true }, pin)
         .catch((error) => {
           // Unknown means not pushed is unproven: those lanes get no rebase.
           console.warn("lane_catch_up.sync_statuses_failed", error);

@@ -36,7 +36,7 @@
     "@factory/droid-sdk": "0.10.0",
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "0.167.0",
+    "@openai/codex": "0.169.0",
     "@opencode/cli": "2.0.29",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
@@ -46,6 +46,7 @@
     "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
     "string-width": "^4.2.3",
+    "tldts": "^7.5.1",
     "ws": "^8.20.0",
     "yaml": "^2.8.2",
     "zod": "^4.3.6"

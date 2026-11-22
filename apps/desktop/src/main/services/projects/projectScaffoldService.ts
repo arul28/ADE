@@ -1,3 +1,9 @@
+import {
+  ADE_GIT_CREDENTIAL_HELPER_KEY,
+  adeGitCredentialHelperValue,
+  cloudAdeLauncherPath,
+} from "../../../../../ade-cli/src/services/github/gitCredentialHelper";
+import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,7 +18,11 @@ import type {
   MyGitHubRepoSummary,
 } from "../../../shared/types/core";
 import { codedError } from "../../../shared/codedError";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { isFsAccessRefusal } from "../../../shared/fsAccessRefusal";
 import { gitCommandError, runGit } from "../git/git";
+import { githubAuthHeaderGitEnv, githubHttpsRemoteOwner } from "../git/gitTransportAuth";
+import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
 import { canonicalGitOriginUrl, resolveGithubRemoteRepo } from "../github/githubSshAlias";
@@ -65,8 +75,52 @@ function isDirectoryNonEmpty(dirPath: string): boolean {
     return entries.length > 0;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if (isFsAccessRefusal(error)) {
+      throw new AdeExpectedError(`ADE can't read the folder ${dirPath}. Choose a folder you can open.`, "user", { cause: error });
+    }
     throw error;
   }
+}
+
+function isExistingDirectory(dirPath: string): boolean {
+  try {
+    return fs.statSync(dirPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Make sure `dirPath` is a folder, creating it and its parents when it is not.
+ * On Windows, Node's recursive mkdir of a drive root that is there (`D:\`)
+ * fails with EPERM, so a folder that exists is never made again; a folder this
+ * account may not create is a plain answer naming it.
+ */
+function ensureDirectory(dirPath: string): void {
+  if (isExistingDirectory(dirPath)) return;
+  try {
+    fs.mkdirSync(dirPath, { recursive: true });
+  } catch (error) {
+    // Made meanwhile by someone else, or a root Node refused to make: it is there.
+    if (isExistingDirectory(dirPath)) return;
+    if (isFsAccessRefusal(error)) throw new AdeExpectedError(folderRefusalMessage(dirPath, error), "user", { cause: error });
+    throw error;
+  }
+}
+
+/**
+ * Name the folder the refusal was about: the deepest one that is there, where
+ * the new folder would have gone. A drive that is not there (`D:\projects` with
+ * no `D:`) is named as missing.
+ */
+function folderRefusalMessage(dirPath: string, error: unknown): string {
+  let existing = path.resolve((error as NodeJS.ErrnoException | null)?.path || dirPath);
+  while (!isExistingDirectory(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) return `ADE can't find ${existing} on this computer. Pick another location.`;
+    existing = parent;
+  }
+  return `ADE can't create a folder in ${existing}. Pick another location.`;
 }
 
 type CloneTarget = {
@@ -182,7 +236,7 @@ export function createProjectScaffoldService({
     // Without this, a partial scaffold (git init or README write) leaves a
     // non-empty dir that the `target_exists` guard rejects on retry.
     const preexisted = fs.existsSync(rootPath);
-    fs.mkdirSync(rootPath, { recursive: true });
+    ensureDirectory(rootPath);
 
     try {
       const initRes = await runGit(["init", "--initial-branch=main"], { cwd: rootPath, timeoutMs: 15_000 });
@@ -288,6 +342,56 @@ export function createProjectScaffoldService({
     }
   };
 
+  /**
+   * Whether this computer has a GitHub sign-in git can use for this owner's
+   * repository: environment, gh, the saved token, or the account's sign-ins
+   * (the App sign-in only where the owner's installation lets it write).
+   */
+  const hasOwnGithubSignIn = async (owner: string | null): Promise<boolean> => {
+    try {
+      await githubService.getGitTransportTokenOrThrowAsync({ owner });
+      return true;
+    } catch (error) {
+      logger.info("project_scaffold.clone_no_own_github_sign_in", { error: error instanceof Error ? error.name : "unknown" });
+      return false;
+    }
+  };
+
+  /**
+   * On an ADE Cloud computer only: the clone's local config gets an empty
+   * `credential.https://github.com.helper` (no system or global helper runs,
+   * or stores ADE's token, for this clone), then `ade git credential` by its
+   * launcher's absolute path, so a plain `git push` in a terminal there signs
+   * in (`gitCredentialHelper.ts`). On a person's own computer nothing is
+   * recorded: ADE's own git passes the token per command, and the person's
+   * git setup works as in any repository. Best effort: a failure is logged.
+   */
+  const recordCloudCredentialHelper = async (rootPath: string): Promise<void> => {
+    if (!isAdeCloudComputer()) return;
+    const launcher = cloudAdeLauncherPath(resolveMachineAdeDir());
+    if (!launcher) {
+      logger.warn("project_scaffold.clone_credential_helper_skipped", { reason: "no_launcher" });
+      return;
+    }
+    const configure = (args: string[]) => runGit(["config", "--local", ...args], { cwd: rootPath, timeoutMs: 10_000 })
+      .catch((error: unknown) => ({ exitCode: 1, stderr: error instanceof Error ? error.message : String(error) }));
+    for (const [index, value] of ["", adeGitCredentialHelperValue(launcher)].entries()) {
+      const result = await configure(["--add", ADE_GIT_CREDENTIAL_HELPER_KEY, value]);
+      if (result.exitCode === 0) continue;
+      logger.warn("project_scaffold.clone_credential_helper_failed", { step: index === 0 ? "reset" : "helper", error: redactGitOutput(String(result.stderr ?? "")).slice(0, 200) });
+      // A reset with no helper after it would leave this clone with none at
+      // all, not even the person's own: undo it (the clone is fresh, so these
+      // entries are only ours).
+      if (index > 0) {
+        const undo = await configure(["--unset-all", ADE_GIT_CREDENTIAL_HELPER_KEY]);
+        if (undo.exitCode !== 0) {
+          logger.warn("project_scaffold.clone_credential_helper_undo_failed", { error: redactGitOutput(String(undo.stderr ?? "")).slice(0, 200) });
+        }
+      }
+      return;
+    }
+  };
+
   const cloneIntoTarget = async (input: CloneProjectInput, target: CloneTarget): Promise<CloneProjectResult> => {
     const { url, parentDir, rootPath } = target;
 
@@ -295,7 +399,7 @@ export function createProjectScaffoldService({
       throw codedError("A folder already exists at that path.", "target_exists");
     }
 
-    fs.mkdirSync(parentDir, { recursive: true });
+    ensureDirectory(parentDir);
 
     // `git clone` may create rootPath and partially populate it before failing
     // (auth prompt aborted, network drop, signature check). Without rollback,
@@ -307,10 +411,13 @@ export function createProjectScaffoldService({
     // clones work in environments without a system credential helper. Using
     // the basic-auth shape (x-access-token:<token>) is the GitHub-recommended
     // form and avoids leaking the token via the URL in process listings.
+    // A header from another computer (`input.githubAuthHeader`, a one-shot
+    // clone sent here) is used for this clone only and never stored here.
     let authHeader = (input.githubAuthHeader ?? "").trim();
+    const borrowedHeader = authHeader.length > 0;
     if (!authHeader) {
       try {
-        const storedToken = await githubService.getGitTransportTokenOrThrowAsync();
+        const storedToken = await githubService.getGitTransportTokenOrThrowAsync({ owner: githubHttpsRemoteOwner(url) });
         const basic = Buffer.from(`x-access-token:${storedToken}`, "utf8").toString("base64");
         authHeader = `basic ${basic}`;
       } catch {
@@ -318,34 +425,38 @@ export function createProjectScaffoldService({
       }
     }
 
-    // `git clone -c …` on purpose: the clone's own `-c` is persisted in the
-    // new repository's .git/config, and ADE's normal fetch/push has no other
-    // auth injection, so later Git work relies on that header. Callers that
-    // add their own header (cross-machine handoff) reset the inherited list
-    // first, so GitHub never sees two.
-    const cloneArgs: string[] = ["clone"];
-    if (authHeader) {
-      cloneArgs.push(
-        "-c",
-        `http.https://github.com/.extraheader=AUTHORIZATION: ${authHeader}`,
-      );
-    }
+    // The header goes to this one command through Git's config environment
+    // (Git 2.31+, the same on every platform), never as `git clone -c …`:
+    // that form saves it in the new repository's .git/config, where any
+    // process, agent or copy of the folder can read the token. It also stays
+    // out of the command line that process listings show. The empty entry
+    // first resets a global header, so GitHub never sees two. Later, ADE's
+    // own fetch and push pass this computer's token the same way
+    // (`runGitWithGithubAuthFallback`); a computer with none of its own has
+    // nothing to pass, which the result says (`githubSignInMissing`).
+    const cloneEnv: NodeJS.ProcessEnv = authHeader ? githubAuthHeaderGitEnv(authHeader) : {};
     // `--` so a URL that starts with "-" cannot be read as a git option.
-    cloneArgs.push("--", url, rootPath);
+    const cloneArgs: string[] = ["clone", "--", url, rootPath];
 
     try {
       const cloneRes = await runGit(cloneArgs, {
         cwd: parentDir,
         timeoutMs: 5 * 60_000,
+        env: cloneEnv,
       });
       if (cloneRes.exitCode !== 0) {
         // Git repeats the clone URL, query and all, so a token in it would reach the banner.
         throw new Error(redactGitOutput(cloneRes.stderr.trim()) || `git clone failed (exit ${cloneRes.exitCode})`);
       }
 
+      await recordCloudCredentialHelper(rootPath);
+
       initializeOrRepairAdeProject(rootPath, { logger, mode: "shared" });
       await warmLocalDatabase(rootPath, "project_scaffold.clone_local_db_warm_failed");
 
+      // Cloned with another computer's header: without a sign-in of its own,
+      // this computer's fetch and push won't sign in. The caller says so.
+      if (borrowedHeader && !await hasOwnGithubSignIn(githubHttpsRemoteOwner(url))) return { rootPath, githubSignInMissing: true };
       return { rootPath };
     } catch (err) {
       if (!preexistedRoot) {

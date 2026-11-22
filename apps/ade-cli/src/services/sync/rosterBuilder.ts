@@ -3,6 +3,7 @@ import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { fileIdentity } from "../projects/fileIdentity";
+import { publicAccountProjectFields } from "../projects/publicProjectRecord";
 import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
@@ -22,7 +23,12 @@ import type {
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AgentChatSpawnKind } from "../../../../desktop/src/shared/types/chat";
 import type { SessionActivePrWatch } from "../../../../desktop/src/shared/prWatch";
-import { isTrackedAgentCliToolType, type TerminalToolType } from "../../../../desktop/src/shared/types/sessions";
+import {
+  isTrackedAgentCliToolType,
+  type TerminalRuntimeState,
+  type TerminalSessionStatus,
+  type TerminalToolType,
+} from "../../../../desktop/src/shared/types/sessions";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import {
   hasTable,
@@ -59,6 +65,10 @@ export type RosterProjectRecord = {
   gitOriginUrl?: string | null;
   lastOpenedAt: number;
   catalogVisibility: "recent" | "system";
+  /** The account project link (`publicProjectRecord` decides who sees it). */
+  accountProjectId?: string;
+  accountProjectUserId?: string;
+  githubRepoId?: number;
 };
 
 export type RosterProjectRegistry = {
@@ -109,18 +119,49 @@ export type RosterAgentChatService = {
 
 export type RosterPtyService = {
   hasLivePty(sessionId: string): boolean;
+  /**
+   * The live turn of a tracked agent CLI. With an exact source (the CLI's own
+   * hooks or OSC reports) its phase is the row's status; a heuristic one is
+   * not trusted over "a live terminal is running".
+   */
+  getTrackedCliTurn?(sessionId: string): {
+    phase: "working" | "idle" | "needs-input";
+    source: string;
+    /** Agents the CLI reported still running after its turn ended (Claude hooks). */
+    backgroundAgentCount?: number;
+  } | null;
+  /**
+   * The terminal's runtime state, the one this machine's own Work list reads.
+   * A plain shell publishes it, so it reads the same on every computer.
+   */
+  getRuntimeState?(sessionId: string, fallbackStatus: TerminalSessionStatus): TerminalRuntimeState;
 };
+
+/** A terminal with no agent in it: a shell the user types into. */
+function isRosterPlainShellToolType(toolType: string | null | undefined): boolean {
+  const raw = normalizedToolType(toolType);
+  return raw === "" || raw === "shell" || raw === "terminal";
+}
 
 export type RosterBootedScope = {
   runtime: {
     agentChatService?: RosterAgentChatService | null;
     ptyService?: RosterPtyService | null;
+    /** The booted project's own open database (statements are kept prepared). */
+    db?: RosterLiveDb | null;
   };
+};
+
+/** The read half of the project database a booted scope already holds open. */
+export type RosterLiveDb = {
+  all<T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: Array<string | number | null>): T[];
 };
 
 export type RosterScopeRegistry = {
   /** Non-booting lookup; null when the project is not currently booted. */
   getIfBooted(projectId: string): Promise<RosterBootedScope> | null;
+  /** A project refused as too slow to open: its folder is not read here. */
+  isOpenBlocked(projectId: string): boolean;
 };
 
 export type BuildRosterSnapshotArgs = {
@@ -128,6 +169,12 @@ export type BuildRosterSnapshotArgs = {
   scopeRegistry: RosterScopeRegistry;
   /** The host's own project is always booted — included with live fidelity. */
   hostProjectId?: string | null;
+  /**
+   * The account signed in on this machine. A project's account project id
+   * goes on its roster row only for that account (`publicProjectRecord`).
+   * Absent: no row carries one.
+   */
+  accountUserId?: () => string | null;
   logger?: Pick<Logger, "warn"> | null;
 };
 
@@ -342,6 +389,137 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
   return data ?? emptyDiskProject();
 }
 
+/** How {@link readProjectRows} reads: a read-only file connection, or a booted scope's own database. */
+type ProjectRowSource = {
+  hasTable(table: string): boolean;
+  all<T>(sql: string): T[];
+};
+
+/** The roster's rows of one project database; throws what the source throws. */
+function readProjectRows(source: ProjectRowSource): DiskProjectData {
+  if (!source.hasTable("lanes")) return emptyDiskProject();
+
+  const lanes = source
+    .all<LaneRow>(
+      `
+        select id, name, color, icon, lane_type, branch_ref,
+               worktree_path, attached_root_path, status, archived_at, created_at
+        from lanes
+        where coalesce(status, 'active') != 'archived'
+          and archived_at is null
+      `,
+    );
+
+  const chats = source.hasTable("terminal_sessions")
+    ? (() => {
+        // One PRAGMA for every column probe below: probing each column on its own
+        // re-ran table_info once per column for every project database.
+        const sessionColumns = new Set(
+          source.all<{ name?: string }>("pragma table_info(terminal_sessions)").map((row) => row.name),
+        );
+        const chatSessionIdColumn = sessionColumns.has("chat_session_id")
+          ? "chat_session_id"
+          : "null as chat_session_id";
+        const settledAtColumn = sessionColumns.has("settled_at")
+          ? "settled_at"
+          : "null as settled_at";
+        const statusNoteColumn = sessionColumns.has("status_note")
+          ? "status_note"
+          : "null as status_note";
+        const activityStatusColumn = sessionColumns.has("activity_status_json")
+          ? "activity_status_json"
+          : "null as activity_status_json";
+        const activityStatusChangedAtColumn = sessionColumns.has("activity_status_changed_at")
+          ? "activity_status_changed_at"
+          : "null as activity_status_changed_at";
+        const attentionRequestedAtColumn = sessionColumns.has("attention_requested_at")
+          ? "attention_requested_at"
+          : "null as attention_requested_at";
+        const attentionMessageColumn = sessionColumns.has("attention_message")
+          ? "attention_message"
+          : "null as attention_message";
+        const lastTurnFailedAtColumn = sessionColumns.has("last_turn_failed_at")
+          ? "last_turn_failed_at"
+          : "null as last_turn_failed_at";
+        const snoozedUntilColumn = sessionColumns.has("snoozed_until")
+          ? "snoozed_until"
+          : "null as snoozed_until";
+        const snoozedAtColumn = sessionColumns.has("snoozed_at")
+          ? "snoozed_at"
+          : "null as snoozed_at";
+        const resumeMetadataColumn = sessionColumns.has("resume_metadata_json")
+          ? "resume_metadata_json"
+          : "null as resume_metadata_json";
+        return source
+          .all<TerminalSessionRow>(
+            `
+              select id, lane_id, ${chatSessionIdColumn}, tool_type, title, status, ended_at, last_output_preview,
+                     last_output_at, pinned, exit_code, started_at,
+                     ${settledAtColumn}, ${statusNoteColumn}, ${activityStatusColumn}, ${activityStatusChangedAtColumn}, ${attentionRequestedAtColumn},
+                     ${attentionMessageColumn}, ${lastTurnFailedAtColumn},
+                     ${snoozedUntilColumn}, ${snoozedAtColumn}, ${resumeMetadataColumn}
+              from terminal_sessions
+              where archived_at is null
+            `,
+          );
+      })()
+    : [];
+
+  const prWaitingReasonByLaneId = new Map<string, "ci" | "review">();
+  if (source.hasTable("pull_requests")) {
+    const prsByLaneId = new Map<string, Array<{
+      state: string;
+      checksStatus: string | null;
+      reviewStatus: string | null;
+    }>>();
+    const rows = source
+      .all<PullRequestRow>(
+        `
+          select lane_id, state, checks_status, review_status
+          from pull_requests
+          where state in ('open', 'draft')
+        `,
+      );
+    for (const row of rows) {
+      const list = prsByLaneId.get(row.lane_id) ?? [];
+      list.push({
+        state: row.state,
+        checksStatus: row.checks_status,
+        reviewStatus: row.review_status,
+      });
+      prsByLaneId.set(row.lane_id, list);
+    }
+    for (const [laneId, prs] of prsByLaneId) {
+      const reason = lanePrWaitingReason(prs);
+      if (reason) prWaitingReasonByLaneId.set(laneId, reason);
+    }
+  }
+
+  return { lanes, chats, prWaitingReasonByLaneId };
+}
+
+/**
+ * The same rows from a booted project's own open database. The file read
+ * opens a new connection and parses the whole schema (about 450 tables) each
+ * time its cache misses, and an open project writes often enough (device
+ * stamps, activity) that it misses on most 30 s attention beats. The scope's
+ * connection is already open and keeps its statements prepared, so this costs
+ * the queries alone. Null on any failure, so the caller reads the file.
+ */
+function readProjectFromLiveDb(db: RosterLiveDb, logger?: Pick<Logger, "warn"> | null): DiskProjectData | null {
+  try {
+    return readProjectRows({
+      hasTable: (table) => db.all("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1", [table]).length > 0,
+      all: <T>(sql: string) => db.all(sql) as T[],
+    });
+  } catch (error) {
+    logger?.warn?.("sync_host.roster_live_project_read_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 /** Null when the read failed (locked, unreadable) so the caller retries next time. */
 function readProjectFromDiskUncached(
   dbPath: string,
@@ -353,109 +531,11 @@ function readProjectFromDiskUncached(
   try {
     db = openReadOnlyDatabase(dbPath);
     db.exec("PRAGMA busy_timeout = 2000");
-    if (!hasTable(db, "lanes")) return empty;
-
-    const lanes = db
-      .prepare(
-        `
-          select id, name, color, icon, lane_type, branch_ref,
-                 worktree_path, attached_root_path, status, archived_at, created_at
-          from lanes
-          where coalesce(status, 'active') != 'archived'
-            and archived_at is null
-        `,
-      )
-      .all<LaneRow>();
-
-    const chats = hasTable(db, "terminal_sessions")
-      ? (() => {
-          const activeDb = db!;
-          // One PRAGMA for every column probe below: probing each column on its own
-          // re-ran table_info once per column for every project database.
-          const sessionColumns = new Set(
-            activeDb.prepare("pragma table_info(terminal_sessions)").all<{ name?: string }>().map((row) => row.name),
-          );
-          const chatSessionIdColumn = sessionColumns.has("chat_session_id")
-            ? "chat_session_id"
-            : "null as chat_session_id";
-          const settledAtColumn = sessionColumns.has("settled_at")
-            ? "settled_at"
-            : "null as settled_at";
-          const statusNoteColumn = sessionColumns.has("status_note")
-            ? "status_note"
-            : "null as status_note";
-          const activityStatusColumn = sessionColumns.has("activity_status_json")
-            ? "activity_status_json"
-            : "null as activity_status_json";
-          const activityStatusChangedAtColumn = sessionColumns.has("activity_status_changed_at")
-            ? "activity_status_changed_at"
-            : "null as activity_status_changed_at";
-          const attentionRequestedAtColumn = sessionColumns.has("attention_requested_at")
-            ? "attention_requested_at"
-            : "null as attention_requested_at";
-          const attentionMessageColumn = sessionColumns.has("attention_message")
-            ? "attention_message"
-            : "null as attention_message";
-          const lastTurnFailedAtColumn = sessionColumns.has("last_turn_failed_at")
-            ? "last_turn_failed_at"
-            : "null as last_turn_failed_at";
-          const snoozedUntilColumn = sessionColumns.has("snoozed_until")
-            ? "snoozed_until"
-            : "null as snoozed_until";
-          const snoozedAtColumn = sessionColumns.has("snoozed_at")
-            ? "snoozed_at"
-            : "null as snoozed_at";
-          const resumeMetadataColumn = sessionColumns.has("resume_metadata_json")
-            ? "resume_metadata_json"
-            : "null as resume_metadata_json";
-          return activeDb
-            .prepare(
-              `
-                select id, lane_id, ${chatSessionIdColumn}, tool_type, title, status, ended_at, last_output_preview,
-                       last_output_at, pinned, exit_code, started_at,
-                       ${settledAtColumn}, ${statusNoteColumn}, ${activityStatusColumn}, ${activityStatusChangedAtColumn}, ${attentionRequestedAtColumn},
-                       ${attentionMessageColumn}, ${lastTurnFailedAtColumn},
-                       ${snoozedUntilColumn}, ${snoozedAtColumn}, ${resumeMetadataColumn}
-                from terminal_sessions
-                where archived_at is null
-              `,
-            )
-            .all<TerminalSessionRow>();
-        })()
-      : [];
-
-    const prWaitingReasonByLaneId = new Map<string, "ci" | "review">();
-    if (hasTable(db, "pull_requests")) {
-      const prsByLaneId = new Map<string, Array<{
-        state: string;
-        checksStatus: string | null;
-        reviewStatus: string | null;
-      }>>();
-      const rows = db
-        .prepare(
-          `
-            select lane_id, state, checks_status, review_status
-            from pull_requests
-            where state in ('open', 'draft')
-          `,
-        )
-        .all<PullRequestRow>();
-      for (const row of rows) {
-        const list = prsByLaneId.get(row.lane_id) ?? [];
-        list.push({
-          state: row.state,
-          checksStatus: row.checks_status,
-          reviewStatus: row.review_status,
-        });
-        prsByLaneId.set(row.lane_id, list);
-      }
-      for (const [laneId, prs] of prsByLaneId) {
-        const reason = lanePrWaitingReason(prs);
-        if (reason) prWaitingReasonByLaneId.set(laneId, reason);
-      }
-    }
-
-    return { lanes, chats, prWaitingReasonByLaneId };
+    const activeDb = db;
+    return readProjectRows({
+      hasTable: (table) => hasTable(activeDb, table),
+      all: <T>(sql: string) => activeDb.prepare(sql).all() as T[],
+    });
   } catch (error) {
     logger?.warn?.("sync_host.roster_project_read_failed", {
       projectRoot,
@@ -614,9 +694,18 @@ const unbootedProjectMemo = new Map<string, {
   project: SyncRosterProject;
 }>();
 
-function rosterRecordKey(record: RosterProjectRecord): string {
-  return JSON.stringify([record.rootPath, record.displayName, record.lastOpenedAt, rosterRepoOriginUrl(record)]);
+function rosterRecordKey(record: RosterProjectRecord, account: RosterAccountFields): string {
+  return JSON.stringify([
+    record.rootPath,
+    record.displayName,
+    record.lastOpenedAt,
+    rosterRepoOriginUrl(record),
+    account.accountProjectId ?? null,
+    account.githubRepoId ?? null,
+  ]);
 }
+
+type RosterAccountFields = { accountProjectId?: string; githubRepoId?: number };
 
 function memoValidUntilMs(disk: DiskProjectData, nowMs: number): number {
   let validUntilMs = nowMs + DISK_PROJECT_CACHE_MAX_AGE_MS;
@@ -737,15 +826,42 @@ async function buildRosterProject(
   record: RosterProjectRecord,
   scopeRegistry: RosterScopeRegistry,
   logger?: Pick<Logger, "warn"> | null,
+  account: RosterAccountFields = {},
 ): Promise<SyncRosterProject> {
-  const disk = readProjectFromDisk(record.rootPath, logger);
+  // A refused project is listed without rows: reading its database and chat
+  // folder here, on the brain's thread, is the freeze it was refused for.
+  const refused = scopeRegistry.isOpenBlocked(record.projectId);
+  let bootedPromise: Promise<RosterBootedScope> | null = null;
+  try {
+    bootedPromise = scopeRegistry.getIfBooted(record.projectId);
+  } catch {
+    // A booted-scope overlay is best-effort; fall back to disk-only fidelity.
+  }
+  // Path A overlay: only for projects already booted on the runtime. NEVER
+  // boots a scope (getIfBooted is non-booting). When booted, listSessions()
+  // carries true running/awaiting fidelity keyed by sessionId.
+  const scope = bootedPromise
+    ? await Promise.race([
+        bootedPromise.catch(() => null),
+        new Promise<null>((resolve) =>
+          setTimeout(() => resolve(null), ROSTER_BOOT_OVERLAY_TIMEOUT_MS),
+        ),
+      ])
+    : null;
+  // A booted project answers from the database it already holds open; the
+  // file read stays for every other project, and for a failed live read.
+  const liveDb = refused ? null : scope?.runtime.db ?? null;
+  const disk = refused
+    ? emptyDiskProject()
+    : (liveDb ? readProjectFromLiveDb(liveDb, logger) : null) ?? readProjectFromDisk(record.rootPath, logger);
   const chatSessionsDir = resolveAdeLayout(record.rootPath).chatSessionsDir;
-  const recordKey = rosterRecordKey(record);
-  const sidecarFolderIdentity = fileIdentity(chatSessionsDir);
+  // The link is part of the key: a sign-out must drop it from a memoized row.
+  const recordKey = rosterRecordKey(record, account);
+  const sidecarFolderIdentity = refused ? null : fileIdentity(chatSessionsDir);
   const memo = unbootedProjectMemo.get(record.projectId);
   if (
     memo
-    && !scopeRegistry.getIfBooted(record.projectId)
+    && !bootedPromise
     && memo.disk === disk
     && memo.sidecarFolderIdentity === sidecarFolderIdentity
     && memo.recordKey === recordKey
@@ -754,23 +870,11 @@ async function buildRosterProject(
     return memo.project;
   }
 
-  // Path A overlay: only for projects already booted on the runtime. NEVER
-  // boots a scope (getIfBooted is non-booting). When booted, listSessions()
-  // carries true running/awaiting fidelity keyed by sessionId.
   const liveBySessionId = new Map<string, RosterLiveSession>();
   let booted = false;
   let livePtyService: RosterPtyService | null = null;
   let liveChatLogState: ((sessionId: string) => AgentChatLogState | null) | null = null;
   try {
-    const bootedPromise = scopeRegistry.getIfBooted(record.projectId);
-    const scope = bootedPromise
-      ? await Promise.race([
-          bootedPromise.catch(() => null),
-          new Promise<null>((resolve) =>
-            setTimeout(() => resolve(null), ROSTER_BOOT_OVERLAY_TIMEOUT_MS),
-          ),
-        ])
-      : null;
     const agentChatService = scope?.runtime.agentChatService;
     livePtyService = scope?.runtime.ptyService ?? null;
     if (agentChatService) {
@@ -838,10 +942,22 @@ async function buildRosterProject(
     // CLI (terminal) sessions never appear in agentChatService; on a booted
     // scope their liveness comes from the PTY table instead.
     const hasLivePty = livePtyService?.hasLivePty(row.id) === true;
+    const cliTurn = !live && hasLivePty ? livePtyService?.getTrackedCliTurn?.(row.id) ?? null : null;
+    const exactCliPhase = cliTurn && cliTurn.source !== "heuristic" ? cliTurn.phase : null;
+    // A quiet shell at its prompt reads idle here as on this machine's own
+    // Work list, not "running" because its terminal is open.
+    const plainShellIdle = !live && hasLivePty && exactCliPhase == null
+      && isRosterPlainShellToolType(row.tool_type)
+      && livePtyService?.getRuntimeState?.(row.id, "running") === "idle";
     const liveStatus = live
       ? liveChatStatus(live)
       : hasLivePty
-        ? "running" as const
+        ? plainShellIdle || exactCliPhase === "idle"
+          // Background agents outlive the turn, as for a chat (`liveChatStatus`).
+          ? (cliTurn?.backgroundAgentCount ?? 0) > 0 ? "running" as const : "idle" as const
+          : exactCliPhase === "needs-input"
+            ? "awaiting" as const
+            : "running" as const
         : null;
     /**
      * A live FOREGROUND turn, not merely a row that reports `running`.
@@ -852,7 +968,7 @@ async function buildRosterProject(
      */
     const liveTurnRunning = live
       ? live.status === "active" && live.awaitingInput !== true
-      : hasLivePty;
+      : hasLivePty && !plainShellIdle && (exactCliPhase == null || exactCliPhase === "working");
     const status: SyncRosterChatStatus = row.attention_requested_at
       ? "awaiting"
       // Settled is checked against a RUNNING row first, exactly as before:
@@ -881,8 +997,11 @@ async function buildRosterProject(
     // chat rows (and their attached shells) count: a standalone CLI session
     // that exited non-zero months ago must not pin its project to the top
     // forever — mobile has no way to clear it (CLI rows can't be archived).
+    // A tracked agent CLI that is live and waiting on the person counts like a
+    // chat: that hand is current, unlike an old exit code.
     const countsTowardAttention = isRosterTopLevelToolType(row.tool_type)
-      || normalizedParentSessionId(row) != null;
+      || normalizedParentSessionId(row) != null
+      || (status === "awaiting" && hasLivePty && isTrackedAgentCliToolType(row.tool_type as TerminalToolType | null));
     if ((status === "awaiting" || status === "failed") && countsTowardAttention) attentionCount += 1;
     const activityStatus = normalizeSessionActivityReport(row.activity_status_json);
     const activityStatusChangedAt = row.activity_status_changed_at ?? activityStatus?.updatedAt ?? null;
@@ -970,6 +1089,7 @@ async function buildRosterProject(
     rootPath: record.rootPath,
     displayName: record.displayName,
     repoOriginUrl: rosterRepoOriginUrl(record),
+    ...account,
     lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
     booted,
     runningCount,
@@ -1011,6 +1131,8 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
  */
 export function createForeignChatTranscriptResolver(args: {
   projectRegistry: ForeignChatProjectRegistry;
+  /** A project refused as too slow to open: its transcripts are not stat'd here. */
+  isOpenBlocked?: (projectId: string) => boolean;
 }): SyncForeignChatTranscriptResolver {
   return {
     resolveTranscriptPath: ({ projectId, projectRootPath, sessionId }) => {
@@ -1033,7 +1155,7 @@ export function createForeignChatTranscriptResolver(args: {
       // transcripts.
       if (byId && requestedRootPath && !pathsEqual(byId.rootPath, requestedRootPath)) return null;
       const record = byId ?? byRoot;
-      if (!record) return null;
+      if (!record || args.isOpenBlocked?.(record.projectId)) return null;
 
       const layout = resolveAdeLayout(record.rootPath);
       const chatTranscriptsDir = path.resolve(layout.chatTranscriptsDir);
@@ -1072,9 +1194,16 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
     .slice()
     .sort((left, right) => right.lastOpenedAt - left.lastOpenedAt);
 
+  // Read the signed-in account once, and only when a record is linked.
+  let accountUserId: string | null | undefined;
+  const readAccountUserId = (): string | null => {
+    if (accountUserId === undefined) accountUserId = args.accountUserId?.() ?? null;
+    return accountUserId;
+  };
   const projects = await Promise.all(
-    records.map((record) =>
-      buildRosterProject(record, args.scopeRegistry, args.logger).catch((error) => {
+    records.map((record) => {
+      const account = publicAccountProjectFields(record, readAccountUserId);
+      return buildRosterProject(record, args.scopeRegistry, args.logger, account).catch((error) => {
         args.logger?.warn?.("sync_host.roster_project_build_failed", {
           projectId: record.projectId,
           error: error instanceof Error ? error.message : String(error),
@@ -1084,6 +1213,7 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
           rootPath: record.rootPath,
           displayName: record.displayName,
           repoOriginUrl: rosterRepoOriginUrl(record),
+          ...account,
           lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
           booted: false,
           runningCount: 0,
@@ -1092,8 +1222,17 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
           chats: [],
         };
         return fallback;
-      }),
-    ),
+      });
+    }),
   );
+  // The account changed while the build ran: its links were made for the
+  // account read above, so none of them goes out.
+  if (accountUserId !== undefined && (args.accountUserId?.() ?? null) !== accountUserId) {
+    return projects.map((project) => {
+      const unlinked = { ...project };
+      delete unlinked.accountProjectId;
+      return unlinked;
+    });
+  }
   return projects;
 }

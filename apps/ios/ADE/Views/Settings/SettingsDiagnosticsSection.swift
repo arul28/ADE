@@ -49,6 +49,11 @@ struct SettingsDiagnosticsSection: View {
           if let deviceId = snapshot.deviceIdentity {
             ADESettingsValueRow(title: "Device id", value: deviceId, mono: true)
           }
+          // Why the Hub's header sits beside the clock or on a row of its
+          // own, as this phone reports its status bar (`hubStatusBandReading`).
+          if let hubHeader = HubLayoutDiagnostics.shared.hubHeader {
+            ADESettingsRow("Hub header", hint: hubHeader, symbol: "rectangle.topthird.inset.filled")
+          }
           // Performance logs from a diagnostics launch, to AirDrop to the
           // Mac when the phone has no cable data link.
           let logFiles = ScrollDiagnostics.logFileURLs

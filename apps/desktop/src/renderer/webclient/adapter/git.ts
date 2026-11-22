@@ -29,7 +29,10 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
     const laneIds = normalizeSyncStatusLaneIds(args);
     if (laneIds.length === 0) return {};
     if (commands.hasAction("git.getSyncStatuses")) {
-      return await call<GitSyncStatuses>("git.getSyncStatuses", { laneIds }, {});
+      return await call<GitSyncStatuses>("git.getSyncStatuses", {
+        laneIds,
+        ...(args.skipRecommendation ? { skipRecommendation: true } : {}),
+      }, {});
     }
 
     return settleLaneSyncStatuses(laneIds, (laneId) =>

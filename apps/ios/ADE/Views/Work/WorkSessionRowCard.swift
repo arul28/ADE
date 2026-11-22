@@ -34,10 +34,12 @@ func workSessionRowPreviewSource(
 
   func inlineText(_ raw: String?, terminalOutput: Bool = false) -> String? {
     guard let raw else { return nil }
-    let rendered = terminalOutput ? sanitizeTerminalOutputForDisplay(raw) : raw
-    guard let normalized = workSessionPreviewText(rendered) else { return nil }
-    let inline = workSummarizeInlineText(normalized, maxChars: 120)
-    return inline.isEmpty ? nil : inline
+    return WorkInlinePreviewCache.shared.text(raw, terminalOutput: terminalOutput) {
+      let rendered = terminalOutput ? sanitizeTerminalOutputForDisplay(raw) : raw
+      guard let normalized = workSessionPreviewText(rendered) else { return nil }
+      let inline = workSummarizeInlineText(normalized, maxChars: 120)
+      return inline.isEmpty ? nil : inline
+    }
   }
 
   if session.attentionRequestedAt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
@@ -67,6 +69,40 @@ func workSessionRowPreviewSource(
     }
   }
   return nil
+}
+
+/// A row's preview line by its raw text. Every Work row works out its preview
+/// on every list pass, and the cleanup (escape codes, repeated stream text,
+/// the cut to one line) gives the same line for the same text, so a pass looks
+/// it up instead of doing it again for all rows. Kept small: it is emptied
+/// when full.
+private final class WorkInlinePreviewCache: @unchecked Sendable {
+  static let shared = WorkInlinePreviewCache()
+
+  private struct Key: Hashable {
+    let raw: String
+    let terminalOutput: Bool
+  }
+
+  private let lock = NSLock()
+  private var lines: [Key: String?] = [:]
+  private let limit = 1_024
+
+  func text(_ raw: String, terminalOutput: Bool, make: () -> String?) -> String? {
+    let key = Key(raw: raw, terminalOutput: terminalOutput)
+    lock.lock()
+    if let known = lines[key] {
+      lock.unlock()
+      return known
+    }
+    lock.unlock()
+    let line = make()
+    lock.lock()
+    if lines.count >= limit { lines.removeAll(keepingCapacity: true) }
+    lines[key] = .some(line)
+    lock.unlock()
+    return line
+  }
 }
 
 /// The two reference shapes ADE's own prose uses: `#123` is a pull request and
@@ -392,10 +428,8 @@ struct WorkSessionRow: View, Equatable {
   var boardCard: Bool = false
   /// A row in the Duo's sessions column: the provider mark leading, the title
   /// on up to two lines, the latest word on one, then one meta line (lane,
-  /// machine, PR, status and time). The column is wide enough to say all of it.
+  /// PR, status and time). The column is wide enough to say all of it.
   var duoRow: Bool = false
-  /// The machine a row from another machine lives on (Duo meta line only).
-  var machineName: String?
   private let renderSignature: WorkSessionRowRenderSignature
 
   init(
@@ -413,12 +447,10 @@ struct WorkSessionRow: View, Equatable {
     showsLaneIdentity: Bool = true,
     waitingOnSubagent: Bool = false,
     boardCard: Bool = false,
-    duoRow: Bool = false,
-    machineName: String? = nil
+    duoRow: Bool = false
   ) {
     self.boardCard = boardCard
     self.duoRow = duoRow
-    self.machineName = machineName
     self.session = session
     self.lane = lane
     self.pullRequest = pullRequest
@@ -452,7 +484,6 @@ struct WorkSessionRow: View, Equatable {
     lhs.renderSignature == rhs.renderSignature
       && lhs.boardCard == rhs.boardCard
       && lhs.duoRow == rhs.duoRow
-      && lhs.machineName == rhs.machineName
   }
 
   var body: some View {
@@ -601,19 +632,19 @@ struct WorkSessionRow: View, Equatable {
     }
   }
 
-  /// Lane, machine, PR, then status and time hard against the trailing edge.
-  /// The lane and PR only where no lane header above already says them.
+  /// Lane, PR, then status and time hard against the trailing edge. The lane
+  /// and PR only where no lane header above already says them. A row never
+  /// names its machine: an open chat does.
   ///
   /// Nothing on this line may draw over anything else: when it does not fit,
-  /// the PR tag goes first, then the lane's git state, then the machine; the
-  /// lane name truncates last.
+  /// the PR tag goes first, then the lane's git state; the lane name
+  /// truncates last.
   private var duoMetaLine: some View {
     HStack(spacing: 6) {
       ViewThatFits(in: .horizontal) {
-        duoMetaItems(pr: true, git: true, machine: true)
-        duoMetaItems(pr: false, git: true, machine: true)
-        duoMetaItems(pr: false, git: false, machine: true)
-        duoMetaItems(pr: false, git: false, machine: false)
+        duoMetaItems(pr: true, git: true)
+        duoMetaItems(pr: false, git: true)
+        duoMetaItems(pr: false, git: false)
       }
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       .clipped()
@@ -622,7 +653,7 @@ struct WorkSessionRow: View, Equatable {
     }
   }
 
-  private func duoMetaItems(pr: Bool, git: Bool, machine: Bool) -> some View {
+  private func duoMetaItems(pr: Bool, git: Bool) -> some View {
     HStack(spacing: 6) {
       if session.pinned {
         Image(systemName: "pin.fill")
@@ -657,14 +688,6 @@ struct WorkSessionRow: View, Equatable {
           laneGitState
         }
       }
-      if machine, let machineName, !machineName.isEmpty {
-        Label(machineName, systemImage: "desktopcomputer")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-          .labelStyle(.titleAndIcon)
-          .lineLimit(1)
-          .layoutPriority(-1)
-      }
       if pr, showsLaneIdentity, let pullRequest {
         WorkLanePrIndicator(tag: pullRequest)
           .fixedSize()
@@ -682,7 +705,7 @@ struct WorkSessionRow: View, Equatable {
   private var duoMetaHasLeading: Bool {
     session.pinned || isMuted || renderSignature.activeGoal != nil
       || subagentMark != nil || showsSubagentIdentity || showsCtoLineage
-      || showsLaneIdentity || !(machineName ?? "").isEmpty || failedExitCode != nil
+      || showsLaneIdentity || failedExitCode != nil
   }
 
   /// The status (or, on a board card, the time) hard against the trailing edge.
@@ -1198,10 +1221,10 @@ struct WorkSessionRow: View, Equatable {
       parts.append("has a question")
     }
     // The glyphs are `accessibilityHidden`, so the lineage has to be stated
-    // here or it is colour-and-shape-only meaning. "Spawned by the CTO" is the
+    // here or it is colour-and-shape-only meaning. "Started by the CTO" is the
     // more specific answer and stands in for "subagent".
     if renderSignature.isCtoChild {
-      parts.append("spawned by the CTO")
+      parts.append("started by the CTO")
     } else if renderSignature.isSubagent {
       parts.append("subagent")
     }

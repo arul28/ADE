@@ -6,6 +6,7 @@ import { Banner, noticeTone, type NoticeAction } from "../../ui/notice";
 import { formatDate } from "../../../lib/format";
 import { linearIngressApi, setupLinearIngressOrOpenSettings } from "../linearIngressApi";
 import { useAsyncAction } from "../../../hooks/useAsyncAction";
+import { useTabCopyPin } from "../../../state/repositoryScope";
 
 function Dot({ tone }: { tone: "ok" | "warn" | "off" }) {
   return (
@@ -38,15 +39,18 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
   const [dismissed, setDismissed] = useState(false);
   const [linear, setLinear] = useState<AutomationLinearIngressStatus | null>(null);
   const api = linearIngressApi();
+  // This strip shows the tab machine's own ingress.
+  const tabPin = useTabCopyPin();
 
   const refreshLinear = useCallback(async () => {
-    if (!api?.getStatus) return;
+    if (!api?.getStatus || !tabPin) return;
     try {
-      setLinear(await api.getStatus());
+      setLinear(await api.getStatus(tabPin));
     } catch {
       // Ignore — the strip degrades to hiding the Linear row.
     }
-  }, [api]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, tabPin?.key]);
 
   useEffect(() => {
     void refreshLinear();
@@ -56,7 +60,7 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
     action: async () => {
       try {
         // This strip shows the tab's own machine, so setup and settings go there.
-        await setupLinearIngressOrOpenSettings(null);
+        await setupLinearIngressOrOpenSettings(tabPin);
       } finally {
         // The service records lastError; the refresh surfaces it either way.
         await refreshLinear().catch(() => {});

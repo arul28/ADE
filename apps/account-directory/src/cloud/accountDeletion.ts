@@ -1,6 +1,12 @@
+import { deleteAccountPhone } from "./phones";
+import { purgeRelayAccountData, type RelayAccountPurgeEnv } from "../activityRelay";
 import { cancelAccountSubscription } from "./billing";
 import { deleteAllAccountChats } from "./chats";
+import { deleteAccountLaunches } from "./launches";
+import { deleteAccountAutomations } from "./automations";
 import { createCloudProvider } from "./provider";
+import { CLOUD_DELETED_ACCOUNT_PREFIX, CLOUD_REFERRAL_FRIEND_REASON, CLOUD_REFERRAL_REFERRER_REASON } from "./contract";
+import { sha256Hex } from "../sinkUtils";
 import {
   deleteComputer,
   isPendingId,
@@ -11,12 +17,16 @@ import {
 
 /**
  * Everything ADE Cloud holds for an account being deleted (Clerk `user.deleted`):
- * the plan, its computers, its timed wakes and its saved chats. A throw means
- * Clerk delivers again, and each step is safe to repeat. A create still running
- * keeps its reservation: the computer it makes is adopted, then the minute cron
- * deletes it because `deleted_at` is set.
+ * the plan, its computers, its timed wakes, its lanes without a computer and
+ * its saved chats, and then the account's vault and settings on the push
+ * relay. A throw means Clerk delivers again, and each step is safe to repeat.
+ * A create still running keeps its reservation: the computer it makes is
+ * adopted, then the minute cron deletes it because `deleted_at` is set.
  */
-export async function deleteCloudAccount(env: Pick<CloudEnv, "DB" | "CLOUD_CHATS" | "AGENT37_API_KEY" | "STRIPE_SECRET_KEY">, userId: string): Promise<void> {
+export async function deleteCloudAccount(
+  env: Pick<CloudEnv, "DB" | "CLOUD_CHATS" | "AGENT37_API_KEY" | "STRIPE_SECRET_KEY" | "NOMAC_API_KEY" | "CLOUD_PHONE_ACCESS"> & RelayAccountPurgeEnv,
+  userId: string,
+): Promise<void> {
   const now = Date.now();
   const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
   if (account) {
@@ -35,6 +45,78 @@ export async function deleteCloudAccount(env: Pick<CloudEnv, "DB" | "CLOUD_CHATS
     }
   }
 
+  // The ADE Cloud iPhone's saved states, replays and workspace at NoMac, and the beta list.
+  // NoMac being down must not hold back the rest: its failure is thrown at the end, so Clerk's
+  // retry runs it again (it lists the phones at NoMac by the account's label, not from D1).
+  let phoneFailure: unknown = null;
+  try {
+    await deleteAccountPhone(env, userId);
+  } catch (error) {
+    phoneFailure = error;
+  }
   await env.DB.prepare("delete from cloud_wakes where user_id = ?").bind(userId).run();
+  // The topics that wake a computer at rest, their state, and the request counts of the Linear and Jira reads.
+  await env.DB.batch([
+    env.DB.prepare("delete from cloud_event_wakes where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_event_wake_state where user_id = ?").bind(userId),
+    // Status-menu facts of any computer whose close above left them (they carry no user id).
+    env.DB.prepare("delete from cloud_instance_events where instance_id in (select instance_id from cloud_computers where user_id = ?)").bind(userId),
+    env.DB.prepare("delete from cloud_computer_activity where instance_id in (select instance_id from cloud_computers where user_id = ?)").bind(userId),
+    env.DB.prepare("delete from cloud_request_windows where user_id = ?").bind(userId),
+    // Sealed Linear grants that wait for their publish.
+    env.DB.prepare("delete from cloud_linear_renewals where user_id = ?").bind(userId),
+  ]);
+  // Lane names, repository origins and branches of lanes whose computer is gone.
+  await env.DB.prepare("delete from cloud_lanes_without_computer where user_id = ?").bind(userId).run();
+  // Saved chats, their queued messages, CLI and shell copies, Git summaries and fork capsules, then the key.
   await deleteAllAccountChats(env, userId);
+  // The account lane index: every machine's lane names, branches and PR numbers.
+  await env.DB.batch([
+    env.DB.prepare("delete from account_lane_index where user_id = ?").bind(userId),
+    env.DB.prepare("delete from account_lane_index_state where user_id = ?").bind(userId),
+  ]);
+  // Launch facts (first messages, lane names) and their files; project delete jobs.
+  await deleteAccountLaunches(env, userId);
+  await env.DB.prepare("delete from cloud_project_deletes where user_id = ?").bind(userId).run();
+  // Repository origins whose setup needed a bigger size.
+  await env.DB.prepare("delete from cloud_repo_sizes where user_id = ?").bind(userId).run();
+  // And whose setup grew its disk.
+  await env.DB.prepare("delete from cloud_repo_disks where user_id = ?").bind(userId).run();
+  // Automations on ADE Cloud (their prompts and names) and their run history.
+  await deleteAccountAutomations(env, userId);
+  // The invite link stops working and the computers it was seen on go. The free-plan
+  // claim stays (re-making the account must not give the computer's free hours again),
+  // and so do referral rows and earned-hour grants (the referral cap and the friends'
+  // rewards are counted from them), each re-keyed to a hash so none names the person.
+  const gone = `${CLOUD_DELETED_ACCOUNT_PREFIX}${await sha256Hex(userId)}`;
+  await env.DB.batch([
+    env.DB.prepare("delete from cloud_invite_codes where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_account_computers where user_id = ?").bind(userId),
+    env.DB.prepare("update cloud_free_plan_claims set user_id = ? where user_id = ?").bind(gone, userId),
+    // The GitHub account's claim stays too, for the same reason; the hashed sign-up address goes.
+    env.DB.prepare("update cloud_free_github_claims set user_id = ? where user_id = ?").bind(gone, userId),
+    env.DB.prepare("delete from cloud_signup_ips where user_id = ?").bind(userId),
+    // Safety (`safety.ts`): a card's free unlock and a block stay, so a re-made account can't use the card or come back
+    // unblocked; abuse events and owner alerts stay for the owner. All re-keyed to the hash.
+    env.DB.prepare("update cloud_free_card_claims set user_id = ? where user_id = ?").bind(gone, userId),
+    env.DB.prepare("update cloud_blocks set user_id = ? where user_id = ?").bind(gone, userId),
+    // The ADE Cloud iPhone's phones stay for the cost report, under the hash, and none counts as running
+    // (`deleteAccountPhone` stopped them at NoMac above, or does on the retry).
+    // Until NoMac's cleanup succeeded they stay under the account, so Clerk's retry still finds them.
+    env.DB.prepare("update cloud_phones set user_id = ?, state = 'ended', stop_at = null, ended_at = coalesce(ended_at, ?) where user_id = ? and ? = 0").bind(gone, Date.now(), userId, phoneFailure ? 1 : 0),
+    env.DB.prepare("update cloud_abuse_events set user_id = ? where user_id = ?").bind(gone, userId),
+    env.DB.prepare("update cloud_owner_alerts set user_id = ? where user_id = ?").bind(gone, userId),
+    env.DB.prepare("delete from cloud_cpu_reports where user_id = ?").bind(userId),
+    env.DB.prepare("update cloud_referrals set friend_user_id = ? where friend_user_id = ?").bind(gone, userId),
+    env.DB.prepare("update cloud_referrals set referrer_user_id = ? where referrer_user_id = ?").bind(gone, userId),
+    env.DB.prepare("update cloud_earned_hours set user_id = ? where user_id = ?").bind(gone, userId),
+    // A referral grant's reference is the friend's account.
+    env.DB.prepare(`update cloud_earned_hours set reference = ? where reference = ? and reason in ('${CLOUD_REFERRAL_REFERRER_REASON}', '${CLOUD_REFERRAL_FRIEND_REASON}')`).bind(gone, userId),
+  ]);
+
+  // Last, after the computers: a cloud computer still running holds the
+  // account's session and could write its sign-ins back into the vault.
+  const relay = await purgeRelayAccountData(env, userId);
+  if (!relay.ok) throw new Error(`relay_purge_failed: ${relay.reason}`);
+  if (phoneFailure) throw phoneFailure;
 }

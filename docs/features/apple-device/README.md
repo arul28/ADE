@@ -15,6 +15,10 @@ downloaded only when the person asks, from the Runtimes section (see below).
 `ade ios-sim` is a deprecated alias of `ade apple` for one minor release. It
 prints one deprecation line to stderr per process.
 
+The ADE Cloud iPhone (`ios@cloud`) is the same `ade apple` surface on an iOS
+Simulator rented from NoMac for the account, so Windows and Linux machines use
+it too: [ade-cloud-iphone.md](./ade-cloud-iphone.md).
+
 ## Runtime ownership
 
 The simulator service runs where the ADE runtime runs. A local Mac runtime can
@@ -27,6 +31,13 @@ macOS-only error. `status` is the capability gate and reports
 A remote Mac runtime supports control, screenshots, recording, and Preview
 Lab. Its live view is the same helper H.264 path; a Windows desktop bound to
 that Mac watches and drives over the stream.
+
+**ADE Cloud.** An ADE Cloud computer is Linux, so it runs no simulator. The
+Apple tool is never hidden for a chat on ADE Cloud. It says "Apple simulators
+stream here from a Mac" and offers the person's own Macs in its **Runs on**
+row (`useToolMachines`, `workToolStartState.tsx`). The chat's cloud computer
+shows as "ADE Cloud", never by its own name, and no other cloud computer is
+listed.
 
 When a desktop simulator request is interrupted by a project switch, the error
 names the requested action and explains that the active project changed or is
@@ -343,9 +354,10 @@ mtime of the device's `data/Containers/Bundle/Application` folder covers a raw
 `<device dir>/ade-last-activity`, written (at most once a minute) whenever a call
 resolves the lane, including the pane's status poll while it is on screen, and on
 every tick while this process streams, records, tests or launches on the device.
-It is a file, not memory, so the desktop and the brain see each other's use. A
-running `xcodebuild`, `simctl` or `xctest` that names the device by udid or
-`name=` also counts. While Simulator.app is running, nothing is powered off: a
+It is a file, not memory, so the desktop and the brain see each other's use. Any
+running process outside the simulator whose command line names the device's
+udid (in either case) also counts, as does an `xcodebuild`, `simctl` or `xctest`
+that names it by `name=`; the device's own processes do not. While Simulator.app is running, nothing is powered off: a
 person may be driving a device in its window, which leaves no trace ADE can
 read. The power-off names the udid the pass checked. Attached devices are never
 powered off by the timer.
@@ -360,6 +372,39 @@ the device again and ignored while `simctl` lists it Booted; a record from an
 earlier day carries its date. Every call that names an extra counts as use,
 reads included (`--device` on `screenshot`, `snapshot`, `tap`, …), so the timer
 cannot power off a device an agent is reading.
+
+### Memory guard
+
+When the computer is short of memory, idle simulators give theirs back. The
+machine brain's resource-pressure monitor (`resourcePressureMonitor.ts`) calls
+the reclaimer (`apps/ade-cli/src/services/runtime/simulatorMemoryReclaimer.ts`)
+on its own samples, only while a memory or swap episode is open and the
+simulators hold at least 3 GB and 10% of RAM. macOS only.
+
+1. **Warn.** Each lane with a booted simulator gets a warning: one line in the
+   lane's open agent terminals, a notice in the chat that booted the device, and
+   a `deviceNotice` on the agent's next simulator call ("Memory on <machine> is
+   low. Your lane has simulator <name> booted. Shut it down if you do not need
+   it now."). Nothing is shut down, and no idle session is woken.
+2. **Shut down idle devices.** Ten minutes later, or on a later critical
+   sample, ADE runs `simctl shutdown` on the devices that nothing uses. It never
+   erases or deletes a device. A pass that shut a device down is followed by a
+   60-minute wait; an empty pass tries again on the next sample.
+
+The decision is the pure `classifySimulatorForMemoryReclaim`
+(`ios/simulatorMemoryReclaim.ts`). A device stays on when any of these is true:
+ADE streams, records, tests or launches on it, or a viewer watches it; ADE used
+it, installed on it or booted it in the last 15 minutes; a process outside the
+simulator names its udid; a `simctl` command works on `booted`; a test run names
+no device; its boot time cannot be read; ADE did not make it and it booted less
+than 2 hours ago. While Simulator.app runs, the device it shows stays on and
+every other device needs 2 hours without use. The pass reads these facts again
+before each shutdown.
+
+A shutdown writes `ade-powered-off` with reason `memory`, and the next simulator
+call says so: when, and how much swap and simulator memory were in use. The
+record goes away when the device runs again. `ADE_APPLE_MEMORY_POWER_OFF=0`
+keeps the warnings and turns the shutdown off.
 
 ### Tests
 
@@ -789,7 +834,10 @@ minimized" for that chat.
 | `apps/desktop/src/main/services/ios/` | Device lifecycle, launch, screenshots, helper transport, recording, Preview Lab. Preload namespace stays `iosSimulator`. |
 | `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | The `ios_simulator` service: app sessions, input, streams, screenshots, and the wiring of the modules below. |
 | `apps/desktop/src/main/services/ios/laneDeviceRegistry.ts` | One device per lane: create, attach, takeover, the `lane_apple_devices` rows, the ownership marker, the cleanup pass (`reconcile`), and `releaseLaneAppleDevice` / `endLaneDeviceOnDisk` for a lane that ends. |
+| `apps/desktop/src/main/services/ios/xcodeGenProjects.ts` | XcodeGen: a `project.yml` with no tracked `.xcodeproj` beside it (in the build root, a folder in it, or a folder under `apps/`) is generated into one before a launch, install or test, and before a work copy's targets are listed. A tracked `.xcodeproj` is never rewritten. |
 | `apps/desktop/src/main/services/ios/laneDeviceMaintenance.ts` | The background cleanup timer and idle power-off, with the shared activity file. |
+| `apps/desktop/src/main/services/ios/simulatorMemoryReclaim.ts` | The pure rules of the memory guard: which step a sample takes and whether a device is idle. Also owns the "a tool uses this device" check the idle power-off shares. |
+| `apps/ade-cli/src/services/runtime/simulatorMemoryReclaimer.ts` | The machine brain's memory guard: reads the devices and processes, sends the warnings, shuts idle devices down. |
 | `apps/desktop/src/main/services/ios/laneDeviceLifecycle.ts` | `deviceDetach`, `deviceDelete`, the takeover release, and `deviceDeleteInstalled`. Runs each verb's teardown in one order. |
 | `apps/desktop/src/main/services/ios/simulatorPower.ts` | The one place ADE boots or powers off a simulator. It resets the helper session, stops a recording, and drops the cached `simctl list`. |
 | `apps/desktop/src/main/services/ios/iosDeviceHub.ts`, `simHelperClient.ts` | Device sessions, and the NDJSON client that supervises the helper. |

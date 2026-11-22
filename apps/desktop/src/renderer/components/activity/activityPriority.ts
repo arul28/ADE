@@ -25,7 +25,7 @@ export type ActivitySectionDescriptor = {
   order: number;
 };
 
-export const ACTIVITY_SECTION_DESCRIPTORS = ACTIVITY_COLUMNS.map(
+const ACTIVITY_SECTION_DESCRIPTORS = ACTIVITY_COLUMNS.map(
   (id, order) => ({ id, label: ACTIVITY_COLUMN_PRESENTATION[id].label, order }),
 ) as readonly ActivitySectionDescriptor[];
 
@@ -71,6 +71,17 @@ export function activityFeedItems(
   now = Date.now(),
 ): AttentionItem[] {
   return activityLiveItems(input, now).filter((item) => item.kind === "agent");
+}
+
+/**
+ * Every agent item that has not expired, dismissed or not. Dismissing hides a
+ * row; it does not stop the agent, so a count of the work in progress reads this.
+ */
+export function activityAgentItemsWithDismissed(
+  input: ActivityItemsInput,
+  now = Date.now(),
+): AttentionItem[] {
+  return activityInputItems(input).filter((item) => item.kind === "agent" && !activityItemIsExpired(item, now));
 }
 
 /**

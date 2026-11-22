@@ -61,6 +61,7 @@ function TestRunNotice({
   if (!test) return null;
   const canClean = test.lanes.length > 0 && !test.cleanedUpAt && Boolean(detail.run.endedAt);
   const cleanUp = async () => {
+    if (!pin) return;
     setCleaning(true);
     setCleanupError(null);
     try {

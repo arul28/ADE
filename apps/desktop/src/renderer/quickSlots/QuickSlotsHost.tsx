@@ -28,7 +28,9 @@ import {
 } from "./commands";
 import { getQuickSlotComposer } from "./composerTarget";
 import { useQuickSlotsStore } from "./quickSlotsStore";
+import { useQuickSlotsAccountSync } from "./useQuickSlotsAccountSync";
 import "./quickSlots.css";
+import { useTabCopyPin } from "../state/repositoryScope";
 
 /** Prompt-box shortcut id → the catalog command it runs. */
 const CHAT_SHORTCUTS: ReadonlyArray<{ bindingId: string; commandId: string }> = [
@@ -109,6 +111,8 @@ function resolveSlots(
  * context captures `caretInsideComposer` once, when the panel opens.
  */
 export function QuickSlotsHost() {
+  // The slots follow the account; this computer keeps its own copy too.
+  useQuickSlotsAccountSync();
   const navigate = useNavigate();
   const { slots, profiles, leader, keepOpenAfterRelease } = useQuickSlotsStore(
     useShallow((state) => ({
@@ -183,6 +187,8 @@ export function QuickSlotsHost() {
     }, 90);
   }, [clearTimers]);
 
+  // The context's lane is from the tab's own list, so it lives on the tab's copy.
+  const tabCopyPin = useTabCopyPin();
   const contextFor = useCallback((caret: boolean): QuickSlotContext => {
     const state = activeProjectStore().getState();
     const composer = getQuickSlotComposer();
@@ -197,13 +203,14 @@ export function QuickSlotsHost() {
       navigate: (to) => navigate(to),
       keybindings,
       lane,
+      lanePin: lane ? tabCopyPin : null,
       composer,
       caretInsideComposer: caret,
       laneUnavailableReason: composerLaneId && !lane
         ? "This chat's lane is on another machine"
         : null,
     };
-  }, [keybindings, navigate]);
+  }, [keybindings, navigate, tabCopyPin]);
 
   const openPanel = useCallback(() => {
     if (openRef.current) return;

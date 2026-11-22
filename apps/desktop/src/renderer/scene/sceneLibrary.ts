@@ -7,8 +7,9 @@
  * `position` is the CSS background-position that keeps the subject in frame
  * when the window's aspect ratio crops the picture. `width` and `height` are
  * the file's pixels, so `sceneFitsScreen` can tell which pictures stay sharp
- * on the screen in use. `small` is a 2560×1600 copy in `public/scenes/2560/`
- * that a screen it covers loads instead (`sceneSrcForScreen`).
+ * on the screen in use. `copies` are smaller files of the same picture, in
+ * `public/scenes/<width>/`: a screen loads the smallest one that covers it
+ * (`sceneSrcForScreen`).
  */
 
 import { isCssZoomedBrowserSurface } from "../lib/webClientMode";
@@ -21,16 +22,43 @@ export type BundledScene = {
   position: string;
   width: number;
   height: number;
-  small?: { src: string; width: number; height: number };
+  /** Smaller copies of the same picture, smallest first. */
+  copies?: readonly SceneCopy[];
+  /**
+   * A light copy for ADE Web's signed-out page (`public/scenes/signin/`), the
+   * one place a picture loads before the person chose one; it keeps that
+   * page's image budget (docs/perf/macos-baseline.md, hosted web client).
+   */
+  signIn?: SceneCopy;
 };
+
+export type SceneCopy = { src: string; width: number; height: number };
 
 function scene(file: string, name: string, width: number, height: number, position = "50% 50%"): BundledScene {
   return { id: `ade:${file}`, name, src: `./scenes/${file}.jpg`, thumb: `./scenes/thumbs/${file}.jpg`, position, width, height };
 }
 
-function withSmallCopy(picture: BundledScene): BundledScene {
+/**
+ * The copies of a 16:10 picture, each the smallest that covers a group of
+ * common screens without stretching (device pixels):
+ * - 1920×1200: 1080p and 1920×1200 screens.
+ * - 2560×1600: 1440p screens, and 2560×1600 laptops.
+ * - 3200×2000: MacBook Air 13" and 15" (2560×1664, 2880×1864) and MacBook
+ *   Pro 14" (3024×1964). 3072×1920 would miss the 14" by 44 rows.
+ * Larger screens (MacBook Pro 16", 4K, 5K) load the full 3840×2400 file.
+ */
+const STANDARD_COPY_SIZES = [
+  [1920, 1200],
+  [2560, 1600],
+  [3200, 2000],
+] as const;
+
+function withCopies(picture: BundledScene): BundledScene {
   const file = picture.id.slice("ade:".length);
-  return { ...picture, small: { src: `./scenes/2560/${file}.jpg`, width: 2560, height: 1600 } };
+  return {
+    ...picture,
+    copies: STANDARD_COPY_SIZES.map(([width, height]) => ({ src: `./scenes/${width}/${file}.jpg`, width, height })),
+  };
 }
 
 export const BUNDLED_SCENES: readonly BundledScene[] = [
@@ -41,12 +69,12 @@ export const BUNDLED_SCENES: readonly BundledScene[] = [
   scene("rooftop-city", "Rooftop city", 5120, 1440),
   scene("tree-village", "Tree village", 5120, 1440),
   // Standard (16:10).
-  withSmallCopy(scene("mountain-vista", "Mountain vista", 3840, 2400)),
-  withSmallCopy(scene("alpine-chalet", "Alpine chalet", 3840, 2400)),
-  withSmallCopy(scene("blossom-geese", "Blossom geese", 3840, 2400)),
-  withSmallCopy(scene("bay-city", "Bay city", 3840, 2400)),
-  withSmallCopy(scene("neon-city", "Neon city", 3840, 2400)),
-  withSmallCopy(scene("star-destroyer", "Star destroyer", 3840, 2400)),
+  { ...withCopies(scene("mountain-vista", "Mountain vista", 3840, 2400)), signIn: { src: "./scenes/signin/mountain-vista.webp", width: 1920, height: 1200 } },
+  withCopies(scene("alpine-chalet", "Alpine chalet", 3840, 2400)),
+  withCopies(scene("blossom-geese", "Blossom geese", 3840, 2400)),
+  withCopies(scene("bay-city", "Bay city", 3840, 2400)),
+  withCopies(scene("neon-city", "Neon city", 3840, 2400)),
+  withCopies(scene("star-destroyer", "Star destroyer", 3840, 2400)),
 ];
 
 export function findBundledScene(id: string | null | undefined): BundledScene | null {
@@ -80,14 +108,35 @@ export function sceneFitsScreen(picture: ScreenPixels, screen: ScreenPixels): bo
 }
 
 /**
- * The file to draw on this screen: the 2560×1600 copy when it covers the
- * screen without stretching (1080p, 1440p), else the full picture. A decoded
- * picture costs memory for every pixel, so a screen that cannot show 3840
- * pixels does not pay for them.
+ * The file to draw on this screen: the smallest copy that covers the screen
+ * without stretching, else the full picture. A decoded picture costs memory
+ * for every pixel, so a screen does not pay for pixels it cannot show. Every
+ * copy has the picture's shape, so the crop and position stay the same.
  */
 export function sceneSrcForScreen(picture: BundledScene, screen: ScreenPixels): string {
-  const small = picture.small;
-  return small && screen.width <= small.width && screen.height <= small.height ? small.src : picture.src;
+  const copy = picture.copies?.find((candidate) => screen.width <= candidate.width && screen.height <= candidate.height);
+  return copy ? copy.src : picture.src;
+}
+
+/**
+ * A copy is made only when it has at most this share of the picture's width:
+ * a copy that saves less is not worth its decode and its disk space.
+ */
+const MAX_COPY_SCALE = 0.85;
+
+/**
+ * The size of a user picture's copy for this screen: the picture scaled down,
+ * shape kept, until it just covers the screen. Null when the picture is not
+ * much larger than that, and the picture itself is drawn.
+ */
+export function screenCopySize(picture: ScreenPixels, screen: ScreenPixels): ScreenPixels | null {
+  if (picture.width <= 0 || picture.height <= 0 || screen.width <= 0 || screen.height <= 0) return null;
+  const scale = Math.max(screen.width / picture.width, screen.height / picture.height);
+  if (scale > MAX_COPY_SCALE) return null;
+  return {
+    width: Math.max(screen.width, Math.ceil(picture.width * scale)),
+    height: Math.max(screen.height, Math.ceil(picture.height * scale)),
+  };
 }
 
 /**

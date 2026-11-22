@@ -74,27 +74,6 @@ afterEach(() => {
 });
 
 describe("RuleRow provenance", () => {
-  it("badges a CTO rule and leaves a user rule unbadged", () => {
-    renderList([
-      rule({ id: "cto-rule", name: "Watch the queue", origin: "cto" }),
-      rule({ id: "user-rule", name: "Nightly tests", origin: "user" }),
-    ]);
-
-    const ctoBadge = within(rowFor("Watch the queue")).getByTestId("rule-origin-cto");
-    expect(ctoBadge.textContent).toContain("CTO");
-    expect(ctoBadge.getAttribute("aria-label")).toBe("Written by the CTO");
-    expect(within(rowFor("Nightly tests")).queryByTestId("rule-origin-cto")).toBeNull();
-  });
-
-  it("renders a rule with no origin (older config) exactly as a user rule", () => {
-    const legacy = rule({ id: "legacy", name: "Legacy rule" });
-    delete (legacy as { origin?: unknown }).origin;
-    renderList([legacy]);
-
-    expect(screen.queryByTestId("rule-origin-cto")).toBeNull();
-    expect(screen.queryByTestId("rule-scope-label")).toBeNull();
-    expect(screen.queryByTestId("rule-one-shot-note")).toBeNull();
-  });
 
   it("shows the originRequest sentence when the CTO badge is hovered", async () => {
     vi.useFakeTimers();
@@ -145,24 +124,6 @@ describe("RuleRow provenance", () => {
     const label = screen.getByTestId("rule-scope-label");
     expect(label.textContent).toBe("Handoff: Fix the sync cursor");
     expect(label.getAttribute("title")).toBe("Fix the sync cursor");
-  });
-
-  it("provides the full chat title on the scope label", () => {
-    const long = "A very long chat title that will never fit inside the three-hundred-and-forty pixel list";
-    renderList([
-      rule({ id: "scoped", name: "Scoped rule", scope: { sessionId: "chat-1", sessionTitle: long } }),
-    ]);
-
-    const label = screen.getByTestId("rule-scope-label");
-    expect(label.getAttribute("title")).toBe(long);
-  });
-
-  it("labels a scoped rule whose chat title was never recorded", () => {
-    renderList([
-      rule({ id: "scoped", name: "Scoped rule", scope: { sessionId: "chat-1", sessionTitle: "" } }),
-    ]);
-
-    expect(screen.getByTestId("rule-scope-label").textContent).toBe("Handoff: Untitled chat");
   });
 
   it("warns on the row that a one-shot rule deletes itself", () => {

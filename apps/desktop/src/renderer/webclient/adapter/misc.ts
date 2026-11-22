@@ -1,3 +1,6 @@
+import { markExpected } from "../../../shared/expectedError";
+import { WEB_PASSWORDS_SENTENCE } from "../../../shared/adeCloud/accountCalls";
+import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import {
   EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
   peerToRuntimeDeviceState,
@@ -10,6 +13,13 @@ import {
   type CloudAgentRef,
   type CtoAttentionState,
   type CtoSnapshot,
+  type CtoMemorySnapshot,
+  type CtoPreviewSystemPromptArgs,
+  type CtoRefreshContextResult,
+  type CtoSystemPromptPreview,
+  type CtoUpdateIdentityArgs,
+  type CtoUpdateNotesArgs,
+  type CtoUpdateOpenWorkArgs,
   type CursorAgentUsage,
   type CursorCloudAgentSummary,
   type CursorCloudArtifactDownload,
@@ -73,7 +83,6 @@ export type MiscNamespaces = {
   transcription: AdeNamespace<"transcription">;
   agentTools: AdeNamespace<"agentTools">;
   cloudAgents: AdeNamespace<"cloudAgents">;
-  cloudAccess: NonNullable<Window["ade"]["cloudAccess"]>;
   adeCli: AdeNamespace<"adeCli">;
   devTools: AdeNamespace<"devTools">;
   localhost: AdeNamespace<"localhost">;
@@ -634,7 +643,22 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     // adapter's single connection.
     getStatus: async (args?: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("ai.getStatus", pin, infra);
-      return await call("ai.getStatus", args, aiStatus());
+      // The host reads only these two flags. `undefined`, `{}` and the
+      // all-false form are one request, so the readers that start together
+      // (the AI cache, Cloud agents, the model options) share one answer of
+      // ~47 KB instead of each sending its own. A plain read keeps its answer
+      // for a few seconds; a forced read always asks the host.
+      const record = asRecord(args);
+      const force = record.force === true;
+      const refreshOpenCodeInventory = record.refreshOpenCodeInventory === true;
+      return await commands.call(
+        "ai.getStatus",
+        {
+          ...(force ? { force: true } : {}),
+          ...(refreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
+        },
+        { fallback: aiStatus(), ...(force || refreshOpenCodeInventory ? {} : { cacheTtlMs: AI_STATUS_SHARED_READ_MS }) },
+      );
     },
     // The connected brain answers; offline, or on any failure, `null` means
     // the caller's own logic decides, exactly as on desktop.
@@ -763,6 +787,15 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     },
     listApiKeys: async () => [],
     verifyApiKey: async () => ({ ok: false, error: "unsupported" }),
+    // The host does not serve this check to the web client; the tile keeps
+    // what the status read said.
+    verifyProviderSignIn: async (args: { provider: string }) => ({
+      provider: args.provider,
+      state: "unknown" as const,
+      reason: "Checking a sign-in needs the ADE desktop app.",
+      account: null,
+      checkedAt: new Date().toISOString(),
+    }),
     updateConfig: async (config: Partial<AiConfig>) => {
       await call("ai.updateConfig", config, undefined, false);
     },
@@ -977,6 +1010,17 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       unavailableOnHost("That machine is running an older ADE that can't save these settings."),
       false,
     ),
+    // A fallback snapshot would hide the notice without answering it, so a
+    // host without the command fails loudly.
+    resolveAccountSettingNotice: async (args: { key: string; choice: "use_local" | "keep" }, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("projectConfig.resolveAccountSettingNotice", pin, infra);
+      return await call(
+        "projectConfig.resolveAccountSettingNotice",
+        { key: args.key, choice: args.choice },
+        unavailableOnHost("That machine is running an older ADE that can't answer this notice."),
+        false,
+      );
+    },
     diffAgainstDisk: async () => ({
       sharedChanged: false,
       localChanged: false,
@@ -1066,19 +1110,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
-    cloudAccess: {
-      // The connected machine answers for the account. Not connected, or
-      // nothing known yet, reads as no.
-      read: () => commands.call<{ enabled: boolean }>("cloud.read", { action: "access" }, { fallback: { enabled: false }, retainLastRead: false }),
-      onChanged: (cb) => {
-        let readiness = client.getStatus().readiness;
-        return client.subscribe((status) => {
-          if (status.readiness === readiness) return;
-          readiness = status.readiness;
-          cb();
-        });
-      },
-    },
     cloudAgents: {
       list: (args: CloudAgentListArgs) =>
         call<CloudAgentList>("ai.listCloudAgents", args, {
@@ -1204,13 +1235,11 @@ function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]
 const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
   getState: 1,
   ensureSession: 1,
-  startFreshSession: 0,
-  getThreadHealth: 0,
-  listSessionLogs: 1,
+  refreshContext: 0,
   updateIdentity: 1,
   getMemory: 0,
-  updateMemory: 1,
-  searchMemory: 1,
+  updateNotes: 1,
+  updateOpenWork: 1,
   getLinearConnectionStatus: 0,
   setLinearToken: 1,
   clearLinearToken: 0,
@@ -1229,6 +1258,8 @@ const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
   getLinearOAuthSession: 1,
   runProjectScan: 0,
   getAttention: 0,
+  adoptAccountCopy: 1,
+  getAccountCopyStatus: 0,
 };
 
 function createCtoNamespace(
@@ -1236,9 +1267,9 @@ function createCtoNamespace(
   scope: RuntimePinScope,
 ): NonNullable<Window["ade"]["cto"]> {
   return guardPinnedMembers<NonNullable<Window["ade"]["cto"]>>({
-    getState: (args?: unknown) => call<CtoSnapshot>(
+    getState: () => call<CtoSnapshot>(
       "cto.getState",
-      { recentLimit: asRecord(args).recentLimit ?? 20 },
+      {},
       unavailableOnHost("The CTO isn't available on the connected ADE host."),
     ),
     // Materializes the primary lane's CTO chat session, so it is a write: never
@@ -1256,6 +1287,52 @@ function createCtoNamespace(
       "cto.getAttention",
       {},
       { status: "unknown", awaitingInput: false, since: null },
+    ),
+    getMemory: () => call<CtoMemorySnapshot>(
+      "cto.getMemory",
+      {},
+      unavailableOnHost("The CTO's memory isn't available on the connected ADE host."),
+    ),
+    updateNotes: (args: CtoUpdateNotesArgs) => call<CtoMemorySnapshot>(
+      "cto.updateNotes",
+      args,
+      unavailableOnHost("The CTO's notes can't be changed on the connected ADE host."),
+      false,
+    ),
+    updateOpenWork: (args: CtoUpdateOpenWorkArgs) => call<CtoMemorySnapshot>(
+      "cto.updateOpenWork",
+      args,
+      unavailableOnHost("The CTO's open work can't be changed on the connected ADE host."),
+      false,
+    ),
+    // `crossMachineEnabled` is the desktop's alone; the host strips it.
+    updateIdentity: (args: CtoUpdateIdentityArgs) => call<CtoSnapshot>(
+      "cto.updateIdentity",
+      { patch: args?.patch ?? {} },
+      unavailableOnHost("The CTO's settings can't be changed on the connected ADE host."),
+      false,
+    ),
+    adoptAccountCopy: (args: CtoAdoptAccountCopyArgs) => call<CtoAdoptAccountCopyResult>(
+      "cto.adoptAccountCopy",
+      { home: args?.home ?? null },
+      unavailableOnHost("The connected ADE host can't take the CTO in yet."),
+      false,
+    ),
+    getAccountCopyStatus: () => call<CtoAccountCopyStatus>(
+      "cto.getAccountCopyStatus",
+      {},
+      { available: false, savedAt: null, ownerName: null, ownerIsThisMachine: false },
+    ),
+    refreshContext: () => call<CtoRefreshContextResult>(
+      "cto.refreshContext",
+      {},
+      unavailableOnHost("The CTO can't be refreshed on the connected ADE host."),
+      false,
+    ),
+    previewSystemPrompt: (args?: CtoPreviewSystemPromptArgs) => call<CtoSystemPromptPreview>(
+      "cto.previewSystemPrompt",
+      args?.identityOverride ? { identityOverride: args.identityOverride } : {},
+      unavailableOnHost("The CTO's prompt isn't available on the connected ADE host."),
     ),
     // The host registers this one `viewerAllowed`, and the CTO tab ships on web
     // now, so leaving it unwired made the Linear panel fall through to the
@@ -1350,23 +1427,20 @@ function createCtoNamespace(
   } as unknown as NonNullable<Window["ade"]["cto"]>, "cto", CTO_PINNED_MEMBER_ARG_INDEX, scope);
 }
 
-const PROJECT_SECRETS_DESKTOP_ONLY = "Project secrets can only be changed in the ADE desktop app on that machine.";
-
 function createProjectSecretsNamespace(): AdeNamespace<"projectSecrets"> {
   return {
-    list: async () => ({ secrets: [] }),
-    get: async () => ({ value: null }),
-    // Secret values stay on their machine. Saving one here used to resolve as
-    // if it worked while nothing was stored, so a chat asking for a secret
-    // waited forever; every caller shows this message instead.
+    // Not an empty list: a caller that read "no secrets" would offer a name
+    // that is already taken. Every caller shows this sentence instead.
+    list: async () => {
+      throw markExpected(new Error(WEB_PASSWORDS_SENTENCE), "user");
+    },
+    // Saving one here used to resolve as if it worked while nothing was
+    // stored, so a chat asking for a secret waited forever; every caller
+    // shows this message instead.
     set: async () => {
-      throw new Error(PROJECT_SECRETS_DESKTOP_ONLY);
+      throw markExpected(new Error(WEB_PASSWORDS_SENTENCE), "user");
     },
-    delete: async () => {
-      throw new Error(PROJECT_SECRETS_DESKTOP_ONLY);
-    },
-    pullFromAccount: async () => ({ state: "unavailable" as const }),
-  } as unknown as AdeNamespace<"projectSecrets">;
+  };
 }
 
 function createTranscriptionNamespace(): AdeNamespace<"transcription"> {
@@ -1432,7 +1506,7 @@ function createLoginImportUnavailableStub(): Record<string, unknown> {
  * way they read the desktop's — `supported: false` is the flag they check, not
  * a licence to omit the rest of the record.
  */
-export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
+function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
   supported: false;
   available: false;
   state: "unsupported";
@@ -1550,6 +1624,10 @@ function createUsageStubs(call: MiscCall, infra: AdapterInfra): Partial<Window["
     // An older host without the command answers null: ADE-only counts.
     getGithubContributions: () => call("usage.getGithubContributions", {}, null),
     getSnapshot: () => call("usage.getQuotaSnapshot", {}, null),
+    // Web only: whether a computer is connected that can give provider
+    // limits. With none (only the account answers), the band says where the
+    // numbers come from instead of waiting for a reading that never comes.
+    liveReadings: () => infra.commands.hasAction("usage.getQuotaSnapshot"),
     // Refresh is the user pressing the button: mark it non-idempotent so it
     // reaches the host instead of replaying a cached read, and so a failure
     // surfaces rather than resolving to a fake null snapshot.
@@ -1635,6 +1713,9 @@ function onboardingStatus(): Record<string, unknown> {
     steps: [],
   };
 }
+
+/** How long readers share one plain `ai.getStatus` answer. A forced read never waits on it. */
+const AI_STATUS_SHARED_READ_MS = 5_000;
 
 function aiStatus(): Record<string, unknown> {
   return {

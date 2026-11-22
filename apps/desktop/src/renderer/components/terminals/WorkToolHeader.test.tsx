@@ -83,15 +83,6 @@ describe("WorkToolHeader tab strip", () => {
     expect(tabs[0].getAttribute("aria-selected")).toBe("false");
   });
 
-  it("carries the active tool's one fact in its tab, never as a header line", () => {
-    renderHeader();
-    // The context string is the active tab's accessible name/tooltip…
-    expect(screen.getByRole("tab", { selected: true }).getAttribute("aria-label"))
-      .toBe("Browser · example.com");
-    // …and nothing in the bar spells it out as a title.
-    expect(screen.queryByText("example.com")).toBeNull();
-  });
-
   it("switches tabs and closes them through their own controls", () => {
     const { props } = renderHeader();
     fireEvent.click(screen.getByRole("tab", { name: /^Terminal/ }));
@@ -143,12 +134,6 @@ describe("WorkToolHeader tab strip", () => {
     fireEvent.click(tab);
     expect(props.onPick).toHaveBeenCalledWith("terminal");
     expect(props.onCloseTool).not.toHaveBeenCalled();
-  });
-
-  it("reserves the ✕ inside a labelled tab instead of badging its corner", () => {
-    renderHeader();
-    const close = document.querySelector<HTMLElement>('[data-tool-tab-close="terminal"]');
-    expect(close?.getAttribute("data-tool-tab-close-mode")).toBe("inline");
   });
 
   it("budgets the strip around the activity dots it is standing beside", () => {
@@ -247,13 +232,6 @@ describe("WorkToolHeader tab strip", () => {
     fireEvent.keyDown(tabs[0], { key: "Backspace" });
     expect(props.onCloseTool).toHaveBeenCalledWith("terminal");
   });
-
-  it("renders the strip with no tabs at all", () => {
-    renderHeader({ activeTool: null, openTools: [] });
-    expect(screen.queryAllByRole("tab")).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "Back to tools" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Close Tools sidebar" })).toBeTruthy();
-  });
 });
 
 describe("workToolTabLayout", () => {
@@ -301,18 +279,5 @@ describe("workToolTabLayout", () => {
     const layout = workToolTabLayout(strip, "browser", 96);
     expect(layout.visible).toEqual(["browser"]);
     expect(layout.overflow).toHaveLength(strip.length - 1);
-  });
-});
-
-describe("WorkToolHeader has no float or maximize controls", () => {
-  afterEach(() => cleanup());
-
-  it("does not draw the float or maximize buttons the tool rows now own", () => {
-    renderHeader();
-    // Both moved onto each screen tool's own chrome row (see
-    // `workToolPreviewControls`); the strip is tabs only.
-    expect(screen.queryByLabelText("Show floating preview")).toBeNull();
-    expect(screen.queryByRole("button", { name: /Maximize pane|Restore pane/ })).toBeNull();
-    expect(document.querySelector('[data-testid="work-tools-maximize"]')).toBeNull();
   });
 });

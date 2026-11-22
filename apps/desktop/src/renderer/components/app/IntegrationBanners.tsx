@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
-import { CloudSlash, GithubLogo, Robot } from "@phosphor-icons/react";
+import { CloudSlash, Gift, GithubLogo, Robot } from "@phosphor-icons/react";
 import type { NavigateFunction } from "react-router-dom";
 import type {
   GitHubAppInstallationStatus,
@@ -24,8 +24,11 @@ import {
   isGithubAppUserAuthSupported,
 } from "../../lib/githubIntegrationStatus";
 import { useGitHubIssueWriteAccess, useProjectGitHubRepo } from "../issues/githubIssueStore";
+import { isWebClientMode } from "../../lib/webClientMode";
+import { isAdeCloudTargetId } from "../../../shared/adeCloud/binding";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { showToast } from "./toast/toastStore";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { githubReminderKey, clearGithubAlarms, migrateGithubReminder, githubAccessWasWorking, rememberGithubWorkingAccess, useBannerDismissals } from "../../lib/bannerDismiss";
 import {
   APP_BANNER_PRIORITY,
@@ -53,6 +56,12 @@ export type IntegrationBannersProps = {
   currentProjectRoot: string | null;
   githubStatus: GitHubStatus | null;
   hasAnyAiProvider: boolean;
+  /**
+   * Nothing is signed in on this machine and its free models are ready
+   * (`shared/freeModels.ts`): the free-models banner replaces the missing
+   * provider warning.
+   */
+  freeModelsReady: boolean;
   aiStatusLoaded: boolean;
   /**
    * Relay leg of this machine's sync route health, pushed down from AppShell's
@@ -71,6 +80,7 @@ const AI_SETTINGS_ROUTE = settingsRouteFor("agents.providers");
 const GITHUB_ICON = <GithubLogo size={13} weight="fill" />;
 const RELAY_ICON = <CloudSlash size={13} weight="fill" />;
 const AI_ICON = <Robot size={13} weight="fill" />;
+const FREE_MODELS_ICON = <Gift size={13} weight="fill" />;
 
 /**
  * How long the relay control has to stay down before we say anything. Relay
@@ -130,6 +140,7 @@ export function IntegrationBanners({
   currentProjectRoot,
   githubStatus,
   hasAnyAiProvider,
+  freeModelsReady,
   aiStatusLoaded,
   relayHealth,
   navigate,
@@ -150,19 +161,26 @@ export function IntegrationBanners({
   const currentRootRef = useRef<string | null>(currentProjectRoot);
   currentRootRef.current = currentProjectRoot;
   const [loadedRoot, setLoadedRoot] = useState<string | null>(null);
+  // The GitHub App state is the repository's: read it from the reader copy.
+  // No copy online: nothing is read and the App block stays hidden.
+  const readerPin = useActiveRepositoryReader();
+  const readerPinRef = useRef(readerPin);
+  readerPinRef.current = readerPin;
+  const readerPinKey = readerPin?.key ?? null;
 
   // Fetch the two independent GitHub App axes (per-repo install + account token).
   // Mirrors GitHubAppInstallPanel.loadStatus: read auth AFTER the install check,
   // since an expired token can be cleared during that check.
   const loadAppStatus = useCallback(async (forceRefresh = false) => {
     const api = window.ade?.github;
-    if (!api?.getAppInstallationStatus) return;
+    const pin = readerPinRef.current;
+    if (!api?.getAppInstallationStatus || !pin) return;
     const seq = seqRef.current + 1;
     seqRef.current = seq;
     const requestedRoot = currentRootRef.current;
     const isCurrent = () => mountedRef.current && seqRef.current === seq && currentRootRef.current === requestedRoot;
     try {
-      const install = await api.getAppInstallationStatus({ forceRefresh });
+      const install = await api.getAppInstallationStatus({ forceRefresh }, pin);
       if (!isCurrent()) return;
       setAppInstall(install);
     } catch {
@@ -170,7 +188,7 @@ export function IntegrationBanners({
       setAppInstall(null);
     }
     try {
-      const auth = (await api.getAppUserAuthStatus?.()) ?? null;
+      const auth = (await api.getAppUserAuthStatus?.(pin)) ?? null;
       if (!isCurrent()) return;
       setAppAuth(auth);
     } catch {
@@ -196,7 +214,7 @@ export function IntegrationBanners({
   useEffect(() => {
     setAppStatusLoaded(false);
     void loadAppStatus(false);
-  }, [currentProjectRoot, loadAppStatus]);
+  }, [currentProjectRoot, loadAppStatus, readerPinKey]);
 
   // Coalesced refresh on PR/GitHub activity — cheap, and seq-guarded against stale
   // responses. Both subscriptions are optional (browser-mock / tests may omit them).
@@ -209,6 +227,8 @@ export function IntegrationBanners({
   const prRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const disposers: Array<() => void> = [];
+    const pin = readerPinRef.current;
+    if (!pin) return undefined;
     const onPrEvent = (event: PrEventPayload) => {
       // Reconcile progress pings never carry App install/auth changes — skip them
       // so a focus reconcile doesn't trigger two forced status calls.
@@ -220,9 +240,9 @@ export function IntegrationBanners({
         void loadAppStatus(false);
       }, 1_500);
     };
-    const offPrs = window.ade?.prs?.onEvent?.(onPrEvent);
+    const offPrs = window.ade?.prs?.onEvent?.(onPrEvent, pin);
     if (offPrs) disposers.push(offPrs);
-    const offGithub = window.ade?.github?.onStatusChanged?.(() => void loadAppStatus(true));
+    const offGithub = window.ade?.github?.onStatusChanged?.(() => void loadAppStatus(true), pin);
     if (offGithub) disposers.push(offGithub);
     return () => {
       if (prRefreshTimerRef.current != null) {
@@ -231,7 +251,7 @@ export function IntegrationBanners({
       }
       for (const dispose of disposers) dispose();
     };
-  }, [loadAppStatus]);
+  }, [loadAppStatus, readerPinKey]);
 
   // Relay outage crosses its grace threshold on wall-clock time, not on an
   // incoming event, so nothing would re-render us at the two-minute mark. Arm a
@@ -423,7 +443,15 @@ export function IntegrationBanners({
       && (!githubStatus.connected || !githubStatusHasWriteCredential(githubStatus))
     ) {
       githubCliShown = true;
-      const cli = describeGithubCliBanner(githubStatus);
+      const described = describeGithubCliBanner(githubStatus);
+      // ADE Web can't run `gh auth login` on the project's computer: the account's GitHub sign-in reaches it.
+      const cli = isWebClientMode() && described.subState === "no-token"
+        ? {
+          ...described,
+          title: "GitHub isn't connected",
+          detail: "Connect GitHub to your ADE account so ADE can push and open pull requests from this project.",
+        }
+        : described;
       list.push({
         id: "github-cli",
         tone: "warning",
@@ -481,8 +509,24 @@ export function IntegrationBanners({
       });
     }
 
-    // 3) No AI provider configured (MIGRATED).
-    if (currentProjectRoot && aiStatusLoaded && !hasAnyAiProvider) {
+    // 3) No AI provider configured (MIGRATED). Not on an ADE Cloud tab: ADE
+    // Cloud has no AI status of its own, and its computers use the account's
+    // sign-ins and keys (Settings > ADE Cloud says what is missing).
+    //
+    // Nothing signed in, but the free models work: say that instead, and name
+    // no provider (there are many).
+    const aiBannerApplies = Boolean(currentProjectRoot) && aiStatusLoaded && !isAdeCloudTargetId(machineId);
+    if (aiBannerApplies && freeModelsReady) {
+      list.push({
+        id: "free-models",
+        tone: "accent",
+        icon: FREE_MODELS_ICON,
+        title: "Free models are ready",
+        detail: "Chat with a free model now, or sign in to an AI provider for more models.",
+        actions: [{ label: "Sign in", variant: "primary", onClick: () => navigate(AI_SETTINGS_ROUTE) }],
+        dismiss: { key: `free-models:${currentProjectRoot}`, fingerprint: "ready" },
+      });
+    } else if (aiBannerApplies && !hasAnyAiProvider) {
       list.push({
         id: "ai-provider",
         tone: "warning",
@@ -590,6 +634,7 @@ export function IntegrationBanners({
     githubStatus,
     aiStatusLoaded,
     hasAnyAiProvider,
+    freeModelsReady,
     navigate,
     loadAppStatus,
     loadedRoot,

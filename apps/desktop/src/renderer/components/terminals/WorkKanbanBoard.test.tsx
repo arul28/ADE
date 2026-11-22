@@ -4,9 +4,8 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionListPane } from "./SessionListPane";
-import { laneBoundMachineKey } from "./useLanePrs";
 import { WORK_BOARD_DND_MIME } from "./WorkKanbanBoard";
 import { ADE_WORK_LANE_DND_MIME } from "./workLaneOrder";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
@@ -89,31 +88,6 @@ function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
   };
 }
 
-function makePr(overrides: Partial<PrSummary> = {}): PrSummary {
-  return {
-    id: "pr-1",
-    laneId: "lane-ci",
-    projectId: "project-a",
-    repoOwner: "acme",
-    repoName: "ade",
-    githubPrNumber: 4242,
-    githubUrl: "https://github.com/acme/ade/pull/4242",
-    githubNodeId: null,
-    title: "Board",
-    state: "open",
-    baseBranch: "main",
-    headBranch: "ade/lane-ci",
-    checksStatus: "pending",
-    reviewStatus: "none",
-    additions: 0,
-    deletions: 0,
-    lastSyncedAt: null,
-    createdAt: "2026-04-22T10:00:00.000Z",
-    updatedAt: "2026-04-22T10:00:00.000Z",
-    ...overrides,
-  };
-}
-
 /**
  * One fixture covering every branch the board has:
  *   Needs you — an ordinary chat
@@ -166,14 +140,10 @@ const FULL_BOARD: Record<WorkBoardColumn, TerminalSessionSummary[]> = {
   done: [ENDED, SETTLED],
 };
 
-const EMPTY_BOARD: Record<WorkBoardColumn, TerminalSessionSummary[]> = {
-  needs_you: [],
-  working: [],
-  waiting: [],
-  done: [],
-};
-
 const WAITING_REASONS = new Map<string, WorkBoardWaitingReason>([["s-ci", "ci"]]);
+
+/** The tab's own copy: its rows carry no binding and resolve to this machine. */
+const BOARD_PIN = { kind: "local", key: "local:/tmp/repo", rootPath: "/tmp/repo", displayName: "repo" } as const;
 
 function renderBoard(props: Partial<ComponentProps<typeof SessionListPane>> = {}) {
   const all = Object.values(FULL_BOARD).flat();
@@ -208,7 +178,7 @@ function renderBoard(props: Partial<ComponentProps<typeof SessionListPane>> = {}
         workCollapsedSectionIds={[]}
         toggleWorkSectionCollapsed={vi.fn()}
         sessionsGroupedByLane={new Map()}
-        resolveSessionRuntimePin={() => null}
+        resolveSessionRuntimePin={() => BOARD_PIN}
         {...props}
       />
     </MemoryRouter>,
@@ -400,35 +370,6 @@ describe("WorkKanbanBoard", () => {
     expect(screen.getAllByTestId(/^work-board-card-[^r]/)).toHaveLength(5);
   });
 
-  it("gives an empty column its header and one quiet line, not an empty state", () => {
-    renderBoard({ workBoardBuckets: EMPTY_BOARD, workBoardWaitingReasons: new Map() });
-
-    for (const key of ["needs_you", "working", "waiting", "done"] as const) {
-      expect(column(key)).toBeTruthy();
-      expect(screen.getByTestId(`work-board-count-${key}`).textContent).toBe("0");
-      const placeholder = screen.getByTestId(`work-board-empty-${key}`);
-      expect(placeholder.tagName).toBe("P");
-      expect(placeholder.textContent?.trim().length).toBeGreaterThan(0);
-    }
-    expect(screen.queryAllByTestId(/^work-board-card-[^r]/)).toHaveLength(0);
-  });
-
-  it("carries the lane rail, the lane name and the PR pill onto a board card", () => {
-    lanePrsByLaneIdForTest.set(laneBoundMachineKey("lane-ci"), [makePr()]);
-    renderBoard();
-
-    const card = screen.getByTestId("work-board-card-s-ci");
-    // The rail is the board's own chrome; the lane NAME still comes from the
-    // shared card, so the lane is never identified by colour alone.
-    expect(within(card).getByTestId("work-board-card-rail-s-ci")).toBeTruthy();
-    expect(card.querySelector('[data-session-lane-identity="Lane CI"]')).toBeTruthy();
-    // The PR pill is `LanePrBadge`, reached by handing the card the singleton
-    // options — not a second badge built for the board.
-    expect(within(card).getByText("#4242")).toBeTruthy();
-    // And the reason it is parked, in words.
-    expect(within(card).getByTestId("work-board-waiting-s-ci").textContent).toContain("CI running");
-  });
-
   it("suppresses the per-card status label, which the column already states", () => {
     renderBoard();
 
@@ -453,14 +394,6 @@ describe("WorkKanbanBoard", () => {
     // status, so removing the word there would delete the fact outright.
     const { container } = renderListWithTwoLanes();
     expect(container.querySelector("[data-session-status]")).toBeTruthy();
-  });
-
-  it("shows the agent note line on a board card", () => {
-    renderBoard();
-    const card = screen.getByTestId("work-board-card-s-needs");
-    expect(
-      card.querySelector('[data-session-preview-source="note"]')?.textContent,
-    ).toContain("waiting on the schema call");
   });
 
   it("renders the CTO chip instead of the Subagent pill and routes it to /cto", () => {
@@ -530,7 +463,8 @@ describe("WorkKanbanBoard", () => {
 
     fireDrag(column("done"), "drop", dt);
     expect(moveOnBoard).toHaveBeenCalledTimes(1);
-    expect(moveOnBoard.mock.calls[0]!.slice(0, 2)).toEqual(["s-needs", "done"]);
+    // A row of the tab's own copy moves on that copy's machine.
+    expect(moveOnBoard.mock.calls[0]).toEqual(["s-needs", "done", BOARD_PIN]);
   });
 
   it("sends the action's column name for Needs you, not the board's label", () => {

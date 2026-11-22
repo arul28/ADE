@@ -27,11 +27,13 @@ export type ProcessRegistryServiceOptions = {
   role: RuntimeProcessRole;
   projectRoot?: string | null;
   /**
-   * How often we refresh our own row's `last_seen`. Defaults to 5s. Reconcile
+   * How often we refresh our own row's `last_seen`. Defaults to 15 s. Reconcile
    * callers wait for at least one stale interval before treating a peer as
-   * dead, so heartbeat cadence sets the floor on "how fast does a crashed
-   * sibling get cleaned up." Faster = noisier writes; slower = stale rows
-   * linger longer after a crash.
+   * dead, so heartbeat cadence sets the floor on "how fast does a hung
+   * sibling get cleaned up." A crashed sibling does not wait for it: its pid
+   * is gone, which `pidLivenessCheck` and `listDeadProcessIdentities` see at
+   * once, and a clean stop deletes its row. Faster = more SQLite writes at
+   * idle; slower = a hung process's rows linger longer.
    */
   heartbeatIntervalMs?: number;
   /**
@@ -43,8 +45,22 @@ export type ProcessRegistryServiceOptions = {
   pidLivenessCheck?: (pid: number) => boolean;
 };
 
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
+// Each beat is a SQLite write in the desktop main process and in the brain,
+// so it runs all day at idle. 15 s keeps the liveness window (3 beats) at 45 s,
+// below the 2-minute fresh-activity grace that the stale-session rescan waits
+// for anyway (`STALE_RUNNING_SESSION_RESCAN_DELAY_MS`).
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 export const DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS = DEFAULT_HEARTBEAT_INTERVAL_MS * 3;
+/** How long a dead owner of `detached` session rows stays in the registry (`pruneStale`). */
+const DETACHED_OWNER_KEEP_MS = 6 * 60 * 60_000;
+/** `process.uptime` and ISO stamps can differ by a little; a run this close to our start is not called dead. */
+const PROCESS_START_SLACK_MS = 1_000;
+/**
+ * When this OS process started (`process.uptime`), read once per process: a
+ * clock step between two registries of one process must not move it past an
+ * earlier one, which would then read as dead.
+ */
+const PROCESS_STARTED_MS = Date.now() - process.uptime() * 1000;
 
 function defaultPidLivenessCheck(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
@@ -95,7 +111,7 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
       heartbeatFailures.clear();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // The tick runs every 5 s; a database that stays paused (its folder
+      // The tick runs every 15 s; a database that stays paused (its folder
       // moved) would log the same line forever. Log each new failure once.
       if (heartbeatFailures.repeated(message)) return;
       logger.warn("process_registry.heartbeat_failed", { pid, role, error: message });
@@ -224,6 +240,45 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
       return Array.from(known.values());
     },
 
+    /**
+     * Known identities whose process is gone on this computer (`kill(pid, 0)`
+     * fails), never this process. Proof, not a guess from a stale heartbeat:
+     * a reused pid reads as running and stays out (the safe side). The
+     * startup rescan closes their rows at once instead of waiting out the
+     * fresh-activity grace, so a chat a crash cut off continues within
+     * seconds (`reconcileStaleRunningSessions`).
+     *
+     * A run with this process's own pid that started before this OS process
+     * did is dead too: this process holds the pid now. A restarted container
+     * (an ADE Cloud computer) gives the brain the same pid every boot, so
+     * without this its chats waited the whole grace after each restart. A
+     * registry this process opened earlier (a project reopened) started after
+     * it and stays out. The table is local, never synced.
+     *
+     * `candidates` replaces the registry's own list with identities the
+     * caller already proved are from this computer, such as the owners of
+     * rows a clean stop left `running` before it removed its registry row
+     * (`closeStrandedLocalSessions`). The same rule applies to them.
+     */
+    listDeadProcessIdentities(candidates?: readonly RuntimeProcessIdentity[]): RuntimeProcessIdentity[] {
+      return (candidates ?? this.listKnownProcessIdentities()).filter((identity) => (
+        identity.pid === pid
+          ? identity.startedAt !== ownStartedAt && Date.parse(identity.startedAt) < PROCESS_STARTED_MS - PROCESS_START_SLACK_MS
+          : !pidLivenessCheck(identity.pid)
+      ));
+    },
+
+    /** The owner scope both hosts pass to `reconcileStaleRunningSessions`. */
+    staleSessionOwnerScope() {
+      return {
+        liveOwnerPids: this.listLivePids(),
+        liveOwnerIdentities: this.listLiveProcessIdentities(),
+        knownOwnerPids: this.listKnownPids(),
+        knownOwnerIdentities: this.listKnownProcessIdentities(),
+        deadOwnerIdentities: this.listDeadProcessIdentities(),
+      };
+    },
+
     /** Quick "is this peer still heartbeating" check. */
     isPidLive(candidatePid: number | null | undefined): boolean {
       if (candidatePid == null || !Number.isFinite(candidatePid)) return false;
@@ -273,19 +328,25 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
 
     /** Sweeps rows whose last_seen is older than 10x the liveness window. */
     pruneStale(): number {
-      const cutoffIso = new Date(Date.now() - livenessWindowMs * 10).toISOString();
+      const nowMs = Date.now();
+      const cutoffIso = new Date(nowMs - livenessWindowMs * 10).toISOString();
+      // A dead owner whose rows a recent start marked `detached` stays known
+      // as this computer's: the CLI reopen after a crash only takes rows whose
+      // owner the registry knows, and a start that failed before its reopen
+      // must not lose them (`cliReopenAfterRestart.ts`). Same 6 h as that reopen.
+      const detachedKeepIso = new Date(nowMs - DETACHED_OWNER_KEEP_MS).toISOString();
       const ownGuardSql = ownStartedAt
         ? "not (pid = ? and started_at = ?) and last_seen < ?"
         : "pid != ? and last_seen < ?";
       const ownGuardParams = ownStartedAt
-        ? [pid, ownStartedAt, cutoffIso]
-        : [pid, cutoffIso];
+        ? [pid, ownStartedAt, cutoffIso, detachedKeepIso]
+        : [pid, cutoffIso, detachedKeepIso];
       const staleUnownedSql = `
         ${ownGuardSql}
         and not exists (
           select 1
             from terminal_sessions s
-           where s.status = 'running'
+           where (s.status = 'running' or (s.status = 'detached' and s.ended_at >= ?))
              and s.owner_pid = runtime_processes.pid
              and s.owner_process_started_at = runtime_processes.started_at
         )

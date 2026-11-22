@@ -19,6 +19,10 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueInSheet } from "../../lib/issueNavigation";
 import { Banner } from "../ui/notice";
+import { useAppStore } from "../../state/appStore";
+import { useTabCopyPin } from "../../state/repositoryScope";
+
+const NO_COMPUTER_ONLINE = "No computer with this project is online.";
 
 export type InboundBranchDeeplink = {
   repoOwner: string;
@@ -38,7 +42,7 @@ export type InboundDeeplinkTarget =
   | {
       kind: "switch-project";
       entity: "chat" | "lane" | "commit";
-      project: { rootPath: string; displayName: string };
+      project: { rootPath: string; displayName: string; remote?: { targetId: string; projectId: string; machineName: string } };
       original: AppNavigationTarget;
     };
 
@@ -132,6 +136,9 @@ export function InboundDeeplinkModal({
   const branchTarget = currentTarget.kind === "branch" ? currentTarget : null;
   const isBranchOnly = branchTarget ? !branchTarget.prNumber : false;
   const laneImportAvailable = typeof window.ade?.lanes?.importBranch === "function";
+  // The lane goes on the tab's copy: `lanes` and `onLaneOpened` are that machine's.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinKey = tabCopyPin?.key ?? null;
 
   React.useEffect(() => {
     setCurrentTarget(normalizeInboundTarget(target));
@@ -163,6 +170,12 @@ export function InboundDeeplinkModal({
       setLoading(false);
       return;
     }
+    if (!tabCopyPin) {
+      setPreflight(null);
+      setError(NO_COMPUTER_ONLINE);
+      setLoading(false);
+      return;
+    }
     if (isBranchOnly) {
       setPreflight(null);
       setError(laneImportAvailable ? null : "This ADE surface cannot create lanes from branch deeplinks.");
@@ -183,7 +196,7 @@ export function InboundDeeplinkModal({
         repoOwner: branchTarget.repoOwner,
         repoName: branchTarget.repoName,
         githubPrNumber: branchTarget.prNumber ?? undefined,
-      })
+      }, tabCopyPin)
       .then((result) => {
         if (!cancelled) setPreflight(result);
       })
@@ -196,7 +209,8 @@ export function InboundDeeplinkModal({
     return () => {
       cancelled = true;
     };
-  }, [branchTarget, existingLane, isBranchOnly, laneImportAvailable, projectOpen]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchTarget, existingLane, isBranchOnly, laneImportAvailable, projectOpen, tabCopyPinKey]);
 
   if (existingLane) return null;
 
@@ -238,19 +252,26 @@ export function InboundDeeplinkModal({
       const repoLabel = envelope?.repoOwner && envelope.repoName ? `${envelope.repoOwner}/${envelope.repoName}` : null;
       const rows: Array<readonly [string, string]> = [
         ["Project", currentTarget.project.displayName],
+        ...(currentTarget.project.remote ? [["Machine", currentTarget.project.remote.machineName] as const] : []),
         ...(repoLabel ? [["Repo", repoLabel] as const] : []),
         ["Opens", originalTargetLabel(currentTarget.original, currentTarget.entity)],
       ];
+      const remoteCopy = currentTarget.project.remote ?? null;
       const onSwitchProject = async () => {
         const switchToPath = window.ade?.project?.switchToPath;
-        if (!switchToPath || !onDispatchTarget) {
+        if ((!remoteCopy && !switchToPath) || !onDispatchTarget) {
           setError("Project switching is not available in this build.");
           return;
         }
         setBusy(true);
         setError(null);
         try {
-          await switchToPath(currentTarget.project.rootPath);
+          if (remoteCopy) {
+            // The only copy is on another machine: the project opens there.
+            await useAppStore.getState().switchRemoteProject(remoteCopy.targetId, remoteCopy.projectId);
+          } else {
+            await switchToPath!(currentTarget.project.rootPath);
+          }
         } catch (err) {
           setError(formatActionError(err));
           setBusy(false);
@@ -270,7 +291,9 @@ export function InboundDeeplinkModal({
       };
 
       return renderFrame(
-        "This link belongs to another ADE project on this machine.",
+        remoteCopy
+          ? `This link belongs to an ADE project on ${remoteCopy.machineName}.`
+          : "This link belongs to another ADE project on this machine.",
         <div style={{ display: "grid", gap: 10 }}>
           {rows.map(([label, value]) => (
             <div key={label} style={{ display: "grid", gridTemplateColumns: "120px minmax(0, 1fr)", gap: 12, alignItems: "baseline" }}>
@@ -409,6 +432,10 @@ export function InboundDeeplinkModal({
   }
 
   const onConfirm = async () => {
+    if (!tabCopyPin) {
+      setError(NO_COMPUTER_ONLINE);
+      return;
+    }
     setBusy(true);
     setError(null);
     if (isBranchOnly) {
@@ -420,7 +447,7 @@ export function InboundDeeplinkModal({
       }
       try {
         const branch = branchTarget.branch.trim();
-        const lane = await lanesApi.importBranch({ branchRef: branch, name: displayBranchName(branch) });
+        const lane = await lanesApi.importBranch({ branchRef: branch, name: displayBranchName(branch) }, tabCopyPin);
         if (lane.id) onLaneOpened(lane.id);
         onClose();
       } catch (err) {
@@ -442,7 +469,7 @@ export function InboundDeeplinkModal({
         repoOwner: branchTarget.repoOwner,
         repoName: branchTarget.repoName,
         githubPrNumber: branchTarget.prNumber,
-      });
+      }, tabCopyPin);
       if (result.lane?.id) onLaneOpened(result.lane.id);
       onClose();
     } catch (err) {

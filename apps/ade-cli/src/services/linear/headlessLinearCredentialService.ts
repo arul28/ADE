@@ -70,12 +70,19 @@ export function createHeadlessLinearCredentialService(args: {
   const secretsDir = path.join(args.adeDir, "secrets");
   const credentialStore = new EncryptedFileCredentialStore({
     secretsDir,
+    projectRoot: path.dirname(args.adeDir),
   });
   const tokenKey = "linear.token.v1";
   const authModeKey = "linear.authMode.v1";
   const tokenExpiresAtKey = "linear.tokenExpiresAt.v1";
   const refreshTokenKey = "linear.refreshToken.v1";
   const oauthClientKey = "linear.oauthClient.v1";
+  /**
+   * The OAuth client a grant is proven to belong to: set only after a code
+   * exchange or a refresh with that client went through, never from config
+   * alone. The server renews a grant only when it names ADE's own client.
+   */
+  const tokenClientIdKey = "linear.tokenClientId.v1";
   let tokenOverride: string | null = null;
   let tokenDecryptionFailed = false;
   /** Until when another machine is known to own the refresh grant (see LINEAR_REFRESH_OWNER_RECHECK_MS). */
@@ -128,6 +135,7 @@ export function createHeadlessLinearCredentialService(args: {
       authMode,
       refreshToken: authMode === "oauth" ? readCredential(refreshTokenKey) : null,
       expiresAt: authMode === "oauth" ? readCredential(tokenExpiresAtKey) : null,
+      clientId: authMode === "oauth" ? readCredential(tokenClientIdKey) : null,
     };
   };
 
@@ -137,6 +145,7 @@ export function createHeadlessLinearCredentialService(args: {
     writeCredential(authModeKey, record?.authMode ?? null);
     writeCredential(refreshTokenKey, record?.authMode === "oauth" ? record.refreshToken : null);
     writeCredential(tokenExpiresAtKey, record?.authMode === "oauth" ? record.expiresAt : null);
+    writeCredential(tokenClientIdKey, record?.authMode === "oauth" ? record.clientId?.trim() || null : null);
   };
 
   const accountSync = createLinearAccountSync({
@@ -257,10 +266,18 @@ export function createHeadlessLinearCredentialService(args: {
           const nextRefreshToken = result.refreshToken ?? tokenToRefresh;
           writeCredential(refreshTokenKey, nextRefreshToken);
           writeCredential(tokenExpiresAtKey, result.expiresAt);
+          // The refresh with this client went through: the grant is proven to be the client's.
+          writeCredential(tokenClientIdKey, client.clientId);
           // The owner publishes each turn before the lock opens, so a sibling
           // process here (or another machine) reads it instead of exchanging.
           if (plan.publish) {
-            await accountSync.publishNow({ token: result.accessToken, authMode: "oauth", refreshToken: nextRefreshToken, expiresAt: result.expiresAt });
+            await accountSync.publishNow({
+              token: result.accessToken,
+              authMode: "oauth",
+              refreshToken: nextRefreshToken,
+              expiresAt: result.expiresAt,
+              clientId: client.clientId,
+            });
           }
           return;
         }
@@ -282,6 +299,7 @@ export function createHeadlessLinearCredentialService(args: {
           writeCredential(tokenKey, null);
           writeCredential(authModeKey, null);
           writeCredential(refreshTokenKey, null);
+          writeCredential(tokenClientIdKey, null);
           writeCredential(tokenExpiresAtKey, null);
           deleteCredentialProvenance(tokenKey);
           deleteCredentialProvenance(refreshTokenKey);
@@ -366,6 +384,7 @@ export function createHeadlessLinearCredentialService(args: {
       writeCredential(tokenKey, tokenOverride);
       writeCredential(authModeKey, "manual");
       writeCredential(refreshTokenKey, null);
+      writeCredential(tokenClientIdKey, null);
       writeCredential(tokenExpiresAtKey, null);
       setCredentialProvenance(tokenKey, deviceCredentialProvenance());
       deleteCredentialProvenance(refreshTokenKey);
@@ -375,6 +394,8 @@ export function createHeadlessLinearCredentialService(args: {
       accessToken: string;
       refreshToken?: string | null;
       expiresAt?: string | null;
+      /** The client the code exchange went through with (proven). */
+      clientId?: string | null;
     }) {
       refreshOwnedElsewhereUntilMs = 0;
       tokenOverride = args.accessToken.trim();
@@ -382,6 +403,7 @@ export function createHeadlessLinearCredentialService(args: {
       writeCredential(authModeKey, "oauth");
       writeCredential(refreshTokenKey, args.refreshToken);
       writeCredential(tokenExpiresAtKey, args.expiresAt);
+      writeCredential(tokenClientIdKey, args.clientId?.trim() || null);
       setCredentialProvenance(tokenKey, deviceCredentialProvenance());
       if (args.refreshToken?.trim()) {
         setCredentialProvenance(refreshTokenKey, deviceCredentialProvenance());
@@ -394,6 +416,7 @@ export function createHeadlessLinearCredentialService(args: {
         authMode: "oauth",
         refreshToken: args.refreshToken?.trim() || null,
         expiresAt: args.expiresAt?.trim() || null,
+        clientId: args.clientId?.trim() || null,
       } : null);
     },
     clearToken() {
@@ -402,6 +425,7 @@ export function createHeadlessLinearCredentialService(args: {
       writeCredential(tokenKey, null);
       writeCredential(authModeKey, null);
       writeCredential(refreshTokenKey, null);
+      writeCredential(tokenClientIdKey, null);
       writeCredential(tokenExpiresAtKey, null);
       deleteCredentialProvenance(tokenKey);
       deleteCredentialProvenance(refreshTokenKey);
@@ -439,6 +463,7 @@ export function createHeadlessLinearCredentialService(args: {
       }
       if (refreshSource.source === "account") {
         writeCredential(refreshTokenKey, null);
+        writeCredential(tokenClientIdKey, null);
         deleteCredentialProvenance(refreshTokenKey);
       }
     },

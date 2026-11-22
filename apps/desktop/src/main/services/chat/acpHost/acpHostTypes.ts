@@ -29,6 +29,7 @@ import type {
   AcpPromptUsage,
   AcpSessionConfigOption,
   AcpSessionId,
+  AcpSessionUpdate,
   AcpUsageUpdate,
 } from "./acpProtocolTypes";
 import type { AcpProviderId } from "../../../../shared/acpProviderMetadata";
@@ -361,7 +362,78 @@ export type AcpLocalUsageBehavior = (args: {
  * Read who pays for this provider's turns from local, non-secret config. Never
  * a network call and never a token value; unknown fields stay out.
  */
-export type AcpAccountReader = (args: { env: NodeJS.ProcessEnv }) => AgentChatUsageAccount;
+export type AcpAccountReader = (args: {
+  env: NodeJS.ProcessEnv;
+  /** The `_meta` of the agent's `session/new` (or resume/load) answer, when it sent one. */
+  sessionMeta?: Readonly<Record<string, unknown>> | null;
+}) => AgentChatUsageAccount;
+
+/**
+ * A turn the agent answered as finished that actually failed upstream.
+ * `usage_limit` is a quota or rate limit (`resetAt` when the agent named
+ * one); `provider_error` is any other API error. `message` is the agent's own
+ * words for an API error, never a token or a prompt.
+ */
+export type AcpTurnFailure = {
+  kind: "usage_limit" | "provider_error";
+  message: string;
+  code: string | null;
+  retryable: boolean;
+  /** ISO instant the limit lifts, when the agent said. */
+  resetAt: string | null;
+};
+
+/** What background work reports. `agent_reply` is a reply written outside any turn. */
+export type AcpBackgroundEvent =
+  | {
+    kind: "subagent_started";
+    taskId: string;
+    label: string;
+    description: string;
+    agentType: string | null;
+    parentToolUseId: string | null;
+  }
+  | { kind: "subagent_progress"; taskId: string; summary: string; lastToolName: string | null }
+  | { kind: "subagent_result"; taskId: string; status: "completed" | "stopped"; summary: string }
+  /** What the agent did outside any turn, oldest first. */
+  | { kind: "agent_activity"; items: AcpBackgroundItem[] };
+
+export type AcpBackgroundItem =
+  | { kind: "thinking"; text: string }
+  | { kind: "text"; text: string }
+  | {
+    kind: "tool";
+    toolCallId: string;
+    name: string;
+    input: unknown;
+    status: "completed" | "failed" | "interrupted";
+    output: string;
+  }
+  /** A tool call held for the user's approval, which the agent asks for at the next prompt. */
+  | { kind: "waiting"; toolCallId: string; name: string; title: string };
+
+export type AcpBackgroundWork = {
+  /** A prompt is about to start: report what was written while idle. */
+  turnStarting(): void;
+  /** The prompt answered: report the turn's launches, then watch them. */
+  turnEnded(): void;
+  /** True while something it watches is still running, or a held tool still waits. */
+  hasOpenWork(): boolean;
+  /** Work still running in the background: open subagents and tools (a held tool is not running). */
+  runningCount(): number;
+  /** The runtime is going away. Open work is reported stopped. */
+  dispose(): void;
+};
+
+/** One question an agent's question tool asks; its answer is the next message. */
+export type AcpAsyncQuestion = {
+  question: string;
+  options: Array<{ label: string; recommended?: boolean }>;
+  multiSelect: boolean;
+};
+
+/** Reads one turn's real outcome after `session/prompt` answers. Never throws. */
+export type AcpTurnOutcomeCheck = (response: AcpPromptResponse | null) => Promise<AcpTurnFailure | null>;
 
 /**
  * Read one usage payload. The host calls it with a `usage_update` as each one
@@ -492,8 +564,59 @@ export type AcpDialectBase = {
   /** Map ADE's requested mode to the posture the supervision guard should enforce. */
   readonly supervisionPermissionMode?: (mode: string | null | undefined) => string | null | undefined;
 
-  /** Whether failure to apply the native mode must abort runtime setup. */
-  readonly modeSetupRequired?: boolean;
+  /**
+   * Whether failure to apply the native mode must abort runtime setup: always,
+   * or only for the native modes this names (a mode whose fallback would be
+   * broader than the one picked).
+   */
+  readonly modeSetupRequired?: boolean | ((nativeModeValue: string) => boolean);
+
+  /**
+   * True when the agent has no full-access mode of its own: ADE's Full access
+   * opens it in an asking mode and ADE answers every permission request.
+   */
+  readonly hostAnswersFullAccess?: boolean;
+
+  /**
+   * The `_meta` that adds text to the agent's system prompt, for an agent
+   * with that channel. ADE's lane guidance then rides `session/new`,
+   * `session/resume` and `session/load` (sent again on each, since the agent
+   * does not keep it) instead of the first user turn.
+   */
+  readonly systemPromptMeta?: (append: string) => Record<string, unknown>;
+
+  /**
+   * For an agent that reports an upstream failure (a quota, an API error) as
+   * a normal `end_turn`: taken before each prompt, it returns the check that
+   * reads the turn's real outcome once the prompt answers. `null` when the
+   * agent's evidence cannot be read; the turn is then judged as usual.
+   */
+  readonly turnOutcome?: (args: { sessionId: string }) => Promise<AcpTurnOutcomeCheck | null>;
+
+  /**
+   * Correct an agent's known protocol quirks in one `session/update` before
+   * ADE reads it. Pure, and returns the update unchanged when nothing applies.
+   */
+  readonly normalizeSessionUpdate?: (update: AcpSessionUpdate) => AcpSessionUpdate;
+
+  /**
+   * The agent's question tool, when its answer is simply the next user
+   * message: returns the questions a tool call asks, or null for any other
+   * tool. ADE shows them as a question card whose answer it sends.
+   */
+  readonly asyncQuestions?: (toolName: string, args: unknown) => AcpAsyncQuestion[] | null;
+
+  /**
+   * Work the agent goes on doing after a turn ends (background subagents)
+   * that ADE learns of outside ACP. Created once per runtime.
+   */
+  readonly backgroundWork?: (args: {
+    sessionId: string;
+    emit: (events: AcpBackgroundEvent[]) => void;
+  }) => AcpBackgroundWork;
+
+  /** The agent's read tool opens binary files (PDF, video) from a path. */
+  readonly readsBinaryAttachments?: boolean;
 
   readonly cancelStyle: AcpCancelStyle;
 

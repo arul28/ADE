@@ -1,23 +1,13 @@
 import type {
   AgentChatSessionSummary,
-  CtoSnapshot,
   OpenProjectBinding,
   OperationRecord,
 } from "../../../shared/types";
-
-/**
- * Where the CTO's sessions are read from. The CTO lives on one home machine per
- * project; `pin: null` is the tab's machine. `skip` when the home is known but
- * unreachable: reading the tab's machine instead would show another machine's
- * (stale) CTO as if it were the real one.
- */
-export type HistoryCtoRoute = { skip: boolean; pin: OpenProjectBinding | null };
 
 type OperationStatus = OperationRecord["status"];
 
 export type HistoryActivitySourceData = {
   chats?: AgentChatSessionSummary[];
-  ctoSnapshot?: CtoSnapshot | null;
 };
 
 function cleanString(value: unknown): string | null {
@@ -86,40 +76,6 @@ function chatRecord(chat: AgentChatSessionSummary): OperationRecord | null {
   };
 }
 
-function ctoSessionRecords(snapshot: CtoSnapshot): OperationRecord[] {
-  return snapshot.recentSessions
-    .map((entry): OperationRecord | null => {
-      const timestamp =
-        validIso(entry.endedAt) ??
-        validIso(entry.createdAt) ??
-        validIso(entry.startedAt);
-      if (!timestamp) return null;
-      const status: OperationStatus = entry.endedAt ? "succeeded" : "running";
-      return {
-        id: `cto-session:${entry.id}`,
-        laneId: null,
-        laneName: null,
-        kind: "cto.session",
-        startedAt: timestamp,
-        endedAt: terminalEndedAt(status, timestamp),
-        status,
-        preHeadSha: null,
-        postHeadSha: null,
-        metadataJson: metadataJson({
-          source: "cto",
-          eventLabel: `CTO: ${entry.summary}`,
-          sessionId: entry.sessionId,
-          summary: entry.summary,
-          provider: entry.provider,
-          model: entry.modelId,
-          actor: "cto",
-          capabilityMode: entry.capabilityMode,
-        }),
-      };
-    })
-    .filter((record): record is OperationRecord => record != null);
-}
-
 export function buildSupplementalTimelineRecords(
   data: HistoryActivitySourceData,
 ): OperationRecord[] {
@@ -128,10 +84,6 @@ export function buildSupplementalTimelineRecords(
   for (const chat of data.chats ?? []) {
     const record = chatRecord(chat);
     if (record) records.push(record);
-  }
-
-  if (data.ctoSnapshot) {
-    records.push(...ctoSessionRecords(data.ctoSnapshot));
   }
 
   return records;
@@ -145,31 +97,14 @@ async function settle<T>(promise: Promise<T>): Promise<T | null> {
   }
 }
 
+/** Chats for the timeline, read from the tab machine (`pin`). */
 export async function fetchSupplementalTimelineRecords(
-  limit: number,
-  cto: HistoryCtoRoute = { skip: false, pin: null },
+  pin: OpenProjectBinding,
 ): Promise<OperationRecord[]> {
-  const roundedLimit = Math.floor(limit);
-  const safeLimit = Number.isFinite(roundedLimit)
-    ? Math.max(1, Math.min(500, roundedLimit))
-    : 500;
-  const [chats, ctoSnapshot] = await Promise.all([
-    typeof window.ade?.agentChat?.list === "function"
-      ? settle(window.ade.agentChat.list({ includeAutomation: true }))
-      : Promise.resolve(null),
-    typeof window.ade?.cto?.getState === "function" && !cto.skip
-      ? settle(
-          cto.pin
-            ? window.ade.cto.getState({ recentLimit: Math.min(100, safeLimit) }, cto.pin)
-            : window.ade.cto.getState({ recentLimit: Math.min(100, safeLimit) }),
-        )
-      : Promise.resolve(null),
-  ]);
-
-  return buildSupplementalTimelineRecords({
-    chats: chats ?? [],
-    ctoSnapshot,
-  });
+  const chats = typeof window.ade?.agentChat?.list === "function"
+    ? await settle(window.ade.agentChat.list({ includeAutomation: true }, pin))
+    : null;
+  return buildSupplementalTimelineRecords({ chats: chats ?? [] });
 }
 
 export function sortTimelineRecords(records: OperationRecord[]): OperationRecord[] {

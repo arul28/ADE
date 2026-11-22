@@ -94,6 +94,7 @@ describe("createAgentChatService", () => {
     });
 
     it("restarts app-server, resumes the Codex thread, and retries stalled work", async () => {
+      mockState.codexInitializeResult = { userAgent: "codex_app_server/0.162.1" };
       const { service } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.6-sol" });
       await service.sendMessage({ sessionId: session.id, text: "Keep working." }, { awaitDispatch: true });
@@ -109,11 +110,15 @@ describe("createAgentChatService", () => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume"
         && (payload.params as any)?.threadId === "thread-1")).toBe(true);
       expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(2);
+      // The queued follow-ups wait for the resumed turn; Restart does not start them.
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/queue/start")).toBe(false);
     });
 
-    it("aggregates optional Codex MCP startup failures and auto-recovers a silent first attempt once", async () => {
+    it("posts the restart card for a silent first attempt and never restarts, resends or starts the queue on its own", async () => {
       vi.useFakeTimers();
       try {
+        // A server new enough to own a queue, so starting it is possible.
+        mockState.codexInitializeResult = { userAgent: "codex_app_server/0.162.1" };
         const events: AgentChatEventEnvelope[] = [];
         const { service } = createService({
           onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -129,23 +134,18 @@ describe("createAgentChatService", () => {
           text: "Keep working.",
         }, { awaitDispatch: true });
 
-        mockState.emitCodexPayload({
-          method: "mcpServer/startupStatus/updated",
-          params: {
-            serverName: "local-tools",
-            status: "failed",
-            message: "http/request failed: error sending request",
-          },
-        });
-        mockState.emitCodexPayload({
-          method: "mcpServer/startupStatus/updated",
-          params: {
-            serverName: "local-tools",
-            status: "failed",
-            message: "http/request failed: error sending request",
-          },
-        });
-
+        // Optional MCP startup trouble is a diagnostic, not output: it must
+        // neither raise a notice nor hold the watchdog off.
+        for (let index = 0; index < 2; index += 1) {
+          mockState.emitCodexPayload({
+            method: "mcpServer/startupStatus/updated",
+            params: {
+              serverName: "local-tools",
+              status: "failed",
+              message: "http/request failed: error sending request",
+            },
+          });
+        }
         await Promise.resolve();
         expect(events.some((event) =>
           event.event.type === "system_notice"
@@ -157,105 +157,28 @@ describe("createAgentChatService", () => {
             failure.integration === "local-tools"
           )
         )).toHaveLength(1);
+        const requestsBeforeWatchdog = mockState.codexRequestPayloads.length;
 
         await vi.advanceTimersByTimeAsync(120_000);
         await waitForFakeTimers(() => {
-          expect(events.some((event) =>
-            event.event.type === "codex_turn_recovery"
-            && event.event.state === "recovered"
-            && event.event.automatic
-          )).toBe(true);
+          expect(events.some((event) => event.event.type === "turn_health"
+            && event.event.turnId === "turn-1")).toBe(true);
         });
-        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(true);
-        expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("persists the Codex automatic-recovery guard across restart while keeping a new turn eligible", async () => {
-      vi.useFakeTimers();
-      try {
-        const first = createService();
-        const session = await first.service.createSession({
-          laneId: "lane-1",
-          provider: "codex",
-          model: "gpt-5.5",
+        const card = events.find((event) => event.event.type === "turn_health")?.event;
+        expect(card).toMatchObject({
+          state: "stalled",
+          supportedActions: ["wait", "restart_resume"],
+          automaticRecoveryAttempted: false,
         });
-        await first.service.sendMessage({
-          sessionId: session.id,
-          text: "Keep this turn running.",
-        }, { awaitDispatch: true });
-        await first.service.recoverCodexTurn({
-          sessionId: session.id,
-          turnId: "turn-1",
-          action: "wait",
-        });
+        expect(card?.type === "turn_health" ? card.message : "").toContain("2 minutes");
 
-        expect(readPersistedChatState(session.id).codexAutomaticRecoveryAttempted)
-          .toBe(true);
-        first.service.forceDisposeAll();
-
-        const restartedEvents: AgentChatEventEnvelope[] = [];
-        const restarted = createService({
-          onEvent: (event: AgentChatEventEnvelope) => restartedEvents.push(event),
-        });
-        await restarted.service.resumeSession({ sessionId: session.id });
-        mockState.emitCodexPayload({
-          method: "turn/started",
-          params: {
-            threadId: "thread-1",
-            turn: { id: "turn-1", status: "inProgress" },
-          },
-        });
-        await Promise.resolve();
-        const resumeRequestsBeforeWatchdog = mockState.codexRequestPayloads
-          .filter((payload) => payload.method === "thread/resume").length;
-
-        await vi.advanceTimersByTimeAsync(120_000);
-        await waitForFakeTimerCondition(
-          () => restartedEvents.some((event) =>
-            event.event.type === "codex_turn_stalled"
-            && event.event.turnId === "turn-1"
-            && event.event.automaticRecoveryAttempted === true),
-          "the resumed turn to remain stalled without another automatic recovery",
-        );
-
-        expect(restartedEvents.some((event) =>
-          event.event.type === "codex_turn_recovery"
-          && event.event.turnId === "turn-1"
-          && event.event.automatic)).toBe(false);
-        expect(mockState.codexRequestPayloads
-          .filter((payload) => payload.method === "thread/resume")).toHaveLength(
-            resumeRequestsBeforeWatchdog,
-          );
-
-        mockState.emitCodexPayload({
-          method: "turn/completed",
-          params: {
-            threadId: "thread-1",
-            turn: { id: "turn-1", status: "completed", items: [] },
-          },
-        });
-        await Promise.resolve();
-        await restarted.service.sendMessage({
-          sessionId: session.id,
-          text: "Start a genuinely new turn.",
-        }, { awaitDispatch: true });
-        expect(readPersistedChatState(session.id).codexAutomaticRecoveryAttempted)
-          .not.toBe(true);
-
-        await vi.advanceTimersByTimeAsync(120_000);
-        await waitForFakeTimerCondition(
-          () => restartedEvents.some((event) =>
-            event.event.type === "codex_turn_recovery"
-            && event.event.turnId === "turn-2"
-            && event.event.state === "recovered"
-            && event.event.automatic),
-          "the new turn to complete its first automatic recovery",
-        );
-        expect(readPersistedChatState(session.id).codexAutomaticRecoveryAttempted)
-          .toBe(true);
+        // Only the read-only state probe ran: no interrupt, restart, resend or queue start.
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+        const after = mockState.codexRequestPayloads.slice(requestsBeforeWatchdog).map((payload) => payload.method);
+        expect(after.filter((method) => method !== "thread/read" && method !== "thread/turns/list")).toEqual([]);
+        expect(events.some((event) => event.event.type === "user_message"
+          && event.event.metadata?.hostContinuation)).toBe(false);
+        expect(events.some((event) => event.event.type === "turn_recovery" || event.event.type === "codex_turn_recovery")).toBe(false);
       } finally {
         vi.useRealTimers();
       }

@@ -4,7 +4,13 @@ import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse, writeTextAtomic } from "../shared/utils";
-import { doNotTrackRequested } from "../../../shared/doNotTrack";
+import { doNotTrackRequested, isTruthyEnvFlag } from "../../../shared/doNotTrack";
+import {
+  isAutomatedTelemetryEnvironment,
+  isDevelopmentTelemetryRuntime,
+  telemetryEnvironment,
+} from "../../../shared/telemetryEnvironment";
+import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import type { ReleaseChannel } from "../../../shared/packageChannel";
 import { normalizeAdeUsageClientSurface } from "../../../shared/types/usage";
 import {
@@ -53,6 +59,8 @@ const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
 const IDENTIFY_DAILY_BUDGET = 3;
 const IDENTIFY_MINUTE_BUDGET = 2;
 const STATE_LOCK_STALE_MS = 5_000;
+/** Fallback stat poll of the opt-out marker; the directory watch is the fast path. */
+const OPT_OUT_MARKER_FALLBACK_POLL_MS = 5_000;
 const RANDOM_UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /**
  * A once-only milestone counts as sent only after delivery is confirmed. One
@@ -543,8 +551,9 @@ function rollQuotaDay(state: ProductAnalyticsState, nowMs: number): ProductAnaly
   };
 }
 
-function makePostHogClient(token: string, host: string): ProductAnalyticsClient {
+function makePostHogClient(token: string, host: string, options: { stillEnabled?: () => boolean } = {}): ProductAnalyticsClient {
   type Message = Parameters<ProductAnalyticsClient["capture"]>[0];
+  const stillEnabled = options.stillEnabled ?? (() => true);
   const captureUrl = `${host}/i/v0/e/`;
   const queue: Message[] = [];
   const activeControllers = new Set<AbortController>();
@@ -592,6 +601,13 @@ function makePostHogClient(token: string, host: string): ProductAnalyticsClient 
   };
 
   const drain = async (): Promise<void> => {
+    // The marker is re-read here, not only where the client was created: this
+    // runs from the flush timer and the retry loop, so a withdrawal made while
+    // events waited must drop them rather than send them.
+    if (!stillEnabled()) {
+      queue.splice(0, queue.length);
+      return;
+    }
     const batch = queue.splice(0, 50);
     const results = await Promise.allSettled(batch.map(send));
     const failed = results.find((result) => result.status === "rejected");
@@ -701,15 +717,30 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   let pendingIngressDrops = 0;
   const optOutMarkerPath = `${args.stateFilePath}.disabled`;
   // Team installs mark themselves with ADE_ANALYTICS_INTERNAL=1 or an empty
-  // `<state file>.internal` marker, so dashboards can leave them out.
-  let internalInstall: boolean | null = null;
-  const isInternalInstall = (): boolean => {
-    if (internalInstall == null) {
-      internalInstall = process.env.ADE_ANALYTICS_INTERNAL === "1"
+  // `<state file>.internal` marker. That is the only thing `$identify` may
+  // raise on the person: a development sign-in must not, because the flag is
+  // never lowered and the person filter would then hide their real usage.
+  let teamInstall: boolean | null = null;
+  const isTeamInstall = (): boolean => {
+    if (teamInstall == null) {
+      teamInstall = process.env.ADE_ANALYTICS_INTERNAL === "1"
         || fs.existsSync(`${args.stateFilePath}.internal`);
     }
-    return internalInstall;
+    return teamInstall;
   };
+  const isInternalEvent = (): boolean =>
+    isTeamInstall()
+    || isAutomatedTelemetryEnvironment()
+    || isDevelopmentTelemetryRuntime({
+      runtimeMode: args.runtimeMode,
+      releaseChannel,
+    });
+  const telemetryProperties = (): Record<string, unknown> => ({
+    is_internal: isInternalEvent(),
+    release_channel: releaseChannel,
+    environment: telemetryEnvironment({ releaseChannel, runtimeMode: args.runtimeMode }),
+    ...(isAdeCloudComputer() ? { ade_cloud: true } : {}),
+  });
   let volatileOptOut = false;
   let optOutCanRecoverFromPersistedOptIn = false;
   let optOutWatcherStarted = false;
@@ -769,8 +800,11 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       optOutDirectoryWatcher = null;
     }
     // Polling remains as a portable fallback for filesystems that coalesce or
-    // do not support native directory notifications.
-    fs.watchFile(optOutMarkerPath, { interval: 100, persistent: false }, onOptOutMarkerChanged);
+    // do not support native directory notifications. It is slow on purpose:
+    // every capture checks the marker itself (`effective`), so the poll only
+    // stops an idle client sooner, and a 100 ms poll woke the brain 10 times a
+    // second all day.
+    fs.watchFile(optOutMarkerPath, { interval: OPT_OUT_MARKER_FALLBACK_POLL_MS, persistent: false }, onOptOutMarkerChanged);
   };
 
   const stopOptOutWatcher = (): void => {
@@ -786,10 +820,13 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   const isRuntimeDisabled = () =>
     process.env.ADE_DISABLE_PRODUCT_ANALYTICS === "1"
     || doNotTrackRequested()
+    || isAutomatedTelemetryEnvironment()
     || (
       (
         process.env.NODE_ENV === "development"
         || args.runtimeMode === "desktop_development"
+        || isTruthyEnvFlag(process.env.ADE_DEV_BRAIN)
+        || releaseChannel === "development"
       )
       && process.env.ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT !== "1"
     )
@@ -805,7 +842,11 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   const ensureClient = (currentState: ProductAnalyticsState): ProductAnalyticsClient | null => {
     if (!effective(currentState) || !host) return null;
     if (!client) {
-      client = (args.makeClient ?? makePostHogClient)(token, host);
+      client = (args.makeClient ?? makePostHogClient)(token, host, {
+        // Checked again by each drain: the opt-out marker can change while
+        // events wait in the client's queue.
+        stillEnabled: () => !isLocallyOptedOut() && !isRuntimeDisabled(),
+      });
       startOptOutWatcher();
       if (isLocallyOptedOut()) {
         cancelClientForOptOut();
@@ -841,8 +882,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         properties: {
           surface: "api",
           ...productAnalyticsEventContext("ade_analytics_budget", "api", null),
-          is_internal: isInternalInstall(),
-          release_channel: releaseChannel,
+          ...telemetryProperties(),
           ...machineProperty(),
           sent_count: summary.sentCount,
           dropped_count: summary.droppedCount,
@@ -946,6 +986,9 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
           event: "$identify",
           properties: {
             $anon_distinct_id: anonymousId,
+            // On the event, not on the person. A development sign-in is
+            // internal here and still does not raise the person flag.
+            ...telemetryProperties(),
             $set: {
               plan: "free",
               platform: process.platform,
@@ -954,11 +997,12 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
               // distinct id stays the hash every ADE client and the sign-up
               // webhook use, which keeps one person one person.
               clerk_user_id: normalizedUserId,
-              // Only ever raised, never lowered: the account directory marks
-              // ADE's own accounts internal from Clerk, and a sign-in on an
-              // unmarked machine must not undo that (recording and every
-              // person-filtered insight key off it).
-              ...(isInternalInstall() ? { is_internal: true } : {}),
+              // Only ever raised, never lowered, and only for an explicit team
+              // install. The account directory marks ADE's own accounts
+              // internal from Clerk, and a sign-in on an unmarked machine
+              // must not undo that. A development runtime tags its events
+              // internal without marking the account.
+              ...(isTeamInstall() ? { is_internal: true } : {}),
             },
             $geoip_disable: true,
           },
@@ -1146,8 +1190,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         ...eventProperties,
         surface,
         ...productAnalyticsEventContext(input.event, surface, typedProperties ?? input.properties),
-        is_internal: isInternalInstall(),
-        release_channel: releaseChannel,
+        ...telemetryProperties(),
         ...machineProperty(),
         app_version: appVersion,
         runtime_mode: safeProductAnalyticsString(args.runtimeMode) ?? "unknown",

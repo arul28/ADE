@@ -8,22 +8,39 @@
  */
 
 import { parseAgentChatTranscript } from "../../shared/chatTranscript";
-import type { AgentChatEventEnvelope, AgentChatEventHistoryPage, AgentChatEventHistorySnapshot, AgentChatSessionSummary } from "../../shared/types/chat";
-import type { CloudSavedChatPage, CloudSavedChatRow } from "../../shared/cloudSavedChats";
+import type {
+  AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
+  AgentChatEventHistorySnapshot,
+  AgentChatSession,
+  AgentChatSessionSummary,
+  AgentChatUpdateSessionArgs,
+} from "../../shared/types/chat";
+import { SAVED_CHAT_STOPPED_STATUS, savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
+import { REMOTE_TARGET_NOT_FOUND_MESSAGE } from "../../shared/types/remoteRuntime";
+import { isRemoteMachineAwayError } from "../../shared/runtimeErrors";
 import type { LaneSummary } from "../../shared/types/lanes";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import type { TerminalSessionSummary } from "../../shared/types/sessions";
 import type { AgentChatApi } from "../components/chat/agentChatApi";
 
-/** A machine id for a saved computer that no longer has a connection target (deleted). */
-export const SAVED_CHATS_MACHINE_PREFIX = "cloud-saved:";
-
+/** Whether a store machine id is a saved chat's computer this window has no connection to. */
 export function isSavedChatsMachineId(machineId: string): boolean {
-  return machineId.startsWith(SAVED_CHATS_MACHINE_PREFIX);
+  return savedChatsMachineKey(machineId) != null;
 }
 
+/** What a chat on a deleted cloud computer says when something is sent or asked of it. */
+export const SAVED_CHAT_COMPUTER_GONE_MESSAGE = "This computer was deleted. Its chats are saved here, but it can't answer anymore.";
+
 export type SavedChatLocation = {
+  /** The machine the chat lives on now: a send goes there. */
   machineKey: string;
+  /**
+   * The machine whose saved copy is read: `machineKey`, except for a lane that
+   * moved to a new computer, whose chats are read from the old computer's copy
+   * until the new one saves its own (contract C3).
+   */
+  readMachineKey: string;
   chatId: string;
   /** Store machine id, to check whether the machine came back. */
   machineId: string;
@@ -31,6 +48,42 @@ export type SavedChatLocation = {
   computerGone: boolean;
   row: CloudSavedChatRow;
 };
+
+/**
+ * Connections whose computer is an ADE Cloud computer that still exists: the
+ * saved chats list holds chats under their keys. Filled by the same list read.
+ * A connection target is a browser environment id on ADE Web, so this is how a
+ * list knows such a connection is a cloud computer the moment its rows dim,
+ * before its saved copies are read in.
+ */
+let cloudConnectionKeys: ReadonlyMap<string, string> = new Map();
+
+/** Each cloud computer's connection target id, with that computer's account key. */
+export function replaceCloudConnectionTargets(targets: Iterable<readonly [targetId: string, machineKey: string]>): void {
+  cloudConnectionKeys = new Map(targets);
+  for (const listener of cloudConnectionListeners) listener();
+}
+
+const cloudConnectionListeners = new Set<() => void>();
+
+/** Calls the listener after each change of the cloud connections list. */
+export function subscribeCloudConnectionTargets(listener: () => void): () => void {
+  cloudConnectionListeners.add(listener);
+  return () => cloudConnectionListeners.delete(listener);
+}
+
+export function isCloudConnectionTarget(machineId: string): boolean {
+  return cloudConnectionKeys.has(machineId);
+}
+
+/**
+ * The account key of the cloud computer behind a connection, or null. A
+ * connection's own fields may not carry it (ADE Web's target has none, and
+ * its host name is the box's OS name), so a wake reads it here.
+ */
+export function cloudConnectionMachineKey(machineId: string): string | null {
+  return cloudConnectionKeys.get(machineId) ?? null;
+}
 
 /** `pinKey\0sessionId` → the saved copy, filled by the sidebar's list read. */
 const locations = new Map<string, SavedChatLocation>();
@@ -53,6 +106,29 @@ export function savedChatLocation(
   return location.computerGone || !machineOnline(location.machineId) ? location : null;
 }
 
+/**
+ * The saved copy of a chat by its id alone, whatever pin asked. For a read
+ * whose pin names a connection this window no longer has ("Remote target was
+ * not found"): the chat is the same on any machine that saved it.
+ */
+export function savedChatLocationForSession(sessionId: string): SavedChatLocation | null {
+  for (const location of locations.values()) {
+    if (location.chatId === sessionId) return location;
+  }
+  return null;
+}
+
+/** The main process's refusal for a pin whose connection this window no longer has. */
+function goneConnection(error: unknown): boolean {
+  const message = REMOTE_TARGET_NOT_FOUND_MESSAGE.replace(/\.$/, "");
+  return (error instanceof Error ? error.message : String(error)).includes(message);
+}
+
+/** Whether the chat's computer was deleted (its chats live on as saved copies). */
+export function savedChatComputerGone(pin: OpenProjectBinding | null | undefined, sessionId: string): boolean {
+  return savedChatLocation(pin, sessionId, () => false)?.computerGone === true;
+}
+
 /** The synthetic row for a chat on a computer not currently connected. */
 export function savedChatSession(row: CloudSavedChatRow): TerminalSessionSummary {
   const activity = row.lastActivityAt ?? new Date(row.updatedAt).toISOString();
@@ -66,7 +142,10 @@ export function savedChatSession(row: CloudSavedChatRow): TerminalSessionSummary
     goal: null,
     toolType: (row.toolType ?? "claude-chat") as TerminalSessionSummary["toolType"],
     title: row.title ?? "Saved chat",
-    status: "completed",
+    // Its computer stopped the running turn to sleep, stop or be deleted: the
+    // row reads Stopped (the stopped phase), as that turn reads in the chat,
+    // not Done.
+    status: row.status === SAVED_CHAT_STOPPED_STATUS ? "disposed" : "completed",
     startedAt: activity,
     endedAt: activity,
     exitCode: null,
@@ -79,6 +158,11 @@ export function savedChatSession(row: CloudSavedChatRow): TerminalSessionSummary
     resumeCommand: null,
     runtimeState: "idle",
     cloudSavedCopy: true,
+    // Its computer saved it after a turn that died on an error: Failed, as live.
+    ...(row.status === "failed" ? { lastTurnFailedAt: activity } : {}),
+    // A chat another chat started nests under it in Work, as it does live.
+    ...(row.parentChatId && row.parentChatId !== row.chatId ? { orchestrationParentSessionId: row.parentChatId } : {}),
+    ...(row.spawnKind === "subagent" || row.spawnKind === "peer" ? { spawnKind: row.spawnKind } : {}),
   };
 }
 
@@ -148,6 +232,86 @@ export function savedChatSummary(location: SavedChatLocation): AgentChatSessionS
   };
 }
 
+/** The settings a person picked for a resting ADE Cloud chat; each key only when picked. */
+export type QueuedChatPicks = Pick<AgentChatUpdateSessionArgs, "modelId" | "presetId" | "reasoningEffort" | "fastMode" | "fastTier">;
+
+/**
+ * The settings a person picked for a resting ADE Cloud chat, by chat id,
+ * until its next send. A queued send carries them to the computer, which
+ * applies them before the message (`peekQueuedChatPicks`, then
+ * `clearQueuedChatPicks`). A direct send applies them first
+ * (`takeQueuedChatPicks`). So a pick never wakes the computer on its own.
+ */
+const queuedChatPicks = new Map<string, QueuedChatPicks>();
+
+/** This chat's picks since its last send, or null. They stay until a send carries them. */
+export function peekQueuedChatPicks(chatId: string): QueuedChatPicks | null {
+  return queuedChatPicks.get(chatId) ?? null;
+}
+
+/** A send carried the picks: drop them. */
+export function clearQueuedChatPicks(chatId: string): void {
+  queuedChatPicks.delete(chatId);
+}
+
+/** This chat's picks, once (a direct send applies them); null when none. */
+export function takeQueuedChatPicks(chatId: string): QueuedChatPicks | null {
+  const picks = peekQueuedChatPicks(chatId);
+  clearQueuedChatPicks(chatId);
+  return picks;
+}
+
+/** A send's settings that the account's queue carries, and nothing a computer must store now. */
+const QUEUE_CARRIED_UPDATE_KEYS = new Set(["sessionId", "modelId", "presetId", "reasoningEffort", "fastMode", "fastTier"]);
+
+function updateCarriedByQueue(args: AgentChatUpdateSessionArgs): boolean {
+  return Object.entries(args).every(([key, value]) => QUEUE_CARRIED_UPDATE_KEYS.has(key) || value === undefined);
+}
+
+/** An update that goes to the computer now: the waiting picks of the same keys are older, so they go. */
+function dropPicksSetBy(chatId: string, args: AgentChatUpdateSessionArgs): void {
+  const picks = queuedChatPicks.get(chatId);
+  if (!picks) return;
+  const next: QueuedChatPicks = { ...picks };
+  for (const key of Object.keys(next) as Array<keyof QueuedChatPicks>) {
+    if (args[key] !== undefined) delete next[key];
+  }
+  if (Object.keys(next).length > 0) queuedChatPicks.set(chatId, next);
+  else queuedChatPicks.delete(chatId);
+}
+
+/** Adds the picked keys of one update to the chat's picks. */
+function notePicks(chatId: string, args: AgentChatUpdateSessionArgs): QueuedChatPicks {
+  const next: QueuedChatPicks = { ...queuedChatPicks.get(chatId) };
+  const modelId = typeof args.modelId === "string" ? args.modelId.trim() : "";
+  if (modelId) next.modelId = modelId;
+  if (args.presetId !== undefined) next.presetId = args.presetId;
+  if (args.reasoningEffort !== undefined) next.reasoningEffort = args.reasoningEffort;
+  if (args.fastMode !== undefined) next.fastMode = args.fastMode;
+  if (args.fastTier !== undefined) next.fastTier = args.fastTier;
+  if (Object.keys(next).length > 0) queuedChatPicks.set(chatId, next);
+  return next;
+}
+
+/** The chat as its saved copy knows it, with the picks the next send carries. */
+function savedChatSessionAfterPick(location: SavedChatLocation, picks: QueuedChatPicks): AgentChatSession {
+  const summary = savedChatSummary(location);
+  return {
+    id: summary.sessionId,
+    laneId: summary.laneId,
+    provider: summary.provider,
+    model: picks.modelId ?? summary.model,
+    ...(picks.modelId ? { modelId: picks.modelId } : {}),
+    ...(typeof picks.presetId === "string" ? { presetId: picks.presetId } : {}),
+    ...(picks.reasoningEffort !== undefined ? { reasoningEffort: picks.reasoningEffort } : {}),
+    ...(picks.fastMode !== undefined ? { fastMode: picks.fastMode } : {}),
+    ...(picks.fastTier !== undefined ? { fastTier: picks.fastTier } : {}),
+    status: "idle",
+    createdAt: summary.startedAt,
+    lastActivityAt: summary.lastActivityAt,
+  };
+}
+
 /** The chat shows as unavailable; this says why. */
 function logSavedChatReadFailure(error: unknown): null {
   console.warn("[cloud] saved chat read failed", error instanceof Error ? error.message : String(error));
@@ -157,45 +321,262 @@ function logSavedChatReadFailure(error: unknown): null {
 type SavedChatsBridge = NonNullable<NonNullable<Window["ade"]["cloud"]>["savedChats"]>;
 
 /**
+ * Reaches the computer of a saved chat that this window has no connection to
+ * (contract C2): the pin to send with, or null to send with the pin as it is.
+ * `reached` runs after a send that went through it, so the window can follow
+ * the chat to its live machine.
+ */
+export type SavedChatReach = {
+  pinFor: (location: SavedChatLocation) => Promise<OpenProjectBinding | null>;
+  reached: (location: SavedChatLocation) => void;
+  /**
+   * Wakes the ADE Cloud computer behind a pin whose connection refused a call
+   * before it was sent, and returns the pin to call with. Null when the pin is
+   * not such a computer.
+   */
+  wakeForSend?: (pin: Extract<OpenProjectBinding, { kind: "remote" }>, sessionId: string) => Promise<OpenProjectBinding | null>;
+  /**
+   * Sends to a chat whose cloud computer is asleep through the account's
+   * queue, which wakes it: the send returns at once (`sent`). `unsupported`
+   * (an older server, files with the message): wake, then send, as before.
+   */
+  queueSend?: (target: SavedChatQueueTarget, args: Parameters<AgentChatApi["send"]>[0]) => Promise<"sent" | "unsupported">;
+};
+
+/**
+ * Where the account's queue sends a message: the chat on its computer, by
+ * machine key. A saved copy's location is one; so is a live chat on an ADE
+ * Cloud connection, which the saved list leaves out while it reads live.
+ */
+export type SavedChatQueueTarget = Pick<SavedChatLocation, "machineKey" | "chatId"> & {
+  row: Pick<CloudSavedChatRow, "provider" | "model">;
+};
+
+/**
+ * How long a send to an ADE Cloud computer waits for its answer before the
+ * account's queue takes it. A computer that went to sleep a moment ago still
+ * reads connected until its link goes stale (75 s on ADE Web), and the call
+ * itself gives up only after 65 s: without this, the send sat on the dead
+ * link for a minute and the computer stayed asleep.
+ */
+export const CLOUD_SEND_ANSWER_WAIT_MS = 10_000;
+
+/** The queue target for a send to a chat on an ADE Cloud connection, or null. */
+function cloudConnectionQueueTarget(pin: OpenProjectBinding | null | undefined, sessionId: string): SavedChatQueueTarget | null {
+  if (pin?.kind !== "remote" || !isCloudConnectionTarget(pin.targetId)) return null;
+  // A saved copy from an earlier read names the chat's computer.
+  const saved = savedChatLocation(pin, sessionId, () => false);
+  if (saved) return saved.computerGone ? null : saved;
+  const machineKey = cloudConnectionMachineKey(pin.targetId);
+  // The server reads the chat's agent and model from its saved copy.
+  return machineKey ? { machineKey, chatId: sessionId, row: { provider: null, model: null } } : null;
+}
+
+/**
+ * ADE Web's refusals before a command leaves: while a connection comes back,
+ * and while it has no command list yet (it is dialing). Nothing was sent, so
+ * one more call is safe.
+ */
+const RECONNECTING_REFUSAL = "Reconnecting to this computer. Try again when connected.";
+const NOT_LISTED_REFUSAL = "UnsupportedRemoteCommandError";
+
+function refusedBeforeSend(error: unknown): boolean {
+  return error instanceof Error && (error.message === RECONNECTING_REFUSAL || error.name === NOT_LISTED_REFUSAL);
+}
+
+/**
  * The chat API, with reads answered from the saved copy while the chat's
- * machine isn't connected. Everything else, sends included, goes through
- * untouched; a send to a computer that no longer exists says so plainly.
+ * machine isn't connected (or its connection is gone). A send to a computer
+ * this window never connected to reaches it by its machine key (`reach`); a
+ * send to a computer that no longer exists says so plainly. A chat whose
+ * computer was deleted never sends here: the chat pane hands the message to
+ * the account's queue, and a new computer continues the chat.
  */
 export function withSavedChatReads(
   api: AgentChatApi,
   bridge: SavedChatsBridge | null | undefined,
   machineOnline: (machineId: string) => boolean,
+  reach?: SavedChatReach | null,
 ): AgentChatApi {
   if (!bridge) return api;
   const locate = (sessionId: string, pin?: OpenProjectBinding | null) => savedChatLocation(pin, sessionId, machineOnline);
-  const savedReads: Pick<AgentChatApi, "getEventHistory" | "getEventHistoryPage" | "getSummary" | "send" | "delete"> = {
+  /** A read through `live`, answered from the saved copy when its connection is gone. */
+  const readOr = async <T>(sessionId: string, live: () => Promise<T>, saved: (location: SavedChatLocation) => Promise<T>): Promise<T> => {
+    try {
+      return await live();
+    } catch (error) {
+      const location = goneConnection(error) ? savedChatLocationForSession(sessionId) : null;
+      if (!location) throw error;
+      return saved(location);
+    }
+  };
+  /**
+   * A call to a chat on an ADE Cloud computer that went to sleep before the
+   * chat said so: ADE Web refuses it before it leaves (the connection dials
+   * again). Wake the computer through the account and call once more, so a
+   * send wakes it also before the chat shows it asleep.
+   */
+  const wakeOnRefusal = async <P extends OpenProjectBinding | null | undefined, T>(
+    pin: P,
+    sessionId: string,
+    run: (pin: P) => Promise<T>,
+  ): Promise<T> => {
+    try {
+      return await run(pin);
+    } catch (error) {
+      if (!refusedBeforeSend(error) || !reach?.wakeForSend || pin?.kind !== "remote" || !isCloudConnectionTarget(pin.targetId)) throw error;
+      const wokenPin = await reach.wakeForSend(pin, sessionId);
+      if (!wokenPin) throw error;
+      // The woken computer's pin: the same kind of value the caller passed.
+      return run(wokenPin as P);
+    }
+  };
+  /**
+   * A send to a chat on an ADE Cloud connection. Its computer may have gone to
+   * sleep a moment ago with the link still reading connected. A send with no
+   * answer after `CLOUD_SEND_ANSWER_WAIT_MS`, refused before it left, or whose
+   * answer was lost goes to the account's queue, which wakes the computer.
+   * The queue sends the same id (`clientSendId`) and the computer answers a
+   * repeated id without sending again, so a direct copy that did arrive never
+   * runs twice; the direct call then ends on its own. What the queue can't
+   * take (`unsupported`: an older server or image, files) goes as before.
+   */
+  const sendToCloudComputer = async (
+    target: SavedChatQueueTarget,
+    queueSend: NonNullable<SavedChatReach["queueSend"]>,
+    args: Parameters<AgentChatApi["send"]>[0],
+    pin: Parameters<AgentChatApi["send"]>[1],
+  ): Promise<Awaited<ReturnType<AgentChatApi["send"]>>> => {
+    type Outcome = { ok: true; value: Awaited<ReturnType<AgentChatApi["send"]>> } | { ok: false; error: unknown };
+    const direct: Promise<Outcome> = api.send(args, pin).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const first = await Promise.race([
+      direct,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), CLOUD_SEND_ANSWER_WAIT_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (first?.ok) return first.value;
+    // Refused for a reason of its own (a turn already running, a bad argument): the queue changes nothing.
+    if (first && !refusedBeforeSend(first.error) && !isRemoteMachineAwayError(first.error)) throw first.error;
+    let queued: "sent" | "unsupported";
+    try {
+      queued = await queueSend(target, args);
+    } catch (queueError) {
+      // The queue refused it (hours, a block) or could not be asked. A direct
+      // call still out may yet be answered, and then its answer stands.
+      const late = first ?? await direct;
+      if (late.ok) return late.value;
+      throw queueError;
+    }
+    if (queued === "sent") return;
+    // No queue for this chat: wait for the direct call, as before. Only a
+    // call refused before it left wakes the computer and goes again.
+    const settled = first ?? await direct;
+    if (settled.ok) return settled.value;
+    let refused = true;
+    return wakeOnRefusal(pin, args.sessionId, (callPin) => {
+      if (!refused) return api.send(args, callPin);
+      refused = false;
+      return Promise.reject(settled.error);
+    });
+  };
+  /** A failed apply of the waiting picks does not stop the message: the send goes on. */
+  const picksNotApplied = (error: unknown): void => {
+    console.warn("[cloud] the picked chat settings were not applied", error instanceof Error ? error.message : String(error));
+  };
+  const savedReads: Pick<AgentChatApi, "getEventHistory" | "getEventHistoryPage" | "getSummary" | "send" | "steer" | "updateSession" | "delete"> = {
     getEventHistory: async (args, pin) => {
+      const saved = async (location: SavedChatLocation) => {
+        const page = await bridge.read({ machineKey: location.readMachineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
+        if (!page) return { sessionId: args.sessionId, events: [], truncated: false, sessionFound: true, hasOlderHistory: false, unavailable: true } satisfies AgentChatEventHistorySnapshot;
+        return savedChatSnapshot(page, args.sessionId);
+      };
       const location = locate(args.sessionId, pin);
-      if (!location) return api.getEventHistory(args, pin);
-      const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
-      if (!page) return { sessionId: args.sessionId, events: [], truncated: false, sessionFound: true, hasOlderHistory: false, unavailable: true } satisfies AgentChatEventHistorySnapshot;
-      return savedChatSnapshot(page, args.sessionId);
+      return location ? saved(location) : readOr(args.sessionId, () => api.getEventHistory(args, pin), saved);
     },
     getEventHistoryPage: async (args, pin) => {
+      const saved = async (location: SavedChatLocation) => {
+        const page = await bridge.read({ machineKey: location.readMachineKey, chatId: location.chatId, before: args.beforeOffset }).catch(logSavedChatReadFailure);
+        if (!page) return { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
+        return savedChatHistoryPage(page, args.sessionId);
+      };
       const location = locate(args.sessionId, pin);
-      if (!location) return api.getEventHistoryPage(args, pin);
-      const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId, before: args.beforeOffset }).catch(logSavedChatReadFailure);
-      if (!page) return { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
-      return savedChatHistoryPage(page, args.sessionId);
+      return location ? saved(location) : readOr(args.sessionId, () => api.getEventHistoryPage(args, pin), saved);
     },
     getSummary: async (args, pin) => {
       const location = locate(args.sessionId, pin);
-      return location ? savedChatSummary(location) : api.getSummary(args, pin);
+      return location
+        ? savedChatSummary(location)
+        : readOr(args.sessionId, () => api.getSummary(args, pin), async (gone) => savedChatSummary(gone));
     },
     send: async (args, pin) => {
       const location = locate(args.sessionId, pin);
-      if (location?.computerGone) throw new Error("This computer was deleted. Its chats are saved here, but it can't answer anymore.");
-      return api.send(args, pin);
+      if (location?.computerGone) throw new Error(SAVED_CHAT_COMPUTER_GONE_MESSAGE);
+      // A computer this window never connected to (another desktop made it):
+      // reach it by its machine key, which wakes it, then send there.
+      // So is an ADE Cloud computer this window has a connection to that went
+      // to sleep: a plain send through the connection only dials, which an
+      // asleep computer does not answer.
+      if (!location || !reach || !(isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
+        // Picks made while the chat rested reach it before this send.
+        const picks = takeQueuedChatPicks(args.sessionId);
+        if (picks) {
+          await wakeOnRefusal(pin, args.sessionId, (callPin) => api.updateSession({ sessionId: args.sessionId, ...picks }, callPin))
+            .catch(picksNotApplied);
+        }
+        const target = args.clientSendId && reach?.queueSend ? cloudConnectionQueueTarget(pin, args.sessionId) : null;
+        if (!target || !reach?.queueSend) return wakeOnRefusal(pin, args.sessionId, (callPin) => api.send(args, callPin));
+        return sendToCloudComputer(target, reach.queueSend, args, pin);
+      }
+      // The account's queue keeps the message and wakes the computer; the
+      // send never waits for the computer to come up.
+      if (reach.queueSend && await reach.queueSend(location, args) === "sent") return;
+      // A direct send (files, an older server): the picks the queue would
+      // have carried reach the chat first.
+      const reachedPin = await reach.pinFor(location);
+      const sendPin = reachedPin ?? pin;
+      const picks = takeQueuedChatPicks(location.chatId);
+      if (picks) await api.updateSession({ sessionId: args.sessionId, ...picks }, sendPin).catch(picksNotApplied);
+      if (!reachedPin) return api.send(args, pin);
+      const result = await api.send(args, reachedPin);
+      reach.reached(location);
+      return result;
     },
+    // The chat's settings go with a send (the model, the mode): the first call
+    // of a send that a sleeping computer refuses. A saved chat on a computer
+    // this window never connected to has no connection to refuse it: its
+    // computer is reached by its machine key first, as a send does.
+    updateSession: async (args, pin) => {
+      const location = locate(args.sessionId, pin);
+      if (location?.computerGone) throw new Error(SAVED_CHAT_COMPUTER_GONE_MESSAGE);
+      // Settings that go with a send to a resting ADE Cloud chat (the model,
+      // the effort, Fast, a preset): the next send carries them, so this call
+      // never wakes the computer and the send never waits for it. Other
+      // changes still reach the computer.
+      if (location && reach?.queueSend && updateCarriedByQueue(args)
+        && (isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
+        return savedChatSessionAfterPick(location, notePicks(location.chatId, args));
+      }
+      // This change reaches the computer now: older waiting picks of the same keys must not follow it.
+      dropPicksSetBy(args.sessionId, args);
+      if (location && reach && isSavedChatsMachineId(location.machineId)) {
+        const reachedPin = await reach.pinFor(location);
+        if (reachedPin) return api.updateSession(args, reachedPin);
+      }
+      return wakeOnRefusal(pin, args.sessionId, (callPin) => api.updateSession(args, callPin));
+    },
+    // A message typed while a turn reads running. It names the turn it may
+    // join, so after the wake it goes in once or is refused, never twice.
+    steer: async (args, pin) => wakeOnRefusal(pin, args.sessionId, (callPin) => api.steer(args, callPin)),
     delete: async (args, pin) => {
       const location = locate(args.sessionId, pin);
       if (location?.computerGone) {
-        await bridge.delete({ machineKey: location.machineKey, chatId: location.chatId });
+        await bridge.delete({ machineKey: location.readMachineKey, chatId: location.chatId });
         return null;
       }
       return api.delete(args, pin);

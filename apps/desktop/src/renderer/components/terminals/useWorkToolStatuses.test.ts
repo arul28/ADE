@@ -414,6 +414,8 @@ describe("workToolSummary", () => {
  */
 describe("useWorkToolStatuses shell re-reads", () => {
   const OWNER = "chat-1";
+  /** The chat's machine: its shells are listed there. */
+  const CHAT_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
 
   afterEach(() => {
     cleanup();
@@ -422,7 +424,7 @@ describe("useWorkToolStatuses shell re-reads", () => {
   });
 
   function wrapper({ children }: { children: ReactNode }) {
-    return createElement(NativeToolFeedsProvider, { active: true, runtimePin: null, children });
+    return createElement(NativeToolFeedsProvider, { active: true, runtimePin: CHAT_PIN, children });
   }
 
   it("re-reads terminal.list when the panel's published count changes", async () => {
@@ -439,7 +441,7 @@ describe("useWorkToolStatuses shell re-reads", () => {
         enabled: true,
         laneId: null,
         lane: null,
-        runtimePin: null,
+        runtimePin: CHAT_PIN,
         terminalOwnerSessionId: OWNER,
         activeTool: "terminal",
       }),

@@ -3,7 +3,16 @@ import type {
   LaneListSnapshot,
   LaneSummary,
   ListLanesArgs,
+  OpenProjectBinding,
 } from "../../shared/types";
+
+/**
+ * Where a lane read goes. `pin` names the copy (machine) whose lanes are read;
+ * the in-flight key carries it, so two machines never share a read. A read
+ * with no pin keeps the old route (the tab's copy) and notes the tripwire.
+ */
+/** `pin`: the copy whose lanes are read. Null: no copy is online, so the list is empty and nothing is asked. */
+export type LaneReadOptions = { projectRoot?: string | null; pin: OpenProjectBinding | null };
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
@@ -27,9 +36,10 @@ function normalizeLaneArgs(args: ListLanesArgs): Required<Pick<ListLanesArgs, "i
   };
 }
 
-function keyFor(projectRoot: string | null | undefined, args: ListLanesArgs): string {
+function keyFor(options: LaneReadOptions | undefined, args: ListLanesArgs): string {
   return JSON.stringify({
-    projectRoot: projectKey(projectRoot),
+    projectRoot: projectKey(options?.projectRoot),
+    pin: options?.pin?.key ?? null,
     args: normalizeLaneArgs(args),
   });
 }
@@ -55,35 +65,40 @@ function coalesceInFlight<T>(
 
 export function listLanesCoalesced(
   args: ListLanesArgs,
-  options?: { projectRoot?: string | null },
+  options: LaneReadOptions,
 ): Promise<LaneSummary[]> {
+  const pin = options.pin;
+  if (!pin) return Promise.resolve([]);
   return coalesceInFlight(
     laneListInFlight,
-    keyFor(options?.projectRoot, args),
-    () => window.ade.lanes.list(args),
+    keyFor(options, args),
+    () => window.ade.lanes.list(args, pin),
     laneReadGeneration,
   );
 }
 
 export function listLaneSnapshotsCoalesced(
   args: ListLanesArgs,
-  options?: { projectRoot?: string | null },
+  options: LaneReadOptions,
 ): Promise<LaneListSnapshot[]> {
+  const pin = options.pin;
+  if (!pin) return Promise.resolve([]);
   return coalesceInFlight(
     laneSnapshotInFlight,
-    keyFor(options?.projectRoot, args),
-    () => window.ade.lanes.listSnapshots(args),
+    keyFor(options, args),
+    () => window.ade.lanes.listSnapshots(args, pin),
     laneReadGeneration,
   );
 }
 
 export function getKeybindingsCoalesced(
-  options?: { projectRoot?: string | null },
+  options?: LaneReadOptions,
 ): Promise<KeybindingsSnapshot> {
+  const pin = options?.pin ?? null;
   return coalesceInFlight(
     keybindingsInFlight,
-    projectKey(options?.projectRoot),
-    () => window.ade.keybindings.get(),
+    `${projectKey(options?.projectRoot)}\n${pin?.key ?? ""}`,
+    () => window.ade.keybindings.get(pin),
   );
 }
 

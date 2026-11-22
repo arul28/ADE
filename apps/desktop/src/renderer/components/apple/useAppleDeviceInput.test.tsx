@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { appleKeyText, useAppleDeviceInput } from "./useAppleDeviceInput";
 
-const pinRef = { current: null as OpenProjectBinding | null };
+/** The lane's machine: input goes to its device. */
+const pinRef: { current: OpenProjectBinding } = {
+  current: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" },
+};
 
 function install(api: Record<string, unknown>) {
   (window as unknown as { ade: unknown }).ade = { iosSimulator: api };
@@ -123,7 +126,7 @@ describe("useAppleDeviceInput", () => {
     expect(sent).toBe(true);
     expect(typeText).toHaveBeenCalledWith(
       expect.objectContaining({ deviceUdid: "device-1", text: "a" }),
-      null,
+      pinRef.current,
     );
 
     await act(async () => {

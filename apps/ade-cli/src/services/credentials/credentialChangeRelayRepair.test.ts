@@ -5,6 +5,7 @@ import {
 } from "./credentialChangeRelayRepair";
 
 const APP_TOKEN_KEY = "github.appUserToken.v1";
+const ACCOUNT_APP_TOKEN_KEY = "github.accountAppToken.v1";
 
 function createLogger() {
   return { warn: vi.fn() };
@@ -154,6 +155,39 @@ describe("watchCredentialsForRelayRepair", () => {
     expect(pollNow).toHaveBeenCalledTimes(1);
   });
 
+  it("forces a poll when the account's App token changes, not when only its lease changes", () => {
+    // The account connected again on another computer: the first process here
+    // that asks writes the new token, and a poll that stopped on the old one
+    // must restart. Leases and stop times rewrite the same entry far more often.
+    const entry = (fields: Record<string, unknown>) =>
+      JSON.stringify({ v: 1, accountUserId: "user-1", state: "active", useUntilEpochMs: 10_000, ...fields });
+    const watchable = createWatchableStore({
+      values: { [ACCOUNT_APP_TOKEN_KEY]: entry({ accessToken: "account-1" }) },
+    });
+    const pollNow = vi.fn(async () => undefined);
+    let nowMs = 1_000;
+    watchCredentialsForRelayRepair({
+      logger: createLogger(),
+      pollNow,
+      credentialStore: watchable.store,
+      now: () => nowMs,
+    });
+
+    watchable.write(ACCOUNT_APP_TOKEN_KEY, entry({ accessToken: "account-1", fetchLeaseHolder: "pid-2", fetchLeaseUntil: 5_000 }));
+    expect(pollNow).not.toHaveBeenCalled();
+
+    watchable.write(ACCOUNT_APP_TOKEN_KEY, entry({ accessToken: "account-2" }));
+    expect(pollNow).toHaveBeenCalledTimes(1);
+
+    // Disconnected: the entry loses its token. A later connect brings one back.
+    nowMs += CREDENTIAL_CHANGE_POLL_COALESCE_MS * 2;
+    watchable.write(ACCOUNT_APP_TOKEN_KEY, entry({ state: "not_connected", retryAtEpochMs: 99_000 }));
+    expect(pollNow).toHaveBeenCalledTimes(2);
+    nowMs += CREDENTIAL_CHANGE_POLL_COALESCE_MS * 2;
+    watchable.write(ACCOUNT_APP_TOKEN_KEY, entry({ accessToken: "account-3" }));
+    expect(pollNow).toHaveBeenCalledTimes(3);
+  });
+
   it("forces a poll when the App credential cannot be read", () => {
     // A read failure says nothing about whether the App credential moved, so
     // it must fail OPEN. Treating it as "unchanged" is how a repair the user
@@ -208,11 +242,22 @@ describe("watchCredentialsForRelayRepair", () => {
   });
 
   it("decrypts the credential once per change however many watchers share the file", () => {
-    // Reading this key takes the file lock and decrypts the whole store. Ten
+    // Reading these keys takes the file lock and decrypts the whole store. Ten
     // open projects must not pay for that ten times to learn the same fact.
-    const watchable = createWatchableStore({ identity: "shared-file-read-count" });
+    // What one watcher costs is the yardstick: two on one file cost the same.
+    const single = createWatchableStore({ identity: "single-file-read-count" });
     const now = () => 0;
+    const stopSingle = watchCredentialsForRelayRepair({
+      logger: createLogger(),
+      pollNow: vi.fn(async () => undefined),
+      credentialStore: single.store,
+      now,
+    });
+    const readsPerChange = single.readCount();
+    expect(readsPerChange).toBeGreaterThan(0);
+    stopSingle();
 
+    const watchable = createWatchableStore({ identity: "shared-file-read-count" });
     const stopFirst = watchCredentialsForRelayRepair({
       logger: createLogger(),
       pollNow: vi.fn(async () => undefined),
@@ -225,10 +270,10 @@ describe("watchCredentialsForRelayRepair", () => {
       credentialStore: watchable.store,
       now,
     });
-    expect(watchable.readCount()).toBe(1);
+    expect(watchable.readCount()).toBe(readsPerChange);
 
     watchable.writeAppToken("token-1");
-    expect(watchable.readCount()).toBe(2);
+    expect(watchable.readCount()).toBe(2 * readsPerChange);
 
     stopFirst();
     stopSecond();

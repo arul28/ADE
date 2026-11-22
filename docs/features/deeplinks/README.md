@@ -88,7 +88,9 @@ into a machine transition. Two rules govern what goes in `projectId`:
 dropped rather than failing the whole link, since no link minted today carries it.
 
 The HTTPS form lives on `apps/web` (Vercel). Its `/open` page
-(`apps/web/src/app/pages/OpenPage.tsx`) forwards everything the link carries
+(`apps/web/src/app/pages/OpenPage.tsx`) is a hand-off screen in the style of
+the ADE start screens, without the site header and footer (`SiteLayout.tsx`).
+It forwards everything the link carries
 (ownership included) and offers **Open in the ADE app** (the `ade://` form) or
 **Open in your browser** (the web client at `https://app.ade-app.dev/open` with
 the same query: the web client must keep its own origin, which holds its
@@ -96,11 +98,21 @@ sign-in and device keys), plus **Install ADE**. "Remember my choice" stores
 `ade.openLinksIn` (`app` | `web`) in that browser's localStorage. With no
 choice remembered nothing launches until the person picks: a page cannot tell
 whether an app took an `ade://` link (browsers ask, or do nothing), so an
-automatic attempt would strand someone without the app. With `web` remembered
-the page goes to the web client after 0.8 s (long enough to press **Change**);
-with `app` it tries the app and, 2.5 s later, makes the browser the main button
-("ADE didn't open?") unless the page lost focus meanwhile, which means the app
-or the browser's prompt took over. A **Change** link forgets the choice. On an
+automatic attempt would strand someone without the app. With a choice
+remembered, the page opens it after 1.5 s, with **Change** and **Open now** in
+view and a bar that fills over the pause. Escape stops it, like **Change**, and
+`?choose=1` shows the choices even when one is remembered. After the app is
+tried, the page makes the browser the main button 2.5 s later ("ADE didn't
+open?") unless the page lost focus meanwhile, which means the app or the
+browser's prompt took over. **Change** stops this visit's automatic open and
+keeps the saved choice; a pick then saves it again with "Remember" on, or
+clears it with "Remember" off. While the choices
+are on screen on a computer, the page frames ADE Web's hidden `/link-status`
+page (on `app.ade-app.dev`, which holds the sign-in) for up to 4 s. When this
+browser is signed in to ADE Web, the answer names the account's online
+computers: the page puts the ADE app first when one is online and ADE Web
+first when none is. The page accepts only a well-formed `ade-link-status`
+message from that origin. On an
 iPhone or iPad the page also offers **Open in ADE Beta** (`ade-beta://`, the
 Beta app's scheme; only the App Store app claims the universal link). Desktop
 betas are the same `com.ade.desktop` app as stable and claim `ade://`. Alpha
@@ -261,9 +273,10 @@ ADE CLI — outbound + inbound:
 Apps/web — landing page + OG unfurl:
 
 - `apps/web/src/app/pages/OpenPage.tsx` — React SPA page mounted at
-  `/open`. Reads the same query shape as the parser, attempts the
-  `ade://` upgrade, and falls back to a download / install card with
-  the parsed target described inline.
+  `/open`. Reads the same query shape as the parser, offers the app, the
+  browser and Install, opens a remembered choice after a short pause, and
+  orders the choices by the online computers that ADE Web's `/link-status`
+  frame reports.
 - `apps/web/api/open.ts` — Vercel serverless function for `/open`. Self-
   fetches `/index.html`, rewrites `<title>`, `og:*`, and `twitter:*`
   meta tags from query params so chat-app unfurlers (Slack, Discord,
@@ -288,7 +301,10 @@ Send-to-Mac:
   `event`/`offset` anchors ride `WorkSessionNavigationRequest` (carried, not
   yet scrolled to — no route-level scroll hook exists on iOS).
   Lane / repo-branch / full-PR / linear-issue / file / commit / artifact
-  shapes validate then post `.adeSendToMacRequested`.
+  shapes validate then post `.adeSendToMacRequested`. A lane link first reads
+  the account's ADE Cloud lanes without a computer; a kept lane posts
+  `.adeKeptLaneRequested` instead, and `ADEApp` shows the kept page (New
+  computer, Delete).
 - Universal Links: `apps/ios/ADE/ADE.entitlements` carries
   `applinks:ade-app.dev`; `ADEApp.swift` routes
   `NSUserActivityTypeBrowsingWeb` activities into the router; the AASA file is
@@ -337,6 +353,7 @@ Send-to-Mac:
 | `ade://pr/<owner>/<repo>/<number>` | `{ kind: "pr", repoOwner, repoName, prNumber }` | If the PR isn't yet local, the renderer jumps to the PRs tab pre-filtered or falls back to the create-lane-from-branch flow. |
 | `ade://linear-issue/<ADE-123>[?branch=<branch>]` | `{ kind: "linear-issue", issueIdentifier, branch? }` | Linear hand-off. Opens ADE's Linear pane focused to the issue. If no project is open or this project is not connected to Linear, ADE shows a setup modal with the next action. |
 | `ade://settings/<entry-id>[?machine=<id>]` | `{ kind: "settings", entryId, machineId? }` | One card in Settings, by its id in `shared/settingsManifest.ts`; https form `type=settings&id=`. Navigates only. `machine` picks a Computer page's machine; one this window does not know opens This computer's page. An id this build does not know draws a generic ADE link. |
+| `ade://lane-share/<grant-id>` | `{ kind: "lane-share", grantId }` | A lane another account shares with this one: the invite link. https form `type=lane-share&id=<grant-id>`, minted by the host as `https://ade-app.dev/open?type=lane-share&id=…`. The grant id (`ls_` and 32 hex characters, `LANE_SHARE_GRANT_ID_PATTERN`) is an address only: the account directory decides whether this account may see the grant. Needs no project. Desktop and the hosted web client route it to `/shared?grant=<id>`; in a chat it is an ADE link chip labelled "Shared lane". See [lane sharing](../lanes/lane-sharing.md). |
 | `ade://open/<place>` | `{ kind: "open", place }` | A page from `shared/openPlaces.ts` (PRs, Lanes, History, Connections…). No https form, and the protocol handler refuses it: it runs only from a click on its chip in a chat. |
 
 Validation lives in one place (`shared/deeplinks.ts`) so the parser, the

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { readChatLaunchKindsCapability } from "../../../shared/chatLaunch";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,17 +14,32 @@ import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
+  RemoteRuntimeUpdateBlock,
   RemoteRuntimeUpdateInstallMode,
 } from "../../../shared/types/remoteRuntime";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
+import { readUpdateBlockHolders } from "../../../shared/updateBlock";
 import {
   runtimeBinaryAssetName,
   runtimeNativeArchiveAssetName,
 } from "../../../../../ade-cli/src/lib/releaseAssets";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
+import {
+  isRemoteBrainNotRunningError,
+  isSshCommandRefusedError,
+  openRuntimeStartingBrain,
+  posixBrainStartCommand,
+  remoteBrainNotRunningConnectError,
+  windowsBrainStartCommand,
+  type RemoteBrainStartOutcome,
+  type RemoteConnectIntent,
+} from "./remoteBrainStart";
+import { markExpected } from "../../../shared/expectedError";
+import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { connectSshWithRoute, execSsh, execSshWithInput, openSshRuntimeTransport, type ConnectedSshRoute, type OpenSshResolvedConfig } from "./sshTransport";
 import { routeKey } from "./routeUtils";
+import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
 import { syncEndpointForHost } from "./pairedRuntimeRoutes";
 import { generateDesktopDpopKeyPair, type DesktopPairedMachineStore } from "./syncPairedMachineStore";
 import {
@@ -119,16 +135,23 @@ const MACHINE_PROJECT_CAPABILITIES = [
   "listMyGitHubRepos",
 ] as const satisfies readonly RemoteRuntimeMachineProjectCapability[];
 
-// Cosmetic capabilities: normalized like the rest, but a host without them is
-// not worth a compatibility warning. The action itself names the update.
+// Capabilities with a fallback or a clear refusal: normalized like the rest,
+// but a host without them is not worth a compatibility warning. The action
+// itself names the update (`removeCopy` falls back to an entry-only remove).
 const OPTIONAL_MACHINE_PROJECT_CAPABILITIES = [
   "setIcon",
+  "removeCopy",
+  "accountList",
 ] as const satisfies readonly RemoteRuntimeMachineProjectCapability[];
 
 type RemoteRuntimeInitializeInfo = {
   version: string | null;
   /** The machine's installed desktop app version; null with no app or from an older brain. */
   desktopAppVersion: string | null;
+  /** See `RemoteRuntimeConnectResult.hostStartedAt`. */
+  hostStartedAt: number | null;
+  /** See `RemoteRuntimeConnectResult.hostUpdateBlock`. */
+  hostUpdateBlock: RemoteRuntimeUpdateBlock | null;
   updateInstallMode?: RemoteRuntimeUpdateInstallMode;
   downloadUrl?: string | null;
   packageChannel: string | null;
@@ -149,6 +172,8 @@ export function validateRemoteRuntimeInitializeResult(args: {
   }
   const runtimeInfo = isRecord(args.result.runtimeInfo) ? args.result.runtimeInfo : {};
   const capabilities = isRecord(args.result.capabilities) ? args.result.capabilities : {};
+  // The launch kinds it runs; absent from an older brain (cloudLaneLaunchService's hand-off check).
+  const chatLaunchKinds = readChatLaunchKindsCapability(capabilities);
   if (runtimeInfo.multiProject !== true || capabilities.projects !== true) {
     throw new Error("Remote ADE service does not support multi-project mode. Update the ADE service on that machine.");
   }
@@ -187,9 +212,16 @@ export function validateRemoteRuntimeInitializeResult(args: {
   const updateInstallMode = runtimeInfo.updateInstallMode === "in_place" || runtimeInfo.updateInstallMode === "manual_download" || runtimeInfo.updateInstallMode === "runtime_only"
     ? runtimeInfo.updateInstallMode : undefined;
   const downloadUrl = typeof runtimeInfo.downloadUrl === "string" ? runtimeInfo.downloadUrl : null;
+  // Wall-clock age only: `uptimeMs` stops while the computer sleeps, so an older
+  // brain's start cannot be told from a restart (`hostUpdateFacts.ts`).
+  const startedAgoMs = typeof runtimeInfo.startedAgoMs === "number" && Number.isFinite(runtimeInfo.startedAgoMs) && runtimeInfo.startedAgoMs >= 0
+    ? runtimeInfo.startedAgoMs
+    : null;
   return {
     version,
     desktopAppVersion,
+    hostStartedAt: startedAgoMs == null ? null : Date.now() - startedAgoMs,
+    hostUpdateBlock: readHostUpdateBlock(runtimeInfo.lastUpdateBlock),
     updateInstallMode,
     downloadUrl,
     packageChannel,
@@ -197,8 +229,30 @@ export function validateRemoteRuntimeInitializeResult(args: {
       projects: true,
       machineProjects: normalizedMachineProjects,
       ...(capabilities.clientSendDedupe === true ? { clientSendDedupe: true } : {}),
+      ...(capabilities.agentCliTypeNow === true ? { agentCliTypeNow: true } : {}),
+      ...(capabilities.ptyDataFilter === true ? { ptyDataFilter: true } : {}),
+      ...(capabilities.chatAttachmentParts === true ? { chatAttachmentParts: true } : {}),
+      ...(capabilities.backgroundActionJobs === true ? { backgroundActionJobs: true } : {}),
+      ...(capabilities.chatCreateAndSend === true ? { chatCreateAndSend: true } : {}),
+      ...(capabilities.machineScope === true ? { machineScope: true } : {}),
+      ...(capabilities.machineScope === true && Array.isArray(capabilities.machineScopeDomains)
+        ? { machineScopeDomains: capabilities.machineScopeDomains.filter((domain): domain is string => typeof domain === "string") }
+        : {}),
+      ...(chatLaunchKinds.length ? { chatLaunchKinds } : {}),
     },
     compatibilityWarnings,
+  };
+}
+
+/** `runtimeInfo.lastUpdateBlock` (`SyncHostUpdateBlock`), or null when absent or malformed. */
+function readHostUpdateBlock(value: unknown): RemoteRuntimeUpdateBlock | null {
+  if (!isRecord(value)) return null;
+  const ageMs = typeof value.ageMs === "number" && Number.isFinite(value.ageMs) && value.ageMs >= 0 ? value.ageMs : null;
+  if (ageMs == null) return null;
+  return {
+    at: Date.now() - ageMs,
+    targetVersion: typeof value.targetVersion === "string" && value.targetVersion.trim() ? value.targetVersion.trim() : null,
+    holders: readUpdateBlockHolders(value.holders),
   };
 }
 
@@ -391,6 +445,11 @@ export function resolveRemoteRuntimeLayoutCandidates(env: NodeJS.ProcessEnv = pr
   });
 }
 
+/** Whether the runtime's environment forbids installing a login service (`ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1`). */
+function remoteRuntimeServiceInstallDisabled(layout: RemoteRuntimeLayout, disableRuntimeServiceInstall: boolean | undefined): boolean {
+  return Boolean(layout.channel || disableRuntimeServiceInstall);
+}
+
 export function buildRemoteRuntimeEnvironmentPrefix(args: {
   archLabel: string;
   nativeDepsReady: boolean;
@@ -409,7 +468,7 @@ export function buildRemoteRuntimeEnvironmentPrefix(args: {
   if (layout.channel) {
     parts.push(`ADE_PACKAGE_CHANNEL="${layout.channel}"`);
   }
-  if (layout.channel || args.disableRuntimeServiceInstall) {
+  if (remoteRuntimeServiceInstallDisabled(layout, args.disableRuntimeServiceInstall)) {
     parts.push("ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1");
   }
   if (args.nativeDepsReady) {
@@ -988,11 +1047,30 @@ function isDiskFullError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * The SSH server's refusal, in words a person can act on. Expected: it is the
+ * server's configuration or limits, not a defect in ADE.
+ */
+function sshCommandRefusedConnectError(error: unknown, step: string): RemoteRuntimeConnectError {
+  const raw = error instanceof Error ? error.message : String(error);
+  return markExpected(new RemoteRuntimeConnectError({
+    kind: "generic",
+    message:
+      `ADE signed in over SSH, but the SSH server refused to run a command while ADE was ${step}. `
+      + "The server may limit how many commands one connection can run (sshd MaxSessions), "
+      + "restrict this account to a fixed command or shell, or be unable to start new processes for it. "
+      + "Check that you can run a command with `ssh <user>@<host> true`, then press Try again.",
+    detail: `While ${step}: ${raw}`,
+  }, error), "environment");
+}
+
 function normalizeBootstrapConnectError(
   error: unknown,
   diskSpace: RemoteInstallDiskSpace | null,
+  step: string,
 ): unknown {
   if (error instanceof RemoteRuntimeConnectError) return error;
+  if (isSshCommandRefusedError(error)) return sshCommandRefusedConnectError(error, step);
   if (!isDiskFullError(error)) return error;
   return diskFullConnectError({
     detail: error instanceof Error ? error.message : String(error),
@@ -1835,6 +1913,14 @@ async function upgradeSshTargetToPairedCredentials(args: {
   });
 }
 
+/**
+ * How long a runtime started over SSH gets to answer `ade/initialize` and the
+ * first `projects.list`. The process starts cold on the other machine, so this
+ * is the wait any caller gives a brain endpoint to come up
+ * (RUNTIME_SERVICE_START_WAIT_MS).
+ */
+const SSH_RUNTIME_HANDSHAKE_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
+
 async function openValidatedRuntimeClient(args: {
   ssh: Client;
   command: string;
@@ -1855,6 +1941,7 @@ async function openValidatedRuntimeClient(args: {
       initializeResult = await client.initialize(
         DESKTOP_CLIENT_NAMES.remote,
         args.appVersion,
+        { timeoutMs: SSH_RUNTIME_HANDSHAKE_TIMEOUT_MS },
       );
     } catch (error) {
       throw new Error(`RPC initialization failed: ${runtimeErrorMessage(error)}`, { cause: error });
@@ -1934,6 +2021,12 @@ export function coerceProjects(value: unknown): RemoteRuntimeProjectRecord[] {
           ? record.registrationSource
           : undefined,
       ...(typeof record.exists === "boolean" ? { exists: record.exists } : {}),
+      ...(typeof record.accountProjectId === "string" && ACCOUNT_PROJECT_ID_PATTERN.test(record.accountProjectId)
+        ? { accountProjectId: record.accountProjectId }
+        : {}),
+      ...(typeof record.githubRepoId === "number" && Number.isSafeInteger(record.githubRepoId) && record.githubRepoId > 0
+        ? { githubRepoId: record.githubRepoId }
+        : {}),
       icon: coerceProjectIcon(record.icon),
     }];
   });
@@ -2392,14 +2485,28 @@ async function bootstrapWindowsRemoteRuntime(args: {
   }
 
   const runtimeCommand = windowsRuntimeRpcCommand({ layout, nativeDepsReady, ptyHostWorkerReady });
-  const opened = await openValidatedRuntimeClient({
-    ssh,
-    command: runtimeCommand,
-    appVersion: request.appVersion,
-    expectedVersion: localBinary ? request.appVersion : null,
-    expectedLayout: layout.channelLayout,
-  });
-  const projects = coerceProjects(await opened.client.call("projects.list", {}));
+  let opened: Awaited<ReturnType<typeof openValidatedRuntimeClient>>;
+  try {
+    opened = await openValidatedRuntimeClient({
+      ssh,
+      command: runtimeCommand,
+      appVersion: request.appVersion,
+      expectedVersion: localBinary ? request.appVersion : null,
+      expectedLayout: layout.channelLayout,
+    });
+  } catch (error) {
+    // `ade rpc --stdio` here has no `--socket`, so the relay starts a brain
+    // itself; this is a brain it could not start or reach.
+    if (!isRemoteBrainNotRunningError(error)) throw error;
+    throw remoteBrainNotRunningConnectError(
+      windowsBrainStartCommand({ adeHome: layout.adeHome, channel: layout.channelLayout.channel, binary: layout.binary }),
+      runtimeErrorMessage(error),
+      error,
+      null,
+      false,
+    );
+  }
+  const projects = coerceProjects(await opened.client.call("projects.list", {}, { timeoutMs: SSH_RUNTIME_HANDSHAKE_TIMEOUT_MS }));
   const connectedAt = Date.now();
   let pairedCredentials: DesktopPairedMachineCredentials | null = null;
   const compatibilityWarnings = [...opened.initializeInfo.compatibilityWarnings];
@@ -2441,6 +2548,8 @@ async function bootstrapWindowsRemoteRuntime(args: {
       arch: platform.label,
       version: opened.initializeInfo.version ?? runtimeVersion,
       appVersion: opened.initializeInfo.desktopAppVersion,
+      hostStartedAt: opened.initializeInfo.hostStartedAt,
+      hostUpdateBlock: opened.initializeInfo.hostUpdateBlock,
       updateInstallMode: opened.initializeInfo.updateInstallMode,
       downloadUrl: opened.initializeInfo.downloadUrl,
       route: { kind: "ssh", endpoint: `${host}:${connectedRoute.port ?? request.target.port ?? 22}` },
@@ -2459,6 +2568,11 @@ export async function bootstrapRemoteRuntime(args: {
   pairedStore?: DesktopPairedMachineStore;
   /** Test seam for the release-asset sidecar fetch (transport + cache root). */
   sidecarDeps?: RemoteSidecarDeps;
+  /**
+   * Who asked for this connect, and whether it was given up (the target was
+   * disconnected or removed). Only a person's connect may start the brain.
+   */
+  connect: RemoteConnectIntent;
 }): Promise<{ client: RuntimeRpcClient; result: RemoteRuntimeConnectResult; ssh: Client }> {
   const {
     client: ssh,
@@ -2468,11 +2582,16 @@ export async function bootstrapRemoteRuntime(args: {
   } = await connectSshWithRoute(args.target);
   const uploadConnectionConfig = openSshConfig ?? connectedConfig;
   let installDiskSpace: RemoteInstallDiskSpace | null = null;
+  // What ADE was doing, for an error that would otherwise name only the SSH
+  // library's sentence ("Unable to exec").
+  let step = "checking the machine's system";
   try {
     const arch = await detectRemotePlatform(ssh);
     if (arch.platform === "win32") {
+      step = "setting up ADE on Windows";
       return await bootstrapWindowsRemoteRuntime({ request: args, ssh, connectedRoute, platform: arch });
     }
+    step = "checking which ADE is installed";
     const preferredLayout = resolveRemoteRuntimeLayout();
     let layout = preferredLayout;
     let runtimeLayoutFallbackReason: string | null = null;
@@ -2603,6 +2722,7 @@ export async function bootstrapRemoteRuntime(args: {
       runtimeVersion = args.appVersion;
     };
 
+    step = "installing ADE (copying its files)";
     if (shouldUploadRuntime) {
       await uploadBundledRuntime();
     }
@@ -2695,11 +2815,17 @@ export async function bootstrapRemoteRuntime(args: {
       }
     }
 
+    // A layout other than the preferred one is another install: never ours to
+    // install a service for. The channel's own rule is in the helper.
+    const serviceInstallDisabled = remoteRuntimeServiceInstallDisabled(
+      layout,
+      layout.homeDirName !== preferredLayout.homeDirName,
+    );
     let runtimeEnvPrefix = buildRemoteRuntimeEnvironmentPrefix({
       archLabel: arch.label,
       nativeDepsReady,
       layout,
-      disableRuntimeServiceInstall: layout.homeDirName !== preferredLayout.homeDirName,
+      disableRuntimeServiceInstall: serviceInstallDisabled,
       ptyHostWorkerReady,
       ptyHostWorkerNodePath,
       ptyHostWorkerCommandExpr,
@@ -2720,6 +2846,7 @@ export async function bootstrapRemoteRuntime(args: {
       runtimeVersion = uploadedVersion;
     };
 
+    step = "checking the installed ADE";
     if (runtimeUploaded) {
       await verifyUploadedRuntime();
     }
@@ -2744,20 +2871,47 @@ export async function bootstrapRemoteRuntime(args: {
       }
     }
 
+    step = "installing ADE (copying agent skills)";
     await ensureAgentSkillsReady(layout);
 
+    step = "starting ADE";
     const command = localBinary || runtimeUploaded
       ? remoteRuntimeRpcCommand(layout, runtimeEnvPrefix, layout.binaryExpr)
       : remoteRuntimeRpcCommand(layout, runtimeEnvPrefix, "ade");
     let openedRuntime: Awaited<ReturnType<typeof openValidatedRuntimeClient>> | null = null;
     const expectedVersion = localBinary || runtimeUploaded ? args.appVersion : null;
+    const openRuntime = () => openValidatedRuntimeClient({
+      ssh,
+      command,
+      appVersion: args.appVersion,
+      expectedVersion,
+      expectedLayout: layout,
+    });
+    const brainStartCommand = posixBrainStartCommand({
+      homeDirExpr: layout.homeDirExpr,
+      channel: layout.channel,
+      binaryExpr: localBinary || runtimeUploaded ? layout.binaryExpr : "ade",
+      runtimeEnvPrefix,
+    });
+    // A brain is started only on a connect the person asked for, for the
+    // install this app targets, where the environment allows a service install.
+    const mayStartBrain = args.connect.initiatedBy === "user"
+      && !runtimeLayoutFallbackReason
+      && !serviceInstallDisabled;
+    let brainStart: RemoteBrainStartOutcome | null = null;
     try {
-      openedRuntime = await openValidatedRuntimeClient({
-        ssh,
-        command,
-        appVersion: args.appVersion,
-        expectedVersion,
-        expectedLayout: layout,
+      openedRuntime = await openRuntimeStartingBrain({
+        openRuntime,
+        startBrain: mayStartBrain
+          ? (timeoutMs) => execSsh(ssh, brainStartCommand.exec, { timeoutMs })
+          : null,
+        isAbandoned: args.connect.isAbandoned,
+        onStart: (outcome) => {
+          // While the start runs, a failure is the start's; after it, the
+          // connect is back to starting ADE.
+          brainStart = outcome;
+          step = outcome ? "starting ADE" : "starting the ADE brain";
+        },
       });
     } catch (error) {
       const attempted = [{
@@ -2819,6 +2973,18 @@ export async function bootstrapRemoteRuntime(args: {
           });
           return index === 0 ? line : `Also tried ${line}`;
         }).join("\n");
+        if (isSshCommandRefusedError(attempted[0]?.error)) {
+          throw sshCommandRefusedConnectError(attempted[0]!.error, step);
+        }
+        if (isRemoteBrainNotRunningError(attempted[0]?.error)) {
+          throw remoteBrainNotRunningConnectError(
+            brainStartCommand.display,
+            detail,
+            error,
+            brainStart,
+            !runtimeLayoutFallbackReason && !serviceInstallDisabled,
+          );
+        }
         throw new RemoteRuntimeConnectError({
           kind: "generic",
           message: "ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.",
@@ -2830,7 +2996,7 @@ export async function bootstrapRemoteRuntime(args: {
       throw new Error("ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.");
     }
     const { client, initializeInfo } = openedRuntime;
-    const projects = coerceProjects(await client.call("projects.list", {}));
+    const projects = coerceProjects(await client.call("projects.list", {}, { timeoutMs: SSH_RUNTIME_HANDSHAKE_TIMEOUT_MS }));
     const connectedAt = Date.now();
     const compatibilityWarnings = [...initializeInfo.compatibilityWarnings];
     if (macDesktopDriverWarning) compatibilityWarnings.push(macDesktopDriverWarning);
@@ -2910,7 +3076,7 @@ export async function bootstrapRemoteRuntime(args: {
     };
   } catch (error) {
     ssh.end();
-    throw normalizeBootstrapConnectError(error, installDiskSpace);
+    throw normalizeBootstrapConnectError(error, installDiskSpace, step);
   }
 }
 

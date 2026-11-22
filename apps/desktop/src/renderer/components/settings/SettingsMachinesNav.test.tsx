@@ -41,6 +41,7 @@ function machine(pin: OpenProjectBinding, overrides: Partial<ProjectMachine> = {
     isActiveBinding: true,
     binding: pin,
     pin,
+    address: pin,
     routable: true,
     hasRepo: true,
     deviceId: null,

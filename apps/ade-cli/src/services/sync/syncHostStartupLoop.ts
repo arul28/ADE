@@ -4,6 +4,7 @@ import {
   SyncHostSingletonConflictError,
 } from "./syncHostSingleton";
 import { createFailureLogDeduper } from "../runtime/failureLogDeduper";
+import { isCodedError, PROJECT_FOLDER_TOO_SLOW_CODE } from "../../../../desktop/src/shared/codedError";
 import {
   terminatePidGracefullyAsync,
   type PidStopOutcome,
@@ -431,7 +432,12 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
         if (deps.maxAttempts != null && attempt >= deps.maxAttempts) return;
         continue;
       }
-      const message = error instanceof Error ? error.message : String(error);
+      // A project refused as too slow names the project in its message, which
+      // is for the person; the log carries the code only.
+      let message = error instanceof Error ? error.message : String(error);
+      if (isCodedError(error, PROJECT_FOLDER_TOO_SLOW_CODE)) {
+        message = `${PROJECT_FOLDER_TOO_SLOW_CODE}: the sync host's project is refused as too slow to open`;
+      }
       // A storage fault is permanent until the provider (or the disk, or the
       // mount) comes back, so it gets the classified sentence in the log, a
       // recorded failure the UI can show, and the slow cadence — never the raw

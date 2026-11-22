@@ -1,3 +1,4 @@
+import { encodeCodedErrorMessage } from "../../../shared/codedError";
 // Main-process bridge for the machine-owned ADE account (Clerk identity, #815).
 //
 // The renderer never holds the account bearer. This bridge owns the shared
@@ -29,7 +30,7 @@ import {
 } from "../../../shared/accountDirectory";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
-import { expectedErrorKind, markExpected, type ExpectedErrorKind } from "../../../shared/expectedError";
+import { carryExpected, expectedErrorKind, markExpected, type ExpectedErrorKind } from "../../../shared/expectedError";
 import { createFileLogger, type Logger } from "../logging/logger";
 import { logMachineEvent } from "../logging/machineLogger";
 import os from "node:os";
@@ -58,8 +59,25 @@ import type {
 import {
   parseTrustedAccountDirectoryBaseUrl,
   shouldIgnoreDevelopmentAccountDirectoryUrl,
+  trustedAccountRelayBaseUrls,
   warnDevelopmentClerkIgnored,
 } from "../../../shared/accountDirectory";
+import { createLaneShareGuestDirectory } from "../../../shared/laneShareGuestDirectory";
+import {
+  ACCOUNT_PROJECT_ID_PATTERN,
+  ACCOUNT_PROJECT_PATHS,
+  accountProjectAddRequestForOrigin,
+  accountProjectRemovePath,
+  coerceAccountProjectView,
+  type AccountProjectChangeResult,
+} from "../../../shared/accountProject";
+import type { LaneShareGuestBridge } from "../../../shared/types/laneShare";
+import { ACCOUNT_DELETE_PATH } from "../../../../../account-directory/src/clientMinimumContract";
+import {
+  LaneShareGrantError,
+  resolveLaneShareDirectoryBase,
+  sendLaneShareDirectoryRequest,
+} from "../../../../../ade-cli/src/services/sync/laneShareGrantService";
 
 type AccountBridgeOptions = {
   /** Resolves the active project root so CLERK_* project secrets win config. */
@@ -469,6 +487,13 @@ export type AccountBridge = {
   pollDeviceLogin(sessionId: string): Promise<AdeAccountDeviceLoginPoll>;
   cancelDeviceLogin(sessionId: string): Promise<void>;
   signOut(): AdeAccountStatus;
+  /**
+   * Deletes the signed-in account (`POST /account/delete`) with this
+   * computer's account token, here in main, then signs out. Throws a plain
+   * sentence when the account server refused or could not be reached; the
+   * session is kept then.
+   */
+  deleteAccount(): Promise<AdeAccountStatus>;
   listMachines(): Promise<AdeAccountMachinesResult>;
   renameMachine(machineKey: string, customName: string | null): Promise<AdeAccountMachine>;
   pairMachine(
@@ -489,6 +514,19 @@ export type AccountBridge = {
    * is usually the process that could not read it.
    */
   repairCredentialStore(): Omit<AdeAccountSessionRepairResult, "brainRestarted">;
+  /**
+   * Lane sharing, the guest's side: this machine's account asks the account
+   * directory about grants given TO it, with its own token, here in main.
+   * The token goes only to the trusted directory; a host of another person
+   * sees only the one-use ticket that `connect` returns.
+   */
+  laneShareGuest(): LaneShareGuestBridge;
+  /**
+   * Adds a GitHub repository to the account's project list, or removes a
+   * project from it (S13), with this machine's token, here in main.
+   */
+  addAccountProject(origin: string): Promise<AccountProjectChangeResult>;
+  removeAccountProject(projectId: string): Promise<AccountProjectChangeResult>;
 };
 
 export type AccountBridgePairMachineOptions = {
@@ -594,6 +632,72 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
   };
 
   const configured = () => isLoginConfigured(options.getProjectRoot());
+  const laneShareDirectoryAccess = {
+    getAccessToken: async (tokenOptions?: { forceRefresh?: boolean }) => {
+      const accountService = service();
+      if (!accountService.getStatus().signedIn) return null;
+      return (await accountService.getAccessToken(tokenOptions)).trim() || null;
+    },
+    getDirectoryBaseUrl: () => resolveDirectoryBaseUrl(options.getProjectRoot()),
+  };
+  const laneShareGuestDirectory = createLaneShareGuestDirectory({
+    send: async (request) => {
+      try {
+        return await sendLaneShareDirectoryRequest(
+          laneShareDirectoryAccess,
+          resolveLaneShareDirectoryBase(laneShareDirectoryAccess),
+          request,
+        );
+      } catch (error) {
+        const code = error instanceof LaneShareGrantError && (error.code === "signed_out" || error.code === "no_directory")
+          ? error.code
+          : "unavailable";
+        // The directory not answering is marked `network` where it is thrown
+        // (`sendLaneShareDirectoryRequest`); the coded rethrow keeps that mark.
+        throw carryExpected(
+          error,
+          new Error(encodeCodedErrorMessage(code, error instanceof Error ? error.message : "The account directory could not be reached.")),
+        );
+      }
+    },
+    // The relay this machine itself uses may be a configured one.
+    trustedRelayBaseUrls: () => trustedAccountRelayBaseUrls(
+      process.env.ADE_TUNNEL_RELAY_URL?.trim() ? [process.env.ADE_TUNNEL_RELAY_URL.trim()] : [],
+    ),
+  });
+  // The account's project list (S13): one add or remove, answered as a
+  // project row or a coded failure. Removed rows coerce to null, so the
+  // remove answer is read from its fields here.
+  const changeAccountProject = async (
+    request: { method: "POST"; path: string; body?: Record<string, unknown> },
+  ): Promise<AccountProjectChangeResult> => {
+    let answer: { status: number; body: unknown };
+    try {
+      answer = await sendLaneShareDirectoryRequest(
+        laneShareDirectoryAccess,
+        resolveLaneShareDirectoryBase(laneShareDirectoryAccess),
+        request,
+      );
+    } catch (error) {
+      const code = error instanceof LaneShareGrantError && (error.code === "signed_out" || error.code === "no_directory")
+        ? error.code
+        : "unavailable";
+      return { ok: false, code, message: code === "signed_out" ? "Sign in to ADE to change your projects." : "ADE couldn't reach your account. Try again." };
+    }
+    const body = answer.body && typeof answer.body === "object" ? answer.body as Record<string, unknown> : {};
+    if (answer.status < 200 || answer.status >= 300) {
+      const error = body.error && typeof body.error === "object" ? body.error as Record<string, unknown> : {};
+      return {
+        ok: false,
+        code: typeof error.code === "string" ? error.code : `http_${answer.status}`,
+        message: typeof error.message === "string" && error.message.trim() ? error.message : "Your account refused the change.",
+      };
+    }
+    const raw = body.project && typeof body.project === "object" ? body.project as Record<string, unknown> : null;
+    const project = raw ? coerceAccountProjectView({ ...raw, removedAt: null, mergedInto: null }) : null;
+    if (!project) return { ok: false, code: "bad_answer", message: "Your account sent an answer ADE can't read." };
+    return { ok: true, project, created: body.created === true, revived: body.revived === true };
+  };
   const directoryService = () => new AccountMachineDirectoryService(service(), {
     directoryBaseUrl: () => resolveDirectoryBaseUrl(options.getProjectRoot()),
     deviceName: () => `ADE Desktop on ${os.hostname()}`,
@@ -802,6 +906,52 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       accountMachineNames.clear();
       reconcileLocalMachines(null);
       return toAccountStatus(status, configured());
+    },
+
+    deleteAccount: async () => {
+      let answer: { status: number; body: unknown };
+      try {
+        answer = await sendLaneShareDirectoryRequest(
+          laneShareDirectoryAccess,
+          resolveLaneShareDirectoryBase(laneShareDirectoryAccess),
+          { method: "POST", path: ACCOUNT_DELETE_PATH, body: { confirm: "delete" } },
+        );
+      } catch (error) {
+        if (error instanceof LaneShareGrantError && error.code === "signed_out") {
+          throw new Error("Sign in to ADE to delete your account.");
+        }
+        throw markExpected(new Error("ADE couldn't reach your account. Check your connection and try again."), "network");
+      }
+      const body = answer.body && typeof answer.body === "object" ? answer.body as Record<string, unknown> : {};
+      if (answer.status < 200 || answer.status >= 300 || body.deleted !== true) {
+        const error = body.error && typeof body.error === "object" ? body.error as Record<string, unknown> : {};
+        options.logger?.warn("account.delete_failed", { status: answer.status, code: typeof error.code === "string" ? error.code : null });
+        throw new Error(typeof error.message === "string" && error.message.trim()
+          ? error.message
+          : "Your account was not deleted. Try again.");
+      }
+      options.logger?.info("account.deleted", {});
+      // The account is gone; this computer's session goes with it.
+      const accountService = service();
+      const status = accountService.signOut();
+      accountMachineNames.clear();
+      reconcileLocalMachines(null);
+      return toAccountStatus(status, configured());
+    },
+
+    laneShareGuest: () => laneShareGuestDirectory,
+
+    addAccountProject: async (origin) => {
+      const request = accountProjectAddRequestForOrigin(origin);
+      if (!request) return { ok: false, code: "invalid_repository", message: "That is not a GitHub repository." };
+      return await changeAccountProject({ method: "POST", path: ACCOUNT_PROJECT_PATHS.root, body: { ...request } });
+    },
+
+    removeAccountProject: async (projectId) => {
+      if (!ACCOUNT_PROJECT_ID_PATTERN.test(projectId)) {
+        return { ok: false, code: "not_found", message: "That project is not on your account." };
+      }
+      return await changeAccountProject({ method: "POST", path: accountProjectRemovePath(projectId) });
     },
 
     listMachines: async (): Promise<AdeAccountMachinesResult> => {

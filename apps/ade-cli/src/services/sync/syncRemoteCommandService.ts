@@ -1,12 +1,18 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import { isLaneShareGuestCommand } from "./laneShareGuestPolicy";
 import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
+import { buildProviderLoginsDomainService } from "../../../../desktop/src/main/services/providerLogins/providerLoginActions";
+import { PROVIDER_LOGIN_ACCOUNT_WRITES } from "../../../../desktop/src/shared/types/providerLogins";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
+import { parseLaneLinearIssueValue } from "../../../../desktop/src/shared/laneLinearIssue";
+import { pickKeptLaneRestoreArgs } from "../../../../desktop/src/shared/cloudKeptLaneRestore";
 import { cloudDomainEnabled } from "../../../../desktop/src/shared/adeCloud";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
 import { normalizeGitHubPrListFilters } from "../../../../desktop/src/shared/githubPrSearch";
 import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
 import type {
+  LaneLinearIssue,
   LinearIssueCreateInput,
   SessionAttentionSource,
   TerminalRuntimeState,
@@ -31,6 +37,7 @@ import {
   isAgentChatDroidPermissionMode,
   isAgentChatTurnRecoveryAction,
   normalizeAgentChatSessionMetadataFields,
+  type AdeMessageAuthor,
 } from "../../../../desktop/src/shared/types/chat";
 import {
   legacyPermissionModeFromMusePermissionMode,
@@ -38,7 +45,13 @@ import {
 } from "../../../../desktop/src/shared/modelPermissions";
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
-import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import { ACCOUNT_SCOPE_ALL, accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import {
+  ANNOUNCEMENTS_SEEN_SETTING_KEY,
+  mergeSeenAnnouncements,
+  normalizeSeenAnnouncements,
+  seenAnnouncementsCover,
+} from "../../../../desktop/src/shared/announcementsSeen";
 import {
   FAST_MODE_SETTING_KEY,
   FAST_MODE_SETTING_SCOPE,
@@ -172,6 +185,7 @@ import type {
   GitResetCommitArgs,
   GitRevertArgs,
   GitGetUserIdentityArgs,
+  GitHubRemoteStatus,
   GitHubRepoRef,
   GitHubRequestBudget,
   GitHubStatus,
@@ -351,6 +365,7 @@ import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/u
 import { resolveTrackedCliUserMcp } from "../../../../desktop/src/main/services/mcp/trackedCliUserMcp";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
+import type { CtoAccountCopyService } from "../../../../desktop/src/main/services/cto/ctoAccountCopyService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import {
   LINEAR_MOBILE_OAUTH_REDIRECT_URI,
@@ -377,6 +392,8 @@ import {
   parseAgentChatCreateFields,
   parseAgentChatFileRefs,
   parseAgentChatSendArgs,
+  excludedThreadCommentsField,
+  guestCommentsField,
   parseChatLaunchArgs,
   parseChatLaunchCompleteClientArgs,
   parseChatLaunchIdArgs,
@@ -404,13 +421,14 @@ import type { JevService } from "../../../../desktop/src/main/services/jev/jevSe
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import { parseProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
-import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
+import { deleteSessionRowWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
 import { dismissPendingInputBeforeSettle, settleTerminalSession } from "../../../../desktop/src/main/services/sessions/settleTerminalSession";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import { readMachineInventoryDetail } from "../account/accountMachinePublisherService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import { getMachineProviderInstanceStore } from "../providerInstances/providerInstanceStore";
+import { setAccountProjectMainCheckout } from "../projects/accountProjectMain";
 import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { getErrorMessage, resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
@@ -418,10 +436,18 @@ import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/termi
 import type { SyncPinStore } from "./syncPinStore";
 import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/chatMobileSlim";
 import type { ProxyService } from "../proxy/proxyService";
+import type { SearchService } from "../../../../desktop/src/main/services/search/searchService";
+import type { SearchQueryArgs } from "../../../../desktop/src/shared/types/search";
 import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/chat/sessionInputOrigins";
 import { createWebhookRemoteCommandHandlers, type WebhookRemoteSource } from "./webhookRemoteCommands";
 import { createAutomationRuleRemoteCommandHandlers, type AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 import { readAgentSkill } from "../skills/agentSkillCatalogService";
+import {
+  isMachineUpdateRemoteCommandAction,
+  machineUpdateRemoteCommandDescriptors,
+  runMachineUpdateRemoteCommand,
+  type MachineUpdatePairing,
+} from "./machineUpdateRemoteCommands";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -499,12 +525,21 @@ export type RemoteCommandRejection = { code: string; message: string };
 export function evaluateRemoteCommandPolicy(args: {
   action: string;
   descriptor: Pick<SyncRemoteCommandDescriptor, "scope" | "policy"> | null | undefined;
-  peer: { pairingRecord: SyncPairingRecord | null };
+  /**
+   * `laneShareGuest`: the host set it after a guest hello (lane sharing). A
+   * guest may run only the commands in `LANE_SHARE_GUEST_COMMANDS`; every
+   * other command is refused here whatever its descriptor says. The rights,
+   * lane and session checks need the host database and run in the sync host.
+   */
+  peer: { pairingRecord: SyncPairingRecord | null; laneShareGuest?: object | null };
   requestedProjectId: string | null;
   hostProjectId: string | null;
 }): RemoteCommandRejection | null {
   const { action, descriptor } = args;
   const policy = descriptor?.policy ?? null;
+  if (args.peer.laneShareGuest && !isLaneShareGuestCommand(action)) {
+    return { code: "forbidden_command", message: "This is not available on a shared lane." };
+  }
   if (!policy) {
     return { code: "unsupported_command", message: `Unsupported remote command: ${action}.` };
   }
@@ -522,7 +557,10 @@ export function evaluateRemoteCommandPolicy(args: {
       };
     }
   }
-  if (!policy.viewerAllowed && !(policy.controllerAllowed && isInteractiveControllerPeer(args.peer))) {
+  // A guest's listed command that a paired controller may run (starting a CLI
+  // session) passes here: the host's rights gate for the guest decides it.
+  const controllerOk = isInteractiveControllerPeer(args.peer) || Boolean(args.peer.laneShareGuest);
+  if (!policy.viewerAllowed && !(policy.controllerAllowed && controllerOk)) {
     return {
       code: "forbidden_command",
       message: `Remote command ${action} is not available to paired controller devices.`,
@@ -596,6 +634,8 @@ type SyncRemoteCommandServiceArgs = {
   db?: AdeDb;
   usageTrackingService?: UsageTrackingHost | null;
   getProxyService?: () => Pick<ProxyService, "status"> | null;
+  /** This project's search index; null until bootstrap has built it. */
+  getSearchService?: () => Pick<SearchService, "query" | "indexStatus"> | null;
   accountSettingsStore?: AccountSettingsStore | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   projectRoot?: string;
@@ -621,10 +661,18 @@ type SyncRemoteCommandServiceArgs = {
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   /** The `cloud` action domain (the phone's ADE Cloud page); null with no project runtime yet. */
   cloudActions?: () => Record<string, unknown> | null;
+  /**
+   * The `cloud_phone` action domain (the account's ADE Cloud iPhone), read
+   * when the phone's own pane or ADE Web asks. Resolved lazily from the
+   * runtime's action registry, since the runtime is built a little later.
+   */
+  cloudPhoneActions?: () => Record<string, unknown> | null;
   cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  /** The CTO's account copy, read when a phone asks (the brain builds it after this service). */
+  ctoAccountCopyService?: () => CtoAccountCopyService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   /**
@@ -771,7 +819,52 @@ export type SyncRemoteCommandExecutionContext = {
    * caller's per-tab token and never from the wire.
    */
   connectionId?: string;
+  /**
+   * Set by the host for a lane-sharing guest. A read must not write on its
+   * behalf: `work.getSession` skips its resume-target hydration.
+   */
+  readOnly?: boolean;
+  /**
+   * Set only by the host, for a lane-sharing guest: the author it verified
+   * (user id from the account directory, name from the directory). `chat.send`,
+   * `chat.steer`, `chat.createDraft` and `chat.createThreadComment` stamp it;
+   * an author in the args is always removed. Absent: the host's own user.
+   */
+  author?: AdeMessageAuthor;
+  /**
+   * Set only by the host with `author`: text added to what the agent reads of
+   * a guest's `chat.send` or `chat.steer` (the commit trailer instruction).
+   * The chat shows the guest's own text.
+   */
+  agentNote?: string | null;
+  /**
+   * Set only by the host, for a lane-sharing guest: the turn the guest's
+   * `chat.send`, `chat.steer` or `chat.interrupt` may act on (a turn id), or
+   * null for "no turn may be running". The chat service checks it right
+   * before it acts (`expectedTurnId`). Absent: no check.
+   */
+  expectedTurnId?: string | null;
+  /**
+   * Set only by the host, for `machine.*` commands: the invoking peer's
+   * pairing record, so "who asked for this update" names the paired device
+   * rather than what the client says it is. Null: not a paired peer.
+   */
+  requester?: MachineUpdatePairing | null;
 };
+
+/** The turn a host-set `expectedTurnId` names, added to a guest's args. */
+function withExpectedTurn<T extends object>(turnArgs: T, context: SyncRemoteCommandExecutionContext): T {
+  return context.expectedTurnId === undefined ? turnArgs : { ...turnArgs, expectedTurnId: context.expectedTurnId };
+}
+
+/** The text a guest's turn gives the agent, and the text the chat shows. */
+function withGuestAgentNote<T extends { text: string; displayText?: string }>(
+  turnArgs: T,
+  context: SyncRemoteCommandExecutionContext,
+): T {
+  if (!context.author || !context.agentNote || !turnArgs.text) return turnArgs;
+  return { ...turnArgs, text: `${turnArgs.text}${context.agentNote}`, displayText: turnArgs.displayText ?? turnArgs.text };
+}
 
 type RegisteredRemoteCommand = {
   descriptor: SyncRemoteCommandDescriptor;
@@ -1225,6 +1318,22 @@ function parseAttachGitHubIssueToSessionArgs(value: Record<string, unknown>): {
   };
 }
 
+function parseAttachLinearIssueToSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issues: LaneLinearIssue[];
+} {
+  if (!Array.isArray(value.issues)) {
+    throw new Error("lanes.attachLinearIssueToSession requires an issues array.");
+  }
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.attachLinearIssueToSession requires chatSessionId.",
+    ),
+    issues: parseCliLinearIssues(value.issues),
+  };
+}
+
 function parseDetachGitHubIssueFromSessionArgs(value: Record<string, unknown>): {
   chatSessionId: string;
   issueId?: string;
@@ -1450,7 +1559,9 @@ function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHan
   return {
     ...(withoutClientRuntimeActor(value) as AgentChatHandoffArgs),
     sourceSessionId: requireString(value.sourceSessionId, "chat.handoff requires sourceSessionId."),
-    targetModelId: requireString(value.targetModelId, "chat.handoff requires targetModelId.") as AgentChatHandoffArgs["targetModelId"],
+    // Empty only means something for a CLI session, which continues on its own
+    // model; a chat without one is refused by the chat service.
+    targetModelId: (typeof value.targetModelId === "string" ? value.targetModelId.trim() : "") as AgentChatHandoffArgs["targetModelId"],
     ...(handoffNote ? { handoffNote } : {}),
   };
 }
@@ -1724,6 +1835,7 @@ function parseStartCrossMachineBatchMoveArgs(value: Record<string, unknown>): Ag
     ...(typeof value.includeChanges === "boolean" ? { includeChanges: value.includeChanges } : {}),
     ...(value.whenBusy === "wait" || value.whenBusy === "interrupt" ? { whenBusy: value.whenBusy } : {}),
     ...(typeof value.note === "string" ? { note: value.note } : {}),
+    ...(value.clone === true ? { clone: true } : {}),
   };
 }
 
@@ -1736,10 +1848,11 @@ function parseAgentChatLaunchArgs(value: Record<string, unknown>): AgentChatLaun
   };
 }
 
-function parseWarmupModelArgs(value: Record<string, unknown>): { sessionId: string; modelId: string } {
+function parseWarmupModelArgs(value: Record<string, unknown>): { sessionId: string; modelId: string; sdkOnly?: true } {
   return {
     sessionId: requireString(value.sessionId, "chat.warmupModel requires sessionId."),
     modelId: requireString(value.modelId, "chat.warmupModel requires modelId."),
+    ...(value.sdkOnly === true ? { sdkOnly: true as const } : {}),
   };
 }
 
@@ -2244,6 +2357,9 @@ const DEFAULT_CLI_COLS = 120;
 const DEFAULT_CLI_ROWS = 36;
 const MAX_CLI_COLS = 400;
 const MAX_CLI_ROWS = 200;
+const MAX_CLI_LINEAR_ISSUES = 50;
+// pty.create caps the startup delay at 1s and the initial-input delay at 10s.
+const MAX_CLI_INITIAL_INPUT_DELAY_MS = 10_000;
 
 function clampCliDimension(value: number | undefined, fallback: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(value ?? fallback)));
@@ -2301,6 +2417,9 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
   const initialInput = typeof value.initialInput === "string" && value.initialInput.trim().length > 0
     ? value.initialInput.slice(0, 20_000)
     : null;
+  const linearIssues = parseCliLinearIssues(value.linearIssues);
+  const startupDelayMs = parseCliDelayMs(value.startupDelayMs);
+  const initialInputDelayMs = parseCliDelayMs(value.initialInputDelayMs);
   return {
     laneId,
     provider,
@@ -2318,7 +2437,29 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     instanceId: asTrimmedString(value.instanceId),
     presetId: asTrimmedString(value.presetId),
     credentialId: asTrimmedString(value.credentialId),
+    ...(linearIssues.length ? { linearIssues } : {}),
+    ...(startupDelayMs !== undefined ? { startupDelayMs } : {}),
+    ...(initialInputDelayMs !== undefined ? { initialInputDelayMs } : {}),
   };
+}
+
+/**
+ * The Linear issues a CLI start attaches. Each entry is parsed into a
+ * `LaneLinearIssue` (the shape the desktop's `pty.create` attaches); entries
+ * that are not one are dropped rather than written to the session.
+ */
+function parseCliLinearIssues(value: unknown): LaneLinearIssue[] {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new Error("work.startCliSession linearIssues must be an array.");
+  return value
+    .slice(0, MAX_CLI_LINEAR_ISSUES)
+    .map((entry) => parseLaneLinearIssueValue(entry))
+    .filter((issue): issue is LaneLinearIssue => issue != null);
+}
+
+function parseCliDelayMs(value: unknown): number | undefined {
+  const delay = asOptionalNumber(value);
+  return delay === undefined ? undefined : Math.max(0, Math.min(MAX_CLI_INITIAL_INPUT_DELAY_MS, Math.floor(delay)));
 }
 
 function parseExternalSessionProvider(value: unknown, action: string): ExternalSessionProvider {
@@ -2522,10 +2663,12 @@ function projectChatOntoSession(
 async function getRemoteWorkSession(
   args: SyncRemoteCommandServiceArgs,
   sessionId: string,
+  options: { hydrateResumeTargets: boolean } = { hydrateResumeTargets: true },
 ) {
   let session = args.sessionService.get(sessionId);
   if (!session) return null;
-  if (sessionNeedsResumeTargetHydration(session)) {
+  // Hydration writes the resume targets to the session row: never for a read-only caller.
+  if (options.hydrateResumeTargets && sessionNeedsResumeTargetHydration(session)) {
     try {
       await args.ptyService.ensureResumeTargets([session.id]);
       const hydrated = args.sessionService.get(sessionId);
@@ -2634,7 +2777,13 @@ function createAgentChatAttachmentUpload(
 
 async function getRemoteTurnFileDiff(args: SyncRemoteCommandServiceArgs, payload: Record<string, unknown>) {
   const parsed = parseAgentChatTurnFileDiffArgs(payload);
-  const cwd = requireProjectRoot(args, "chat.getTurnFileDiff");
+  // A lane names the worktree to read in (a lane-sharing guest's read always
+  // does, set by the host). Lanes share one object store, so the commits read
+  // the same; a lane with no worktree here is refused, never the project root.
+  const laneId = asTrimmedString(payload.laneId);
+  const laneCwd = laneId ? resolveLaneWorktreePathForSync(args, laneId) : null;
+  if (laneId && !laneCwd) throw new Error("chat.getTurnFileDiff: that lane has no worktree on this computer.");
+  const cwd = laneCwd ?? requireProjectRoot(args, "chat.getTurnFileDiff");
   const language = parsed.filePath.split(".").pop() ?? undefined;
   const readSide = async (spec: string): Promise<{ exists: boolean; text: string; isTruncated?: boolean; isBinary?: boolean }> => {
     const result = await runGit(["show", spec], {
@@ -2784,6 +2933,8 @@ function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteer
     // typed in the composer.
     sentByUser: true,
     ...(includeThreadComments ? { includeThreadComments: true } : {}),
+    ...guestCommentsField(includeThreadComments, value.includeGuestComments),
+    ...excludedThreadCommentsField(includeThreadComments, value.excludeThreadCommentClientIds),
   };
 }
 
@@ -2945,6 +3096,10 @@ function parseAgentChatRespondToInputArgs(value: Record<string, unknown>): Agent
   if (typeof value.responseText === "string" && value.responseText.trim().length > 0) {
     parsed.responseText = value.responseText.trim();
   }
+  // A plan handoff creates a brand-new chat, so it is spelled out rather than
+  // inferred from a decision: an older host that ignores it still implements
+  // the plan in the planning chat, which is the safe answer.
+  if (value.planAction === "new_chat") parsed.planAction = "new_chat";
   return parsed;
 }
 
@@ -3208,6 +3363,7 @@ function parseGitListCommitFilesArgs(value: Record<string, unknown>): GitListCom
   return {
     laneId: requireString(value.laneId, "git.listCommitFiles requires laneId."),
     commitSha: requireString(value.commitSha, "git.listCommitFiles requires commitSha."),
+    ...(value.onlyLaneHistory === true ? { onlyLaneHistory: true } : {}),
   };
 }
 
@@ -3215,6 +3371,7 @@ function parseGitGetCommitMessageArgs(value: Record<string, unknown>): GitGetCom
   return {
     laneId: requireString(value.laneId, "git.getCommitMessage requires laneId."),
     commitSha: requireString(value.commitSha, "git.getCommitMessage requires commitSha."),
+    ...(value.onlyLaneHistory === true ? { onlyLaneHistory: true } : {}),
   };
 }
 
@@ -3350,6 +3507,8 @@ function parseGetFileDiffArgs(value: Record<string, unknown>): GetFileDiffArgs {
     mode: requireString(value.mode, "git.getFile requires mode.") as GetFileDiffArgs["mode"],
     ...(asTrimmedString(value.compareRef) ? { compareRef: asTrimmedString(value.compareRef)! } : {}),
     ...(asTrimmedString(value.compareTo) ? { compareTo: value.compareTo as GetFileDiffArgs["compareTo"] } : {}),
+    // Only refuses more: a caller that sets it reads less.
+    ...(value.refuseIgnored === true ? { refuseIgnored: true } : {}),
   };
 }
 
@@ -3360,6 +3519,8 @@ function parseGetFilePatchArgs(value: Record<string, unknown>): GetFileDiffArgs 
     mode: requireString(value.mode, "git.getFilePatch requires mode.") as GetFileDiffArgs["mode"],
     ...(asTrimmedString(value.compareRef) ? { compareRef: asTrimmedString(value.compareRef)! } : {}),
     ...(asTrimmedString(value.compareTo) ? { compareTo: value.compareTo as GetFileDiffArgs["compareTo"] } : {}),
+    // Only refuses more: a caller that sets it reads less.
+    ...(value.refuseIgnored === true ? { refuseIgnored: true } : {}),
   };
 }
 
@@ -3703,6 +3864,13 @@ function parseSetPrAutoMergeArgs(value: Record<string, unknown>): SetPrAutoMerge
     enabled: value.enabled,
     ...(method ? { method } : {}),
   };
+}
+
+/** The repo a PR writing helper names; neither means the project's own repo. */
+function prRepoArgs(value: Record<string, unknown>): { repoOwner?: string; repoName?: string } {
+  const repoOwner = asTrimmedString(value.repoOwner);
+  const repoName = asTrimmedString(value.repoName);
+  return repoOwner && repoName ? { repoOwner, repoName } : {};
 }
 
 function parseRequestReviewersArgs(value: Record<string, unknown>): RequestPrReviewersArgs {
@@ -4113,6 +4281,22 @@ function registerProxyRemoteCommands({ args, register }: RemoteCommandRegistrati
   }, "runtime");
 }
 
+/**
+ * The project's search index, read only, for the web palette (the same calls
+ * as the `search` action domain). A remote caller never sets `callerScope`,
+ * as at the RPC edge. The query text is not logged: it can hold chat text.
+ */
+function registerSearchRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  register("search.query", { viewerAllowed: true }, async (payload) => {
+    const searchService = args.getSearchService?.();
+    if (!searchService) throw new Error("Search is not available in this runtime.");
+    const { callerScope: _callerScope, ...query } = (payload ?? {}) as SearchQueryArgs;
+    if (typeof query.query !== "string") throw new Error("search.query requires query.");
+    return searchService.query(query);
+  });
+  register("search.indexStatus", { viewerAllowed: true }, async () => args.getSearchService?.()?.indexStatus() ?? null);
+}
+
 function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   /**
    * Run a new lane's setup without holding the reply: the default lane
@@ -4351,6 +4535,8 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     ));
   register("lanes.attachGitHubIssueToSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.attachGitHubIssueToSession(parseAttachGitHubIssueToSessionArgs(payload)));
+  register("lanes.attachLinearIssueToSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.attachLinearIssueToSession(parseAttachLinearIssueToSessionArgs(payload)));
   register("lanes.detachGitHubIssueFromSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.detachGitHubIssueFromSession(parseDetachGitHubIssueFromSessionArgs(payload)));
   register("lanes.listGitHubIssuesForSession", { viewerAllowed: true }, async (payload) =>
@@ -4473,14 +4659,17 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     agentChatService: args.agentChatService,
     logger: args.logger,
   });
-  register("work.getSession", { viewerAllowed: true }, async (payload) =>
-    getRemoteWorkSession(args, parseSessionIdArgs(payload, "work.getSession").sessionId));
+  register("work.getSession", { viewerAllowed: true }, async (payload, context) =>
+    getRemoteWorkSession(args, parseSessionIdArgs(payload, "work.getSession").sessionId, {
+      hydrateResumeTargets: context.readOnly !== true,
+    }));
   register("work.deleteSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const sessionId = requireString(payload.sessionId, "Session id is required.");
-    await deleteTerminalSessionWithRuntimeCleanup({
+    await deleteSessionRowWithRuntimeCleanup({
       sessionId,
       sessionService: args.sessionService,
       ptyService: args.ptyService,
+      agentChatService: args.agentChatService ?? null,
     });
   });
   register("work.getSessionDelta", { viewerAllowed: true }, async (payload) =>
@@ -4718,9 +4907,15 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       credentialId: parsed.credentialId,
     });
     const remotePreset = trackedPreset?.preset;
+    // A named account wins; otherwise a new CLI session starts where a new
+    // chat would. A preset or a stored key brings its own sign-in.
+    const namedInstanceId = parsed.instanceId?.trim() || null;
+    const pickedInstanceId = provider !== "shell" && !namedInstanceId && !parsed.presetId && !parsed.credentialId
+      ? args.agentChatService?.pickNewCliSessionAccount(provider, trackedPreset?.model || parsed.modelId || parsed.model || null) ?? null
+      : null;
     const resolvedInstance = provider === "shell"
       ? null
-      : resolveProviderInstanceForLaunch(provider, parsed.instanceId);
+      : resolveProviderInstanceForLaunch(provider, namedInstanceId || pickedInstanceId);
     const userMcp = provider === "shell"
       ? null
       : await resolveTrackedCliUserMcp({
@@ -4796,7 +4991,13 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       toolType,
       cols,
       rows,
+      ...(parsed.startupDelayMs !== undefined ? { startupDelayMs: parsed.startupDelayMs } : {}),
+      // The caller's delay applies only when the provider launch sets none.
+      ...(parsed.initialInputDelayMs !== undefined ? { initialInputDelayMs: parsed.initialInputDelayMs } : {}),
       ...launch,
+      // Attached before the spawn, the same way a desktop CLI launch does it,
+      // so the CLI inherits ADE_LINEAR_* on the machine that owns the lane.
+      ...(parsed.linearIssues?.length ? { linearIssues: parsed.linearIssues } : {}),
       ...(resumeMetadata ? { resumeMetadata } : {}),
     });
 
@@ -5049,6 +5250,18 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     if (!enabled) args.agentChatService?.applyFastModePolicy();
     return { ok: true, enabled };
   });
+  // Claude's Full access where ADE runs as root (the brain's
+  // `claudeRootFullAccess.ts`). The answer covers every chat on this machine,
+  // so only the owner's own controller devices may set it, as with spending
+  // a reset credit; a viewer only reads it.
+  register("chat.getRootFullAccess", { viewerAllowed: true }, async () =>
+    requireService(args.agentChatService, "Chats are not available on this machine.").getRootFullAccess(),
+  );
+  register("chat.setRootFullAccess", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Chats are not available on this machine.").setRootFullAccess({
+      allowed: (payload as { allowed?: unknown } | null)?.allowed,
+    }),
+  );
   register("chat.handoff", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").handoffSession(
       parseAgentChatHandoffArgs(payload),
@@ -5109,6 +5322,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.getCrossMachineBatchMove", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getCrossMachineBatchMove({
       batchId: requireString(payload.batchId, "chat.getCrossMachineBatchMove requires batchId."),
+    }));
+  // Read-only: whether the batch's source lanes changed after the move carried them.
+  register("chat.crossMachineBatchSourceChanged", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").crossMachineBatchSourceChanged({
+      batchId: requireString(payload.batchId, "chat.crossMachineBatchSourceChanged requires batchId."),
     }));
   register("chat.retryCrossMachineBatchMove", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").retryCrossMachineBatchMove({
@@ -5200,8 +5418,8 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.listDrafts", { viewerAllowed: true }, async () =>
     listDrafts(requireService(args.db, "Database not available.")));
-  register("chat.createDraft", { viewerAllowed: true }, async (payload) =>
-    createDraft(requireService(args.db, "Database not available."), payload));
+  register("chat.createDraft", { viewerAllowed: true }, async (payload, context) =>
+    createDraft(requireService(args.db, "Database not available."), payload, { author: context.author ?? null }));
   register("chat.deleteDraft", { viewerAllowed: true }, async (payload) => {
     const id = typeof payload.id === "string" ? payload.id.trim() : "";
     if (!id) throw new Error("Missing draft id.");
@@ -5230,7 +5448,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").listThreadComments({
       sessionId: requireString(payload.sessionId, "chat.listThreadComments requires sessionId."),
     }));
-  register("chat.createThreadComment", { viewerAllowed: true }, async (payload) => {
+  register("chat.createThreadComment", { viewerAllowed: true }, async (payload, context) => {
     const anchor = normalizeThreadCommentAnchor(payload.anchor);
     if (!anchor) throw new Error("chat.createThreadComment requires the text or table row the comment is about.");
     return requireService(args.agentChatService, "Agent chat service not available.").createThreadComment({
@@ -5239,7 +5457,9 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       messageExcerpt: typeof payload.messageExcerpt === "string" ? payload.messageExcerpt : "",
       anchor,
       body: typeof payload.body === "string" ? payload.body : "",
-    });
+      // The host cleans it (`normalizeThreadCommentClientId`); a lane-share guest's is dropped by its policy.
+      ...(typeof payload.clientId === "string" ? { clientId: payload.clientId } : {}),
+    }, { author: context.author ?? null });
   });
   register("chat.updateThreadComment", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").updateThreadComment({
@@ -5264,13 +5484,18 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // Tracked CLI launch (the Linear batch-launch path). Without it the web
   // client's launch resolved to `null` and reported a launch that never
   // spawned a pty.
-  register("chat.launchCli", { viewerAllowed: true, queueable: true }, async (payload) =>
-    launchAgentChatCli(parseAgentChatLaunchCliArgs(payload), {
+  register("chat.launchCli", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const agentChatService = args.agentChatService;
+    return launchAgentChatCli(parseAgentChatLaunchCliArgs(payload), {
       laneService: args.laneService,
       ptyService: args.ptyService,
       sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
       logger: args.logger,
-    }));
+      ...(agentChatService
+        ? { pickAccount: (provider: string, modelId: string | null) => agentChatService.pickNewCliSessionAccount(provider, modelId) }
+        : {}),
+    });
+  });
   // Auto-lane naming. It degrades to a deterministic name on the client, so an
   // unregistered action was survivable — but every web auto-created lane was
   // silently denied its AI-generated name.
@@ -5378,6 +5603,20 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       paused,
     });
   });
+  register("chat.setScheduledWorkItemPaused", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const paused = asOptionalBoolean(payload.paused);
+    if (paused === undefined) throw new Error("chat.setScheduledWorkItemPaused requires paused.");
+    return requireService(args.agentChatService, "Agent chat service not available.").setScheduledWorkItemPaused({
+      sessionId: requireString(payload.sessionId, "chat.setScheduledWorkItemPaused requires sessionId."),
+      scheduleId: requireString(payload.scheduleId, "chat.setScheduledWorkItemPaused requires scheduleId."),
+      paused,
+    });
+  });
+  register("chat.runScheduledWorkNow", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").runScheduledWorkNow({
+      sessionId: requireString(payload.sessionId, "chat.runScheduledWorkNow requires sessionId."),
+      scheduleId: requireString(payload.scheduleId, "chat.runScheduledWorkNow requires scheduleId."),
+    }));
   register("chat.getChatEventHistory", { viewerAllowed: true, observesAbort: true }, async (payload, context): Promise<AgentChatEventHistorySnapshot> => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistory requires sessionId.");
@@ -5455,6 +5694,19 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").getMainTranscript(
       parseAgentChatMainTranscriptArgs(payload),
     ));
+  // A chat's or a tracked agent CLI's open cards (`cliCardInputs.ts`): the web
+  // client's CLI surface lists them to answer them.
+  register("chat.listPendingInputs", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").listPendingInputs({
+      sessionId: requireString(payload.sessionId, "chat.listPendingInputs requires sessionId."),
+    }));
+  // What the chat's runtime can show (subagents, review mode). The web
+  // client's adapter already asks for it and fell back to "nothing" when no
+  // host served it.
+  register("chat.getSessionCapabilities", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getSessionCapabilities({
+      sessionId: requireString(payload.sessionId, "chat.getSessionCapabilities requires sessionId."),
+    }));
   register("chat.listSubagents", { viewerAllowed: true, queueable: false, observesAbort: true }, async (payload, context) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatSubagentListArgs(payload);
@@ -5516,18 +5768,23 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireChatLaunchService().queueMessage(parseChatLaunchQueueMessageArgs(payload)));
   register("chat.completeLaunchClient", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().completeClient(parseChatLaunchCompleteClientArgs(payload)));
-  register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const sendArgs = parseAgentChatSendArgs(payload);
+  register("chat.send", { viewerAllowed: true, queueable: true }, async (payload, context) => {
+    // A paired controller sends what its user typed, like `chat.steer`.
+    const sendArgs = withExpectedTurn(
+      withGuestAgentNote({ ...parseAgentChatSendArgs(payload), sentByUser: true }, context),
+      context,
+    );
     // A phone or web message: no desktop is the one being talked from now.
     noteSessionInputOrigin(sendArgs.sessionId, null);
     const result = await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
       sendArgs,
-      { awaitDispatch: false, routeActiveToSteer: true },
+      { awaitDispatch: false, routeActiveToSteer: true, ...(context.author ? { author: context.author } : {}) },
     );
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
   });
-  register("chat.interrupt", { viewerAllowed: true, queueable: false }, async (payload) => {
-    const result = await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
+  register("chat.interrupt", { viewerAllowed: true, queueable: false }, async (payload, context) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.")
+      .interrupt(withExpectedTurn(parseAgentChatInterruptArgs(payload), context));
     return { ...result, ok: true };
   });
   register("chat.interruptWithQueueMode", { viewerAllowed: true, queueable: false }, async (payload) => {
@@ -5562,10 +5819,31 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.resolveUnprocessedMessage", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.")
       .resolveUnprocessedMessage(parseAgentChatResolveUnprocessedMessageArgs(payload)));
-  register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload) => {
-    const result = await requireService(args.agentChatService, "Agent chat service not available.")
-      .steerUserMessage(parseAgentChatSteerArgs(payload));
+  register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload, context) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const steerArgs = withExpectedTurn(withGuestAgentNote(parseAgentChatSteerArgs(payload), context), context);
+    const result = context.author
+      ? await agentChatService.steerUserMessage(steerArgs, { author: context.author })
+      : await agentChatService.steerUserMessage(steerArgs);
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
+  });
+  // Text for a running agent CLI from a phone or the web: typed now when its
+  // prompt is free, else held on this host and typed when it is (neither
+  // client keeps a queue of its own). Queueable, so an offline phone's send
+  // goes out on reconnect. Lane share guests are not offered it.
+  register("chat.typeIntoCli", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const sessionId = requireString(payload.sessionId, "chat.typeIntoCli requires sessionId.");
+    const text = requireString(payload.text, "chat.typeIntoCli requires text.");
+    const result = await agentChatService.typeIntoAgentCliWhenFree({
+      sessionId,
+      text,
+      holdUntilFree: payload.holdUntilFree !== false,
+      ...(typeof payload.clientMessageId === "string" && payload.clientMessageId.trim()
+        ? { clientMessageId: payload.clientMessageId.trim().slice(0, 128) }
+        : {}),
+    });
+    return { ok: true, outcome: result.outcome, ...(result.typedAtOnce ? { typedAtOnce: true } : {}) };
   });
   register("chat.cancelSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").cancelSteer(parseAgentChatCancelSteerArgs(payload));
@@ -5592,8 +5870,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     return { ok: true };
   });
   register("chat.respondToInput", { viewerAllowed: true, queueable: false }, async (payload) => {
-    await requireService(args.agentChatService, "Agent chat service not available.").respondToInput(parseAgentChatRespondToInputArgs(payload));
-    return { ok: true };
+    const result = await requireService(args.agentChatService, "Agent chat service not available.")
+      .respondToInput(parseAgentChatRespondToInputArgs(payload));
+    // The plan handoff answers with the chat it created so the phone and the web
+    // client can open it; every other answer is a plain acknowledgement.
+    return result?.implementationSessionId
+      ? { ok: true, implementationSessionId: result.implementationSessionId }
+      : { ok: true };
   });
   // Throwing a non-blocking question away. Viewer-allowed for the same reason
   // answering one is: it changes nothing on disk and nothing in the repo, and a
@@ -5640,6 +5923,27 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     await requireService(args.agentChatService, "Agent chat service not available.").unarchiveSession(parseAgentChatArchiveArgs(payload, "chat.unarchive"));
     return { ok: true };
   });
+  // Recently deleted chats (Settings). Not queued: each answer is shown at once.
+  register("chat.listDeleted", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").listDeletedChats({
+      ...(typeof payload.query === "string" ? { query: payload.query } : {}),
+    }));
+  register("chat.getDeletedDetail", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getDeletedChatDetail({
+      id: requireString(payload.id, "chat.getDeletedDetail requires id."),
+      ...(typeof payload.before === "string" && payload.before ? { before: payload.before } : {}),
+    }));
+  register("chat.reopenDeleted", { viewerAllowed: true }, async (payload) => {
+    const laneId = asTrimmedString(payload.laneId);
+    return requireService(args.agentChatService, "Agent chat service not available.").reopenDeletedChat({
+      id: requireString(payload.id, "chat.reopenDeleted requires id."),
+      ...(laneId ? { laneId } : {}),
+    });
+  });
+  register("chat.removeDeleted", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").removeDeletedChats({
+      ids: asStringArray(payload.ids),
+    }));
   register("chat.delete", { viewerAllowed: true, queueable: true }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").deleteSession(parseAgentChatArchiveArgs(payload, "chat.delete"));
     // `recoverable`: whether Recently deleted holds it, so the client offers Undo.
@@ -5689,6 +5993,23 @@ function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandReg
     async (payload) => await scope.streamEvents(payload),
     "runtime",
   );
+}
+
+/**
+ * "Update & restart" for this machine, from a phone or browser on the project
+ * host's socket. Registered only on a brain that can update itself.
+ */
+function registerMachineUpdateRemoteCommands({ register }: RemoteCommandRegistrationDeps): void {
+  // The descriptors the hello advertises; none when this brain cannot update itself.
+  for (const { action, policy, scope } of machineUpdateRemoteCommandDescriptors()) {
+    if (!isMachineUpdateRemoteCommandAction(action)) continue;
+    register(
+      action,
+      policy,
+      async (payload, context) => await runMachineUpdateRemoteCommand(action, payload, context.requester ?? null),
+      scope,
+    );
+  }
 }
 
 function registerPushRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -5915,6 +6236,22 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
     workToolsStateService.readObservationPreview({
       path: requireString(payload.path, "workTools.readObservationPreview requires path."),
     }));
+  // A browser tab's live picture on the phone: each read renews a short watch
+  // on the desktop, so frames flow only while the sheet is open.
+  register("workTools.readBrowserTabFrame", { viewerAllowed: true, queueable: false }, async (payload) =>
+    workToolsStateService.readBrowserTabFrame({
+      tabId: requireString(payload.tabId, "workTools.readBrowserTabFrame requires tabId."),
+      maxWidth: payload.maxWidth,
+    }));
+  // Take control of a browser tab from the phone: a tap, a scroll, typing.
+  register(
+    "workTools.sendBrowserTabInput",
+    { viewerAllowed: false, controllerAllowed: true, queueable: false },
+    async (payload) => workToolsStateService.sendBrowserTabInput({
+      tabId: requireString(payload.tabId, "workTools.sendBrowserTabInput requires tabId."),
+      event: payload.event,
+    }),
+  );
   register(
     "workTools.closeBrowserTab",
     { viewerAllowed: false, controllerAllowed: true, queueable: false },
@@ -6604,11 +6941,18 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
     ));
 }
 
-/** What the phone's ADE Cloud page may run (`cloud.read` / `cloud.write`). */
-const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["access", "list", "hours", "limits", "ready_status", "make_status"]);
+/**
+ * What the phone's ADE Cloud page and ADE Web may run (`cloud.read` /
+ * `cloud.write`). `saved_chats_*`: an asleep cloud computer's chats, for a
+ * client with no cloud credential of its own (ADE Web's Work list and Lanes).
+ */
+const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set([
+  "access", "status", "list", "hours", "limits", "make_status", "cloud_sign_in_status", "referral",
+  "saved_chats_list", "saved_chats_read",
+]);
+/** `invite_redeem`: the person enters someone's invite from their own phone (a controlling device only). */
 const CLOUD_REMOTE_WRITES: ReadonlySet<string> = new Set([
-  "create", "copy", "move", "sleep", "wake", "resize", "delete", "update", "set_limits",
-  "ready_set", "ready_off", "ready_retry",
+  "create", "copy", "move", "sleep", "wake", "resize", "delete", "update", "set_limits", "invite_redeem",
 ]);
 
 /**
@@ -6681,6 +7025,53 @@ function registerWebhookRemoteCommands({ args, register }: RemoteCommandRegistra
   for (const entry of entries) {
     register(entry.action, entry.policy, async (payload) => entry.handler(payload));
   }
+}
+
+/**
+ * The ADE Cloud iPhone (`cloud_phone` on the chat's brain), for the phone's
+ * own pane and ADE Web: the same domain service the desktop reaches through
+ * its runtime pin. `getStatus` is a read; a view link, start, stop and a
+ * screenshot are the person's own, so only a controlling device may ask.
+ */
+function registerCloudPhoneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const getDomain = args.cloudPhoneActions;
+  if (!getDomain) return;
+  // The action registry builds every domain on each call; the phone is one per
+  // brain, so keep the first `cloud_phone` domain and reuse it.
+  let resolved: Record<string, unknown> | null = null;
+  const domain = (): Record<string, unknown> => {
+    resolved ??= getDomain() ?? null;
+    if (!resolved) throw new Error("The ADE Cloud iPhone is not available in this runtime.");
+    return resolved;
+  };
+  const call = async (action: string, input: Record<string, unknown>): Promise<unknown> => {
+    const service = domain();
+    const handler = service[action];
+    if (typeof handler !== "function") throw new Error(`The ADE Cloud iPhone has no "${action}" here.`);
+    return await (handler as (values: unknown) => Promise<unknown>).call(service, input);
+  };
+
+  register("cloudPhone.status", { viewerAllowed: true }, async () => await call("getStatus", {}));
+  register("cloudPhone.view", { viewerAllowed: false, controllerAllowed: true }, async (payload) =>
+    await call("view", payload.control === undefined ? {} : { control: payload.control }));
+  register("cloudPhone.start", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    await call("start", payload.device === undefined ? {} : { device: payload.device }));
+  register("cloudPhone.stop", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async () =>
+    await call("stop", {}));
+  // The pane's "still here" for the idle stop; never starts a phone.
+  register("cloudPhone.keepAlive", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async () =>
+    await call("keepAlive", {}));
+  // The capture is filed to the calling project's proof drawer, owned by the
+  // chat and lane named here; the answer is the drawer's id, if it has one.
+  register("cloudPhone.screenshot", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const chatSessionId = asTrimmedString(payload.chatSessionId);
+    const laneId = asTrimmedString(payload.laneId);
+    const answer = await call("screenshot", {
+      ...(chatSessionId ? { chatSessionId } : {}),
+      ...(laneId ? { laneId } : {}),
+    }) as { artifactId?: string | null };
+    return { artifactId: answer.artifactId ?? null };
+  });
 }
 
 function registerAppleRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -6811,11 +7202,8 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     return summarizeChatSessionForRemote(agentChatService, session);
   });
 
-  register("cto.getState", { viewerAllowed: true }, async (payload) => {
-    const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
-    const recentLimit = asOptionalNumber(payload.recentLimit);
-    return ctoStateService.getSnapshot(recentLimit ?? 20);
-  });
+  register("cto.getState", { viewerAllowed: true }, async () =>
+    requireService(args.ctoStateService, "CTO state service not available.").getSnapshot());
   // The project's CTO home machine, the same account setting the desktop reads
   // (`ctoHomeMachine.ts`): scope `repo:<origin>`, key `cto.homeMachine`.
   register("cto.getHomeMachine", { viewerAllowed: true }, async (payload) => {
@@ -6839,6 +7227,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
       name,
       hostname: asTrimmedString(record?.hostname) ?? null,
       chosenAt: new Date().toISOString(),
+      ...(asTrimmedString(record?.cloudInstanceId) ? { cloudInstanceId: asTrimmedString(record?.cloudInstanceId) } : {}),
     };
     store.set(scope, CTO_HOME_SETTING_KEY, value);
     return { ok: true, value };
@@ -6852,9 +7241,50 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   });
   register("cto.getMemory", { viewerAllowed: true }, async () => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
-    // Returns the exact CtoMemorySnapshot shape the iOS client decodes:
-    // { memory, threadState, dailyLog, dailyLogDate, updatedAt }.
+    // Returns the CtoMemorySnapshot the iOS client decodes (every field
+    // defaulted there); the v1-only fields are sent empty.
     return ctoMemoryService.getSnapshot();
+  });
+  // Not queueable: a whole-file write replayed later would overwrite whatever
+  // the CTO or another device saved in between. `baseHash` refuses that too.
+  register("cto.updateNotes", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    const scope = payload.scope === "user" ? "user" : payload.scope === "project" ? "project" : null;
+    if (!scope) throw new Error("cto.updateNotes requires scope: project or user.");
+    if (typeof payload.text !== "string") throw new Error("cto.updateNotes requires text.");
+    ctoMemoryService.writeNotes(scope, payload.text, {
+      baseHash: typeof payload.baseHash === "string" ? payload.baseHash : null,
+    });
+    return ctoMemoryService.getSnapshot();
+  });
+  register("cto.updateOpenWork", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    const op = payload.op;
+    if (op === "add") {
+      ctoMemoryService.updateOpenWork({ op, text: requireString(payload.text, "cto.updateOpenWork add requires text.") });
+    } else if (op === "complete" || op === "reopen" || op === "remove") {
+      ctoMemoryService.updateOpenWork({ op, id: requireString(payload.id, `cto.updateOpenWork ${op} requires id.`) });
+    } else {
+      throw new Error("cto.updateOpenWork requires op: add, complete, reopen or remove.");
+    }
+    return ctoMemoryService.getSnapshot();
+  });
+  // The person moved the CTO here: take it from its account copy. The phone
+  // that made the move asks the new home itself.
+  register("cto.adoptAccountCopy", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const copy = args.ctoAccountCopyService?.() ?? null;
+    if (!copy) return { restored: false, fromName: null, savedAt: null };
+    return await copy.adopt({ home: payload.home });
+  });
+  register("cto.getAccountCopyStatus", { viewerAllowed: true }, async () =>
+    args.ctoAccountCopyService?.()?.status()
+      ?? { available: false, savedAt: null, ownerName: null, ownerIsThisMachine: false });
+  register("cto.refreshContext", { viewerAllowed: true, queueable: false }, async () =>
+    requireService(args.agentChatService, "Agent chat service not available.").refreshCtoContext());
+  register("cto.previewSystemPrompt", { viewerAllowed: true }, async (payload) => {
+    const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
+    const override = isRecord(payload.identityOverride) ? (payload.identityOverride as Partial<CtoIdentity>) : undefined;
+    return ctoStateService.previewSystemPrompt(override);
   });
   register("cto.getLinearConnectionStatus", { viewerAllowed: true }, async () =>
     buildLinearConnectionStatus(args));
@@ -7080,6 +7510,7 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
       mode: parsed.mode,
       compareRef: parsed.compareRef,
       compareTo: parsed.compareTo,
+      ...(parsed.refuseIgnored ? { refuseIgnored: true } : {}),
     });
   });
   register("git.getFilePatch", { viewerAllowed: true }, async (payload) => {
@@ -7091,6 +7522,7 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
       mode: parsed.mode,
       compareRef: parsed.compareRef,
       compareTo: parsed.compareTo,
+      ...(parsed.refuseIgnored ? { refuseIgnored: true } : {}),
     });
   });
   register("git.getUserIdentity", { viewerAllowed: true }, async (payload) =>
@@ -7159,6 +7591,7 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
   register("git.getSyncStatuses", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getSyncStatuses({
       laneIds: asStringArray(payload.laneIds),
+      ...(payload.skipRecommendation === true ? { skipRecommendation: true } : {}),
     }));
   register("git.getOriginRemote", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getOriginRemote(parseConflictLaneArgs(payload, "git.getOriginRemote")));
@@ -7243,7 +7676,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.githubService, "GitHub service not available.").getStatus({
       forceRefresh: payload.forceRefresh === true,
     }));
-  register("github.getRemoteStatus", { viewerAllowed: true, observesAbort: true }, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> =>
+  register("github.getRemoteStatus", { viewerAllowed: true, observesAbort: true }, async (): Promise<GitHubRemoteStatus> =>
     requireService(args.githubService, "GitHub service not available.").getRemoteStatus());
   // The web client's PR timers run in the browser but spend THIS machine's
   // quota. Without this registration its adapter falls back to an all-null
@@ -7436,6 +7869,15 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     );
     return redactProjectConfigSnapshotForRemote(projectConfigService.save(candidate));
   });
+  // The answer to a setting that moved to the account with a different value
+  // on this computer (the hosted web client's Settings).
+  register("projectConfig.resolveAccountSettingNotice", { viewerAllowed: true }, async (payload) => {
+    const key = requireString(payload.key, "projectConfig.resolveAccountSettingNotice requires key.");
+    const choice = payload.choice === "use_local" ? "use_local" : "keep";
+    return redactProjectConfigSnapshotForRemote(
+      requireService(args.projectConfigService, "Project config service not available.").resolveAccountSettingNotice({ key, choice }),
+    );
+  });
   register("ai.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload, context) => {
     try {
       return await runAiStatusWithTimeout(
@@ -7530,6 +7972,19 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     }), "runtime");
   register("ai.antigravitySignInCancel", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
     (await antigravitySignIn()).cancelAntigravitySignIn({ flowId: requireString(payload.flowId, "ai.antigravitySignInCancel requires flowId.") }), "runtime");
+  // ADE's pinned copy of a provider's tool on THIS machine, the same calls as
+  // the desktop's `ai.pinnedToolStatus` / `ai.pinnedToolDownload` actions. The
+  // phone's and the web client's Free page download OpenCode with them.
+  // Reading is a viewer's; a download is a controller's.
+  const pinnedProviderTools = () => import("../../../../desktop/src/main/services/ai/pinnedProviderTools");
+  register("ai.pinnedToolStatus", { viewerAllowed: true }, async (payload) =>
+    (await pinnedProviderTools()).getPinnedProviderToolStatus(
+      requireString(payload.provider, "ai.pinnedToolStatus requires provider."),
+    ), "runtime");
+  register("ai.pinnedToolDownload", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    (await pinnedProviderTools()).startPinnedProviderToolDownload(
+      requireString(payload.provider, "ai.pinnedToolDownload requires provider."),
+    ), "runtime");
   register("ai.listCursorCloudRepositories", { viewerAllowed: true }, async (payload) =>
     requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudRepositories({
       refresh: payload.refresh === true,
@@ -8111,6 +8566,29 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     await args.prService.updateBody(parseUpdatePrBodyArgs(payload));
     return { ok: true };
   });
+  // The PR writing helpers the web client's PR pages use: the description
+  // editor (a PR opened from the GitHub list may have no local row, which
+  // `updateBody` needs), and the people, teams, issues and PRs behind the
+  // reviewer picker and the @ / # menus. Reads are not queued: a late answer
+  // to a search helps nobody.
+  register("prs.updateDescription", { viewerAllowed: true, queueable: true }, async (payload) => {
+    // A call without a body is a broken call, not a request to clear the
+    // description. An empty string is that request.
+    if (typeof payload.body !== "string") throw new Error("prs.updateDescription requires body.");
+    await args.prService.updateDescription({
+      prId: requirePrId(payload, "prs.updateDescription"),
+      body: payload.body,
+    });
+    return { ok: true };
+  });
+  register("prs.searchMentionables", { viewerAllowed: true }, async (payload) =>
+    args.prService.searchMentionables({
+      ...prRepoArgs(payload),
+      query: typeof payload.query === "string" ? payload.query : "",
+      ...(payload.includeTeams === true ? { includeTeams: true } : {}),
+    }));
+  register("prs.getRepoReferences", { viewerAllowed: true }, async (payload) =>
+    args.prService.getRepoReferences(prRepoArgs(payload)));
   register("prs.setLabels", { viewerAllowed: true, queueable: true }, async (payload) => {
     await args.prService.setLabels(parseSetPrLabelsArgs(payload));
     return { ok: true };
@@ -8182,6 +8660,29 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       handler,
     });
   };
+
+  // ADE Web's "What's new" seen pages: one account setting, read and grown
+  // through this brain because a browser has no account-settings store. Only
+  // this key, and only by union, so a caller can add seen pages but never
+  // remove one or touch any other setting. Not in the lane-share guest list:
+  // a guest's pages would land on the host's account.
+  register("announcements.getSeen", { viewerAllowed: true }, async () => {
+    if (!args.accountSettingsStore) return { available: false, value: {} };
+    return {
+      available: true,
+      value: normalizeSeenAnnouncements(args.accountSettingsStore.get(ACCOUNT_SCOPE_ALL, ANNOUNCEMENTS_SEEN_SETTING_KEY)),
+    };
+  }, "runtime");
+  register("announcements.markSeen", { viewerAllowed: true }, async (payload) => {
+    const store = requireService(args.accountSettingsStore, "Account settings are not available on this machine.");
+    const current = normalizeSeenAnnouncements(store.get(ACCOUNT_SCOPE_ALL, ANNOUNCEMENTS_SEEN_SETTING_KEY));
+    const merged = mergeSeenAnnouncements(current, normalizeSeenAnnouncements(payload.seen));
+    if (seenAnnouncementsCover(current, merged)) return { ok: true, value: current };
+    if (!store.set(ACCOUNT_SCOPE_ALL, ANNOUNCEMENTS_SEEN_SETTING_KEY, merged)) {
+      return { ok: false, value: current };
+    }
+    return { ok: true, value: merged };
+  }, "runtime");
 
   register("analytics.capture", { viewerAllowed: true }, async (payload) => {
     if (!args.productAnalyticsService) {
@@ -8300,10 +8801,43 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     const { approval: _ignored, ...rest } = input;
     return await (handler as (input: unknown) => Promise<unknown>).call(domain, { ...rest, approval: { by: "person" } });
   };
+  // A kept ADE Cloud lane moved to THIS machine, in this project (shared/cloudKeptLaneRestore.ts):
+  // ADE Web and the phone pin the destination machine. The preview and the progress are reads;
+  // the move needs a controlling device, and the person asking is the person.
+  const keptLaneCall = async (action: "kept_lane_move_preview" | "kept_lane_move" | "kept_lane_move_status", payload: Record<string, unknown>) => {
+    const domain = args.cloudActions?.() ?? null;
+    const handler = domain?.[action];
+    if (typeof handler !== "function") throw new Error(`cloud has no "${action}" here. Update ADE on this computer.`);
+    // The same gate as every other ADE Cloud call: with ADE Cloud off here, the command isn't here.
+    const accessOn = await cloudDomainEnabled(domain, (error) => {
+      args.logger.warn("cloud.remote_access_read_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+    if (!accessOn) throw new Error(`cloud has no "${action}" here.`);
+    // `fromComputer`: the lane's asleep ADE Cloud computer, released first (the store checks the id).
+    return await (handler as (input: unknown) => Promise<unknown>).call(domain, pickKeptLaneRestoreArgs(payload));
+  };
+  register("cloud.previewKeptLaneRestore", { viewerAllowed: true }, async (payload) => await keptLaneCall("kept_lane_move_preview", payload));
+  register("cloud.restoreKeptLane", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => await keptLaneCall("kept_lane_move", payload));
+  register("cloud.getKeptLaneRestore", { viewerAllowed: true }, async (payload) => await keptLaneCall("kept_lane_move_status", payload));
   register("cloud.read", { viewerAllowed: true }, async (payload) =>
     await cloudCall(payload, CLOUD_REMOTE_READS), "runtime");
   register("cloud.write", { viewerAllowed: false, controllerAllowed: true }, async (payload) =>
     await cloudCall(payload, CLOUD_REMOTE_WRITES), "runtime");
+
+  // The account's sign-ins (Cloud 4), for Settings › Providers and the ADE
+  // Cloud page on the phone and in the web app: the same `provider_logins`
+  // service the desktop reaches through its runtime pin. `status` is a read.
+  // The rest are the person's own writes, so only a controlling device (the
+  // person's phone or browser) may send them; agents and outside apps never
+  // reach sync commands. The two this-computer-only actions (`allowKeychain`,
+  // `allowGitHubCli`) stay on the desktop in front of that computer.
+  const providerLogins = buildProviderLoginsDomainService();
+  register("providerLogins.status", { viewerAllowed: true }, async (payload) =>
+    await providerLogins.status(payload), "runtime");
+  for (const method of ["captureNow", ...PROVIDER_LOGIN_ACCOUNT_WRITES] as const) {
+    register(`providerLogins.${method}`, { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+      await providerLogins[method](payload), "runtime");
+  }
 
   register("account.getMachineInventory", { viewerAllowed: true }, async (payload) => {
     const machineKey = asTrimmedString(payload.machineKey);
@@ -8325,6 +8859,13 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
 
   register("account.setRelayEnabled", { viewerAllowed: true, runtimeHostOnly: true }, async (payload) =>
     await setMachineRelayEnabled(readRelayEnabledArg(payload.enabled)), "runtime");
+
+  // "Use for new lanes": which folder of a project new lanes on this computer
+  // use. Machine-level (the account project state of the publishing brain),
+  // so it answers the same from any project scope. A person's choice: the
+  // account's own phone may make it, an agent's viewer may not.
+  register("projects.setMainCheckout", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    await setAccountProjectMainCheckout(payload.checkoutId), "runtime");
 
   register("usage.getQuotaSnapshot", { viewerAllowed: true }, async () => {
     if (!args.usageTrackingService) throw new Error("Usage quota is not available in this runtime.");
@@ -8435,16 +8976,19 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   }, "runtime");
 
   registerProxyRemoteCommands({ args, register });
+  registerSearchRemoteCommands({ args, register });
   registerLaneRemoteCommands({ args, register });
   registerWorkRemoteCommands({ args, register });
   registerChatRemoteCommands({ args, register });
   registerPersonalChatRemoteCommands({ args, register });
+  registerMachineUpdateRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
   registerComputerUseRemoteCommands({ args, register });
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
   registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
+  registerCloudPhoneRemoteCommands({ args, register });
   registerAndroidRemoteCommands({ args, register });
   registerWebhookRemoteCommands({ args, register });
   registerAutomationRuleRemoteCommands({ args, register });

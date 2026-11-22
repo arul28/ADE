@@ -2,9 +2,8 @@ import { useCallback, useMemo } from "react";
 import type { AutomationRuleSummary, LaneSummary } from "../../../shared/types";
 import {
   machineBlockedReason,
-  machineChipFor,
+  rowMachineChip,
   routableMachines,
-  shouldShowMachineChips,
   useAllMachineLanes,
   type LaneMachine,
 } from "../../state/laneMachineRouting";
@@ -111,9 +110,6 @@ export function useAutomationMachines({
     return map;
   }, [entries]);
 
-  // The chip rule counts the machines this list can hold, not every machine
-  // the union knows: an unaddressable machine holds no rules.
-  const showChips = shouldShowMachineChips(machines.length);
   const machineOfRule = useCallback((rule: AutomationRuleSummary): RuleMachineView | null => {
     const entry = entryByRule.get(rule);
     if (!entry) return null;
@@ -124,11 +120,11 @@ export function useAutomationMachines({
     const homeUnreached = followsAccount(rule) && rule.runsHere === false;
     return {
       elsewhereReason: ruleElsewhereReason(rule),
-      chip: showChips && !homeUnreached ? machineChipFor(entry.machine) : null,
+      chip: homeUnreached ? null : rowMachineChip(entry.machine),
       offlineMessage: machineBlockedReason(entry.machine),
       isActiveBinding: entry.machine.isActiveBinding,
     };
-  }, [entryByRule, showChips]);
+  }, [entryByRule]);
 
   /** The live state of a machine; a captured one may be stale. */
   const liveMachine = useCallback(

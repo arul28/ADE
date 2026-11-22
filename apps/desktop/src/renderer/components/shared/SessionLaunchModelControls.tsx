@@ -31,7 +31,7 @@ import {
 } from "./permissionModePickerOptions";
 import { getPermissionOptions } from "./permissionOptions";
 import { useRootAppStore } from "../../state/appStore";
-import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { reasoningModelIdForLaunchTarget, resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 
 const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0";
 const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
@@ -237,10 +237,20 @@ export function SessionLaunchModelControls({
     if (!fastModeAllowed && config.fastMode) onChange({ fastMode: false });
   }, [fastModeAllowed, config.fastMode, onChange]);
   const harnessPresets = useRootAppStore((state) => state.harnessPresets);
-  const activePreset = useMemo(() => {
-    const target = resolveHarnessLaunchTarget(config.presetId, harnessPresets);
-    return target ? { name: target.name, logo: target.logo } : null;
-  }, [config.presetId, harnessPresets]);
+  const activePresetTarget = useMemo(
+    () => resolveHarnessLaunchTarget(config.presetId, harnessPresets),
+    [config.presetId, harnessPresets],
+  );
+  const activePreset = useMemo(
+    () => (activePresetTarget ? { name: activePresetTarget.name, logo: activePresetTarget.logo } : null),
+    [activePresetTarget],
+  );
+  // A Custom pick runs the source model, so its effort menu belongs to that
+  // model’s ladder, not to the harness’s own rows.
+  const reasoningModelId = activePresetTarget
+    ? reasoningModelIdForLaunchTarget(activePresetTarget)
+    : config.modelId;
+  const reasoningTiers = activePresetTarget?.reasoningTiers;
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -275,7 +285,9 @@ export function SessionLaunchModelControls({
         disabled={disabled}
       />
       <ReasoningEffortPicker
-        modelId={config.modelId}
+        modelId={reasoningModelId}
+        reasoningTiers={reasoningTiers}
+        harness={activePresetTarget?.harness}
         reasoningEffort={config.reasoningEffort}
         onChange={(reasoningEffort) => onChange({ reasoningEffort })}
         compact

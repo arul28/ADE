@@ -13,11 +13,14 @@
  */
 
 import type React from "react";
+import type { CursorSignInOutcome } from "./ProviderSignInSheet";
 import type {
   AcpProviderDiagnostics,
   AiApiKeyVerificationResult,
+  AiProviderSignInCheck,
   AiSettingsStatus,
   CursorSdkAuthStatus,
+  OpenProjectBinding,
   ProjectConfigSnapshot,
 } from "../../../../shared/types";
 import type {
@@ -48,17 +51,21 @@ export type SettingsProviderId =
 export type AcpSettingsProviderId = AcpProviderId;
 
 /**
- * The six words a tile is allowed to say.
+ * The seven states a tile can be in. The sign-in ones read "Signed in"
+ * (`connected`), "Not signed in" (`sign-in`) and "Unknown" (`unknown`).
  *
  * `checking` is first-class and distinct from `not-installed`: a status probe
  * that has not answered yet is not the same claim as "this is not on your
  * machine", and presenting the first as the second is how a slow first probe
- * used to tell people to reinstall a working CLI.
+ * used to tell people to reinstall a working CLI. `unknown` is a read that
+ * answered without a verdict (a sign-in kept where a status read does not
+ * look, or a failed read); it is not "not signed in".
  */
 export type ProviderStatusState =
   | "checking"
   | "connected"
   | "sign-in"
+  | "unknown"
   | "attention"
   | "not-installed"
   | "disabled";
@@ -74,6 +81,8 @@ export type ProviderStatusView = {
    * health check, so this is the only error surface — there is no Verify.
    */
   errorLine?: string | null;
+  /** The signed-in account's email, when the provider records one. */
+  account?: string | null;
 };
 
 export type ProviderFact = {
@@ -89,6 +98,21 @@ export type ProviderFact = {
 export type ProvidersViewContext = {
   status: AiSettingsStatus | null;
   projectConfigSnapshot: ProjectConfigSnapshot | null;
+  /**
+   * False when there is no copy of this repository on the page's computer, or
+   * its settings have not been read (a drive that is not answering). The
+   * settings a project copy saves (turning a provider off, local model
+   * servers, custom providers and slugs, compaction) are then shown as a note
+   * instead of controls.
+   */
+  projectConfigEditable: boolean;
+  /**
+   * That copy's pin: where those settings are written. The page's own pin is
+   * the machine route, which never answers them. Null with no copy.
+   */
+  projectPin: OpenProjectBinding | null;
+  /** The page's computer, for that note. */
+  machineName: string;
   loading: boolean;
   statusLoadError: string | null;
   /** True until the first status payload lands — the "Checking…" gate. */
@@ -137,6 +161,11 @@ export type ProvidersViewContext = {
   acpDoctorBusy: AcpSettingsProviderId | null;
   acpDiagnosticsError: Partial<Record<AcpSettingsProviderId, string>>;
 
+  /** The last sign-in check per provider (after a sign-in, or Re-check). */
+  signInChecks: Partial<Record<SettingsProviderId, AiProviderSignInCheck>>;
+  /** The provider whose sign-in check is running. */
+  signInCheckBusy: SettingsProviderId | null;
+
   actions: ProvidersActions;
 };
 
@@ -148,12 +177,12 @@ export type ProvidersActions = {
   }) => Promise<AiSettingsStatus | null>;
   loadAuthMethods: () => Promise<void>;
   setError: (message: string | null) => void;
-  setNotice: (message: string | null) => void;
 
   deleteApiKey: (provider: string, options?: { alsoOpenCode?: boolean }) => Promise<void>;
   verifyApiKey: (provider: string) => Promise<void>;
 
-  loginWithCursor: () => Promise<void>;
+  /** Cursor's browser sign-in on the page's machine, then its key check. Never rejects. */
+  loginWithCursor: () => Promise<CursorSignInOutcome>;
   logoutCursor: () => Promise<void>;
   cancelCursorLogin: () => Promise<void>;
 
@@ -176,8 +205,17 @@ export type ProvidersActions = {
   loadAcpDiagnostics: (provider: AcpSettingsProviderId) => Promise<void>;
   /** Run the vendor's own `doctor` and fold the output into the diagnostics. */
   runAcpDoctor: (provider: AcpSettingsProviderId) => Promise<void>;
-  /** Open the embedded terminal that runs this provider's login command. */
-  openSignInTerminal: (provider: SettingsProviderId) => void;
+  /**
+   * Open the sign-in sheet for a provider whose login ADE runs: the CLI's own
+   * login run headlessly where the machine's ADE can, else its login command
+   * in a terminal inside the sheet. Nothing for a provider with neither.
+   */
+  openSignIn: (provider: SettingsProviderId) => void;
+  /**
+   * Run the provider's own sign-in check (up to 20 s) on the page's machine,
+   * then read the status again. Never rejects: a failure is "unknown".
+   */
+  verifySignIn: (provider: SettingsProviderId) => Promise<AiProviderSignInCheck>;
 };
 
 /**

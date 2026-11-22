@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AdeStartedEmulators, androidDiscoveryDirs, readAndroidDiscoveryFiles, waitForAndroidBoot, type AndroidEmulatorLaunch } from "./androidEmulatorProcess";
 import type { AndroidEmulatorFailure } from "./androidEmulatorErrors";
+import { assertAndroidDiskForStart } from "./androidDiskGuard";
+import { parseAndroidLowDisk } from "../../../shared/androidDisk";
 import { AndroidEmulatorOwnersStore, type AndroidEmulatorOwnerRecord } from "./androidEmulatorOwners";
 import { createAndroidEmulatorLifecycle } from "./androidEmulatorSweep";
 
@@ -397,5 +399,50 @@ describe.skipIf(process.platform === "win32")("the boot wait when adb refuses th
     }
     // "Open log" tells the person what ADE saw and did.
     expect(fs.readFileSync(path.join(root, "emulator.log"), "utf8")).toContain("unauthorized");
+  });
+});
+
+// A cloud computer's disk starts small. The emulator makes the data partition
+// at the first start, so the guard refuses a first start the disk can't hold,
+// and the numbers reach the panel as text (an error crosses IPC as its message).
+describe("the disk check before a device's first start", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-android-disk-"));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const device = (name: string, partition: string, made: boolean) => {
+    const avdPath = path.join(root, `${name}.avd`);
+    fs.mkdirSync(avdPath);
+    fs.writeFileSync(path.join(avdPath, "config.ini"), `disk.dataPartition.size=${partition}\n`);
+    if (made) fs.writeFileSync(path.join(avdPath, "userdata-qemu.img"), "");
+    return { name, path: avdPath };
+  };
+  const refusalOf = (avd: { name: string; path: string }): AndroidEmulatorFailure | null => {
+    try {
+      assertAndroidDiskForStart({ laneId: "lane-1", avd });
+      return null;
+    } catch (error) {
+      return error as AndroidEmulatorFailure;
+    }
+  };
+
+  it("refuses with ANDROID_LOW_DISK and the numbers only when the partition to make does not fit", () => {
+    const refusal = refusalOf(device("too_big", "100T", false));
+    expect(refusal?.code).toBe("ANDROID_LOW_DISK");
+    expect(refusal!.disk!.neededMb).toBeGreaterThanOrEqual(100 * 1024 * 1024);
+    // The free space is this machine's real number: it is positive and far below what was asked.
+    expect(refusal!.disk!.freeMb).toBeGreaterThan(0);
+    expect(refusal!.disk!.freeMb).toBeLessThan(refusal!.disk!.neededMb);
+    const parsed = parseAndroidLowDisk(refusal!.message);
+    expect(Math.abs(parsed!.neededMb - refusal!.disk!.neededMb)).toBeLessThanOrEqual(52);
+    expect(Math.abs(parsed!.freeMb - refusal!.disk!.freeMb)).toBeLessThanOrEqual(52);
+
+    // A partition that fits starts; so does a device whose partition exists (a cold boot reuses it).
+    expect(refusalOf(device("fits", "1M", false))).toBeNull();
+    expect(refusalOf(device("already_made", "100T", true))).toBeNull();
   });
 });

@@ -58,8 +58,8 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     statusLabel: "Antigravity",
     loginCommand: null,
     loginHint: "sign in from Settings > Providers > Antigravity (Google account, Gemini Enterprise, Gemini API key, or Agent Platform)",
-    // GEMINI_HOME names the parent of the agent's own `antigravity-acp/`
-    // directory; ADE leaves it at the default so the login is shared.
+    // Passed through untouched. The agy CLI keeps its login in the OS
+    // keyring and ~/.gemini/antigravity-cli whatever GEMINI_HOME says.
     configHomeEnv: "GEMINI_HOME",
   },
 };

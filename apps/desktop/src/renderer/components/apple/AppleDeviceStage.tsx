@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { H264StreamView } from "../device/H264StreamView";
 import { h264SourceForUrl, isWebCodecsAvailable } from "../device/h264StreamPlayer";
 import { cn } from "../ui/cn";
@@ -36,11 +36,19 @@ import {
 export type AppleStageMode = "flat" | "3d";
 
 export type AppleDeviceStageProps = {
-  /** Localised read address. Null when there is no stream to read. */
-  streamUrl: string | null;
+  /** Localised read address. Null (or left out) when there is no stream to read. */
+  streamUrl?: string | null;
   /** Bearer token for the reader's `Authorization` header. */
-  streamToken: string | null;
-  reconnectNonce: number;
+  streamToken?: string | null;
+  /**
+   * A picture someone else already draws (the ADE Cloud iPhone, painted in
+   * main and decoded by `useCloudPhoneFrames`), used instead of a stream.
+   * The stage shows that canvas in flat mode and samples it in 3D, the same
+   * as its own decoder's.
+   */
+  screenSource?: { canvas: HTMLCanvasElement | null; pixelSize: { width: number; height: number } | null } | undefined;
+  /** The stream's reconnect: only with `streamUrl`. */
+  reconnectNonce?: number;
   mode: AppleStageMode;
   /**
    * "Reset view". Handed to the 3D view as a value it acts on, NOT as a React
@@ -69,9 +77,10 @@ export type AppleDeviceStageProps = {
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   /** A key pressed while the flat screen holds focus. True = forwarded. */
   onDeviceKey?: (event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => boolean;
-  onReaderStatus: (status: "connecting" | "playing" | "error" | "stopped", error: string | null) => void;
-  onDimensions: (size: { width: number; height: number }) => void;
-  onFrame: () => void;
+  /** The stream reader's state, size and frames: only with `streamUrl`. */
+  onReaderStatus?: (status: "connecting" | "playing" | "error" | "stopped", error: string | null) => void;
+  onDimensions?: (size: { width: number; height: number }) => void;
+  onFrame?: () => void;
   /** Each drawn frame; the 3D view re-uploads its texture on each. */
   frames: AppleFrameFeed | null;
   /**
@@ -131,6 +140,7 @@ const PARKED_CANVAS_STYLE = {
 export function AppleDeviceStage({
   streamUrl,
   streamToken,
+  screenSource,
   reconnectNonce,
   mode,
   viewNonce,
@@ -158,15 +168,17 @@ export function AppleDeviceStage({
 }: AppleDeviceStageProps) {
   // Settings › Apple devices › Realistic body. Off: the 3D view draws the bare screen.
   const realisticBody = useAppStore((s) => s.appleDevice.realisticBody);
-  const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
-  const [screenPixelSize, setScreenPixelSize] = useState<{ width: number; height: number } | null>(null);
+  const [decoderCanvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [decodedPixelSize, setScreenPixelSize] = useState<{ width: number; height: number } | null>(null);
+  const canvas = screenSource ? screenSource.canvas : decoderCanvas;
+  const screenPixelSize = screenSource ? screenSource.pixelSize : decodedPixelSize;
   const [geometry, setGeometry] = useState<DeviceGeometry | null>(null);
 
   const handleDimensions = useCallback((size: { width: number; height: number }) => {
     setScreenPixelSize((current) => (
       current && current.width === size.width && current.height === size.height ? current : size
     ));
-    onDimensions(size);
+    onDimensions?.(size);
   }, [onDimensions]);
 
   // WebGL is a hard precondition for the 3D presenter. There is no procedural
@@ -208,16 +220,18 @@ export function AppleDeviceStage({
       <div style={videoStyle} data-apple-stage-screen="">
         {streamUrl ? (
           <H264StreamView
-            source={h264SourceForUrl(streamUrl, streamToken)}
+            source={h264SourceForUrl(streamUrl, streamToken ?? null)}
             streamName="simulator video stream"
             streamGoneCode={APPLE_STREAM_NOT_RUNNING_CODE}
-            reconnectNonce={reconnectNonce}
+            reconnectNonce={reconnectNonce ?? 0}
             onStatus={onReaderStatus}
             onDimensions={handleDimensions}
             onFrame={onFrame}
             onCanvas={setCanvas}
             className={flat ? "ring-1 ring-inset ring-fg/[0.06]" : undefined}
           />
+        ) : screenSource ? (
+          <ExternalScreenCanvas canvas={screenSource.canvas} className={flat ? "ring-1 ring-inset ring-fg/[0.06]" : undefined} />
         ) : null}
       </div>
 
@@ -263,6 +277,26 @@ export function AppleDeviceStage({
       {children}
     </div>
   );
+}
+
+/**
+ * Puts a canvas drawn elsewhere into the screen box: the same place, size and
+ * parking the stage's own decoder canvas gets, so flat and 3D read it alike.
+ */
+function ExternalScreenCanvas({ canvas, className }: { canvas: HTMLCanvasElement | null; className?: string | undefined }) {
+  const host = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = host.current;
+    if (!element || !canvas) return undefined;
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.display = "block";
+    element.appendChild(canvas);
+    return () => {
+      if (canvas.parentElement === element) element.removeChild(canvas);
+    };
+  }, [canvas]);
+  return <div ref={host} className={cn("h-full w-full", className)} />;
 }
 
 export { isWebCodecsAvailable };

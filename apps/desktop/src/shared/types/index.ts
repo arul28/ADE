@@ -6,6 +6,7 @@
 export * from "./core";
 export * from "./models";
 export * from "./git";
+export * from "./githubDirect";
 export * from "./lanes";
 export * from "./conflicts";
 export * from "./prs";

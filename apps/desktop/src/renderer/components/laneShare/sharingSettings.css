@@ -1,0 +1,116 @@
+/*
+ * Settings › Sharing: the layout of its two lists. Built on the settings kit
+ * (ModernSection, `.ade-modern-rows`, `.ade-modern-btn`, `.kit-dot`); only the
+ * row grid lives here. Every row of a list uses the same column template, so
+ * the columns line up across project groups without a header row.
+ */
+
+/* A project group: its name and count on one line, then its rows. */
+.ade-shr-groups { display: flex; min-width: 0; flex-direction: column; gap: 18px; }
+.ade-shr-group { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.ade-shr-group-head { display: flex; min-width: 0; align-items: center; gap: 8px; min-height: 24px; padding: 0 2px 0 4px; }
+.ade-shr-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--kit-text-2);
+}
+.ade-shr-group-count { flex: none; font-size: 11.5px; color: var(--kit-text-3); }
+.ade-shr-group-action { margin-left: auto; }
+
+/* One share. People you shared with: person, lane, access, state, menu. */
+.ade-shr-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.9fr) 28px;
+  grid-template-areas: "main lane access state end";
+  align-items: center;
+  column-gap: 16px;
+  row-gap: 4px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 8px 8px 8px 14px;
+}
+/* Lanes shared with you: lane, access, state, actions. */
+.ade-shr-row[data-list="with-me"] {
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 0.9fr) 152px;
+  grid-template-areas: "main access state end";
+  padding-right: 10px;
+}
+.ade-modern-rows > .ade-shr-row + .ade-shr-row { border-top: 1px solid var(--kit-rule); }
+
+.ade-shr-cell { display: flex; min-width: 0; flex-direction: column; justify-content: center; gap: 2px; }
+.ade-shr-main { grid-area: main; }
+.ade-shr-lane { grid-area: lane; }
+.ade-shr-access { grid-area: access; }
+.ade-shr-state { grid-area: state; }
+.ade-shr-end { grid-area: end; display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+
+.ade-shr-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-fg);
+}
+.ade-shr-text {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--kit-text-2);
+}
+.ade-shr-text > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ade-shr-text > svg { flex: none; color: var(--kit-text-3); }
+.ade-shr-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--kit-text-3);
+}
+.ade-shr-sub > svg { display: inline-block; margin-right: 4px; vertical-align: -1px; }
+.ade-shr-text .ade-ls-risk-level { margin-right: 0; }
+
+/* An empty list: one quiet block inside the panel. */
+.ade-shr-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 28px 16px;
+  text-align: center;
+}
+.ade-shr-empty > .ade-modern-glyph { margin-bottom: 6px; }
+
+/* Default access: the access level, its risk, the switches, then Save. */
+.ade-shr-defaults { display: flex; min-width: 0; flex-direction: column; gap: 12px; }
+.ade-shr-save { display: flex; align-items: center; gap: 10px; padding-top: 4px; }
+.ade-shr-save-note { font-size: 12px; color: var(--kit-text-3); }
+.ade-shr-save-note[data-tone="crit"] { color: var(--kit-crit); }
+
+/* A narrow page: the row folds onto two lines; the main fact and the state stay on top. */
+@container modernpage (max-width: 620px) {
+  .ade-shr-row {
+    grid-template-columns: minmax(0, 1fr) auto 28px;
+    grid-template-areas:
+      "main state end"
+      "lane access .";
+  }
+  .ade-shr-row[data-list="with-me"] {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "main state"
+      "access end";
+  }
+  .ade-shr-access, .ade-shr-state { align-items: flex-end; text-align: right; }
+  .ade-shr-row[data-list="with-me"] .ade-shr-access { align-items: flex-start; text-align: left; }
+}

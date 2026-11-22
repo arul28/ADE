@@ -163,6 +163,15 @@ export class AccountHostIdentityVerificationError extends Error {
   }
 }
 
+/**
+ * The route bookkeeping after a dial found no record: the machine left the
+ * paired list while the dial ran (the person removed it, or the account
+ * forgot it). An answer about that machine, not a defect.
+ */
+function pairedMachineNotFoundError(): Error {
+  return markExpected(new Error("Paired machine was not found."), "user");
+}
+
 function hostIdentityVerificationError(): AccountHostIdentityVerificationError {
   return new AccountHostIdentityVerificationError();
 }
@@ -746,7 +755,7 @@ export class DesktopPairedMachineStore {
     nowMs = Date.now(),
   ): DesktopPairedMachineCredentials {
     const machine = this.get(hostDeviceIdOrMachineKey);
-    if (!machine) throw new Error("Paired machine was not found.");
+    if (!machine) throw pairedMachineNotFoundError();
     const endpoint = normalizeSyncEndpoint(endpointValue);
     const endpoints = uniqueEndpoints(endpoint, ...machine.endpoints);
     return this.save({
@@ -778,7 +787,7 @@ export class DesktopPairedMachineStore {
     endpointValue: string,
   ): DesktopPairedMachineCredentials {
     const machine = this.get(hostDeviceIdOrMachineKey);
-    if (!machine) throw new Error("Paired machine was not found.");
+    if (!machine) throw pairedMachineNotFoundError();
     const endpoint = normalizeSyncEndpoint(endpointValue);
     const endpoints = machine.endpoints.filter((value) => value !== endpoint);
     if (endpoints.length === 0 || endpoints.length === machine.endpoints.length) {
@@ -803,7 +812,7 @@ export class DesktopPairedMachineStore {
     nowMs = Date.now(),
   ): DesktopPairedMachineCredentials {
     const machine = this.get(hostDeviceIdOrMachineKey);
-    if (!machine) throw new Error("Paired machine was not found.");
+    if (!machine) throw pairedMachineNotFoundError();
     const endpoint = normalizeSyncEndpoint(endpointValue);
     const endpoints = uniqueEndpoints(endpoint, ...machine.endpoints);
     const previous = machine.endpointStates?.find(
@@ -831,7 +840,7 @@ export class DesktopPairedMachineStore {
     nowMs = Date.now(),
   ): DesktopPairedMachineCredentials {
     const machine = this.get(hostDeviceIdOrMachineKey);
-    if (!machine) throw new Error("Paired machine was not found.");
+    if (!machine) throw pairedMachineNotFoundError();
     const discoveredEndpoints = uniqueEndpoints(...endpointValues);
     const endpoints = uniqueEndpoints(...discoveredEndpoints, ...machine.endpoints);
     return this.save({
@@ -1249,6 +1258,18 @@ export class DesktopPairedMachineStore {
           deviceId: localDeviceId,
           accountToken,
           dpop: accountDpop,
+          // The secret this desktop already holds for the host. A host that
+          // recognizes it keeps it instead of minting a new one, so a reply
+          // lost below cannot leave the two ends on different secrets. Only
+          // the host that issued it sees it: the record must name that host,
+          // and only the sealed channel carries it, because there the host
+          // already proved its device id by signing the challenge. Without a
+          // directory key (an older host) the host stages a new secret instead.
+          ...(adoptSessionKey
+            && existing?.secret
+            && existing.hostIdentity.deviceId === expectedHostDeviceId
+            ? { pairedSecret: existing.secret }
+            : {}),
         };
         let sealedAccountAuth: string | null = null;
         if (adoptSessionKey) {

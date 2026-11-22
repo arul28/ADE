@@ -1,3 +1,4 @@
+import Network
 import XCTest
 @testable import ADE
 
@@ -1895,6 +1896,126 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
     _ = await second.value
   }
 
+  // MARK: - A swept port learns who answers before any credential
+
+  /// A port sweep can reach another ADE on the same address. The phone must
+  /// learn which host answers before the pairing secret goes there. These run
+  /// against a local WebSocket host on 127.0.0.1 and an ephemeral port, never
+  /// on 8787-8795.
+  private static let pairedSecret = "paired-secret-under-test"
+
+  @MainActor
+  private func makeService() throws -> (SyncService, DatabaseService, URL) {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    return (SyncService(database: database), database, baseURL)
+  }
+
+  @MainActor
+  func testSweptPortProbeDecidesBeforeAnyCredential() async throws {
+    let cases: [(name: String, answeringHost: String?, passes: Bool)] = [
+      ("another ADE", "another-host", false),
+      ("the paired computer", "paired-host", true),
+      ("a host that names no one", nil, false),
+    ]
+    for testCase in cases {
+      let host = try CandidateTestHost { hello in
+        var error: [String: Any] = ["code": "auth_failed", "message": "Sync authentication failed."]
+        if let id = testCase.answeringHost { error["host"] = ["deviceId": id, "name": "Test"] }
+        return ("hello_error", error)
+      }
+      try await host.start()
+      defer { host.stop() }
+      let (service, database, baseURL) = try makeService()
+      defer {
+        service.disconnect(clearCredentials: false, suspendAutoReconnect: false)
+        database.close()
+        try? FileManager.default.removeItem(at: baseURL)
+      }
+
+      var thrown: Error?
+      do {
+        try await service.requireSweptCandidateIdentity(
+          url: try XCTUnwrap(URL(string: "ws://127.0.0.1:\(host.port)")),
+          expectedHostIdentity: "paired-host",
+          connectionAttempt: SyncConnectionAttemptMetadata(id: "attempt", startedAtMilliseconds: 0),
+          fleetDial: nil
+        )
+      } catch {
+        thrown = error
+      }
+
+      if testCase.passes {
+        XCTAssertNil(thrown, testCase.name)
+      } else {
+        let error = try XCTUnwrap(thrown as NSError?, testCase.name)
+        XCTAssertEqual(error.code, 37, testCase.name)
+        // A refused candidate is not a pairing rejection: the pairing stays,
+        // and the race goes on with the other candidates.
+        XCTAssertTrue(syncSweepMayFollow(error), testCase.name)
+      }
+      // Whatever the answer: the probe carried no credential of the pairing.
+      let hellos = host.hellos
+      XCTAssertEqual(hellos.count, 1, testCase.name)
+      let auth = try XCTUnwrap(hellos.first?["auth"] as? [String: Any], testCase.name)
+      XCTAssertEqual(auth["kind"] as? String, "bootstrap", testCase.name)
+      XCTAssertNil(auth["secret"], testCase.name)
+      XCTAssertNil(auth["dpop"], testCase.name)
+      XCTAssertNil(auth["relayAccountToken"], testCase.name)
+      XCTAssertFalse(host.upgradeHeaderNames.contains("x-ade-hello"), testCase.name)
+    }
+  }
+
+  /// The saved port keeps the direct path: no probe, the authenticated hello
+  /// with the upgrade request, and an older host that does not name itself in
+  /// a refusal still connects there.
+  @MainActor
+  func testSavedPortConnectsDirectlyWithoutAProbe() async throws {
+    let host = try CandidateTestHost { hello in
+      let auth = hello["auth"] as? [String: Any]
+      guard auth?["kind"] as? String == "paired" else {
+        return ("hello_error", ["code": "auth_failed", "message": "Sync authentication failed."])
+      }
+      return ("hello_ok", ["brain": ["deviceId": "paired-host"]])
+    }
+    try await host.start()
+    defer { host.stop() }
+    let (service, database, baseURL) = try makeService()
+    defer {
+      service.disconnect(clearCredentials: false, suspendAutoReconnect: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+    let profile = HostConnectionProfile(
+      hostIdentity: "paired-host",
+      hostName: "Test computer",
+      port: host.port,
+      authKind: "paired",
+      pairedDeviceId: "phone-under-test",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "paired-host",
+      lastSuccessfulAddress: "127.0.0.1",
+      savedAddressCandidates: ["127.0.0.1"],
+      discoveredLanAddresses: [],
+      tailscaleAddress: nil
+    )
+
+    let result = try await service.dialFleetConnection(
+      profile: profile,
+      token: Self.pairedSecret,
+      isCurrent: { true }
+    )
+    result.task.cancel(with: .goingAway, reason: nil)
+
+    XCTAssertEqual(result.address, "127.0.0.1")
+    XCTAssertEqual(host.connectionCount, 1, "no probe socket before the saved port")
+    let first = try XCTUnwrap(host.hellos.first?["auth"] as? [String: Any])
+    XCTAssertEqual(first["kind"] as? String, "paired")
+    XCTAssertEqual(first["secret"] as? String, Self.pairedSecret)
+  }
+
   // MARK: - Fixtures
 
   /// The wake card is the fourth sheet chained onto the root's single
@@ -1980,5 +2101,102 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
       connection: "connected",
       machineId: machineId
     )
+  }
+}
+
+/// A local WebSocket host for the candidate tests. It records each upgrade
+/// request's header names and each hello, and answers every hello with
+/// `answer` (type and payload) under the hello's request id.
+final class CandidateTestHost: @unchecked Sendable {
+  typealias Answer = @Sendable (_ hello: [String: Any]) -> (type: String, payload: [String: Any])
+
+  private final class Record: @unchecked Sendable {
+    let lock = NSLock()
+    var hellos: [[String: Any]] = []
+    var headerNames: Set<String> = []
+    var connections = 0
+  }
+
+  private let listener: NWListener
+  private let queue = DispatchQueue(label: "candidate-test-host")
+  private let record = Record()
+  private let answer: Answer
+
+  init(answer: @escaping Answer) throws {
+    self.answer = answer
+    let record = self.record
+    let webSocket = NWProtocolWebSocket.Options()
+    webSocket.autoReplyPing = true
+    webSocket.setClientRequestHandler(queue) { _, headers in
+      record.lock.withLock {
+        for header in headers { record.headerNames.insert(header.name.lowercased()) }
+      }
+      return NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
+    }
+    let parameters = NWParameters.tcp
+    parameters.defaultProtocolStack.applicationProtocols.insert(webSocket, at: 0)
+    parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any)
+    listener = try NWListener(using: parameters)
+    listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
+  }
+
+  var port: Int { Int(listener.port?.rawValue ?? 0) }
+  var hellos: [[String: Any]] { record.lock.withLock { record.hellos } }
+  var upgradeHeaderNames: Set<String> { record.lock.withLock { record.headerNames } }
+  var connectionCount: Int { record.lock.withLock { record.connections } }
+
+  func start() async throws {
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+      var resumed = false
+      listener.stateUpdateHandler = { state in
+        guard !resumed else { return }
+        switch state {
+        case .ready:
+          resumed = true
+          continuation.resume()
+        case .failed(let error):
+          resumed = true
+          continuation.resume(throwing: error)
+        default:
+          break
+        }
+      }
+      listener.start(queue: queue)
+    }
+  }
+
+  func stop() { listener.cancel() }
+
+  private func accept(_ connection: NWConnection) {
+    record.lock.withLock { record.connections += 1 }
+    connection.start(queue: queue)
+    receive(on: connection)
+  }
+
+  private func receive(on connection: NWConnection) {
+    connection.receiveMessage { [weak self] data, _, _, error in
+      guard let self else { return }
+      if let data,
+         let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+         envelope["type"] as? String == "hello",
+         let hello = envelope["payload"] as? [String: Any] {
+        self.record.lock.withLock { self.record.hellos.append(hello) }
+        let reply = self.answer(hello)
+        let out: [String: Any] = [
+          "version": 1,
+          "type": reply.type,
+          "requestId": envelope["requestId"] ?? "",
+          "compression": "none",
+          "payloadEncoding": "json",
+          "payload": reply.payload,
+        ]
+        if let text = try? JSONSerialization.data(withJSONObject: out) {
+          let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
+          let context = NWConnection.ContentContext(identifier: "reply", metadata: [metadata])
+          connection.send(content: text, contentContext: context, isComplete: true, completion: .idempotent)
+        }
+      }
+      if error == nil { self.receive(on: connection) }
+    }
   }
 }

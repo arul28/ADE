@@ -56,10 +56,15 @@ function impactNote(impact: UpdateImpact): string | null {
   if (impact.cliSessions + impact.terminals === 0) return null;
   // A brain that reopens CLIs does so only with Continue chats after restarts on.
   const cliReopen = impact.cliSessions > 0 && impact.cliSessionsReopen === true && impact.continueAfterRestart !== false;
-  if (!cliReopen) return "CLI sessions and terminals close and don't reopen.";
-  return impact.terminals > 0
-    ? "CLI sessions reopen after the update. Terminals close and don't reopen."
-    : "CLI sessions reopen after the update.";
+  // Name only what is open: CLI sessions, terminals, or both.
+  const cliClose = impact.cliSessions > 0 && !cliReopen;
+  const terminalsClose = impact.terminals > 0;
+  const closeLine = cliClose && terminalsClose
+    ? "CLI sessions and terminals close and don't reopen."
+    : cliClose
+      ? "CLI sessions close and don't reopen."
+      : terminalsClose ? "Terminals close and don't reopen." : null;
+  return [cliReopen ? "CLI sessions reopen after the update." : null, closeLine].filter(Boolean).join(" ");
 }
 
 /** Chats ADE can queue to continue after a restart: all but personal chats. */

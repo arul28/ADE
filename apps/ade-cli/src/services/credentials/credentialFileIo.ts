@@ -56,8 +56,34 @@ export function writeFileAtomic(filePath: string, contents: string | Buffer): vo
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmpPath, contents, { mode: 0o600 });
   ensureMode600(tmpPath);
-  fs.renameSync(tmpPath, filePath);
+  try {
+    renameRetryingOnWindows(tmpPath, filePath);
+  } catch (error) {
+    try { fs.rmSync(tmpPath, { force: true }); } catch { /* the rename error is the one to report */ }
+    throw error;
+  }
   ensureMode600(filePath);
+}
+
+/**
+ * Waits between rename attempts on Windows, about 1.3 s in all. Antivirus
+ * and the search indexer open a newly written file for a moment, and Windows
+ * refuses a rename onto or from a file anyone has open (EPERM, EACCES, EBUSY).
+ * A credential write must outlast that: after a refresh-token rotation the old
+ * token is already spent, so a write that gives up signs the machine out.
+ */
+const WINDOWS_RENAME_RETRY_WAITS_MS = [0, 5, 10, 25, 50, 100, 150, 250, 300, 400];
+
+function renameRetryingOnWindows(tmpPath: string, filePath: string): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(tmpPath, filePath);
+      return;
+    } catch (error) {
+      if (!isLockContention(error) || isEexist(error) || attempt >= WINDOWS_RENAME_RETRY_WAITS_MS.length) throw error;
+      sleepSync(WINDOWS_RENAME_RETRY_WAITS_MS[attempt]!);
+    }
+  }
 }
 
 export function isEnoent(error: unknown): boolean {
@@ -149,35 +175,118 @@ export function isSameCredentialFileStat(
     && left.size === right.size;
 }
 
+/**
+ * How often a watcher whose folder watch is running still stats the file, for
+ * the changes a folder watch can miss: a network volume, a folder that was
+ * removed and made again, or events the OS merged or dropped.
+ */
+export const CREDENTIAL_FILE_WATCH_BACKUP_POLL_MS = 5_000;
+
 export class CredentialFileStatWatcher {
   private previous: CredentialFileStatSnapshot | undefined;
   private timer: NodeJS.Timeout | null = null;
-  /** One poll at a time: a stat stalled by a scan must not pile up behind itself. */
+  private folderWatch: fs.FSWatcher | null = null;
+  private disposed = false;
+  /** One stat at a time: a stat stalled by a scan must not pile up behind itself. */
   private polling = false;
+  /** A change was signalled while a stat was running: stat again after it. */
+  private recheck = false;
+
+  private readonly listeners = new Set<() => void>();
 
   constructor(
     private readonly filePath: string,
-    private readonly listener: () => void,
     private readonly intervalMs: number | null,
   ) {}
 
+  addListener(listener: () => void): void {
+    this.listeners.add(listener);
+  }
+
+  /** True when no listener is left. */
+  removeListener(listener: () => void): boolean {
+    this.listeners.delete(listener);
+    return this.listeners.size === 0;
+  }
+
+  /**
+   * Watches the file's folder (writes replace the file by a rename, so a
+   * watch on the file itself would end at the first write) and stats the file
+   * on each event for its name, so another process's sign-in is seen at once.
+   * A slow backup poll covers what a folder watch misses. Where the folder
+   * watch cannot start, or stops with an error, the steady poll at
+   * `intervalMs` runs instead, as before.
+   */
   start(): void {
     this.previous = readCredentialFileStatSnapshot(this.filePath);
     if (this.intervalMs === null) return;
-    // The poll stats off the event loop; it runs four times a second for the
-    // life of the brain.
-    this.timer = setInterval(() => {
-      if (this.polling) return;
-      this.polling = true;
-      void readCredentialFileStatSnapshotAsync(this.filePath)
-        .then((current) => {
-          if (this.timer) this.compare(current);
-        })
-        .finally(() => {
-          this.polling = false;
-        });
-    }, this.intervalMs);
+    const watching = this.startFolderWatch();
+    this.startPoll(watching ? Math.max(this.intervalMs, CREDENTIAL_FILE_WATCH_BACKUP_POLL_MS) : this.intervalMs);
+  }
+
+  private startFolderWatch(): boolean {
+    const fileName = path.basename(this.filePath);
+    const caseInsensitive = process.platform === "win32" || process.platform === "darwin";
+    const sameName = (name: string): boolean => (caseInsensitive ? name.toLowerCase() === fileName.toLowerCase() : name === fileName);
+    try {
+      const watcher = fs.watch(path.dirname(this.filePath), { persistent: false }, (_event, changed) => {
+        // Some platforms leave the name out; then any event in the folder is worth a stat.
+        const name = typeof changed === "string" ? changed : changed ? String(changed) : null;
+        if (name === null || sameName(name)) this.statAndCompare();
+      });
+      watcher.on("error", () => this.fallBackToSteadyPoll());
+      this.folderWatch = watcher;
+      return true;
+    } catch {
+      this.folderWatch = null;
+      return false;
+    }
+  }
+
+  /** The folder watch failed after it started: close it and poll at the steady rate, as before. */
+  private fallBackToSteadyPoll(): void {
+    if (this.disposed || this.intervalMs === null) return;
+    this.closeFolderWatch();
+    this.startPoll(this.intervalMs);
+    // Whatever the watch missed while it was failing.
+    this.statAndCompare();
+  }
+
+  private startPoll(intervalMs: number): void {
+    if (this.timer) clearInterval(this.timer);
+    // The poll stats off the event loop.
+    this.timer = setInterval(() => this.statAndCompare(), intervalMs);
     this.timer.unref();
+  }
+
+  private statAndCompare(): void {
+    if (this.disposed) return;
+    if (this.polling) {
+      this.recheck = true;
+      return;
+    }
+    this.polling = true;
+    void readCredentialFileStatSnapshotAsync(this.filePath)
+      .then((current) => {
+        if (!this.disposed) this.compare(current);
+      })
+      .finally(() => {
+        this.polling = false;
+        if (this.recheck) {
+          this.recheck = false;
+          this.statAndCompare();
+        }
+      });
+  }
+
+  private closeFolderWatch(): void {
+    const watcher = this.folderWatch;
+    this.folderWatch = null;
+    try {
+      watcher?.close();
+    } catch {
+      // Already closed.
+    }
   }
 
   checkNow(): void {
@@ -192,18 +301,73 @@ export class CredentialFileStatWatcher {
     }
     if (isSameCredentialFileStat(current, this.previous)) return;
     this.previous = current;
-    try {
-      this.listener();
-    } catch {
-      // Credential observers are best-effort; one subscriber must not stop
-      // the watcher or prevent sibling subscribers from seeing the change.
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch {
+        // Credential observers are best-effort; one subscriber must not stop
+        // the watcher or prevent sibling subscribers from seeing the change.
+      }
     }
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.closeFolderWatch();
   }
+}
+
+/** A subscription to one credential file's changes; see {@link subscribeCredentialFileChanges}. */
+export type CredentialFileChangeSubscription = {
+  /** Stats the file now and tells every subscriber of the file if it changed. */
+  checkNow(): void;
+  dispose(): void;
+};
+
+const sharedCredentialFileWatchers = new Map<string, CredentialFileStatWatcher>();
+
+/**
+ * Tells `listener` when the file changes. Every subscriber of the same file
+ * (and the same poll interval) in this process shares one watcher: each
+ * subscriber used to start its own folder watch and its own backup stat of
+ * the same file every 5 s.
+ *
+ * A subscriber that joins after the file changed, but before the shared
+ * watcher saw that change, also hears of it. Subscribers re-read on a change,
+ * so an extra call costs one read; a missed change is not possible.
+ */
+export function subscribeCredentialFileChanges(
+  filePath: string,
+  intervalMs: number | null,
+  listener: () => void,
+): CredentialFileChangeSubscription {
+  const key = `${path.resolve(filePath)}\0${intervalMs ?? "manual"}`;
+  let watcher = sharedCredentialFileWatchers.get(key);
+  if (!watcher) {
+    watcher = new CredentialFileStatWatcher(filePath, intervalMs);
+    sharedCredentialFileWatchers.set(key, watcher);
+    watcher.start();
+  }
+  const shared = watcher;
+  // One registration per subscriber, even when two pass the same callback: a
+  // Set would keep one, and the first dispose would stop the other's watcher.
+  const entry = (): void => listener();
+  shared.addListener(entry);
+  let disposed = false;
+  return {
+    checkNow: () => {
+      if (!disposed) shared.checkNow();
+    },
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      if (!shared.removeListener(entry)) return;
+      shared.dispose();
+      if (sharedCredentialFileWatchers.get(key) === shared) sharedCredentialFileWatchers.delete(key);
+    },
+  };
 }
 
 function parseLockMetadata(raw: string): CredentialLockMetadata {

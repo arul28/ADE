@@ -67,6 +67,44 @@ async function gitOut(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Pro
 }
 
 /**
+ * Waits between tries when another live git holds the lane's `index.lock`
+ * (an editor's status refresh, ADE's own git panel). `runGit` only clears a
+ * lock that is stale; a live one is released within moments.
+ */
+const INDEX_LOCK_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
+
+function isIndexLockBusyError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /index\.lock/.test(message) && /File exists|Another git process seems to be running/i.test(message);
+}
+
+/**
+ * A step that writes the lane's index. Git refuses before it changes anything
+ * when it cannot take the lock, so the same step can run again. The other
+ * writer may have changed the lane during the wait, so `recheck` runs the
+ * step's safety checks again before each retry, and throws to stop it (it
+ * gets the lock error, to stop with that). A step that overwrites files
+ * without asking (the snapshot checkout) must check in `recheck` that the
+ * lane is exactly as ADE left it, so a retry never overwrites anyone's work.
+ */
+async function gitWriteOutWhenLockFrees(
+  cwd: string,
+  args: string[],
+  recheck: (lockError: unknown) => Promise<void>,
+): Promise<string> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await gitOut(cwd, args);
+    } catch (error) {
+      const delay = INDEX_LOCK_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !isIndexLockBusyError(error)) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      await recheck(error);
+    }
+  }
+}
+
+/**
  * The first added path that would overwrite or delete a file only this
  * machine has. A path `commit` tracks (a directory the change turns into a
  * file, say) is git's to replace, unless an untracked or ignored local file
@@ -94,6 +132,40 @@ async function gitOk(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Prom
 async function resolveCommit(cwd: string, ref: string): Promise<string | null> {
   const result = await runGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, timeoutMs: 15_000 });
   return result.exitCode === 0 ? result.stdout.trim() || null : null;
+}
+
+/** The commits a bundle builds on (its prerequisites), read from its header. */
+export function bundlePrerequisites(content: Buffer): string[] {
+  const end = content.indexOf("\n\n");
+  if (end < 0) return [];
+  return content.subarray(0, end).toString("utf8").split("\n")
+    .filter((line) => line.startsWith("-"))
+    .map((line) => line.slice(1).split(" ")[0] ?? "")
+    .filter((sha) => SHA_PATTERN.test(sha));
+}
+
+/**
+ * Makes sure this clone has the commits the bundle at `bundlePath` builds on:
+ * a `fetch origin` first, then a fetch of each missing one by id (GitHub
+ * still serves a commit that a pull request reaches after its branch was
+ * deleted). True when the bundle verifies. `gitPrefix` carries hardening
+ * options (`-c core.hooksPath=...`) onto every call.
+ */
+export async function ensureBundleBase(args: { cwd: string; bundlePath: string; content: Buffer; env?: NodeJS.ProcessEnv; gitPrefix?: string[] }): Promise<boolean> {
+  const { cwd, bundlePath } = args;
+  const prefix = args.gitPrefix ?? [];
+  const envOpt = args.env ? { env: args.env } : {};
+  const verified = () => gitOk(cwd, [...prefix, "bundle", "verify", "--quiet", bundlePath], args.env);
+  if (await verified()) return true;
+  await runGitWithGithubAuthFallback([...prefix, "fetch", "--quiet", "--no-recurse-submodules", "origin"], { cwd, timeoutMs: GIT_TIMEOUT_MS, ...envOpt });
+  if (await verified()) return true;
+  const wanted = bundlePrerequisites(args.content);
+  if (wanted.length === 0) return false;
+  const checked = await runGit(["cat-file", "--batch-check"], { cwd, timeoutMs: 30_000, stdin: `${wanted.join("\n")}\n`, ...envOpt });
+  const missing = checked.stdout.split("\n").filter((line) => line.endsWith(" missing")).map((line) => line.split(" ")[0]!).filter((sha) => SHA_PATTERN.test(sha));
+  if (missing.length === 0) return false;
+  await runGitWithGithubAuthFallback([...prefix, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "origin", ...missing.slice(0, 200)], { cwd, timeoutMs: GIT_TIMEOUT_MS, ...envOpt });
+  return await verified();
 }
 
 /** 0 = ancestor, 1 = not an ancestor, null = undecidable (object missing). */
@@ -128,7 +200,7 @@ export async function readHandoffWorkingTreeSha(args: { worktreePath: string }):
 }
 
 /** Refuses before hashing when untracked files are clearly too big to carry. */
-async function precheckUntrackedSize(cwd: string): Promise<void> {
+export async function precheckUntrackedSize(cwd: string): Promise<void> {
   const listed = await runGit(["ls-files", "--others", "--exclude-standard", "-z"], {
     cwd,
     timeoutMs: 30_000,
@@ -179,14 +251,21 @@ function rawChangedPaths(raw: string): string[] {
  * they sit in the uncommitted snapshot or in a commit origin doesn't have yet.
  * Returns the snapshot's changed paths.
  */
-async function refuseUnportablePaths(cwd: string, tip: string, snapshot: string | null): Promise<string[]> {
+export async function refuseUnportablePaths(cwd: string, tip: string, snapshot: string | null, githubShas?: readonly string[]): Promise<string[]> {
   const snapshotPaths = snapshot
     ? rawChangedPaths(await gitOut(cwd, ["diff", "--raw", "--no-renames", "-z", tip, snapshot]))
     : [];
-  const carried = await runGitOrThrow(
-    ["log", "--raw", "-z", "--no-renames", "--format=", tip, "--not", "--remotes=origin"],
-    { cwd, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 64 * 1024 * 1024 },
-  );
+  // The commits the bundle carries: past origin's refs here, or past the
+  // commits GitHub holds (`githubShas`, a lane backup) when the caller has them.
+  const carried = githubShas
+    ? await runGitOrThrow(
+        ["log", "--raw", "-z", "--no-renames", "--format=", "--stdin"],
+        { cwd, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 64 * 1024 * 1024, stdin: `${[tip, ...githubShas.map((sha) => `^${sha}`)].join("\n")}\n` },
+      )
+    : await runGitOrThrow(
+        ["log", "--raw", "-z", "--no-renames", "--format=", tip, "--not", "--remotes=origin"],
+        { cwd, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 64 * 1024 * 1024 },
+      );
   const commitPaths = rawChangedPaths(carried);
   const checked = [...new Set([...snapshotPaths, ...commitPaths])];
   if (checked.length) {
@@ -368,8 +447,19 @@ export async function applyHandoffGitBundle(args: {
   target: HandoffGitBundleTarget;
   /** Env for `git fetch origin` (destination credentials, no prompts). */
   fetchEnv?: NodeJS.ProcessEnv;
+  /**
+   * The bundle comes from another person (a lane share move). Every git call
+   * here then runs with hooks off (an empty `core.hooksPath`, so a hook the
+   * arriving tree carries, such as `.husky/_/post-checkout`, never runs) and
+   * without submodule recursion. Only the `attach` target is allowed: the
+   * work lands in a new lane, never in an existing checkout.
+   */
+  untrusted?: boolean;
 }): Promise<void> {
   const { projectRoot, bundle } = args;
+  if (args.untrusted && args.target.kind !== "attach") {
+    throw new Error("Work from another person lands only in a new lane.");
+  }
   const branch = args.branchRef.replace(/^refs\/heads\//, "");
   const tip = bundle.branchHeadSha;
   const snapshot = bundle.snapshotSha;
@@ -383,7 +473,20 @@ export async function applyHandoffGitBundle(args: {
 
   const tempRef = `${handoffRefPrefix(args.handoffId)}/head`;
   const tempDir = makeTempDir();
+  // Untrusted: hooks point at an empty folder; no submodule is fetched or checked out.
+  let hardening: string[] = [];
+  if (args.untrusted) {
+    const noHooks = path.join(tempDir, "no-hooks");
+    fs.mkdirSync(noHooks);
+    hardening = ["-c", `core.hooksPath=${noHooks}`, "-c", "submodule.recurse=false", "-c", "fetch.recurseSubmodules=false"];
+  }
+  const g = (gitArgs: string[]): string[] => [...hardening, ...gitArgs];
   const undo: Array<() => Promise<void>> = [];
+  // Set when a wait for the index lock found the lane changed by another
+  // writer. The rollback of an existing lane (a hard reset, removing the
+  // arriving files) would then delete that writer's work, so it is skipped:
+  // the lane keeps what it has, and the handoff fails with the lock error.
+  let laneChangedDuringWait = false;
   const ignore = async (fn: () => Promise<unknown>): Promise<void> => {
     try {
       await fn();
@@ -396,19 +499,12 @@ export async function applyHandoffGitBundle(args: {
     fs.writeFileSync(bundlePath, content);
 
     // The bundle builds on commits origin has; fetch them when missing here.
-    if (!(await gitOk(projectRoot, ["bundle", "verify", bundlePath]))) {
-      await runGitWithGithubAuthFallback(["fetch", "--quiet", "origin"], {
-        cwd: projectRoot,
-        timeoutMs: GIT_TIMEOUT_MS,
-        ...(args.fetchEnv ? { env: args.fetchEnv } : {}),
-      });
-      if (!(await gitOk(projectRoot, ["bundle", "verify", bundlePath]))) {
-        throw new Error(
-          "This machine lacks the commits the handed-off changes build on, even after fetching origin. Push the branch on the source machine, then hand off again.",
-        );
-      }
+    if (!(await ensureBundleBase({ cwd: projectRoot, bundlePath, content, gitPrefix: hardening, ...(args.fetchEnv ? { env: args.fetchEnv } : {}) }))) {
+      throw new Error(
+        "This machine lacks the commits the handed-off changes build on, even after fetching origin. Push the branch on the source machine, then hand off again.",
+      );
     }
-    const heads = (await gitOut(projectRoot, ["bundle", "list-heads", bundlePath]))
+    const heads = (await gitOut(projectRoot, g(["bundle", "list-heads", bundlePath])))
       .split(/\r?\n/)
       .map((line) => line.trim().split(/\s+/))
       .filter((parts) => parts.length === 2 && SHA_PATTERN.test(parts[0]!));
@@ -416,8 +512,12 @@ export async function applyHandoffGitBundle(args: {
     if (heads.length !== 1 || heads[0]![0] !== expectedHead) {
       throw new Error("The handed-off changes don't match what was sent.");
     }
+    // From another person: the one head must be the handoff ref the packer writes, nothing else.
+    if (args.untrusted && !/^refs\/ade-handoff\/[0-9a-f]{32}\/head$/.test(heads[0]![1] ?? "")) {
+      throw new Error("The moved work carries a branch ADE did not expect.");
+    }
     // Deleted in `finally`, success or not.
-    await gitOut(projectRoot, ["fetch", "--quiet", "--no-tags", bundlePath, `+${heads[0]![1]}:${tempRef}`]);
+    await gitOut(projectRoot, g(["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", bundlePath, `+${heads[0]![1]}:${tempRef}`]));
     if ((await resolveCommit(projectRoot, tempRef)) !== expectedHead) {
       throw new Error("The handed-off changes don't match what was sent.");
     }
@@ -439,14 +539,15 @@ export async function applyHandoffGitBundle(args: {
       }
       const current = await resolveCommit(worktreePath, "HEAD");
       const status = await gitOut(worktreePath, ["status", "--porcelain=v1"]);
+      const dirtyLaneError = (): Error => new Error(
+        `The destination lane on '${branch}' has uncommitted changes. Commit or discard them there, then hand off again.`,
+      );
       if (status) {
         const alreadyApplied = current === tip
           && (await readHandoffWorkingTreeSha({ worktreePath }))
             === (await gitOut(worktreePath, ["rev-parse", `${expectedHead}^{tree}`]));
         if (alreadyApplied) return;
-        throw new Error(
-          `The destination lane on '${branch}' has uncommitted changes. Commit or discard them there, then hand off again.`,
-        );
+        throw dirtyLaneError();
       }
       if (!current) throw new Error("The destination lane has no readable commit.");
       if (current !== tip) {
@@ -461,20 +562,38 @@ export async function applyHandoffGitBundle(args: {
         const added = (await gitOut(worktreePath, ["diff", "--name-only", "--diff-filter=A", "-z", current, tip]))
           .split("\0")
           .filter(Boolean);
-        const collision = await findLocalFileCollision(worktreePath, current, added);
-        if (collision) {
-          throw new Error(
-            `The destination lane already has '${collision}' (an ignored or untracked file) where the handed-off commits add one. Move it aside, then hand off again.`,
-          );
-        }
-        await gitOut(worktreePath, ["merge", "--ff-only", "--quiet", tip]);
+        const refuseLocalCollision = async (): Promise<void> => {
+          const collision = await findLocalFileCollision(worktreePath, current, added);
+          if (collision) {
+            throw new Error(
+              `The destination lane already has '${collision}' (an ignored or untracked file) where the handed-off commits add one. Move it aside, then hand off again.`,
+            );
+          }
+        };
+        await refuseLocalCollision();
+        // Another git held the lock: the lane must still be clean, at the
+        // same commit, with no new file in the way, before the retry.
+        await gitWriteOutWhenLockFrees(worktreePath, ["merge", "--ff-only", "--quiet", tip], async () => {
+          if ((await resolveCommit(worktreePath, "HEAD")) !== current) {
+            throw new Error(`'${branch}' moved on this machine during the handoff. Hand off again.`);
+          }
+          if (await gitOut(worktreePath, ["status", "--porcelain=v1"])) throw dirtyLaneError();
+          await refuseLocalCollision();
+        });
       }
       // The lane was clean, so a hard reset back loses nothing of the user's.
       landedOnExistingLane = true;
-      undo.push(() => ignore(() => runGit(["reset", "--hard", "--quiet", current], { cwd: worktreePath, timeoutMs: GIT_TIMEOUT_MS })));
+      undo.push(async () => {
+        if (laneChangedDuringWait) return;
+        await ignore(() => runGit(["reset", "--hard", "--quiet", current], { cwd: worktreePath, timeoutMs: GIT_TIMEOUT_MS }));
+      });
     } else {
       const ref = `refs/heads/${branch}`;
       const existing = await resolveCommit(projectRoot, ref);
+      // From another person: never move a branch this machine already has.
+      if (existing && args.untrusted) {
+        throw new Error(`'${branch}' already exists on this machine. Move again to land on a new branch.`);
+      }
       if (existing) {
         const worktrees = await gitOut(projectRoot, ["worktree", "list", "--porcelain"]);
         if (worktrees.split(/\r?\n/).some((line) => line.trim() === `branch ${ref}`)) {
@@ -524,19 +643,41 @@ export async function applyHandoffGitBundle(args: {
       }
       if (landedOnExistingLane) {
         undo.push(async () => {
+          if (laneChangedDuringWait) return;
           for (const relative of added) {
             await ignore(async () => fs.rmSync(path.join(worktreePath, relative), { force: true }));
           }
         });
       }
       // The working tree as it was, then the index back on the tip so every
-      // change shows as uncommitted.
-      await gitOut(worktreePath, ["checkout", "--no-overlay", snapshot, "--", "."]);
-      await gitOut(worktreePath, ["reset", "--quiet", tip]);
+      // change shows as uncommitted. Another git holding the index lock (an
+      // editor's status refresh) gets a short wait. The checkout overwrites
+      // tracked files without asking, so it runs again only on a lane still
+      // at the tip with nothing changed and no new file in the way.
+      const stopIfLaneChanged = (lockError: unknown): never => {
+        laneChangedDuringWait = true;
+        throw lockError;
+      };
+      await gitWriteOutWhenLockFrees(worktreePath, g(["checkout", "--no-overlay", snapshot, "--", "."]), async (lockError) => {
+        if ((await resolveCommit(worktreePath, "HEAD")) !== tip) stopIfLaneChanged(lockError);
+        if (await gitOut(worktreePath, ["status", "--porcelain=v1"])) stopIfLaneChanged(lockError);
+        if (await findLocalFileCollision(worktreePath, tip, added)) stopIfLaneChanged(lockError);
+      });
+      // The reset changes only the index. After the checkout the lane is not
+      // clean, so the check is that the index and the files still match the
+      // snapshot exactly: nothing staged or edited by anyone else.
+      await gitWriteOutWhenLockFrees(worktreePath, g(["reset", "--quiet", tip]), async (lockError) => {
+        if ((await resolveCommit(worktreePath, "HEAD")) !== tip) stopIfLaneChanged(lockError);
+        if (!(await gitOk(worktreePath, ["diff", "--cached", "--quiet", snapshot, "--"]))) stopIfLaneChanged(lockError);
+        if (!(await gitOk(worktreePath, ["diff", "--quiet", "--"]))) stopIfLaneChanged(lockError);
+      });
     }
     undo.length = 0;
   } catch (error) {
-    for (const step of undo.reverse()) await step();
+    // Another writer changed the lane during a wait for the index lock: no
+    // undo step runs. Deleting a new lane, its branch or the arriving files
+    // would delete that writer's work with them.
+    if (!laneChangedDuringWait) for (const step of undo.reverse()) await step();
     undo.length = 0;
     throw error;
   } finally {
@@ -596,6 +737,8 @@ type LandHandoffGitBundleArgs<Lane extends HandoffBundleLane> = {
   branchRef: string;
   existingLane: Lane | null;
   fetchEnv?: NodeJS.ProcessEnv;
+  /** From another person: hooks off, new lane only (see `applyHandoffGitBundle`). */
+  untrusted?: boolean;
   importLane: (input: { branchRef: string; name: string; description: string }) => Promise<Lane>;
   deleteLane: (laneId: string) => Promise<void>;
   /**
@@ -613,6 +756,9 @@ async function landHandoffGitBundleNow<Lane extends HandoffBundleLane>(
   if (!bundle) throw new Error("The handoff carries no branch changes to land.");
   if (args.existingLane?.laneType === "primary") {
     throw new Error("Handed-off changes never land in this machine's primary checkout.");
+  }
+  if (args.untrusted && args.existingLane) {
+    throw new Error("Work from another person lands only in a new lane.");
   }
   if (args.existingLane) {
     args.onLaneImported(args.existingLane.id);
@@ -633,6 +779,7 @@ async function landHandoffGitBundleNow<Lane extends HandoffBundleLane>(
     branchRef: args.branchRef,
     bundle,
     ...(args.fetchEnv ? { fetchEnv: args.fetchEnv } : {}),
+    ...(args.untrusted ? { untrusted: true } : {}),
     target: {
       kind: "attach",
       attach: async (branch) => {

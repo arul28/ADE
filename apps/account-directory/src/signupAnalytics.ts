@@ -26,98 +26,40 @@
  * while; a `user.deleted` still deletes the account's ADE Cloud data with no token.
  */
 
+import type { RelayAccountPurgeEnv } from "./activityRelay";
+import { alertSignupBurst, recordSignupIp, signupClientIp } from "./cloud/abuseSignals";
 import { deleteCloudAccount } from "./cloud/accountDeletion";
+import { closeLaneSharesForAccount } from "./laneShares/routes";
+import { deleteAccountProjects } from "./accountProjects/store";
+import { deleteGithubAppAccount, type GithubAppEnv } from "./githubApp/grants";
 import { reportCloudFailure } from "./cloud/store";
+import { accountDistinctId, uuidFromSeed } from "./sinkUtils";
+import { verifyWebhookSignature } from "./webhookSignature";
 
-export type SignupAnalyticsEnv = {
+/** `RelayAccountPurgeEnv`: a `user.deleted` also removes the account's vault and settings on the push relay. */
+export type SignupAnalyticsEnv = RelayAccountPurgeEnv & Partial<Omit<GithubAppEnv, "DB">> & {
   CLERK_WEBHOOK_SIGNING_SECRET?: string;
   POSTHOG_PROJECT_TOKEN?: string;
   POSTHOG_HOST?: string;
-  /** For `user.deleted`: the account's ADE Cloud computers, plan and saved chats go with it. */
+  /** For `user.deleted`: the account's ADE Cloud computers, plan and saved chats go with it, its lane shares close, and its project list goes. */
   DB?: D1Database;
   CLOUD_CHATS?: R2Bucket;
   AGENT37_API_KEY?: string;
   STRIPE_SECRET_KEY?: string;
+  /** Keys the hashed sign-up address (`cloud/abuseSignals.ts`). */
+  CLOUD_CHAT_MASTER_KEY?: string;
+  /** The owner's sign-up burst alert (`cloud/abuseSignals.ts` `alertSignupBurst`). */
+  RESEND_API_KEY?: string;
+  CLOUD_ALERT_EMAIL?: string;
+  BILLING_RETURN_ORIGIN?: string;
 };
 
 const ROUTE = "/webhooks/clerk";
 const MAX_BODY_BYTES = 64 * 1024;
-/** Svix's own replay window. */
-const TIMESTAMP_TOLERANCE_SECONDS = 5 * 60;
 const SIGNUP_METHODS = new Set(["google", "github", "apple", "microsoft", "gitlab", "discord", "linear"]);
 
 export function isSignupAnalyticsRequest(url: URL): boolean {
   return url.pathname === ROUTE;
-}
-
-const textEncoder = new TextEncoder();
-
-function base64ToBytes(value: string): Uint8Array<ArrayBuffer> {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
-
-function bytesToBase64(bytes: ArrayBuffer): string {
-  let binary = "";
-  for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let index = 0; index < a.length; index += 1) diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
-  return diff === 0;
-}
-
-/** Svix: HMAC-SHA256 over `${id}.${timestamp}.${body}`, any `v1,` signature in the header may match. */
-export async function verifySvixSignature(args: {
-  secret: string;
-  id: string;
-  timestamp: string;
-  body: string;
-  signatureHeader: string;
-  nowSeconds: number;
-}): Promise<boolean> {
-  const timestamp = Number(args.timestamp);
-  if (!Number.isFinite(timestamp) || Math.abs(args.nowSeconds - timestamp) > TIMESTAMP_TOLERANCE_SECONDS) {
-    return false;
-  }
-  let keyBytes: Uint8Array<ArrayBuffer>;
-  try {
-    keyBytes = base64ToBytes(args.secret.replace(/^whsec_/, ""));
-  } catch {
-    return false;
-  }
-  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const expected = bytesToBase64(
-    await crypto.subtle.sign("HMAC", key, textEncoder.encode(`${args.id}.${args.timestamp}.${args.body}`)),
-  );
-  return args.signatureHeader
-    .split(" ")
-    .map((part) => part.split(",", 2))
-    .some(([version, signature]) => version === "v1" && typeof signature === "string" && constantTimeEqual(signature, expected));
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", textEncoder.encode(value));
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-/** The id every ADE client identifies an account with. Keep in step with `identifyAccount`. */
-export async function accountDistinctId(userId: string): Promise<string> {
-  return `ade_user_${(await sha256Hex(`ade-product-analytics-account-v1:${userId}`)).slice(0, 32)}`;
-}
-
-/** A stable v4-shaped uuid from a seed string. */
-async function uuidFromSeed(seed: string): Promise<string> {
-  const chars = (await sha256Hex(seed)).slice(0, 32).split("");
-  chars[12] = "4";
-  chars[16] = "8";
-  const value = chars.join("");
-  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
 /**
@@ -221,7 +163,7 @@ export async function handleSignupAnalyticsRequest(
   if (!id || !timestamp || !signatureHeader) return json(400, { error: "missing_signature" });
   const body = await readBoundedBody(request);
   if (body === null) return json(413, { error: "too_large" });
-  const verified = await verifySvixSignature({
+  const verified = await verifyWebhookSignature({
     secret,
     id,
     timestamp,
@@ -229,7 +171,8 @@ export async function handleSignupAnalyticsRequest(
     signatureHeader,
     nowSeconds: Math.floor(Date.now() / 1000),
   });
-  if (!verified) return json(401, { error: "bad_signature" });
+  if (verified === "secret_unreadable") reportCloudFailure("signup_webhook_secret_unreadable", {}, "signup");
+  if (verified !== "valid") return json(401, { error: "bad_signature" });
 
   let payload: ClerkUserEvent;
   try {
@@ -242,13 +185,42 @@ export async function handleSignupAnalyticsRequest(
   if (!userId || userId.length > 512) return json(400, { error: "bad_user" });
 
   if (payload.type === "user.deleted" && env.DB) {
-    // Before the capture, so a failure here asks Clerk to deliver again.
+    // Before the capture, so a failure here asks Clerk to deliver again. Lane
+    // shares first: one D1 write that must not wait on the provider below.
+    try {
+      await closeLaneSharesForAccount({ DB: env.DB }, userId);
+    } catch (error) {
+      reportCloudFailure("lane_share.account_close_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+      return json(502, { error: "lane_share_close_failed" });
+    }
+    // The project list (folder paths included): D1 only, safe to repeat.
+    try {
+      await deleteAccountProjects(env.DB, userId);
+    } catch (error) {
+      reportCloudFailure("account_project.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "account_projects");
+      return json(502, { error: "account_project_delete_failed" });
+    }
+    // The GitHub App grant: its token is deleted at GitHub where the secrets
+    // allow (best effort), then the rows go. D1 only decides the answer.
+    try {
+      await deleteGithubAppAccount({ ...env, DB: env.DB } as GithubAppEnv, userId);
+    } catch (error) {
+      reportCloudFailure("github_app.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "github_app");
+      return json(502, { error: "github_app_delete_failed" });
+    }
     try {
       await deleteCloudAccount({ ...env, DB: env.DB }, userId);
     } catch (error) {
       reportCloudFailure("cloud.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
       return json(502, { error: "cloud_delete_failed" });
     }
+  }
+  // The sign-up's address, hashed, for the daily report's burst alarm (`cloud/abuseSignals.ts`). Never fails the webhook.
+  if (payload.type === "user.created" && env.DB) {
+    const createdAtMs = typeof payload.data?.created_at === "number" ? payload.data.created_at : Date.now();
+    const ipHash = await recordSignupIp({ DB: env.DB, CLOUD_CHAT_MASTER_KEY: env.CLOUD_CHAT_MASTER_KEY }, userId, signupClientIp(payload), createdAtMs);
+    // The owner hears of a burst from one address at once (alert only, nobody is held).
+    if (ipHash) await alertSignupBurst({ ...env, DB: env.DB }, userId, ipHash, Date.now());
   }
   if (!analyticsToken) return payload.type === "user.deleted" ? json(200, { deleted: true }) : json(503, { error: "not_configured" });
 

@@ -49,6 +49,7 @@ export const IPC = {
   appGetLaunchGateState: "ade.app.getLaunchGateState",
   appResolveLaunchGate: "ade.app.resolveLaunchGate",
   appSetWindowProjectTabs: "ade.app.setWindowProjectTabs",
+  appSetWindowRepositoryTabs: "ade.app.setWindowRepositoryTabs",
   appNewWindow: "ade.app.newWindow",
   appOpenProjectInNewWindow: "ade.app.openProjectInNewWindow",
   appProjectTabDragStart: "ade.app.projectTabDragStart",
@@ -95,6 +96,7 @@ export const IPC = {
   appWriteClipboardImage: "ade.app.writeClipboardImage",
   appOpenPathInEditor: "ade.app.openPathInEditor",
   appLogDebugEvent: "ade.app.logDebugEvent",
+  appReportRendererMemory: "ade.app.reportRendererMemory",
   captureGestureUpdateSettings: "ade.captureGesture.updateSettings",
   captureGestureGetHealth: "ade.captureGesture.getHealth",
   captureGestureRetry: "ade.captureGesture.retry",
@@ -129,6 +131,10 @@ export const IPC = {
   projectOpenAdeFolder: "ade.project.openAdeFolder",
   projectClearLocalData: "ade.project.clearLocalData",
   projectListRecent: "ade.project.listRecent",
+  projectListThisComputer: "ade.project.listThisComputer",
+  projectAccountList: "ade.project.accountList",
+  projectAccountAdd: "ade.project.accountAdd",
+  projectAccountRemove: "ade.project.accountRemove",
   projectFindForRepo: "ade.project.findForRepo",
   projectCreateLocal: "ade.project.createLocal",
   projectClone: "ade.project.clone",
@@ -173,17 +179,22 @@ export const IPC = {
   machineResetStart: "ade.machineReset.start",
   /** Folder picker for the "move lanes out" rescue option. */
   machineResetChooseRescueDir: "ade.machineReset.chooseRescueDir",
-  /** Assemble, save, copy to the clipboard, and open a prefilled GitHub issue. */
-  diagnosticsOpenIssue: "ade.diagnostics.openIssue",
   /** Renderer-detected failure asking main to consider one automatic send. */
   diagnosticsAutoReport: "ade.diagnostics.autoReport",
   /**
-   * "Send a report to ADE", pressed by hand in Settings, with nothing visibly
-   * broken. Main owns the report, the per-device manual budget and the upload;
-   * unlike the automatic path it answers with what happened, because someone is
-   * watching.
+   * Build and redact one report for the person to read before it is sent
+   * (the report dialog, Settings' "Send a report"). Sends nothing and claims
+   * no budget; answers the text with a one-use id.
    */
-  diagnosticsSendManual: "ade.diagnostics.sendManual",
+  diagnosticsPrepareReport: "ade.diagnostics.prepareReport",
+  /**
+   * Upload a prepared report by id, byte for byte, and claim the manual
+   * budget then. Main owns the report, the budget and the upload; unlike the
+   * automatic path it answers with what happened, because someone is watching.
+   */
+  diagnosticsSendReport: "ade.diagnostics.sendReport",
+  /** Drop a prepared report (Cancel). */
+  diagnosticsDiscardReport: "ade.diagnostics.discardReport",
   /** Read the automatic-report setting. No UI reads it any more; kept for the preload contract. */
   diagnosticsGetSharing: "ade.diagnostics.getSharing",
   /** Flip the automatic-report setting. No UI calls it any more; kept for the preload contract. */
@@ -207,6 +218,9 @@ export const IPC = {
    */
   diagnosticsAckAutoSent: "ade.diagnostics.ackAutoSent",
   projectForgetRecent: "ade.project.forgetRecent",
+  projectRetryOpen: "ade.project.retryOpen",
+  projectInspectRemoval: "ade.project.inspectRemoval",
+  projectRemoveCopy: "ade.project.removeCopy",
   projectReorderRecent: "ade.project.reorderRecent",
   projectSetRecentPinned: "ade.project.setRecentPinned",
   projectMissing: "ade.project.missing",
@@ -221,10 +235,13 @@ export const IPC = {
   remoteRuntimeRunDoctor: "ade.remoteRuntime.runDoctor",
   remoteRuntimeCheckReachability: "ade.remoteRuntime.checkReachability",
   remoteRuntimeGetConnectionSnapshot: "ade.remoteRuntime.getConnectionSnapshot",
+  /** This computer's network came back or changed: redial dropped machines now. */
+  remoteRuntimeNetworkChanged: "ade.remoteRuntime.networkChanged",
   remoteRuntimeConnectionSnapshotChanged:
     "ade.remoteRuntime.connectionSnapshotChanged",
   remoteRuntimeSaveTarget: "ade.remoteRuntime.saveTarget",
   remoteRuntimeSetAutoConnect: "ade.remoteRuntime.setAutoConnect",
+  remoteRuntimeSetSlowLinkMode: "ade.remoteRuntime.setSlowLinkMode",
   remoteRuntimeRemoveTarget: "ade.remoteRuntime.removeTarget",
   remoteRuntimeGetSshHostKeyTrust:
     "ade.remoteRuntime.getSshHostKeyTrust",
@@ -236,6 +253,8 @@ export const IPC = {
   remoteRuntimeGetProjectDetail: "ade.remoteRuntime.getProjectDetail",
   remoteRuntimeChooseProjectIcon: "ade.remoteRuntime.chooseProjectIcon",
   remoteRuntimeRemoveProjectIcon: "ade.remoteRuntime.removeProjectIcon",
+  remoteRuntimeInspectProjectRemoval: "ade.remoteRuntime.inspectProjectRemoval",
+  remoteRuntimeRemoveProjectCopy: "ade.remoteRuntime.removeProjectCopy",
   remoteRuntimeGetDefaultParentDir: "ade.remoteRuntime.getDefaultParentDir",
   remoteRuntimeGetHandoffStoragePreflight: "ade.remoteRuntime.getHandoffStoragePreflight",
   remoteRuntimeCreateProject: "ade.remoteRuntime.createProject",
@@ -269,6 +288,8 @@ export const IPC = {
   personalChatsCall: "ade.personalChats.call",
   personalChatsStreamEvents: "ade.personalChats.streamEvents",
   runtimeEvent: "ade.runtime.event",
+  /** Main to window: a runtime event stream ended by itself; `{ bindingKey }`. The pump re-subscribes at once. */
+  runtimeEventStreamEnded: "ade.runtime.event.streamEnded",
   runtimeEventsRelease: "ade.runtime.events.release",
   projectStateGetSnapshot: "ade.project.state.getSnapshot",
   projectStateInitializeOrRepair: "ade.project.state.initializeOrRepair",
@@ -411,6 +432,7 @@ export const IPC = {
   agentChatDraftsUpdate: "ade.agentChat.drafts.update",
   agentChatDraftsClaim: "ade.agentChat.drafts.claim",
   agentChatDraftsSendNow: "ade.agentChat.drafts.sendNow",
+  agentChatTypeIntoCli: "ade.agentChat.typeIntoCli",
   agentChatClaudePluginUiGet: "ade.agentChat.claudePluginUi.get",
   agentChatClaudePluginUiAct: "ade.agentChat.claudePluginUi.act",
   agentChatThreadCommentsList: "ade.agentChat.threadComments.list",
@@ -420,6 +442,8 @@ export const IPC = {
   agentChatHandoff: "ade.agentChat.handoff",
   agentChatStartSideChat: "ade.agentChat.startSideChat",
   agentChatEndSideChat: "ade.agentChat.endSideChat",
+  agentChatGetRootFullAccess: "ade.agentChat.getRootFullAccess",
+  agentChatSetRootFullAccess: "ade.agentChat.setRootFullAccess",
   agentChatPrepareCrossMachineHandoff: "ade.agentChat.prepareCrossMachineHandoff",
   agentChatValidateCrossMachineSource: "ade.agentChat.validateCrossMachineSource",
   agentChatMarkCrossMachineHandoff: "ade.agentChat.markCrossMachineHandoff",
@@ -433,6 +457,7 @@ export const IPC = {
   agentChatStartCrossMachineBatchMove: "ade.agentChat.startCrossMachineBatchMove",
   agentChatGetCrossMachineBatchMove: "ade.agentChat.getCrossMachineBatchMove",
   agentChatRetryCrossMachineBatchMove: "ade.agentChat.retryCrossMachineBatchMove",
+  agentChatCrossMachineBatchSourceChanged: "ade.agentChat.crossMachineBatchSourceChanged",
   agentChatResolveCrossMachineBatchMoveApproval: "ade.agentChat.resolveCrossMachineBatchMoveApproval",
   agentChatSend: "ade.agentChat.send",
   agentChatSteer: "ade.agentChat.steer",
@@ -482,7 +507,11 @@ export const IPC = {
   agentChatContinueUsageLimitOnAlternate: "ade.agentChat.continueUsageLimitOnAlternate",
   agentChatSwitchAccount: "ade.agentChat.switchAccount",
   agentChatSetScheduledWorkPaused: "ade.agentChat.scheduledWork.pause",
+  agentChatSetScheduledWorkItemPaused: "ade.agentChat.scheduledWork.pauseItem",
+  agentChatRunScheduledWorkNow: "ade.agentChat.scheduledWork.runNow",
   agentChatWarmupModel: "ade.agentChat.warmupModel",
+  agentChatPrewarmDraft: "ade.agentChat.prewarmDraft",
+  agentChatCreateAndSendSupported: "ade.agentChat.createAndSendSupported",
   agentChatSlashCommands: "ade.agentChat.slashCommands",
   agentChatListClaudePlugins: "ade.agentChat.claudePlugins.list",
   agentChatListCodexPlugins: "ade.agentChat.codexPlugins.list",
@@ -501,6 +530,7 @@ export const IPC = {
   agentChatSaveTempAttachment: "ade.agentChat.saveTempAttachment",
   agentChatCopyTempAttachment: "ade.agentChat.copyTempAttachment",
   agentChatListSubagents: "ade.agentChat.listSubagents",
+  agentChatListPendingInputs: "ade.agentChat.listPendingInputs",
   agentChatKillDroidWorker: "ade.agentChat.killDroidWorker",
   agentChatGetSessionCapabilities: "ade.agentChat.getSessionCapabilities",
   agentChatGetTurnFileDiff: "ade.agentChat.getTurnFileDiff",
@@ -538,6 +568,7 @@ export const IPC = {
   computerUseUpdateArtifactReview: "ade.computerUse.updateArtifactReview",
   computerUseReadArtifactPreview: "ade.computerUse.readArtifactPreview",
   computerUseMediaBaseUrl: "ade.computerUse.mediaBaseUrl",
+  computerUseMediaSize: "ade.computerUse.mediaSize",
   computerUseSaveMediaAs: "ade.computerUse.saveMediaAs",
   computerUseEvent: "ade.computerUse.event",
   iosSimulatorGetStatus: "ade.iosSimulator.getStatus",
@@ -762,8 +793,18 @@ export const IPC = {
   builtInBrowserCreateTab: "ade.builtInBrowser.createTab",
   builtInBrowserSwitchTab: "ade.builtInBrowser.switchTab",
   builtInBrowserHandTabToChat: "ade.builtInBrowser.handTabToChat",
+  builtInBrowserKeepTab: "ade.builtInBrowser.keepTab",
   builtInBrowserCloseTab: "ade.builtInBrowser.closeTab",
   builtInBrowserReload: "ade.builtInBrowser.reload",
+  // The Messages integration on this Mac (Settings › Integrations › Messages).
+  messagesIntegrationStatus: "ade.messagesIntegration.status",
+  messagesIntegrationSet: "ade.messagesIntegration.set",
+  // Passwords for the person in the browser: the key button and "Save to Passwords?".
+  builtInBrowserSavedLogins: "ade.builtInBrowser.savedLogins",
+  builtInBrowserFillSavedLogin: "ade.builtInBrowser.fillSavedLogin",
+  builtInBrowserLoginOffer: "ade.builtInBrowser.loginOffer",
+  builtInBrowserAcceptLoginOffer: "ade.builtInBrowser.acceptLoginOffer",
+  builtInBrowserDismissLoginOffer: "ade.builtInBrowser.dismissLoginOffer",
   builtInBrowserGoBack: "ade.builtInBrowser.goBack",
   builtInBrowserGoForward: "ade.builtInBrowser.goForward",
   builtInBrowserStop: "ade.builtInBrowser.stop",
@@ -986,6 +1027,7 @@ export const IPC = {
   apiCredentialsRemove: "ade.apiCredentials.remove",
   apiCredentialsGet: "ade.apiCredentials.get",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
+  aiVerifyProviderSignIn: "ade.ai.verifyProviderSignIn",
   aiUpdateConfig: "ade.ai.updateConfig",
   aiGetContinueAfterRestart: "ade.ai.getContinueAfterRestart",
   aiSetContinueAfterRestart: "ade.ai.setContinueAfterRestart",
@@ -996,6 +1038,7 @@ export const IPC = {
    * provider's settings page opens — never on a status refresh.
    */
   aiAcpProviderDiagnostics: "ade.ai.acpProviderDiagnostics",
+  aiRunAcpProviderDoctor: "ade.ai.runAcpProviderDoctor",
   aiOpencodeAuthMethods: "ade.ai.opencodeAuthMethods",
   aiOpencodeOAuthStart: "ade.ai.opencodeOAuthStart",
   aiOpencodeOAuthCancel: "ade.ai.opencodeOAuthCancel",
@@ -1023,15 +1066,6 @@ export const IPC = {
   aiGetToolsCache: "ade.ai.getToolsCache",
   aiEnsureToolsCache: "ade.ai.ensureToolsCache",
   aiToolsCacheEvent: "ade.ai.toolsCacheEvent",
-  projectSecretsList: "ade.projectSecrets.list",
-  projectSecretsGet: "ade.projectSecrets.get",
-  projectSecretsSet: "ade.projectSecrets.set",
-  projectSecretsDelete: "ade.projectSecrets.delete",
-  projectSecretsPullFromAccount: "ade.projectSecrets.pullFromAccount",
-  projectSecretsChooseEnvFile: "ade.projectSecrets.chooseEnvFile",
-  projectSecretsPreviewEnvImport: "ade.projectSecrets.previewEnvImport",
-  projectSecretsImportEnv: "ade.projectSecrets.importEnv",
-  projectSecretsExportEnv: "ade.projectSecrets.exportEnv",
   aiCursorCloudListRepositories: "ade.ai.cursorCloud.listRepositories",
   aiCursorCloudListAgents: "ade.ai.cursorCloud.listAgents",
   aiCursorCloudListRuns: "ade.ai.cursorCloud.listRuns",
@@ -1088,6 +1122,7 @@ export const IPC = {
   githubGetRemoteStatus: "ade.github.getRemoteStatus",
   githubSetToken: "ade.github.setToken",
   githubClearToken: "ade.github.clearToken",
+  githubSetGhAccountSharing: "ade.github.setGhAccountSharing",
   githubStatusChanged: "ade.github.statusChanged",
   githubGetRequestBudget: "ade.github.getRequestBudget",
   githubIsRepoStarred: "ade.github.isRepoStarred",
@@ -1095,6 +1130,15 @@ export const IPC = {
   githubStartAppUserDeviceAuth: "ade.github.startAppUserDeviceAuth",
   githubPollAppUserDeviceAuth: "ade.github.pollAppUserDeviceAuth",
   githubClearAppUserAuth: "ade.github.clearAppUserAuth",
+  // The ADE account's GitHub App sign-in. Account-scoped: no machine pin.
+  githubGetAccountAppStatus: "ade.github.getAccountAppStatus",
+  githubStartAccountAppSignIn: "ade.github.startAccountAppSignIn",
+  githubReadAccountAppSignIn: "ade.github.readAccountAppSignIn",
+  githubSignOutAccountApp: "ade.github.signOutAccountApp",
+  // Direct GitHub reads with the account's GitHub App sign-in. Account-scoped:
+  // no machine pin (githubDirectIpc.ts).
+  githubDirectRequest: "ade.githubDirect.request",
+  githubDirectGetState: "ade.githubDirect.getState",
   githubGetAppInstallationStatus: "ade.github.getAppInstallationStatus",
   githubListRepoAutolinks: "ade.github.listRepoAutolinks",
   githubCreateRepoAutolink: "ade.github.createRepoAutolink",
@@ -1122,13 +1166,26 @@ export const IPC = {
   accountPollDeviceLogin: "ade.account.pollDeviceLogin",
   accountCancelDeviceLogin: "ade.account.cancelDeviceLogin",
   accountSignOut: "ade.account.signOut",
+  /** Deletes the signed-in ADE account (`POST /account/delete`), then signs out. Account level: no pin. */
+  accountDelete: "ade.account.delete",
   accountListMachines: "ade.account.listMachines",
+  laneShareGuestListReceived: "ade.laneShareGuest.listReceived",
+  laneShareGuestListGiven: "ade.laneShareGuest.listGiven",
+  laneShareGuestRevokeGiven: "ade.laneShareGuest.revokeGiven",
+  laneShareGuestOpen: "ade.laneShareGuest.open",
+  laneShareGuestAccept: "ade.laneShareGuest.accept",
+  laneShareGuestLeave: "ade.laneShareGuest.leave",
+  laneShareGuestConnect: "ade.laneShareGuest.connect",
   accountGetMachineInventory: "ade.account.getMachineInventory",
   accountGetConnectionRoutes: "ade.account.getConnectionRoutes",
   accountGetAvatarDataUrl: "ade.account.getAvatarDataUrl",
   accountSetRelayEnabled: "ade.account.setRelayEnabled",
   accountRenameMachine: "ade.account.renameMachine",
   accountPairMachine: "ade.account.pairMachine",
+  /** Contract C2: an address for one machine of the account, by machine key (`shared/machineAddress.ts`). */
+  machinesConnect: "ade.machines.connect",
+  /** The address from this computer's saved connections only; no network. */
+  machinesAddressFor: "ade.machines.addressFor",
   accountPairMachineProgress: "account:pairMachineProgress",
   accountGetLocalMachineIdentity: "ade.account.getLocalMachineIdentity",
   accountRemoveMachine: "ade.account.removeMachine",
@@ -1139,40 +1196,113 @@ export const IPC = {
   /** the provider: the account-wide key, and new machines made on it. */
   cloudGetAccess: "ade.cloud.getAccess",
   cloudGetStatus: "ade.cloud.getStatus",
-  cloudCreateMachine: "ade.cloud.createMachine",
   cloudCreateProgress: "cloud:createProgress",
   cloudCancelCreate: "ade.cloud.cancelCreate",
   cloudStatusChanged: "cloud:statusChanged",
+  /**
+   * ADE Cloud lane launches: one call for every `chatLaunch` method, answered
+   * by this app while it owns the launch (`cloudLaneLaunchService.ts`), and
+   * their snapshots to every window.
+   */
+  cloudLaneLaunchCall: "ade.cloud.laneLaunch.call",
+  cloudLaneLaunchEvent: "cloud:laneLaunchEvent",
+  /** The CTO's home on ADE Cloud (`ctoCloudHomeService.ts`): one call, and its snapshots to every window. */
+  ctoCloudHomeCall: "ade.cloud.ctoHome.call",
+  ctoCloudHomeEvent: "cloud:ctoHomeEvent",
   cloudSavedChatsList: "ade.cloud.savedChats.list",
   cloudSavedChatsRead: "ade.cloud.savedChats.read",
   cloudSavedChatsDelete: "ade.cloud.savedChats.delete",
+  /**
+   * ADE with no computer (`main/services/adeCloud/adeCloudReadIpc.ts`): a
+   * tab bound to ADE Cloud, the account reads behind it, and the message
+   * queue of an existing cloud chat.
+   */
+  adeCloudOpenProject: "ade.adeCloud.openProject",
+  adeCloudProjectOverview: "ade.adeCloud.projectOverview",
+  adeCloudGitSummary: "ade.adeCloud.gitSummary",
+  adeCloudSavedSessions: "ade.adeCloud.savedSessions",
+  adeCloudChatMessages: "ade.adeCloud.chatMessages.list",
+  adeCloudChatMessageCancel: "ade.adeCloud.chatMessages.cancel",
+  adeCloudAccountCall: "ade.adeCloud.accountCall",
   cloudListMachines: "ade.cloud.listMachines",
   cloudMachineAction: "ade.cloud.machineAction",
-  cloudReadyStatus: "ade.cloud.readyStatus",
-  cloudReadySetProject: "ade.cloud.readySetProject",
-  cloudReadyRemoveProject: "ade.cloud.readyRemoveProject",
-  cloudReadyRetry: "ade.cloud.readyRetry",
-  cloudReadyClaim: "ade.cloud.readyClaim",
-  cloudReadyRelease: "ade.cloud.readyRelease",
-  cloudReadyStatusChanged: "cloud:readyStatusChanged",
   cloudGetAgentLimits: "ade.cloud.getAgentLimits",
   cloudSetAgentLimits: "ade.cloud.setAgentLimits",
   cloudSetExtraHours: "ade.cloud.setExtraHours",
   cloudOpenCheckout: "ade.cloud.openCheckout",
+  cloudSetExtraPhoneMinutes: "ade.cloud.setExtraPhoneMinutes",
+  cloudPickPlanCleanup: "ade.cloud.pickPlanCleanup",
+  /** Enters a friend's invite (a link or a code) for this account (`CloudInviteRedeemOutcome`). Account level: no pin. */
+  cloudRedeemInvite: "ade.cloud.redeemInvite",
   cloudOpenBillingPortal: "ade.cloud.openBillingPortal",
+  /** Opens Stripe's page to save a card with no charge (a too-new GitHub account's free hours start now). Account level: no pin. */
+  cloudOpenFreeUnlock: "ade.cloud.openFreeUnlock",
   cloudPersonIsHere: "ade.cloud.personIsHere",
   cloudPushAllWork: "ade.cloud.pushAllWork",
+  cloudLaneBackups: "ade.cloud.laneBackups",
+  cloudLaneBackupSavePatch: "ade.cloud.laneBackupSavePatch",
+  cloudLaneBackupToBranch: "ade.cloud.laneBackupToBranch",
+  cloudLaneBackupForget: "ade.cloud.laneBackupForget",
+  /**
+   * A kept ADE Cloud lane moved to a machine (shared/cloudKeptLaneRestore.ts). The brain of the
+   * pinned project runs it; these answer only a call with no project runtime (it needs one).
+   */
+  cloudPreviewKeptLaneRestore: "ade.cloud.previewKeptLaneRestore",
+  cloudRestoreKeptLane: "ade.cloud.restoreKeptLane",
+  cloudGetKeptLaneRestore: "ade.cloud.getKeptLaneRestore",
+  cloudKeepIdleComputer: "ade.cloud.keepIdleComputer",
+  cloudComputerStatus: "ade.cloud.computerStatus",
+  /** Delete lane, keep a lane on a fresh computer, lanes without a computer, tier changes (`cloudLaneLife.ts`). Account level. */
+  cloudLaneLifeCall: "ade.cloud.laneLife.call",
+  /** A tier change's steps (`CloudLaneJobSnapshot`), to every window. */
+  cloudLaneJobEvent: "cloud:laneJobEvent",
+  /** Contract C3 (`shared/laneComputer.ts`): the computer a lane is on now. Account level. */
+  cloudLaneComputer: "ade.cloud.laneComputer",
+  /** The lane's computer and an address for it (pairs and connects). */
+  cloudFollowLane: "ade.cloud.followLane",
+  /** A lane's computer changed (`LaneMovedEvent`), to every window. */
+  cloudLaneMoved: "cloud:laneMoved",
   cloudCopyMachine: "ade.cloud.copyMachine",
   cloudMoveMachine: "ade.cloud.moveMachine",
   cloudReconnectMachine: "ade.cloud.reconnectMachine",
+  /** C4: can a new cloud computer clone this repository with the account's GitHub sign-in? Account-level, no pin. The launch runs the same check itself; no renderer surface calls this yet. */
+  cloudGitPreflight: "ade.cloud.gitPreflight",
+  cloudLaunchSignInCode: "ade.cloud.launchSignInCode",
+  /** A message for an existing ADE Cloud chat, through the account's queue (`POST /cloud/chats/:m/:c/messages`). Account-level, no pin. */
+  cloudChatMessageSend: "ade.cloud.chatMessageSend",
+  /** One server launch's record (`GET /cloud/launches/:id`), for a launch the queue started. Account-level, no pin. */
+  cloudServerLaunchStatus: "ade.cloud.serverLaunchStatus",
+  /** Which provider sign-ins the account carries to ADE Cloud (`GET /cloud/sign-ins` `carried`). Account-level, no pin. */
+  cloudCarriedSignIns: "ade.cloud.carriedSignIns",
+  /** The models a chat on ADE Cloud can run (`GET /cloud/models`), the same for every account. Account-level, no pin. */
+  cloudModelCatalog: "ade.cloud.modelCatalog",
   /** Sign-ins for cloud machines: the person's provider sign-ins, given to every new cloud machine. */
   cloudSignInStatus: "ade.cloud.cloudSignInStatus",
   cloudSignInClaudeStart: "ade.cloud.cloudSignInClaudeStart",
   cloudSignInClaudeCode: "ade.cloud.cloudSignInClaudeCode",
+  cloudSignInClaudeKeep: "ade.cloud.cloudSignInClaudeKeep",
   cloudSignInClaudeCancel: "ade.cloud.cloudSignInClaudeCancel",
   cloudSignInSaveKey: "ade.cloud.cloudSignInSaveKey",
   cloudSignInRemove: "ade.cloud.cloudSignInRemove",
   cloudSignInChanged: "cloud:cloudSignInChanged",
+
+  /**
+   * The ADE Cloud iPhone's live view (`cloudPhoneViewHost.ts`). Desktop-only:
+   * an offscreen window in this process paints NoMac's control page, and its
+   * cropped frames come back over `cloudPhoneViewFrame`. No pin: the view is a
+   * window on this computer, not a lane on another machine.
+   */
+  cloudPhoneViewOpen: "ade.cloudPhoneView.open",
+  cloudPhoneViewClose: "ade.cloudPhoneView.close",
+  cloudPhoneViewInput: "ade.cloudPhoneView.input",
+  cloudPhoneViewScroll: "ade.cloudPhoneView.scroll",
+  cloudPhoneViewKey: "ade.cloudPhoneView.key",
+  cloudPhoneViewHome: "ade.cloudPhoneView.home",
+  cloudPhoneViewSetHidden: "ade.cloudPhoneView.setHidden",
+  /** One painted phone frame (`CloudPhoneViewFrame`), to the renderer that opened the view. */
+  cloudPhoneViewFrame: "ade.cloudPhoneView.frame",
+  /** A view's lifecycle (`CloudPhoneViewStateEvent`), to the renderer that opened it. */
+  cloudPhoneViewState: "ade.cloudPhoneView.state",
 
   /**
    * The account settings store, reached through the brain's `account_settings`
@@ -1183,7 +1313,27 @@ export const IPC = {
   accountSettingsList: "ade.accountSettings.list",
   accountSettingsGet: "ade.accountSettings.get",
   accountSettingsSet: "ade.accountSettings.set",
+  accountSettingsRemove: "ade.accountSettings.remove",
   accountSettingsSync: "ade.accountSettings.sync",
+  /**
+   * The account's provider sign-ins (P5) on this computer's brain, with no
+   * project bound: `{ action, args }` through the brain's `providerLogins.call`.
+   * A bound or pinned window calls the `provider_logins` action domain instead.
+   */
+  providerLoginsCall: "ade.providerLogins.call",
+  /**
+   * Passwords on this computer's brain, with no project bound: `{ action, args }`
+   * through the brain's `passwords.call`. A bound or pinned window calls the
+   * `passwords` action domain instead. The handler allows summaries and
+   * person-only writes; it never exposes `resolveForFill` or a value.
+   */
+  passwordsCall: "ade.passwords.call",
+  /** Settings › Passwords & Secrets: Reveal / Copy after Touch ID or Windows Hello, on this computer. */
+  passwordsReveal: "ade.passwords.reveal",
+  /** Passwords & Secrets: pick a .env file on this computer; its entries come back to choose from. */
+  passwordsChooseEnvFile: "ade.passwords.chooseEnvFile",
+  /** Passwords & Secrets: this computer's projects, by the key their secrets are saved under. */
+  passwordsProjects: "ade.passwords.projects",
 
   /**
    * Settings > Integrations > MCP servers: what the renderer cannot do itself. It reads and
@@ -1325,13 +1475,11 @@ export const IPC = {
   ctoGetState: "ade.cto.getState",
   ctoGetAttention: "ade.cto.getAttention",
   ctoEnsureSession: "ade.cto.ensureSession",
-  ctoStartFreshSession: "ade.cto.startFreshSession",
-  ctoGetThreadHealth: "ade.cto.getThreadHealth",
-  ctoListSessionLogs: "ade.cto.listSessionLogs",
+  ctoRefreshContext: "ade.cto.refreshContext",
   ctoUpdateIdentity: "ade.cto.updateIdentity",
   ctoGetMemory: "ade.cto.getMemory",
-  ctoUpdateMemory: "ade.cto.updateMemory",
-  ctoSearchMemory: "ade.cto.searchMemory",
+  ctoUpdateNotes: "ade.cto.updateNotes",
+  ctoUpdateOpenWork: "ade.cto.updateOpenWork",
   ctoGetLinearConnectionStatus: "ade.cto.getLinearConnectionStatus",
   ctoSetLinearToken: "ade.cto.setLinearToken",
   ctoClearLinearToken: "ade.cto.clearLinearToken",
@@ -1375,6 +1523,14 @@ export const IPC = {
   updateDismissInstalledNotice: "ade.update.dismissInstalledNotice",
   updateRelaunchApp: "ade.update.relaunchApp",
   updateEvent: "ade.update.event",
+  // This computer's build against the owner's minimum (`/client/minimum`).
+  // About this app only, so no remote pin; another machine's version is
+  // judged in the renderer from its connection status.
+  clientUpdateGateGetState: "ade.clientUpdateGate.getState",
+  clientUpdateGateRefresh: "ade.clientUpdateGate.refresh",
+  clientUpdateGateEvent: "ade.clientUpdateGate.event",
+  /** "Quit ADE" on the update screen: an ordinary quit, with its warnings. */
+  clientUpdateGateQuit: "ade.clientUpdateGate.quit",
   // About the ADE.app on THIS computer only, so these take no remote pin.
   appBundleOwnershipGetStatus: "ade.appBundleOwnership.getStatus",
   appBundleOwnershipFix: "ade.appBundleOwnership.fix",

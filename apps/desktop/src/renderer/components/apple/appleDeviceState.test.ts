@@ -3,7 +3,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AppleInstalledSimulator, IosScreenElement } from "../../../shared/types/iosSimulator";
 import {
-  APPLE_DEFAULT_VIEW_MODE,
   APPLE_DEVICE_ORIENTATION_CYCLE,
   appleElementContextItem,
   appleEventAddresses,
@@ -180,7 +179,6 @@ describe("the view mode preference", () => {
   beforeEach(() => window.localStorage.clear());
 
   it("defaults to 3D, per round 4's first owner decision", () => {
-    expect(APPLE_DEFAULT_VIEW_MODE).toBe("3d");
     expect(readAppleViewMode("/repo")).toBe("3d");
     expect(readAppleViewMode(null)).toBe("3d");
   });

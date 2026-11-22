@@ -273,6 +273,12 @@ export const musicActions = {
     run({ type: "playCollection", kind, id, index, shuffle }),
   playNext: (ids: string[]) => run({ type: "playNext", ids }),
   playLater: (ids: string[]) => run({ type: "playLater", ids }),
+  /** Move playback to another Spotify device; no bridge means a stated no. */
+  transfer: async (args: { deviceId: string; play?: boolean }): Promise<MusicCommandResult> => {
+    const bridge = musicBridge();
+    if (!bridge) return { ok: false, error: "Music isn't available in this window." };
+    return await bridge.transfer(args);
+  },
   connect: async (): Promise<MusicConnectResult> => {
     const bridge = musicBridge();
     if (!bridge) return { ok: false, error: "Music isn't available in this window." };

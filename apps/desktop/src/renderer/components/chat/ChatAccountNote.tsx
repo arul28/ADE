@@ -6,6 +6,7 @@ import type { AgentChatEventEnvelope, AgentChatUsageAccount } from "../../../sha
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import {
   isProviderInstanceProvider,
+  providerAccountCanTakeChats,
   providerAccountName,
   type ProviderInstance,
   type ProviderInstanceProvider,
@@ -19,6 +20,8 @@ import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS } from "../ui/pan
 import { useAgentChatApi } from "./agentChatApi";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { extractError } from "../../lib/format";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * Which login, key or endpoint a chat runs on, as one quiet row pinned to the
@@ -57,6 +60,8 @@ type ChatAccountNoteInput = {
   preset?: HarnessPreset | null;
   /** The stored key's label for `sessionCredentialId`, when it was read. */
   credentialLabel?: string | null;
+  /** What the note describes, for the hover text. */
+  subject?: "chat" | "CLI";
 };
 
 function clean(value: string | null | undefined): string | null {
@@ -98,7 +103,7 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
   const turnInstanceId = clean(turn?.instanceId);
   if (turn && multi && turnInstanceId && turnInstanceId !== boundInstanceId) turn = null;
 
-  const sourceLine = turn ? "Ran the latest turn." : "Bound to this chat; no turn has reported its account yet.";
+  const sourceLine = turn ? "Ran the latest turn." : `Bound to this ${input.subject ?? "chat"}; no turn has reported its account yet.`;
 
   if (turn?.kind === "api_key" || (!turn && (clean(input.sessionCredentialId) || input.preset?.source.kind === "key"))) {
     const name = keyName(input);
@@ -130,8 +135,8 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
     : null;
   const email = clean(turn?.email) ?? clean(instance?.account?.email);
   const plan = clean(turn?.plan) ?? clean(instance?.account?.plan);
-  // An account is its email; before it has one, it is not signed in.
-  const primary = email ?? (instance ? providerAccountName(instance) : null);
+  // An account is its email; a working pass without one is named by its title.
+  const primary = email ?? (instance ? accountName(instance) : null);
   if (!primary) return null;
   return {
     family: provider,
@@ -141,12 +146,21 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
       email,
       instance?.isDefault ? "Default for new chats" : null,
       plan ? `Plan: ${plan}` : null,
-      instance && instance.loginBroken ? "Signed out: this account needs a new sign-in." : null,
+      instance && instance.loginBroken ? "Not signed in: this account needs a new sign-in." : null,
       sourceLine,
     ]
       .filter(Boolean)
       .join("\n"),
   };
+}
+
+/**
+ * The note names the login that paid: its email when it has one, otherwise the
+ * pass title. A working Claude pass can have no account record at all; calling
+ * that "Not signed in" hides a selectable account.
+ */
+function accountName(instance: ProviderInstance): string {
+  return instance.account?.email?.trim() || instance.label?.trim() || providerAccountName(instance);
 }
 
 /** The account the latest finished turn reported, scanning back from the end. */
@@ -168,8 +182,7 @@ function switchTargets(
   return instances.filter((instance) =>
     instance.provider === provider
     && instance.id !== currentId
-    && instance.signedIn
-    && !instance.sameLoginAs);
+    && providerAccountCanTakeChats(instance));
 }
 
 /** The tighter of an account's five-hour and weekly room, in percent, when known. */
@@ -239,6 +252,7 @@ export function ChatAccountNote({
   events,
   runtimePin,
   busy = false,
+  subject = "chat",
   onSwitched,
 }: {
   sessionId: string;
@@ -247,13 +261,16 @@ export function ChatAccountNote({
   credentialId?: string | null;
   preset?: HarnessPreset | null;
   events: readonly AgentChatEventEnvelope[];
-  /** The chat's machine; null is the tab's own binding. */
+  /** The chat's copy, the tab's own included; null when unknown (the tab's machine). */
   runtimePin: OpenProjectBinding | null;
   /** A turn is running; switching waits for it to end. */
   busy?: boolean;
+  /** What moves: a chat, or a CLI session (relaunched and resumed there). */
+  subject?: "chat" | "CLI";
   onSwitched?: () => void;
 }) {
   const agentChatApi = useAgentChatApi();
+  const runsOnTab = usePinTargetsTab(runtimePin);
   const turnAccount = useMemo(() => latestTurnAccount(events), [events]);
   const multi = isProviderInstanceProvider(provider) ? provider : null;
   const boundInstanceId = multi ? (clean(instanceId) ?? multi) : null;
@@ -281,8 +298,9 @@ export function ChatAccountNote({
       instances,
       preset,
       credentialLabel,
+      subject,
     }),
-    [provider, instanceId, credentialId, turnAccount, instances, preset, credentialLabel],
+    [provider, instanceId, credentialId, turnAccount, instances, preset, credentialLabel, subject],
   );
   const current = multi && boundInstanceId ? findInstance(instances, multi, boundInstanceId) : null;
   const targets = useMemo(
@@ -321,7 +339,7 @@ export function ChatAccountNote({
     setOpen(next);
     setError(null);
     // Usage numbers are this machine's; a chat on another machine shows none.
-    if (next && !runtimePin) {
+    if (next && runsOnTab) {
       window.ade?.usage?.getSnapshot().then(setUsage).catch(() => undefined);
     }
   };
@@ -330,7 +348,7 @@ export function ChatAccountNote({
     if (busy || pendingId) return;
     setPendingId(target.id);
     setError(null);
-    agentChatApi.switchAccount({ sessionId, instanceId: target.id }, runtimePin)
+    withChatPin(runtimePin, (chatPin) => agentChatApi.switchAccount({ sessionId, instanceId: target.id }, chatPin))
       .then((result) => {
         if (!result.ok) {
           setError(result.message);
@@ -345,6 +363,7 @@ export function ChatAccountNote({
 
   const accountRow = (instance: ProviderInstance, isCurrent: boolean) => {
     const left = roomLeft(usage, instance.provider, instance.id);
+    const name = accountName(instance);
     let side: string | null = left === null ? null : `${Math.round(left)}% left`;
     if (pendingId === instance.id) side = "Switching…";
     return (
@@ -353,8 +372,8 @@ export function ChatAccountNote({
           {isCurrent ? <Check size={12} weight="bold" /> : null}
         </span>
         {/* Truncated in a narrow menu: the full name on hover and focus. */}
-        <span className="min-w-0 flex-1 truncate" title={providerAccountName(instance)}>
-          {providerAccountName(instance)}
+        <span className="min-w-0 flex-1 truncate" title={name}>
+          {name}
         </span>
         {side ? <span className="shrink-0 tabular-nums text-fg/45">{side}</span> : null}
       </>
@@ -380,7 +399,7 @@ export function ChatAccountNote({
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content side="top" align="start" sideOffset={4} className={MENU_CONTENT_CLASS}>
-          <div className={MENU_LABEL_CLASS}>Run this chat on</div>
+          <div className={MENU_LABEL_CLASS}>Run this {subject} on</div>
           <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={(event) => event.preventDefault()}>
             {accountRow(current, true)}
           </DropdownMenu.Item>

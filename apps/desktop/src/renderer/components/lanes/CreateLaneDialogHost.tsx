@@ -2,7 +2,13 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useAppStoreApi } from "../../state/appStore";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { useLaneMachineChoice } from "./useLaneMachineChoice";
+import { ADE_CLOUD_MACHINE_ID } from "./useAdeCloudLaneTarget";
+import type { CreateLaneAdeCloud } from "./CreateLaneDialog";
+import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
+import type { CloudTierId } from "../../../shared/cloudTiers";
+import { adeCloudLaunchProblem, adeCloudStartBranchReady, startAdeCloudLaunch } from "../chat/launch/adeCloudLaunch";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { CreateLaneDialog, type CreateLaneMode } from "./CreateLaneDialog";
 import { DEFAULT_LANE_START, plainLaneStartBranch, type LaneStart } from "../../../shared/laneStart";
 import { startSourceBranch } from "./laneStartOptions";
@@ -26,7 +32,9 @@ import {
   canCreateLaneOnMachine,
   type LaneMachineOption,
 } from "./laneMachines";
-import type { LaneBranchOption } from "./laneUtils";
+import { stripRemotePrefix, type LaneBranchOption } from "./laneUtils";
+import { useAccountGithubBranches } from "../../lib/useAccountGithubReads";
+import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import type {
   BranchPullRequest,
   ChatLaunchLaneConfig,
@@ -111,14 +119,6 @@ type DetachedCreateParams = LaneFlowScope & {
   addLaneToList: (lane: LaneSummary) => void;
   onCreated?: LaneCreatedHandler;
 };
-
-/**
- * The trailing pin argument for a preload call: none for the tab's machine, so
- * an unpinned call keeps exactly its pre-pin shape.
- */
-function pinArg(pin: OpenProjectBinding | null): [] | [OpenProjectBinding] {
-  return pin ? [pin] : [];
-}
 
 async function applyLaneEnvSetup(
   laneId: string,
@@ -347,6 +347,24 @@ function runDetachedLaneCreate(params: DetachedCreateParams): void {
 const NO_MACHINES: LaneMachineOption[] = [];
 
 /**
+ * The ref a new ADE Cloud computer can check out: a fresh clone has only the
+ * remote's branches, so a local branch goes by its remote copy's name.
+ */
+/** The repository on GitHub for an origin; account origins come without a scheme (`github.com/owner/repo`). */
+function githubRepoOfOrigin(originUrl: string | null): { owner: string; name: string } | null {
+  const raw = originUrl?.trim() ?? "";
+  if (!raw) return null;
+  return githubRepoRefFromRemoteUrl(raw.includes("://") || /^[^/]*:/.test(raw) ? raw : `https://${raw}`);
+}
+
+function cloudBranchRef(branchName: string, branches: LaneBranchOption[]): string {
+  const branch = branches.find((candidate) => candidate.name === branchName);
+  if (!branch || branch.isRemote) return branchName;
+  const plain = stripRemotePrefix(branch.name);
+  return branches.find((candidate) => candidate.isRemote && stripRemotePrefix(candidate.name) === plain)?.name ?? branchName;
+}
+
+/**
  * Self-contained host for {@link CreateLaneDialog}: owns the create-lane form
  * state, base-branch loading, and the submit.
  *
@@ -367,6 +385,8 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   onConfigured,
   onNavigateToTemplates,
   onOpenLinearSettings,
+  adeCloudTierId = null,
+  onChooseAdeCloudTier,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -383,6 +403,13 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   onConfigured?: (config: NewLaneDraftConfig) => void;
   onNavigateToTemplates?: () => void;
   onOpenLinearSettings?: () => void;
+  /**
+   * "configure-for-chat" for a draft bound for ADE Cloud: the draft's size.
+   * The place is fixed, so the size takes the machine row's place.
+   */
+  adeCloudTierId?: CloudTierId | null;
+  /** Changes the draft's size (`adeCloudTierId`). */
+  onChooseAdeCloudTier?: (tier: CloudTierId) => void;
 }) {
   // Configuring a draft creates nothing and owns no machine.
   const configureForChat = behavior === "configure-for-chat";
@@ -390,7 +417,15 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   // This tab's own store, not the global one: the background create keeps them.
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const tabStore = useAppStoreApi();
-  const tabBinding = useAppStore((s) => s.projectBinding);
+  // The form reads the repository's reader copy (the tab's copy while it has
+  // one) until another machine is picked, and for an ADE Cloud lane.
+  const readerPin = useActiveRepositoryReader(open);
+  const readerPinRef = useRef(readerPin);
+  readerPinRef.current = readerPin;
+  // The tab's project, online or not: an ADE Cloud launch only names the
+  // repository with it and keeps it as the launch's pin (main moves it to the
+  // new computer), as the composer and the other cloud surfaces do.
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const tabScopeKey = useAppStore(selectActiveProjectStateKey);
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
 
@@ -440,7 +475,13 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     targetPinKey,
     targetPinRef,
     setPickedMachineId,
+    adeCloud,
+    adeCloudPicked,
+    repoOriginUrl,
   } = useLaneMachineChoice(open);
+  // The tab's own copy is picked: the form already reads it (`readerPin`).
+  const selectedIsTab = machines.some((machine) => machine.id === selectedMachineId && machine.isBound);
+  const formPinKey = selectedIsTab ? null : targetPinKey;
 
   const {
     selectedEmoji: createSelectedEmoji,
@@ -452,8 +493,8 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   } = useLaneEmojiSuggestion({
     name: createLaneName,
     enabled: open && !configureForChat,
-    pin: targetPin,
-    pinKey: targetPinKey,
+    pin: targetPin ?? readerPin,
+    pinKey: targetPinKey ?? readerPin?.key ?? null,
   });
 
   /**
@@ -464,7 +505,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
    */
   const [pinnedLanes, setPinnedLanes] = useState<{ key: string; lanes: LaneSummary[] } | null>(null);
   useEffect(() => {
-    if (!open || !targetPin) return;
+    if (!open || !targetPin || selectedIsTab) return;
     let cancelled = false;
     const pin = targetPin;
     void window.ade.lanes.list({ includeStatus: true }, pin)
@@ -477,12 +518,12 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     };
     // `targetPinKey` carries the pin's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, targetPinKey]);
+  }, [open, targetPinKey, selectedIsTab]);
   const lanes = useMemo<LaneSummary[]>(() => {
-    if (!targetPin) return boundLanes;
+    if (!targetPin || selectedIsTab) return boundLanes;
     if (pinnedLanes?.key === targetPin.key) return pinnedLanes.lanes;
     return selectedTarget?.lanes ?? [];
-  }, [boundLanes, pinnedLanes, selectedTarget, targetPin]);
+  }, [boundLanes, pinnedLanes, selectedIsTab, selectedTarget, targetPin]);
   const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
 
   const resetCreateDialogState = useCallback(() => {
@@ -569,10 +610,17 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     // Fresh on every open: another computer may have changed them. An older
     // brain without new-lane defaults answers null, and the form keeps the
     // built-in default (the default branch on the remote).
-    const defaultsRead = getNewLaneDefaultsCached({ projectRoot: getActiveProjectRoot(), pin, force: true });
+    const callPin = pin ?? readerPinRef.current;
+    if (!callPin) {
+      // No computer to read from: the form keeps its built-in defaults.
+      setCreateBranchesLoading(false);
+      setTemplates([]);
+      return;
+    }
+    const defaultsRead = getNewLaneDefaultsCached({ projectRoot: getActiveProjectRoot(), pin: callPin, force: true });
     setCreateBranchesLoading(Boolean(primary));
     if (primary) {
-      loadLaneStartMenuData(primary.id, pin, current, {
+      loadLaneStartMenuData(primary.id, callPin, current, {
         setBranches: setCreateBranches,
         setBranchesLoading: setCreateBranchesLoading,
         setGitUserName: setCreateGitUserName,
@@ -581,7 +629,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     }
     Promise.all([
       defaultsRead,
-      window.ade.lanes.listTemplates(...pinArg(pin)).catch(() => [] as LaneTemplate[]),
+      window.ade.lanes.listTemplates(callPin).catch(() => [] as LaneTemplate[]),
     ]).then(([snapshot, nextTemplates]) => {
       if (!current()) return;
       setNewLaneDefaults(snapshot);
@@ -605,7 +653,11 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   // the lane is being created on (the account setting is shared, but the
   // machine answers with its own branch names).
   const handleMakeStartDefault = useCallback(() => {
-    const pin = targetPinRef.current;
+    const pin = targetPinRef.current ?? readerPinRef.current;
+    if (!pin) {
+      setCreateError("Connect a computer that has this project to save the default.");
+      return;
+    }
     // Only the start: the brain keeps the rest (the default template).
     void saveNewLaneDefaults({
       projectRoot: getActiveProjectRoot(),
@@ -657,6 +709,11 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   /** Picking a machine only chooses where the lane goes; nothing is rebound. */
   const handleSelectMachine = useCallback((machineId: string) => {
     if (machineId === selectedMachineId) return;
+    if (machineId === ADE_CLOUD_MACHINE_ID) {
+      setCreateError(null);
+      setPickedMachineId(machineId);
+      return;
+    }
     const machine = machines.find((candidate) => candidate.id === machineId);
     if (!machine || !canCreateLaneOnMachine(machine)) return;
     if (!machineTargets.has(machineId)) {
@@ -673,12 +730,88 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const targetPrimaryId = primaryLane?.id ?? null;
   useEffect(() => {
     if (!open) return;
-    const key = `${targetPinKey ?? "bound"}::${targetPrimaryId ?? ""}`;
+    const key = `${formPinKey ?? "bound"}::${targetPrimaryId ?? ""}`;
     if (machineDataKeyRef.current === key) return;
-    loadMachineData(targetPinRef.current, primaryLane);
+    loadMachineData(selectedIsTab ? null : targetPinRef.current, primaryLane);
     // `primaryLane` is read through its id; `targetPinKey` carries the pin.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, targetPinKey, targetPrimaryId]);
+  }, [open, formPinKey, targetPrimaryId]);
+
+  /*
+   * ADE Cloud as the lane's place. From the Lanes tab it is one more choice in
+   * the machine chip; from the "+" of a draft bound for ADE Cloud it is fixed
+   * and the size takes the machine row's place. The form keeps reading the
+   * tab's machine: the new computer clones the pushed project.
+   */
+  const adeCloudFixed = configureForChat && adeCloudTierId != null;
+  const adeCloudOnLane = adeCloudFixed || (!configureForChat && adeCloudPicked);
+  /*
+   * An ADE Cloud lane starts from the pushed copy on GitHub. With no copy of
+   * the project to list branches from (an ADE Cloud tab, which has no main
+   * checkout, or no copy online), or one that listed none, the branches are
+   * the repository's on GitHub: the account's own GitHub read, no machine.
+   */
+  const copyListsBranches = Boolean(targetPin ?? readerPin) && primaryLane != null
+    && (createBranchesLoading || createBranches.length > 0);
+  const githubBranchesWanted = open && adeCloudOnLane && !copyListsBranches;
+  const githubBranchRepo = useMemo(() => githubRepoOfOrigin(repoOriginUrl), [repoOriginUrl]);
+  const githubBranches = useAccountGithubBranches(githubBranchesWanted ? githubBranchRepo : null);
+  const githubBranchOptions = useMemo<LaneBranchOption[]>(
+    () => githubBranches.branches.map((branch) => ({
+      // As a copy lists its remote branches, so the launch names the pushed copy.
+      name: `origin/${branch.name}`,
+      isCurrent: false,
+      isRemote: true,
+      upstream: null,
+      lastCommitSha: branch.sha,
+    })),
+    [githubBranches.branches],
+  );
+  const formBranches = githubBranchesWanted ? githubBranchOptions : createBranches;
+  const formBranchesLoading = githubBranchesWanted
+    ? githubBranches.loading && githubBranchOptions.length === 0
+    : createBranchesLoading;
+  const handleChooseAdeCloud = useCallback(() => handleSelectMachine(ADE_CLOUD_MACHINE_ID), [handleSelectMachine]);
+  const adeCloudDialog = useMemo<CreateLaneAdeCloud | null>(() => {
+    if (!adeCloudFixed && (configureForChat || !adeCloud.offered)) return null;
+    return {
+      choice: adeCloudFixed
+        ? null
+        : {
+          selected: adeCloudPicked,
+          unavailableReason: adeCloud.unavailableReason,
+          detail: adeCloud.detail,
+          onSelect: handleChooseAdeCloud,
+        },
+      picked: adeCloudOnLane,
+      fixed: adeCloudFixed,
+      tiers: adeCloud.tiers,
+      tierId: adeCloudFixed && adeCloudTierId ? adeCloudTierId : adeCloud.tierId,
+      defaultTier: adeCloud.defaultTier,
+      onChooseTier: adeCloudFixed && onChooseAdeCloudTier ? onChooseAdeCloudTier : adeCloud.chooseTier,
+      onSetDefaultTier: adeCloud.setDefaultTier,
+      problem: adeCloudOnLane
+        ? cloudLaneStartBlock(adeCloud.account, { newLane: true, sizeId: adeCloudFixed && adeCloudTierId ? adeCloudTierId : adeCloud.tierId })?.message ?? null
+        : null,
+    };
+  }, [
+    adeCloud.account,
+    adeCloud.chooseTier,
+    adeCloud.defaultTier,
+    adeCloud.detail,
+    adeCloud.offered,
+    adeCloud.setDefaultTier,
+    adeCloud.tierId,
+    adeCloud.tiers,
+    adeCloud.unavailableReason,
+    adeCloudFixed,
+    adeCloudOnLane,
+    adeCloudPicked,
+    adeCloudTierId,
+    configureForChat,
+    handleChooseAdeCloud,
+    onChooseAdeCloudTier,
+  ]);
 
   const handleConnectMachine = useCallback(() => {
     onOpenChange(false);
@@ -709,7 +842,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       return false;
     }
     try {
-      const check = await window.ade.lanes.checkBranchName({ name: branchName }, ...pinArg(pin));
+      const checkPin = pin ?? readerPinRef.current;
+      if (!checkPin) return true;
+      const check = await window.ade.lanes.checkBranchName({ name: branchName }, checkPin);
       setCreateBranchProblem(check.problem);
       return !check.problem;
     } catch (error) {
@@ -739,7 +874,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         mode: createMode,
         name: createLaneName.trim(),
         start: createMode === "new" ? createStart : null,
-        branchRef: createMode === "existing" ? createImportBranch : "",
+        branchRef: createMode === "existing"
+          ? (adeCloudFixed ? cloudBranchRef(createImportBranch, formBranches) : createImportBranch)
+          : "",
         ...(typedBranch ? { branchName: typedBranch } : {}),
         templateId: selectedTemplateId || null,
         color: createSelectedColor,
@@ -752,13 +889,77 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
 
     const name = createLaneName.trim();
     if (!name) return;
+
+    // ADE Cloud: a lane-only launch makes the lane on a new computer. Its
+    // card shows in the launches slide-out, from the first frame.
+    if (adeCloudPicked) {
+      const extrasError = validateLaneFormExtras();
+      if (extrasError) {
+        setCreateError(extrasError);
+        return;
+      }
+      if (createMode === "existing" && !createImportBranch) return;
+      if (!projectBinding) {
+        setCreateError("Open a project to start a lane on ADE Cloud.");
+        return;
+      }
+      const typedBranch = createMode === "new" ? editedBranchName?.trim() ?? "" : "";
+      const typedProblem = typedBranch ? branchNameProblem(typedBranch) : null;
+      if (typedProblem) {
+        setCreateBranchProblem(typedProblem);
+        return;
+      }
+      const args = {
+        kind: "lane" as const,
+        mode: "background" as const,
+        launchId: crypto.randomUUID(),
+        laneId: crypto.randomUUID(),
+        laneName: name,
+        title: name,
+        prompt: "",
+        laneConfig: createMode === "existing"
+          ? { mode: "existing" as const, branchRef: cloudBranchRef(createImportBranch, formBranches), templateId: selectedTemplateId || null, color: createSelectedColor }
+          : {
+            mode: "new" as const,
+            start: createStart,
+            ...(typedBranch ? { branchName: typedBranch } : {}),
+            templateId: selectedTemplateId || null,
+            color: createSelectedColor,
+            linearIssue: createSelectedLinearIssue,
+          },
+      };
+      const problem = adeCloudLaunchProblem({
+        args: { ...args, cloud: { sizeId: adeCloud.tierId } },
+        originUrl: repoOriginUrl,
+        account: adeCloud.account,
+      });
+      if (problem) {
+        setCreateError(problem);
+        return;
+      }
+      // A picked branch must be on GitHub before the computer is made ("Push
+      // this branch?"), asked of the copy it was read from. With no copy online
+      // the launch goes with the branch as GitHub has it.
+      const branchReady = await adeCloudStartBranchReady(args.laneConfig, targetPinRef.current ?? readerPinRef.current);
+      if (!branchReady.go) {
+        if (branchReady.error) setCreateError(branchReady.error);
+        return;
+      }
+      resetCreateDialogState();
+      onOpenChange(false);
+      void startAdeCloudLaunch({ args, sizeId: adeCloud.tierId, sizeChoice: adeCloud.sizeChoice, originUrl: repoOriginUrl, binding: projectBinding });
+      return;
+    }
+
     // Always asks: never create on a machine nobody chose.
     const machineId = selectedMachineId;
     if (!machineId || !machineTargets.has(machineId)) {
       setCreateError("Choose the machine this lane will live on.");
       return;
     }
-    const pin = machineTargets.get(machineId)?.pin ?? null;
+    const targetMachinePin = machineTargets.get(machineId)?.pin ?? null;
+    // `pin` marks a lane on another machine; the tab's own copy keeps it null.
+    const pin = selectedIsTab ? null : targetMachinePin;
     // A named branch must be picked. Default and Primary are the brain's to
     // resolve, so a failed defaults read does not block them.
     const startBranchMissing = createStart.from === "branch"
@@ -777,10 +978,10 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     // A typed branch name is checked where the lane will live; a followed one
     // is the brain's to make unique.
     const typedBranch = createMode === "new" ? editedBranchName?.trim() ?? "" : "";
-    if (typedBranch && !(await branchNameIsFree(typedBranch, pin))) return;
+    if (typedBranch && !(await branchNameIsFree(typedBranch, targetMachinePin))) return;
 
-    // Every background call is pinned: the chosen machine, else this tab's own.
-    const callPin = pin ?? tabBinding;
+    // Every background call is pinned to the chosen machine's copy.
+    const callPin = targetMachinePin;
     if (!callPin) {
       setCreateError("This project is still opening. Try again in a moment.");
       return;
@@ -841,12 +1042,20 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     createSelectedEmoji,
     createSelectedLinearIssue,
     tabScopeKey,
-    tabBinding,
+    projectBinding,
+    selectedIsTab,
     tabStore,
     refreshLanes,
     validateLaneFormExtras,
     selectedMachineId,
     machineTargets,
+    adeCloudPicked,
+    adeCloud.tierId,
+    adeCloud.sizeChoice,
+    adeCloud.account,
+    repoOriginUrl,
+    formBranches,
+    adeCloudFixed,
   ]);
   const handleCreateSubmit = useCallback(async () => {
     if (submittingRef.current) return;
@@ -876,7 +1085,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       createImportBranch={createImportBranch}
       setCreateImportBranch={setCreateImportBranch}
       projectRoot={activeProjectRoot}
-      createBranches={createBranches}
+      createBranches={formBranches}
       lanes={lanes}
       onSubmit={handleCreateSubmit}
       machineRequired={!configureForChat}
@@ -899,10 +1108,11 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       setSelectedLinearIssue={handleSetCreateLinearIssue}
       branchPullRequests={createBranchPullRequests}
       currentGitUserName={createGitUserName}
-      loadingBranches={createBranchesLoading}
+      loadingBranches={formBranchesLoading}
       onOpenLinearSettings={onOpenLinearSettings}
       onNavigateToTemplates={onNavigateToTemplates}
       selectedMachineId={selectedMachineId}
+      adeCloud={adeCloudDialog}
     />
   );
 });

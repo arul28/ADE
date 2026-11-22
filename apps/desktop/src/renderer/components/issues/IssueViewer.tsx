@@ -3,6 +3,7 @@ import { GitHubIssueViewer } from "./GitHubIssueViewer";
 import { JiraIssueViewer } from "./JiraIssueViewer";
 import type { IssueViewerProps } from "./issueViewerParts";
 import { LinearIssueViewer } from "./LinearIssueViewer";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import "./issueViewer.css";
 
 export type { IssueViewerProps } from "./issueViewerParts";
@@ -14,6 +15,10 @@ export type { IssueViewerProps } from "./issueViewerParts";
  * both render this; only their containers differ.
  */
 export function IssueViewer(props: IssueViewerProps) {
+  // Jira answers through one machine's connection: the chat's machine when
+  // the issue came from a chat there, else the repository reader. Null means
+  // no machine is online.
+  const readerPin = useActiveRepositoryReader();
   if (props.issueRef.provider === "linear") {
     return <LinearIssueViewer {...props} identifier={props.issueRef.identifier} />;
   }
@@ -22,5 +27,6 @@ export function IssueViewer(props: IssueViewerProps) {
   }
   // Keyed by machine: a viewer opened for the same issue from another machine
   // starts clean, and a read still in flight for the old one cannot land here.
-  return <JiraIssueViewer key={props.pin?.key ?? "bound"} {...props} jiraRef={props.issueRef} />;
+  const jiraPin = props.pin ?? readerPin;
+  return <JiraIssueViewer key={jiraPin?.key ?? "none"} {...props} pin={jiraPin} jiraRef={props.issueRef} />;
 }

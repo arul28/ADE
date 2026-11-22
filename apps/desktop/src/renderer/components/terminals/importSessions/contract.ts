@@ -127,4 +127,5 @@ export const PROVIDER_TOOL_TYPE: Record<ExternalSessionProvider, TerminalToolTyp
   kimi: "kimi",
   grok: "grok",
   copilot: "copilot",
+  antigravity: "antigravity",
 };

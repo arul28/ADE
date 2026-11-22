@@ -1,6 +1,6 @@
 ---
 name: ade-cli-control-plane
-description: Use this skill when you need to hand work to another ADE agent, wait for or check whether delegated work has finished, read another agent's chat transcript, report status or raise a question on the Work row, schedule a wake-up for later, send a message to a chat later, or create a lane — and generally whenever you need ADE's own state (lanes, chats, actions, proof, secrets, runtime/socket status) through the `ade` CLI.
+description: "ADE's own state via `ade`: hand work to another ADE agent and wait or check on it, read another agent's transcript, Work-row status or question, wake-ups, messages to a chat later, rename the chat, create lanes, secrets, MCP servers, runtime/socket status."
 ---
 
 # ADE CLI control plane
@@ -42,9 +42,14 @@ up (or `ade skill show ade-cli-control-plane references/<file>`):
 
 **Never ask the user to paste a secret into chat.** Ask with the private card:
 `ade secrets request NAME --reason "<why>"` (add `--generate` to suggest a
-strong one). Use a stored secret by name without printing it:
-`gh secret set X --body "$(ade secrets get NAME --text)"`. Read secrets only
-when the user names one. Webhooks (run an agent when another service does
+strong one). Use a stored secret by name; you never read its value:
+`ade secrets exec --env NAME -- sh -c 'gh secret set X --body "$NAME"'` runs
+the command with it in the environment and masks it in the output. Use
+secrets only when the user names one or the task plainly needs it.
+Saved logins are **ade-browser**'s `ade browser signin`; sign-in codes are
+`ade code wait --site <host>`. The person's texts (on their Mac, when they
+connected Messages): `ade messages recent|chats --text`; `ade messages send
+--to <number> --text "…"` shows them a card to approve each text. Webhooks (run an agent when another service does
 something) are the **ade-webhooks** skill. Full detail:
 `references/secrets-and-webhooks.md`.
 
@@ -96,14 +101,14 @@ when the user asks, or when they ask another model to do part of the work
 
 ```
 ade new chat --mode chat --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --prompt "Fix the issue"
-ade new chat --mode chat --lane auto --lane-name fix-issue --prompt "Fix the issue"     # only when the user asks for a new lane
+ade new chat --mode chat --lane auto --lane-name fix-issue --provider codex --model <m> --prompt "Fix the issue"   # only when the user asks for a new lane
 ade lanes create --name ENG-431 --issue-id ENG-431 --start-chat --provider codex --model <m>   # a lane for an issue, when asked
 ```
 
 Always use `--mode chat`. `--mode cli` starts the provider's own CLI in a
-terminal instead. ADE cannot tell reliably when a terminal finishes a task, so
-it is told it is your subagent and messages you its reports itself. Use it
-only when the user asks for a terminal.
+terminal instead (a "CLI session"); use it only when the user asks for a
+terminal. It is still your subagent and reports back, but it can do less than
+a chat: see **Chats and CLI sessions** below.
 
 ### Spawning agents
 
@@ -118,7 +123,8 @@ From an agent this is your subagent. It runs in your lane, under your chat,
 and reports back after every turn it finishes: ADE steers you if you are busy
 and wakes you if you are idle. Two opt-outs, used only when the user asks:
 
-- `--type peer`: linked to you, leaves only a quiet note when it finishes.
+- `--no-report`: linked to you, but it does not report back. Nothing is posted
+  to you when it finishes.
 - `--no-parent`: a separate top-level chat that does not report back.
 
 ADE is a mesh. You can read, message, interrupt, or stop any chat, whoever
@@ -140,12 +146,56 @@ still exists retries and then becomes one visible warning in the child. Every
 child receives `ADE_PARENT_CHAT_SESSION_ID` and direct-report guidance while
 that parent is reachable.
 
-A `--mode cli` child sends its own report with `ade chat message` when it
-finishes a task, and ADE adds one more when its process exits. Check any child
-with `ade chat status <id>` (running / blocked / waiting / idle; `waiting`
-means its turn ended but work it started still runs, so it is not done yet) and read it with `ade chat read <id>` (`ade terminal
-read <id>` for the full output). To give it a new instruction, type into it:
-`ade terminal write --terminal <id> --data "<text>\n"`.
+A `--mode cli` child reports after every turn it finishes, like a chat child
+(ADE reads the CLI's closing message), and it is also told to send its own
+report with `ade chat message`; a turn it reported on wakes you once. Check
+any child with `ade chat status <id>` (running / blocked / waiting / idle;
+`waiting` means its turn ended but work it started still runs, so it is not
+done yet) and read it with `ade chat read <id>` (`ade terminal read <id>` for
+the full output). Give a CLI child a new instruction with `ade chat send <id>
+--text "…"`, as you would a chat: ADE types it at the CLI's prompt, or queues
+it until the running turn ends.
+
+### Chats and CLI sessions
+
+Every `ade chat` command takes a chat id or a CLI-session id. A chat is ADE's own
+agent runtime; a CLI session is a provider's CLI (Claude Code, Codex, Cursor,
+...) running in an ADE terminal, which ADE drives by typing into it. You can
+be either: `$ADE_CHAT_SESSION_ID` names yours.
+
+The same for both: send, steer, interrupt, restart, `update` (pin, title,
+model, effort, permissions), `generate-names`, delete and Reopen from Recently
+deleted, archive, hand off or fork into a chat, move to another machine,
+subagents in either direction (a CLI parent gets each child report typed at
+its prompt), `ade chat wait --async`, cards (`ade secrets request`, `ade
+integrations connect`, `ade mcp servers add`), proof, and `ade chat
+scheduled-work`.
+
+What differs for a CLI session:
+
+- **Turn status is exact only for Claude Code and Codex.** For other CLIs ADE
+  reads the screen, so `status`, the turn-end report and when a queued message
+  is typed can lag by several seconds.
+- **Text only.** No images or attachments; put a file's path in the message.
+- **Model, effort, permissions and account change by relaunch.** `ade chat
+  update` restarts the CLI and resumes its conversation. A change made inside
+  the CLI (its own `/model`) is not seen by ADE, so `ade chat show` keeps
+  what ADE last launched.
+- **Its own permission prompts stay in the terminal.** `ade chat respond
+  --approve|--deny` presses the CLI's key for Claude Code, Codex and Cursor;
+  for other CLIs answer with `ade terminal write`.
+- **No ADE transcript.** `ade chat read` gives its last message;
+  `ade terminal read` the full output. `ade chat subagents` lists the CLI's
+  own built-in agents; the ADE sessions it started are the ones whose parent
+  it is.
+- **Wake-ups:** Claude Code's own `ScheduleWakeup` and `/loop` are saved in
+  ADE and survive a restart; other CLIs have none, so use `ade chat
+  scheduled-work create`.
+- **MCP servers:** your ADE MCP servers reach Claude Code and Copilot; Codex
+  gets only those with no secret in them; other CLIs get none.
+- **Moving machines:** Claude Code and Codex take their conversation along;
+  other CLIs start fresh there with a brief. The other machine must run an ADE
+  that accepts CLI moves.
 
 **Which lane a child goes in.** An ADE child chat is a subagent that can run
 another provider, so it works where a native subagent would: in your lane,
@@ -230,7 +280,7 @@ Never poll and never block on a long wait. Match the thing you wait on:
 | A subagent chat | Nothing. Its report wakes you. |
 | A PR the user asked you to watch or land | `ade prs watch <pr>` (or `ade prs ship <pr>` to land it) |
 | A dev server, build or log | `ade terminal watch <terminal-id> [--match "ready"]` |
-| A peer (it does not report back) | `ade chat wait <id> --async [--for idle]` |
+| A chat that does not report back (`--no-report`) | `ade chat wait <id> --async [--for idle]` |
 | A chat, from a script or outside ADE | `ade chat events <id> --since <cursor> --json` answers at once; `ade chat notify <id> --url https://…` POSTs when it goes idle, needs input or fails |
 
 Scratch files belong in the lane's `.ade/tmp` (git-ignored). Apps connected
@@ -282,15 +332,16 @@ ade lanes rename <lane> --name "Better name"
 They are two separate signals on the row the user is looking at:
 
 - **`ade chat note` sets the row's status line.** It shows a durable one-line
-  summary of the current state; it does not change the row's phase. Keep it to about six words with the decisive state first; long notes are cut off.
+  summary of the current state; it does not change the row's phase. Keep it to six words or fewer with the decisive state first; ADE cuts a note at 72 characters.
   Good: `CI green; awaiting Codex review`
   Bad: `Working`, `Still looking`, `Blocked`, or `Done`.
 - **`ade chat ask` raises the row's hand**, moving it to **Needs you**. Because
   a note alone never changes the phase, an idle row with only a note can read as
   **Done** — whenever your reply asks the user a question or for a decision,
   call `note` for the context and then `ask` for the exact question.
-- **Subagents do not ask the user.** Put the question in your final reply; it
-  reaches your parent, which asks the user if it cannot answer.
+- **Subagents do not ask the user.** A subagent asks in its report instead of
+  `ade chat ask`: put the question in your final reply; it reaches your parent,
+  which asks the user if it cannot answer.
 - **Ask even while background work runs.** A chat whose subagents or monitors
   are still running reads as **Working**, so a question at the end of your turn
   is invisible unless you `ask`. "Ship this, or keep building?" and "Want me to
@@ -303,7 +354,7 @@ They are two separate signals on the row the user is looking at:
 - **Take the hand down when you moved on without an answer.**
   `ade chat ask --clear` drops the marker this chat raised (alias
   `ade chat unask`, TUI `/chat unask`). Use it the moment the question stops
-  being the thing you are waiting on: a coordinator or peer sent new
+  being the thing you are waiting on: a coordinator or another chat sent new
   instructions, or you decided and kept working. Otherwise the row keeps saying
   **Needs you** for the rest of the run, and the person reads a live "blocked on
   you" badge about a decision that was already made. It clears only an
@@ -423,9 +474,9 @@ edits, and is not a subagent: it does not report or wake anyone.
 
 ## Other machines on the account
 
-Chats, lanes and devices on the user's other machines are reachable with
-`--machine <name>` (a machine key or an unambiguous name). You act there as an
-agent, under that machine's own policy.
+Chats, lanes and shells on the user's other machines take `--machine <name>`
+(a machine key or an unambiguous name); for devices, see ade-computer-use
+`references/other-machines.md`. You act there under that machine's own policy.
 
 ```bash
 ade machines list --projects --text              # who is online, what projects each has
@@ -433,13 +484,13 @@ ade chat list --all-machines --text              # every machine in one table
 ade chat create --machine "Mac mini" --lane <lane there> \
   --provider claude --model anthropic/claude-opus-5 --prompt "…"   # your subagent there (no --lane: the primary lane there)
 ade chat read <id> --machine "Mac mini" --text
-ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in this chat's work copy
-ade files push --machine "Windows PC" ./fixture.bin test/   # one file into that work copy (pull copies back)
+ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in your code there
+ade files push --machine "Windows PC" ./fixture.bin test/   # one file into your code there (pull copies back)
 ```
 
 - Put all the steps of a task in one `--machine` call (`-- sh -c "npm ci && npm test"`,
-  or a script you run once). Each call opens a new shell there and syncs the
-  work copy again. Do not run single commands one call at a time. Move files
+  or a script you run once). Each call opens a new shell there and syncs
+  your code there again. Do not run single commands one call at a time. Move files
   with `ade files push|pull --machine`, never as base64 inside shell commands.
 
 - The project there defaults to this repository's checkout; pick another with

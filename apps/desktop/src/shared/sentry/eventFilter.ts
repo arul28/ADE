@@ -1,11 +1,14 @@
 /**
  * The `beforeSend` / `beforeBreadcrumb` / `beforeSendLog` hooks every ADE
- * process installs: drop expected noise, enforce the per-process budget, then
- * scrub. Kept free of SDK-specific types so the Electron, Node and browser SDKs
+ * process installs (and `tracesSampler`): drop everything from a build the
+ * update gate blocks, drop expected noise, enforce the per-process budget,
+ * then scrub. Kept free of SDK-specific types so the Electron, Node and browser SDKs
  * can all take it.
  */
+import { isGateExemptVersion, type DesktopUpdateRequirement } from "../clientUpdateGate";
 import { expectedErrorKind } from "../expectedError";
 import { resolveSentryMachineId, resolveSentryUserId } from "./capture";
+import { SENTRY_TRACES_SAMPLE_RATE } from "./config";
 import { applySentryDiagnostics, type DiagnosticEvent, type DiagnosticHint } from "./diagnostics";
 import { createEventLimiter, eventBudgetKey, FATAL_SENTRY_BUDGET, isIgnoredEvent, type SentryBudget } from "./guardrails";
 import { forwardLogToSentry } from "./logBridge";
@@ -67,6 +70,56 @@ export function setSentryEventMirror(mirror: SentryEventMirror | null): void {
   mirrorEvent = mirror;
 }
 
+/** What `clientUpdateGate` says about this process's own build. */
+export type SentryUpdateGateReading = {
+  /** The gate's `self`; null or absent while the gate has not answered. */
+  requirement: Pick<DesktopUpdateRequirement, "required"> | null | undefined;
+  /** This process's build version. */
+  version: string | null | undefined;
+};
+
+/**
+ * True when this build's own reports go nowhere: the update gate blocks it
+ * (below the owner's minimum, "Update ADE to keep working" on screen), so
+ * they come from a build that is already fixed. Sentry's release filter would
+ * drop them at its edge, but our Sentry plan does not have it
+ * (`scripts/release-tools/client-minimum.mjs`), so each build drops its own.
+ * A gate that has not answered, and a build with no minimum (dev, Alpha,
+ * preview), never drop.
+ */
+export function isBlockedBuildTelemetry(reading: SentryUpdateGateReading | null | undefined): boolean {
+  return reading?.requirement?.required === true && !isGateExemptVersion(reading.version);
+}
+
+let resolveUpdateGate: (() => SentryUpdateGateReading | null | undefined) | null = null;
+
+/**
+ * Where the hooks read the update gate: set once by the process that owns
+ * the gate state (main's `clientUpdateGate`, the window's store, the brain's
+ * check), read at send time. While it says blocked, error events, Sentry Logs
+ * and new traces are dropped. Renderer events and logs pass main's hooks, so
+ * main's gate covers them; the window's own spans need the window's store.
+ */
+export function setSentryUpdateGateResolver(resolver: (() => SentryUpdateGateReading | null | undefined) | null): void {
+  resolveUpdateGate = resolver;
+}
+
+/** A resolver that throws drops nothing. */
+function isBlockedBuildNow(): boolean {
+  if (!resolveUpdateGate) return false;
+  try {
+    return isBlockedBuildTelemetry(resolveUpdateGate());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The one log a blocked build still sends, once per block: it is how the
+ * owner sees which machines a minimum holds back.
+ */
+const LOGS_KEPT_WHILE_BLOCKED = new Set<string>(["client_update.required"]);
+
 /** Whether the SDK caught this exception itself (an uncaught error or unhandled rejection). */
 function isUnhandledException(event: unknown): boolean {
   const values = (event as { exception?: { values?: Array<{ mechanism?: { handled?: boolean } }> } })
@@ -91,6 +144,7 @@ export function createSentryEventHooks(budget?: SentryBudget) {
   const fatalLimiter = createEventLimiter(FATAL_SENTRY_BUDGET);
   return {
     beforeSend<T>(event: T, hint?: DiagnosticHint & { originalException?: unknown }): T | null {
+      if (isBlockedBuildNow()) return null;
       const candidate = event as unknown as FilterableEvent;
       // An error its throw site marked as an answer (`shared/expectedError.ts`)
       // that someone caught and reported: a direct capture or a logged error.
@@ -139,12 +193,22 @@ export function createSentryEventHooks(budget?: SentryBudget) {
       if (isUnreadableClick(crumb)) return null;
       return scrubBreadcrumb(crumb) as unknown as T;
     },
+    /**
+     * Use in place of `tracesSampleRate`: a blocked build starts no trace
+     * (`beforeSendSpan` cannot drop a span). Otherwise the same rate, and a
+     * trace that arrives sampled stays sampled.
+     */
+    tracesSampler(context: { inheritOrSampleWith?: (fallbackSampleRate: number) => number }): number {
+      if (isBlockedBuildNow()) return 0;
+      return context.inheritOrSampleWith?.(SENTRY_TRACES_SAMPLE_RATE) ?? SENTRY_TRACES_SAMPLE_RATE;
+    },
     /** Spans never pass `beforeSend`; this is their only scrub. */
     beforeSendSpan<T>(span: T): T {
       return scrubSpan(span as unknown as ScrubbableSpan) as unknown as T;
     },
     beforeSendLog<T>(log: T): T | null {
       const scrubbable = log as unknown as ScrubbableLog;
+      if (isBlockedBuildNow() && !LOGS_KEPT_WHILE_BLOCKED.has(String(scrubbable.message ?? ""))) return null;
       const machineId = resolveSentryMachineId();
       if (machineId) scrubbable.attributes = { ...(scrubbable.attributes ?? {}), machine_id: machineId };
       return scrubLog(scrubbable) as unknown as T;

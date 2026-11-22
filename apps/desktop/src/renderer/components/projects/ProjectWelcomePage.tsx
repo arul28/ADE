@@ -1,12 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useLaneShareHomeRows } from "../laneShare/guest/LaneShareHomeRows";
 import { useNavigate } from "react-router-dom";
 import { BROWSER_TAB_ROUTE, browserTabAvailable } from "../browser/browserTab";
 import { HomeAppButton, openMusicApp } from "../music/musicApps";
 import { musicTabAvailable } from "../music/musicTab";
 import {
   AppWindow,
-  ArrowCounterClockwise,
   ChatCircleDots,
+  Eye,
   FolderOpen,
   GitMerge,
   Globe,
@@ -23,14 +24,16 @@ import {
 } from "../ui/ContextMenu";
 import { ProjectIconDialog, type ProjectIconDialogTarget } from "./ProjectIconDialog";
 import { CloneLocallyDialog, type CloneLocallyTarget } from "./CloneLocallyDialog";
+import { openProjectCopy } from "./AddProjectForm";
 import { useAppStore } from "../../state/appStore";
+import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { CommandPalette } from "../app/CommandPalette";
+import { webStoppedTabCopies } from "../app/webResumeOwnedTabs";
 import { Banner } from "../ui/notice";
-import { dismissToast, showToast } from "../app/toast/toastStore";
 import {
-  groupRecentProjects,
+  ACCOUNT_MACHINE_TARGET_PREFIX,
   recentProjectLocationKey,
   localBindingFromRecent,
   remoteBindingFromRecent,
@@ -48,7 +51,6 @@ import { useHomeLayoutStore } from "../home/homeLayout";
 import { useHomePageWiring } from "../home/useHomePageWiring";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import {
-  WebAddProjectNotice,
   WebZeroMachines,
   webZeroMachinesNotice,
 } from "./ProjectWelcomeWebNotices";
@@ -60,6 +62,11 @@ import type {
 } from "../../../shared/types";
 import "./ProjectWelcomePage.css";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
+import { useDesktopFirstAccountTab, useHomeAccountProjects } from "./useHomeAccountProjects";
+import { GetStartedCard, InstallAdeChip, useGetStartedState } from "./GetStartedCard";
+import { useHasOwnComputer, useOwnWebComputers } from "../../state/ownComputers";
+import type { HomeWebComputer } from "./homeProjectRows";
+import { useHomeRowRemoval } from "./useHomeRowRemoval";
 
 // Edit mode's toolbar, gallery and appearance sliders: loaded the first time
 // someone customizes the page, never on the boot path.
@@ -68,10 +75,12 @@ const HomeEditTools = lazy(() => import("../home/HomeEditTools"));
 function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
 }
-// How long the "Removed — Undo" toast stays before the forget is committed.
-const FORGET_UNDO_WINDOW_MS = 5_000;
-const FORGET_TOAST_ID = "welcome-forget-recent";
 
+/** Whether the tab in front is this remote project (no later choice replaced the open). */
+function isOpenRemoteProject(targetId: string, projectId: string): boolean {
+  const binding = useAppStore.getState().projectBinding;
+  return binding?.kind === "remote" && binding.targetId === targetId && binding.projectId === projectId;
+}
 
 export function ProjectWelcomePage() {
   const navigate = useNavigate();
@@ -86,8 +95,9 @@ export function ProjectWelcomePage() {
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
   );
+  // The first recents read finished (or failed): Home's catalog read waits for it.
+  const [recentsLoaded, setRecentsLoaded] = useState(false);
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
-  const [webAddProjectNoticeOpen, setWebAddProjectNoticeOpen] = useState(false);
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const applyRemoteSnapshot = useCallback(
@@ -98,16 +108,6 @@ export function ProjectWelcomePage() {
     },
     [],
   );
-  // Keys hidden by a pending deferred forget (committed only after the undo
-  // window expires). Reconnect/open state is keyed the same way.
-  const [pendingForgetKeys, setPendingForgetKeys] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [forgetToast, setForgetToast] = useState<{
-    key: string;
-    name: string;
-    recentKeys: string[];
-  } | null>(null);
   const [connectingKeys, setConnectingKeys] = useState<Set<string>>(
     () => new Set(),
   );
@@ -120,9 +120,12 @@ export function ProjectWelcomePage() {
    * reporting, and only the row knows that.
    */
   const [openingRowKey, setOpeningRowKey] = useState<string | null>(null);
+  // A row action's failure (open, pin, forget).
   const [rowError, setRowError] = useState<string | null>(null);
-  // Kept apart from rowError: the recents-list error banner only renders when
-  // there are rows, and a directory retry fails precisely when there are none.
+  // A failed recents read must not look like "no projects yet".
+  const [recentListError, setRecentListError] = useState<string | null>(null);
+  // Kept apart from both: a hosted directory retry fails precisely when the
+  // recents list has no rows, which is when the other banners are least useful.
   const [directoryRetryError, setDirectoryRetryError] = useState<string | null>(
     null,
   );
@@ -167,23 +170,34 @@ export function ProjectWelcomePage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [editingHome, setEditingHome]);
   useEffect(() => () => setEditingHome(false), [setEditingHome]);
-  const forgetTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
+
+  const recentReadRef = useRef(0);
+  const loadRecentProjects = useCallback(() => {
+    const request = ++recentReadRef.current;
+    window.ade.project
+      .listRecent()
+      .then((rows) => {
+        if (recentReadRef.current !== request) return;
+        setRecentProjects(rows);
+        setRecentListError(null);
+        setRecentsLoaded(true);
+      })
+      .catch((error: unknown) => {
+        if (recentReadRef.current !== request) return;
+        setRecentListError(error instanceof Error ? error.message : String(error));
+        setRecentsLoaded(true);
+      });
+  }, []);
 
   useEffect(() => {
     if (webMode) return;
-    const load = () => {
-      window.ade.project
-        .listRecent()
-        .then(setRecentProjects)
-        .catch(() => {});
-    };
-    load();
+    loadRecentProjects();
     // First-run setup can add projects while Home is already showing (a
     // replay from the help menu).
-    window.addEventListener(RECENT_PROJECTS_CHANGED_EVENT, load);
-    return () => window.removeEventListener(RECENT_PROJECTS_CHANGED_EVENT, load);
-  }, [webMode]);
+    window.addEventListener(RECENT_PROJECTS_CHANGED_EVENT, loadRecentProjects);
+    return () => window.removeEventListener(RECENT_PROJECTS_CHANGED_EVENT, loadRecentProjects);
+  }, [webMode, loadRecentProjects]);
 
   useEffect(() => {
     if (webMode) return;
@@ -205,15 +219,6 @@ export function ProjectWelcomePage() {
       unsubscribe();
     };
   }, [applyRemoteSnapshot, webMode]);
-
-  useEffect(
-    () => () => {
-      if (forgetTimerRef.current != null) {
-        window.clearTimeout(forgetTimerRef.current);
-      }
-    },
-    [],
-  );
 
   // Live connection state per remote target, used to pick the dot color and
   // decide whether a remote row needs a reconnect before opening.
@@ -237,14 +242,45 @@ export function ProjectWelcomePage() {
     () => new Map(webMachines.map((machine) => [machine.key, machine])),
     [webMachines],
   );
+  // The same machines by account machine key, the key the account's project
+  // list names a copy's computer by.
+  const webMachineByAccountKey = useMemo(
+    () => new Map(webMachines.flatMap((machine) => (
+      machine.accountMachine?.machineKey ? [[machine.accountMachine.machineKey, machine] as const] : []
+    ))),
+    [webMachines],
+  );
   const webRecents = useMemo(() => webRecentProjects(webMachines), [webMachines]);
-  const activeWebMachine = useMemo(() => (
-    webMachines.find((machine) => machine.status === "live")
-    ?? webMachines.find((machine) => machine.key === workspace?.snapshot.lastActiveMachineKey)
-    ?? webMachines.find((machine) => machine.status === "available")
-    ?? webMachines[0]
-    ?? null
-  ), [webMachines, workspace?.snapshot.lastActiveMachineKey]);
+  // The computers as Home's list reads them on the web: by account machine
+  // key (the account list's name for a computer), and by web machine row key
+  // and browser environment id (a catalog row's and a connection's names).
+  const { webComputers, webComputersByKey } = useMemo(() => {
+    const byAccount = new Map<string, HomeWebComputer>();
+    const byKey = new Map<string, HomeWebComputer>();
+    for (const machine of webMachines) {
+      const computer: HomeWebComputer = {
+        key: machine.key,
+        name: machine.name,
+        live: machine.status === "live",
+        reachable: machine.status === "live" || machine.status === "available" || machine.status === "connecting",
+      };
+      byKey.set(machine.key, computer);
+      if (machine.environment?.envId) byKey.set(machine.environment.envId, computer);
+      if (machine.accountMachine?.machineKey) byAccount.set(machine.accountMachine.machineKey, computer);
+    }
+    return { webComputers: byAccount, webComputersByKey: byKey };
+  }, [webMachines]);
+  // A chat with no project runs on a computer of the person's own, never on an ADE Cloud computer.
+  const ownWebMachines = useOwnWebComputers();
+  // An offline own computer is hidden everywhere: the button never names or dials one.
+  const activeWebMachine = useMemo(() => {
+    const online = ownWebMachines.filter((machine) => machine.status !== "offline");
+    return online.find((machine) => machine.status === "live")
+      ?? online.find((machine) => machine.key === workspace?.snapshot.lastActiveMachineKey)
+      ?? online.find((machine) => machine.status === "available")
+      ?? online[0]
+      ?? null;
+  }, [ownWebMachines, workspace?.snapshot.lastActiveMachineKey]);
 
   useEffect(() => {
     if (!webMode || !workspace) return;
@@ -253,27 +289,48 @@ export function ProjectWelcomePage() {
     if (!workspace.adapter.getActiveBinding()) workspace.adapter.activateHub();
   }, [webMode, workspace]);
 
-  const visibleProjectGroups = useMemo(() => {
-    const kept = (webMode ? webRecents : recentProjects).filter((rp) => {
-      if (rp.kind === "remote") return true;
-      return rp.exists && !rp.rootPath.includes("ade-project");
-    });
-    return groupRecentProjects({
-      recentProjects: kept,
-      remoteSnapshot: webMode ? null : remoteSnapshot,
-    }).filter((group) => !pendingForgetKeys.has(group.id));
-  }, [pendingForgetKeys, recentProjects, remoteSnapshot, webMode, webRecents]);
-
-  const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
+  // One source: the account's projects decide the rows and the count, on
+  // every client; a project with no computer online opens as its repository
+  // tab with no machine (0M). This computer's other folders follow.
+  const { pendingForgetKeys, handleRemoveRow, handleShowAgain } = useHomeRowRemoval({ recentProjects, setRecentProjects, setRowError });
+  const { list: homeList, openNoMachineTab } = useHomeAccountProjects({
+    webMode,
+    recentProjects,
+    recentsLoaded,
+    webRecents,
+    webComputers,
+    webComputersByKey,
+    remoteSnapshot,
+    pendingForgetKeys,
+  });
+  const homeRows = useMemo(
+    () => [...homeList.accountRows, ...homeList.localGroups.flatMap((group) => group.rows)],
+    [homeList],
+  );
+  const visibleProjectGroups = useMemo(() => homeRows.map((row) => row.group), [homeRows]);
 
   // Selecting anything on the hosted client connects its machine first — a
   // machine the account can reach is never a dead end (bug-ledger C2d).
   const openWebProject = useCallback(
-    (machineKey: string, projectId: string, rowKey: string) => {
+    (machineKey: string, projectId: string, rowKey: string, onUnreachable?: () => boolean) => {
       if (!workspace) return;
       const machine = webMachineByKey.get(machineKey);
-      if (!machine) return;
       setRowError(null);
+      if (!machine) {
+        // The row of an open tab names that tab's saved machine, which the
+        // list does not hold while its computer is asleep or not answering:
+        // open the tab, which wakes a sleeping ADE Cloud computer first.
+        void (async () => {
+          try {
+            await switchRemoteProject(machineKey, projectId);
+            if (isOpenRemoteProject(machineKey, projectId)) navigate(workspace.consumePendingProjectPath() ?? "/work");
+          } catch (error) {
+            if (onUnreachable?.()) return;
+            setRowError(error instanceof Error ? error.message : String(error));
+          }
+        })();
+        return;
+      }
       setOpeningRowKey(rowKey);
       void (async () => {
         try {
@@ -281,15 +338,19 @@ export function ProjectWelcomePage() {
           await workspace.adapter.openProject(targetId, projectId);
           navigate(workspace.consumePendingProjectPath() ?? "/work");
         } catch (error) {
+          // An account row whose computer did not answer opens with no machine.
+          if (onUnreachable?.()) return;
           setRowError(error instanceof Error ? error.message : String(error));
         } finally {
           setOpeningRowKey((current) => (current === rowKey ? null : current));
         }
       })();
     },
-    [navigate, webMachineByKey, workspace],
+    [navigate, switchRemoteProject, webMachineByKey, workspace],
   );
 
+  // Lanes shared with this account: they need no computer of its own.
+  const sharedRows = useLaneShareHomeRows();
   // Why the hosted client is showing no machines, in the account's own words.
   // Only computed when there is nothing to list — a populated list speaks for
   // itself even when the last directory read failed.
@@ -335,19 +396,64 @@ export function ProjectWelcomePage() {
     (rp: RecentProjectSummary) => {
       setRowError(null);
       if (webMode && rp.kind === "remote" && rp.remote) {
-        openWebProject(rp.remote.targetId, rp.remote.projectId, recentKey(rp));
+        // A tab of this repository is open, or waiting, on a computer this
+        // browser cannot reach now (asleep, or not answering): the row opens
+        // that tab, which wakes a sleeping ADE Cloud computer first.
+        const origin = normalizeGitRemoteIdentity(rp.gitOriginUrl ?? null);
+        const unreachableTab = [...useAppStore.getState().openRemoteProjectTabs, ...webStoppedTabCopies()].find((binding) => (
+          (origin ? normalizeGitRemoteIdentity(binding.gitOriginUrl ?? null) === origin : binding.rootPath === rp.rootPath)
+          && !webMachines.some((machine) => machine.session?.targetId === binding.targetId && machine.session.state === "live")
+        ));
+        if (unreachableTab) {
+          const rowKey = recentKey(rp);
+          setOpeningRowKey(rowKey);
+          void switchRemoteProject(unreachableTab.targetId, unreachableTab.projectId).then(
+            () => {
+              // A later choice can supersede this open while the computer wakes.
+              if (isOpenRemoteProject(unreachableTab.targetId, unreachableTab.projectId)) {
+                navigate(workspace?.consumePendingProjectPath() ?? "/work");
+              }
+            },
+            (error: unknown) => {
+              if (!openNoMachineTab(rp)) setRowError(error instanceof Error ? error.message : String(error));
+            },
+          ).finally(() => setOpeningRowKey((current) => (current === rowKey ? null : current)));
+          return;
+        }
+        const targetId = rp.remote.targetId;
+        if (targetId.startsWith(ACCOUNT_MACHINE_TARGET_PREFIX)) {
+          // A row from the account list: its copy's computer by its account
+          // machine key, or no copy at all. A computer this browser can
+          // connect to opens the copy there; otherwise the repository opens
+          // with no machine, as on the desktop.
+          const machineKey = targetId.slice(ACCOUNT_MACHINE_TARGET_PREFIX.length);
+          const machine = machineKey ? webMachineByAccountKey.get(machineKey) ?? null : null;
+          if (machine) {
+            openWebProject(machine.key, rp.remote.projectId, recentKey(rp), () => openNoMachineTab(rp));
+            return;
+          }
+          if (!openNoMachineTab(rp)) setRowError("No computer with this project is online.");
+          return;
+        }
+        // A computer that no longer answers opens the repository with no machine, as above.
+        openWebProject(targetId, rp.remote.projectId, recentKey(rp), () => openNoMachineTab(rp));
         return;
       }
       if (rp.kind === "remote" && rp.remote) {
         const key = recentKey(rp);
         const targetId = rp.remote.targetId;
         const projectId = rp.remote.projectId;
+        // A copy on a machine this computer has no connection to: the
+        // repository opens with no machine, and that page connects the
+        // computer and opens the copy (no pick).
+        if (targetId.startsWith(ACCOUNT_MACHINE_TARGET_PREFIX)) {
+          if (!openNoMachineTab(rp)) setRowError("No computer with this project is online.");
+          return;
+        }
         const state = connectionByTarget.get(targetId) ?? null;
         if (state === "connected") {
           void switchRemoteProject(targetId, projectId).catch((error) => {
-            setRowError(
-              error instanceof Error ? error.message : String(error),
-            );
+            setRowError(error instanceof Error ? error.message : String(error));
           });
           return;
         }
@@ -358,9 +464,9 @@ export function ProjectWelcomePage() {
             await window.ade.remoteRuntime.connect(targetId);
             await switchRemoteProject(targetId, projectId);
           } catch (error) {
-            setRowError(
-              error instanceof Error ? error.message : String(error),
-            );
+            // The machine did not come online: the repository still opens, as
+            // a tab with no machine that opens a copy when one is online.
+            if (!openNoMachineTab(rp)) setRowError(error instanceof Error ? error.message : String(error));
           } finally {
             setConnectingKeys((prev) => {
               const next = new Set(prev);
@@ -380,11 +486,16 @@ export function ProjectWelcomePage() {
     [
       cancelNewTab,
       connectionByTarget,
+      openNoMachineTab,
       openWebProject,
       project?.rootPath,
       switchProjectToPath,
+      navigate,
       switchRemoteProject,
+      webMachineByAccountKey,
+      webMachines,
       webMode,
+      workspace,
     ],
   );
 
@@ -399,97 +510,6 @@ export function ProjectWelcomePage() {
       setRowError(error instanceof Error ? error.message : String(error));
     }
   }, [recentProjects]);
-
-  // Deferred-commit forget: hide the row immediately and show an undo toast.
-  // Only after the window elapses do we call the backend forget. Undo cancels
-  // the timer and unhides the row, with no backend call.
-  const commitForget = useCallback((key: string, recentKeys: string[]) => {
-    if (forgetTimerRef.current != null) {
-      window.clearTimeout(forgetTimerRef.current);
-      forgetTimerRef.current = null;
-    }
-    void (async () => {
-      let next = recentProjects;
-      for (const recentKey of recentKeys) {
-        next = await window.ade.project.forgetRecent(recentKey);
-      }
-      setRecentProjects(next);
-    })().catch(() => {});
-    setPendingForgetKeys((prev) => {
-      const next = new Set(prev);
-      next.delete(key);
-      return next;
-    });
-    setForgetToast(null);
-  }, [recentProjects]);
-
-  const handleForget = useCallback(
-    (group: RecentProjectGroup) => {
-      const key = group.id;
-      // Flush any prior pending forget so we never stack timers.
-      const previousKey = forgetToast?.key ?? null;
-      if (previousKey && previousKey !== key) {
-        commitForget(previousKey, forgetToast?.recentKeys ?? []);
-      } else if (forgetTimerRef.current != null) {
-        window.clearTimeout(forgetTimerRef.current);
-        forgetTimerRef.current = null;
-      }
-      setForgetToast({
-        key,
-        name: group.displayName,
-        recentKeys: group.recentKeys,
-      });
-      setPendingForgetKeys((prev) => new Set(prev).add(key));
-      forgetTimerRef.current = window.setTimeout(() => {
-        forgetTimerRef.current = null;
-        commitForget(key, group.recentKeys);
-      }, FORGET_UNDO_WINDOW_MS);
-    },
-    [commitForget, forgetToast],
-  );
-
-  const handleUndoForget = useCallback(() => {
-    if (forgetTimerRef.current != null) {
-      window.clearTimeout(forgetTimerRef.current);
-      forgetTimerRef.current = null;
-    }
-    setForgetToast((current) => {
-      if (current) {
-        setPendingForgetKeys((prev) => {
-          const next = new Set(prev);
-          next.delete(current.key);
-          return next;
-        });
-      }
-      return null;
-    });
-  }, []);
-
-  // The undo offer is a shared toast; this page's own timer decides when the
-  // forget commits (and clears `forgetToast`), so the toast itself is sticky.
-  useEffect(() => {
-    if (!forgetToast) {
-      dismissToast(FORGET_TOAST_ID);
-      return;
-    }
-    showToast({
-      id: FORGET_TOAST_ID,
-      tone: "neutral",
-      icon: <Trash size={15} weight="fill" />,
-      title: `Removed ${forgetToast.name}`,
-      actions: [
-        {
-          label: "Undo",
-          variant: "primary",
-          icon: <ArrowCounterClockwise size={12} weight="bold" />,
-          onClick: handleUndoForget,
-        },
-      ],
-      dismissible: false,
-      durationMs: 0,
-    });
-  }, [forgetToast, handleUndoForget]);
-  useEffect(() => () => dismissToast(FORGET_TOAST_ID), []);
 
   const handleDropFolder = useCallback(
     (event: React.DragEvent) => {
@@ -512,15 +532,6 @@ export function ProjectWelcomePage() {
     [switchProjectToPath],
   );
 
-  const rows = useMemo(() => visibleProjectGroups.map((group) => {
-    const primary = group.primary;
-    const rp = {
-      ...primary.summary,
-      pinned: group.pinned,
-    };
-    return { group, rp, key: recentKey(rp) };
-  }), [visibleProjectGroups]);
-
   const [rowMenu, setRowMenu] = useState<(NonNullable<ContextMenuState> & { key: string }) | null>(null);
   const closeRowMenu = useCallback(() => setRowMenu(null), []);
   const [iconDialogTarget, setIconDialogTarget] = useState<ProjectIconDialogTarget | null>(null);
@@ -529,7 +540,8 @@ export function ProjectWelcomePage() {
 
   const rowMenuEntries = useMemo((): ContextMenuEntry[] => {
     if (!rowMenu) return [];
-    const row = rows.find((entry) => entry.key === rowMenu.key);
+    const hiddenRow = homeList.hiddenRows.find((entry) => entry.key === rowMenu.key);
+    const row = homeRows.find((entry) => entry.key === rowMenu.key) ?? hiddenRow;
     if (!row) return [];
     const { group, rp } = row;
     const remoteBinding = remoteBindingFromRecent(rp);
@@ -543,7 +555,8 @@ export function ProjectWelcomePage() {
         displayName: rp.displayName,
         binding: remoteBinding ?? localBindingFromRecent(rp),
         available: localReady || remoteBinding != null,
-        pinned: Boolean(group.pinned),
+        // Pinning is a recents action: a project this computer never opened has no pin.
+        pinned: group.recentKeys.length > 0 ? Boolean(group.pinned) : null,
         hostIconDataUrl: remoteBinding?.iconDataUrl ?? null,
         cloneTarget: cloneTargetFor({
           binding: remoteBinding,
@@ -595,15 +608,18 @@ export function ProjectWelcomePage() {
         ? {
             kind: "item",
             key: "forget",
-            label: "Remove from recents",
+            label: row.kind === "account" ? "Remove…" : "Remove from this list",
             icon: Trash,
             danger: true,
-            onSelect: () => handleForget(group),
+            onSelect: () => handleRemoveRow(row),
           }
+        : null,
+      hiddenRow
+        ? { kind: "item", key: "show-again", label: "Show on this list", icon: Eye, onSelect: () => handleShowAgain(hiddenRow) }
         : null,
     ];
     return entries.filter((entry): entry is ContextMenuEntry => entry != null);
-  }, [connectionByTarget, handleForget, handleOpen, handleTogglePin, rowMenu, rows, webMode]);
+  }, [connectionByTarget, handleOpen, handleRemoveRow, handleShowAgain, handleTogglePin, homeList.hiddenRows, homeRows, rowMenu, webMode]);
 
   const focusRowButton = useCallback((index: number) => {
     const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>('[data-welcome-row="true"]');
@@ -627,9 +643,15 @@ export function ProjectWelcomePage() {
 
   const browserAvailable = !webMode && browserTabAvailable();
   const musicAvailable = !webMode && musicTabAvailable();
-  const showSide = !webMode || webMachines.length > 0;
-
-
+  // A chat with no project runs on an online computer of the person's own;
+  // with none online it is hidden (nothing says a computer is needed).
+  const hasOwnComputer = useHasOwnComputer();
+  const getStarted = useGetStartedState({
+    // Desktop: unknown until the recents are read, so a list still loading never finishes the card.
+    priorWork: webMode ? hasOwnComputer && webRecents.length > 0 : recentsLoaded ? recentProjects.length > 0 : null,
+  });
+  const showChatWithoutProject = !webMode || activeWebMachine != null;
+  useDesktopFirstAccountTab({ enabled: !webMode && recentsLoaded, hasLocalProjects: recentProjects.length > 0 });
 
   // The page's own card look, when the user set one in edit mode. Scoped to
   // this page: the same tokens drive every other kit card in the app.
@@ -647,11 +669,15 @@ export function ProjectWelcomePage() {
   const projectsCard = useCallback((preview: boolean) => (
     <ProjectsCard
       preview={preview}
-      rows={rows}
-      count={visibleProjectGroups.length}
+      rows={homeList.accountRows}
+      hiddenRows={homeList.hiddenRows}
+      localGroups={homeList.localGroups}
+      // The account's count, hidden rows included; this computer's recents when there is no account list.
+      count={homeList.accountCount ?? homeRows.length}
       webMode={webMode}
       listRef={listRef}
       onListKeyDown={handleListKeyDown}
+      sharedRows={sharedRows}
       connectionByTarget={connectionByTarget}
       connectingKeys={connectingKeys}
       pendingForgetKeys={pendingForgetKeys}
@@ -659,16 +685,19 @@ export function ProjectWelcomePage() {
       openRootPath={project?.rootPath ?? null}
       projectBinding={projectBinding}
       webMachineByKey={webMachineByKey}
+      webMachineByAccountKey={webMachineByAccountKey}
       onOpen={handleOpen}
       onTogglePin={handleTogglePin}
-      onForget={handleForget}
+      onRemove={handleRemoveRow}
+      onShowAgain={handleShowAgain}
       onMerge={setMergeTarget}
       onRowMenu={setRowMenu}
     />
   ), [
     connectingKeys,
     connectionByTarget,
-    handleForget,
+    handleRemoveRow,
+    handleShowAgain,
     handleListKeyDown,
     handleOpen,
     handleTogglePin,
@@ -676,12 +705,13 @@ export function ProjectWelcomePage() {
     pendingForgetKeys,
     project?.rootPath,
     projectBinding,
-    rows,
-    visibleProjectGroups.length,
+    homeList,
+    homeRows.length,
+    sharedRows,
+    webMachineByAccountKey,
     webMachineByKey,
     webMode,
   ]);
-
 
   const { homeData, headline, openHeadlineTarget, renderWidget } = useHomePageWiring({
     navigate,
@@ -700,18 +730,18 @@ export function ProjectWelcomePage() {
         key: "add-project",
         label: "Add project…",
         icon: Plus,
-        disabled: webMode && !activeWebMachine,
-        onSelect: () => (webMode ? setWebAddProjectNoticeOpen(true) : setProjectBrowserOpen(true)),
+        onSelect: () => setProjectBrowserOpen(true),
       },
-      {
+    ];
+    if (showChatWithoutProject) {
+      entries.push({
         kind: "item",
         key: "chat",
         label: "Chat without a project",
         icon: ChatCircleDots,
-        disabled: webMode && !activeWebMachine,
         onSelect: () => (webMode ? openWebChats() : navigate("/chats")),
-      },
-    ];
+      });
+    }
     entries.push({
       kind: "item",
       key: "customize-home",
@@ -735,7 +765,7 @@ export function ProjectWelcomePage() {
       });
     }
     return entries;
-  }, [activeWebMachine, browserAvailable, musicAvailable, navigate, openWebChats, setEditingHome, webMode]);
+  }, [browserAvailable, musicAvailable, navigate, openWebChats, setEditingHome, showChatWithoutProject, webMode]);
   const backgroundMenu = useBackgroundContextMenu(backgroundPageEntries);
 
   return (
@@ -844,26 +874,15 @@ export function ProjectWelcomePage() {
                 label="Add project"
                 tour="project.welcomeAddButton"
                 onboardingAnchor="add-project"
-                disabled={webMode && !activeWebMachine}
-                title={
-                  webMode && !activeWebMachine
-                    ? "Connect a machine first — projects are added on the machine that hosts them."
-                    : undefined
-                }
-                onClick={() => {
-                  if (!webMode) {
-                    setProjectBrowserOpen(true);
-                    return;
-                  }
-                  setWebAddProjectNoticeOpen(true);
-                }}
+                onClick={() => setProjectBrowserOpen(true)}
               />
-              <HomeAction
-                icon={ChatCircleDots}
-                label={webMode && activeWebMachine ? `Chat on ${activeWebMachine.name}` : "Chat without a project"}
-                disabled={webMode && !activeWebMachine}
-                onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
-              />
+              {showChatWithoutProject ? (
+                <HomeAction
+                  icon={ChatCircleDots}
+                  label={webMode && activeWebMachine ? `Chat on ${activeWebMachine.name}` : "Chat without a project"}
+                  onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
+                />
+              ) : null}
               {/* The desktop's own browser and Apple Music, each a tab of its
                   own, as square app-icon buttons beside the text actions. */}
               {browserAvailable ? (
@@ -879,28 +898,24 @@ export function ProjectWelcomePage() {
               ) : null}
               {musicAvailable && !hiddenApps.includes("appleMusic") ? <HomeAppButton app="appleMusic" /> : null}
               {musicAvailable && !hiddenApps.includes("spotify") ? <HomeAppButton app="spotify" /> : null}
-              {showSide ? (
-                <button
-                  type="button"
-                  className="ade-home-action ade-home-customize"
-                  data-onboarding-anchor="home-customize"
-                  aria-label="Customize home page"
-                  title="Customize home page"
-                  onClick={() => setEditingHome(true)}
-                >
-                  <SlidersHorizontal size={15} aria-hidden />
-                </button>
-              ) : null}
+              <button
+                type="button"
+                className="ade-home-action ade-home-customize"
+                data-onboarding-anchor="home-customize"
+                aria-label="Customize home page"
+                title="Customize home page"
+                onClick={() => setEditingHome(true)}
+              >
+                <SlidersHorizontal size={15} aria-hidden />
+              </button>
             </>
           )}
         />
 
-        {webMode && webAddProjectNoticeOpen && activeWebMachine ? (
-          <WebAddProjectNotice
-            machineName={activeWebMachine.name}
-            onDismiss={() => setWebAddProjectNoticeOpen(false)}
-          />
+        {getStarted.show && !editingHome ? (
+          <GetStartedCard state={getStarted} onAddProject={() => setProjectBrowserOpen(true)} />
         ) : null}
+        {webMode && !hasOwnComputer && getStarted.finished && !editingHome ? <InstallAdeChip /> : null}
         {/* Above the recents list, not inside it: "Chat without a project"
             reports its failures here too, and that button works with zero
             recents — where a banner scoped to the list rendered nothing. */}
@@ -916,10 +931,23 @@ export function ProjectWelcomePage() {
             }}
           />
         ) : null}
+        {recentListError ? (
+          <Banner
+            layout="inline"
+            style={{ maxWidth: 520, width: "100%" }}
+            model={{
+              id: "welcome-recents-load-error",
+              tone: "warning",
+              title: "ADE couldn't read your recent projects",
+              detail: recentListError,
+              actions: [{ label: "Retry", onClick: loadRecentProjects }],
+              dismiss: { onDismiss: () => setRecentListError(null) },
+            }}
+          />
+        ) : null}
         {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
 
         <HomeWidgetGrid
-          single={!showSide}
           style={appearanceStyle}
           renderWidget={renderWidget}
         />
@@ -938,9 +966,7 @@ export function ProjectWelcomePage() {
       <CloneLocallyDialog
         target={cloneLocallyTarget}
         onClose={() => setCloneLocallyTarget(null)}
-        onCloned={(result) => {
-          void switchProjectToPath(result.rootPath).catch(() => {});
-        }}
+        onOpenProject={openProjectCopy}
       />
 
       {mergeTarget ? (

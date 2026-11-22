@@ -53,6 +53,24 @@ export function ctoCallerInitializeParams(version: string): Record<string, unkno
   };
 }
 
+/** The name the machine brain connects with when it asks a lane brain to hand a chat back. */
+export const CHAT_RUNTIME_RECLAIM_CLIENT_NAME = "ade-chat-reclaim";
+
+/**
+ * The `ade/initialize` params of that request: the same caller shape as the
+ * CTO's (role `cto`, no chat session, a process caller id), so the lane brain
+ * neither clamps it to `agent` nor lends it a chat identity from its own
+ * environment.
+ */
+export function chatRuntimeReclaimInitializeParams(version: string): Record<string, unknown> {
+  return {
+    protocolVersion: "2025-06-18",
+    clientName: CHAT_RUNTIME_RECLAIM_CLIENT_NAME,
+    clientInfo: { name: CHAT_RUNTIME_RECLAIM_CLIENT_NAME, version },
+    identity: { role: "cto", callerId: syntheticCallerId(CHAT_RUNTIME_RECLAIM_CLIENT_NAME) },
+  };
+}
+
 /**
  * The name a brain connects with when an ordinary agent on that machine runs
  * an `ade` command against another machine (`ade chat list --machine …`).
@@ -92,6 +110,12 @@ export type RemoteCallerClaim = {
    * here. Absent means unknown, and a child falls to the cautious default.
    */
   permissionLevel?: string | null;
+  /**
+   * The calling chat's current turn. The target keeps the latest one per
+   * calling chat, so an end-of-turn release that arrives after the chat's next
+   * turn already called there lets go of nothing. Absent from older callers.
+   */
+  turnId?: string | null;
   /**
    * Sent only with a request that starts the caller's own child. The target
    * stores it with the child and returns it with every report, so the calling
@@ -136,6 +160,18 @@ export function parseForeignCallerSessionId(
   const [device, chat, ...rest] = raw.slice(FOREIGN_CALLER_PREFIX.length).split(":");
   if (rest.length || !device || !chat || !FOREIGN_SEGMENT.test(device) || !FOREIGN_SEGMENT.test(chat)) return null;
   return { peerDeviceId: device, chatSessionId: chat === "terminal" ? null : chat };
+}
+
+/**
+ * The id of a child chat's parent as the parent's own Work row has it. A child
+ * started from another computer stores `remote:<device id>:<chat id>`; its
+ * parent's row is `<chat id>` on that computer. Null for a terminal caller.
+ */
+export function parentChatRowId(parentId: string | null | undefined): string | null {
+  const raw = parentId?.trim() || null;
+  if (!raw) return null;
+  const foreign = parseForeignCallerSessionId(raw);
+  return foreign ? foreign.chatSessionId : raw;
 }
 
 /**

@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ListBullets, MagnifyingGlass, Plus, Rows, X } from "@phosphor-icons/react";
-import type { LaneDeleteProgress, LaneListSnapshot } from "../../../../shared/types";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Funnel, ListBullets, MagnifyingGlass, Plus, Rows, X } from "@phosphor-icons/react";
+import type { LaneDeleteProgress, LaneListSnapshot, OpenProjectBinding } from "../../../../shared/types";
 import type { LaneRebaseLine } from "../laneRebaseNeeds";
 import type { LaneCatchUpTarget } from "../LaneCatchUpMenu";
 import type { CreatingIssuePlaceholder } from "../../../lib/launchedLanesHighlight";
@@ -10,9 +10,12 @@ import { COLORS } from "../laneDesignTokens";
 import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 import { SmartTooltip } from "../../ui/SmartTooltip";
+import { cn } from "../../ui/cn";
 import { LaneSidebarGroupHeader, LaneSidebarGroupMenu, laneGroupHasActions } from "./LaneSidebarGroupHeader";
 import { LaneSidebarCreatingRow, LaneSidebarRow } from "./LaneSidebarRow";
-import type { MachineChipModel } from "../../../state/laneMachineRouting";
+import type { MachineChipModel, LaneMachineFilterEntry } from "../../../state/laneMachineRouting";
+import { LANES_MACHINE_FILTER_ALL } from "../../../state/laneMachineFilterIds";
+import { LANE_FILTER_PANEL_ID, LaneFilterPanel } from "./LaneFilterPanel";
 import {
   laneStateGroupSectionId,
   type LaneGroupBulkAction,
@@ -20,6 +23,8 @@ import {
   type LaneSidebarLayout,
   type LaneSidebarListRow,
   type LaneStateGroupId,
+  laneIdsShowingMachine,
+  laneSidebarLayoutLanes,
 } from "./laneSidebarModel";
 
 const GROUP_BY_OPTIONS: Array<{ value: LaneSidebarGroupBy; label: string; description: string; Icon: typeof Rows }> = [
@@ -28,6 +33,8 @@ const GROUP_BY_OPTIONS: Array<{ value: LaneSidebarGroupBy; label: string; descri
 ];
 
 const EMPTY_AGENTS: LaneAgent[] = [];
+const EMPTY_LANE_IDS: ReadonlySet<string> = new Set();
+const EMPTY_MACHINE_FILTER_ENTRIES: readonly LaneMachineFilterEntry[] = [];
 
 export const LANES_FILTER_INPUT_ID = "lanes-filter-input";
 
@@ -78,14 +85,25 @@ export type LaneSidebarListProps = {
   onOpenPr: (pr: LaneTabPrTag) => void;
   onOpenAgent: (agent: LaneAgent) => void;
   onClearMultiSelection: () => void;
-  /** Machine chip per row key; absent on a single-machine project. */
-  machineChipByLaneId?: ReadonlyMap<string, MachineChipModel>;
+  /** The machine per row key, for the row's hover card; absent on a single-machine project. */
+  machineByLaneId?: ReadonlyMap<string, MachineChipModel>;
+  /** Foreign rows: the lane's own id and its machine's pin, for the share mark. */
+  shareTargetByLaneId?: ReadonlyMap<string, { laneId: string; pin: OpenProjectBinding | null }>;
   /** Why a row cannot be acted on (its machine is offline), per row key. */
   disabledReasonByLaneId?: ReadonlyMap<string, string>;
   /** Row keys of lanes on machines other than the tab's. */
   foreignLaneIds?: ReadonlySet<string>;
-  /** Rendered between the filter row and the list (the machine filter). */
+  /** Rendered between the filter row and the list (the ADE Cloud notices). */
   toolbar?: React.ReactNode;
+  /** A quiet mark per row key ("Computer deleted", "Deleting soon") with its hover text. */
+  noteByLaneId?: ReadonlyMap<string, { label: string; title: string }>;
+  /** The Computer filter's entries; two or fewer means there is nothing to filter. */
+  machineFilterEntries?: readonly LaneMachineFilterEntry[];
+  /** `"all"`, a computer id, or ADE Cloud. */
+  machineFilter?: string;
+  onMachineFilterChange?: (next: string) => void;
+  /** What "nothing here" says instead of "No lanes match" (a computer filter is on). */
+  emptyMessage?: string;
 };
 
 /**
@@ -132,15 +150,36 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     onOpenPr,
     onOpenAgent,
     onClearMultiSelection,
-    machineChipByLaneId,
+    machineByLaneId,
+    shareTargetByLaneId,
     disabledReasonByLaneId,
     foreignLaneIds,
     toolbar,
+    noteByLaneId,
+    machineFilterEntries = EMPTY_MACHINE_FILTER_ENTRIES,
+    machineFilter = LANES_MACHINE_FILTER_ALL,
+    onMachineFilterChange,
+    emptyMessage,
   } = props;
   const listRef = useRef<HTMLDivElement>(null);
   const [groupMenu, setGroupMenu] = useState<{ groupId: LaneStateGroupId; laneIds: string[]; x: number; y: number } | null>(null);
   const closeGroupMenu = useCallback(() => setGroupMenu(null), []);
+  // The filter panel is open while the person uses it; which computer it picked
+  // is what persists, per project (LanesPage).
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false);
+  const machineFilterActive = machineFilter !== LANES_MACHINE_FILTER_ALL;
+  // Nothing to filter on a project that lives on one computer, unless a filter
+  // is already on (it must always be reachable to clear).
+  const machineFilterOffered = machineFilterEntries.length > 2 || machineFilterActive;
   const groupBy = layout.groupBy;
+  // Two rows of one name on two machines (two main checkouts) name their
+  // machine on screen; else they look the same.
+  const machineShownLaneIds = useMemo(
+    () => machineByLaneId?.size
+      ? laneIdsShowingMachine(laneSidebarLayoutLanes(layout), (laneId) => machineByLaneId.get(laneId)?.machineId ?? null)
+      : EMPTY_LANE_IDS,
+    [layout, machineByLaneId],
+  );
 
   // Keep the selected row on screen when the selection moves by keyboard or
   // by a deep link.
@@ -168,6 +207,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     const laneId = row.lane.id;
     const deleteProgress = deleteProgressByLaneId[laneId] ?? null;
     const deleting = isLaneDeleteProgressActive(deleteProgress);
+    const note = noteByLaneId?.get(laneId) ?? null;
     return (
       <LaneSidebarRow
         key={laneId}
@@ -189,9 +229,13 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
           : null}
         creating={!deleting && settingUpLaneIds.has(laneId)}
         needsYouReason={needsYouReasonByLaneId.get(laneId) ?? null}
-        machineChip={machineChipByLaneId?.get(laneId) ?? null}
+        machine={machineByLaneId?.get(laneId) ?? null}
+        showMachine={machineShownLaneIds.has(laneId)}
+        shareTarget={shareTargetByLaneId?.get(laneId) ?? null}
         disabledReason={disabledReasonByLaneId?.get(laneId) ?? null}
         foreign={foreignLaneIds?.has(laneId) ?? false}
+        noteLabel={note?.label ?? null}
+        noteTitle={note?.title ?? null}
         onSelect={onSelectRow}
         onContextMenu={onContextMenu}
         onOpenPr={onOpenPr}
@@ -275,6 +319,35 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
             </SmartTooltip>
           ))}
         </div>
+        {machineFilterOffered ? (
+          <SmartTooltip
+            content={{
+              label: "Filters",
+              description: machineFilterActive
+                ? "1 filter on. Some lanes are hidden."
+                : "Choose which computer's lanes to show.",
+            }}
+          >
+            <button
+              type="button"
+              className={cn(
+                "inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md transition-colors hover:bg-[color-mix(in_srgb,var(--color-fg)_7%,transparent)]",
+                machineFilterActive ? "px-1.5" : "w-7",
+              )}
+              style={{ color: machineFilterActive ? COLORS.textPrimary : COLORS.textSecondary }}
+              aria-expanded={filterPanelOpen}
+              aria-controls={LANE_FILTER_PANEL_ID}
+              aria-label={machineFilterActive ? "Filters, 1 on" : "Filters"}
+              data-testid="lane-filter-toggle"
+              onClick={() => setFilterPanelOpen((open) => !open)}
+            >
+              <Funnel size={13} weight={filterPanelOpen || machineFilterActive ? "fill" : "regular"} />
+              {machineFilterActive ? (
+                <span className="text-[10px] font-semibold tabular-nums text-accent">1</span>
+              ) : null}
+            </button>
+          </SmartTooltip>
+        ) : null}
         <button
           type="button"
           data-tour="lanes.newLane"
@@ -288,6 +361,14 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
           <Plus size={14} />
         </button>
       </div>
+
+      {filterPanelOpen && machineFilterOffered && onMachineFilterChange ? (
+        <LaneFilterPanel
+          entries={machineFilterEntries}
+          value={machineFilter}
+          onChange={onMachineFilterChange}
+        />
+      ) : null}
 
       {toolbar}
       <div
@@ -341,8 +422,8 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
             {loading && totalLaneCount === 0
               ? "Loading lanes…"
               : totalLaneCount === 0
-                ? (loadError ? `Couldn't load lanes. ${loadError}` : "No lanes yet")
-                : "No lanes match"}
+                ? (loadError ? `Couldn't load lanes. ${loadError}` : (emptyMessage ?? "No lanes yet"))
+                : (emptyMessage ?? "No lanes match")}
           </div>
         ) : filter.trim().length === 0 && totalLaneCount === 1 && creatingRows.length === 0 ? (
           // Only the primary lane: the next step is a lane to work in.

@@ -61,13 +61,22 @@ export const READABLE_TOAST_DURATION_MS = 18_000;
 const MAX_TOASTS = 5;
 
 type TimerEntry = {
+  /** Set while the countdown runs; null while it is stopped for any reason. */
   handle: ReturnType<typeof setTimeout> | null;
-  /** Time left on the current countdown; the full duration while running. */
+  /** Time left on the countdown, as of `startedAt`. */
   remaining: number;
-  /** `Date.now()` when the current run started (for elapsed math on pause). */
+  /** `Date.now()` when the current run started (for elapsed math on a stop). */
   startedAt: number;
+  /** The person's pointer is on the card (`pauseToast`). */
   paused: boolean;
 };
+
+/**
+ * The notice corner is held: a browser page covers both corners, so nothing
+ * on the stack can be seen and no countdown may run. Separate from a hover
+ * pause, so ending one never restarts a timer the other still holds.
+ */
+let held = false;
 
 // Ordered oldest -> newest. `ToastStack` renders in array order inside a
 // bottom-anchored flex column, so the newest toast sits closest to the corner.
@@ -96,6 +105,31 @@ function generateId(): string {
     : `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** Whether a countdown may run right now. */
+function mayRun(entry: TimerEntry): boolean {
+  return !held && !entry.paused;
+}
+
+/** Stop a running countdown, keeping the time it had left. */
+function stopRun(entry: TimerEntry): void {
+  if (entry.handle == null) return;
+  clearTimeout(entry.handle);
+  entry.handle = null;
+  entry.remaining = Math.max(0, entry.remaining - (Date.now() - entry.startedAt));
+  entry.startedAt = Date.now();
+}
+
+/** Start a stopped countdown from the time it had left, when nothing holds it. */
+function startRun(id: string, entry: TimerEntry): void {
+  if (entry.handle != null || !mayRun(entry)) return;
+  if (!Number.isFinite(entry.remaining) || entry.remaining <= 0) {
+    dismissToast(id);
+    return;
+  }
+  entry.startedAt = Date.now();
+  entry.handle = setTimeout(() => dismissToast(id), entry.remaining);
+}
+
 function clearTimer(id: string): void {
   const entry = timers.get(id);
   if (entry?.handle != null) clearTimeout(entry.handle);
@@ -103,18 +137,17 @@ function clearTimer(id: string): void {
 
 /** (Re)arm the auto-dismiss countdown for a toast, clearing any prior timer. */
 function scheduleTimer(id: string, durationMs: number): void {
+  const priorPaused = timers.get(id)?.paused ?? false;
   clearTimer(id);
   if (!Number.isFinite(durationMs) || durationMs <= 0) {
     timers.delete(id);
     return;
   }
-  const handle = setTimeout(() => dismissToast(id), durationMs);
-  timers.set(id, {
-    handle,
-    remaining: durationMs,
-    startedAt: Date.now(),
-    paused: false,
-  });
+  // A replaced toast keeps a hover pause its card still has; a hold applies
+  // to it like every other.
+  const entry: TimerEntry = { handle: null, remaining: durationMs, startedAt: Date.now(), paused: priorPaused };
+  timers.set(id, entry);
+  startRun(id, entry);
 }
 
 function isSticky(toast: Toast): boolean {
@@ -228,31 +261,34 @@ export function dismissToast(id: string): void {
   emit();
 }
 
-/** Freeze a toast's countdown (e.g. while hovered), recording time remaining. */
+/** Freeze a toast's countdown while the person's pointer is on it. */
 export function pauseToast(id: string): void {
   const entry = timers.get(id);
   if (!entry || entry.paused) return;
-  if (entry.handle != null) clearTimeout(entry.handle);
-  const elapsed = Date.now() - entry.startedAt;
-  const remaining = Math.max(0, entry.remaining - elapsed);
-  timers.set(id, { handle: null, remaining, startedAt: Date.now(), paused: true });
+  stopRun(entry);
+  entry.paused = true;
 }
 
-/** Resume a paused countdown from the remaining time recorded at pause. */
+/** Let a hovered toast's countdown continue (unless the corner is held). */
 export function resumeToast(id: string): void {
   const entry = timers.get(id);
   if (!entry || !entry.paused) return;
-  if (!Number.isFinite(entry.remaining) || entry.remaining <= 0) {
-    dismissToast(id);
-    return;
+  entry.paused = false;
+  startRun(id, entry);
+}
+
+/**
+ * Hold or release every countdown. `ToastViewport` holds them while a browser
+ * page covers both corners, so a notice never times out unseen, a toast
+ * replaced under the same id included.
+ */
+export function setToastsHeld(next: boolean): void {
+  if (held === next) return;
+  held = next;
+  for (const [id, entry] of Array.from(timers)) {
+    if (held) stopRun(entry);
+    else startRun(id, entry);
   }
-  const handle = setTimeout(() => dismissToast(id), entry.remaining);
-  timers.set(id, {
-    handle,
-    remaining: entry.remaining,
-    startedAt: Date.now(),
-    paused: false,
-  });
 }
 
 /** Imperative read of the current toast stack (oldest -> newest). */

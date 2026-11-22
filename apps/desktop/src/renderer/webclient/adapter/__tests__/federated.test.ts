@@ -6,6 +6,8 @@ import type { BrowserAccountClient } from "../../account/client";
 import type { AdeSyncClient } from "../../sync";
 import type { WebMachineSessionManager } from "../../workspace/WebMachineSessionManager";
 import { createFederatedWebAdapter } from "../federated";
+import { createReconnectHold } from "../reconnectHold";
+import type * as WebCloudMachines from "../../workspace/webCloudMachines";
 
 const adapters = vi.hoisted(() => new Map<object, {
   ade: Window["ade"];
@@ -16,6 +18,13 @@ const adapters = vi.hoisted(() => new Map<object, {
 
 vi.mock("../index", () => ({
   createAdeWebAdapter: (client: object) => adapters.get(client),
+}));
+
+// The wake goes through a connected computer's sync client; a test holds it open.
+const cloudWake = vi.hoisted(() => ({ wake: vi.fn((): Promise<void> => Promise.resolve()) }));
+vi.mock("../../workspace/webCloudMachines", async (importOriginal) => ({
+  ...(await importOriginal<typeof WebCloudMachines>()),
+  wakeWebCloudMachine: cloudWake.wake,
 }));
 
 function fakeAdapter(label: string) {
@@ -215,7 +224,8 @@ function managerFixture() {
   };
 }
 
-const accountClient = {} as BrowserAccountClient;
+// The adapter reads the account machines (their keys) and follows changes.
+const accountClient = { getSnapshot: () => ({ machines: [] }), onMachinesChanged: () => () => {} } as unknown as BrowserAccountClient;
 
 afterEach(() => {
   localStorage.clear();
@@ -344,6 +354,38 @@ describe("createFederatedWebAdapter", () => {
       { forcePinned: true },
     );
     expect(fixture.targetB.onAgentChatEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["usage", "getAdeStats"],
+    ["cloudAccess", "read"],
+    ["cloud", "listMachines"],
+    ["cloud", "machineAction"],
+  ] as const)("sends the account-wide %s.%s to a connected computer while the displayed one is down", async (namespace, member) => {
+    const fixture = managerFixture();
+    (fixture.fallbackClient as unknown as { getStatus: () => unknown }).getStatus = () => ({ state: "disconnected" });
+    vi.mocked(fixture.manager.getConnectionSnapshot).mockReturnValue({
+      connections: [{ state: "connected", target: { id: "machine-b" } }],
+      connectedCount: 1,
+      updatedAt: 0,
+    } as unknown as ReturnType<WebMachineSessionManager["getConnectionSnapshot"]>);
+    const onDown = vi.fn(async () => "from the computer that dropped");
+    const onB = vi.fn(async () => "from machine-b");
+    const surface = (adapter: { ade: Window["ade"] }, fn: typeof onDown) => {
+      (adapter.ade as unknown as Record<string, unknown>)[namespace] = { [member]: fn };
+    };
+    surface(fixture.fallback.adapter, onDown);
+    surface(fixture.targetB.adapter, onB);
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: `account-wide-${namespace}-${member}`,
+      fallbackClient: fixture.fallbackClient,
+    });
+
+    const call = (federated.ade as unknown as Record<string, Record<string, () => Promise<unknown>>>)[namespace][member];
+    await expect(call()).resolves.toBe("from machine-b");
+    expect(onDown).not.toHaveBeenCalled();
   });
 
   it("invokes proxied subscription functions without resolving their apply member", () => {
@@ -851,6 +893,40 @@ describe("createFederatedWebAdapter", () => {
     expect(fixture.targetB.onAgentChatEvent).not.toHaveBeenCalled();
   });
 
+  it("keeps a pinned subscription on its own machine across reconnects, once, until it is unsubscribed", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "pinned-subscriptions-reconnect",
+      fallbackClient: fixture.fallbackClient,
+    });
+    const bindingA = await federated.openProject("machine-a", "project-machine-a");
+    const listener = vi.fn();
+    const unsubscribe = (federated.ade.agentChat.onEvent as unknown as (
+      listener: () => void,
+      binding: typeof bindingA,
+    ) => () => void)(listener, bindingA);
+    expect(fixture.targetA.onAgentChatEvent).toHaveBeenCalledOnce();
+
+    // The machine's client is replaced: the feed attaches to the new one, once,
+    // and more snapshots of the same client attach nothing more.
+    const second = fixture.reconnect("machine-a");
+    fixture.emitSnapshot();
+    expect(second.onAgentChatEvent).toHaveBeenCalledOnce();
+    expect((second.onAgentChatEvent.mock.calls[0] as unknown[])[0]).toBe(listener);
+
+    // Gone, then back: it waits detached and attaches to the client that arrives.
+    fixture.disconnect("machine-a");
+    const third = fixture.reconnect("machine-a");
+    expect(third.onAgentChatEvent).toHaveBeenCalledOnce();
+    expect(second.onAgentChatEvent).toHaveBeenCalledOnce();
+
+    unsubscribe();
+    const fourth = fixture.reconnect("machine-a");
+    expect(fourth.onAgentChatEvent).not.toHaveBeenCalled();
+  });
+
   it("releases every durable subscription when the workspace is disposed", async () => {
     const fixture = managerFixture();
     const federated = createFederatedWebAdapter({
@@ -882,5 +958,108 @@ describe("createFederatedWebAdapter", () => {
     federated.activateHub();
 
     expect(fixture.manager.setProtectedTargetId).toHaveBeenLastCalledWith("machine-a");
+  });
+
+  it.each([
+    { name: "a Disconnect during a wake that works stops the connect", wake: "succeeds", disconnectDuringWake: true, dials: 0, ok: false },
+    { name: "a Disconnect during a wake that fails stops the fallback connect", wake: "fails", disconnectDuringWake: true, dials: 0, ok: false },
+    { name: "a Disconnect from before the click does not stop the connect", wake: "succeeds", disconnectDuringWake: false, dials: 1, ok: true },
+  ])("connecting a sleeping computer: $name", async ({ wake, disconnectDuringWake, dials, ok }) => {
+    const fixture = managerFixture();
+    const machine = { machineKey: "cloud-1", name: "Cloud", online: false, sleepState: null, sleepStateAt: null, lastSeenAt: Date.now() - 1_000 };
+    const environment = { envId: "env-cloud", machineName: "Cloud", addressCandidates: [] };
+    // The person disconnected it earlier; their Connect click clears that.
+    const disconnected = new Set([environment.envId]);
+    const connectAccountMachine = vi.fn(async () => ({ targetId: environment.envId, environment }));
+    Object.assign(fixture.manager, {
+      findAccountMachineEnvironment: vi.fn(() => environment),
+      acceptUserConnect: vi.fn((targetId: string) => disconnected.delete(targetId)),
+      connectAccountMachine,
+      getConnectionSnapshot: vi.fn(() => ({
+        connections: [{ target: { id: environment.envId }, reconnectBlocked: disconnected.has(environment.envId) ? "disconnected" : null }],
+        connectedCount: 0,
+        updatedAt: 0,
+      })),
+    });
+    let finishWake!: () => void;
+    cloudWake.wake.mockImplementationOnce(() => new Promise<void>((resolve, reject) => {
+      finishWake = wake === "succeeds" ? resolve : () => reject(new Error("no computer can wake it"));
+    }));
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient: {
+        getSnapshot: () => ({ machines: [machine] }),
+        // A person's connect to a computer whose saved connection is down reads the account list first.
+        loadMachines: async () => ({ machines: [machine] }),
+        onMachinesChanged: () => () => {},
+      } as unknown as BrowserAccountClient,
+      accountKey: `wake-disconnect-${wake}-${disconnectDuringWake}`,
+      fallbackClient: fixture.fallbackClient,
+    });
+
+    const connecting = federated.ade.machines.connect("cloud-1");
+    // This case's own wake has started (the mock is shared by the cases).
+    await vi.waitFor(() => expect(typeof finishWake).toBe("function"));
+    if (disconnectDuringWake) disconnected.add(environment.envId);
+    finishWake();
+    const result = await connecting;
+
+    expect(result.ok).toBe(ok);
+    if (!result.ok) expect(result.reason).toBe("declined");
+    expect(connectAccountMachine).toHaveBeenCalledTimes(dials);
+  });
+});
+
+describe("createReconnectHold", () => {
+  const snapshotOf = (states: Record<string, "connected" | "connecting" | "error" | "parked">) => ({
+    connections: Object.entries(states).map(([id, state]) => ({ target: { id }, state })),
+    connectedCount: Object.values(states).filter((state) => state === "connected").length,
+    updatedAt: 0,
+  }) as unknown as Parameters<ReturnType<typeof createReconnectHold>["apply"]>[0];
+  const stateOf = (snapshot: { connections: Array<{ target: { id: string }; state: string }> }, id: string) =>
+    snapshot.connections.find((connection) => connection.target.id === id)?.state;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Reflect.deleteProperty(document, "visibilityState");
+  });
+
+  it("holds a reconnecting machine for 30 s in front, then lets it go until it connects again", () => {
+    vi.useFakeTimers();
+    let visibility: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    const clientStates: Record<string, string> = { a: "reconnecting", fresh: "connecting", refused: "error" };
+    const onExpire = vi.fn();
+    const hold = createReconnectHold((id) => clientStates[id] ?? null, onExpire);
+
+    hold.apply(snapshotOf({ a: "connected", fresh: "connecting", refused: "connected" }));
+    const dropped = hold.apply(snapshotOf({ a: "connecting", fresh: "connecting", refused: "error" }));
+    // Only a reconnect is held: never a first connect, never a refusal.
+    expect(stateOf(dropped, "a")).toBe("connected");
+    expect(stateOf(dropped, "fresh")).toBe("connecting");
+    expect(stateOf(dropped, "refused")).toBe("error");
+    expect(dropped.connectedCount).toBe(1);
+
+    // Time in the background does not count.
+    vi.advanceTimersByTime(20_000);
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    vi.advanceTimersByTime(60_000);
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connected");
+
+    onExpire.mockClear();
+    vi.advanceTimersByTime(10_100);
+    expect(onExpire).toHaveBeenCalled();
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connecting");
+    // A spent hold does not start again on the next change or return to the page.
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connecting");
+
+    // Connected again, the next drop is held again.
+    hold.apply(snapshotOf({ a: "connected" }));
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connected");
+    hold.dispose();
   });
 });

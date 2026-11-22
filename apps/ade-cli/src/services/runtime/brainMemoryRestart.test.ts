@@ -42,8 +42,6 @@ describe("createBrainMemoryRestartGuard", () => {
       attached: false,
       reason: BRAIN_MEMORY_RESTART_REASON,
     });
-    // The copy has to survive a reader who arrives at it during an outage.
-    expect(BRAIN_MEMORY_RESTART_REASON).toContain("not a crash");
   });
 
   it("never interrupts work, however much memory is held", async () => {

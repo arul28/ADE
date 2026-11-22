@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrSummary } from "../../../shared/types";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   getPrMergeAutoSettlementState,
   getSessionLifecycleSettings,
@@ -564,6 +565,76 @@ describe("prPollingService", () => {
       baseBranch: "main",
       headBranch: "feature/add",
     }));
+  });
+
+  it("announces one review request across an unknown-verdict dip", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    // A branch that requires a review but names no reviewer: `none` is also
+    // what a snapshot backfill or a failed GraphQL read writes, so a dip to it
+    // must not look like the review request ended.
+    let summary = createSummary({
+      title: "Needs one approval",
+      headBranch: "feature/review",
+      checksStatus: "passing",
+      reviewStatus: "none",
+      headSha: "sha-a",
+    });
+    const events: any[] = [];
+    const prService = {
+      listAll: () => [summary],
+      refresh: vi.fn(async () => [summary]),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+    const reviewAnnouncements = () => events.filter(
+      (event) => event.type === "pr-notification" && event.kind === "review_requested",
+    ).length;
+    const poll = async () => {
+      service.poke();
+      await vi.advanceTimersByTimeAsync(0);
+    };
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000); // first look: remembered, not announced
+
+    summary = { ...summary, reviewStatus: "requested" as const };
+    await poll();
+    expect(reviewAnnouncements()).toBe(1);
+
+    summary = { ...summary, reviewStatus: "none" as const }; // verdict went unknown
+    await poll();
+    summary = { ...summary, reviewStatus: "requested" as const }; // and came back
+    await poll();
+    expect(reviewAnnouncements()).toBe(1);
+
+    summary = { ...summary, reviewStatus: "approved" as const }; // a real verdict ends the round
+    await poll();
+    summary = { ...summary, reviewStatus: "requested" as const }; // a new request announces
+    await poll();
+    expect(reviewAnnouncements()).toBe(2);
+
+    // A push does not re-request review: the same request on a new head is not news.
+    summary = { ...summary, headSha: "sha-b" };
+    await poll();
+    expect(reviewAnnouncements()).toBe(2);
+
+    // An approval that arrives with a new commit still ends the round, so the
+    // next request announces even though the head just moved.
+    summary = { ...summary, reviewStatus: "approved" as const };
+    await poll();
+    summary = { ...summary, reviewStatus: "requested" as const };
+    await poll();
+    expect(reviewAnnouncements()).toBe(3);
   });
 
   it("emits changes_requested notification with generic messaging", async () => {
@@ -1932,7 +2003,7 @@ describe("prMergeAutoSettlementService", () => {
 
 describe("PR-origin merge lifecycle", () => {
   const roots: string[] = [];
-  const databases: Awaited<ReturnType<typeof openKvDb>>[] = [];
+  const databases: AdeDb[] = [];
   afterEach(() => {
     for (const db of databases.splice(0)) db.close();
     for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
@@ -1941,7 +2012,7 @@ describe("PR-origin merge lifecycle", () => {
   async function fixture(count = 1, handled = true) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-origin-merge-"));
     roots.push(root);
-    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    const db = await openFreshKvDb(path.join(root, "ade.db"), createLogger());
     databases.push(db);
     const before = "2026-03-24T12:00:00.000Z";
     const after = "2026-03-24T12:02:00.000Z";

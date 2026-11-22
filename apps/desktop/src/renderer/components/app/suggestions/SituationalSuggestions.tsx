@@ -1,18 +1,18 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { isAdeCloudComputer } from "../../../state/adeCloudLaneIndex";
 import type { GitHubStatus, LaneSummary, OpenProjectBinding, UsageSnapshot } from "../../../../shared/types";
 import type { AttentionItem } from "../../../../shared/types/attention";
 import { isProviderInstanceProvider } from "../../../../shared/types/providerInstances";
 import { countActivityBoardColumns } from "../../../../shared/attention/activityBoardColumn";
-import { selectActiveProjectStateKey, useAppStore, workViewStoreForProject } from "../../../state/appStore";
+import { selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, workViewStoreForProject } from "../../../state/appStore";
 import { useActivityStore } from "../../../state/activityStore";
 import { useProjectMachines } from "../../../state/projectMachines";
-import { activityFeedItems } from "../../activity/activityPriority";
+import { activityAgentItemsWithDismissed } from "../../activity/activityPriority";
 import { useUsageSnapshot } from "../../usage/useUsageSnapshot";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { humanizeProvider } from "../../usage/usageProviderNames";
 import { formatResetIn, windowLabel } from "../../usage/usageWindowFormat";
 import { settingsRouteFor } from "../../settings/settingsManifest";
-import { loadJiraConnectionStatus } from "../../issues/jiraIssueStore";
 import { openConnectionsPanel } from "../../../lib/connectionsPanel";
 import { openStartChatDraft } from "../../../lib/workDraft";
 import { readOnboardingProgress } from "../../../onboarding/onboardingProgress";
@@ -21,6 +21,7 @@ import { isSuggestionOff, markSuggestionDone } from "../../../onboarding/situati
 import { useChatSendSignals, type IssueTracker } from "./chatSendSignals";
 import { useSituationalSuggestion } from "./useSituationalSuggestion";
 import { useFeatureTipCard } from "./useFeatureTipCard";
+import { useActiveRepositoryReader } from "../../../state/repositoryScope";
 
 /**
  * The situational suggestions' signals (tier 3 of onboarding), each a small
@@ -69,17 +70,23 @@ function projectWorkView(): { key: string; store: ReturnType<typeof workViewStor
 export function SituationalSuggestions(props: Props): null {
   const { machines, settled: machinesSettled } = useProjectMachines(props.enabled);
   const otherMachines = machines.filter((machine) => !machine.isThisMachine);
-  const onlineMachineName = otherMachines.find((machine) => machine.online)?.machineName ?? null;
+  // Work goes by @ to another computer: not the one the tab works on, nor a lane's ADE Cloud computer (it has one lane).
+  const onlineMachineName = otherMachines.find((machine) => (
+    machine.online && !machine.isActiveBinding && !isAdeCloudComputer({ hostname: machine.hostname })
+  ))?.machineName ?? null;
 
   useUsageLowSuggestion(props);
   useMachineMentionSuggestion(props, machinesSettled ? onlineMachineName : null);
   useChatSecretSuggestion(props);
   useIssueTrackerSuggestion(props);
-  useParallelChatsSuggestion(props);
+  // Chats and CLIs running in the open project: read once for the two hooks that use it.
+  const working = useOpenProjectWorkingCount(machines.find((machine) => machine.isActiveBinding)?.deviceId ?? null);
+  useParallelChatsSuggestion(props, working);
   useRepeatPromptSuggestion(props);
   usePairPhoneSuggestion(props, machinesSettled && otherMachines.length === 0);
-  // Last: a tip only asks for the slot once these have had their chance.
-  useFeatureTipCard(props.enabled);
+  // Last: a tip only asks for the slot once these have had their chance, and
+  // never while an agent works in the project, so it does not cover the composer then.
+  useFeatureTipCard(props.enabled, working > 0);
   return null;
 }
 
@@ -157,7 +164,7 @@ function useMachineMentionSuggestion({ enabled, lanes, navigate }: Props, machin
 /** A sent message looked like it had a key or password in it. Again only after 30 days. */
 function useChatSecretSuggestion({ enabled, navigate }: Props): void {
   const { secretSeq } = useChatSendSignals();
-  const start = useCallback(() => navigate(settingsRouteFor("secrets.secrets")), [navigate]);
+  const start = useCallback(() => navigate(settingsRouteFor("passwords.secrets")), [navigate]);
   useSituationalSuggestion({
     id: "chat-secret",
     signalKey: enabled && secretSeq > 0 ? "sent" : null,
@@ -174,6 +181,10 @@ function useChatSecretSuggestion({ enabled, navigate }: Props): void {
 function useIssueTrackerSuggestion({ enabled, projectRoot, githubStatus, navigate }: Props): void {
   const { issueTrackers, issueSeq } = useChatSendSignals();
   const [unconnected, setUnconnected] = useState<IssueTracker | null>(null);
+  // Linear is the repository's: ask the reader copy. None online: treat it as connected (no nag).
+  const linearReaderPin = useActiveRepositoryReader();
+  const linearReaderPinRef = useRef(linearReaderPin);
+  linearReaderPinRef.current = linearReaderPin;
   // An unreadable credential store may still hold a working sign-in: not "unconnected".
   const githubConnected = githubStatus
     ? githubStatus.connected || githubStatus.credentialStoreUnreadable === true
@@ -184,8 +195,14 @@ function useIssueTrackerSuggestion({ enabled, projectRoot, githubStatus, navigat
     let cancelled = false;
     const isConnected = async (tracker: IssueTracker): Promise<boolean> => {
       if (tracker === "github") return githubConnected !== false;
-      if (tracker === "jira") return (await loadJiraConnectionStatus(projectRoot))?.connected !== false;
-      const status = await window.ade?.cto?.getLinearConnectionStatus?.(null);
+      if (tracker === "jira") {
+        // Loaded only when a Jira issue was mentioned, not with the window.
+        const { loadJiraConnectionStatus } = await import("../../issues/jiraIssueStore");
+        return (await loadJiraConnectionStatus(projectRoot))?.connected !== false;
+      }
+      const pin = linearReaderPinRef.current;
+      if (!pin) return true;
+      const status = await window.ade?.cto?.getLinearConnectionStatus?.(pin);
       return status?.connected !== false;
     };
     void (async () => {
@@ -240,13 +257,42 @@ function registerTrackerStarter(tracker: IssueTracker, navigate: (path: string) 
   });
 }
 
-function workingChatCount(itemsById: Readonly<Record<string, AttentionItem>>): number {
-  return countActivityBoardColumns(activityFeedItems(itemsById)).working;
+/**
+ * Chats running in the open project. The Activity feed holds every machine's
+ * and project's items, but the Work grid shows only the open project's chats.
+ * Another machine names a project by its own folder, so its items match by
+ * the project's name. An item from the project's own machine (the same
+ * device) matches only by folder: another project there can share the name.
+ */
+function workingChatCount(
+  itemsById: Readonly<Record<string, AttentionItem>>,
+  project: { rootPath: string | null; name: string | null; deviceId: string | null },
+): number {
+  if (!project.rootPath && !project.name) return 0;
+  const name = project.name?.trim().toLowerCase() || null;
+  // A dismissed row still counts: dismissing hides it, the agent keeps working.
+  const inProject = activityAgentItemsWithDismissed(itemsById).filter((item) => {
+    if (project.rootPath != null && item.project.rootPath === project.rootPath) return true;
+    if (project.deviceId != null && item.machine.deviceId === project.deviceId) return false;
+    return name != null && item.project.name.trim().toLowerCase() === name;
+  });
+  return countActivityBoardColumns(inProject).working;
 }
 
-/** Three or more chats are running at once and the Work grid is not in use. */
-function useParallelChatsSuggestion({ enabled, navigate }: Props): void {
-  const working = useActivityStore((state) => workingChatCount(state.itemsById));
+/**
+ * Chats and CLIs running now in the open project, on any machine.
+ * `deviceId`: the device of the project's own machine, when known.
+ */
+function useOpenProjectWorkingCount(deviceId: string | null): number {
+  const rootPath = useAppStore(selectActiveProjectRoot);
+  const projectName = useAppStore((state) => (
+    state.projectBinding?.kind === "remote" ? state.projectBinding.displayName : state.project?.displayName
+  ) ?? null);
+  return useActivityStore((state) => workingChatCount(state.itemsById, { rootPath, name: projectName, deviceId }));
+}
+
+/** Three or more chats are running at once in the open project and the Work grid is not in use. */
+function useParallelChatsSuggestion({ enabled, navigate }: Props, working: number): void {
   const running = enabled && working >= 3;
   const gridOn = useWorkFocusGridOn(running);
   const start = useCallback(() => {

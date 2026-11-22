@@ -8,6 +8,14 @@ editing that surface.
 Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 (`docs.json` + root-level `*.mdx`) is **out of scope** for context loading.
 
+ADE works with no computer of your own: every account has ADE Cloud, one
+machine next to the person's own computers. Any work on machines, ADE Cloud,
+the account, or web and iOS with no computer also loads
+`docs/ARCHITECTURE.md` section 1.1 and `docs/features/ade-cloud/README.md`.
+ADE Cloud computers run on Agent 37: work that depends on how a cloud
+computer sleeps, wakes, restarts or updates also reads that README's "The
+provider: Agent 37" section, which links Agent 37's own docs.
+
 ---
 
 ## Desktop — main-process services
@@ -17,7 +25,8 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | `apps/desktop/src/main/services/projects/` | `docs/features/onboarding-and-settings/` | `ade-perf-boot` |
 | `apps/desktop/src/main/services/lanes/` | `docs/features/lanes/` | `ade-perf-lanes` |
 | `apps/desktop/src/main/services/prs/`, `services/review/` | `docs/features/pull-requests/` | `ade-perf-prs` |
-| `apps/desktop/src/main/services/proof/` | `docs/features/proof.md` | — |
+| `apps/desktop/src/main/services/proof/` | `docs/features/computer-use/artifact-broker.md` | — |
+| `apps/desktop/src/main/services/adeCloud/` (keywords: ADE Cloud, cloud lane, wake, asleep, server queue, fork-continue, deleting soon, refusal) | `docs/features/ade-cloud/` + `docs/ARCHITECTURE.md` (§1.1) | — |
 | `apps/desktop/src/main/services/remoteRuntime/`, `services/localRuntime/`, `services/runtime/` | `docs/features/remote-runtime/` | `ade-perf-boot` |
 | `apps/desktop/src/main/services/cto/` | `docs/features/cto/` + `linear-integration/` | — |
 | `apps/desktop/src/main/services/ai/` | `docs/features/chat/` + `features/agents/` | `ade-perf-work` |
@@ -52,6 +61,7 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | `apps/desktop/src/renderer/components/music/**` | `docs/features/music/README.md` | — |
 | `apps/desktop/src/renderer/components/browser/**` (the Browser top tab) | `docs/features/chat/README.md` ("The Browser top tab") + `docs/plans/ade-dev-home.md` (§2) | `ade-perf-work` |
 | `apps/desktop/src/renderer/components/app/**` (App shell) | `docs/ARCHITECTURE.md` (UI framework) | `ade-perf-boot` |
+| `apps/desktop/src/renderer/components/cloudLane/**`, `renderer/state/adeCloud*.ts`, `cloudRestingRows.ts`, `cloudSaved*.ts`, `ownComputers.ts`, `crossMachineLanes.ts` (keywords: ADE Cloud tab, resting lane, saved chat, queued message, offline hidden) | `docs/features/ade-cloud/` + `docs/features/web-client/` + `docs/ARCHITECTURE.md` (§1.1) | `ade-perf-work` |
 | `apps/desktop/src/renderer/components/<area>/**` | `docs/features/<same-area>/` | match by area above |
 | `apps/desktop/src/renderer/state/` (incl. `appStore.ts`) | `docs/ARCHITECTURE.md` (UI framework) | `ade-perf-lanes` |
 | `apps/desktop/src/shared/**` | `docs/ARCHITECTURE.md` + the touching feature's doc | — |
@@ -62,14 +72,19 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | Path pattern | Feature docs | Perf skill |
 |---|---|---|
 | `apps/ade-cli/**` | `docs/ARCHITECTURE.md` (ADE CLI / Build/Test/Deploy) + `features/agents/` | — |
+| `apps/ade-cli/src/services/cloudChats/**`, `services/power/cloudPrepareStop.ts`, `services/github/cloudGitIdentity.ts`, `services/account/accountLaneIndexPublisher.ts` (keywords: save at rest, queue drain, restore, git identity, lane index) | `docs/features/ade-cloud/` + `docs/features/remote-runtime/` | — |
 
 ## iOS, web, CI
 
 | Path pattern | Feature docs | Perf skill |
 |---|---|---|
-| `apps/ios/**` | `docs/features/sync-and-multi-device/ios-companion.md` + `features/apple-device/` | — |
+| `apps/ios/**` | `docs/features/sync-and-multi-device/ios-companion.md` + `features/apple-device/` + `docs/features/ade-cloud/` for ADE Cloud screens | — |
 | `apps/desktop/src/main/services/ios/**`, `apps/desktop/src/renderer/components/apple/**`, `apps/desktop/native/ADESimHelper/**` | `docs/features/apple-device/` + skill `ade-apple` | `ade-perf-work` |
 | `apps/web/**` | `docs/ARCHITECTURE.md` (Apps & Processes) | — |
+| `apps/desktop/src/renderer/webclient/**` | `docs/features/web-client/` + `docs/ARCHITECTURE.md` (§1.1, §2.4) | `ade-perf-boot` |
+| `apps/account-directory/**` | `docs/features/ade-cloud/` + `apps/account-directory/README.md` | — |
+| `apps/push-relay/**` (keywords: vault, Passwords, browser allowlist, Activity) | `docs/features/passwords/` + `apps/push-relay/README.md` + `docs/features/sync-and-multi-device/push-notifications.md` | — |
+| `apps/webhook-relay/**` (keywords: webhook, event wake) | `apps/webhook-relay/README.md` + `docs/features/automations/` | — |
 | `apps/ade-cli/src/services/remoteMcp/**`, `apps/ade-cli/src/cliRemoteMcp.ts`, `apps/tunnel-relay/**`, `AdeMcpPage.tsx` (keywords: remote MCP, MCP server, ADE MCP, `ade mcp`, connector) | `docs/features/ade-mcp/README.md` + `apps/tunnel-relay/README.md` | — |
 | `.github/workflows/**` | `docs/ARCHITECTURE.md` (Build/Test/Deploy) | — |
 

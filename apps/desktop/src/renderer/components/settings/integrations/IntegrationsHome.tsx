@@ -26,13 +26,14 @@ import { INTEGRATION_IDS, integrationBrand, integrationThemeVars, type Integrati
 import type { IntegrationTone } from "./IntegrationChrome";
 import { SolidLogo } from "../providers/ProviderHero";
 import { useMcpRegistry } from "../mcp/useMcpRegistry";
-import { useAdeCloudEnabled } from "../../../state/cloudAccess";
 import { MCP_ACCENT, mcpCatalogueBrand } from "../mcp/mcpCatalogueBrand";
 import { McpCatalogueAddDialog } from "../mcp/McpCatalogueAddDialog";
 import { McpServerDialog } from "../mcp/McpServerDialog";
 import { showToast } from "../../app/toast/toastStore";
 import "../providers/providerPage.css";
 import "./integrationPage.css";
+import { MessagesIntegrationCard } from "./MessagesIntegrationCard";
+import { requirePin } from "../../../state/repositoryScope";
 
 /** A page under Integrations: GitHub, Linear or Jira, or the MCP servers. */
 export type IntegrationsPageId = IntegrationId | "mcp";
@@ -52,32 +53,27 @@ const DESCRIPTIONS: Record<IntegrationId, string> = {
   github: "Open, review and merge pull requests, follow checks, and work on issues.",
   linear: "Start lanes from Linear issues, link them to PRs, and let your team assign work to ADE.",
   jira: "Bring a Jira Cloud site's issues into ADE and tie them to this project.",
-  cloud: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.",
 };
 
 /** Where the credential lives: what the status says, else where a new one is saved. */
 function savedIn(id: IntegrationId, summary?: Summary): string {
-  return summary?.savedIn ?? (id === "cloud" || connectProviderSpec(id).savedScope === "account" ? "Your account" : "This project");
+  return summary?.savedIn ?? (connectProviderSpec(id).savedScope === "account" ? "Your account" : "This project");
 }
 
 async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): Promise<Summary> {
-  if (id === "cloud") {
-    // Account-wide: access is the account's, so this computer answers for every machine.
-    const status = await window.ade.cloud?.getStatus();
-    if (!status) return UNKNOWN;
-    if (status.signedOut) return { tone: "neutral", label: "Sign in to ADE" };
-    if (status.error) return { tone: "warn", label: status.connected ? "Couldn't reach ADE Cloud" : "Not available" };
-    if (status.connected) return { tone: "ok", label: "Ready", savedIn: "Your account" };
-    return { tone: "neutral", label: "Not available yet" };
-  }
   if (id === "github") {
     const status = await window.ade.github.getStatus(undefined, pin);
     if (status.connected) {
       return {
         tone: "ok",
         label: status.userLogin ? `Connected as ${status.userLogin}` : "Connected",
-        // Only a pasted token follows the account; gh, an env token and the app sign-in are this computer's.
-        savedIn: status.authSource === "pat" ? "Your account" : "This computer",
+        // A pasted token, a gh login and the account's App sign-in follow the account; an env token and this computer's own App sign-in stay here.
+        savedIn: status.authSource === "pat"
+          || status.authSource === "account_gh"
+          || status.authSource === "account_app"
+          || (status.authSource === "gh" && status.accountCredentials?.ghSharedFromHere)
+          ? "Your account"
+          : "This computer",
       };
     }
     if (status.authFailure || status.credentialStoreUnreadable) return { tone: "warn", label: "Needs attention" };
@@ -86,7 +82,7 @@ async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): P
   if (id === "linear") {
     const cto = window.ade.cto;
     if (!cto) return UNKNOWN;
-    const status = await cto.getLinearConnectionStatus(pin);
+    const status = await cto.getLinearConnectionStatus(requirePin(pin));
     if (status.connected) {
       const workspace = status.organizationName?.trim() || status.organizationUrlKey?.trim();
       return { tone: "ok", label: workspace ? `Connected to ${workspace}` : "Connected" };
@@ -111,15 +107,14 @@ function useIntegrationSummaries(
     github: CHECKING,
     linear: CHECKING,
     jira: CHECKING,
-    cloud: CHECKING,
   });
   useEffect(() => {
     let cancelled = false;
     if (!online) {
-      setSummaries({ github: OFFLINE, linear: OFFLINE, jira: OFFLINE, cloud: OFFLINE });
+      setSummaries({ github: OFFLINE, linear: OFFLINE, jira: OFFLINE });
       return undefined;
     }
-    setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING, cloud: CHECKING });
+    setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING });
     for (const id of ids) {
       readSummary(id, pin)
         .then((summary) => { if (!cancelled) setSummaries((prev) => ({ ...prev, [id]: summary })); })
@@ -176,7 +171,7 @@ function IntegrationMark({ server, entry, integration }: {
 export function IntegrationsHome({
   pin,
   machineOnline = true,
-  integrations: integrationsProp = INTEGRATION_IDS,
+  integrations = INTEGRATION_IDS,
   onOpen,
 }: {
   /** The page's machine: each integration status is read where its credential lives. */
@@ -188,11 +183,6 @@ export function IntegrationsHome({
   /** Opens a page; `server` focuses one MCP server on it. */
   onOpen: (page: IntegrationsPageId, server?: string) => void;
 }) {
-  const cloudEnabled = useAdeCloudEnabled();
-  const integrations = useMemo(
-    () => integrationsProp.filter((id) => id !== "cloud" || cloudEnabled),
-    [cloudEnabled, integrationsProp],
-  );
   const summaries = useIntegrationSummaries(pin, machineOnline, integrations);
   const registry = useMcpRegistry();
   const [query, setQuery] = useState("");
@@ -310,6 +300,9 @@ export function IntegrationsHome({
         </section>
       ) : null}
 
+      {/* This Mac's own Messages; a page following another machine leaves it out. */}
+      {pin === null || pin.kind !== "remote" ? <MessagesIntegrationCard /> : null}
+
       <section className="ade-ix-section" aria-label="Add">
         <div className="ade-ix-heading-row">
           <h3 className="ade-ix-heading">Add</h3>
@@ -340,7 +333,7 @@ export function IntegrationsHome({
                     className="ade-ig-tile"
                     style={integrationThemeVars(brand.accent)}
                     data-testid={`integration-tile-${id}`}
-                    data-settings-anchor={settingsEntryById(id === "cloud" ? "integrations.ade-cloud" : `integrations.${id}`)?.anchor}
+                    data-settings-anchor={settingsEntryById(`integrations.${id}`)?.anchor}
                     disabled={!machineOnline}
                     onClick={() => onOpen(id)}
                   >
@@ -462,6 +455,7 @@ export function IntegrationsHome({
           onAdded={() => setAdding(null)}
         />
       ) : null}
+
     </div>
   );
 }

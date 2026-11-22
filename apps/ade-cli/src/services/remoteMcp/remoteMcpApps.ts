@@ -47,7 +47,18 @@ function buildHtml(): string {
     + `<script>${APP_JS}</script></body></html>`;
 }
 
-const APP_HTML = buildHtml();
+let appHtml: string | null = null;
+
+/**
+ * Built on first use: the page is about 96 KB, and a brain keeps it only once
+ * an MCP host has asked for a tool list or the view.
+ */
+function adeAppHtml(): string {
+  appHtml ??= buildHtml();
+  return appHtml;
+}
+
+let appResourceUri: string | null = null;
 
 /**
  * The resource URI carries a hash of the HTML: hosts may cache a UI resource,
@@ -55,7 +66,10 @@ const APP_HTML = buildHtml();
  * `resources/read` answers any `ui://ade/app…html`, so a host holding an older
  * tool list still gets today's view.
  */
-export const ADE_APP_RESOURCE_URI = `ui://ade/app-${createHash("sha256").update(APP_HTML).digest("hex").slice(0, 8)}.html`;
+function adeAppResourceUri(): string {
+  appResourceUri ??= `ui://ade/app-${createHash("sha256").update(adeAppHtml()).digest("hex").slice(0, 8)}.html`;
+  return appResourceUri;
+}
 
 const ADE_APP_URI_PATTERN = /^ui:\/\/ade\/app(?:-[0-9a-f]{8})?\.html$/;
 
@@ -69,10 +83,10 @@ const RESOURCE_UI_META = { prefersBorder: false };
 /** The `resources/list` entry. */
 export function adeAppResourceListing() {
   return {
-    uri: ADE_APP_RESOURCE_URI,
+    uri: adeAppResourceUri(),
     name: "ade-app",
     title: "ADE",
-    description: "ADE's view for chats, questions and approvals, pull requests, lanes, diffs, usage and computers.",
+    description: "ADE's view for chats, questions and approvals, pull requests, lanes, diffs, usage and machines.",
     mimeType: MCP_APP_MIME_TYPE,
     _meta: { ui: RESOURCE_UI_META },
   };
@@ -82,7 +96,7 @@ export function adeAppResourceListing() {
 export function readAdeAppResource(uri: unknown) {
   if (typeof uri !== "string" || !ADE_APP_URI_PATTERN.test(uri)) return null;
   return {
-    contents: [{ uri, mimeType: MCP_APP_MIME_TYPE, text: APP_HTML, _meta: { ui: RESOURCE_UI_META } }],
+    contents: [{ uri, mimeType: MCP_APP_MIME_TYPE, text: adeAppHtml(), _meta: { ui: RESOURCE_UI_META } }],
   };
 }
 
@@ -95,8 +109,9 @@ export function withAppUi<T extends { name: string; _meta?: Record<string, unkno
   if (!TOOLS_WITH_VIEWS.has(tool.name)) return tool;
   const meta = tool._meta ?? {};
   const ui = meta.ui && typeof meta.ui === "object" ? meta.ui as Record<string, unknown> : {};
+  const resourceUri = adeAppResourceUri();
   return {
     ...tool,
-    _meta: { ...meta, ui: { ...ui, resourceUri: ADE_APP_RESOURCE_URI }, "ui/resourceUri": ADE_APP_RESOURCE_URI },
+    _meta: { ...meta, ui: { ...ui, resourceUri }, "ui/resourceUri": resourceUri },
   };
 }

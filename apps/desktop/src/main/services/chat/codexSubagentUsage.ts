@@ -93,7 +93,13 @@ export function findCodexThreadRolloutPath(codexHome: string, threadId: string):
     } catch {
       continue;
     }
-    const match = names.find((name) => name.startsWith("rollout-") && name.toLowerCase().endsWith(suffix));
+    // Codex compacts older rollouts to `.jsonl.zst`; the same thread is still
+    // there and callers (holding-thread checks, a chat's account) must see it.
+    const match = names.find((name) => {
+      const lower = name.toLowerCase();
+      return name.startsWith("rollout-")
+        && (lower.endsWith(suffix) || lower.endsWith(`${suffix}.zst`));
+    });
     if (match) return path.join(localDayDir(sessionsDir, ms), match);
   }
   return null;

@@ -7,7 +7,7 @@ icon: "mobile"
 The **iOS Simulator** drawer drives the system iOS Simulator from inside ADE's Work tab. It discovers your launchable iOS targets, builds and launches the app, mirrors the running Simulator window into the drawer, and turns drawer gestures into either simulator input or context for the active chat. When you tap a SwiftUI view in inspect mode, the agent gets the element's **source file and line** — not a guess from stale code.
 
 <Note>
-This feature is **macOS-only**. `xcrun`, `xcodebuild`, and Simulator.app must be available on the runtime host. `idb` and `idb_companion` are optional but unlock direct tap, drag, text, and accessibility-backed inspection.
+The local drawer is **macOS-only**; from Windows, Linux or a Mac without Xcode, use the [ADE Cloud iPhone](#the-ade-cloud-iphone). `xcrun`, `xcodebuild`, and Simulator.app must be available on the runtime host. `idb` and `idb_companion` are optional but unlock direct tap, drag, text, and accessibility-backed inspection.
 </Note>
 
 ## What the drawer does
@@ -70,6 +70,16 @@ Each launched simulator session has one owning chat or lane. If a second chat tr
 ## A simulator on another Mac
 
 A chat can use the simulator on another of your Macs without moving there. `ade apple launch --machine "Mac Studio"` with no lane builds the chat's work copy on that Mac (see [remote machines](/tools/remote-machines#use-another-machine-from-the-chat-you-are-in)) and runs it on a simulator that Mac already has and no lane holds. ADE creates a new simulator only when none is free, and never deletes one it borrowed. The drawer then offers **Simulator · Mac Studio** beside **This lane**, so you can switch between them.
+
+## The ADE Cloud iPhone
+
+On accounts that have it, the **ADE Cloud iPhone** is an iPhone simulator that runs in the cloud, so a chat on any machine (Windows, Linux, a Mac without Xcode) can build and drive an iOS app. Pick **ADE Cloud** in the drawer's **Runs on** row, or have the agent run `ade devices use ios@cloud`; every `ade apple` command then goes to it.
+
+- One phone per account: every chat that uses `ios@cloud` drives the same one.
+- It stops after 5 minutes with no command or input, and after 2 hours at most. The drawer shows its minutes left and the idle stop while it runs, with **Keep on** in the last 90 seconds; the top bar shows a phone icon with the same details.
+- The chat whose agent started it gets a line when it starts and when it stops.
+- Its minutes come from the plan (Settings › ADE Cloud).
+- A machine with an ADE older than 1.2.131 can't reach it; the drawer and `ade devices` say to update ADE there.
 
 ## Drive it from the CLI
 

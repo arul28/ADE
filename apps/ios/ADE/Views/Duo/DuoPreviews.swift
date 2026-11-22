@@ -31,6 +31,9 @@ enum DuoPreviewRouter {
       DuoFoldPreviews.view,
       LiveInspectMarkupPreviews.view,
       CloudPreviews.view,
+      CloudNoComputerPreviews.view,
+      CloudAtRestPreviews.view,
+      AccountProjectScreenPreviews.view,
     ]
     for provider in providers {
       if let view = provider(name) { return view }

@@ -1,14 +1,21 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
+  clearProjectIconOverride,
   resolveProjectIcon,
+  resolveProjectIconOverridePath,
   resolveProjectIconPath,
 } from "../../../../desktop/src/main/services/projects/projectIconResolver";
+import { encodeProjectRecordIcon } from "../../../../desktop/src/main/services/projects/projectRecordHost";
+import type { ProjectRecordIconValue } from "../../../../desktop/src/shared/projectRecord";
 
 export {
+  clearProjectIconOverride,
   decodeProjectIconUpload,
   importProjectIconBytes,
   removeProjectIconOverride,
+  resolveProjectIconOverridePath,
+  resolveProjectIconPath,
 } from "../../../../desktop/src/main/services/projects/projectIconResolver";
 import {
   PROJECT_ICON_THUMBNAIL_MAX_DATA_URL_BYTES,
@@ -62,15 +69,61 @@ function mimeTypeForIconPath(filePath: string): string | null {
   }
 }
 
-export function resolveRemoteProjectIcon(projectRoot: string): RemoteProjectIcon {
+/**
+ * How the shared project record (`shared/projectRecord.ts`) changes a resolve:
+ * - `off`: as before the record.
+ * - `detected`: the record says the custom icon was removed, so this
+ *   machine's own override is dropped and the icon is detected.
+ * - `migrate`: the record has no icon yet; the answer also carries this
+ *   machine's own custom icon, shrunk for the record, for the caller to upload.
+ */
+export type RemoteProjectIconRecordMode = "off" | "detected" | "migrate";
+
+export type RemoteProjectIconWithRecord = RemoteProjectIcon & {
+  /** Only in `migrate` mode, and only when this machine has its own custom icon that fits. */
+  recordValue?: ProjectRecordIconValue | null;
+};
+
+export function resolveRemoteProjectIconForRecord(
+  projectRoot: string,
+  mode: RemoteProjectIconRecordMode,
+): RemoteProjectIconWithRecord {
+  if (mode === "off" || typeof projectRoot !== "string" || projectRoot.trim().length === 0) {
+    return resolveRemoteProjectIcon(projectRoot);
+  }
+  const root = projectRoot.trim();
+  if (mode === "detected") {
+    try {
+      clearProjectIconOverride(root);
+    } catch {
+      // The override is ignored below either way.
+    }
+    return resolveRemoteProjectIcon(root, { ignoreOverride: true });
+  }
+  const icon = resolveRemoteProjectIcon(root);
+  let overridePath: string | null = null;
+  try {
+    overridePath = resolveProjectIconOverridePath(root);
+  } catch {
+    overridePath = null;
+  }
+  return overridePath ? { ...icon, recordValue: encodeProjectRecordIcon(overridePath) } : icon;
+}
+
+export function resolveRemoteProjectIcon(
+  projectRoot: string,
+  options: { ignoreOverride?: boolean } = {},
+): RemoteProjectIcon {
   if (typeof projectRoot !== "string" || projectRoot.trim().length === 0) {
     return EMPTY_ICON;
   }
   const root = projectRoot.trim();
+  // `undefined` as the override skips this machine's own setting.
+  const resolveOptions = options.ignoreOverride ? { iconPathOverride: undefined } : {};
 
   let iconPath: string | null;
   try {
-    iconPath = resolveProjectIconPath(root);
+    iconPath = resolveProjectIconPath(root, resolveOptions);
   } catch {
     return EMPTY_ICON;
   }
@@ -85,7 +138,7 @@ export function resolveRemoteProjectIcon(projectRoot: string): RemoteProjectIcon
     // never read merely to discover that base64 would exceed the wire cap.
     const dataUrl = thumbnailDataUrl ?? (
       fs.statSync(iconPath).size <= 96 * 1024
-        ? resolveProjectIcon(root).dataUrl
+        ? resolveProjectIcon(root, resolveOptions).dataUrl
         : null
     );
     if (

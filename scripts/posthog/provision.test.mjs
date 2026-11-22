@@ -32,6 +32,8 @@ const SPEC_OBJECTS = dashboardSpec.dashboards.length + SPEC_INSIGHTS;
 const NOT_INTERNAL = [
   { key: "is_internal", value: ["true"], operator: "is_not", type: "event" },
   { key: "is_internal", value: ["true"], operator: "is_not", type: "person" },
+  { key: "review_context", value: ["app_review"], operator: "is_not", type: "event" },
+  { key: "environment", value: ["ci"], operator: "is_not", type: "event" },
 ];
 
 test("dashboard spec is valid and excludes replay queries", () => {
@@ -46,8 +48,8 @@ test("dashboard queries match the bounded instrumentation semantics", () => {
   assert.equal(surface.query.source.breakdownFilter.breakdown, "surface");
 
   const errors = findInsight("unrecoverable-errors");
-  assert.equal(errors.name, "Errors by action");
-  assert.equal(errors.query.source.breakdownFilter.breakdown, "action");
+  assert.equal(errors.query.source.series[0].event, "ade_error");
+  assert.ok(errors.query.source.breakdownFilter.breakdowns.some((breakdown) => breakdown.property === "action"));
 
   const outcomes = findInsight("work-session-outcomes");
   assert.equal(outcomes.name, "First agent-turn outcomes");

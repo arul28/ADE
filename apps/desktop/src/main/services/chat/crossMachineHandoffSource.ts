@@ -12,6 +12,7 @@ import type {
   AgentChatCrossMachineHandoffBlocker,
   AgentChatCrossMachineBatchMoveApproval,
   AgentChatCrossMachineBatchMoveRecord,
+  AgentChatCrossMachineBatchSourceChangedResult,
   AgentChatCrossMachineHandoffOrigin,
   AgentChatCrossMachineHandoffRecord,
   AgentChatEventEnvelope,
@@ -26,6 +27,7 @@ import {
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
 import { canonicalGitOriginUrl, gitRemoteIdentity } from "../github/githubSshAlias";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import type { GitRunOptions, GitRunResult } from "../git/git";
 import type { AdeDb } from "../state/kvDb";
 import { writeFileAtomic } from "../state/durableFile";
@@ -559,6 +561,12 @@ export type CrossMachineBatchChatState = {
   blockedKind: string | null;
   /** The unified permission level of a loaded chat. */
   permissionLevel: string | null;
+  /**
+   * Set for a tracked agent CLI row (its tool type). Its row is `running`
+   * while the process is up, which says nothing about a turn, so only
+   * `blockedKind` says it is busy.
+   */
+  cliToolType?: string | null;
 };
 
 /**
@@ -579,11 +587,13 @@ export function createCrossMachineBatchSource(deps: {
   localMachineKey: () => string;
   /** This machine's name as the account lists it, else its host name. */
   localMachineName: () => Promise<string>;
-}): Omit<CrossMachineBatchMoveDeps, "interruptBatchChat" | "showBatchApprovalCard"> {
+}): Omit<CrossMachineBatchMoveDeps, "interruptBatchChat" | "showBatchApprovalCard"> & {
+  batchSourceChanged: (batchId: string) => Promise<AgentChatCrossMachineBatchSourceChangedResult>;
+} {
   const { store, laneService } = deps;
 
   const listBatchChats = async (): Promise<CrossMachineBatchChat[]> => deps.listChatSessions()
-    .map(({ row, lineage, blockedKind, permissionLevel }) => {
+    .map(({ row, lineage, blockedKind, permissionLevel, cliToolType }) => {
       const activeWork = row.archivedAt == null
         && row.settledAt == null
         && (lineage?.surface ?? row.surface ?? "work") === "work";
@@ -593,7 +603,8 @@ export function createCrossMachineBatchSource(deps: {
         parentSessionId: lineage?.orchestrationParentSessionId ?? null,
         spawnKind: lineage?.spawnKind ?? "subagent",
         isWorkChat: activeWork,
-        turnActive: blockedKind === "turn_active" || row.status === "running" || row.status === "detached",
+        turnActive: blockedKind === "turn_active"
+          || (!cliToolType && (row.status === "running" || row.status === "detached")),
         awaitingInput: blockedKind === "awaiting_input",
         permissionLevel,
         provider: lineage?.provider ?? "",
@@ -602,6 +613,7 @@ export function createCrossMachineBatchSource(deps: {
         title: row.title ?? null,
         crossMachineOrigin: lineage?.crossMachineOrigin ?? null,
         crossMachineArrival: lineage?.crossMachineArrival ?? null,
+        ...(cliToolType ? { cliToolType } : {}),
       };
     });
 
@@ -675,19 +687,55 @@ export function createCrossMachineBatchSource(deps: {
       || current.headSha !== payload.headSha
       || gitRemoteIdentity(current.originUrl) !== gitRemoteIdentity(payload.originUrl)
     ) throw new CrossMachineSourceStaleError("The source lane changed after the batch was prepared. Review the batch again.");
+    // The tree the payload carries: its snapshot, else the commit itself.
+    const expected = await requireGitOutput(
+      deps.runGit,
+      ["rev-parse", `${payload.gitBundle?.snapshotSha ?? payload.headSha}^{tree}`],
+      summary.worktreePath,
+      "ADE could not verify the prepared lane changes.",
+    );
     if (payload.gitBundle) {
       validateHandoffGitBundle({ source: { headSha: payload.headSha }, gitBundle: payload.gitBundle });
       const tree = await readHandoffWorkingTreeSha({ worktreePath: summary.worktreePath });
-      const expected = await requireGitOutput(
-        deps.runGit,
-        ["rev-parse", `${payload.gitBundle.snapshotSha ?? payload.headSha}^{tree}`],
-        summary.worktreePath,
-        "ADE could not verify the prepared lane changes.",
-      );
       if (tree !== expected) throw new CrossMachineSourceStaleError("The source lane files changed after the batch was prepared.");
     } else if (current.changes !== null) {
       throw new CrossMachineSourceStaleError("The source lane has changes that were not included in the batch.");
     }
+    return { headSha: payload.headSha, treeSha: expected };
+  };
+
+  /**
+   * Whether a batch's source lanes changed since the batch carried them: a
+   * new commit, or a file edit (untracked files count, ignored files don't,
+   * the same way the bundle reads them). Read just before the source's ADE
+   * Cloud computer is deleted. Throws when it can't tell.
+   */
+  const batchSourceChanged = async (batchId: string): Promise<AgentChatCrossMachineBatchSourceChangedResult> => {
+    const batch = store.readBatch(batchId);
+    if (!batch) throw new Error("Batch move not found.");
+    for (const item of batch.items) {
+      if (item.kind !== "lane") continue;
+      if (!item.carriedHeadSha || !item.carriedTreeSha) {
+        throw new Error("This move does not say what it carried, so ADE can't check the lane.");
+      }
+      const summary = await laneService.getSummary(item.sourceLaneId, { includeStatus: false });
+      if (!summary) throw new Error(`The source lane '${item.sourceLaneId}' could not be loaded.`);
+      const label = `Lane '${laneDisplayName(summary)}'`;
+      const head = await requireGitOutput(
+        deps.runGit,
+        ["rev-parse", "HEAD"],
+        summary.worktreePath,
+        `ADE could not read ${label}.`,
+      );
+      if (head !== item.carriedHeadSha) {
+        return { changed: true, reason: `${label} has commits the move did not carry.` };
+      }
+      const tree = await readHandoffWorkingTreeSha({ worktreePath: summary.worktreePath });
+      if (tree !== item.carriedTreeSha) {
+        return { changed: true, reason: `${label} has file changes the move did not carry.` };
+      }
+    }
+    return { changed: false };
   };
 
   return {
@@ -700,5 +748,6 @@ export function createCrossMachineBatchSource(deps: {
     inspectBatchLane,
     prepareBatchLane,
     validateBatchLane,
+    batchSourceChanged,
   };
 }

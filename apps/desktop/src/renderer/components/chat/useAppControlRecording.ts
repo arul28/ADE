@@ -8,6 +8,7 @@ import type { MacDesktopPermissionKind, MacDesktopPermissions } from "../../../s
 import { RECORDING_RECEIPT_MS, revealProofArtifactRow } from "../shared/recordingFormat";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useTicker } from "../../lib/ticker";
+import { requireChatPin } from "./chatMachinePin";
 
 /**
  * The App Control pane's recording: status, the Record/Stop toggle, the
@@ -90,10 +91,11 @@ export function useAppControlRecording({
   // One read, then events. Never a poll.
   useEffect(() => {
     const api = window.ade?.appControl;
-    if (!laneId || !api) return undefined;
+    const pin = pinRef.current;
+    if (!laneId || !api || !pin) return undefined;
     let cancelled = false;
     if (enabled && isAdeAvailable(api.getRecordingStatus)) {
-      void api.getRecordingStatus({ laneId }, pinRef.current)
+      void api.getRecordingStatus({ laneId }, pin)
         .then((status) => {
           if (cancelled || !status) return;
           setRecording(status);
@@ -106,7 +108,7 @@ export function useAppControlRecording({
       if (event.type !== "recording-changed" || event.laneId !== laneId) return;
       setRecording(event.status);
       if (event.status.permissions) setPermissions(event.status.permissions);
-    }, pinRef.current);
+    }, pin);
     return () => {
       cancelled = true;
       unsubscribe?.();
@@ -129,7 +131,7 @@ export function useAppControlRecording({
         laneId,
         chatSessionId,
         caption: caption?.trim() || null,
-      }, pinRef.current);
+      }, requireChatPin(pinRef.current));
       if (laneIdRef.current !== laneId) return;
       setRecording(next);
       const missing = appControlRecordingMissingPermissions(next.permissions);
@@ -153,7 +155,7 @@ export function useAppControlRecording({
     setBusy(true);
     setError(null);
     try {
-      const next = await api.stopRecording({ laneId, chatSessionId }, pinRef.current);
+      const next = await api.stopRecording({ laneId, chatSessionId }, requireChatPin(pinRef.current));
       if (laneIdRef.current !== laneId) return;
       setRecording(next);
       if (next.proofArtifactId) {
@@ -187,7 +189,7 @@ export function useAppControlRecording({
         laneId,
         chatSessionId,
         caption: caption?.trim() || null,
-      }, pinRef.current);
+      }, requireChatPin(pinRef.current));
       if (laneIdRef.current !== laneId) return;
       setReceipt({ artifactId: filed.artifactId, durationMs: null, bytes: null, filePath: filed.filePath });
     } catch (cause) {

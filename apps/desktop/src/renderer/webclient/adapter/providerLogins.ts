@@ -1,0 +1,90 @@
+import type { ProviderLoginStatus } from "../../../shared/types/providerLogins";
+import { isAdeCloudTargetId } from "../../../shared/adeCloud/binding";
+import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
+import type { AdapterInfra } from "./types";
+
+type ProviderLoginsBridge = NonNullable<Window["ade"]["providerLogins"]>;
+
+const NO_COMPUTER = "ADE Web reads your sign-ins through one of your computers, and none is connected here.";
+
+const DESKTOP_ONLY = "Do this in the ADE desktop app on that computer: only that computer's own ADE can read its OS keyring or its GitHub CLI login.";
+
+/**
+ * `window.ade.providerLogins` for the web app: the account's sign-ins for
+ * Settings › Providers (the account cards, ADE Cloud as a place) and the
+ * ADE Cloud page's sign-ins card.
+ *
+ * Every member goes to the connected machine's `providerLogins.*` commands,
+ * the same `provider_logins` service the desktop reaches through its pin. The
+ * account part is the same from any of the person's brains, so the connected
+ * machine answers for it. A pin naming another machine (the reporting cloud
+ * computer of the ADE Cloud place) is refused by the pin guard, so that part
+ * reads "no answer" instead of being served by the wrong machine.
+ *
+ * The writes are the person's own, so they ask the host every time and never
+ * resolve a fallback. The two that only that computer's own desktop may run
+ * (`allowKeychain`, `allowGitHubCli`) refuse with a plain sentence.
+ * `onChanged` listens to its pin's machine: the federated proxy hands a pinned
+ * call to that machine's adapter, and a pin this adapter cannot serve is
+ * refused like every pinned member. It fires on the host's
+ * `provider_logins_changed` push and when this connection comes back; each
+ * write returns the new status itself.
+ */
+export function createWebProviderLoginsNamespace(infra: Pick<AdapterInfra, "client" | "commands" | "state">): ProviderLoginsBridge {
+  const { client, commands } = infra;
+
+  const read = async (method: "status", args: object | undefined, pin: RuntimePinArg): Promise<ProviderLoginStatus> => {
+    assertWebRuntimePinRoutable(`providerLogins.${method}`, pin, infra);
+    // A tab on ADE Cloud (or a resting cloud lane's pin) is answered by the
+    // account, which keeps the sign-ins in a vault only a computer's brain
+    // reads. There is no machine to ask: say so, never "update ADE".
+    const envId = client.getStatus().selectedEnvId;
+    if (isAdeCloudTargetId(envId) || savedChatsMachineKey(envId) != null) {
+      throw new AdeExpectedError(NO_COMPUTER, "environment");
+    }
+    return await commands.call<ProviderLoginStatus>(`providerLogins.${method}`, (args ?? {}) as Record<string, unknown>, {
+      fallback: () => {
+        throw new Error("Update ADE on that computer to see your sign-ins here.");
+      },
+      authoritative: true,
+      retainLastRead: false,
+    });
+  };
+
+  const write = async (method: string, args: object | undefined, pin: RuntimePinArg): Promise<ProviderLoginStatus> => {
+    assertWebRuntimePinRoutable(`providerLogins.${method}`, pin, infra);
+    return await commands.call<ProviderLoginStatus>(`providerLogins.${method}`, (args ?? {}) as Record<string, unknown>, { idempotent: false });
+  };
+
+  const refused = async (): Promise<ProviderLoginStatus> => {
+    throw new Error(DESKTOP_ONLY);
+  };
+
+  return {
+    status: (args, pin) => read("status", args, pin),
+    captureNow: (args, pin) => write("captureNow", args, pin),
+    allowKeychain: refused,
+    allowGitHubCli: refused,
+    use: (args, pin) => write("use", args, pin),
+    setCloud: (args, pin) => write("setCloud", args, pin),
+    setCloudAll: (args, pin) => write("setCloudAll", args, pin),
+    setCloudBalance: (args, pin) => write("setCloudBalance", args, pin),
+    remove: (args, pin) => write("remove", args, pin),
+    onChanged: (cb, pin) => {
+      assertWebRuntimePinRoutable("providerLogins.onChanged", pin, infra);
+      let readiness = client.getStatus().readiness;
+      const offStatus = client.subscribe((status) => {
+        if (status.readiness === readiness) return;
+        readiness = status.readiness;
+        if (status.readiness === "ready") cb();
+      });
+      const offPush = client.onProviderLoginsChanged(cb);
+      return () => {
+        offStatus();
+        offPush();
+      };
+    },
+  };
+}

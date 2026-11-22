@@ -1,12 +1,16 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "ade-account-directory",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-30",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
-  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // 10% of requests are logged: Workers Logs cost $0.60 per million events above
+  // 20 million a month, and at 100% the three Workers made about 53 million a
+  // month (measured 2026-11-12). Errors still reach Sentry in full. The
+  // production environment inherits this block.
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
   // The Sentry cron monitor `account-directory-cleanup` repeats this schedule
   // (CLEANUP_MONITOR_CONFIG in src/index.ts); change both together.
   "triggers": { "crons": ["* * * * *"] },
@@ -22,20 +26,36 @@
   // Repeat the secret for `env.production` (`wrangler secret put --env production`).
   //
   // OPTIONAL SECRET — CLERK_SECRET_KEY
-  // The Clerk Backend API key of the Clerk instance this worker uses. Only
+  // The Clerk Backend API key of the Clerk instance this worker uses.
   // `/device/approve` reads it, to mint the one-time sign-in ticket for a user
   // who approved a sign-in from a signed-in ADE app. Unset, that route answers
-  // 503 and the app opens the browser page instead. It can sign in as any user
-  // of that instance, so it is set out of band like the secret above.
+  // 503 and the app opens the browser page instead. ADE Cloud also reads it to
+  // find a person's email address: unset, the hours warnings, the idle warnings
+  // and the after-delete emails are skipped (log `cloud.email_skipped`, reason
+  // `no_clerk_key`). It can sign in as any user of that instance, so it is set
+  // out of band like the secret above.
   //
   // REQUIRED SECRET — AGENT37_API_KEY (ADE Cloud)
   // The workspace key ADE Cloud runs computers on, set out of band like the
   // secret above. Only this Worker holds it: the desktop and brains never do.
   // Without it every /cloud route refuses with 503 and the cron does nothing.
   //
+  // SECRET — AGENT37_WEBHOOK_SECRET (ADE Cloud status webhook)
+  // The `whsec_…` signing secret of the provider's `instance.status.updated`
+  // webhook (src/cloud/computerStatus.ts), returned once when the webhook is
+  // registered (`node scripts/register-agent37-webhook.mjs <worker-origin>`).
+  // Set out of band, here and with `--env production`. Unset, the webhook
+  // answers 503 and the status menu reads the minute tick's record only.
+  //
   // OPTIONAL SECRET — RESEND_API_KEY (ADE Cloud)
   // Sends hours warnings, deletion warnings and owner alerts. Unset, those log
-  // a line and carry on. Recipients come from CLERK_SECRET_KEY above.
+  // `cloud.email_skipped` (reason `no_resend_key`) and carry on. Recipients
+  // come from CLERK_SECRET_KEY above; owner alerts go to CLOUD_ALERT_EMAIL.
+  //
+  // OPTIONAL SECRET — CLOUD_EVENT_WAKE_SECRET (ADE Cloud)
+  // Proves that a call to `/cloud/internal/event-wake` comes from the webhook
+  // relay. Set the SAME value on ade-webhook-relay. Unset, that route answers
+  // 503, and no Linear or webhook delivery wakes a resting computer.
   //
   // SECRETS — STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET (ADE Cloud)
   // The Stripe key that sells the plan, and the `whsec_...` signing secret of the
@@ -44,9 +64,30 @@
   // invoice.paid and invoice.payment_failed. Set out of band. Without them the
   // billing routes answer 503, the webhook answers 503, and no hours are reported.
   //
-  // CLOUD_ACCESS_ACCOUNTS (ADE Cloud, deliberately absent below)
-  // A comma list of Clerk user ids, or `*`. Unset means nobody: every /cloud
-  // route answers 404. The owner's id is set at rollout, out of band.
+  // CLOUD_CREATES_PAUSED (ADE Cloud kill switch, deliberately absent below)
+  // "1" refuses every new computer, copy and launch with a plain message;
+  // existing computers keep working (wakes, moves, chats). Set it out of band
+  // (`wrangler secret put` or a dashboard var) only while it is needed.
+  //
+  // SECRET — CLOUD_OWNER_TOKEN (ADE Cloud owner routes)
+  // 32 random bytes, base64 (`openssl rand -base64 32`). The bearer of
+  // `POST /cloud/owner/block` and `/cloud/owner/unblock` (src/cloud/safety.ts).
+  // Set out of band. Unset, those routes answer 503.
+  //
+  // SECRETS — NOMAC_API_KEY, NOMAC_EMBED_SECRET, NOMAC_WEBHOOK_SECRET (ADE Cloud iPhone)
+  // NoMac's account key (`nmk_…`) runs the account's iOS Simulator
+  // (src/cloud/phones.ts); required, and only this Worker holds it. The
+  // optional embed secret (`nme_…`) signs each view link for the account.
+  // Set both out of band, here and with `--env production`. Apply
+  // migrations/0047_cloud_phone_beta.sql before the Worker that reads it
+  // deploys. Unset NOMAC_API_KEY, the phone reads `off` and answers "not set
+  // up"; without the embed secret a view link is its own permission. The
+  // webhook secret is the one NoMac shows once when the webhook to
+  // /cloud/nomac/webhook is made. Apply migrations/0048_cloud_phone_usage.sql
+  // first too. Vars (here and under env.production): CLOUD_PHONE_ACCESS
+  // (`beta` by default, `all` at launch, `off`), CLOUD_PHONES_PAUSED (`1`
+  // stops new phones), STRIPE_PHONE_MINUTE_PRICE_ID and
+  // STRIPE_PHONE_METER_EVENT (scripts/stripe-setup.mjs prints both).
   //
   // SECRET — CLOUD_CHAT_MASTER_KEY (ADE Cloud, saved chats)
   // 32 random bytes, base64 (`openssl rand -base64 32`). Seals the per-user key
@@ -54,11 +95,29 @@
   // chats unreadable, so it is never rotated in place. Unset, the chat routes
   // answer 503.
   //
+  // SECRET — CLOUD_LAUNCH_JOIN_KEY (ADE Cloud, the server launcher)
+  // 32 random bytes, base64 (`openssl rand -base64 32`). A server launch's join
+  // code is an HMAC under it (src/cloud/launches.ts), so a retried start puts
+  // the same code in the same computer. Set out of band, only in this Worker.
+  // Rotating it is safe for launches already joining (the join checks the
+  // stored hash), and a start retried across a rotation still works.
+  // Unset, `POST /cloud/launches` answers 503.
+  //
   // OPTIONAL SECRETS — CLERK_WEBHOOK_SIGNING_SECRET, POSTHOG_PROJECT_TOKEN
   // `/webhooks/clerk` records one `ade_signed_up` PostHog event per new account
   // (src/signupAnalytics.ts). Create a Clerk webhook for `user.created` and `user.deleted` pointing
   // at https://<this worker>/webhooks/clerk, then set its `whsec_…` signing
   // secret and the public `phc_…` project token. Unset, the route answers 503 (a `user.deleted` needs only the signing secret).
+  //
+  // SECRETS — GITHUB_APP_CLIENT_SECRET, GITHUB_APP_TOKEN_KEY (GitHub App sign-in)
+  // `/github/app/*` (src/githubApp) keeps each account's ADE GitHub App user
+  // token chain and renews it. GITHUB_APP_CLIENT_SECRET is a client secret
+  // generated on the App's settings page; GITHUB_APP_TOKEN_KEY is 32 random
+  // bytes, base64 (`openssl rand -base64 32`), that seals the tokens at rest.
+  // Set both out of band, here and with `--env production`. Rotating the key
+  // makes every stored grant unreadable (each account connects GitHub again).
+  // Unset or malformed, every `/github/app/*` bearer route answers 503
+  // `github_app_not_configured` and nothing else changes.
   "vars": {
     "ONLINE_WINDOW_MS": "150000",
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
@@ -71,7 +130,9 @@
     "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
     // Push relay origin. Removing a machine forwards the removal here so its
     // Activity is purged and it cannot publish again; a machine removal fails
-    // loudly (502) when this is unset or unreachable.
+    // loudly (502) when this is unset or unreachable. A Clerk `user.deleted`
+    // also removes the account's vault and settings there, and answers 502
+    // (so Clerk delivers again) until the relay confirms it.
     //
     // PUSH_RELAY_URL builds the request URL; the `ACTIVITY_RELAY` service
     // binding below carries it. Both are required, and so is
@@ -116,8 +177,38 @@
     // ADE Cloud prices and meter in the Stripe SANDBOX. `scripts/stripe-setup.mjs`
     // creates or finds them and prints these ids.
     "STRIPE_PLAN_PRICE_ID": "price_1UZkLZBsy4QVYccDJhyDhBPZ",
-    "STRIPE_EXTRA_PRICE_ID": "price_1UZkLZBsy4QVYccDDwJ33ruZ",
-    "STRIPE_METER_EVENT": "ade_cloud_small_hours"
+    // The first extra-hours price (1 cent, 0.85 after 1,000), on the "Extra
+    // hours" product. Subscriptions bought before Cloud 7 keep it until their
+    // next renewal or plan change. Read before the older STRIPE_EXTRA_PRICE_ID.
+    "STRIPE_EXTRA_HOURS_PRICE_ID": "price_1UadQVBsy4QVYccDnPEBOIkW",
+    // Each plan's own extra-hours price (Cloud 7, 2026-11-13): 2, 1.5 and 1.2
+    // cents an hour, all on the one hours meter.
+    "STRIPE_EXTRA_HOURS_PLUS_PRICE_ID": "price_1UbECABsy4QVYccDEYv5HvpZ",
+    "STRIPE_EXTRA_HOURS_PRO_PRICE_ID": "price_1UePypBsy4QVYccDbWcSwkUd",
+    "STRIPE_EXTRA_HOURS_MAX_PRICE_ID": "price_1UePypBsy4QVYccDO3bAKveb",
+    // Extra-hours prices a plan no longer sells: subscriptions holding one keep
+    // it until their renewal moves it to the plan's price. Pro's and Max's
+    // Cloud 7 prices, which the Pricing v2 rerun of stripe-setup replaces; add
+    // each id a later rerun replaces.
+    "STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS": "price_1UbECABsy4QVYccDRUVKf1y7,price_1UbECABsy4QVYccD0aD7kNA5",
+    "STRIPE_METER_EVENT": "ade_cloud_small_hours",
+    // Pro, Max, extra disk ($2 per 10 GB a month, its own meter, never the
+    // hours price) and the billing portal setup (card, cancel, invoices).
+    // Same script, same sandbox.
+    "STRIPE_PRO_PRICE_ID": "price_1UaJv6Bsy4QVYccDyUbQTq6x",
+    "STRIPE_MAX_PRICE_ID": "price_1UbEC9Bsy4QVYccD16fLtkI2",
+    "STRIPE_DISK_PRICE_ID": "price_1UbECBBsy4QVYccDXcCUZEYt",
+    "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
+    // Extra ADE Cloud iPhone minutes (2.5 cents a minute, its own meter). Same script, same sandbox.
+    "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1Ud7x8Bsy4QVYccDQcdVWRfk",
+    "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
+    "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD",
+    // The ADE GitHub App's public client id (also a constant in the desktop),
+    // and the two GitHub bases the sign-in calls. The bases are settings so a
+    // local run can point at a fake GitHub; leave them at GitHub's own.
+    "GITHUB_APP_CLIENT_ID": "Iv23liy35Ed4L0oQODtl",
+    "GITHUB_WEB_BASE_URL": "https://github.com",
+    "GITHUB_API_BASE_URL": "https://api.github.com"
   },
   // REQUIRED, not optional. Cloudflare refuses a Worker's fetch to another
   // Worker of the same account through its workers.dev URL (error 1042): the
@@ -153,6 +244,10 @@
   "env": {
     "production": {
       "name": "ade-account-directory-production",
+      // Billing pages (Checkout/portal return) live on a clean ADE address.
+      // ade-app.dev is a Cloudflare zone, so the deploy makes the DNS record
+      // and certificate. The workers.dev URL keeps working.
+      "routes": [{ "pattern": "account.ade-app.dev", "custom_domain": true }],
       // DIRECTORY_AUTH_SECRET is required here too and is set as a secret:
       //   wrangler secret put DIRECTORY_AUTH_SECRET --env production
       "vars": {
@@ -163,6 +258,8 @@
         // every sign-in link is a 404; the deploy preflight checks the page
         // is live (`scripts/verify-deployment-config.mjs`).
         "DEVICE_PAGE_ORIGIN": "https://ade-app.dev",
+        // Where Stripe sends people back after Checkout and the portal.
+        "BILLING_RETURN_ORIGIN": "https://account.ade-app.dev",
         "ONLINE_WINDOW_MS": "150000",
         // Same public DSN as above; vars do not inherit into an environment.
         "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",
@@ -184,10 +281,33 @@
         // secret here too: wrangler secret put MUSICKIT_PRIVATE_KEY --env production
         "MUSICKIT_KEY_ID": "3NNQ5Y43RA",
         "MUSICKIT_TEAM_ID": "VQ372F39G6",
-        "MUSICKIT_TOKEN_TTL_SECONDS": "2592000"
-        // STRIPE_PLAN_PRICE_ID, STRIPE_EXTRA_PRICE_ID and STRIPE_METER_EVENT are
-        // left out until rollout: run `scripts/stripe-setup.mjs` with the live key
-        // and put the ids it prints here. Unset, billing answers 503.
+        "MUSICKIT_TOKEN_TTL_SECONDS": "2592000",
+        // Production bills in LIVE Stripe (the "ADE" account) since Cloud 7,
+        // 2026-11-13. STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+        // STRIPE_PLAN_PRICE_ID (Plus), STRIPE_EXTRA_PRICE_ID and
+        // STRIPE_METER_EVENT are Worker secrets there (never restate one here:
+        // a var and a secret can't share a name). These are the live ids for
+        // Pro, Max, extra hours (the pre-Cloud-7 price and each plan's), extra
+        // disk and the portal, from `scripts/stripe-setup.mjs` run on live.
+        // The sandbox ids stay in the top-level vars for local and staging.
+        "STRIPE_PRO_PRICE_ID": "price_1UaNNMPWulQjqSYP5RzGDNiy",
+        "STRIPE_MAX_PRICE_ID": "price_1UbMTjPWulQjqSYPlV8gvD3N",
+        "STRIPE_EXTRA_HOURS_PRICE_ID": "price_1UaNNNPWulQjqSYPQ2Pz5CXM",
+        "STRIPE_EXTRA_HOURS_PLUS_PRICE_ID": "price_1UbMTjPWulQjqSYPb3jzlykP",
+        "STRIPE_EXTRA_HOURS_PRO_PRICE_ID": "price_1UePyWPWulQjqSYPLOxH5HlB",
+        "STRIPE_EXTRA_HOURS_MAX_PRICE_ID": "price_1UePyXPWulQjqSYPzetEe1Dl",
+        "STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS": "price_1UbMTjPWulQjqSYPROgTWr6C,price_1UbMTkPWulQjqSYPhPcWm3l6",
+        "STRIPE_DISK_PRICE_ID": "price_1UbMTkPWulQjqSYPQYFuKXln",
+        "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
+        "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1UdF4HPWulQjqSYPydFHhXGd",
+        "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
+        "CLOUD_PHONE_ACCESS": "beta",
+        "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaNNNPWulQjqSYPYyVgxCA6",
+        // GitHub App sign-in, restated for the same reason. The two secrets
+        // are set with `wrangler secret put … --env production`.
+        "GITHUB_APP_CLIENT_ID": "Iv23liy35Ed4L0oQODtl",
+        "GITHUB_WEB_BASE_URL": "https://github.com",
+        "GITHUB_API_BASE_URL": "https://api.github.com"
       },
       "services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }],
       "d1_databases": [

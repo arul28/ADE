@@ -6,6 +6,8 @@
  * ever carries a full machine key, a token, or a pairing grant.
  */
 
+import * as Sentry from "@sentry/cloudflare";
+
 const SERVICE = "ade-account-directory";
 
 export function logActivityRelayFailure(args: {
@@ -28,6 +30,12 @@ export function logActivityRelayFailure(args: {
   }));
 }
 
+/** Register refusals that describe the client's state, not a Worker fault. */
+const CLIENT_STATE_REGISTER_REFUSALS: ReadonlySet<string> = new Set([
+  "machine_revoked",
+  "pairing_authentication_required",
+]);
+
 /**
  * One line per refused machine-membership change.
  *
@@ -43,6 +51,14 @@ export function logActivityRelayFailure(args: {
  * grant is a live credential; eight characters identify a row for a human
  * reading logs and are useless to anyone who reads them. Nothing here ever
  * carries a full key, a token, or a grant in any form.
+ *
+ * Workers observability keeps only a sample of requests, so the line alone
+ * can be gone. Each refused register or remove is also a Sentry warning (a
+ * kept duplicate, a removed machine and a re-pair with no fresh sign-in are
+ * only the line, see below), one issue per event and code, with the
+ * correlation id and the prefixes but no account id (the client's own log
+ * holds the same correlation id). The Worker's Sentry budget (`admitEvent`)
+ * bounds a burst.
  */
 export function logDirectoryRefusal(args: {
   event: "directory.register_refused" | "directory.remove_refused" | "directory.supersede_refused";
@@ -65,6 +81,26 @@ export function logDirectoryRefusal(args: {
     correlationId: args.correlationId,
     ...(args.reason ? { reason: args.reason.slice(0, 300) } : {}),
   }));
+  // A kept duplicate is not a refusal: the machine registered, and the line
+  // above answers "why is my Mac listed twice". Registration rides the
+  // heartbeat, so a warning per call made one issue per minute per machine.
+  // The line stays; Sentry gets only the refusals a user is actually stuck
+  // behind.
+  if (args.event === "directory.supersede_refused") return;
+  // A removed machine that keeps registering on its heartbeat, and a re-pair
+  // that has no fresh sign-in yet, are the client's own state: the client
+  // shows "sign in again" and the line above keeps the reason for support.
+  if (args.event === "directory.register_refused" && CLIENT_STATE_REGISTER_REFUSALS.has(args.code)) return;
+  Sentry.captureMessage(`${args.event}: ${args.code}`, {
+    level: "warning",
+    fingerprint: [args.event, args.code],
+    tags: { area: "directory", "refusal.code": args.code, correlation_id: args.correlationId.slice(0, 64) },
+    extra: {
+      machinePrefix: args.machineKey.slice(0, 8),
+      devicePrefix: args.deviceId ? args.deviceId.slice(0, 8) : null,
+      ...(args.reason ? { reason: args.reason.slice(0, 200) } : {}),
+    },
+  });
 }
 
 /**
@@ -277,4 +313,126 @@ export function logDirectoryLifecycle(args: {
     outcome,
     durationMs: Math.max(0, Math.round(args.durationMs)),
   }));
+}
+
+/**
+ * One line per lane share change or refusal (src/laneShares). The grant id is
+ * the address in an invite link, so only its first eight hex characters go
+ * out. Never an email address, a name, a machine key or a token.
+ */
+export function logLaneShare(args: {
+  event:
+    | "lane_share.invited"
+    | "lane_share.refreshed"
+    | "lane_share.accepted"
+    | "lane_share.revoked"
+    | "lane_share.left"
+    | "lane_share.declined"
+    | "lane_share.edited"
+    | "lane_share.moved"
+    | "lane_share.ticket_minted"
+    | "lane_share.ticket_redeemed"
+    | "lane_share.refused";
+  userId: string;
+  grantId?: string;
+  code?: string;
+  emailSent?: boolean;
+}): void {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    event: args.event,
+    userId: args.userId,
+    ...(args.grantId ? { grant: args.grantId.slice(0, 11) } : {}),
+    ...(args.code ? { code: args.code } : {}),
+    ...(args.emailSent === undefined ? {} : { emailSent: args.emailSent }),
+  }));
+}
+
+/**
+ * One line per change to the account's project list, or a refusal
+ * (src/accountProjects). Never a folder path, a repository name or a token:
+ * the project id is random and names nothing.
+ */
+export function logAccountProject(args: {
+  event:
+    | "account_project.added"
+    | "account_project.revived"
+    | "account_project.removed"
+    | "account_project.refused";
+  userId: string;
+  projectId?: string;
+  code?: string;
+}): void {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    event: args.event,
+    userId: args.userId,
+    ...(args.projectId ? { project: args.projectId } : {}),
+    ...(args.code ? { code: args.code } : {}),
+  }));
+}
+
+/**
+ * One line per GitHub App sign-in event (src/githubApp). Events and numbers
+ * only: never a token, a code, a state, a verifier, or the client secret.
+ * `oauthError` is GitHub's short error code (`bad_verification_code`), never
+ * its description.
+ */
+export function logGithubApp(args: {
+  event:
+    | "github_app.sign_in_started"
+    | "github_app.sign_in_completed"
+    | "github_app.sign_in_failed"
+    | "github_app.sign_in_refused"
+    | "github_app.token_served"
+    | "github_app.refreshed"
+    | "github_app.refresh_failed"
+    | "github_app.refresh_unpersisted"
+    | "github_app.refresh_unpersisted_dropped"
+    | "github_app.refresh_replaced"
+    | "github_app.needs_reauth"
+    | "github_app.rejected_checked"
+    | "github_app.adopted"
+    | "github_app.retired"
+    | "github_app.disconnected"
+    | "github_app.keepalive"
+    | "github_app.abandoned_confirms_dropped"
+    | "github_app.account_age_save_failed";
+  userId: string;
+  [field: string]: string | number | boolean | undefined;
+}): void {
+  const { event, userId, ...fields } = args;
+  const line: Record<string, unknown> = { ts: new Date().toISOString(), svc: SERVICE, event, userId };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    line[key] = typeof value === "string" ? value.slice(0, 64) : value;
+  }
+  const failed = event === "github_app.refresh_failed"
+    || event === "github_app.refresh_unpersisted"
+    || event === "github_app.refresh_unpersisted_dropped"
+    || event === "github_app.account_age_save_failed";
+  (failed ? console.error : console.log)(JSON.stringify(line));
+  // Worker logs keep one request in ten, so a failed sign-in can leave no
+  // record of GitHub's reason. Sentry keeps every one. Kind and GitHub's
+  // short code only, never a token, code, state or verifier.
+  if (event === "github_app.sign_in_failed") {
+    const kind = typeof fields.kind === "string" ? fields.kind.slice(0, 64) : "unknown";
+    const oauthError = typeof fields.oauthError === "string" ? fields.oauthError.slice(0, 64) : null;
+    Sentry.captureMessage(`${event}: ${kind}`, {
+      level: "warning",
+      fingerprint: [event, kind, oauthError ?? "none"],
+      tags: {
+        area: "github_app",
+        "github_app.kind": kind,
+        ...(oauthError ? { "github_app.oauth_error": oauthError } : {}),
+        ...(typeof fields.client === "string" ? { "github_app.client": fields.client.slice(0, 16) } : {}),
+      },
+      extra: {
+        ...(typeof fields.attempts === "number" ? { attempts: fields.attempts } : {}),
+        ...(typeof fields.status === "number" ? { status: fields.status } : {}),
+      },
+    });
+  }
 }

@@ -8,6 +8,21 @@ import {
   refreshLinkedPrCoalesced,
   refreshPrsCoalesced,
 } from "./prReadCache";
+import type { OpenProjectBinding } from "../../shared/types";
+
+/** A copy of the project on one machine. */
+function machine(targetId: string, rootPath = "/repo"): OpenProjectBinding {
+  return {
+    kind: "remote",
+    key: `remote:${targetId}:project-1`,
+    targetId,
+    projectId: "project-1",
+    rootPath,
+    displayName: "repo",
+  } as OpenProjectBinding;
+}
+const A = machine("machine-a");
+const B = machine("machine-b");
 
 const listAll = vi.fn();
 const getGitHubSnapshot = vi.fn();
@@ -47,35 +62,38 @@ describe("prReadCache", () => {
       .mockReturnValueOnce(firstRequest.promise)
       .mockResolvedValueOnce([{ id: "pr-2" }]);
 
-    const first = listPrsCoalesced({ projectRoot: "/repo" });
-    const second = listPrsCoalesced({ projectRoot: "/repo" });
+    const first = listPrsCoalesced({ projectRoot: "/repo", pin: A });
+    const second = listPrsCoalesced({ projectRoot: "/repo", pin: A });
 
     expect(listAll).toHaveBeenCalledTimes(1);
     firstRequest.resolve([{ id: "pr-1" }]);
 
     await expect(first).resolves.toEqual([{ id: "pr-1" }]);
     await expect(second).resolves.toEqual([{ id: "pr-1" }]);
-    await expect(listPrsCoalesced({ projectRoot: "/repo" })).resolves.toEqual([{ id: "pr-2" }]);
+    await expect(listPrsCoalesced({ projectRoot: "/repo", pin: A })).resolves.toEqual([{ id: "pr-2" }]);
     expect(listAll).toHaveBeenCalledTimes(2);
   });
 
-  it("does not let two projects share one unpinned in-flight PR read", async () => {
-    // With no pin and no projectRoot, `projectKey` answers the literal
-    // "active", which every project shares. A read still in flight when the
-    // user switched projects was joined by the new project and answered with
-    // the old one's rows. Callers must key by their own root.
-    const projectA = deferred<any[]>();
+  it("never lets two machines share an in-flight PR read, and reads nothing with no machine", async () => {
+    // The same folder on two machines is two databases: a read in flight on
+    // one machine must not answer the other. With no machine online there is
+    // nothing to ask.
+    const onA = deferred<any[]>();
     listAll
-      .mockReturnValueOnce(projectA.promise)
+      .mockReturnValueOnce(onA.promise)
       .mockResolvedValueOnce([{ id: "pr-from-b" }]);
 
-    const a = listPrsCoalesced({ projectRoot: "/repo-a" });
-    const b = listPrsCoalesced({ projectRoot: "/repo-b" });
+    const a = listPrsCoalesced({ projectRoot: "/repo", pin: A });
+    const b = listPrsCoalesced({ projectRoot: "/repo", pin: B });
 
     expect(listAll).toHaveBeenCalledTimes(2);
-    projectA.resolve([{ id: "pr-from-a" }]);
+    expect(listAll.mock.calls.map((call) => call[0]?.key)).toEqual([A.key, B.key]);
+    onA.resolve([{ id: "pr-from-a" }]);
     await expect(a).resolves.toEqual([{ id: "pr-from-a" }]);
     await expect(b).resolves.toEqual([{ id: "pr-from-b" }]);
+
+    await expect(listPrsCoalesced({ projectRoot: "/repo", pin: null })).resolves.toEqual([]);
+    expect(listAll).toHaveBeenCalledTimes(2);
   });
 
   it("keeps each machine's settled PR list to itself and lets a PR event supersede a read in flight", async () => {
@@ -86,13 +104,13 @@ describe("prReadCache", () => {
     listAllConditional
       .mockResolvedValueOnce({ signature: "a1", prs: [{ id: "pr-on-a" }] })
       .mockResolvedValueOnce({ signature: "b1", prs: [{ id: "pr-on-b" }] });
-    await expect(listPrsCached({ projectRoot: "/repo", bindingKey: "machine-a" })).resolves.toEqual([{ id: "pr-on-a" }]);
-    await expect(listPrsCached({ projectRoot: "/repo", bindingKey: "machine-b" })).resolves.toEqual([{ id: "pr-on-b" }]);
+    await expect(listPrsCached({ projectRoot: "/repo", pin: A })).resolves.toEqual([{ id: "pr-on-a" }]);
+    await expect(listPrsCached({ projectRoot: "/repo", pin: B })).resolves.toEqual([{ id: "pr-on-b" }]);
     expect(listAllConditional).toHaveBeenCalledTimes(2);
 
     // A read is under way when a PR event lands. The read after the event
     // does not join it, and the older answer is not kept as fresh.
-    const scope = { projectRoot: "/repo", bindingKey: "machine-a" };
+    const scope = { projectRoot: "/repo", pin: A };
     invalidatePrListCache(scope);
     const beforeEvent = deferred<any>();
     listAllConditional
@@ -115,8 +133,8 @@ describe("prReadCache", () => {
       .mockReturnValueOnce(normal.promise)
       .mockReturnValueOnce(forced.promise);
 
-    const first = getGitHubSnapshotCoalesced({ force: false }, { projectRoot: "/repo" });
-    const second = getGitHubSnapshotCoalesced({ force: true }, { projectRoot: "/repo" });
+    const first = getGitHubSnapshotCoalesced({ force: false }, { projectRoot: "/repo", pin: A });
+    const second = getGitHubSnapshotCoalesced({ force: true }, { projectRoot: "/repo", pin: A });
 
     expect(getGitHubSnapshot).toHaveBeenCalledTimes(2);
     normal.resolve({ repoPullRequests: [], externalPullRequests: [], repo: null, viewerLogin: null, syncedAt: "now" });
@@ -143,10 +161,10 @@ describe("prReadCache", () => {
     const refused = new Error("GitHub auth missing on this machine.");
 
     // The same checkout path on two machines is two credential stores and two
-    // databases; the window's binding is what tells them apart.
-    const first = getGitHubSnapshotCoalesced({}, { projectRoot: "/repo", bindingKey: "remote:env-a:project-1" });
+    // databases; the pin is what tells them apart.
+    const first = getGitHubSnapshotCoalesced({}, { projectRoot: "/repo", pin: A });
     const firstOutcome = expect(first).rejects.toThrow(/auth missing/);
-    const second = getGitHubSnapshotCoalesced({}, { projectRoot: "/repo", bindingKey: "remote:env-b:project-1" });
+    const second = getGitHubSnapshotCoalesced({}, { projectRoot: "/repo", pin: B });
     expect(getGitHubSnapshot).toHaveBeenCalledTimes(2);
 
     rejectA(refused);
@@ -156,12 +174,12 @@ describe("prReadCache", () => {
     // A's refusal is remembered for A alone: B's next automatic read still asks.
     await getGitHubSnapshotCoalesced(
       { automaticRefresh: true },
-      { projectRoot: "/repo", bindingKey: "remote:env-b:project-1" },
+      { projectRoot: "/repo", pin: B },
     );
     expect(getGitHubSnapshot).toHaveBeenCalledTimes(3);
     await expect(getGitHubSnapshotCoalesced(
       { automaticRefresh: true },
-      { projectRoot: "/repo", bindingKey: "remote:env-a:project-1" },
+      { projectRoot: "/repo", pin: A },
     )).rejects.toThrow(/auth missing/);
     expect(getGitHubSnapshot).toHaveBeenCalledTimes(3);
   });
@@ -170,8 +188,8 @@ describe("prReadCache", () => {
     const request = deferred<any[]>();
     refresh.mockReturnValueOnce(request.promise);
 
-    const first = refreshPrsCoalesced({ prIds: ["pr-2", "pr-1"] }, { projectRoot: "/repo" });
-    const second = refreshPrsCoalesced({ prIds: ["pr-1", "pr-2"] }, { projectRoot: "/repo" });
+    const first = refreshPrsCoalesced({ prIds: ["pr-2", "pr-1"] }, { projectRoot: "/repo", pin: A });
+    const second = refreshPrsCoalesced({ prIds: ["pr-1", "pr-2"] }, { projectRoot: "/repo", pin: A });
 
     expect(refresh).toHaveBeenCalledTimes(1);
     request.resolve([{ id: "pr-1" }, { id: "pr-2" }]);
@@ -186,17 +204,17 @@ describe("prReadCache", () => {
     refresh.mockResolvedValueOnce([freshPr]);
 
     await expect(
-      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo", pin: A }),
     ).resolves.toEqual(freshPr);
     await expect(
-      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo", pin: A }),
     ).resolves.toEqual(freshPr);
 
     expect(refresh).toHaveBeenCalledTimes(1);
 
     refresh.mockResolvedValueOnce([{ ...freshPr, title: "forced" }]);
     await expect(
-      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo", force: true }),
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo", pin: A, force: true }),
     ).resolves.toMatchObject({ title: "forced" });
     expect(refresh).toHaveBeenCalledTimes(2);
   });
@@ -206,10 +224,10 @@ describe("prReadCache", () => {
     refresh.mockResolvedValueOnce([]);
 
     await expect(
-      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo", pin: A }),
     ).resolves.toBeNull();
     await expect(
-      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo", pin: A }),
     ).resolves.toBeNull();
 
     expect(refresh).toHaveBeenCalledTimes(1);
@@ -232,10 +250,10 @@ describe("prReadCache", () => {
     refresh.mockResolvedValueOnce([stalePr]);
 
     await expect(
-      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo", pin: A }),
     ).resolves.toEqual(stalePr);
     await expect(
-      refreshLinkedPrCoalesced(fresherPr as any, { projectRoot: "/repo" }),
+      refreshLinkedPrCoalesced(fresherPr as any, { projectRoot: "/repo", pin: A }),
     ).resolves.toEqual(fresherPr);
 
     expect(refresh).toHaveBeenCalledTimes(1);

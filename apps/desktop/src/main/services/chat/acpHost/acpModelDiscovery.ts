@@ -15,7 +15,8 @@
  *   prompt, so it costs no quota, and it closes its session and process.
  * - **Never on the read path.** A catalog read serves what is cached and, when
  *   the cache is older than the TTL, starts one background warm. Warms run one
- *   at a time, so a cold start spawns at most one CLI at once.
+ *   at a time, so a cold start spawns at most one CLI at once, and not in the
+ *   first seconds of a launch (`launchQuiet.ts`).
  * - **A live session is the probe.** A chat that opened refreshed the cache, so
  *   a warm within the TTL finds it fresh and spawns nothing.
  * - **Persistence.** The last good list per provider lives in Electron
@@ -42,10 +43,11 @@ import { acpProbeConfigHome } from "../../ai/acpAuthProbe";
 import { resolveAcpExecutable } from "../../ai/acpExecutables";
 import { pinnedToolNotReadyError } from "../../ai/pinnedProviderTools";
 import { prepareAcpProbeSpawnPlan } from "../../ai/acpProbeSpawnPlan";
-import { createAcpConnection, initializeAcpConnection } from "./acpConnection";
+import { ACP_HANDSHAKE_TIMEOUT_MS, createAcpConnection, initializeAcpConnection } from "./acpConnection";
 import { acpDialectFor } from "./acpDialects";
 import { ACP_EFFORT_LADDER } from "./acpDialects/shared";
 import { resolveAdeCacheFile } from "../../shared/adeCacheFile";
+import { runAfterLaunchQuiet } from "../../shared/launchQuiet";
 import { writeTextAtomic } from "../../shared/utils";
 import { createFailureBackoff, type FailureBackoff } from "../../../../shared/failureBackoff";
 import {
@@ -64,6 +66,12 @@ const CATALOG_TTL_MS = 6 * 60 * 60_000;
  */
 const RETRY_AFTER_FAILURE_MS = 5 * 60_000;
 const PROBE_TIMEOUT_MS = 20_000;
+/**
+ * `initialize` waits as long as a chat's does: a cold start (an agent that
+ * unpacks itself, a Windows virus scan of a fresh Node) took longer than 20 s
+ * on real machines, and each such miss backed the list off for minutes.
+ */
+const PROBE_INITIALIZE_TIMEOUT_MS = ACP_HANDSHAKE_TIMEOUT_MS;
 const CACHE_FILE_VERSION = 1;
 /** A chat re-reporting the same list rewrites the file at most this often. */
 const SESSION_REWRITE_MIN_MS = 30 * 60_000;
@@ -260,7 +268,7 @@ async function probeAcpModels(provider: Exclude<AcpModelProviderGroup, "devin">,
   }));
   const connection = createAcpConnection({ dialect, spawnPlan });
   try {
-    const init = await initializeAcpConnection({ connection, dialect, timeoutMs: PROBE_TIMEOUT_MS });
+    const init = await initializeAcpConnection({ connection, dialect, timeoutMs: PROBE_INITIALIZE_TIMEOUT_MS });
     const created = await connection.request<Record<string, unknown>>(
       ACP_METHOD.sessionNew,
       { cwd, mcpServers: [] },
@@ -325,8 +333,10 @@ let queue: Promise<void> = Promise.resolve();
 
 /**
  * Refresh one provider's live list in the background when it is missing or
- * older than the TTL. Call only for a provider whose pinned copy is on this
- * machine and signed in; a missing copy fails the warm (retried later). Never throws, never blocks: the read that calls this serves the cache.
+ * older than the TTL. Call for a signed-in provider. Only from ADE's copy
+ * already on this machine: while it is not here yet (it downloads on first
+ * use) this does nothing and counts no failure. Never throws, never blocks:
+ * the read that calls this serves the cache.
  */
 export function warmAcpModelCatalog(
   provider: AcpModelProviderGroup,
@@ -338,8 +348,21 @@ export function warmAcpModelCatalog(
   if (inFlight.has(provider)) return;
   if (!providerFailureBackoff(provider).canAttempt()) return;
   if (Date.now() - (lastEmptyAt.get(provider) ?? 0) < CATALOG_TTL_MS) return;
+  // A model list read never downloads an agent; the curated rows stand in until it is here.
+  let onDisk = false;
+  try {
+    onDisk = resolveAcpExecutable(provider, { env: options?.env ?? process.env }).source !== "fallback-command";
+  } catch (error) {
+    options?.logger?.warn?.("ai.acp_model_discovery.resolve_failed", {
+      provider,
+      error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+    });
+  }
+  if (!onDisk) return;
   inFlight.add(provider);
-  queue = queue.then(async () => {
+  // One warm at a time, and none in the first seconds of a launch: each one
+  // starts the provider's CLI (`launchQuiet.ts`).
+  queue = queue.then(() => runAfterLaunchQuiet(async () => {
     // A chat may have refreshed the list while this warm waited its turn.
     const latest = readFile().providers[provider];
     if (latest && Date.now() - latest.savedAt < CATALOG_TTL_MS) return;
@@ -364,7 +387,7 @@ export function warmAcpModelCatalog(
         error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
       });
     }
-  }).finally(() => {
+  })).finally(() => {
     inFlight.delete(provider);
   });
 }

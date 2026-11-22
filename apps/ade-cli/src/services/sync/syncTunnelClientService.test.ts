@@ -505,6 +505,14 @@ describe("createSyncTunnelClientService", () => {
     let relayEnabled = true;
     let connections = 0;
     let closes = 0;
+    // Sign-in, sign-out and the relay setting arrive as events, as in
+    // production; the backstop poll is longer than the 1 s the owner is
+    // promised, so only the event path can meet the relay-off deadline.
+    const eligibilityListeners = new Set<() => void>();
+    const emitEligibilityChange = () => {
+      for (const listener of eligibilityListeners) listener();
+    };
+    let leaseChecks = 0;
     relay.on("connection", (socket) => {
       connections += 1;
       socket.on("close", () => {
@@ -518,10 +526,16 @@ describe("createSyncTunnelClientService", () => {
       getSyncPort: () => 8787,
       getRelayBridgeProof: () => "e".repeat(43),
       isAccountSignedIn: () => signedIn,
-      getAccountLease: async () => signedIn && leaseValid
-        ? { userId: "relay-owner" }
-        : null,
+      getAccountLease: async () => {
+        leaseChecks += 1;
+        return signedIn && leaseValid ? { userId: "relay-owner" } : null;
+      },
       configStore: { ...fakeStore(`http://127.0.0.1:${relayPort}`), isRelayEnabled: () => relayEnabled },
+      subscribeEligibilityChanges: (listener) => {
+        eligibilityListeners.add(listener);
+        return () => eligibilityListeners.delete(listener);
+      },
+      accountStatusPollMs: 2_000,
     });
 
     try {
@@ -534,14 +548,20 @@ describe("createSyncTunnelClientService", () => {
       });
 
       signedIn = true;
+      emitEligibilityChange();
       await vi.waitFor(() => {
         expect(connections).toBe(1);
         expect(service.getStatus().connected).toBe(true);
       }, { timeout: 3_000 });
 
       // The owner turns ADE Relay off: the live control socket closes, the
-      // status says why, and no redial happens while it stays off.
+      // status says why, within a second, and no redial happens while it
+      // stays off. It turns off just after a backstop poll, so the next poll
+      // is about 2 s away and cannot be what closes it.
+      const checksBefore = leaseChecks;
+      await vi.waitFor(() => expect(leaseChecks).toBeGreaterThan(checksBefore), { timeout: 3_000 });
       relayEnabled = false;
+      emitEligibilityChange();
       await vi.waitFor(() => {
         expect(closes).toBe(1);
         expect(service.getStatus()).toMatchObject({
@@ -550,16 +570,18 @@ describe("createSyncTunnelClientService", () => {
           relayTurnedOff: true,
           lastError: "ADE Relay is turned off on this computer.",
         });
-      }, { timeout: 3_000 });
+      }, { timeout: 1_000 });
       expect(connections).toBe(1);
 
       // Exactly one more dial: none happened while it was off.
       relayEnabled = true;
+      emitEligibilityChange();
       await vi.waitFor(() => {
         expect(connections).toBe(2);
         expect(service.getStatus()).toMatchObject({ connected: true, relayTurnedOff: false });
       }, { timeout: 3_000 });
 
+      // A lost lease has no event: the backstop poll finds it.
       leaseValid = false;
       await vi.waitFor(() => {
         expect(service.getStatus()).toMatchObject({
@@ -2430,6 +2452,93 @@ describe("createSyncTunnelClientService", () => {
       expect(service.getStatus()).toMatchObject({
         connected: true,
         relayBridgeValidated: true,
+      });
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await listener.close();
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  // The relay must not depend on 127.0.0.1:<port>: a `wrangler dev` holding
+  // that address once cut every phone off a Mac. With the shared listener
+  // attached, each pipe is handed to the host in process; the loopback port is
+  // never probed or dialed, and traffic flows both ways.
+  it("hands relay pipes to the attached listener in process while another program holds its loopback port", async () => {
+    let loopbackIsAde = true;
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      inspectPort: (port) => ({ port, holders: [] }),
+      loopbackProbe: async (port, expectedNonce) => ({
+        ok: loopbackIsAde,
+        port,
+        statusCode: loopbackIsAde ? 426 : 404,
+        statusMessage: loopbackIsAde ? "Upgrade Required" : "Not Found",
+        markerValue: loopbackIsAde ? expectedNonce : null,
+        checkedAt: new Date().toISOString(),
+        reason: loopbackIsAde ? null : `Expected ADE 426 Upgrade Required on 127.0.0.1:${port}, received 404 Not Found.`,
+      }),
+    });
+    const hostReceived: string[] = [];
+    const hostOrigins: string[] = [];
+    listener.setConnectionHandler((connection) => {
+      hostOrigins.push(connection.transportOrigin);
+      connection.ws.on("message", (raw) => {
+        hostReceived.push(raw.toString());
+        connection.ws.send(`host:${raw.toString()}`);
+      });
+    });
+    await listener.ensureListening([0]);
+    loopbackIsAde = false;
+    await listener.revalidateLoopback().catch(() => {});
+    expect(listener.getLoopbackValidationStatus().loopbackAdeValidated).toBe(false);
+
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const address = relay.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    const controlMessages: Array<Record<string, unknown>> = [];
+    const phoneReceived: string[] = [];
+    let connectionCount = 0;
+    relay.on("connection", (socket, request) => {
+      connectionCount += 1;
+      if (connectionCount === 1) {
+        socket.on("message", (raw) => {
+          controlMessages.push(JSON.parse(raw.toString()) as Record<string, unknown>);
+        });
+        socket.send(epochOpen(request.url, "abcdef01"));
+        return;
+      }
+      // The pipe: stands in for the phone end of the relay.
+      socket.on("message", (raw) => phoneReceived.push(raw.toString()));
+      socket.send("hello-from-phone");
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const tunnelLoopbackProbe = vi.fn();
+    const service = createSyncTunnelClientService({
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+      loopbackProbe: tunnelLoopbackProbe,
+    });
+    service.attachHostListener(listener);
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(controlMessages).toContainEqual(expect.objectContaining({ t: "ready", id: "abcdef01" }));
+        expect(hostReceived).toEqual(["hello-from-phone"]);
+        expect(phoneReceived).toEqual(["host:hello-from-phone"]);
+      });
+      expect(hostOrigins).toEqual(["relay-bridge"]);
+      expect(tunnelLoopbackProbe).not.toHaveBeenCalled();
+      expect(service.getStatus()).toMatchObject({
+        connected: true,
+        relayBridgeValidated: true,
+        activeTunnels: 1,
       });
     } finally {
       await service.dispose();

@@ -5,7 +5,7 @@ import type { ProjectHealthIssue, ProjectHealthReport } from "../../../../shared
 import type { UsageSnapshot } from "../../../../shared/types/usage";
 import type { AiProviderConnectionStatus } from "../../../../shared/types/config";
 import { isBackgroundItemBlocked } from "../../../../shared/types/core";
-import { cloudMachineResting } from "../../../../shared/adeCloud";
+import { cloudMachineResting, selfUpdatingCloudMachineKeys } from "../../../../shared/adeCloud";
 import { adeCloudEnabled } from "../../../state/cloudAccess";
 import type { AiConfig } from "../../../../shared/types/config";
 import type { ProviderInstance } from "../../../../shared/types/providerInstances";
@@ -21,10 +21,14 @@ import {
   machinesBehindOnTheirTrack,
 } from "../../remoteTargets/remoteMachineModel";
 import { cloudBoxForMachine } from "../../remoteTargets/cloudMachineModel";
+import { readSelfUpdatingCloudKeys, withoutSelfUpdatingCloud } from "../../remoteTargets/machineUpdates";
+import { watchedCloudMachines } from "../../remoteTargets/useCloudMachines";
 import { missingMcpSecrets } from "../mcp/useMcpRegistry";
 import { settingsRouteFor } from "../settingsManifest";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { isDegradedSyncSnapshot } from "../../../lib/localSyncStatusReader";
+import type { OpenProjectBinding } from "../../../../shared/types";
+import { onlineCopyPin, settingsCopyScope, useProjectCopyPage, useThisComputerCopyPin } from "../ProjectCopyScope";
 
 /**
  * Settings → General's "Needs attention": every problem ADE can see, from
@@ -348,6 +352,38 @@ async function restingCloudItemIds(snapshot: ConnectionSnapshot | null): Promise
     .map((connection) => machineItemId(connection.target.id)));
 }
 
+/**
+ * "N machines run an older ADE", on each machine's own track only (a Stable
+ * machine is not "older" than this computer's Beta). A cloud computer that
+ * updates itself (`selfUpdating`, its machine key) is never in it.
+ */
+function machinesBehindItem(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null, selfUpdating: ReadonlySet<string>): AttentionItem | null {
+  if (!snapshot) return null;
+  const behind = withoutSelfUpdatingCloud(machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), knownAdeVersions(update)), selfUpdating);
+  if (behind.length === 0) return null;
+  return {
+    id: MACHINES_BEHIND_ITEM_ID,
+    severity: "note",
+    title: behind.length === 1 ? `${behind[0]!.name} runs an older ADE` : `${behind.length} machines run an older ADE`,
+    detail: behind.map((machine) => `${machine.name}: ${machine.versionLabel ?? machine.version ?? "unknown"}`).join(", "),
+    where: behind.length === 1 ? behind[0]!.name : "Your computers",
+    route: settingsRouteFor("general.update-other-machines"),
+  };
+}
+
+const MACHINES_BEHIND_ITEM_ID = "machines-behind";
+
+/**
+ * The behind item again once the account's cloud list says which computers
+ * update themselves. Undefined when nothing changes (no item, or no cloud
+ * computer among the behind ones). Never rejects.
+ */
+async function machinesBehindWithCloud(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null): Promise<AttentionItem | null | undefined> {
+  if (!machinesBehindItem(snapshot, update, new Set())) return undefined;
+  const keys = await readSelfUpdatingCloudKeys();
+  return keys.size === 0 ? undefined : machinesBehindItem(snapshot, update, keys);
+}
+
 function machineItems(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null): AttentionItem[] {
   if (!snapshot) return [];
   const items: AttentionItem[] = [];
@@ -361,19 +397,10 @@ function machineItems(snapshot: ConnectionSnapshot | null, update: AutoUpdateSna
       route: settingsRouteFor("account.computers"),
     });
   }
-  // Behind on its own track only: a Stable machine is not "older" than this
-  // computer's Beta.
-  const behind = machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), knownAdeVersions(update));
-  if (behind.length > 0) {
-    items.push({
-      id: "machines-behind",
-      severity: "note",
-      title: behind.length === 1 ? `${behind[0]!.name} runs an older ADE` : `${behind.length} machines run an older ADE`,
-      detail: behind.map((machine) => `${machine.name}: ${machine.versionLabel ?? machine.version ?? "unknown"}`).join(", "),
-      where: behind.length === 1 ? behind[0]!.name : "Your computers",
-      route: settingsRouteFor("general.update-other-machines"),
-    });
-  }
+  // The cloud list already in memory, if a surface read it; the full read
+  // after the list is on screen corrects it (`machinesBehindWithCloud`).
+  const behind = machinesBehindItem(snapshot, update, selfUpdatingCloudMachineKeys(watchedCloudMachines()));
+  if (behind) items.push(behind);
   return items;
 }
 
@@ -487,11 +514,12 @@ async function mcpItems(): Promise<AttentionItem[]> {
   return items;
 }
 
-async function integrationItems(hasProject: boolean, failed?: string[]): Promise<AttentionItem[]> {
-  if (!hasProject) return [];
+/** `pin`: the copy Settings › Integrations shows, so a row agrees with the page it opens. */
+async function integrationItems(pin: OpenProjectBinding | null, failed?: string[]): Promise<AttentionItem[]> {
+  if (!pin) return [];
   const [linear, jira] = await Promise.all([
-    quiet(window.ade.cto?.getLinearConnectionStatus ? () => window.ade.cto!.getLinearConnectionStatus() : null, failed, "Linear"),
-    quiet(() => window.ade.jira.getConnectionStatus(), failed, "Jira"),
+    quiet(window.ade.cto?.getLinearConnectionStatus ? () => window.ade.cto!.getLinearConnectionStatus(pin) : null, failed, "Linear"),
+    quiet(() => window.ade.jira.getConnectionStatus(pin), failed, "Jira"),
   ]);
   const items: AttentionItem[] = [];
   if (linear && linear.tokenStored && !linear.connected) {
@@ -557,7 +585,26 @@ export function attentionAgentPrompt(items: readonly AttentionItem[], projectRoo
   ].join("\n");
 }
 
+/**
+ * What Settings › General lists. Project rows read the copy each project page
+ * shows (Location for the checks and provider settings, Integrations for the
+ * connections), so a row and the page it opens agree. Provider rows read this
+ * computer's copy when it has one, the machine General is about.
+ */
 export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
+  // Only a copy whose computer is online: an offline one is not called.
+  const locationPin = onlineCopyPin(useProjectCopyPage(settingsCopyScope("location"), hasProject));
+  const integrationsPin = onlineCopyPin(useProjectCopyPage(settingsCopyScope("integrations"), hasProject));
+  const thisComputerPin = useThisComputerCopyPin(hasProject);
+  const projectPin = hasProject ? locationPin : null;
+  const connectionsPin = hasProject ? integrationsPin : null;
+  // Null (no copy here) keeps the machine-global route for this computer.
+  const providersPin = hasProject ? thisComputerPin : null;
+  const projectKey = projectPin?.key ?? null;
+  const connectionsKey = connectionsPin?.key ?? null;
+  const providersKey = providersPin?.key ?? null;
+  const pinsRef = React.useRef({ projectPin, connectionsPin, providersPin });
+  pinsRef.current = { projectPin, connectionsPin, providersPin };
   const [sources, setSources] = React.useState<OverviewSources>(EMPTY_SOURCES);
   const [items, setItems] = React.useState<AttentionItem[]>([]);
   const [lateItems, setLateItems] = React.useState<AttentionItem[]>([]);
@@ -570,14 +617,15 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     if (opts.force) setChecking(true);
     const ade = window.ade;
     const failed: string[] = [];
+    const { projectPin: reportPin, connectionsPin: githubPin, providersPin: aiPin } = pinsRef.current;
     const [info, update, pressure, runtimeHealth, report, usage, ai, cli, machines, sync, github, projectConfig, providerAccounts] = await Promise.all([
       quiet(() => ade.app.getInfo(), failed, "ADE's service"),
       quiet(ade.updateGetState ? () => ade.updateGetState() : null, failed, "updates"),
       quiet(isAdeAvailable(ade.storage?.getPressure) ? () => ade.storage.getPressure() : null, failed, "disk space"),
       quiet(isAdeAvailable(ade.app?.getRuntimeHealth) ? () => ade.app.getRuntimeHealth() : null, failed, "ADE's service health"),
-      hasProject ? quiet(isAdeAvailable(ade.projectHealth?.getReport) ? () => ade.projectHealth.getReport({ forceRefresh: opts.force }) : null, failed, "this project") : Promise.resolve(null),
+      reportPin ? quiet(isAdeAvailable(ade.projectHealth?.getReport) ? () => ade.projectHealth.getReport({ forceRefresh: opts.force }, reportPin) : null, failed, "this project") : Promise.resolve(null),
       quiet(ade.usage?.getSnapshot ? () => ade.usage.getSnapshot() : null, failed, "usage"),
-      quiet(ade.ai?.getStatus ? () => ade.ai.getStatus() : null, failed, "providers"),
+      quiet(ade.ai?.getStatus ? () => ade.ai.getStatus(undefined, aiPin) : null, failed, "providers"),
       quiet(ade.adeCli?.getStatus ? () => ade.adeCli.getStatus() : null, failed, "the ade command"),
       quiet(ade.remoteRuntime?.getConnectionSnapshot ? () => ade.remoteRuntime.getConnectionSnapshot() : null, failed, "other machines"),
       quiet(ade.sync?.getStatus ? async () => {
@@ -586,11 +634,15 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
         if (isDegradedSyncSnapshot(snapshot)) throw new Error(snapshot.degradedReason);
         return snapshot;
       } : null, failed, "sync"),
-      hasProject ? quiet(ade.github?.getStatus ? () => ade.github.getStatus({}) : null, failed, "GitHub") : Promise.resolve(null),
+      githubPin ? quiet(ade.github?.getStatus ? () => ade.github.getStatus({}, githubPin) : null, failed, "GitHub") : Promise.resolve(null),
       // Only for the providers you switched off; without it they show, and the list says it couldn't check.
-      hasProject ? quiet(ade.projectConfig?.get ? () => ade.projectConfig.get() : null, failed, "provider settings") : Promise.resolve(null),
-      // Same machine as `ai.getStatus` (unpinned), so the two describe one provider set.
-      quiet(ade.providerInstances?.list ? () => ade.providerInstances.list() : null, failed, "provider accounts"),
+      reportPin ? quiet(ade.projectConfig?.get ? () => ade.projectConfig.get(reportPin) : null, failed, "provider settings") : Promise.resolve(null),
+      // Same machine as `ai.getStatus`, so the two describe one provider set.
+      // With a project open but no copy on this computer, a call with no pin
+      // would go to the tab's computer, so the accounts are not read.
+      hasProject && !aiPin
+        ? Promise.resolve(null)
+        : quiet(ade.providerInstances?.list ? () => ade.providerInstances.list(undefined, aiPin) : null, failed, "provider accounts"),
     ]);
     if (current !== request.current) return;
     const providers = connectedProviders(ai);
@@ -616,9 +668,17 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       if (current !== request.current || resting.size === 0) return;
       setItems((currentItems) => currentItems.filter((item) => !resting.has(item.id)));
     });
+    // A cloud computer that updates itself never counts as behind.
+    void machinesBehindWithCloud(machines, update).then((behind) => {
+      if (current !== request.current || behind === undefined) return;
+      setItems((currentItems) => [
+        ...currentItems.filter((item) => item.id !== MACHINES_BEHIND_ITEM_ID),
+        ...(behind ? [behind] : []),
+      ]);
+    });
     const late = await Promise.all([
       quiet(mcpItems, failed, "MCP servers"),
-      quiet(() => integrationItems(hasProject, failed), failed, "integrations"),
+      quiet(() => integrationItems(githubPin, failed), failed, "integrations"),
     ]);
     if (current !== request.current) return;
     setLateItems(late.flatMap((entry) => entry ?? []));
@@ -626,7 +686,9 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       ...currentItems.filter((item) => item.id !== "overview-read-failed"),
       ...readFailureItem(failed, () => load({ force: true })),
     ]);
-  }, [hasProject]);
+    // The pins are read from the ref; the keys restart the read when a copy changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasProject, projectKey, connectionsKey, providersKey]);
 
   React.useEffect(() => {
     void load();
@@ -638,5 +700,5 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
   }, []);
 
   const all = React.useMemo(() => sortAttention([...items, ...lateItems]), [items, lateItems]);
-  return { items: all, sources, loading, checking, reload: load, setReport };
+  return { items: all, sources, loading, checking, reload: load, setReport, projectPin };
 }

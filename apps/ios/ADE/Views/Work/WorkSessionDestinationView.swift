@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import AVKit
@@ -241,8 +242,8 @@ func workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: Bool) -> 
 /// The CTO chat (and any other caller passing `showsLaneActions: false`) reuses
 /// this destination with a *synthetic* lane id, so resolving that lane would
 /// hand back the project's primary-lane PR and render it as this chat's badge.
-/// `showsLaneActions` only hides the header menu's PR items, so the lookup and
-/// the composer badge read this policy instead.
+/// `showsLaneActions` turns off every lane-owned surface (PR items and issue
+/// attach); the lookup and the composer badge read this policy instead.
 struct WorkChatLanePrPolicy {
   var showsLaneActions: Bool
 
@@ -260,10 +261,14 @@ struct WorkSessionDestinationView: View {
   /// Observed so a mute toggled anywhere (Work-list row menu, settings) flows
   /// into `headerMenuModel` and re-renders the equatable-gated header menu.
   @ObservedObject private var pushNotificationService = PushNotificationService.shared
+  // The send gate reads the account's access and kept lanes (`cloudNewComputerBlockedReason`).
+  @ObservedObject private var accountCloud = AccountCloudStore.shared
   @Environment(\.dismiss) var dismiss
   @Environment(\.scenePhase) private var scenePhase
   @Environment(\.duoLayout) private var duoLayout
   @Environment(\.duoWorkFamily) private var duoWorkFamily
+  /// Set on the CTO thread only: its calm rendering and its live state.
+  @Environment(\.ctoLiveModel) private var ctoLiveModel
   /// This chat's child chats as the Work list holds them. Chat Info lists a
   /// nested subagent only from here, and opens a child through its lane id.
   @Environment(\.workChatChildRoster) var chatChildRoster
@@ -460,6 +465,9 @@ struct WorkSessionDestinationView: View {
   @State var duoColumnWidth: CGFloat = 0
   @State var chatSummary: AgentChatSessionSummary?
   @State var chatSummaryRefreshGeneration = 0
+  /// The last title another computer's roster gave this chat (see
+  /// `followRemoteRosterTitle`).
+  @State private var remoteRosterTitleSeen: String?
   // Last non-nil summary this mounted instance ever observed. The composer's
   // model-picker + permission-mode row is gated on `summary.isAvailable`, so a
   // momentary nil summary would blank those controls mid-session. This latch
@@ -495,7 +503,9 @@ struct WorkSessionDestinationView: View {
   /// transcript loads.
   @State var postSendRefreshTask: Task<Void, Never>?
   @State private var hubActivationRebindTask: Task<Void, Never>?
-  @State private var chatDestinationVisible = false
+  /// Read by the actions in this file's sibling extension, which must not open
+  /// another chat over a screen the person already left.
+  @State var chatDestinationVisible = false
   @State var optimisticPendingSteers: [WorkPendingSteerModel] = []
   @State var subagentSnapshots: [WorkSubagentSnapshot] = []
   @State var subagentSnapshotsRenderSignature = 0
@@ -503,6 +513,10 @@ struct WorkSessionDestinationView: View {
   @State var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot] = []
   @State var scheduledWorkSnapshotsRenderSignature = 0
   @State var chatInfoPresented = false
+  /// The ADE Cloud iPhone, from the chat's Tools menu.
+  @State var cloudIphonePresented = false
+  /// The GitHub issue picker opened from the composer's Issue context menu.
+  @State var githubIssueAttachPresented = false
   @State var expandedSubagentDetailIds: Set<String> = []
   @State var remoteSubagentRefreshInFlight = false
   /// Central expansion state for every collapsible transcript card. Lives
@@ -584,6 +598,8 @@ struct WorkSessionDestinationView: View {
   @State var composerDraftRestore: WorkChatComposerDraftRestore?
   /// The side-chat panel (`/side`) over this chat, and what it shows.
   @State var sideChatPanelPresented = false
+  /// "Move this lane to", opened from the prompt box's machine label.
+  @State private var laneMoveSheetSource: LaneMoveSource?
   @State var sideChatPanelState: WorkSideChatPanelState = .closed
 
   var initialOpeningPromptNeedsManualRetry: Bool {
@@ -632,6 +648,78 @@ struct WorkSessionDestinationView: View {
       ?? syncService.chatSummaryCache[sessionId]?.title
       ?? syncService.remoteMachineRosterChat(sessionId: sessionId)?.title
       ?? "Session"
+  }
+
+  /// The machine this chat lives on, for the ADE Cloud wake: another
+  /// machine's key, else the focused machine's.
+  /// ADE Cloud's model list while this chat's cloud computer is not awake
+  /// (asleep, waking, deleted); nil for any other machine and an awake one.
+  var restingCloudModelCatalog: CloudModelCatalog? {
+    guard let state = cloudLaneState(fleetKey: sessionCloudMachineKey, sync: syncService, store: AccountCloudStore.shared) else { return nil }
+    if case .awake = state { return nil }
+    return AccountCloudLaunchStore.shared.catalog ?? .pending
+  }
+
+  /// The account machine key this chat's held messages are filed under:
+  /// set only for a chat on an ADE Cloud computer.
+  var cloudQueueAccountKey: String? {
+    guard let fleetKey = sessionCloudMachineKey, syncService.isCloudFleetKey(fleetKey) else { return nil }
+    return syncService.cloudAccountMachineKey(fleetKey: fleetKey)
+  }
+
+  /// The messages ADE Cloud holds for this chat, as its thread draws them,
+  /// less the ones the transcript already shows (no second copy, even for
+  /// the one frame before `retireCloudHeldShownInTranscript` runs). Nil
+  /// when there are none. Every action names the chat's own account key.
+  func cloudHeldThread(frame: ChatThreadFrame?) -> WorkCloudHeldThread? {
+    guard let accountKey = cloudQueueAccountKey else { return nil }
+    let held = accountCloud.threadMessages(machineKey: accountKey, chatId: sessionId)
+    guard !held.isEmpty else { return nil }
+    let shown = cloudHeldMessagesShown(held, in: frame?.transcript ?? [], textMatchedRows: accountCloud.textMatchedTranscriptRows).messageIds
+    // The send's own echo can outlive its removal by a frame (the engine
+    // takes overlays off the main actor): the held copy of the same text
+    // waits until it is gone, so the bubble never shows twice.
+    var echoTexts: [String] = (frame?.snapshot.timeline.suffix(8) ?? []).compactMap { entry in
+      guard entry.id.hasPrefix("echo-"), case .message(let message) = entry.payload else { return nil }
+      return message.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let messages = held.filter { message in
+      guard !shown.contains(message.messageId) else { return false }
+      if let text = nonEmptyTrimmed(message.text), let index = echoTexts.firstIndex(of: text) {
+        echoTexts.remove(at: index)
+        return false
+      }
+      return true
+    }
+    guard !messages.isEmpty else { return nil }
+    let sync = syncService
+    let chatId = sessionId
+    return WorkCloudHeldThread(
+      messages: messages,
+      onCancel: { messageId in
+        let store = AccountCloudStore.shared
+        guard let failure = await store.cancelQueued(machineKey: accountKey, chatId: chatId, messageId: messageId, using: sync) else {
+          return nil
+        }
+        // The computer may have taken it meanwhile: show its state now.
+        await store.reconcile(machineKey: accountKey, chatId: chatId, using: sync)
+        return failure
+      },
+      onPutBack: { message in
+        guard let text = nonEmptyTrimmed(message.text) else { return }
+        composerDraftRestore = WorkChatComposerDraftRestore(text: text)
+        AccountCloudStore.shared.hideFailedMessage(message.messageId)
+      },
+      onDismiss: { messageId in
+        AccountCloudStore.shared.hideFailedMessage(messageId)
+      }
+    )
+  }
+
+  var sessionCloudMachineKey: String? {
+    crossProjectContext?.machineKey
+      ?? syncService.remoteChatMachineKey(sessionId: sessionId)
+      ?? syncService.focusedMachineKey
   }
 
   /// The machine name under the header title: the host this phone is
@@ -705,7 +793,20 @@ struct WorkSessionDestinationView: View {
     session != nil || initialSession != nil
   }
 
+  /// Why a message can't make a new computer for this chat, whose ADE Cloud
+  /// computer was deleted (ADE Cloud refuses work for the account now: read
+  /// only, out of hours); nil when it can, and for every other chat. The
+  /// chat's state line shows the same sentence.
+  var cloudNewComputerBlockedReason: String? {
+    guard !personalChat else { return nil }
+    return cloudLaneNewComputerProblem(fleetKey: sessionCloudMachineKey, sync: syncService, store: accountCloud)
+  }
+
   var canSendChatMessages: Bool {
+    if cloudNewComputerBlockedReason != nil { return false }
+    // A chat on a sleeping ADE Cloud computer: the account holds the send and
+    // wakes the computer, so there is no live link to require.
+    if !personalChat, syncService.chatSendsThroughCloudAccount(sessionId: sessionId) { return true }
     let sendSupported = personalChat
       ? syncService.supportsRemoteAction("personalChats.send")
       : syncService.supportsChatRemoteAction("chat.send", sessionId: sessionId)
@@ -720,7 +821,8 @@ struct WorkSessionDestinationView: View {
   }
 
   var sendWillQueueChatMessage: Bool {
-    workChatSendWillQueueMessage(
+    if !personalChat, syncService.chatSendsThroughCloudAccount(sessionId: sessionId) { return true }
+    return workChatSendWillQueueMessage(
       isLive: isLive,
       hostReachable: hostReachable,
       chatSendQueueable: personalChat
@@ -781,27 +883,30 @@ struct WorkSessionDestinationView: View {
   /// shortcuts when the session is lane-backed.
   @ViewBuilder
   var sessionHeaderTrailingControls: some View {
-    if let session, isChatSession(session) {
-      HStack(spacing: 8) {
+    HStack(spacing: 8) {
+      // An ADE Cloud chat's computer: asleep, waking or awake. Shown before
+      // the chat's row loads too (an asleep chat with nothing cached).
+      CloudLaneHeaderStateButton(fleetKey: sessionCloudMachineKey)
+      if let session, isChatSession(session) {
         if currentSideChatSessionId != nil {
           WorkSideChatHeaderButton { openSideChatPanel() }
         }
         sessionHeaderMenu(session, toolbarLabel: false)
       }
-    } else {
-      EmptyView()
     }
   }
 
   /// The same three parts as the ⋯, as rail buttons (the Duo's outer display).
   @ViewBuilder
   var sessionRailControls: some View {
+    CloudLaneHeaderStateButton(fleetKey: sessionCloudMachineKey, inToolbar: true)
     if let session, isChatSession(session) {
       WorkChatRailButtons(
         model: headerMenuModel(session),
         session: session,
         onShowChatInfo: { showChatInfo() },
         onOpenTool: { openChatTool($0) },
+        onOpenCloudIphone: { cloudIphonePresented = true },
         onCreatePullRequest: { presentCreateLanePr() },
         onOpenLane: { openSessionLane() },
         onRename: { presentSessionRename() },
@@ -821,6 +926,7 @@ struct WorkSessionDestinationView: View {
       session: session,
       onShowChatInfo: { showChatInfo() },
       onOpenTool: { openChatTool($0) },
+      onOpenCloudIphone: { cloudIphonePresented = true },
       onCreatePullRequest: { presentCreateLanePr() },
       onOpenLane: { openSessionLane() },
       onRename: { presentSessionRename() },
@@ -1297,11 +1403,15 @@ struct WorkSessionDestinationView: View {
     return DuoToolTiles(tiles: tiles) { tab in openChatTool(tab) }
   }
 
-  /// The wide column's subtitle: lane · model · machine, the three facts that
-  /// tell two chats with the same title apart.
+  /// The wide column's subtitle: machine · lane · model, the three facts that
+  /// tell two chats with the same title apart. The machine goes first: a
+  /// narrow column (the book pose) cuts the end of the line, and the machine
+  /// is where a message sent here runs, while the model chip in the prompt
+  /// box names the model too.
   private var duoChatSubtitle: String? {
     let current = session ?? initialSession
     var parts: [String] = []
+    if let machine = sessionDestinationNavigationSubtitle { parts.append(machine) }
     // The CTO's lane is a stand-in named "CTO": the title already says it.
     if duoCtoSettings == nil,
        let lane = current?.laneName.trimmingCharacters(in: .whitespacesAndNewlines), !lane.isEmpty {
@@ -1309,7 +1419,6 @@ struct WorkSessionDestinationView: View {
     }
     let model = shortModelLabel(composerChatSummary?.model)
     if !model.isEmpty { parts.append(model) }
-    if let machine = sessionDestinationNavigationSubtitle { parts.append(machine) }
     return parts.isEmpty ? nil : parts.joined(separator: " · ")
   }
 
@@ -1350,6 +1459,7 @@ struct WorkSessionDestinationView: View {
         onToggleSidebar: onDuoToggleSidebar,
         onChatInfo: { showChatInfo() },
         onOpenTool: { openChatTool($0) },
+        onOpenCloudIphone: { cloudIphonePresented = true },
         onCreatePullRequest: { presentCreateLanePr() },
         onOpenLane: { openSessionLane() },
         onRename: { presentSessionRename() },
@@ -1447,13 +1557,16 @@ struct WorkSessionDestinationView: View {
       showsPinAction: !personalChat
         || syncService.canInvokeChatRemoteAction("chat.setPinned", sessionId: session.id),
       showsSessionLink: !personalChat,
-      canAttachIssue: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession"),
       showsRename: !CursorCloudNaming.ownsName(
         composerChatSummary?.cursorCloudAgentId ?? session.cursorCloudAgentId
       ),
       // Optional on mobile: an older host has no restart, and the item hides.
       showsRestartAgent: syncService.supportsChatRemoteAction("chat.restartSession", sessionId: session.id),
       tools: personalChat ? [] : chatToolMenuItems,
+      // Only while the account has the ADE Cloud iPhone on (the account
+      // server's answer): anyone else sees no button at all.
+      showsCloudIphone: !personalChat && AccountCloudStore.shared.account?.phoneOn == true
+        && syncService.supportsChatRemoteAction("cloudPhone.status", sessionId: sessionId),
       hasPullRequest: showsLaneActions && !personalChat && duoHasPullRequest,
       canCreatePullRequest: showsLaneActions && !personalChat && !duoHasPullRequest
         && canCreatePullRequestForHeaderLane,
@@ -1542,6 +1655,11 @@ struct WorkSessionDestinationView: View {
 
   var sessionDestinationZoomTransitionId: String? {
     transitionNamespace == nil ? nil : "work-container-\(sessionId)"
+  }
+
+  /// The chrome this destination draws: the wide column's is the rail around the split.
+  private var sessionChromeMode: WorkSessionNavigationChrome {
+    duoUsesPane || isFullScreenTerminalSession ? .embedded : navigationChrome
   }
 
   /// Terminal sessions render `TerminalSessionScreen`, which brings its own
@@ -1670,9 +1788,30 @@ struct WorkSessionDestinationView: View {
   /// sits, never what it is.
   private var chatColumnPresentations: some View {
     AnyView(sessionDestinationRoot)
+      // A chat on an ADE Cloud computer: its state shows at the top, and an
+      // asleep one reads from the saved copy. Opening it never wakes the
+      // computer; a send does.
+      .showsCloudLaneState(
+        fleetKey: sessionCloudMachineKey,
+        // Asleep and waking show on the header's cloud button. Embedded
+        // chrome (the Duo's split rail, a side chat, a full-screen terminal)
+        // has no header here, so it keeps the lines.
+        restingStateInHeader: sessionChromeMode != .embedded,
+        // A chat with no cached row loaded nothing while the computer slept:
+        // read it now that the computer answers.
+        onAwake: { await loadMissingSessionWhenLive() }
+      )
+      // Messages ADE Cloud holds for this chat until its computer is up:
+      // the thread draws them (`cloudHeldThread`); this follows the queue.
+      .followsCloudQueue(fleetKey: sessionCloudMachineKey, sessionId: sessionId)
+      // The wake can return before this chat's link reads as live.
+      .onChange(of: isLiveAndReachable) { _, live in
+        guard live, session == nil, initialLoadCompleted else { return }
+        Task { await loadMissingSessionWhenLive() }
+      }
       .workSessionNavigationChrome(
         // The wide column's chrome is the rail around the split (`body`).
-        mode: duoUsesPane || isFullScreenTerminalSession ? .embedded : navigationChrome,
+        mode: sessionChromeMode,
         title: sessionDestinationNavigationTitle,
         subtitle: sessionDestinationNavigationSubtitle,
         leadingSymbol: "sidebar.left",
@@ -1701,6 +1840,20 @@ struct WorkSessionDestinationView: View {
           .task {
             await refreshRemoteSubagentSnapshots()
           }
+      }
+      .sheet(isPresented: $githubIssueAttachPresented) {
+        WorkGitHubIssuePickerSheet(syncService: syncService) { issue, repo in
+          githubIssueAttachPresented = false
+          Task { await attachGitHubIssueToChat(issue, repo: repo) }
+        }
+      }
+      .sheet(item: $laneMoveSheetSource) { source in
+        LaneMoveSheet(source: source)
+      }
+      .sheet(isPresented: $cloudIphonePresented) {
+        CloudIphoneSheet(sessionId: sessionId, syncService: syncService)
+          .presentationDetents([.large])
+          .presentationDragIndicator(.visible)
       }
       .sheet(isPresented: $createPrPresented) {
         chatCreatePrWizardSheet
@@ -1746,6 +1899,7 @@ struct WorkSessionDestinationView: View {
       .onAppear {
         ChatOpenCloseTiming.destinationAppeared(sessionId: sessionId)
         chatDestinationVisible = true
+        syncService.noteChatDestinationAppeared(sessionId: sessionId)
         // Install remote routing synchronously with presentation so the first
         // user interaction cannot race the async load task and accidentally
         // fall back to the active project.
@@ -1803,8 +1957,14 @@ struct WorkSessionDestinationView: View {
           openingDeliveryWarning = SyncRequestTimeout.chatSendMessage
         }
         stageInitialOpeningPromptEchoIfNeeded()
+        let wasLiveBeforeLoad = isLiveAndReachable
         await load()
         initialLoadCompleted = true
+        // The computer answered while that load ran (a cloud wake): read the
+        // chat once more instead of showing it as unavailable.
+        if !wasLiveBeforeLoad, session == nil {
+          await loadMissingSessionWhenLive()
+        }
         await sendInitialOpeningPromptIfNeeded()
         refreshChatInfoSnapshots()
         // Remote subagent probing hits the host; skip the eager pass for a
@@ -1924,8 +2084,12 @@ struct WorkSessionDestinationView: View {
       .onChange(of: chatChildRoster) { _, _ in
         refreshSubagentSnapshots()
       }
+      .onReceive(remoteRosterTitlePublisher) { title in
+        followRemoteRosterTitle(title)
+      }
       .onDisappear {
         chatDestinationVisible = false
+        syncService.noteChatDestinationDisappeared(sessionId: sessionId)
         detachThreadModel()
         // The next appearance re-retains the stream (cancelling the delayed
         // unsubscribe scheduled below) and resumes it if it closed.
@@ -1944,6 +2108,10 @@ struct WorkSessionDestinationView: View {
         let wasPersonalChat = personalChat
         if wasCrossProject || wasPersonalChat {
           Task { @MainActor in
+            // The same chat opened again while this screen left (a
+            // notification tap, a Hub cover): that screen owns the stream
+            // and the routing scope now.
+            guard !syncService.chatDestinationIsVisible(sessionId: sessionId) else { return }
             try? await syncService.unsubscribeFromChatEvents(sessionId: sessionId)
             // Preserve routing through the unsubscribe payload, then drop it
             // so a later ordinary project chat with the same id cannot inherit
@@ -1955,7 +2123,9 @@ struct WorkSessionDestinationView: View {
             }
           }
         } else if let currentSession = session ?? initialSession,
-                  isChatSession(currentSession) {
+                  isChatSession(currentSession),
+                  // As above: a screen already showing this chat keeps it.
+                  !syncService.chatDestinationIsVisible(sessionId: sessionId) {
           syncService.scheduleChatEventUnsubscribe(sessionId: sessionId)
         }
       }
@@ -2078,7 +2248,16 @@ struct WorkSessionDestinationView: View {
           .environmentObject(syncService)
       }
     } else {
-      if initialLoadCompleted {
+      if initialLoadCompleted, let held = cloudHeldThread(frame: nil) {
+        // A cloud chat with no cached row yet: its held messages still
+        // show, with their Cancel or Put back, until it loads.
+        WorkChatConnectingFrame(
+          machineName: sessionDestinationNavigationSubtitle,
+          held: held,
+          sessionId: sessionId,
+          unavailableNotice: "This chat loads when its ADE Cloud computer is up."
+        )
+      } else if initialLoadCompleted {
         ADEEmptyStateView(
           symbol: "bubble.left.and.bubble.right",
           title: "Session unavailable",
@@ -2097,9 +2276,45 @@ struct WorkSessionDestinationView: View {
       // Keyed on the engine too: a Hub activation moves the chat to another
       // scope's engine, and the transcript view's scroll state belongs to one.
       duoFixtureChatView(makeWorkChatSessionView(for: session, thread: threadModel))
+        // The prompt box names the computer the chat runs on.
+        .environment(\.workChatComposerMachineName, syncService.chatMachineName(sessionId: sessionId))
+        // The label opens "Move this lane to" when the chat's lane can move.
+        .environment(\.workChatComposerLaneMove, composerLaneMoveAction(for: session))
         .id("main-\(session.id)-\(threadModel.key.description)")
     } else {
       connectingFrame
+    }
+  }
+
+  /// The machine label's move: the chat's lane, from wherever it is. A side
+  /// chat follows its main chat and moves with it, so its label stays a label.
+  private func composerLaneMoveAction(for session: TerminalSessionSummary) -> WorkComposerLaneMoveAction? {
+    guard !isSideChatSurface, !personalChat,
+          nonEmptyTrimmed(chatSummary?.sideChatParentSessionId) == nil,
+          let source = laneMoveSourceForChat(
+            sessionId: session.id,
+            laneId: session.laneId,
+            laneName: session.laneName,
+            surface: chatSummary?.surface,
+            fleetKey: sessionCloudMachineKey,
+            sync: syncService
+          )
+    else { return nil }
+    let sync = syncService
+    let summary = chatSummary
+    // The chat's own machine, not the focused one: a bare lane id would
+    // name the focused computer.
+    let fleetKey = sessionCloudMachineKey
+    return WorkComposerLaneMoveAction(key: "\(session.id)|\(session.laneId)|\(source.kind.rawValue)") {
+      // Read again on the tap: the lane's computer may have woken or gone since.
+      laneMoveSheetSource = laneMoveSourceForChat(
+        sessionId: session.id,
+        laneId: session.laneId,
+        laneName: session.laneName,
+        surface: summary?.surface,
+        fleetKey: fleetKey,
+        sync: sync
+      )
     }
   }
 
@@ -2109,7 +2324,13 @@ struct WorkSessionDestinationView: View {
   /// progress, not a failure, so it never times out. The task is cancelled the
   /// moment the real chat replaces the frame.
   private var connectingFrame: some View {
-    WorkChatConnectingFrame(machineName: sessionDestinationNavigationSubtitle)
+    // No chat view here, so its thread does not draw the held messages:
+    // this frame does, until the chat replaces it.
+    WorkChatConnectingFrame(
+      machineName: sessionDestinationNavigationSubtitle,
+      held: cloudHeldThread(frame: nil),
+      sessionId: sessionId
+    )
       .task(id: sessionId) { await watchChatConnecting() }
   }
 
@@ -2145,6 +2366,11 @@ struct WorkSessionDestinationView: View {
       let ownerKey = syncService.navigationMachineKey(rawMachineKey: nil, sessionId: sessionId)
       if syncService.connectionState == .connected,
          ownerKey == nil || syncService.accountMachineIsFocused(ownerKey) {
+        deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
+      }
+      // An ADE Cloud computer that is waking is progress too: it gets a
+      // fresh window once it answers.
+      if syncService.wakingCloudMachineName(fleetKey: sessionCloudMachineKey) != nil {
         deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
       }
       // Never time out under the Wake & open prompt; give the open a fresh
@@ -2241,7 +2467,12 @@ struct WorkSessionDestinationView: View {
     }
     let resolvedSessionStatus: String? = sessionStatus
     let loadOlderTranscriptAction: (@MainActor () async -> WorkChatOlderHistoryLoadResult)?
-    if isCrossProject && !syncService.supportsSubscribedChatHistory(sessionId: sessionId) {
+    // An ADE Cloud chat whose computer is asleep or deleted pages its saved
+    // copy from the account (`AccountCloudStore.olderSavedPage`), with no
+    // live link and no wake.
+    if isCrossProject
+      && !syncService.supportsSubscribedChatHistory(sessionId: sessionId)
+      && !syncService.chatSendsThroughCloudAccount(sessionId: sessionId) {
       // Older hosts have no scoped transcript-page envelope. Do not fall back
       // to a foreign project command, which would activate its runtime just to
       // read history; the next host upgrade makes the same cached view pageable.
@@ -2334,7 +2565,7 @@ struct WorkSessionDestinationView: View {
     let openSideChatAction: (() -> Void)? = currentSideChatSessionId == nil
       ? nil
       : { openSideChatPanel() }
-    return WorkChatSessionView(
+    var chatView = WorkChatSessionView(
       session: WorkChatSessionRenderContext(session),
       chatSummaryContext: summaryContext,
       thread: thread,
@@ -2382,6 +2613,7 @@ struct WorkSessionDestinationView: View {
       onContinueUsageLimitOnAlternate: continueUsageLimitOnAlternateAction,
       onStopSubagentTask: stopTaskAction,
       onApproveRequest: approveRequest,
+      onImplementPlanInNewChat: implementPlanInNewChat,
       onRespondToQuestion: respondToQuestion,
       onSubmitQuestionAnswers: submitQuestionAnswers,
       onDeclineQuestion: declineQuestion,
@@ -2476,12 +2708,17 @@ struct WorkSessionDestinationView: View {
         : nil,
       transcriptLoadState: transcriptLoadState,
       onRetryTranscript: {
+        // Idempotent: puts back a routing scope lost since the chat opened,
+        // so the retried subscribe names the chat's project again.
+        registerChatCommandScope()
         thread.retry()
       },
       providerSignInAllowed: providerSignInAllowed,
       providerSignInHost: providerSignInHost,
       providerSignInMachineName: providerSignInMachineName,
       providerSignInInstanceId: composerChatSummary?.instanceId,
+      providerSignInIsAdeCloud: providerSignInIsAdeCloud,
+      adeCloudSignInReadHosts: adeCloudSignInReadHosts,
       onTakeOverSubagent: canWriteSpawnKind ? takeOverSubagent : nil,
       onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil,
       threadComments: threadCommentsForView,
@@ -2492,15 +2729,31 @@ struct WorkSessionDestinationView: View {
       duoPane: duoPane,
       duoPaneOpen: duoPaneOpen,
       toolsRelay: toolsRelay,
-      onAttachIssue: personalChat || !syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
+      onAttachIssue: personalChat || isCrossProject || isRemoteMachineChat
+        || !showsLaneActions || sideChatParentSessionId != nil
+        || !syncService.canInvokeChatRemoteAction("lanes.attachLinearIssueToSession", sessionId: session.id)
         ? nil
         : {
           ADEHaptics.light()
           syncService.linearPaneAttachSessionId = session.id
           syncService.linearPanePresented = true
         },
+      onAttachGitHubIssue: personalChat || isCrossProject || isRemoteMachineChat
+        || !showsLaneActions || sideChatParentSessionId != nil
+        || !syncService.canInvokeChatRemoteAction("lanes.attachGitHubIssueToSession", sessionId: session.id)
+        || !syncService.supportsGitHubIssuesPane
+        ? nil
+        : {
+          ADEHaptics.light()
+          githubIssueAttachPresented = true
+        },
       onOpenSideChat: openSideChatAction
     )
+    chatView.ctoLive = ctoLiveModel
+    chatView.cloudHeld = cloudHeldThread(frame: thread.frame)
+    chatView.modelPickerCloudCatalog = restingCloudModelCatalog
+    chatView.sendBlockedReason = cloudNewComputerBlockedReason
+    return chatView
   }
 
   /// Extracted from the `.onChange` modifier: the destination's modifier chain
@@ -2562,6 +2815,18 @@ struct WorkSessionDestinationView: View {
   /// subscribed before this runs. The summary and artifact loads run side by
   /// side instead of in series.
   @MainActor
+  /// Reads a chat that has no session row yet once its computer is live and
+  /// reachable, after any load still running ends.
+  func loadMissingSessionWhenLive() async {
+    // A cross-project quick look reads no session row.
+    guard !isRemoteOnlyChat else { return }
+    while openingLoadInFlight, !Task.isCancelled {
+      try? await Task.sleep(for: .milliseconds(200))
+    }
+    guard !Task.isCancelled, session == nil, isLiveAndReachable else { return }
+    await load()
+  }
+
   func load() async {
     guard !openingLoadInFlight else { return }
     openingLoadInFlight = true
@@ -2638,6 +2903,11 @@ struct WorkSessionDestinationView: View {
     // older cache entry.
     // The brain's explicit clear drops the live record too; a merely absent
     // cached record (an older host) does not.
+    // The machines this chat works on, folded from a live event: the cache is
+    // the newer answer (a fetched summary also lands there).
+    if let cachedRemoteWork = cached.remoteWork, current.remoteWork != cachedRemoteWork {
+      current.remoteWork = cachedRemoteWork
+    }
     if cached.crossMachineHandoff == nil, syncService.crossMachineHandoffClears[sessionId] != nil {
       current.crossMachineHandoff = nil
     } else {
@@ -2649,6 +2919,38 @@ struct WorkSessionDestinationView: View {
     if current != chatSummary {
       chatSummary = current
     }
+  }
+
+  /// A chat on another computer: no event reaches this screen when that
+  /// computer names the chat after its first turn, or renames it. Its roster
+  /// does carry the new title, so a new one reads the summary again.
+  /// This chat's title in another computer's roster. A busy computer
+  /// publishes its roster each second; only a new title reaches the view.
+  private var remoteRosterTitlePublisher: AnyPublisher<String?, Never> {
+    guard let fleet = syncService.machineFleet else { return Just(nil).eraseToAnyPublisher() }
+    let sessionId = sessionId
+    let focusedKey = syncService.focusedMachineKey
+    return fleet.$machines
+      .map { machines -> String? in
+        for machine in machines where machine.machineKey != focusedKey {
+          for project in machine.projects {
+            if let chat = project.chats.first(where: { $0.id == sessionId }) {
+              return chat.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+          }
+        }
+        return nil
+      }
+      .removeDuplicates()
+      .eraseToAnyPublisher()
+  }
+
+  @MainActor
+  private func followRemoteRosterTitle(_ rosterTitle: String?) {
+    guard let rosterTitle, !rosterTitle.isEmpty, rosterTitle != remoteRosterTitleSeen else { return }
+    remoteRosterTitleSeen = rosterTitle
+    guard rosterTitle != chatSummary?.title else { return }
+    Task { await refreshChatSummaryFromHost() }
   }
 
   @MainActor
@@ -2928,6 +3230,9 @@ struct WorkSessionDestinationView: View {
         localEchoMessages.removeAll { $0.id == echo.id }
         errorMessage = "Message not sent — the queue is full. Wait for the current turn to finish, then resend."
         return
+      case .heldByServer:
+        // ADE Cloud holds it: the thread draws the held message as the one copy.
+        localEchoMessages.removeAll { $0.id == echo.id }
       }
       errorMessage = nil
     } catch {
@@ -3277,9 +3582,10 @@ func workChatEmptyThreadAnomaly(
 }
 
 extension WorkSessionDestinationView {
-  /// While the chat is open, look every 10 s for the empty-thread state and
-  /// report it to Sentry once per appearance, with the stream trace that says
-  /// where the history went. Reading a frame costs nothing; the report is rare.
+  /// While the chat is open, look every 10 s for the empty-thread state or an
+  /// unanswered transcript request, and report it to Sentry once per
+  /// appearance with the stream trace that says where the history went.
+  /// Reading a frame costs nothing; the report is rare.
   @MainActor
   func runEmptyThreadProbe() async {
     let openedAt = Date()
@@ -3289,6 +3595,21 @@ extension WorkSessionDestinationView {
       let shown = threadModel.frame
       let latest = await threadModel.engine.currentFrame
       guard !Task.isCancelled, let reference = latest ?? shown else { continue }
+      // The link is up but the machine never answered the transcript request:
+      // the pane shows "Couldn't load the transcript". Nothing else reports it.
+      if isLiveAndReachable, !reference.sessionDeleted, case .failed(let message) = reference.loadState {
+        reportChatStreamAnomaly(
+          domain: "ADE.ChatTranscriptUnanswered",
+          area: "chat.transcript_unanswered",
+          kind: "transcript_unanswered",
+          description: "Chat transcript request went unanswered on a live link",
+          shown: shown,
+          latest: latest,
+          openedAt: openedAt,
+          extra: ["loadFailure": String(message.prefix(160))]
+        )
+        return
+      }
       guard let kind = workChatEmptyThreadAnomaly(
         shownTimelineCount: shown?.presentation.timelineCount ?? 0,
         isStreamingTurn: shown?.isStreamingTurn ?? reference.isStreamingTurn,
@@ -3297,16 +3618,34 @@ extension WorkSessionDestinationView {
         diagnostics: reference.ingestDiagnostics,
         isLiveAndReachable: isLiveAndReachable
       ) else { continue }
-      reportEmptyThread(kind: kind, shown: shown, latest: latest, openedAt: openedAt)
+      reportChatStreamAnomaly(
+        domain: "ADE.ChatEmptyThread",
+        area: "chat.empty_thread.\(kind)",
+        kind: kind,
+        description: "Working chat shows no messages (\(kind))",
+        shown: shown,
+        latest: latest,
+        openedAt: openedAt
+      )
       return
     }
   }
 
   @MainActor
-  private func reportEmptyThread(kind: String, shown: ChatThreadFrame?, latest: ChatThreadFrame?, openedAt: Date) {
+  private func reportChatStreamAnomaly(
+    domain: String,
+    area: String,
+    kind: String,
+    description: String,
+    shown: ChatThreadFrame?,
+    latest: ChatThreadFrame?,
+    openedAt: Date,
+    extra: [String: String] = [:]
+  ) {
     let ingest = (latest ?? shown)?.ingestDiagnostics ?? ChatThreadIngestDiagnostics()
     var context = syncService.chatStreamDiagnostics(sessionId: sessionId)
-    context["area"] = "chat.empty_thread.\(kind)"
+    context.merge(extra) { _, new in new }
+    context["area"] = area
     context["kind"] = kind
     context["sessionId"] = sessionId
     context["machineKey"] = threadKey?.machineKey ?? "nil"
@@ -3343,9 +3682,9 @@ extension WorkSessionDestinationView {
     context["engineAwaitingBoundaryPage"] = String(ingest.awaitingBoundaryPage)
     CrashReporting.capture(
       NSError(
-        domain: "ADE.ChatEmptyThread",
+        domain: domain,
         code: 1,
-        userInfo: [NSLocalizedDescriptionKey: "Working chat shows no messages (\(kind))"]
+        userInfo: [NSLocalizedDescriptionKey: description]
       ),
       context: context
     )
@@ -3543,6 +3882,17 @@ extension WorkSessionDestinationView {
     syncService.subscribeToChatEventsNow(sessionId: sessionId, requestSnapshot: requestSnapshot)
   }
 
+  /// A held message the transcript now shows is the chat's own message:
+  /// the thread stops drawing the held copy, for good. Cheap when nothing
+  /// is held (no account key, or no held message).
+  @MainActor
+  func retireCloudHeldShownInTranscript(_ transcript: [WorkChatEnvelope]) {
+    guard let accountKey = cloudQueueAccountKey else { return }
+    let held = accountCloud.threadMessages(machineKey: accountKey, chatId: sessionId)
+    guard !held.isEmpty else { return }
+    accountCloud.retireFromThread(cloudHeldMessagesShown(held, in: transcript, textMatchedRows: accountCloud.textMatchedTranscriptRows))
+  }
+
   /// Per-frame bookkeeping that needs the transcript: echo and steer
   /// reconciliation (cheap, and guarded on having any), the summary-mode
   /// patch from `session_meta_updated`, and the Chat Info roster (only when an
@@ -3557,6 +3907,7 @@ extension WorkSessionDestinationView {
     if !localEchoMessages.isEmpty {
       reconcileLocalEchoMessages()
     }
+    retireCloudHeldShownInTranscript(transcript)
     if workChatInfoTranscriptShape(transcript) != chatInfoTranscriptShape {
       refreshChatInfoSnapshots()
     }

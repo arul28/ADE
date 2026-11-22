@@ -7,12 +7,19 @@ import type {
   AgentChatSession,
   LaneSummary,
   OpenProjectBinding,
+  RemoteRuntimeConnectionStatus,
+  RemoteRuntimeProjectRecord,
   TerminalSessionSummary,
 } from "../../shared/types";
+import { deriveLaneMachineOptions } from "../components/lanes/laneMachines";
 import { detectPushDivergence } from "../../shared/laneDivergence";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { AppStoreProvider, createProjectAppStore, useAppStore } from "./appStore";
 import { buildAllMachineLanes, buildForeignSessionLanes, createLaneMachineRouter } from "./laneMachineRouting";
+import { rowShowsConnected } from "./cloudRestingRows";
+import { noteCloudLaneMachines } from "./adeCloudLaneIndex";
+import { refreshCloudSavedChats } from "./cloudSavedChatsSync";
+import { useCloudMachines } from "../components/remoteTargets/useCloudMachines";
 import {
   buildCrossMachineLaneRows,
   cancelCrossMachineOptimisticChatSession,
@@ -427,6 +434,42 @@ describe("This computer counterpart resolution", () => {
       displayName: "Repo A",
       gitOriginUrl: "git@github.com:Acme/ADE.git",
     });
+  });
+});
+
+describe("another machine's checkout of the repository", () => {
+  const ORIGIN = "git@github.com:acme/app.git";
+  const record = (projectId: string, extra: Partial<RemoteRuntimeProjectRecord>): RemoteRuntimeProjectRecord => ({
+    projectId,
+    rootPath: `/srv/${projectId}`,
+    displayName: "app",
+    addedAt: 1,
+    lastOpenedAt: 1,
+    gitOriginUrl: null,
+    ...extra,
+  });
+  const studio = (projects: RemoteRuntimeProjectRecord[]) => ({
+    target: { id: "target-studio", name: "Mac Studio", hostname: "studio.local", transport: "paired" },
+    state: "connected",
+    projects,
+  }) as unknown as RemoteRuntimeConnectionStatus;
+
+  it.each([
+    ["the account project id when the origins differ", [record("renamed", { accountProjectId: "ap_1", gitOriginUrl: "git@github.com:acme/app-renamed.git" })], "renamed"],
+    ["the origin when the copy carries no account id", [record("by-origin", { gitOriginUrl: ORIGIN })], "by-origin"],
+    ["a live origin match over a deleted copy that carries the id", [record("gone", { accountProjectId: "ap_1", exists: false }), record("live", { gitOriginUrl: ORIGIN })], "live"],
+  ])("joins on %s", (_label, projects, expectedProjectId) => {
+    const options = deriveLaneMachineOptions({
+      connections: [studio(projects)],
+      boundTargetId: null,
+      repoOriginUrl: ORIGIN,
+      repoAccountProjectId: "ap_1",
+      repoDisplayName: "app",
+    });
+    const option = options.find((entry) => entry.id === "target-studio");
+    expect(option?.repoMatch).toBe("matched");
+    expect(option?.project?.projectId).toBe(expectedProjectId);
+    expect(option?.project?.rootPath).toBe(`/srv/${expectedProjectId}`);
   });
 });
 
@@ -1434,6 +1477,22 @@ describe("foreign payload decoding", () => {
   });
 });
 
+/** One pinned machine read, as the union issues it: which list, with what arguments. */
+type MachineReadRequest = { domain: "lane" | "session" | "pr"; action: string; args?: unknown };
+
+/**
+ * The pinned list reads (`lanes.list`, `sessions.list`, `prs.listAll`) the
+ * union sends with a machine's binding, all answered by one `read`, so a test
+ * counts and answers every machine read in one place.
+ */
+function pinnedMachineReads(read: (request: MachineReadRequest, binding: unknown) => Promise<unknown>) {
+  return {
+    lanes: { list: vi.fn((args: unknown, binding: unknown) => read({ domain: "lane", action: "list", args }, binding)) },
+    sessions: { list: vi.fn((args: unknown, binding: unknown) => read({ domain: "session", action: "list", args }, binding)) },
+    prs: { listAll: vi.fn((binding: unknown) => read({ domain: "pr", action: "listAll" }, binding)) },
+  };
+}
+
 describe("cross-machine refresh scheduling", () => {
   it("reads This computer explicitly while the active tab is bound remotely", async () => {
     vi.useFakeTimers();
@@ -1551,13 +1610,13 @@ describe("cross-machine refresh scheduling", () => {
 
   it("waits for a slow refresh to settle before scheduling the next poll", async () => {
     vi.useFakeTimers();
-    const pending: Array<(value: { result: unknown }) => void> = [];
-    const callAction = vi.fn(
-      () => new Promise<{ result: unknown }>((resolve) => pending.push(resolve)),
+    const pending: Array<(value: unknown) => void> = [];
+    const machineRead = vi.fn(
+      (_request: MachineReadRequest) => new Promise<unknown>((resolve) => pending.push(resolve)),
     );
     window.ade = {
+      ...pinnedMachineReads(machineRead),
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({
           connections: [{
             state: "connected",
@@ -1589,30 +1648,27 @@ describe("cross-machine refresh scheduling", () => {
     // and must be issued in parallel — reading them after the lane read would
     // hold this machine's lanes and chats behind a second 8s timeout and stall
     // every other machine's cadence with it.
-    expect(callAction).toHaveBeenCalledTimes(3);
+    expect(machineRead).toHaveBeenCalledTimes(3);
 
     // The old setInterval path started another generation on its own cadence,
     // invalidating this still-live read. A settled-chain poll must leave it alone
     // for as long as the read's own timeout allows it to run.
     await vi.advanceTimersByTimeAsync(7_500);
-    expect(callAction).toHaveBeenCalledTimes(3);
+    expect(machineRead).toHaveBeenCalledTimes(3);
 
-    pending.splice(0).forEach((resolve, index) => resolve({
-      result: index === 0 ? { lanes: [] } : index === 1 ? { sessions: [] } : { prs: [] },
-    }));
+    pending.splice(0).forEach((resolve) => resolve([]));
     await Promise.resolve();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(9_000);
-    expect(callAction).toHaveBeenCalledTimes(3);
+    expect(machineRead).toHaveBeenCalledTimes(3);
     // The next tick reads chats only: the lane list (and with it the PR list)
     // has its own 30s cadence, and no chat referenced a lane this machine has
     // not already reported.
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(callAction).toHaveBeenCalledTimes(4);
-    expect(callAction).toHaveBeenLastCalledWith(
-      "target-studio",
-      "project-a",
+    expect(machineRead).toHaveBeenCalledTimes(4);
+    expect(machineRead).toHaveBeenLastCalledWith(
       expect.objectContaining({ domain: "session", action: "list" }),
+      expect.objectContaining({ kind: "remote", targetId: "target-studio" }),
     );
 
     stop();
@@ -1624,32 +1680,25 @@ describe("cross-machine refresh scheduling", () => {
       session: (() => void) | null;
       lane: (() => void) | null;
     } = { session: null, lane: null };
-    const callAction = vi.fn(async (
-      _targetId: string,
-      _projectId: string,
-      request: { domain: string; action: string },
-    ) => ({
-      result: request.domain === "lane"
-        ? { lanes: [] }
-        : request.domain === "pr"
-          ? { prs: [] }
-          : { sessions: [] },
-    }));
+    const machineRead = vi.fn(async (_request: MachineReadRequest): Promise<unknown> => []);
+    const reads = pinnedMachineReads(machineRead);
     window.ade = {
+      prs: reads.prs,
       sessions: {
+        ...reads.sessions,
         onChanged: vi.fn((listener: () => void) => {
           emitters.session = listener;
           return () => { emitters.session = null; };
         }),
       },
       lanes: {
+        ...reads.lanes,
         onLifecycleEvent: vi.fn((listener: () => void) => {
           emitters.lane = listener;
           return () => { emitters.lane = null; };
         }),
       },
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({
           connections: [{
             state: "connected",
@@ -1676,17 +1725,17 @@ describe("cross-machine refresh scheduling", () => {
     });
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(400);
-    const initialCallCount = callAction.mock.calls.length;
+    const initialCallCount = machineRead.mock.calls.length;
     expect(initialCallCount).toBe(3);
 
     emitters.session?.();
     emitters.lane?.();
     emitters.session?.();
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(callAction).toHaveBeenCalledTimes(initialCallCount);
+    expect(machineRead).toHaveBeenCalledTimes(initialCallCount);
 
     await vi.advanceTimersByTimeAsync(8_500);
-    expect(callAction.mock.calls.length).toBeGreaterThan(initialCallCount);
+    expect(machineRead.mock.calls.length).toBeGreaterThan(initialCallCount);
 
     stop();
   });
@@ -1695,19 +1744,14 @@ describe("cross-machine refresh scheduling", () => {
     vi.useFakeTimers();
     const requests: Array<{ domain: string; action: string }> = [];
     let sessionLaneId = "lane-known";
-    const callAction = vi.fn(async (
-      _targetId: string,
-      _projectId: string,
-      request: { domain: string; action: string },
-    ) => {
+    const machineRead = vi.fn(async (request: MachineReadRequest): Promise<unknown> => {
       requests.push({ domain: request.domain, action: request.action });
-      return request.domain === "lane"
-        ? { result: { lanes: [{ id: "lane-known", name: "Known", branchRef: "feature/known" }] } }
-        : { result: { sessions: [{ id: "session-1", laneId: sessionLaneId }] } };
+      if (request.domain === "lane") return [{ id: "lane-known", name: "Known", branchRef: "feature/known" }];
+      return request.domain === "pr" ? [] : [{ id: "session-1", laneId: sessionLaneId }];
     });
     window.ade = {
+      ...pinnedMachineReads(machineRead),
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({
           connections: [{
             state: "connected",
@@ -1764,33 +1808,29 @@ describe("cross-machine refresh scheduling", () => {
     vi.useFakeTimers();
     const requests: Array<{ domain: string; action: string }> = [];
     let sessionLaneId = "lane-known";
-    const callAction = vi.fn(async (
-      _targetId: string,
-      _projectId: string,
-      request: { domain: string; action: string },
-    ) => {
+    const machineRead = vi.fn(async (request: MachineReadRequest): Promise<unknown> => {
       requests.push({ domain: request.domain, action: request.action });
       if (request.domain === "lane") {
-        return { result: { lanes: [
+        return [
           { id: "lane-known", name: "Known", branchRef: "feature/known" },
           { id: "lane-brand-new", name: "New", branchRef: "feature/new" },
-        ] } };
+        ];
       }
       if (request.domain === "pr") {
-        return { result: { prs: [{
+        return [{
           id: "pr-foreign",
           laneId: "lane-known",
           headBranch: "feature/known",
           githubPrNumber: 91,
           githubUrl: "https://github.com/acme/repo-a/pull/91",
           state: "open",
-        }] } };
+        }];
       }
-      return { result: { sessions: [{ id: "session-1", laneId: sessionLaneId }] } };
+      return [{ id: "session-1", laneId: sessionLaneId }];
     });
     window.ade = {
+      ...pinnedMachineReads(machineRead),
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({
           connections: [{
             state: "connected",
@@ -1840,22 +1880,18 @@ describe("cross-machine refresh scheduling", () => {
   it("does not let a late catch-up read suppress a new scope's first lane read", async () => {
     vi.useFakeTimers();
     const requests: Array<{ domain: string; action: string }> = [];
-    const pendingLaneReads: Array<(value: { result: unknown }) => void> = [];
+    const pendingLaneReads: Array<(value: unknown) => void> = [];
     let holdLaneReads = false;
     let sessionLaneId = "lane-one";
-    const callAction = vi.fn((
-      _targetId: string,
-      _projectId: string,
-      request: { domain: string; action: string },
-    ) => {
+    const machineRead = vi.fn((request: MachineReadRequest): Promise<unknown> => {
       requests.push({ domain: request.domain, action: request.action });
       if (request.domain === "lane") {
         if (holdLaneReads) {
-          return new Promise<{ result: unknown }>((resolve) => pendingLaneReads.push(resolve));
+          return new Promise<unknown>((resolve) => pendingLaneReads.push(resolve));
         }
-        return Promise.resolve({ result: { lanes: [] } });
+        return Promise.resolve([]);
       }
-      return Promise.resolve({ result: { sessions: [{ id: "session-1", laneId: sessionLaneId }] } });
+      return Promise.resolve(request.domain === "pr" ? [] : [{ id: "session-1", laneId: sessionLaneId }]);
     });
     const connections = [{
       state: "connected",
@@ -1868,8 +1904,8 @@ describe("cross-machine refresh scheduling", () => {
       }],
     }];
     window.ade = {
+      ...pinnedMachineReads(machineRead),
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({ connections, connectedCount: 1 })),
         onConnectionSnapshotChanged: vi.fn(() => () => {}),
       },
@@ -1898,7 +1934,7 @@ describe("cross-machine refresh scheduling", () => {
     const second = startCrossMachineLaneSync({ ...scope, scopeKey: "local:/repo-a-copy" });
     first();
     holdLaneReads = false;
-    pendingLaneReads.splice(0).forEach((resolve) => resolve({ result: { lanes: [] } }));
+    pendingLaneReads.splice(0).forEach((resolve) => resolve([]));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1914,10 +1950,10 @@ describe("cross-machine refresh scheduling", () => {
 
   it("stops polling while the window is hidden and refreshes on the way back", async () => {
     vi.useFakeTimers();
-    const callAction = vi.fn(async () => ({ result: { sessions: [] } }));
+    const machineRead = vi.fn(async (_request: MachineReadRequest): Promise<unknown> => []);
     window.ade = {
+      ...pinnedMachineReads(machineRead),
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({
           connections: [{
             state: "connected",
@@ -1944,16 +1980,16 @@ describe("cross-machine refresh scheduling", () => {
     });
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(400);
-    const whileVisible = callAction.mock.calls.length;
+    const whileVisible = machineRead.mock.calls.length;
     expect(whileVisible).toBeGreaterThan(0);
 
     setDocumentVisibility("hidden");
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(callAction).toHaveBeenCalledTimes(whileVisible);
+    expect(machineRead).toHaveBeenCalledTimes(whileVisible);
 
     setDocumentVisibility("visible");
     await vi.advanceTimersByTimeAsync(400);
-    expect(callAction.mock.calls.length).toBeGreaterThan(whileVisible);
+    expect(machineRead.mock.calls.length).toBeGreaterThan(whileVisible);
 
     stop();
   });
@@ -2078,8 +2114,8 @@ describe("believing a drop before a machine dims", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(isOnline()).toBe(true);
 
-    // 45s after the FIRST drop, not after the latest snapshot.
-    await vi.advanceTimersByTimeAsync(22_100);
+    // 40s after the FIRST drop, not after the latest snapshot.
+    await vi.advanceTimersByTimeAsync(17_100);
     expect(isOnline()).toBe(false);
     // Dimmed, not deleted: the lanes and chats are still there to render.
     expect(entry().lanes).toHaveLength(1);
@@ -2102,14 +2138,14 @@ describe("believing a drop before a machine dims", () => {
     stop();
   });
 
-  it("dims a manually disconnected machine at the floor, with no attempt to wait for", async () => {
+  it("dims an idle machine at the floor, with no attempt to wait for", async () => {
     vi.useFakeTimers();
     const { stop, pushState } = await startSeeded();
 
     // `idle` means nothing is dialing and nothing will start on its own, so
     // waiting for a failed attempt would wait forever.
     pushState("idle");
-    await vi.advanceTimersByTimeAsync(44_000);
+    await vi.advanceTimersByTimeAsync(39_000);
     expect(isOnline()).toBe(true);
     await vi.advanceTimersByTimeAsync(1_500);
     expect(isOnline()).toBe(false);
@@ -2201,7 +2237,7 @@ describe("believing a drop before a machine dims", () => {
       }],
       connectedCount: 1,
     });
-    await vi.advanceTimersByTimeAsync(44_000);
+    await vi.advanceTimersByTimeAsync(39_000);
     expect(isOnline()).toBe(true);
     await vi.advanceTimersByTimeAsync(2_000);
     expect(isOnline()).toBe(false);
@@ -2400,7 +2436,7 @@ describe("believing a drop before a machine dims", () => {
     // A second drop gets a FULL window, not the remainder of the first one.
     pushState("connecting");
     pushState("error");
-    await vi.advanceTimersByTimeAsync(44_000);
+    await vi.advanceTimersByTimeAsync(39_000);
     expect(isOnline()).toBe(true);
     await vi.advanceTimersByTimeAsync(2_000);
     expect(isOnline()).toBe(false);
@@ -2657,9 +2693,16 @@ describe("lane actions resolve against the lane's machine", () => {
     hostname: "studio.local",
   };
 
+  const tabBinding: OpenProjectBinding = {
+    kind: "local",
+    key: "local:/Users/me/repo",
+    rootPath: "/Users/me/repo",
+    displayName: "Repo",
+  };
+
   function routerForForeignLane(bindingOverride: OpenProjectBinding | null) {
     const all = buildAllMachineLanes({
-      activeBinding: null,
+      activeBinding: tabBinding,
       activeLanes: [makeLane({ id: "shared-lane", name: "Local lane" })],
       machines: {
         "target-studio": {
@@ -2689,7 +2732,8 @@ describe("lane actions resolve against the lane's machine", () => {
     const unknownMachine = routable.route("shared-lane", "not-listed");
     const unroutable = routerForForeignLane(null).route("shared-lane", "target-studio");
 
-    expect(local.kind).toBe("bound");
+    // The tab's own lane routes to the tab's copy by its own address.
+    expect(local).toMatchObject({ kind: "pinned", pin: tabBinding, machine: { isActiveBinding: true } });
     expect(foreign).toMatchObject({ kind: "pinned", pin: binding, machine: { machineId: "target-studio" } });
     expect(unknownLane.kind).toBe("unknown");
     expect(unknownMachine.kind).toBe("unknown");
@@ -2734,5 +2778,188 @@ describe("lane actions resolve against the lane's machine", () => {
     expect(laptop?.blockedReason).toMatch(/offline/);
     // A stale slice of the tab's own machine is not a foreign lane.
     expect(bySession.has(THIS_MACHINE_ID)).toBe(false);
+  });
+});
+
+describe("an ADE Cloud lane computer adds no main checkout to the lane lists", () => {
+  afterEach(() => noteCloudLaneMachines([]));
+
+  const lane = (laneId: string) => ({ laneId, laneName: laneId, projectOrigin: "github.com/o/r" });
+  const slice = (machineId: string, hostname: string | null, online: boolean) => ({
+    machineId,
+    machineName: machineId,
+    targetId: machineId.startsWith("cloud-saved:") ? null : machineId,
+    projectId: "proj",
+    binding: {
+      kind: "remote",
+      key: `${machineId}:proj`,
+      targetId: machineId,
+      runtimeName: machineId,
+      projectId: "proj",
+      rootPath: "/repo",
+      displayName: "repo",
+      ...(hostname ? { hostname } : {}),
+    } as OpenProjectBinding,
+    online,
+    // Kept from a read made before the lane index named the computer.
+    lanes: [
+      makeLane({ id: `${machineId}-main`, name: "Primary", laneType: "primary", branchRef: "main" }),
+      makeLane({ id: `${machineId}-lane`, name: "Cloud lane" }),
+    ],
+    sessions: [],
+    prs: [],
+    lastSyncedAtMs: Date.now(),
+    lanesSyncedAtMs: Date.now(),
+    error: null,
+  });
+
+  it.each([
+    { name: "a connected lane computer", slice: slice("target-a", "i-a", true), primaryListed: false },
+    { name: "an asleep lane computer's saved slice", slice: slice("cloud-saved:key-b", null, false), primaryListed: false },
+    { name: "a move's new computer while the old one still holds the lane", slice: slice("target-c-new", "i-c-new", true), primaryListed: false },
+    { name: "an ADE Cloud computer made without a lane", slice: slice("target-d", "i-d", true), primaryListed: true },
+    { name: "another computer of the person's own", slice: slice("target-studio", "studio.local", true), primaryListed: true },
+  ])("$name", ({ slice: entry, primaryListed }) => {
+    noteCloudLaneMachines([
+      { instanceId: "i-a", machineKey: "key-a", state: "running", lane: lane("lane-a") },
+      { instanceId: "i-b", machineKey: "key-b", state: "stopped", lane: lane("lane-b") },
+      { instanceId: "i-c", machineKey: "key-c", state: "stopped", lane: lane("lane-c") },
+      { instanceId: "i-c-new", machineKey: "key-c-new", state: "running", lane: lane("lane-c"), replacesInstanceId: "i-c" },
+      { instanceId: "i-d", machineKey: "key-d", state: "running" },
+    ] as never);
+    const all = buildAllMachineLanes({
+      activeBinding: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" },
+      activeLanes: [makeLane({ id: "local-main", name: "Primary", laneType: "primary", branchRef: "main" })],
+      machines: { [entry.machineId]: entry },
+    });
+    const primaries = all.lanes.filter((row) => row.lane.laneType === "primary").map((row) => row.key);
+    expect(primaries).toEqual(primaryListed ? ["local-main", `${entry.machineId}:${entry.machineId}-main`] : ["local-main"]);
+    // Its lane still lists.
+    expect(all.lanes.some((row) => row.key === `${entry.machineId}:${entry.machineId}-lane`)).toBe(true);
+  });
+});
+
+describe("a chat after its ADE Cloud computer moved", () => {
+  const OLD = "target-old";
+  const NEW = "target-new";
+  const machineKeyOf: Record<string, string> = { [OLD]: "key-old", [NEW]: "key-new" };
+  const bindingOf = (targetId: string) => ({
+    kind: "remote",
+    key: `${targetId}:proj`,
+    targetId,
+    runtimeName: targetId,
+    transport: "paired",
+    projectId: "proj",
+    rootPath: "/repo",
+    displayName: "repo",
+  }) as OpenProjectBinding;
+
+  // The saved copies come from the account's list, the live chat from the
+  // computer that answers; the row that shows the chat is where a send goes.
+  it.each<{
+    name: string;
+    savedOn: Array<[targetId: string, updatedAt: number]>;
+    connected: string[];
+    stillExists: string[];
+    liveOn: string | null;
+    owner: string;
+    savedCopy: boolean;
+    looksConnected: boolean;
+  }>([
+    {
+      name: "the new computer's live chat wins over the old computer's saved copy",
+      savedOn: [[OLD, 1]],
+      connected: [NEW],
+      stillExists: [OLD, NEW],
+      liveOn: NEW,
+      owner: NEW,
+      savedCopy: false,
+      looksConnected: true,
+    },
+    {
+      name: "a saved copy of a computer that exists wins over a newer copy of a deleted one",
+      savedOn: [[OLD, 2], [NEW, 1]],
+      connected: [],
+      stillExists: [NEW],
+      liveOn: null,
+      owner: NEW,
+      savedCopy: true,
+      looksConnected: true,
+    },
+    {
+      name: "a deleted computer's chat stays on it and lists like an asleep one",
+      savedOn: [[OLD, 1]],
+      connected: [],
+      stillExists: [NEW],
+      liveOn: null,
+      owner: OLD,
+      savedCopy: true,
+      looksConnected: true,
+    },
+  ])("$name", async ({ savedOn, connected, stillExists, liveOn, owner, savedCopy, looksConnected }) => {
+    window.ade = {
+      cloud: {
+        onStatusChanged: () => () => undefined,
+        listMachines: async () => ({
+          state: "ok",
+          machines: stillExists.map((id) => ({ machineKey: machineKeyOf[id], instanceId: `i-${id}`, state: "stopped" })),
+        }),
+        savedChats: {
+          list: async () => ({
+            nextCursor: null,
+            chats: savedOn.map(([id, updatedAt]) => ({
+              machineKey: machineKeyOf[id],
+              chatId: "chat-1",
+              instanceId: null,
+              lastSeq: 1,
+              updatedAt,
+              title: "Chat",
+              laneId: "lane-1",
+              laneName: "Lane One",
+              status: null,
+              toolType: "claude-chat",
+              provider: null,
+              model: null,
+              projectKey: "repo-key",
+              projectId: "proj",
+              projectRoot: "/repo",
+              lastActivityAt: null,
+            })),
+          }),
+        },
+      },
+    } as unknown as typeof window.ade;
+    // The old computer is first in the store, so order alone would pick it.
+    for (const id of [OLD, NEW]) {
+      useAppStore.getState().mergeCrossMachineLanes({
+        machineId: id,
+        machineName: id,
+        targetId: id,
+        projectId: "proj",
+        binding: bindingOf(id),
+        online: connected.includes(id),
+        lanes: [makeLane()],
+        sessions: liveOn === id ? [makeSession({ id: "chat-1" })] : [],
+      });
+    }
+    // A surface keeps the account's computer list current while it is open.
+    const watch = renderHook(() => useCloudMachines(true));
+    await act(async () => {});
+    await refreshCloudSavedChats({
+      projectKey: "repo-key",
+      isActive: () => true,
+      connections: [OLD, NEW].map((id) => ({
+        target: { id, name: id, hostname: null, pairedMachine: { machineKey: machineKeyOf[id] } },
+        state: connected.includes(id) ? "connected" : "disconnected",
+        projects: [{ projectId: "proj", rootPath: "/repo", displayName: "repo" }],
+      })) as never,
+    });
+    watch.unmount();
+
+    const rows = buildCrossMachineLaneRows({ localLanes: [], machines: useAppStore.getState().crossMachineLanesByMachineId });
+    const holders = rows.filter((row) => row.sessions.some((session) => session.id === "chat-1"));
+    expect(holders.map((row) => (row.binding?.kind === "remote" ? row.binding.targetId : null))).toEqual([owner]);
+    expect(holders[0]!.sessions.find((session) => session.id === "chat-1")!.cloudSavedCopy === true).toBe(savedCopy);
+    expect(rowShowsConnected(holders[0]!)).toBe(looksConnected);
   });
 });

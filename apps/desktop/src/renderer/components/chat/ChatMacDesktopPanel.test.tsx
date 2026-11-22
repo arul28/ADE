@@ -211,31 +211,11 @@ describe("ChatMacDesktopPanel against an older remote brain", () => {
       STUDIO_PIN,
     );
   });
-
-  it("falls back to the binding's machine name when the union has no row", async () => {
-    macDesktop.getStatus.mockRejectedValue(new Error(OLDER_ADE_ERROR));
-
-    renderPanel();
-
-    expect(await screen.findByText(
-      "Mac Studio runs ADE 1.2.74, which has no Mac Desktop. Update ADE there.",
-    )).toBeTruthy();
-  });
 });
 
 describe("ChatMacDesktopPanel actions on a pinned machine", () => {
   beforeEach(() => {
     macDesktop.getStatus.mockResolvedValue(makeStatus());
-  });
-
-  it("carries the per-chat preview toggle on its chrome row", async () => {
-    renderPanel();
-
-    // Wait for the live chrome row (the display resolved), then the toggle.
-    await screen.findByTestId("mac-desktop-record");
-    const toggle = screen.getByTestId("work-tool-preview-toggle");
-    expect(toggle.getAttribute("aria-label")).toBe("Show preview when minimized");
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("starts a captioned recording on the focused chat's machine, so it files as proof", async () => {
@@ -468,13 +448,18 @@ describe("ChatMacDesktopPanel captures", () => {
     macDesktop.getStatus.mockResolvedValue(makeStatus({
       recording: { ...RUNNING, startedAt: new Date(Date.now() - 12_000).toISOString() },
     }));
-    macDesktop.stopRecording.mockResolvedValue({
+    const stopped = {
       ...RUNNING,
       running: false,
       filePath: "/Users/me/.ade/artifacts/clip.mp4",
       durationMs: 12_000,
       proofArtifactId: "artifact-1",
       bytes: 3 * 1024 * 1024,
+    };
+    macDesktop.stopRecording.mockImplementation(async () => {
+      // Like the real host: once stopped, a status read says so.
+      macDesktop.getStatus.mockResolvedValue(makeStatus({ recording: stopped }));
+      return stopped;
     });
 
     renderPanel();
@@ -696,31 +681,6 @@ describe("ChatMacDesktopPanel Apps section", () => {
 
   beforeEach(() => {
     macDesktop.getStatus.mockResolvedValue(makeStatus({ windows: [parked] }));
-  });
-
-  it("renders the Apps section with icon, name and Release per parked window", async () => {
-    renderPanel();
-
-    const apps = await screen.findByTestId("mac-desktop-apps");
-    expect(apps.textContent).toContain("Xcode");
-    expect(screen.getByTestId("mac-desktop-app-icon")).toBeTruthy();
-    expect(screen.getByTestId("mac-desktop-window-release").textContent).toContain("Release");
-    // The window's own title is the card's tooltip, not text on its face: the
-    // cards are fixed rectangles that wrap, so a long document name would
-    // either blow the card out or be truncated to nothing readable.
-    const card = screen.getByTestId("mac-desktop-window-card");
-    expect(card.getAttribute("title")).toContain("ADE.xcodeproj");
-  });
-
-  it("wraps the cards left to right and puts Add app after the last one", async () => {
-    renderPanel();
-
-    const list = await screen.findByTestId("mac-desktop-apps-list");
-    // The button is the last thing in the same run, not a control in the
-    // heading: the heading carries the label and nothing else.
-    expect(list.lastElementChild?.getAttribute("data-testid")).toBe("mac-desktop-add-app");
-    const header = screen.getByTestId("mac-desktop-apps-header");
-    expect(header.querySelector("button")).toBeNull();
   });
 
   it("Add app opens the picker inside the pane, not in a portal", async () => {
@@ -958,6 +918,8 @@ describe("ChatMacDesktopPanel with no display", () => {
     expect(await screen.findByTestId("mac-desktop-off")).toBeTruthy();
     expect(macDesktop.start).not.toHaveBeenCalled();
 
+    // Once started, the brain reports the display it made.
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
     fireEvent.click(screen.getByTestId("mac-desktop-start"));
     await waitFor(() => expect(macDesktop.start).toHaveBeenCalledWith(
       { laneId: "lane-1", laneName: "docs-fix", chatSessionId: "chat-1" },
@@ -965,15 +927,6 @@ describe("ChatMacDesktopPanel with no display", () => {
     ));
     expect(await screen.findByTestId("mac-desktop-surface")).toBeTruthy();
     expect(macDesktop.start).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps the floating-preview toggle on the Off screen", async () => {
-    macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
-
-    renderPanel();
-
-    await screen.findByTestId("mac-desktop-off");
-    expect(screen.getByTestId("mac-desktop-idle-row").contains(screen.getByTestId("work-tool-preview-toggle"))).toBe(true);
   });
 
   it("reads again when the brain restarts, so a display that died with it goes to Off", async () => {

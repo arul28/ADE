@@ -83,6 +83,30 @@ struct WorkToolsSheet: View {
   @State private var closedTabIds: Set<String> = []
   @State private var tabCloseError: String?
 
+  @Environment(\.scenePhase) private var scenePhase
+  /// The tab the person tapped to watch. Nil follows the agent, then the
+  /// active tab; see `liveTabId`.
+  @State private var watchedTabId: String?
+  /// Newest live picture of `liveFrameTabId`, from `workTools.readBrowserTabFrame`.
+  /// Nil until the first frame arrives and again once frames stop for
+  /// `liveFrameStaleAfter`, which brings the last-observation card back.
+  @State private var liveFrame: UIImage?
+  @State private var liveFrameTabId: String?
+  @State private var liveFrameInfo: WorkToolsBrowserTabFrame?
+  /// "Take control" is on: taps, drags and typing go to the tab.
+  @State private var browserInControl = false
+
+  /// Live frame cadence. One request is in flight at a time, so a slow link
+  /// simply gets fewer frames.
+  private static let liveFrameInterval: Duration = .milliseconds(300)
+  /// After a failed read, wait this long before asking again.
+  private static let liveFrameRetryDelay: Duration = .seconds(1)
+  /// No frame for this long and the card falls back to the last observation.
+  private static let liveFrameStaleAfter: TimeInterval = 5
+  /// Width asked of the desktop. Enough for a phone screen at 3x on a card,
+  /// small enough to keep each frame a modest JPEG.
+  private static let liveFrameMaxWidth = 1_000
+
   /// How long a closed tab can be taken back before the close is sent.
   private static let closeUndoWindow: Duration = .seconds(5)
 
@@ -96,7 +120,25 @@ struct WorkToolsSheet: View {
   var previewAllowsTabClose = false
   /// Opens with this tab's close already waiting on Undo.
   var previewPendingCloseTabId: String?
+  /// Shows `previewFrame` as the live picture, with Take control.
+  var previewLiveBrowser = false
   #endif
+
+  /// The host serves live frames of a browser tab.
+  private var supportsLiveBrowser: Bool {
+    #if DEBUG
+    if previewLiveBrowser { return true }
+    #endif
+    return syncService.supportsWorkToolsBrowserTabFrame(laneId: laneId)
+  }
+
+  /// The host lets this phone click and type into a browser tab.
+  private var canControlBrowser: Bool {
+    #if DEBUG
+    if previewLiveBrowser { return true }
+    #endif
+    return syncService.supportsWorkToolsBrowserTabInput(laneId: laneId)
+  }
 
   /// The fixture holds Undo longer so a slow driven capture can still see it.
   private var undoWindow: Duration {
@@ -135,6 +177,10 @@ struct WorkToolsSheet: View {
     .onChange(of: appControlViewerPresented) { _, presented in
       if !presented { Task { await refresh() } }
     }
+    // Live frames only while the browser sheet is on screen and the app is in
+    // front: leaving either changes the key, which cancels the poll.
+    .task(id: livePollKey) { await pollLiveFrames() }
+    .onChange(of: liveTabId) { _, _ in browserInControl = false }
     .onDisappear { sendPendingTabClosesNow(laneId: laneId) }
     .onChange(of: laneId) { previousLaneId, _ in
       // Closes waiting on the old lane go out for that lane; its hidden rows
@@ -214,7 +260,19 @@ struct WorkToolsSheet: View {
         switch tool {
         case .browser:
           browserCard
-          lastFrameCard
+          if let liveFrame, liveFrameTabId == liveTabId, let tabId = liveTabId {
+            WorkToolsBrowserLiveCard(
+              image: liveFrame,
+              title: liveFrameInfo?.title ?? visibleTabs.first { $0.id == tabId }?.title,
+              url: liveFrameInfo?.url ?? visibleTabs.first { $0.id == tabId }?.url,
+              isLoading: liveFrameInfo?.isLoading == true,
+              canControl: canControlBrowser,
+              inControl: $browserInControl,
+              send: { event in sendBrowserInput(event, tabId: tabId) }
+            )
+          } else {
+            lastFrameCard
+          }
         case .appControl:
           AppControlCard(
             laneId: laneId,
@@ -235,9 +293,7 @@ struct WorkToolsSheet: View {
           )
         }
         if tool != .macDesktop {
-          Text(tool == .browser && canCloseTabs
-            ? "Close tabs here. Browse from the desktop."
-            : "Control from the desktop")
+          Text(footerHint)
             .font(.caption)
             .foregroundStyle(ADEColor.textMuted)
             .frame(maxWidth: .infinity, alignment: .center)
@@ -328,11 +384,15 @@ struct WorkToolsSheet: View {
       }
       if !visibleTabs.isEmpty {
         let canClose = canCloseTabs
+        let canWatch = supportsLiveBrowser && visibleTabs.count > 1
+        let watching = supportsLiveBrowser ? liveTabId : nil
         VStack(alignment: .leading, spacing: 10) {
           ForEach(visibleTabs) { tab in
             WorkToolsTabRow(
               tab: tab,
               isClosing: pendingTabCloses[tab.id] != nil,
+              isWatched: watching == tab.id,
+              onSelect: canWatch ? { watchTab(tab.id) } : nil,
               onClose: canClose ? { scheduleTabClose(tab) } : nil,
               onUndo: { undoTabClose(tab.id) }
             )
@@ -377,6 +437,117 @@ struct WorkToolsSheet: View {
   /// The lane's tabs, less the ones this sheet just closed.
   private var visibleTabs: [WorkToolsBrowserTab] {
     (state?.browser?.tabs ?? []).filter { !closedTabIds.contains($0.id) }
+  }
+
+  // MARK: - Live tab
+
+  /// The tab the live picture shows: the one the person tapped, else the tab
+  /// an agent is driving right now, else the active tab, else the first.
+  private var liveTabId: String? {
+    let tabs = visibleTabs
+    guard !tabs.isEmpty else { return nil }
+    if let watchedTabId, tabs.contains(where: { $0.id == watchedTabId }) { return watchedTabId }
+    if let agentTab = (state?.agentBrowserPresence ?? []).compactMap(\.tabId)
+      .first(where: { id in tabs.contains { $0.id == id } }) {
+      return agentTab
+    }
+    return tabs.first(where: \.active)?.id ?? tabs.first?.id
+  }
+
+  /// Identity of the live poll. Nil — no poll — when this is not the browser,
+  /// the host cannot serve frames, the app is not in front, or there is no tab.
+  private var livePollKey: String? {
+    guard tool == .browser, scenePhase == .active, supportsLiveBrowser, let liveTabId else { return nil }
+    return "\(laneId)|\(liveTabId)"
+  }
+
+  private var footerHint: String {
+    guard tool == .browser else { return "Control from the desktop" }
+    if liveFrame != nil, canControlBrowser { return "Take control to tap, scroll and type in the page." }
+    return canCloseTabs ? "Close tabs here. Browse from the desktop." : "Control from the desktop"
+  }
+
+  private func watchTab(_ tabId: String) {
+    guard watchedTabId != tabId || liveTabId != tabId else { return }
+    ADEHaptics.light()
+    watchedTabId = tabId
+  }
+
+  /// Polls `workTools.readBrowserTabFrame` for the watched tab until the task is
+  /// cancelled (sheet gone, app in the background, another tab picked). Each
+  /// read renews the desktop's short watch, so stopping needs no message.
+  private func pollLiveFrames() async {
+    guard livePollKey != nil, let tabId = liveTabId else { return }
+    if liveFrameTabId != tabId {
+      liveFrame = nil
+      liveFrameInfo = nil
+      liveFrameTabId = nil
+    }
+    #if DEBUG
+    if previewLiveBrowser {
+      liveFrame = previewFrame
+      liveFrameTabId = previewFrame == nil ? nil : tabId
+      return
+    }
+    #endif
+    let laneId = laneId
+    let syncService = syncService
+    // The desktop starts capturing on the first read, so the first poll or two
+    // answer with no frame; the grace period counts from here.
+    var lastFrameAt = Date()
+    while !Task.isCancelled {
+      let started = ContinuousClock.now
+      var delay = Self.liveFrameInterval
+      do {
+        let answer = try await syncService.readWorkToolsBrowserTabFrame(
+          tabId: tabId,
+          laneId: laneId,
+          maxWidth: Self.liveFrameMaxWidth
+        )
+        guard !Task.isCancelled else { return }
+        var image: UIImage?
+        if let dataUrl = answer?.frame?.dataUrl {
+          image = await Task.detached(priority: .userInitiated) { workToolsDecodeLiveFrame(dataUrl) }.value
+          guard !Task.isCancelled else { return }
+        }
+        if let image {
+          liveFrame = image
+          liveFrameTabId = tabId
+          liveFrameInfo = answer
+          lastFrameAt = Date()
+        } else {
+          if let answer { liveFrameInfo = answer }
+          if Date().timeIntervalSince(lastFrameAt) > Self.liveFrameStaleAfter { dropLiveFrame() }
+        }
+      } catch {
+        guard !Task.isCancelled else { return }
+        if Date().timeIntervalSince(lastFrameAt) > Self.liveFrameStaleAfter { dropLiveFrame() }
+        delay = Self.liveFrameRetryDelay
+      }
+      let wait = delay - (ContinuousClock.now - started)
+      if wait > .zero { try? await Task.sleep(for: wait) }
+    }
+  }
+
+  /// Frames stopped: back to the last observation, and out of control.
+  private func dropLiveFrame() {
+    guard liveFrame != nil else { return }
+    liveFrame = nil
+    liveFrameTabId = nil
+    browserInControl = false
+  }
+
+  /// Sends one tap, scroll or keystroke. Fire and forget: the next frame shows
+  /// whether it landed, and a failure here has nothing useful to say.
+  private func sendBrowserInput(_ event: WorkToolsBrowserTabInputEvent, tabId: String) {
+    #if DEBUG
+    if previewLiveBrowser { return }
+    #endif
+    let laneId = laneId
+    let syncService = syncService
+    Task { @MainActor in
+      _ = try? await syncService.sendWorkToolsBrowserTabInput(tabId: tabId, laneId: laneId, event: event)
+    }
   }
 
   // MARK: - Closing a tab
@@ -623,6 +794,10 @@ private struct WorkToolsTabRow: View {
   let tab: WorkToolsBrowserTab
   /// The × was tapped and the close is waiting out its undo window.
   var isClosing = false
+  /// This tab is the one in the live picture.
+  var isWatched = false
+  /// Nil when there is nothing to pick (no live view, or only one tab).
+  var onSelect: (() -> Void)?
   /// Nil when this machine does not let the phone close tabs.
   var onClose: (() -> Void)?
   var onUndo: () -> Void = {}
@@ -632,7 +807,13 @@ private struct WorkToolsTabRow: View {
       closingRow
     } else {
       HStack(alignment: .center, spacing: 10) {
-        details
+        if let onSelect {
+          Button(action: onSelect) { details }
+            .buttonStyle(.plain)
+            .accessibilityHint(isWatched ? "Shown in the live picture" : "Shows this tab in the live picture")
+        } else {
+          details
+        }
         if let onClose {
           Button(action: onClose) {
             Image(systemName: "xmark")
@@ -692,6 +873,12 @@ private struct WorkToolsTabRow: View {
           .font(.subheadline.weight(.medium))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
+        if isWatched {
+          Image(systemName: "eye.fill")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.accent)
+            .accessibilityLabel("Watching")
+        }
         if tab.active {
           ADEKitTag(text: "Active", color: ADEColor.accent)
         }

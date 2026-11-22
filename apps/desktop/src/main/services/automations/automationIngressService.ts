@@ -30,6 +30,35 @@ import {
 import { lowerCaseHeaders, queryRecord } from "./webhookRequest";
 import { WEBHOOK_MAX_BODY_BYTES } from "../../../shared/automationWebhooks";
 
+/** GitHub's own webhook payload limit; the hosted relay enforces the same 25 MB. */
+const MAX_GITHUB_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
+
+/** Read a webhook body up to `limit`, then stop buffering but keep draining the request. */
+function collectBoundedBody(
+  request: http.IncomingMessage,
+  limit: number,
+): Promise<{ body: Buffer; tooLarge: boolean }> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let tooLarge = false;
+    request.on("data", (chunk: Buffer | string) => {
+      if (tooLarge) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      // A chunked request has no length to trust, so the cap is on arriving bytes.
+      if (size > limit) {
+        tooLarge = true;
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(buffer);
+    });
+    request.on("end", () => resolve({ body: tooLarge ? Buffer.alloc(0) : Buffer.concat(chunks), tooLarge }));
+    request.on("error", reject);
+  });
+}
+
 export type AutomationIngressCursorStore = {
   get(source: AutomationIngressSource): string | null;
   set(args: { source: AutomationIngressSource; cursor: string | null }): void;
@@ -74,6 +103,12 @@ type AutomationIngressServiceArgs = {
   githubService?: {
     detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
     getAppUserTokenForRelay: () => Promise<string>;
+    /**
+     * The relay answered 401 to this App user token. The account client asks
+     * for the account's current token, so the next poll reads the new one
+     * instead of the token a Disconnect deleted at GitHub.
+     */
+    reportAppUserTokenRejected?: (token: string) => Promise<unknown>;
   } | null;
   getAccountAccessToken?: () => Promise<string | null>;
   /**
@@ -513,6 +548,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let relayPollCooldownUntilMs = 0;
   let relayPollFailureCount = 0;
   let relayPollUnauthorizedCount = 0;
+  /** The App user token the current poll sent, for `reportAppUserTokenRejected` on a 401. */
+  let relayPollAppUserToken: string | null = null;
   let unsubscribeSignIn: (() => void) | null = null;
   /** A poll failing on the same cause as the last one logs at info. */
   const relayPollFailures = createRepeatedFailureGate();
@@ -585,30 +622,16 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       response.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: "not_found" }));
       return;
     }
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let tooLarge = false;
-    request.on("data", (chunk: Buffer | string) => {
-      if (tooLarge) return;
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      size += buffer.length;
-      // Stop buffering past the cap; a chunked request with no length is bounded too.
-      if (size > WEBHOOK_MAX_BODY_BYTES) {
-        tooLarge = true;
-        chunks.length = 0;
-        return;
-      }
-      chunks.push(buffer);
-    });
-    request.on("end", async () => {
+    void (async () => {
       try {
+        const { body, tooLarge } = await collectBoundedBody(request, WEBHOOK_MAX_BODY_BYTES);
         const result = await service.receive({
           hookId: route.hookId,
           token: route.token,
           method,
           headers: lowerCaseHeaders(request.headers),
           query: queryRecord(url.searchParams),
-          rawBody: tooLarge ? Buffer.alloc(0) : Buffer.concat(chunks),
+          rawBody: body,
           tooLarge,
           via: "local",
         });
@@ -621,7 +644,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         args.logger.warn("automations.custom_webhook_failed", { error: error instanceof Error ? error.message : String(error) });
         response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: "internal_error" }));
       }
-    });
+    })();
   };
 
   const updateGithubRelayStatus = (patch: Partial<AutomationIngressStatus["githubRelay"]>) => {
@@ -801,46 +824,62 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       response.writeHead(404).end("not found");
       return;
     }
-    const automationId = match?.[1] ? decodeURIComponent(match[1]) : null;
-    const chunks: Buffer[] = [];
-    request.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-    request.on("end", async () => {
-      const body = Buffer.concat(chunks);
+    let automationId: string | null = null;
+    if (match?.[1]) {
       try {
-        const payload = JSON.parse(body.toString("utf8")) as Record<string, unknown>;
-        const record = isGithubWebhook
-          ? await (async () => {
-              verifyGithubWebhookSignature(body, normalizeHeader(request.headers, "x-hub-signature-256"));
-              return await dispatchGithubWebhook(
-                normalizeHeader(request.headers, "x-github-event"),
-                normalizeHeader(request.headers, "x-github-delivery"),
-                payload,
-              );
-            })()
-          : await (async () => {
-              if (!automationId) throw new Error("Automation id is required.");
-              payload.signatureHeader = request.headers["x-ade-signature"] ?? "";
-              return await dispatchLocalWebhook(automationId, payload, body);
-            })();
-        noteRelayActivity();
-        updateLocalWebhookStatus({
-          healthy: true,
-          status: "listening",
-          lastDeliveryAt: record?.receivedAt ?? new Date().toISOString(),
-          lastError: null,
-        });
-        response.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, eventId: record?.id ?? null }));
-      } catch (error) {
+        automationId = decodeURIComponent(match[1]);
+      } catch {
+        response.writeHead(404).end("not found");
+        return;
+      }
+    }
+    const bodyLimit = isGithubWebhook ? MAX_GITHUB_WEBHOOK_BODY_BYTES : WEBHOOK_MAX_BODY_BYTES;
+    void collectBoundedBody(request, bodyLimit)
+      .then(async ({ body, tooLarge }) => {
+        if (tooLarge) {
+          response.writeHead(413, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: "payload too large" }));
+          return;
+        }
+        try {
+          const payload = JSON.parse(body.toString("utf8")) as Record<string, unknown>;
+          const record = isGithubWebhook
+            ? await (async () => {
+                verifyGithubWebhookSignature(body, normalizeHeader(request.headers, "x-hub-signature-256"));
+                return await dispatchGithubWebhook(
+                  normalizeHeader(request.headers, "x-github-event"),
+                  normalizeHeader(request.headers, "x-github-delivery"),
+                  payload,
+                );
+              })()
+            : await (async () => {
+                if (!automationId) throw new Error("Automation id is required.");
+                payload.signatureHeader = request.headers["x-ade-signature"] ?? "";
+                return await dispatchLocalWebhook(automationId, payload, body);
+              })();
+          noteRelayActivity();
+          updateLocalWebhookStatus({
+            healthy: true,
+            status: "listening",
+            lastDeliveryAt: record?.receivedAt ?? new Date().toISOString(),
+            lastError: null,
+          });
+          response.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, eventId: record?.id ?? null }));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          args.logger.warn("automations.local_webhook_failed", { automationId, path: url.pathname, error: message });
+          updateLocalWebhookStatus({
+            healthy: false,
+            status: "error",
+            lastError: message,
+          });
+          response.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: message }));
+        }
+      })
+      .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         args.logger.warn("automations.local_webhook_failed", { automationId, path: url.pathname, error: message });
-        updateLocalWebhookStatus({
-          healthy: false,
-          status: "error",
-          lastError: message,
-        });
-        response.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: message }));
-      }
-    });
+        response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: "internal_error" }));
+      });
   };
 
   const regularPollIntervalMs = Math.max(
@@ -897,7 +936,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     if (pollTimer) clearInterval(pollTimer);
     pollTimerIntervalMs = intervalMs;
     pollTimer = setInterval(() => {
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     }, intervalMs);
     pollTimer.unref?.();
   };
@@ -923,7 +962,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     const delayMs = Math.max(0, relayPollCooldownUntilMs - Date.now());
     relayPollRetryTimer = setTimeout(() => {
       relayPollRetryTimer = null;
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     }, delayMs);
     relayPollRetryTimer.unref?.();
   };
@@ -997,7 +1036,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       subscriptionReconnectTimer = null;
       // A poll re-resolves config, repository, and fresh auth before opening the
       // next socket. Opening the socket then triggers a second catch-up drain.
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     }, delayMs);
     subscriptionReconnectTimer.unref?.();
   };
@@ -1050,7 +1089,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       subscriptionReconnectAttempt = 0;
       setSubscriptionConnected(true);
       // The durable cursor may have advanced while the socket was unavailable.
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     });
     socket.on("message", (raw: RawData) => {
       if (subscriptionSocket !== socket) return;
@@ -1058,7 +1097,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         const frame = JSON.parse(rawDataToText(raw)) as unknown;
         if (isRecord(frame) && frame.t === "github_delivery") {
           noteRelayActivity();
-          void pollGithubRelayOnce();
+          pollGithubRelayInBackground();
         }
       } catch {
         // Wake-up frames are hints only; malformed/unknown frames are ignored.
@@ -1231,6 +1270,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         : hostedAuth?.ok
           ? hostedAuth.token
           : null;
+      relayPollAppUserToken = hostedAuth?.ok ? hostedAuth.token : null;
       if (!authToken && (!accountAccessToken || useLegacyProjectRoute)) {
         throw new Error("GitHub auth is required for relay polling.");
       }
@@ -1495,6 +1535,13 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       // and each reconnect was another refused upgrade beside the refused poll.
       const unauthorized = relayError?.status === 401;
       relayPollUnauthorizedCount = unauthorized ? relayPollUnauthorizedCount + 1 : 0;
+      // The retry reads the token again, but a cached account token stays the
+      // same until the account client hears GitHub refused it.
+      if (unauthorized && relayPollAppUserToken) {
+        const rejected = relayPollAppUserToken;
+        relayPollAppUserToken = null;
+        void Promise.resolve(args.githubService?.reportAppUserTokenRejected?.(rejected)).catch(() => undefined);
+      }
       const authRefused = relayPollUnauthorizedCount >= 2;
       if (unauthorized) disableRelaySubscription();
       if (authRefused) {
@@ -1519,6 +1566,20 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           : error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  /**
+   * A poll nobody awaits (a timer, a wake-up). Its config and status reads
+   * run before the poll's own catch, and a project database that stops
+   * answering throws there; unhandled, that rejection reaches the brain's
+   * crash handler. The next timer tick polls again.
+   */
+  const pollGithubRelayInBackground = (): void => {
+    void pollGithubRelayOnce().catch((error: unknown) => {
+      args.logger.warn("automations.github_relay_background_poll_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const pollGithubRelayOnce = async () => {

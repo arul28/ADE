@@ -6,9 +6,11 @@ import {
 import { handleAccountSettingsRoute } from "./accountSettings";
 import { withCloudflareRetry } from "./cloudflareTransient";
 import { handleAccountVaultRoute } from "./accountVault";
+import { handlePasswordsRoute } from "./passwords";
 import {
   AttentionAuthVerificationUnavailableError,
   inspectAttentionAuthConfiguration,
+  relayAccountKeysForClerkUser,
   verifyAttentionBearerToken,
 } from "./attentionAuth";
 import {
@@ -120,6 +122,8 @@ const ORPHANED_MACHINE_ACTIVITY_MS = 14 * 24 * 60 * 60 * 1_000;
 // the backlog drains over later passes. The sweeps run from the hourly cron
 // only — see `sweepAttentionState` — so 25 accounts an hour is the drain rate.
 const MAX_SWEPT_ACCOUNTS_PER_PRUNE = 25;
+/** Expired device leases per cron pass; each costs six statements. */
+const MAX_SWEPT_DEVICES_PER_PRUNE = 25;
 
 const EVENT_KINDS = new Set([
   "agent_running",
@@ -1538,7 +1542,7 @@ function secretsMatch(left: string, right: string): boolean {
  * a transport choice on the directory side; the directory sends this header
  * over either transport. Unset secret fails closed with 503, never open.
  */
-function assertDirectoryProvenance(
+export function assertDirectoryProvenance(
   request: Request,
   env: AttentionRelayEnv,
 ): { ok: true } | { response: Response } {
@@ -1987,6 +1991,42 @@ function attentionDeviceOwnershipDeleteStatements(
       .prepare("delete from attention_devices where user_id = ? and device_id = ?")
       .bind(userId, deviceId),
   ];
+}
+
+/**
+ * The sweep's guarded cleanup: every delete runs only while the device's lease
+ * is still expired, so a registration that renewed after the candidate read is
+ * left alone. The whole batch is one transaction.
+ */
+function attentionDeviceOwnershipDeleteIfExpiredStatements(
+  env: AttentionRelayEnv,
+  userId: string,
+  deviceId: string,
+  expiredBefore: string,
+): D1PreparedStatement[] {
+  const guard = "and exists (select 1 from attention_devices where user_id = ? and device_id = ? and lease_expires_at <= ?)";
+  const bind = (sql: string) => env.DB.prepare(sql).bind(userId, deviceId, userId, deviceId, expiredBefore);
+  return [
+    bind(`delete from attention_activity_tokens where user_id = ? and device_id = ? ${guard}`),
+    bind(`delete from attention_activity_state where user_id = ? and device_id = ? ${guard}`),
+    bind(`delete from attention_delivery_receipts where user_id = ? and device_id = ? ${guard}`),
+    bind(`delete from attention_presence where user_id = ? and device_id = ? ${guard}`),
+    bind(`
+      update attention_device_ownership
+      set active = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where user_id = ? and device_id = ? ${guard}
+    `),
+    bind(`delete from attention_devices where user_id = ? and device_id = ? ${guard}`),
+  ];
+}
+
+async function deleteExpiredAttentionDeviceOwnership(
+  env: AttentionRelayEnv,
+  userId: string,
+  deviceId: string,
+  expiredBefore: string,
+): Promise<void> {
+  await env.DB.batch(attentionDeviceOwnershipDeleteIfExpiredStatements(env, userId, deviceId, expiredBefore));
 }
 
 function isAttentionDeviceLimitError(error: unknown): boolean {
@@ -2477,8 +2517,8 @@ async function linkMachineToAccount(
   // Seed only currently unowned installs/tokens, at most once per machine.
   const leaseExpiresAt = new Date(Date.now() + ATTENTION_DEVICE_LEASE_MS).toISOString();
   const existingDeviceCount = await env.DB
-    .prepare("select count(*) as count from attention_devices where user_id = ?")
-    .bind(userId)
+    .prepare("select count(*) as count from attention_devices where user_id = ? and lease_expires_at > ?")
+    .bind(userId, new Date().toISOString())
     .first<{ count: number }>();
   const availableSlots = Math.max(
     0,
@@ -3946,6 +3986,100 @@ async function handleAccountMachinePairingRestore(
   return json({ ok: true, machineKey, restored: revokedAt !== null });
 }
 
+/**
+ * `DELETE /directory/accounts/<userId>`: the account was deleted (Clerk
+ * `user.deleted`, handled by the directory), so its vault and its settings go.
+ *
+ * Directory provenance is the only credential. There is no account token to
+ * check: the account no longer exists, and the directory names the account in
+ * the path. The secret only the directory holds is what keeps any other caller
+ * from deleting an account's data.
+ *
+ * Hard deletes, not tombstones: no machine of a deleted account syncs again,
+ * and a tombstone would keep the account's item names. Every delete runs in one
+ * batch, so they land together or not at all. Safe to repeat: a second call
+ * finds nothing and answers the same `ok`.
+ */
+export async function handleDirectoryAccountPurge(
+  request: Request,
+  env: AttentionRelayEnv,
+  url: URL,
+): Promise<Response | null> {
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts[0] !== "directory" || parts[1] !== "accounts") return null;
+  if (parts.length === 4 && parts[3] === "notify" && request.method === "POST") {
+    return await handleDirectoryAccountNotify(request, env, decodePathSegment(parts[2]));
+  }
+  if (parts.length !== 3 || request.method !== "DELETE") return attentionRouteNotFound();
+  const provenance = assertDirectoryProvenance(request, env);
+  if ("response" in provenance) return provenance.response;
+  const clerkUserId = requiredString(decodePathSegment(parts[2]), 256);
+  if (!clerkUserId) return json({ ok: false, error: "invalid account" }, { status: 400 });
+  // The directory names the raw Clerk id; the rows are keyed by the relay's
+  // hash of issuer and id (`verifyAttentionBearerToken`), one per issuer.
+  const accountKeys = await relayAccountKeysForClerkUser(env, clerkUserId);
+  if (accountKeys.length === 0) {
+    // No issuer configured: nothing can be matched, so the directory must try again later.
+    return json({ ok: false, error: "account sign-in is not configured" }, { status: 503 });
+  }
+  const deletes = [
+    ["vaultItems", "delete from account_vault_items where user_id = ?"],
+    ["settings", "delete from account_settings where user_id = ?"],
+    ["passwordItems", "delete from password_items where user_id = ?"],
+    ["passwordKeys", "delete from password_keys where user_id = ?"],
+    ["passwordKeyReleases", "delete from password_key_releases where user_id = ?"],
+  ] as const;
+  const results = await env.DB.batch(accountKeys.flatMap((accountKey) =>
+    deletes.map(([, sql]) => env.DB.prepare(sql).bind(accountKey)),
+  ));
+  const counts = Object.fromEntries(deletes.map(([key], index) => [
+    key,
+    results
+      .filter((_, resultIndex) => resultIndex % deletes.length === index)
+      .reduce((sum, result) => sum + (result?.meta?.changes ?? 0), 0),
+  ]));
+  return json({ ok: true, ...counts });
+}
+
+/**
+ * `POST /directory/accounts/<userId>/notify`: ADE Cloud's server tells a
+ * person something with nobody watching (an automation on ADE Cloud whose
+ * run couldn't start). The same notification `POST /attention/account/notify`
+ * sends, with its quota and the person's quiet hours and previews setting,
+ * for each of the account's relay keys. Directory provenance is the only
+ * credential: the cron that asks has no account token.
+ */
+async function handleDirectoryAccountNotify(
+  request: Request,
+  env: AttentionRelayEnv,
+  clerkUserIdRaw: string | null,
+): Promise<Response> {
+  const provenance = assertDirectoryProvenance(request, env);
+  if ("response" in provenance) return provenance.response;
+  const clerkUserId = requiredString(clerkUserIdRaw, 256);
+  if (!clerkUserId) return json({ ok: false, error: "invalid account" }, { status: 400 });
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+  const accountKeys = await relayAccountKeysForClerkUser(env, clerkUserId);
+  if (accountKeys.length === 0) return json({ ok: false, error: "account sign-in is not configured" }, { status: 503 });
+  let delivered = 0;
+  for (const accountKey of accountKeys) {
+    const response = await handleCustomNotification(
+      new Request("https://relay.invalid/notify", { method: "POST", body: JSON.stringify(payload) }),
+      env,
+      accountKey,
+    );
+    if (!response.ok) return response;
+    const body = await response.json().catch(() => null) as { delivered?: unknown } | null;
+    delivered += typeof body?.delivered === "number" ? body.delivered : 0;
+  }
+  return json({ ok: true, delivered });
+}
+
 async function deleteAttentionDeviceOwnership(
   env: AttentionRelayEnv,
   userId: string,
@@ -4122,49 +4256,52 @@ async function handleDeviceRegistration(
   const keyChange = await attentionDeviceKeyChange(observedOwnership, deviceKey);
   // A physical installation/APNs token belongs to exactly one authenticated
   // account stream at a time.
+  const nowIso = new Date().toISOString();
   const conflicts = apnsToken
     ? await env.DB.prepare(`
-        select user_id, device_id
+        select user_id, device_id, lease_expires_at
         from attention_devices
         where not (user_id = ? and device_id = ?)
           and (device_id = ? or apns_token = ?)
-      `).bind(userId, deviceId, deviceId, apnsToken).all<{ user_id: string; device_id: string }>()
+      `).bind(userId, deviceId, deviceId, apnsToken).all<{ user_id: string; device_id: string; lease_expires_at: string }>()
     : await env.DB.prepare(`
-        select user_id, device_id
+        select user_id, device_id, lease_expires_at
         from attention_devices
         where not (user_id = ? and device_id = ?)
           and device_id = ?
-      `).bind(userId, deviceId, deviceId).all<{ user_id: string; device_id: string }>();
+      `).bind(userId, deviceId, deviceId).all<{ user_id: string; device_id: string; lease_expires_at: string }>();
   const existingDevice = await env.DB
-    .prepare("select 1 as found from attention_devices where user_id = ? and device_id = ? limit 1")
+    .prepare("select lease_expires_at from attention_devices where user_id = ? and device_id = ? limit 1")
     .bind(userId, deviceId)
-    .first<{ found: number }>();
+    .first<{ lease_expires_at: string }>();
   const existingOwnership = ownershipRows.find((row) =>
     row.user_id === userId && row.device_id === deviceId
   );
   const ownershipChanged = Boolean(
-    existingDevice?.found
+    existingDevice
     && (
       !existingOwnership
       || existingOwnership.ownership_epoch !== ownershipEpoch
     ),
   );
   const deviceCount = await env.DB
-    .prepare("select count(*) as count from attention_devices where user_id = ?")
-    .bind(userId)
+    .prepare("select count(*) as count from attention_devices where user_id = ? and lease_expires_at > ?")
+    .bind(userId, nowIso)
     .first<{ count: number }>();
   const destinationConflicts = new Set(
     conflicts.results
-      .filter((conflict) => conflict.user_id === userId)
+      .filter((conflict) => conflict.user_id === userId && conflict.lease_expires_at > nowIso)
       .map((conflict) => conflict.device_id),
   ).size;
+  // An expired row re-registering becomes live again, so it takes a slot;
+  // an expired conflict is not in the live count, so it is not subtracted.
   const projectedDeviceCount = Number(deviceCount?.count ?? 0)
     - destinationConflicts
-    + (existingDevice?.found ? 0 : 1);
+    + (existingDevice && existingDevice.lease_expires_at > nowIso ? 0 : 1);
   if (projectedDeviceCount > MAX_ATTENTION_DEVICES) {
     return json({ ok: false, error: "account device limit reached" }, { status: 409 });
   }
-  const now = new Date().toISOString();
+  const now = nowIso;
   const leaseExpiresAt = new Date(Date.now() + ATTENTION_DEVICE_LEASE_MS).toISOString();
   const generation = crypto.randomUUID();
   const preferences = isRecord(payload.preferences) ? payload.preferences : {};
@@ -4451,6 +4588,10 @@ async function handleAuthorizedAttentionAccountRequest(
   // credential from ever being returned by a settings query.
   const vault = await handleAccountVaultRoute(request, env, url, userId, route);
   if (vault) return vault;
+  // Passwords: sealed items and the wrapped vault key; also its own module,
+  // for the same reason as the vault.
+  const passwords = await handlePasswordsRoute(request, env, url, userId, route);
+  if (passwords) return passwords;
   if (route.length === 1 && route[0] === "snapshot" && request.method === "GET") {
     return await handleSnapshot(env, userId, url);
   }
@@ -4683,7 +4824,7 @@ async function sweepOrphanedMachineActivity(
 /**
  * The expensive half of Attention maintenance: CRON ONLY, never a request.
  *
- * Both sweeps are unbounded scans that fan out into per-account work —
+ * The sweeps are unbounded scans that fan out into per-account work —
  * `sweepExpiredAttentionItems` runs up to `MAX_SWEPT_ACCOUNTS_PER_PRUNE` SERIAL
  * `commitAttentionRevision` batches, and `sweepOrphanedMachineActivity` runs an
  * unindexed full aggregate over `attention_items` and then calls
@@ -4694,9 +4835,22 @@ async function sweepOrphanedMachineActivity(
  * backlog. Neither sweep is latency-sensitive: retention is measured in days.
  */
 export async function sweepAttentionState(env: AttentionRelayEnv): Promise<void> {
-  const now = new Date().toISOString();
-  await sweepExpiredAttentionItems(env, now);
-  await sweepOrphanedMachineActivity(env, now);
+  const now = new Date();
+  const nowIso = now.toISOString();
+  await sweepExpiredAttentionItems(env, nowIso);
+  await sweepOrphanedMachineActivity(env, nowIso);
+  // Expired device leases fan out into six statements per device, so they are
+  // cron work, never request work. A backlog drains over later passes.
+  const expiredDevices = await env.DB.prepare(`
+    select user_id, device_id
+    from attention_devices
+    where lease_expires_at <= ?
+    order by lease_expires_at
+    limit ?
+  `).bind(nowIso, MAX_SWEPT_DEVICES_PER_PRUNE).all<{ user_id: string; device_id: string }>();
+  for (const device of expiredDevices.results) {
+    await deleteExpiredAttentionDeviceOwnership(env, device.user_id, device.device_id, nowIso);
+  }
 }
 
 /**
@@ -4714,14 +4868,6 @@ export async function pruneAttentionState(env: AttentionRelayEnv): Promise<void>
   const alertLogCutoff = new Date(
     now.getTime() - ATTENTION_ALERT_LOG_RETENTION_MS,
   ).toISOString();
-  const expiredDevices = await env.DB.prepare(`
-    select user_id, device_id
-    from attention_devices
-    where lease_expires_at <= ?
-  `).bind(now.toISOString()).all<{ user_id: string; device_id: string }>();
-  for (const device of expiredDevices.results) {
-    await deleteAttentionDeviceOwnership(env, device.user_id, device.device_id);
-  }
   await Promise.all([
     env.DB.batch([
       env.DB.prepare(`

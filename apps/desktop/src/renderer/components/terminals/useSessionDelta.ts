@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
-import type { SessionDeltaSummary } from "../../../shared/types";
+import { useEffect, useRef, useState } from "react";
+import type { OpenProjectBinding, SessionDeltaSummary } from "../../../shared/types";
 
 const deltaCache = new Map<string, SessionDeltaSummary | null>();
 const deltaInFlight = new Map<string, Promise<SessionDeltaSummary | null>>();
 const deltaQueue: Array<{
   sessionId: string;
+  pin: OpenProjectBinding;
   resolve: (value: SessionDeltaSummary | null) => void;
 }> = [];
 const MAX_CACHED_SESSION_DELTAS = 128;
@@ -29,7 +30,7 @@ function pumpDeltaQueue(): void {
     if (!next) return;
     activeDeltaRequests += 1;
     window.ade.sessions
-      .getDelta(next.sessionId)
+      .getDelta(next.sessionId, next.pin)
       .then((result) => {
         touchDeltaCacheEntry(next.sessionId, result);
         next.resolve(result);
@@ -46,7 +47,7 @@ function pumpDeltaQueue(): void {
   }
 }
 
-function fetchSessionDelta(sessionId: string): Promise<SessionDeltaSummary | null> {
+function fetchSessionDelta(sessionId: string, pin: OpenProjectBinding): Promise<SessionDeltaSummary | null> {
   if (deltaCache.has(sessionId)) {
     const cached = deltaCache.get(sessionId) ?? null;
     touchDeltaCacheEntry(sessionId, cached);
@@ -56,26 +57,31 @@ function fetchSessionDelta(sessionId: string): Promise<SessionDeltaSummary | nul
   if (existing) return existing;
 
   const request = new Promise<SessionDeltaSummary | null>((resolve) => {
-    deltaQueue.push({ sessionId, resolve });
+    deltaQueue.push({ sessionId, pin, resolve });
     pumpDeltaQueue();
   });
   deltaInFlight.set(sessionId, request);
   return request;
 }
 
-export function useSessionDelta(sessionId: string | null, enabled: boolean) {
+/** The session's change summary, read from the session's machine (`pin`). No pin: no read. */
+export function useSessionDelta(sessionId: string | null, enabled: boolean, pin: OpenProjectBinding | null) {
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const [delta, setDelta] = useState<SessionDeltaSummary | null>(
     sessionId ? deltaCache.get(sessionId) ?? null : null,
   );
 
   useEffect(() => {
-    if (!sessionId || !enabled) {
+    const deltaPin = pinRef.current;
+    if (!sessionId || !enabled || !deltaPin) {
       setDelta(null);
       return;
     }
 
     let cancelled = false;
-    fetchSessionDelta(sessionId)
+    fetchSessionDelta(sessionId, deltaPin)
       .then((result) => {
         if (cancelled) return;
         setDelta(result);
@@ -84,7 +90,7 @@ export function useSessionDelta(sessionId: string | null, enabled: boolean) {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, enabled]);
+  }, [sessionId, enabled, pinKey]);
 
   return delta;
 }

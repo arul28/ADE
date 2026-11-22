@@ -19,9 +19,13 @@ import { requestModelCatalog } from "./modelCatalog";
 import {
   clearRuntimeCatalogRequest,
   getRuntimeCatalogRequest,
+  invalidateRuntimeCatalogScope,
   isPersonalChatCatalogScopeKey,
+  noteRuntimeCatalogScopePin,
   rememberRuntimeCatalog,
   reserveRuntimeCatalogScope,
+  runtimeCatalogScopeInvalidationGeneration,
+  runtimeCatalogScopesForMachine,
   setRuntimeCatalogRequest,
   type SharedCatalogFetchResult,
 } from "./runtimeCatalogCache";
@@ -58,11 +62,15 @@ export async function fetchSharedRuntimeCatalog(
   const { scopeKey, mode, refreshProvider, cursorSource, pin } = args;
   if (!catalogBridgeAvailable(scopeKey)) return { status: "unavailable" };
 
-  const requestKey = `${scopeKey}|${mode}:${refreshProvider ?? "all"}:${cursorSource ?? "all"}`;
+  // A read started before the machine's last change is not joined: its
+  // answer may predate the change (`rememberRuntimeCatalog` drops it).
+  const invalidationGeneration = runtimeCatalogScopeInvalidationGeneration(scopeKey);
+  const requestKey = `${scopeKey}|${mode}:${refreshProvider ?? "all"}:${cursorSource ?? "all"}#${invalidationGeneration}`;
   const existing = getRuntimeCatalogRequest(requestKey);
   if (existing) return await existing;
 
   const scopeSerial = reserveRuntimeCatalogScope(scopeKey);
+  noteRuntimeCatalogScopePin(scopeKey, pin);
   const fetchArgs = {
     mode,
     ...(refreshProvider ? { refreshProvider } : {}),
@@ -74,7 +82,7 @@ export async function fetchSharedRuntimeCatalog(
         catalogScopeKey: scopeKey,
         ...(pin ? { pin } : {}),
       });
-      const visible = rememberRuntimeCatalog(next, { ...fetchArgs, scopeKey, scopeSerial });
+      const visible = rememberRuntimeCatalog(next, { ...fetchArgs, scopeKey, scopeSerial, invalidationGeneration });
       return { status: "ok", catalog: visible };
     } catch {
       return { status: "error" };
@@ -85,4 +93,49 @@ export async function fetchSharedRuntimeCatalog(
     clearRuntimeCatalogRequest(requestKey, request);
   });
   return await request;
+}
+
+/**
+ * Read one machine's catalog again after it went missing or out of date.
+ *
+ * Reads only: `agentChat.modelCatalog` is a declared read in every mode, so
+ * none of this wakes a sleeping computer. With a provider, that provider is
+ * probed again. Without one, the host answers from its cache and says whether
+ * it is stale (a sign-in or an inventory change marks it); only then is the
+ * full list rebuilt, and that request joins the rebuild the host already
+ * started for the stale answer instead of running a second one.
+ */
+export async function refreshRuntimeCatalogScope(args: {
+  scopeKey: string;
+  pin?: OpenProjectBinding | null;
+  refreshProvider?: AgentChatModelCatalogRefreshProvider;
+}): Promise<SharedCatalogFetchResult> {
+  const { scopeKey, pin, refreshProvider } = args;
+  if (refreshProvider) {
+    return await fetchSharedRuntimeCatalog({ scopeKey, mode: "force", refreshProvider, pin });
+  }
+  const first = await fetchSharedRuntimeCatalog({ scopeKey, mode: "refresh-stale", pin });
+  if (first.status !== "ok" || first.catalog.stale !== true) return first;
+  return await fetchSharedRuntimeCatalog({ scopeKey, mode: "force", pin });
+}
+
+/**
+ * Something on one machine changed what its agents can run (a provider set
+ * up, signed in, given a key). Mark every catalog this window holds for that
+ * machine out of date, so the "@" menu, the picker and the effort control
+ * look again, and re-read each one through the pin it was read with: a chat's
+ * project copy on that computer has its own OpenCode inventory, so the
+ * Settings page's machine pin alone would not reach it.
+ */
+export function refreshRuntimeCatalogsForMachine(
+  pin: OpenProjectBinding | null | undefined,
+  options?: { refreshProvider?: AgentChatModelCatalogRefreshProvider },
+): Promise<void> {
+  const scopes = runtimeCatalogScopesForMachine(pin);
+  for (const scope of scopes) invalidateRuntimeCatalogScope(scope.scopeKey);
+  return Promise.all(scopes.map((scope) => refreshRuntimeCatalogScope({
+    scopeKey: scope.scopeKey,
+    pin: scope.pin,
+    ...(options?.refreshProvider ? { refreshProvider: options.refreshProvider } : {}),
+  }))).then(() => undefined);
 }

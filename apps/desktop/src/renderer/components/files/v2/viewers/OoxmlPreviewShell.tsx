@@ -6,6 +6,7 @@ import { captureError } from "../../../../../shared/sentry/capture";
 import { DocumentSurface } from "./DocumentSurface";
 import { formatBytes } from "../../../../../shared/formatting";
 import { OoxmlError, ooxmlFailureMessage } from "./office/ooxmlError";
+import type { OpenProjectBinding } from "../../../../../shared/types/core";
 
 type ShellState<T> =
   | { status: "loading" }
@@ -48,7 +49,7 @@ export function OoxmlPreviewShell<T>({
   declaredSize: number;
   loadingLabel: string;
   /** What the failure card names, when there is nothing to draw. */
-  fallback: { rootPath: string; title: string; mimeType: string | null; size: number };
+  fallback: { rootPath: string; pathPin: OpenProjectBinding; title: string; mimeType: string | null; size: number };
   /** Streams nothing; receives the bytes and returns the parsed model. */
   load: (bytes: Uint8Array) => Promise<T>;
   children: (value: T) => React.ReactNode;
@@ -109,6 +110,7 @@ export function OoxmlPreviewShell<T>({
     return (
       <DocumentSurface
         rootPath={fallback.rootPath}
+        pathPin={fallback.pathPin}
         relativePath={path}
         title={fallback.title}
         mimeType={fallback.mimeType}

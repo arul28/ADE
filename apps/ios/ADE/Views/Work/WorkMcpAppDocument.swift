@@ -116,7 +116,8 @@ func workParseMcpAppFetch(_ value: Any?) -> WorkMcpAppFetch {
 /// default, with the sandbox that makes the page's origin opaque. The phone
 /// checks; it does not repair or widen.
 func workMcpAppPolicyIsUsable(_ policy: String) -> Bool {
-  guard policy.count < 8_000, !policy.contains("\n"), !policy.contains("\r") else { return false }
+  // Up to 128 origins per list, each in up to six directives (`MCP_APP_LIMITS.maxCspDomains`).
+  guard policy.utf8.count < 256_000, !policy.contains("\n"), !policy.contains("\r") else { return false }
   let directives = policy
     .split(separator: ";")
     .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }

@@ -14,6 +14,9 @@
 const TRANSIENT_KINDS: ReadonlyArray<[RegExp, string]> = [
   [/Durable Object reset because its code was updated/, "durable-object-code-updated"],
   [/D1 DB is overloaded/, "d1-overloaded"],
+  // The whole Cloudflare account's D1 work is over its limit, not one
+  // database: every Worker's queries count. It asks callers to back off.
+  [/generating too much load on D1/, "d1-account-overloaded"],
   // Both wordings Cloudflare uses: "storage caused object to be reset" and
   // "storage operation exceeded timeout which caused object to be reset".
   [/D1 DB storage (?:operation exceeded timeout which )?caused object to be reset/, "d1-storage-reset"],
@@ -55,14 +58,17 @@ export function cloudflareTransientKind(error: unknown): string | null {
   return null;
 }
 
+/** Failures that ask callers to back off: retrying at once adds to the load. */
+const BACK_OFF_KINDS: ReadonlySet<string> = new Set(["durable-object-overloaded", "d1-account-overloaded"]);
+
 /**
  * Whether running the same operation again can succeed. An overloaded Durable
- * Object asks callers to back off, so it is never retried here; the caller's
- * own Retry-After backoff covers it.
+ * Object, or an account over its D1 load, asks callers to back off, so it is
+ * never retried here; the caller's own Retry-After backoff covers it.
  */
 export function isRetryableCloudflareError(error: unknown): boolean {
   const kind = cloudflareTransientKind(error);
-  return kind != null && kind !== "durable-object-overloaded";
+  return kind != null && !BACK_OFF_KINDS.has(kind);
 }
 
 const RETRY_ATTEMPTS = 3;

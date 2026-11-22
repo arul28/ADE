@@ -23,6 +23,7 @@ import { PrSwitcherMenu, PrSwitcherStepper, type PrSwitcher } from "../shared/Pr
 import type { PrDetailRouteTab } from "../prsRouteState";
 import "./PrDetailHeader.css";
 import { isImeComposing } from "../../../lib/imeComposition";
+import { usePrRuntimePin } from "../state/prMachines";
 
 type DetailTab = PrDetailRouteTab;
 
@@ -154,6 +155,8 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
     { id: "checks", label: "Checks", icon: Play, note: <ChecksNote note={checksNote} /> },
   ];
 
+  // The PR row's machine: it resolves the PR's GitHub address.
+  const runtimePin = usePrRuntimePin();
   const handleTitleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (isImeComposing(event)) return;
     if (event.key === "Enter") onSubmitTitle();
@@ -162,7 +165,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
 
   const openOnGitHub = () => {
     if (pr.githubUrl) void window.ade.app.openExternal(pr.githubUrl);
-    else void window.ade.prs.openInGitHub(pr.id);
+    else if (runtimePin) void window.ade.prs.openInGitHub(pr.id, runtimePin);
   };
 
   const badge = provisional

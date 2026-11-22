@@ -1,6 +1,15 @@
 import { runCloudWakes } from "./cloudWake";
-import { handleCloudRequest, isCloudRequest } from "./cloud/routes";
+import { createComputerSettled, forkComputerSettled, handleCloudRequest, isCloudRequest } from "./cloud/routes";
+import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/automations";
+import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
+import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
+import { runProjectComputerDeletes } from "./cloud/projectComputers";
+import { runCloudMoves } from "./cloud/moves";
+import { sweepStaleBackupUploads } from "./cloud/laneBackups";
+import { runPlanCleanupPicks } from "./cloud/planCleanup";
+import { runIdleCleanup } from "./cloud/idleCleanup";
+import { createCloudProvider } from "./cloud/provider";
 import { handleCloudBillingPublicRequest, isCloudBillingPublicRequest, reportExtraHours } from "./cloud/billing";
 import type { CloudEnv } from "./cloud/store";
 import * as Sentry from "@sentry/cloudflare";
@@ -31,6 +40,14 @@ import {
 } from "./musicDeveloperToken";
 import { cleanupJevBonusDays, handleJevBonusRequest, isJevBonusRequest, type JevBonusEnv } from "./jevBonus";
 import { handleSignupAnalyticsRequest, isSignupAnalyticsRequest, type SignupAnalyticsEnv } from "./signupAnalytics";
+import { cleanupLaneShares, handleLaneShareRequest, isLaneShareRequest, type LaneShareEnv } from "./laneShares/routes";
+import { handleAccountProjectRequest, isAccountProjectRequest, type AccountProjectEnv } from "./accountProjects/routes";
+import { handleAccountLanesRequest, isAccountLanesRequest } from "./accountLanes/routes";
+import { handleGithubAppRequest, isGithubAppRequest, type GithubAppEnv } from "./githubApp/routes";
+import { handleLatestReleasesRequest, isLatestReleasesRequest, type LatestReleasesEnv } from "./latestReleases";
+import { handleClientMinimumRequest, isClientMinimumRequest } from "./clientMinimum";
+import { handleAccountSelfDeleteRequest, isAccountSelfDeleteRequest } from "./accountSelfDelete";
+import { runGithubAppCron } from "./githubApp/grants";
 import {
   cleanupUsageResearch,
   handleUsageResearchRequest,
@@ -39,7 +56,8 @@ import {
 } from "./usageResearch";
 
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
-  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv;
+  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv & LaneShareEnv & AccountProjectEnv & GithubAppEnv
+  & LatestReleasesEnv;
 
 const WORKER_NAME = "ade-account-directory";
 
@@ -76,15 +94,46 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // The Jev bonus: account bearer, POST only, no CORS — the ADE brain is the
   // only caller. It forwards to TypeSafe with ADE's key under a daily cap.
   if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
-  // ADE Cloud (src/cloud): account bearer, no CORS. Timed wakes ride the same
-  // gate. Everything under /cloud answers 404 for an account not on the list.
-  if (isCloudRequest(url)) return handleCloudRequest(request, env);
-  // Stripe's webhook (signed, so no bearer and no access list) and the page
+  // The newest ADE build on each track, for the phone's and the web's
+  // "Update & restart" on other machines: account bearer, GET only, the
+  // directory's exact-origin CORS for the web client.
+  if (isLatestReleasesRequest(url)) return handleLatestReleasesRequest(request, env);
+  // The oldest build each kind of install may run (the update gate). Public
+  // and read-only: a signed-out app must still learn it has to update.
+  if (isClientMinimumRequest(url)) return handleClientMinimumRequest(request, env);
+  // The person deletes their own account from the app; Clerk's `user.deleted`
+  // webhook then removes everything ADE holds for it.
+  if (isAccountSelfDeleteRequest(url)) return handleAccountSelfDeleteRequest(request, env);
+  // ADE Cloud (src/cloud): account bearer, the directory's exact-origin CORS for
+  // the web client (routes.ts). Timed wakes ride the same gate. Everything
+  // under /cloud refuses an account the owner blocked (403), except a launch's
+  // join, which a new computer makes with its one-time code, and the owner's
+  // block routes, which take CLOUD_OWNER_TOKEN instead (safety.ts).
+  if (isCloudRequest(url)) return handleCloudRequest(request, env, held.waitUntil);
+  // Stripe's webhook (signed, so no bearer) and the page
   // Stripe sends a person back to after Checkout or the billing portal.
-  if (isCloudBillingPublicRequest(url)) return handleCloudBillingPublicRequest(request, env);
+  if (isCloudBillingPublicRequest(url)) return handleCloudBillingPublicRequest(request, env, held.waitUntil);
   // Clerk's sign-up webhook: Svix-signed, POST only, no CORS (Clerk is the
   // only caller). It records one `ade_signed_up` per account.
   if (isSignupAnalyticsRequest(url)) return handleSignupAnalyticsRequest(request, env);
+  // The website's invite page: public and rate-limited, it answers only the
+  // inviter's first name, and never for an inviter the owner blocked.
+  if (isInviteLookupRequest(url)) return handleInviteLookup(request, env);
+  // Lane sharing (src/laneShares): account bearer, the directory's exact-origin
+  // CORS for the web client, none for the host read (machines only).
+  if (isLaneShareRequest(url)) return handleLaneShareRequest(request, env);
+  // The account's project list (src/accountProjects): account bearer, the
+  // directory's exact-origin CORS for the web client, none for the copies
+  // route (machines only). Matched before the directory, which owns only
+  // `/account/machines`.
+  if (isAccountProjectRequest(url)) return handleAccountProjectRequest(request, env);
+  // The account lane index (src/accountLanes): account bearer, exact-origin
+  // CORS for the read only; brains publish. Matched before the directory.
+  if (isAccountLanesRequest(url)) return handleAccountLanesRequest(request, env);
+  // The account's GitHub App sign-in (src/githubApp): account bearer and the
+  // same exact-origin CORS, except the callback and Setup URL pages that a
+  // browser opens. 503 for every bearer route until its two secrets are set.
+  if (isGithubAppRequest(url)) return handleGithubAppRequest(request, env, held.waitUntil);
   return handleRequest(request, env);
 }
 
@@ -112,7 +161,7 @@ export default Sentry.withSentry(sentryOptions, {
     }
   },
 
-  async scheduled(_event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
     // Each cleanup settles on its own: one table that throws logs a line and
     // leaves the other sweeps to finish, instead of failing the whole tick.
     const settle = (task: string, run: () => Promise<unknown>): Promise<void> =>
@@ -157,15 +206,80 @@ export default Sentry.withSentry(sentryOptions, {
         settle("model_registry", () => runModelRegistryCron(env)),
         // Jev bonus: per-account day counts past a week.
         settle("jev_bonus_days", () => cleanupJevBonusDays(env)),
+        // Lane shares: clock-derived states written, rows closed 90 days ago
+        // deleted, invite budget rows past a week. Bounded per tick.
+        settle("lane_shares", () => cleanupLaneShares(env)),
         // the provider timed wakes: requests each due machine's wake URL.
         settle("cloud_wakes", () => runCloudWakes(env)),
         // ADE Cloud: reads the provider list once, meters hours, stops computers
         // at 0 hours, and runs the daily and ten-minute checks. No computers, no
         // provider calls.
-        settle("cloud_account", () => runCloudMinuteCron(env)),
+        settle("cloud_account", () => runCloudMinuteCron(env, { waitUntil: (promise) => ctx.waitUntil(promise) })),
         // ADE Cloud extra hours: reports whole hours to the Stripe meter. One
         // indexed read when no account has extra hours on.
         settle("cloud_extra_hours", () => reportExtraHours(env)),
+        // GitHub App sign-in: minute 17 of each hour prunes old sign-ins and
+        // limit windows; 03:17 UTC also renews up to 50 grants whose refresh
+        // token ends within 30 days. Every other tick makes no query.
+        settle("github_app", () => runGithubAppCron(env, event.scheduledTime)),
+        // The server launcher's records past their week (and a draft's day),
+        // with their files. One indexed read when none is due.
+        settle("cloud_launches", () => expireCloudLaunches(env)),
+        // Launches whose computer never signed in: the computer deleted, the
+        // launch failed (an automation's run follows). One indexed read when none.
+        settle("cloud_launches_unjoined", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          await failUnjoinedLaunches(env, {
+            provider: key ? createCloudProvider(key) : null,
+            onProgress: (record) => noteAutomationLaunchProgress(env, record, { now: Date.now() }),
+          });
+        }),
+        // Automations whose home is ADE Cloud: due schedules and runs that need
+        // the server, in one indexed read; nothing more when none is due.
+        settle("cloud_automations", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          const provider = key ? createCloudProvider(key) : null;
+          const waitUntil = (promise: Promise<unknown>) => ctx.waitUntil(promise);
+          await runCloudAutomations(env, {
+            provider,
+            // The free plan's GitHub rules are settled first, as a launch's request settles them.
+            createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now: Date.now(), waitUntil }),
+          });
+        }),
+        // The server's own jobs (a computer moved to the other kind, freed or
+        // copied): one or two short steps each, a few a tick. One indexed read when none is due.
+        settle("cloud_jobs", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          if (!key) return;
+          const waitUntil = (promise: Promise<unknown>) => ctx.waitUntil(promise);
+          await runCloudMoves(env, {
+            provider: createCloudProvider(key),
+            createComputer: (userId, jobProvider, extras) => createComputerSettled(env, userId, jobProvider, extras, { now: Date.now(), waitUntil }),
+            forkComputer: (source, jobProvider, extras) => forkComputerSettled(env, source, jobProvider, extras, { now: Date.now(), waitUntil }),
+          });
+        }),
+        // "Delete the project's cloud computers" jobs: a few computers a tick.
+        // One indexed read when no job waits.
+        settle("cloud_project_deletes", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          if (key) await runProjectComputerDeletes(env, createCloudProvider(key));
+        }),
+        // Lane backup uploads nobody committed (`laneBackups.ts`): their parts
+        // go. One indexed read when none is stale.
+        settle("cloud_backup_uploads", () => sweepStaleBackupUploads(env, Date.now())),
+        // The computers a person picked to free for a cheaper plan: saved,
+        // then freed, a few a tick. One indexed read when no pick waits.
+        settle("cloud_plan_cleanups", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          if (key) await runPlanCleanupPicks(env, createCloudProvider(key));
+        }),
+        // Idle cleanup: warnings and follow-up emails for unused computers,
+        // then each one's work saved and the computer deleted, its lane kept,
+        // a few a tick. Two indexed reads when no computer is idle.
+        settle("cloud_idle_cleanup", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          if (key) await runIdleCleanup(env, createCloudProvider(key), Date.now(), (promise) => ctx.waitUntil(promise));
+        }),
       ]);
     } catch (error) {
       status = "error";

@@ -515,6 +515,10 @@ Harvest fixes stay local until every signal on the remote head is terminal.
 - **Treat each remaining comment as a quality finding.** Verify it against the
   real code (quality synthesis step 4), then fix it or reject it. Never trust a
   bot finding as fact. Record every handled id.
+- **A request for a test is not a reason for a test.** When a bot or a
+  reviewer asks for "tests for this", ask the critical-path question in
+  **Writing tests** (`AGENTS.md`). If it fails, reply in one line ("No test:
+  <reason>; validated by <how>.") and resolve the thread.
 - **Rerun each CI failure locally** with only the failing file (Fix
   discipline §2). The phase's own edits often fixed it already. Fix the real
   failures that remain. At the `/quality` harvest, route a failure whose cause
@@ -543,9 +547,7 @@ A push cancels and restarts an in-flight Greptile review. So, after a harvest:
   with its own fixes, in one push.
 - Before any push — a fix, a rebase, held commits, or a rerun of a flaky job
   that ends in a rebase — run the poll again and act on everything it reports.
-  A push made from a CI-only check carries open review work past the loop: on
-  PR #1469 a CodeRabbit finding and seven unanswered threads stayed open that
-  way until the user asked about them.
+  A push made from a CI-only check carries open review work past the loop.
 - Before any push, run **Commit-bound quality revalidation**. It reviews the
   delta since `qualityReviewedSha`. At the end of `/quality` that delta is
   usually empty, so this is only the bind and the push; a fix that the review
@@ -862,8 +864,7 @@ Filter out any comment whose `id` is in `addressedCommentIds`.
 **Then read every open review thread, whatever its age.** The `SINCE` filter
 only finds what is new. A review that lands while you wait on CI is older than
 the next push (a docs fix, a rebase), so the next poll's `SINCE` drops it as
-old — and nothing answers it. PR #1410 merged over seven CodeRabbit comments
-this way. Every poll also lists the unresolved threads:
+old — and nothing answers it. Every poll also lists the unresolved threads:
 
 ```bash
 ade prs comments "$PR_NUMBER" --text      # "open" rows are unresolved threads
@@ -878,7 +879,8 @@ is fix work, even when the code it points at moved ("outdated" is not
 "answered"). It goes to Phase 3b: fix it, or reply with the reason it is
 rejected, then resolve the thread. A thread whose id is already in
 `addressedCommentIds` but is still open was fixed and never answered: reply
-with the fix commit and the test that pins it, then resolve it.
+with the fix commit (and the test that pins it, if one exists), then resolve
+it.
 
 **Then read the bots' review bodies.** A finding on a line outside the diff
 cannot be an inline comment, so CodeRabbit lists it in the review body under
@@ -1097,7 +1099,7 @@ If both CI fixes and review-comment fixes are needed, spawn them **in parallel**
 
 **review-fix-agent** input:
 - List of new comments: `{id, author, body, path, line}`
-- Comment filter: address **every** comment that touches code — bot bugs, bot nits, human change-requests, human style nits. Skip only:
+- Comment filter: address **every** comment that touches code — bot bugs, bot nits, human change-requests, human style nits. A comment that asks only for a test gets a test only when it guards a critical path (**Writing tests** in `AGENTS.md`); otherwise reply "No test: <reason>; validated by <how>." and resolve it. Skip only:
   - Pure questions with no change requested
   - Praise
   - Comments whose referenced line no longer exists in the current diff
@@ -1159,7 +1161,7 @@ before merging. If the gate is non-empty or unavailable, exit
 and disclose deferred findings afterwards.
 
 For a Windows-relevant diff, the bound head must have a terminal-green native
-`windows-foundation` check. That job runs on a pull request only with the
+`windows-foundation` checks (one per matrix group, `windows-foundation (<group>)`). That job runs on a pull request only with the
 `windows` label: add it (`gh pr edit <n> --add-label windows`) when you open
 the PR, so the first push runs it. Added later, it takes effect on the next
 push; a re-run replays the old event and its old labels, so push (an empty

@@ -196,8 +196,12 @@ export function describeElement(element: IosScreenElement): string {
   return parts.join(" ");
 }
 
-function criteriaOf(query: IosSimulatorElementQuery): QueryCriterion[] {
+// `query` is caller input that arrives untyped over RPC: a call with no query
+// at all is the empty query below, answered with a reason, never a TypeError
+// (ADE-BRAIN-6Z).
+function criteriaOf(query: IosSimulatorElementQuery | null | undefined): QueryCriterion[] {
   const criteria: QueryCriterion[] = [];
+  if (!query || typeof query !== "object") return criteria;
   const push = (field: QueryCriterion["field"], raw: string | null | undefined) => {
     const value = nonEmpty(raw);
     if (value) criteria.push({ field, value });
@@ -517,9 +521,11 @@ function singleCriterionSentence(criterion: QueryCriterion): string {
  */
 export function matchElements(
   elements: IosScreenElement[],
-  query: IosSimulatorElementQuery,
+  rawQuery: IosSimulatorElementQuery | null | undefined,
   options: { labelPrefix?: boolean } = {},
 ): ElementMatchOutcome {
+  // Caller input over RPC: no query at all is the empty query (ADE-BRAIN-6Z).
+  const query: IosSimulatorElementQuery = rawQuery && typeof rawQuery === "object" ? rawQuery : {};
   const visible = elements.filter(isVisible);
   const criteria = criteriaOf(query);
 

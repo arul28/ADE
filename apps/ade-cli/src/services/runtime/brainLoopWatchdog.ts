@@ -5,9 +5,13 @@ import { Worker } from "node:worker_threads";
 import { SUSPEND_GAP_THRESHOLD_MS } from "../power/suspendGapDetector";
 import {
   BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
+  type BrainLoopFreezeCause,
   buildBrainLoopWatchdogWorkerSource,
 } from "./brainLoopWatchdogWorker";
 import { SYNC_FS_TRACKED_METHODS, syncFsCallBuffer } from "./syncFsCallTracker";
+import { BRAIN_HEARTBEAT_FILE, BRAIN_HEARTBEAT_INTERVAL_MS } from "./brainHeartbeat";
+import { processIsAlive } from "./parentDeathWatchdog";
+import type { RuntimePingReply } from "../../../../desktop/src/shared/types/remoteRuntime";
 
 export {
   BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
@@ -19,6 +23,10 @@ export {
 export const DEFAULT_BRAIN_LOOP_WATCHDOG_MS = 30_000;
 export const DEFAULT_WINDOWS_BRAIN_LOOP_WATCHDOG_MS = 60_000;
 export const BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS = 2_000;
+/** The event loop delay monitor's timer period (see where it starts). */
+const BRAIN_LOOP_DELAY_RESOLUTION_MS = 100;
+/** A heartbeat whose largest delay sample is within this of the resolution had no delay worth a mean or a p99. */
+const BRAIN_LOOP_DELAY_QUIET_MARGIN_MS = 50;
 export const BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE = "event-loop-wedge.json";
 export const BRAIN_LOOP_WATCHDOG_LAST_WEDGE_FILE = "last-wedge.json";
 export const BRAIN_LOOP_WATCHDOG_REPORT_FILE = "event-loop-wedge-report.json";
@@ -63,16 +71,37 @@ export type BrainLoopBlockedFsCall = {
   blockedMs: number;
 };
 
+/** A project scope that was opening when the watchdog looked, and how far it had got. */
+export type BrainLoopProjectOpen = {
+  projectId: string;
+  /** The open's step: `prepare`, then the runtime's own steps (`db_open`, `services`…). */
+  phase: string;
+  /** Since the open started. */
+  elapsedMs: number;
+  /** Since the open entered `phase`. Absent on breadcrumbs written before it existed. */
+  phaseElapsedMs?: number;
+};
+
 export type BrainLoopWatchdogBreadcrumb = {
   lastCommand: string;
   blockedMs: number;
   ts: string;
   blockedFsCall?: BrainLoopBlockedFsCall;
+  /**
+   * Every project scope that was opening when the brain was killed. Absent on
+   * breadcrumbs written before it existed, and when nothing was opening.
+   */
+  openingProjects?: BrainLoopProjectOpen[];
   thresholdMs?: number;
   diagnostics?: BrainLoopWatchdogDiagnostics;
   diagnosticReportPath?: string | null;
   /** The macOS `sample` of the wedged brain, taken before the kill. */
   nativeSamplePath?: string | null;
+  /**
+   * Who froze the loop: the brain itself, or the machine (memory, a drive)
+   * past the wait ceiling. Absent on breadcrumbs written before it existed.
+   */
+  freezeCause?: BrainLoopFreezeCause;
 };
 
 export type BrainLoopWatchdogEvaluation = {
@@ -398,6 +427,27 @@ export function resolveBrainLoopWatchdogThresholdMs(
   return Math.max(BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS, parsed);
 }
 
+/** The well-formed entries of a breadcrumb's `openingProjects`; anything else is dropped. */
+function readProjectOpens(value: unknown): BrainLoopProjectOpen[] {
+  if (!Array.isArray(value)) return [];
+  const opens: BrainLoopProjectOpen[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.projectId !== "string" || !record.projectId.trim()) continue;
+    const ms = (value: unknown): number | null =>
+      typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+    const phaseElapsedMs = ms(record.phaseElapsedMs);
+    opens.push({
+      projectId: record.projectId.trim(),
+      phase: typeof record.phase === "string" && record.phase ? record.phase : "unknown",
+      elapsedMs: ms(record.elapsedMs) ?? 0,
+      ...(phaseElapsedMs !== null ? { phaseElapsedMs } : {}),
+    });
+  }
+  return opens;
+}
+
 function readBreadcrumb(filePath: string): BrainLoopWatchdogBreadcrumb | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<BrainLoopWatchdogBreadcrumb>;
@@ -426,6 +476,9 @@ function readBreadcrumb(filePath: string): BrainLoopWatchdogBreadcrumb | null {
     if (typeof parsed.nativeSamplePath === "string" || parsed.nativeSamplePath === null) {
       breadcrumb.nativeSamplePath = parsed.nativeSamplePath;
     }
+    if (parsed.freezeCause === "self" || parsed.freezeCause === "memory" || parsed.freezeCause === "drive") {
+      breadcrumb.freezeCause = parsed.freezeCause;
+    }
     const fsCall = parsed.blockedFsCall;
     if (fsCall && typeof fsCall === "object" && typeof fsCall.path === "string" && typeof fsCall.method === "string") {
       breadcrumb.blockedFsCall = {
@@ -435,6 +488,8 @@ function readBreadcrumb(filePath: string): BrainLoopWatchdogBreadcrumb | null {
         blockedMs: Number.isFinite(fsCall.blockedMs) ? Math.max(0, Math.floor(fsCall.blockedMs)) : 0,
       };
     }
+    const openingProjects = readProjectOpens(parsed.openingProjects);
+    if (openingProjects.length > 0) breadcrumb.openingProjects = openingProjects;
     return breadcrumb;
   } catch {
     return null;
@@ -466,12 +521,38 @@ function rotateLatestArtifact(latestPath: string, lastPath: string): string | nu
   }
 }
 
+/**
+ * How fresh a breadcrumb must be for its live writer to count as still
+ * running. A waiting or dying brain rewrites it at least every heartbeat
+ * interval (15 s); a pid alive past this age is a reused one.
+ */
+const BREADCRUMB_LIVE_WRITER_MAX_AGE_MS = 2 * 60_000;
+
+/**
+ * Whether another brain on this home is still writing the breadcrumb: one
+ * waiting out a machine-caused freeze, or inside its kill grace. Its file is
+ * evidence in progress, not a crash, so a brain starting beside it leaves it.
+ */
+function breadcrumbWriterStillRunning(breadcrumbPath: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(breadcrumbPath, "utf8")) as { pid?: unknown; ts?: unknown };
+    const pid = parsed.pid;
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+    const writtenAtMs = typeof parsed.ts === "string" ? Date.parse(parsed.ts) : Number.NaN;
+    if (!Number.isFinite(writtenAtMs) || Date.now() - writtenAtMs > BREADCRUMB_LIVE_WRITER_MAX_AGE_MS) return false;
+    return processIsAlive(pid);
+  } catch {
+    return false;
+  }
+}
+
 export function recoverBrainLoopWatchdogBreadcrumb(args: {
   runtimeDir: string;
   warn?: (event: string, meta: Record<string, unknown>) => void;
 }): BrainLoopWatchdogBreadcrumb | null {
   const breadcrumbPath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE);
   if (!fs.existsSync(breadcrumbPath)) return null;
+  if (breadcrumbWriterStillRunning(breadcrumbPath)) return null;
   const breadcrumb = readBreadcrumb(breadcrumbPath) ?? {
     lastCommand: "unknown",
     blockedMs: 0,
@@ -550,6 +631,82 @@ export function trackBrainLoopWatchdogCommand(action: string): () => void {
   };
 }
 
+type TrackedProjectOpen = { projectId: string; phase: string; startedAtMs: number; phaseStartedAtMs: number };
+
+/**
+ * What a reply leaving the brain now was delayed by a freeze of this
+ * process. A request that arrives during a freeze waits in the socket until
+ * the loop runs again, so a client timing it (the desktop's `ping`) would read
+ * the freeze as a slow network. The reply carries this number and the client
+ * takes it off the round trip.
+ *
+ * Two readings, because a request can be handled before or after the
+ * heartbeat that measures the freeze: the gap since the last heartbeat (a
+ * freeze that just ended, not yet measured), and the last measured freeze if
+ * it ended within the last couple of seconds.
+ */
+const RECENT_FREEZE_REPLY_WINDOW_MS = 2_000;
+const FREEZE_REPLY_MIN_MS = 500;
+/** The running watchdog's reading for a reply leaving now; null when none runs. */
+let readFreezeForReply: (() => number) | null = null;
+
+/** The brain's answer to a client's `ping`, with `hostFrozenMs` after a freeze. */
+export function brainPingReply(at: string): RuntimePingReply {
+  const hostFrozenMs = readFreezeForReply?.() ?? 0;
+  return { pong: true, at, ...(hostFrozenMs > 0 ? { hostFrozenMs } : {}) };
+}
+
+let nextProjectOpenToken = 0;
+const activeProjectOpens = new Map<number, TrackedProjectOpen>();
+/** Tells a running watchdog worker which project scopes are opening; null when none runs. */
+let announceProjectOpensToWatchdog: ((opens: TrackedProjectOpen[]) => void) | null = null;
+
+/** The project scopes opening right now, with the step each one is in. */
+function currentProjectOpens(nowMs = Date.now()): BrainLoopProjectOpen[] {
+  return [...activeProjectOpens.values()].map((open) => ({
+    projectId: open.projectId,
+    phase: open.phase,
+    elapsedMs: Math.max(0, nowMs - open.startedAtMs),
+    phaseElapsedMs: Math.max(0, nowMs - open.phaseStartedAtMs),
+  }));
+}
+
+export type BrainLoopProjectOpenTracker = {
+  /** The open moved to `phase`; the worker learns it at once. */
+  phase(phase: string): void;
+  /** The open settled, either way. Idempotent. */
+  done(): void;
+};
+
+/**
+ * Mark a project scope as opening, so a freeze kill names it.
+ *
+ * Kept apart from the command tracker on purpose: a command name is "the last
+ * one that started", so a concurrent RPC would overwrite the project, and
+ * several projects can be opening at once. The worker receives the whole set
+ * on every change, by message, which it reads while the main thread is stuck.
+ */
+export function trackBrainLoopWatchdogProjectOpen(projectId: string): BrainLoopProjectOpenTracker {
+  const token = ++nextProjectOpenToken;
+  const startedAtMs = Date.now();
+  const open: TrackedProjectOpen = { projectId, phase: "prepare", startedAtMs, phaseStartedAtMs: startedAtMs };
+  activeProjectOpens.set(token, open);
+  const announce = (): void => announceProjectOpensToWatchdog?.([...activeProjectOpens.values()]);
+  announce();
+  return {
+    phase(phase) {
+      if (!activeProjectOpens.has(token) || open.phase === phase) return;
+      open.phase = phase;
+      open.phaseStartedAtMs = Date.now();
+      announce();
+    },
+    done() {
+      if (!activeProjectOpens.delete(token)) return;
+      announce();
+    },
+  };
+}
+
 export function startBrainLoopWatchdog(args: {
   runtimeDir: string;
   /**
@@ -558,6 +715,12 @@ export function startBrainLoopWatchdog(args: {
    */
   socketPath?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * The freeze threshold, when the host resolved it already for other users
+   * of the same value (the scope registry's open queue). Otherwise read from
+   * `ADE_LOOP_WATCHDOG_MS` in `env`.
+   */
+  thresholdMs?: number;
   forceInTests?: boolean;
   warn?: (event: string, meta: Record<string, unknown>) => void;
   /**
@@ -585,7 +748,11 @@ export function startBrainLoopWatchdog(args: {
    * A stall the process came back from (not a suspension). Lets the host tell
    * devices that reconnect after it why they lost it.
    */
-  onStall?: (stall: { observedLagMs: number }) => void;
+  onStall?: (stall: {
+    observedLagMs: number;
+    /** How long ago the stall ended: a lag held for the worker's verdict reaches this seconds later. */
+    endedAgoMs: number;
+  }) => void;
 }): () => void {
   const recovered = recoverBrainLoopWatchdogBreadcrumb({
     runtimeDir: args.runtimeDir,
@@ -612,7 +779,7 @@ export function startBrainLoopWatchdog(args: {
   if (env.ADE_DISABLE_LOOP_WATCHDOG === "1") return () => {};
   if (!args.forceInTests && (env.VITEST || env.NODE_ENV === "test")) return () => {};
 
-  const thresholdMs = resolveBrainLoopWatchdogThresholdMs(env.ADE_LOOP_WATCHDOG_MS);
+  const thresholdMs = args.thresholdMs ?? resolveBrainLoopWatchdogThresholdMs(env.ADE_LOOP_WATCHDOG_MS);
   const reportPath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_REPORT_FILE);
   const reportSignal = "SIGUSR2";
   let reportEnabled = false;
@@ -639,7 +806,11 @@ export function startBrainLoopWatchdog(args: {
         runtimeDir: args.runtimeDir,
         thresholdMs,
         checkIntervalMs: BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
+        nearMissMs: BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS,
         breadcrumbFile: BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE,
+        // The machine heartbeat a wait on the machine keeps fresh (see the worker).
+        heartbeatFile: BRAIN_HEARTBEAT_FILE,
+        heartbeatRefreshMs: BRAIN_HEARTBEAT_INTERVAL_MS,
         reportEnabled,
         reportPath,
         reportSignal,
@@ -670,11 +841,38 @@ export function startBrainLoopWatchdog(args: {
     }
   };
   announceCommandToWatchdog = announceCommand;
+  const announceProjectOpens = (opens: TrackedProjectOpen[]): void => {
+    try {
+      worker.postMessage({ type: "projectOpens", opens });
+    } catch {
+      // As above.
+    }
+  };
+  announceProjectOpensToWatchdog = announceProjectOpens;
+  // An open that started before the watchdog did.
+  if (activeProjectOpens.size > 0) announceProjectOpens([...activeProjectOpens.values()]);
 
-  const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+  // The monitor is a timer of its own: at 20 ms it woke the main thread 50
+  // times a second and cost about 55 ms of CPU a minute in an idle brain, the
+  // largest part of the watchdog's cost. Its max is all the watchdog judges,
+  // and a block reads within one resolution of its length, so 100 ms is
+  // exact enough next to the 2 s near miss and the 30 s threshold. At rest
+  // the max reads about one resolution (100 ms), well under both.
+  const eventLoopDelay = monitorEventLoopDelay({ resolution: BRAIN_LOOP_DELAY_RESOLUTION_MS });
   eventLoopDelay.enable();
   const monotonicMs = (): number => Number(process.hrtime.bigint() / 1_000_000n);
   let lastHeartbeatMonotonicMs = monotonicMs();
+  let lastFreeze: { lagMs: number; endedAtMonotonicMs: number } | null = null;
+  const freezeForReply = (): number => {
+    const nowMonotonicMs = monotonicMs();
+    const ongoing = nowMonotonicMs - lastHeartbeatMonotonicMs - BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS;
+    const recent = lastFreeze && nowMonotonicMs - lastFreeze.endedAtMonotonicMs <= RECENT_FREEZE_REPLY_WINDOW_MS
+      ? lastFreeze.lagMs
+      : 0;
+    const frozenMs = Math.max(ongoing, recent);
+    return frozenMs >= FREEZE_REPLY_MIN_MS ? Math.round(frozenMs) : 0;
+  };
+  readFreezeForReply = freezeForReply;
   let lastCpuMicros = (() => {
     const usage = process.resourceUsage();
     return usage.userCPUTime + usage.systemCPUTime;
@@ -694,11 +892,30 @@ export function startBrainLoopWatchdog(args: {
 
   /** The worker's recent pause reports, newest last. Only a pause near a lag can explain it. */
   const recentWorkerPauses: BrainLoopWorkerPause[] = [];
+  /**
+   * The sync file call the worker saw the main thread inside during the
+   * current freeze, longest first; taken when that freeze's lag is logged.
+   */
+  let blockedFsCallInFreeze: (BrainLoopBlockedFsCall & { atMonotonicMs: number }) | null = null;
+  const takeBlockedFsCall = (
+    lag: Pick<ObservedLag, "observedAtMonotonicMs" | "lagMs">,
+  ): BrainLoopBlockedFsCall | null => {
+    const call = blockedFsCallInFreeze;
+    if (!call) return null;
+    // A later freeze's call stays for that freeze.
+    if (call.atMonotonicMs > lag.observedAtMonotonicMs + BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS) return null;
+    blockedFsCallInFreeze = null;
+    // Only a call seen inside this lag (with a tick of slack) explains it.
+    if (call.atMonotonicMs < lag.observedAtMonotonicMs - lag.lagMs - BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS) return null;
+    return { method: call.method, path: call.path, caller: call.caller, blockedMs: call.blockedMs };
+  };
   /** A lag as the watchdog observed it, before the worker has had its say. */
   type ObservedLag = {
     observedAtMonotonicMs: number;
     lagMs: number;
     lastCommand: string;
+    /** Project scopes still opening when the lag was seen: the step a stall interrupted. */
+    openingProjects: BrainLoopProjectOpen[];
     diagnostics: BrainLoopWatchdogDiagnostics;
     cpuDeltaMs: number;
     majorPageFaultsDelta: number | null;
@@ -741,12 +958,27 @@ export function startBrainLoopWatchdog(args: {
       return;
     }
     try {
-      args.onStall?.({ observedLagMs: held.lagMs });
+      args.onStall?.({
+        observedLagMs: held.lagMs,
+        endedAgoMs: Math.max(0, monotonicMs() - held.observedAtMonotonicMs),
+      });
     } catch {
       // Reporting a stall must never break the watchdog.
     }
+    // The sync file call the main thread was inside during the lag, if the worker saw one.
+    const blockedFsCall = takeBlockedFsCall(held);
     warn?.("brain.event_loop_near_miss", {
       lastCommand: held.lastCommand,
+      ...(held.openingProjects.length > 0 ? { openingProjects: held.openingProjects } : {}),
+      // Flat fields, so Sentry Logs can group near misses by what they waited on.
+      ...(blockedFsCall
+        ? {
+          blockedFsMethod: blockedFsCall.method,
+          blockedFsPath: blockedFsCall.path,
+          blockedFsCaller: blockedFsCall.caller,
+          blockedFsMs: blockedFsCall.blockedMs,
+        }
+        : {}),
       thresholdMs,
       observedLagMs: held.lagMs,
       workerPauseCoverage,
@@ -804,13 +1036,22 @@ export function startBrainLoopWatchdog(args: {
     );
     lastInvoluntarySwitches = resources.involuntaryContextSwitches;
     resolveHeldLag(nowMonotonicMs);
+    // The mean and the p99 walk the whole histogram: on the reference Mac they
+    // were about a third of a millisecond a second, the largest part of an idle
+    // heartbeat. Each sample is the time between two of the monitor's ticks, so
+    // none is below one resolution. In a quiet second no sample is more than
+    // the quiet margin above that either, so the mean and the p99 sit within the
+    // margin of the max; the max stands in for both. Any second with a real
+    // delay gets the exact numbers.
+    const eventLoopDelayMaxMs = eventLoopDelayMs(eventLoopDelay.max);
+    const quietSecond = eventLoopDelayMaxMs < BRAIN_LOOP_DELAY_RESOLUTION_MS + BRAIN_LOOP_DELAY_QUIET_MARGIN_MS;
     const diagnostics: BrainLoopWatchdogDiagnostics = {
       capturedAt: new Date().toISOString(),
       heartbeatLagMs: Math.floor(heartbeatLagMs),
       eventLoopDelay: {
-        maxMs: eventLoopDelayMs(eventLoopDelay.max),
-        meanMs: eventLoopDelayMs(eventLoopDelay.mean),
-        p99Ms: eventLoopDelayMs(eventLoopDelay.percentile(99)),
+        maxMs: eventLoopDelayMaxMs,
+        meanMs: quietSecond ? eventLoopDelayMaxMs : eventLoopDelayMs(eventLoopDelay.mean),
+        p99Ms: quietSecond ? eventLoopDelayMaxMs : eventLoopDelayMs(eventLoopDelay.percentile(99)),
       },
       memory: {
         rss: memory.rss,
@@ -887,11 +1128,15 @@ export function startBrainLoopWatchdog(args: {
         observedAtMonotonicMs: nowMonotonicMs,
       }),
     });
+    if (lag.observedLagMs >= FREEZE_REPLY_MIN_MS) {
+      lastFreeze = { lagMs: lag.observedLagMs, endedAtMonotonicMs: nowMonotonicMs };
+    }
     if (lag.verdict !== "normal") {
       const observation: ObservedLag = {
         observedAtMonotonicMs: nowMonotonicMs,
         lagMs: lag.observedLagMs,
         lastCommand: currentCommandName(),
+        openingProjects: currentProjectOpens(),
         diagnostics,
         cpuDeltaMs,
         majorPageFaultsDelta,
@@ -907,7 +1152,10 @@ export function startBrainLoopWatchdog(args: {
         // report with "event loop near miss".
         heldLag = observation;
       } else {
-        emitLag(observation, lag.verdict);
+        // After the worker's messages from the freeze: this timer runs before
+        // the loop polls for them, and one names the file call it waited on.
+        const verdict = lag.verdict;
+        setImmediate(() => emitLag(observation, verdict));
       }
     }
     try {
@@ -931,7 +1179,29 @@ export function startBrainLoopWatchdog(args: {
       type?: unknown;
       pausedMs?: unknown;
       resumedAtMonotonicMs?: unknown;
+      method?: unknown;
+      path?: unknown;
+      caller?: unknown;
+      blockedMs?: unknown;
+      atMonotonicMs?: unknown;
     };
+    if (record.type === "blockedFsCall") {
+      const blockedMs = Number(record.blockedMs);
+      const atMonotonicMs = Number(record.atMonotonicMs);
+      if (typeof record.method !== "string" || typeof record.path !== "string") return;
+      if (!Number.isFinite(blockedMs) || !Number.isFinite(atMonotonicMs)) return;
+      // The worker reports each tick of a freeze: keep the longest call.
+      if (blockedFsCallInFreeze && blockedFsCallInFreeze.blockedMs > blockedMs
+        && atMonotonicMs - blockedFsCallInFreeze.atMonotonicMs <= BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS * 2) return;
+      blockedFsCallInFreeze = {
+        method: record.method,
+        path: record.path,
+        caller: typeof record.caller === "string" ? record.caller : null,
+        blockedMs: Math.floor(blockedMs),
+        atMonotonicMs,
+      };
+      return;
+    }
     if (record.type !== "sleep") return;
     const pausedMs = Number(record.pausedMs);
     if (!Number.isFinite(pausedMs) || pausedMs <= 0) return;
@@ -967,6 +1237,8 @@ export function startBrainLoopWatchdog(args: {
     emitHeldLag();
     eventLoopDelay.disable();
     if (announceCommandToWatchdog === announceCommand) announceCommandToWatchdog = null;
+    if (announceProjectOpensToWatchdog === announceProjectOpens) announceProjectOpensToWatchdog = null;
+    if (readFreezeForReply === freezeForReply) readFreezeForReply = null;
     void worker.terminate();
   };
 }

@@ -213,9 +213,9 @@ with the watcher:
 
 There is no content index. Entries are `path` / `lowerPath` / `size` /
 `mtimeMs` and nothing more: the build walk only stats paths (no file
-reads), so `quickOpen` never waits on content, and retaining decoded
-lines here previously cost hundreds of megabytes of heap and crashed the
-app once "include ignored files" widened the pile. `searchText` reads,
+reads), so `quickOpen` never waits on content. Do not keep decoded lines
+here: they cost hundreds of megabytes of heap with "include ignored files"
+on. `searchText` reads,
 scans, and discards — nothing it decodes outlives the call. `quickOpen`
 results are cached per `(query, limit, mode)` per index; any watcher
 mutation clears the query cache.
@@ -226,7 +226,7 @@ before the first real query. To turn a chat `sessionId` into the
 workspace to search, the bridge (`adeActions/registry.ts`) caches the
 session's `laneId` in `fileSearchLaneIdBySessionId` (capped at 200,
 LRU). Only non-identity sessions are cached, because their lane binding
-is immutable; primary-pinned identity sessions (CTO / worker) can be
+is immutable; primary-pinned identity sessions (the CTO) can be
 migrated to the canonical primary lane by `resumeSession`, so they
 resolve fresh each call.
 

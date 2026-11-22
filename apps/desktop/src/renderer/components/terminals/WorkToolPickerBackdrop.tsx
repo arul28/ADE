@@ -3,9 +3,11 @@ import { selectEffectiveThemeId, useAppearanceStore, type ThemeId } from "../../
 import { resolveTheme, resolveThemeById, STYLESHEET_THEME_IDS } from "../../../shared/theme";
 import { cn } from "../ui/cn";
 import { createBackdropRenderer, type BackdropRenderer } from "./workToolPickerBackdropRenderer";
+import { acquireBackdropCanvas, returnBackdropCanvas } from "./backdropCanvasPool";
 import { useActiveScene } from "../../scene/useScene";
 import { backdropThemeFromScene, type ScenePalette } from "../../scene/scenePalette";
 import { SceneImageLayer } from "../../scene/SceneImageLayer";
+import type { ScenePreferences } from "../../scene/scenePreferences";
 
 export {
   BACKDROP_FRAME_MS,
@@ -59,6 +61,7 @@ export function WorkToolPickerBackdrop({
   clockOrigin,
   field,
   colors,
+  untouchedScene,
 }: {
   theme: ThemeId;
   /**
@@ -74,8 +77,12 @@ export function WorkToolPickerBackdrop({
   clockOrigin?: number;
   /** `window`: draw this box's part of one window-sized field; see `createBackdropRenderer`. */
   field?: "window";
+  /** The scene for a person who never picked one; see `useActiveScene`. */
+  untouchedScene?: ScenePreferences;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // The canvas comes from the pool (`backdropCanvasPool.ts`) and is placed in
+  // this host, so a remount reuses the last backdrop's WebGL context.
+  const canvasHostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<BackdropRenderer | null>(null);
   // The two stylesheet themes keep their hand-tuned ramps; every other theme
   // paints the mesh from its own accent, so the header and the start screen
@@ -92,10 +99,14 @@ export function WorkToolPickerBackdrop({
   }, [themeId, customThemes]);
   // A scene picture either fills the window field itself or, everywhere else
   // (and when the user asked for colours only), lends the mesh its colours.
-  const scene = useActiveScene();
+  const scene = useActiveScene({ untouched: untouchedScene });
   const showPicture = !colors && field === "window" && scene.kind === "image" && scene.showImage;
   // The `plain` scene: the flat CSS background below, with no mesh and no loop.
   const still = !colors && scene.kind === "plain";
+  // Shuffle has not drawn its picture yet: a mesh built now would be thrown
+  // away when the picture arrives (the top bar did that on every launch), so
+  // the static gradient holds until the scene settles.
+  const settling = !colors && scene.kind === "gradient" && scene.pending === true;
   const scenePalette = colors ?? (scene.kind === "image" ? scene.palette : null);
   const override = useMemo(
     () => (scenePalette ? backdropThemeFromScene(scenePalette, theme) : undefined),
@@ -120,9 +131,11 @@ export function WorkToolPickerBackdrop({
   }, []);
 
   useEffect(() => {
-    if (webglRefused || showPicture || still) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (webglRefused || showPicture || still || settling) return;
+    const host = canvasHostRef.current;
+    if (!host) return;
+    const canvas = acquireBackdropCanvas();
+    host.appendChild(canvas);
     const renderer = createBackdropRenderer({
       canvas,
       theme,
@@ -134,12 +147,19 @@ export function WorkToolPickerBackdrop({
       field,
       onRefused: () => setWebglRefused(true),
     });
+    if (!renderer) {
+      // Refused: the renderer has already released the context. A canvas with
+      // no context is a layer the compositor would carry for nothing.
+      canvas.remove();
+      return;
+    }
     rendererRef.current = renderer;
     return () => {
-      renderer?.dispose();
+      renderer.dispose({ keepContext: true });
+      returnBackdropCanvas(canvas);
       if (rendererRef.current === renderer) rendererRef.current = null;
     };
-  }, [theme, palette, override, reduceMotion, clockOrigin, field, webglRefused, motionEpoch, showPicture, still]);
+  }, [theme, palette, override, reduceMotion, clockOrigin, field, webglRefused, motionEpoch, showPicture, still, settling]);
 
   useEffect(() => {
     rendererRef.current?.setPlaying(playing);
@@ -150,20 +170,15 @@ export function WorkToolPickerBackdrop({
   return (
     <div
       aria-hidden="true"
-      data-backdrop={showPicture ? "scene" : webglRefused || still ? "static" : "shader"}
+      data-backdrop={showPicture ? "scene" : settling ? "settling" : webglRefused || still ? "static" : "shader"}
       data-field={field}
       className={cn("ade-tool-picker-backdrop", className)}
     >
       <div className="ade-tool-picker-static absolute inset-0" />
       {showPicture && scene.kind === "image" ? (
         <SceneImageLayer scene={scene} />
-      ) : webglRefused || still ? null : (
-        <canvas
-          ref={canvasRef}
-          data-backdrop-canvas=""
-          className="absolute inset-0"
-          style={{ display: "block", width: "100%", height: "100%" }}
-        />
+      ) : webglRefused || still || settling ? null : (
+        <div ref={canvasHostRef} className="absolute inset-0" />
       )}
     </div>
   );

@@ -343,6 +343,32 @@ function widthFor(columns: number, available: number): number {
  * rows when they fit, so one small widget is not stretched page-tall.
  */
 export function packLayout(cells: readonly HomeLayoutCell[], metrics: Pick<GridMetrics, "columns" | "maxRows" | "height" | "width">, shapeOf: ShapeOf): PackResult {
+  const best = packBest(cells, metrics, shapeOf);
+  if (!hidesWayIn(best.hidden)) return best;
+  // Projects is the way into a project, so on a small page it is never the
+  // card with no room. First it keeps its place without the cards stacked
+  // under it (they wait in the hidden list, still stacked, so the editor's
+  // groups stay as saved); then it goes first.
+  const index = cells.findIndex((cell) => cell.host.type === WAY_IN_TYPE);
+  if (index < 0) return best;
+  const wayIn: HomeLayoutCell = { host: cells[index]!.host, stacked: [] };
+  const companions = cells[index]!.stacked.map((item): HomeLayoutCell => ({ host: item, stacked: [] }));
+  const rest = [...cells.slice(0, index), ...cells.slice(index + 1)];
+  for (const variant of [[...cells.slice(0, index), wayIn, ...cells.slice(index + 1)], [wayIn, ...rest]]) {
+    const result = packBest(variant, metrics, shapeOf);
+    if (!hidesWayIn(result.hidden)) return { ...result, hidden: [...companions, ...result.hidden] };
+  }
+  return best;
+}
+
+/** The widget that opens a project. A Projects card the person stacked under another keeps that choice. */
+const WAY_IN_TYPE: HomeWidgetType = "projects";
+
+function hidesWayIn(hidden: readonly HomeLayoutCell[]): boolean {
+  return hidden.some((cell) => cell.host.type === WAY_IN_TYPE);
+}
+
+function packBest(cells: readonly HomeLayoutCell[], metrics: Pick<GridMetrics, "columns" | "maxRows" | "height" | "width">, shapeOf: ShapeOf): PackResult {
   if (cells.length === 0) {
     return { placed: [], hidden: [], holes: 0, shrunk: 0, grown: 0, trailing: 0, rows: 1, rowPx: rowPx(1, metrics.height), columns: metrics.columns, width: metrics.width };
   }

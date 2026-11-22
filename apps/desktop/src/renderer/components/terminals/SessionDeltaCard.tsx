@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding, SessionDeltaSummary, TerminalSessionDetail } from "../../../shared/types";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
+import { withChatPin } from "../chat/chatMachinePin";
 
 export function SessionDeltaCard({
   sessionId,
@@ -27,7 +28,7 @@ export function SessionDeltaCard({
     setSession(null);
 
     const pin = runtimePinRef.current;
-    Promise.allSettled([window.ade.sessions.getDelta(sessionId, pin), window.ade.sessions.get(sessionId, pin)]).then((results) => {
+    Promise.allSettled([withChatPin(pin, (chatPin) => window.ade.sessions.getDelta(sessionId, chatPin)), withChatPin(pin, (chatPin) => window.ade.sessions.get(sessionId, chatPin))]).then((results) => {
       if (cancelled) return;
       const [deltaResult, sessionResult] = results;
       if (deltaResult.status === "fulfilled") setDelta(deltaResult.value);

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import type { IosElementContextItem, OpenProjectBinding } from "../../../shared/types";
 import type {
   AndroidDeviceInventory,
@@ -8,8 +9,7 @@ import type {
   AndroidRenderRequestEvent,
 } from "../../../shared/types/androidEmulator";
 import { useAppStore } from "../../state/appStore";
-import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
-import { isInParkedSurface } from "../../lib/parkedSurface";
+import { usePaneOffScreen } from "../../lib/parkedSurface";
 import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
@@ -45,14 +45,9 @@ import { useAndroidDeviceStream } from "./useAndroidDeviceStream";
 import { useAndroidOrientation } from "./useAndroidOrientation";
 import { useAndroidScreenCaptures } from "./useAndroidScreenCaptures";
 import { androidCatalogColor, androidCatalogEntry, androidCatalogEntryForAvd, type AndroidCatalogEntry } from "../../../shared/androidDeviceCatalog";
-import type { Device3DFailure } from "../device/Device3DView";
 import { ANDROID_DEFAULT_BODY_COLOR, androidBodyColor, type AndroidBodySpec } from "./androidDeviceBody";
-import {
-  androidScreenAspect,
-  readAndroidViewMode,
-  writeAndroidViewMode,
-  type AndroidViewMode,
-} from "./androidDeviceState";
+import { androidScreenAspect } from "./androidDeviceState";
+import { useAndroidViewMode } from "./useAndroidViewMode";
 import { AndroidRenderSheet } from "./AndroidRenderSheet";
 import { useAndroidBootScreen } from "./useAndroidBootScreen";
 import { useAndroidRenderRequests } from "./useAndroidRenderRequests";
@@ -66,10 +61,14 @@ import { useAndroidStorageActions } from "./useAndroidStorageActions";
 import { useAndroidExtraDevices } from "./useAndroidExtraDevices";
 import { AndroidQuickChips } from "./AndroidQuickChips";
 import { AndroidPaneStrip } from "./AndroidPaneStrip";
+import { AndroidCloudComputerNotice, cloudComputerWithoutAndroid } from "./AndroidCloudComputerNotice";
+import { useCloudComputer } from "../remoteTargets/useCloudComputer";
 import { AndroidCrashPin } from "./AndroidCrashPin";
 import { subscribeAndroidPickerRequests, takeAndroidPickerRequest } from "./androidPickerRequests";
 import type { AndroidDrawerGroupId } from "./drawer/androidDrawerState";
 import { presetDeviceDrawerGroup } from "../device/deviceDrawerState";
+import { useDeviceMachinePin } from "../apple/useDeviceMachinePin";
+import { WorkToolEmptyLine } from "../terminals/workToolChrome";
 
 /** Below this pane width the chips would crowd the picture; the drawer still has every control. */
 const ANDROID_QUICK_CHIPS_MIN_WIDTH = 420;
@@ -140,7 +139,18 @@ export type AndroidCreateChoice =
   | { profileId: string }
   | { catalogId: string; colorId: string | null; systemImage?: string | null; displayName?: string | null };
 
-export function AndroidDevicePane({
+/**
+ * The pane for one lane's emulator. Every emulator call names the lane's
+ * machine (`useDeviceMachinePin`). With no machine at all (no computer online
+ * for this project) it shows one line and makes no call.
+ */
+export function AndroidDevicePane(props: AndroidDevicePaneProps) {
+  const pin = useDeviceMachinePin(props.runtimePin);
+  if (!pin) return <WorkToolEmptyLine title="No computer with this project is online" testId="android-pane-no-computer" />;
+  return <AndroidDevicePaneOnMachine {...props} runtimePin={pin} />;
+}
+
+function AndroidDevicePaneOnMachine({
   laneId,
   laneName,
   runtimePin,
@@ -151,22 +161,25 @@ export function AndroidDevicePane({
   onInsertDraft,
   onAddContext,
   className,
-}: AndroidDevicePaneProps) {
+}: AndroidDevicePaneProps & { runtimePin: OpenProjectBinding }) {
   const api = window.ade?.androidEmulator ?? null;
-  const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
+  const runtimePinRef = useRef<OpenProjectBinding>(runtimePin);
   runtimePinRef.current = runtimePin;
-  const pinKey = runtimePin?.key ?? null;
-  const bound = useAppStore((state) => state.projectBinding);
+  const pinKey = runtimePin.key;
   // Where the lane's files live: a remote machine's log path cannot be opened here.
-  const binding = effectiveRuntimeBinding(runtimePin, bound);
-  const remoteMachine = binding?.kind === "remote";
-  // A lane on a project tab bound to another machine has no pin, so the
-  // caller passes no name: the tab's binding names the machine.
-  const remoteMachineName = machineName ?? (binding?.kind === "remote" ? binding.runtimeName : null);
+  const remoteMachine = runtimePin.kind === "remote";
+  // The tab's own copy on another machine comes with no name from the
+  // caller: the pin names the machine.
+  // An ADE Cloud computer reads "ADE Cloud", never its own name.
+  const remoteMachineName = machineName ?? (runtimePin.kind === "remote" ? machineLabelForBinding(runtimePin) : null);
+  // An ADE Cloud computer gets its own notice in place of the KVM one or a
+  // start refused for disk. Found by the same pin as every Android call.
+  const { box: cloudBox, account: cloudAccount, refresh: refreshCloud } = useCloudComputer(runtimePin);
+  const cloudNoAndroid = cloudComputerWithoutAndroid(cloudBox);
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [bodyWidth, setBodyWidth] = useState(720);
-  const [hidden, setHidden] = useState(false);
+  const hidden = usePaneOffScreen(bodyRef);
 
   const [status, setStatus] = useState<AndroidEmulatorStatus | null>(null);
   const [statusError, setStatusError] = useState<AndroidErrorDescription | null>(null);
@@ -185,24 +198,9 @@ export function AndroidDevicePane({
   /* ── P1 look: the view mode (3D / flat), as on the Apple pane ──────────── */
 
   const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
-  const [viewMode, setViewModeState] = useState<AndroidViewMode>(() => readAndroidViewMode(projectRoot));
-  const [threeFailure, setThreeFailure] = useState<Device3DFailure | null>(null);
-  const [viewNonce, setViewNonce] = useState(0);
-  useEffect(() => {
-    setViewModeState(readAndroidViewMode(projectRoot));
-    setThreeFailure(null);
-  }, [projectRoot]);
-  const setViewMode = useCallback((next: AndroidViewMode) => {
-    setViewModeState(next);
-    if (next === "3d") setThreeFailure(null);
-    writeAndroidViewMode(projectRoot, next);
-  }, [projectRoot]);
-  /** The 3D view cannot draw here: fall back to flat and say so once (Apple §A1). */
-  const handleThreeUnavailable = useCallback((reason: Device3DFailure) => {
-    setThreeFailure(reason);
-    setViewModeState("flat");
-  }, []);
-  const threeD = viewMode === "3d" && threeFailure === null;
+  const {
+    threeD, threeFailure, viewNonce, setViewMode, handleThreeUnavailable, retry3D, dismiss3DFailure, resetView,
+  } = useAndroidViewMode(projectRoot);
   /** A colour picked here, shown at once while the brain records it. */
   const [colorOverride, setColorOverride] = useState<string | null>(null);
 
@@ -214,19 +212,6 @@ export function AndroidDevicePane({
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width;
       if (typeof width === "number") setBodyWidth(width);
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const node = bodyRef.current;
-    if (!node || typeof IntersectionObserver !== "function") return undefined;
-    // A parked surface (another project or tab on screen) reads as not
-    // intersecting, but keeps its stream so switching back shows it live.
-    const observer = new IntersectionObserver((entries) => {
-      const entry = entries[0];
-      if (entry) setHidden(!entry.isIntersecting && !isInParkedSurface(node));
     });
     observer.observe(node);
     return () => observer.disconnect();
@@ -680,14 +665,27 @@ export function AndroidDevicePane({
       onDismissError={() => { setError(null); forgetRefused(); }}
       onStart={start}
       onStartAnyway={() => startRefused({ force: true })}
-      machine={{ remote: remoteMachine, name: remoteMachineName }}
+      machine={{ remote: remoteMachine, name: remoteMachineName, pin: runtimePin }}
       onRestartAdb={() => startRefused({ restartAdb: true })}
       onError={setError}
       onChoose={() => setPickerRequested(true)}
       onReconnect={() => stream.reconnect()}
-      onRetry3D={() => { setThreeFailure(null); setViewMode("3d"); setViewNonce((nonce) => nonce + 1); }}
-      onDismiss3D={() => setThreeFailure(null)}
+      onRetry3D={retry3D}
+      onDismiss3D={dismiss3DFailure}
       onDismissAcceleration={() => setNoAccelDismissed(true)}
+      cloudNeedsFullComputer={cloudNoAndroid != null}
+      renderCloudNotice={cloudBox
+        ? (need, onDismiss) => (
+          <AndroidCloudComputerNotice
+            box={cloudBox}
+            account={cloudAccount}
+            need={need}
+            name={remoteMachineName}
+            refresh={refreshCloud}
+            onDismiss={onDismiss}
+          />
+        )
+        : null}
     />
   );
 
@@ -724,7 +722,7 @@ export function AndroidDevicePane({
           />
         );
       case "loading":
-        return <AndroidPaneMessage title="Reading this machine's Android setup…" description={null} />;
+        return <AndroidPaneMessage title="Reading this machine's Android setup…" description={null} busy />;
       case "status-failed":
         return (
           <div data-android-status-failed="" className="flex size-full items-start justify-center px-4 py-6">
@@ -883,7 +881,7 @@ export function AndroidDevicePane({
                 threeDisabledReason={threeFailure}
                 onRender={renders.openRender}
                 rendering={renders.rendering}
-                onResetView={() => setViewNonce((nonce) => nonce + 1)}
+                onResetView={resetView}
                 colors={laneEntry?.colors}
                 colorId={bodySpec?.colorId ?? null}
                 onColor={noPicker ? undefined : setColor}
@@ -929,7 +927,7 @@ export function AndroidDevicePane({
               <AndroidRecordingPill recording={recording} />
             </>
           ) : null}
-          <AndroidRecordingSavedReceipt recording={recording} remoteMachine={remoteMachine} onError={onToolError} />
+          <AndroidRecordingSavedReceipt recording={recording} pin={runtimePin} onError={onToolError} />
           </div>
           {posture.posture ? (
             <AndroidFoldDock

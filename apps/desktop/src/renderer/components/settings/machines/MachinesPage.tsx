@@ -2,7 +2,7 @@ import { useMemo, type CSSProperties } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ArrowRight, CaretRight } from "@phosphor-icons/react";
 import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
-import type { ProjectMachine } from "../../../state/projectMachines";
+import { useLinkRoundTripMs, useSlowLinkActive, type ProjectMachine } from "../../../state/projectMachines";
 import { useAutoUpdateSnapshot } from "../../app/useAutoUpdateSnapshot";
 import { UpdateTrackChip } from "../../app/ChannelBadge";
 import { MachineAvatar, machineFormFactor, useMachineColor } from "../../remoteTargets/MachineIdentity";
@@ -10,7 +10,7 @@ import { FreeSpaceMeter } from "../health/healthCharts";
 import { formatBytes } from "../../../lib/format";
 import { formatStorageBytes } from "../../../../shared/formatting";
 import { freeSpaceLevel } from "../storage/storageView";
-import { machineSectionAvailable, settingsMachinePageFor, type SettingsMachinePage } from "../SettingsMachinesNav";
+import { routedPageFor, settingsMachinePageFor, type SettingsMachinePage } from "../SettingsMachinesNav";
 import type { MachineStats } from "../../../../shared/types/machineStats";
 import { useMachineStatsMap, type MachineStatsRequest } from "../../../state/machineStats";
 import { useMachinePlacementPreferences } from "../../../state/machinePlacement";
@@ -22,6 +22,7 @@ import { osLabel, platformWord, useMachineFacts, type MachineFacts } from "./mac
 import { useSettingsMachines } from "./settingsMachinesContext";
 import { useThisComputerFacts } from "./useThisComputerFacts";
 import { MachineSettings } from "./MachineSettings";
+import { machineLabelForMachine, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "../../../state/adeCloudLaneIndex";
 import "./machinesPage.css";
 
 /**
@@ -34,21 +35,35 @@ export function MachinesPage({ machine }: { machine: SettingsMachinePage | null 
   return detail && machine ? <MachineDetail scope={machine} /> : <MachinesList />;
 }
 
-function machineDisplayName(machine: ProjectMachine, thisMachineName: string | null): string {
-  return machine.isThisMachine ? (thisMachineName ?? THIS_MACHINE_NAME) : machine.machineName;
+/**
+ * This computer by its device name; an ADE Cloud computer as "ADE Cloud";
+ * any other machine by its name; two that share a name told apart (`names`).
+ */
+function machineDisplayName(
+  machine: ProjectMachine,
+  names: ReadonlyMap<string, string>,
+  thisMachineName: string | null,
+  laneComputers: readonly AdeCloudLaneComputer[],
+): string {
+  const shown = names.get(machine.machineId);
+  if (shown) return shown;
+  if (machine.isThisMachine) return thisMachineName ?? THIS_MACHINE_NAME;
+  return machineLabelForMachine({ hostname: machine.hostname, machineKey: machine.machineId, name: machine.machineName }, laneComputers);
 }
 
 function MachinesList() {
-  const { machines, thisMachineName, openMachine, openTab } = useSettingsMachines();
+  const { machines, machineNames, thisMachineName, openMachine, openTab } = useSettingsMachines();
+  const { computers: laneComputers } = useAdeCloudLaneComputers();
   const update = useAutoUpdateSnapshot();
   const facts = useMachineFacts(machines, update.currentVersion || null);
   const local = useThisComputerFacts();
   const known = useKnownAdeVersions();
-  // Each machine's load, read through its own pin once when the list opens.
+  // Each machine's load, read through its own pin once when the list opens:
+  // its copy of this repository, else its machine route.
   const statsRequests = useMemo<MachineStatsRequest[]>(() => machines.flatMap((machine) => {
     if (!machine.online && !machine.isThisMachine) return [];
-    const page = settingsMachinePageFor(machine);
-    return machineSectionAvailable("routed", page) ? [{ id: machine.machineId, pin: page.pin }] : [];
+    const page = routedPageFor(settingsMachinePageFor(machine));
+    return page && page.online ? [{ id: machine.machineId, pin: page.pin }] : [];
   }), [machines]);
   const { stats } = useMachineStatsMap(statsRequests, true);
   const { preferenceOf } = useMachinePlacementPreferences();
@@ -69,7 +84,7 @@ function MachinesList() {
         <div className="ade-mx-lineup" aria-hidden>
           {machines.slice(0, 5).map((machine, index) => {
             const fact = facts.get(machine.machineId);
-            const name = machineDisplayName(machine, thisMachineName);
+            const name = machineDisplayName(machine, machineNames, thisMachineName, laneComputers);
             return (
               <span key={machine.machineId} className="ade-mx-lineup-tile" style={{ "--i": index } as CSSProperties}>
                 <MachineAvatar
@@ -104,7 +119,7 @@ function MachinesList() {
           <MachineListRow
             key={machine.machineId}
             machine={machine}
-            name={machineDisplayName(machine, thisMachineName)}
+            name={machineDisplayName(machine, machineNames, thisMachineName, laneComputers)}
             fact={facts.get(machine.machineId)}
             local={machine.isThisMachine ? local : null}
             known={known}
@@ -116,6 +131,17 @@ function MachinesList() {
       </div>
     </div>
   );
+}
+
+/**
+ * "766 ms", "Slow connection" while the link to a paired machine is in
+ * slow-connection mode, as the Connections panel says it; nothing otherwise.
+ */
+function useSlowLinkWords(targetId: string | null): string[] {
+  const slow = useSlowLinkActive(targetId);
+  const rttMs = useLinkRoundTripMs(slow ? targetId : null);
+  if (!slow) return [];
+  return typeof rttMs === "number" ? [`${Math.round(rttMs)} ms`, "Slow connection"] : ["Slow connection"];
 }
 
 /** The dot and word under a machine's name: its service here, its connection elsewhere. */
@@ -154,6 +180,7 @@ function MachineListRow({
 }) {
   const offline = !machine.online && !machine.isThisMachine;
   const status = presence(machine, local);
+  const slowLink = useSlowLinkWords(machine.isThisMachine ? null : machine.machineId);
   const target = fact?.connected && machine.online ? machineUpdateTargetVersion(fact.connected, known) : null;
   const os = machine.isThisMachine ? osLabel(local?.info?.platform) : platformWord(fact?.platform);
   // Disk sizes in the machine's own file manager's units (Finder vs Explorer).
@@ -182,7 +209,7 @@ function MachineListRow({
         </span>
         <span className="ade-mx-row-sub">
           <span className="kit-dot" data-state={status.state} aria-hidden />
-          <span className="ade-mx-row-sub-text">{[status.word, os, ...busyNotes].filter(Boolean).join(" · ")}</span>
+          <span className="ade-mx-row-sub-text">{[status.word, ...slowLink, os, ...busyNotes].filter(Boolean).join(" · ")}</span>
           {preferenceTag ? <span className="kit-tag" data-tone={preferenceTag === "Manual only" ? "warn" : undefined} title="New work: how often Least loaded picks this machine">{preferenceTag}</span> : null}
         </span>
       </span>
@@ -228,16 +255,18 @@ function MachineListRow({
  * machine and no other.
  */
 function MachineDetail({ scope }: { scope: SettingsMachinePage }) {
-  const { machines, thisMachineName } = useSettingsMachines();
+  const { machines, machineNames, thisMachineName } = useSettingsMachines();
+  const { computers: laneComputers } = useAdeCloudLaneComputers();
   const update = useAutoUpdateSnapshot();
   const machine = machines.find((candidate) => candidate.machineId === scope.machineId) ?? null;
   const facts = useMachineFacts(machine ? [machine] : [], update.currentVersion || null);
   const local = useThisComputerFacts();
   const fact = machine ? facts.get(machine.machineId) : undefined;
-  const name = machine ? machineDisplayName(machine, thisMachineName) : scope.machineName;
+  const name = machine ? machineDisplayName(machine, machineNames, thisMachineName, laneComputers) : scope.machineName;
   const color = useMachineColor(fact?.colorKey ?? scope.machineId);
   const offline = !scope.online && !scope.isThisMachine;
   const os = scope.isThisMachine ? osLabel(local.info?.platform) : platformWord(fact?.platform);
+  const slowLink = useSlowLinkWords(scope.isThisMachine ? null : scope.machineId);
 
   return (
     <div className="ade-mx">
@@ -259,7 +288,7 @@ function MachineDetail({ scope }: { scope: SettingsMachinePage }) {
             </div>
             <div className="ade-mx-hero-sub">
               <span className="kit-dot" data-state={offline ? undefined : "ok"} aria-hidden />
-              {[scope.isThisMachine ? "This machine" : offline ? "Offline" : "Online", os, fact?.versionLabel ? `ADE ${fact.versionLabel}` : null].filter(Boolean).join(" · ")}
+              {[scope.isThisMachine ? "This machine" : offline ? "Offline" : "Online", ...slowLink, os, fact?.versionLabel ? `ADE ${fact.versionLabel}` : null].filter(Boolean).join(" · ")}
             </div>
           </div>
         </div>

@@ -17,6 +17,14 @@ const ROOT_PATH_DELIMITER = String.fromCharCode(0);
  */
 export const GIT_UNTRUSTED_FOLDER_CODE = "git_untrusted_folder";
 
+/**
+ * The brain refused to open a project because opening it froze ADE until its
+ * freeze guard restarted it, more than once: the folder's drive is too slow
+ * for ADE (`apps/ade-cli/src/services/projects/projectOpenStrikes.ts`). The
+ * message names the project and the wait; Try again clears the refusal.
+ */
+export const PROJECT_FOLDER_TOO_SLOW_CODE = "project_folder_too_slow";
+
 export function codedError<TCode extends string>(message: string, code: TCode): Error & { code: TCode } {
   return Object.assign(new Error(message), { code });
 }
@@ -72,7 +80,10 @@ export function encodeCodedErrorMessage(code: string, message: string, meta?: { 
 export function stripElectronErrorWrapper(message: string): string {
   return message
     .replace(/^Error invoking remote method '[^']+':\s*/i, "")
-    .replace(/^Error:\s*/i, "")
+    // Electron puts the error's class name before its message:
+    // "PairedRuntimeTransportUnavailableError: Can't reach …" reached the chat
+    // as written. The person needs the sentence, not the class.
+    .replace(/^(?:[A-Z][A-Za-z0-9]*)?Error:\s*/i, "")
     // The runtime RPC client wraps every daemon-side failure in "Remote ADE
     // service method <m> failed (code <n>): …". A code the brain attached is
     // behind that wrapper, and without stripping it no brain-side failure can

@@ -27,6 +27,7 @@ import { useBannerDismissals } from "../../lib/bannerDismiss";
 import { showToast } from "../app/toast/toastStore";
 import { Banner, type BannerModel } from "../ui/notice";
 import { cn } from "../ui/cn";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * The state of a chat's move to another machine, above its composer. The
@@ -167,22 +168,22 @@ export function CrossMachineHandoffBanner({
       const api = window.ade.agentChat;
       const session = { sourceSessionId: sessionId };
       const calls: Record<BannerAction, () => Promise<AgentChatCrossMachineHandoffRecord | null>> = {
-        cancel: () => api.cancelCrossMachineHandoff(session, runtimePin),
-        retry: () => api.retryCrossMachineHandoff(session, runtimePin),
-        workHere: () => api.acknowledgeCrossMachineHandoff(
+        cancel: () => withChatPin(runtimePin, (chatPin) => api.cancelCrossMachineHandoff(session, chatPin)),
+        retry: () => withChatPin(runtimePin, (chatPin) => api.retryCrossMachineHandoff(session, chatPin)),
+        workHere: () => withChatPin(runtimePin, (chatPin) => api.acknowledgeCrossMachineHandoff(
           { ...session, handoffId: continuation?.handoffId ?? record.handoffId },
-          runtimePin,
-        ),
-        approve: () => api.resolveCrossMachineHandoffApproval(
+          chatPin,
+        )),
+        approve: () => withChatPin(runtimePin, (chatPin) => api.resolveCrossMachineHandoffApproval(
           { ...session, handoffId: record.handoffId, approve: true },
-          runtimePin,
-        ),
-        deny: () => api.resolveCrossMachineHandoffApproval(
+          chatPin,
+        )),
+        deny: () => withChatPin(runtimePin, (chatPin) => api.resolveCrossMachineHandoffApproval(
           { ...session, handoffId: record.handoffId, approve: false },
-          runtimePin,
-        ),
+          chatPin,
+        )),
         // The brain reuses the failed fork's saved choices; only the mode changes.
-        brief: () => api.retryCrossMachineHandoff({ ...session, asBrief: true }, runtimePin),
+        brief: () => withChatPin(runtimePin, (chatPin) => api.retryCrossMachineHandoff({ ...session, asBrief: true }, chatPin)),
       };
       const next = await calls[action]();
       onRecord(next);
@@ -406,10 +407,10 @@ export function CrossMachineBatchApprovalBanner({
     if (busy) return;
     setBusy(approve ? "approve" : "deny");
     try {
-      await window.ade.agentChat.resolveCrossMachineBatchMoveApproval(
+      await withChatPin(runtimePin, (chatPin) => window.ade.agentChat.resolveCrossMachineBatchMoveApproval(
         { batchId: approval.batchId, approve },
-        runtimePin,
-      );
+        chatPin,
+      ));
       setAnsweredBatchId(approval.batchId);
     } catch (error) {
       showToast({

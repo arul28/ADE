@@ -1,5 +1,6 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import fs from "node:fs";
+import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import path from "node:path";
 import { randomInt } from "node:crypto";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
@@ -30,6 +31,7 @@ import type { CloudAgentsService } from "../../../../desktop/src/main/services/c
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
+import type { CtoAccountCopyService } from "../../../../desktop/src/main/services/cto/ctoAccountCopyService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import type { createLinearOAuthService } from "../../../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
@@ -63,6 +65,7 @@ import {
   type SyncForeignChatTranscriptResolver,
   type SyncRuntimeKind,
   type SyncHostRemoteCommandExecutor,
+  type TerminalInputDedupeLedger,
 } from "./syncHostService";
 import { createSyncArtifactReads, runSyncFileServiceRequest } from "./syncFileRequests";
 import { createSyncPairingStore } from "./syncPairingStore";
@@ -94,18 +97,34 @@ import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingletonAsync, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
+import {
+  PREFERRED_PORT_BIND_ATTEMPTS,
+  PREFERRED_PORT_BIND_RETRY_DELAY_MS,
+  isRetryableListenerBindError,
+} from "./syncListenerBind";
 import type { ModelPickerStore } from "../modelPickerStore";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { JevService } from "../../../../desktop/src/main/services/jev/jevService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
-import type { AccountAuthService } from "../account/accountAuthService";
+import { requireSignedInAccountAccessToken, type AccountAuthService } from "../account/accountAuthService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import type { ProxyService } from "../proxy/proxyService";
+import type { SearchService } from "../../../../desktop/src/main/services/search/searchService";
 import {
   getSharedAccountAttestationConfig,
   getSharedAccountAuthService,
+  getSharedAccountDirectoryBaseUrl,
   type AccountAttestationConfig,
 } from "../account/sharedAccountAuthService";
+import { createLaneShareGrantService } from "./laneShareGrantService";
+import { createLaneShareAgentRate, createLaneShareHostService } from "./laneShareHostService";
+import { createLaneShareMoveService } from "./laneShareMoveService";
+import { createLaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
+import { ACCOUNT_SCOPE_ALL, accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import { LANE_SHARE_DEFAULT_RIGHTS_KEY } from "../../../../desktop/src/shared/laneShareRights";
+import { readGitOriginUrl } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
+import type { LaneShareHostEvent } from "./syncHostService";
+import type { LaneShareGuestHandoff } from "./laneShareGuestTypes";
 import type { SyncTunnelClientService } from "./syncTunnelClientService";
 import {
   isLoopbackShadowedError,
@@ -119,6 +138,7 @@ type SyncServiceArgs = {
   db: AdeDb;
   usageTrackingService?: UsageTrackingHost | null;
   getProxyService?: () => Pick<ProxyService, "status"> | null;
+  getSearchService?: () => Pick<SearchService, "query" | "indexStatus"> | null;
   accountSettingsStore?: AccountSettingsStore | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   logger: Logger;
@@ -160,12 +180,16 @@ type SyncServiceArgs = {
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   /** The `cloud` action domain (the phone's ADE Cloud page); null with no project runtime yet. */
   cloudActions?: () => Record<string, unknown> | null;
+  /** The `cloud_phone` action domain (the account's ADE Cloud iPhone), read lazily from the runtime's registry. */
+  cloudPhoneActions?: () => Record<string, unknown> | null;
   cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: PersonalChatScopeContract;
   /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
   pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  /** The CTO account copy, read when a phone asks (built after this service). */
+  ctoAccountCopyService?: () => CtoAccountCopyService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   getJiraService?: () => ReturnType<typeof createJiraService> | null;
@@ -243,10 +267,15 @@ type SyncServiceArgs = {
     | null;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   onRemoteFileWrite?: () => void;
+  /** Lane sharing events for the owner's app (a guest turn still running after a revoke). */
+  onLaneShareEvent?: (event: LaneShareHostEvent) => void;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
-  projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
+  projectScopes?: {
+    getIfBooted(projectId: string): Promise<unknown> | null;
+    terminalInputDedupeLedger?: TerminalInputDedupeLedger;
+  };
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
    * sync commands to share favorites + recents with desktop; the
@@ -265,6 +294,8 @@ type SyncServiceArgs = {
   loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
 };
 
+/** How often an idle guests-only host checks for sockets; it stops after two empty checks. */
+const LANE_SHARE_GUEST_HOST_IDLE_CHECK_MS = 60_000;
 const DRAFT_FILE = "sync-peer-draft.json";
 const TOKEN_FILE = "sync-bootstrap-token";
 const PIN_FILE = "sync-pin.json";
@@ -593,17 +624,6 @@ export function shouldReclaimStaleViewerDraftAfterTransportFailure(args: {
     && unseenForMs > STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS;
 }
 
-function isRetryableHostBindError(error: unknown): boolean {
-  if (isLoopbackShadowedError(error)) return true;
-  const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
-  return code === "EADDRINUSE" || code === "EACCES";
-}
-
-// How long to insist on the preferred port before drifting: 8 × 400ms ≈ 3.2s,
-// enough for a disposing listener (or a sibling host being replaced) to free
-// the port that paired phones have saved.
-const PREFERRED_PORT_BIND_ATTEMPTS = 8;
-const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
 
 function createInactiveTailnetDiscoveryStatus(
   error: string,
@@ -618,6 +638,12 @@ function createInactiveTailnetDiscoveryStatus(
     stderr: null,
   };
 }
+
+/**
+ * One agent share counter for this brain process: a brain serves every open
+ * project with its own sync service, and the limit is per machine.
+ */
+const brainLaneShareAgentRate = createLaneShareAgentRate();
 
 export function createSyncService(args: SyncServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
@@ -676,6 +702,83 @@ export function createSyncService(args: SyncServiceArgs) {
     projectRoots: () => [args.projectRoot],
     logger: args.logger,
   });
+  // Lane sharing: this machine's grants, read with the owner's own token. One
+  // instance per sync service, so a hosted-project switch keeps the last good
+  // list. It sends nothing until a guest connects.
+  const laneShareGrants = createLaneShareGrantService({
+    getAccessToken: (tokenOptions) => requireSignedInAccountAccessToken(accountAuthService, tokenOptions),
+    getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [args.projectRoot] }),
+    getMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
+    logger: args.logger,
+  });
+  // The rights and counters of each share this machine serves: a local table
+  // of this project's database, never synced.
+  const laneShareRights = createLaneShareRightsStore({ db: args.db });
+  let laneShareRepoKey: { value: string | null } | null = null;
+  // Read once: the origin of a project does not change while it is open.
+  const readLaneShareRepoKey = (): string | null => {
+    laneShareRepoKey ??= { value: accountRepoScopeKey(readGitOriginUrl(args.projectRoot)) };
+    return laneShareRepoKey.value;
+  };
+  const laneShareService = createLaneShareHostService({
+    access: {
+      getAccessToken: (tokenOptions) => requireSignedInAccountAccessToken(accountAuthService, tokenOptions),
+      getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [args.projectRoot] }),
+    },
+    getMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
+    isCloudComputer: () => isAdeCloudComputer(),
+    store: laneShareRights,
+    getHost: () => laneShareServingHost(),
+    getRepoKey: readLaneShareRepoKey,
+    getProjectLabel: () => path.basename(args.projectRoot) || null,
+    getLaneLabel: (laneId) => args.laneService.findLaneIdentity(laneId)?.name ?? null,
+    refreshGrants: () => laneShareGrants.refresh(),
+    onEvent: (event) => args.onLaneShareEvent?.(event),
+    agentRate: brainLaneShareAgentRate,
+    readDefaultRights: () => {
+      const settings = args.accountSettingsStore;
+      if (!settings) throw new Error("Account settings are not available on this runtime.");
+      return settings.get(ACCOUNT_SCOPE_ALL, LANE_SHARE_DEFAULT_RIGHTS_KEY);
+    },
+    logger: args.logger,
+  });
+  // Moving a chat to the other person of a share (plan Part C). Uses this
+  // machine's own chats, rights and account; the guest side is reached only
+  // through the sync host's guest connection.
+  const laneShareMoves = createLaneShareMoveService({
+    chat: () => {
+      const chat = args.agentChatService;
+      if (!chat) return null;
+      return {
+        getSessionSummary: async (sessionId) => {
+          const summary = await chat.getSessionSummary(sessionId);
+          return summary ? { laneId: summary.laneId, title: summary.title ?? null, modelId: summary.modelId ?? null } : null;
+        },
+        prepareLaneShareMove: (moveArgs) => chat.prepareLaneShareMove(moveArgs),
+        checkLaneShareMoveDestination: (moveArgs) => chat.checkLaneShareMoveDestination(moveArgs),
+        acceptLaneShareMove: (moveArgs) => chat.acceptLaneShareMove(moveArgs),
+        markLaneShareMoved: (moveArgs) => chat.markLaneShareMoved(moveArgs),
+        discardLaneShareMoveLane: (laneId) => chat.discardLaneShareMoveLane(laneId),
+      };
+    },
+    rightsStore: laneShareRights,
+    // The share back and its undo run inside a move that the person who
+    // receives the work accepted in the ADE app (`moveRespond` and
+    // `moveReceiveLand` are person-only), so they act as that person.
+    share: () => ({
+      create: async (createArgs) => ({ grantId: (await laneShareService.create(createArgs, "person")).grantId }),
+      shareBackParty: (grantId) => laneShareService.shareBackParty(grantId),
+      acceptShareBack: (acceptArgs) => laneShareService.acceptShareBack(acceptArgs),
+      revoke: async (grantId) => {
+        await laneShareService.revoke({ grantId }, "person");
+      },
+    }),
+    getRepoKey: readLaneShareRepoKey,
+    getAccountEmail: () => accountAuthService.getStatus().email?.trim() || null,
+    notifyGuests: (grantId) => laneShareServingHost()?.notifyLaneShareGuestState(grantId),
+    onEvent: (event) => args.onLaneShareEvent?.(event),
+    logger: args.logger,
+  });
   const isRelayAccountSignedIn = (): boolean => {
     const status = accountAuthService.getStatus();
     return status.signedIn && Boolean(status.userId?.trim());
@@ -690,11 +793,13 @@ export function createSyncService(args: SyncServiceArgs) {
   // Route health deliberately does NOT use this: `ade doctor` and the desktop
   // banner must still report relay as enabled-but-suppressed rather than
   // silently "disabled", which is how this whole failure stayed invisible.
-  const isCloudRelayUsable = (): boolean =>
-    cloudRelayStore.isRelayEnabled()
-    && isRelayAccountSignedIn()
-    && (args.syncTunnelClientService?.getStatus().accountLeaseValid ?? true)
-    && args.syncTunnelClientService?.getStatus().controlSuppressed !== true;
+  const relayTunnelUsable = (
+    tunnelStatus: { accountLeaseValid?: boolean; controlSuppressed?: boolean } | null,
+  ): boolean => (tunnelStatus?.accountLeaseValid ?? true) && tunnelStatus?.controlSuppressed !== true;
+  const isCloudRelayUsable = (): boolean => {
+    if (!cloudRelayStore.isRelayEnabled() || !isRelayAccountSignedIn()) return false;
+    return relayTunnelUsable(args.syncTunnelClientService?.getStatus() ?? null);
+  };
 
   const deviceRegistryService = createDeviceRegistryService({
     db: args.db,
@@ -704,6 +809,56 @@ export function createSyncService(args: SyncServiceArgs) {
   });
 
   let hostService: SyncHostService | null = null;
+  /**
+   * Lane sharing: a host of this project that serves only guests, while the
+   * brain serves another project on its shared listener (or none). Made when
+   * the brain's router hands this project a guest, gone after a minute with
+   * no socket, and closed when this project becomes the served one (its
+   * guests reconnect to that host). At most one of the two runs.
+   */
+  let laneShareGuestHost: SyncHostService | null = null;
+  let laneShareGuestHostIdleTimer: ReturnType<typeof setInterval> | null = null;
+  /** The host that serves this project's guests now: the served project's, else the guests-only one. */
+  const laneShareServingHost = (): SyncHostService | null => hostService ?? laneShareGuestHost;
+  /** A guests-only host for this project, stopped after two idle checks in a row. */
+  const startLaneShareGuestHost = (listener: SharedSyncListener): SyncHostService => {
+    const guestHost = createSyncHostService({
+      ...buildHostServiceArgs(listener.getPort() ?? DEFAULT_SYNC_HOST_PORT),
+      sharedListener: listener,
+      laneShareGuestsOnly: true,
+      discoveryEnabled: false,
+      // Guests change no machine role.
+      onStateChanged: () => {},
+    });
+    laneShareGuestHost = guestHost;
+    args.logger.info("sync.lane_share_guest_host_started", {});
+    let idleChecks = 0;
+    laneShareGuestHostIdleTimer = setInterval(() => {
+      if (laneShareGuestHost?.laneShareGuestsBusy()) {
+        idleChecks = 0;
+        return;
+      }
+      idleChecks += 1;
+      if (idleChecks >= 2) {
+        args.logger.info("sync.lane_share_guest_host_stopped", { reason: "idle" });
+        void stopLaneShareGuestHost();
+      }
+    }, LANE_SHARE_GUEST_HOST_IDLE_CHECK_MS);
+    laneShareGuestHostIdleTimer.unref?.();
+    return guestHost;
+  };
+  const stopLaneShareGuestHost = async (): Promise<void> => {
+    if (laneShareGuestHostIdleTimer) clearInterval(laneShareGuestHostIdleTimer);
+    laneShareGuestHostIdleTimer = null;
+    const current = laneShareGuestHost;
+    laneShareGuestHost = null;
+    if (!current) return;
+    try {
+      await current.dispose();
+    } catch (error) {
+      args.logger.warn("sync.lane_share_guest_host_dispose_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
   let hostSingletonLease: SyncHostSingletonLease | null = null;
   let listenerValidationHistory: Pick<SyncLoopbackValidationStatus, "lastFailureAt" | "lastSuccessAt"> = {
     lastFailureAt: null,
@@ -964,6 +1119,7 @@ export function createSyncService(args: SyncServiceArgs) {
     db: args.db,
     usageTrackingService: args.usageTrackingService,
     getProxyService: args.getProxyService,
+    getSearchService: args.getSearchService,
     accountSettingsStore: args.accountSettingsStore,
     productAnalyticsService: args.productAnalyticsService,
     projectRoot: args.projectRoot,
@@ -985,11 +1141,13 @@ export function createSyncService(args: SyncServiceArgs) {
     chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
     cloudActions: args.cloudActions,
+    cloudPhoneActions: args.cloudPhoneActions,
     cloudAgentsService: args.cloudAgentsService,
     personalChatScope: args.personalChatScope,
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
+    ctoAccountCopyService: args.ctoAccountCopyService,
     linearCredentialService: args.linearCredentialService,
     linearOAuthService: args.linearOAuthService,
     getLinearIssueTracker: args.getLinearIssueTracker,
@@ -1097,7 +1255,9 @@ export function createSyncService(args: SyncServiceArgs) {
   };
 
   const scheduleCanonicalPortMigrate = (delayMs: number): void => {
-    if (!args.sharedSyncListener || disposed) return;
+    // Moving back to 8787 is the hosting scope's job; an attempt that finishes
+    // after hosting stopped must not re-arm it.
+    if (!args.sharedSyncListener || disposed || hostService == null) return;
     stopCanonicalPortMigrateTimer();
     canonicalPortMigrateTimer = setTimeout(() => {
       canonicalPortMigrateTimer = null;
@@ -1112,24 +1272,14 @@ export function createSyncService(args: SyncServiceArgs) {
     const currentPort = listener.getPort();
     if (currentPort == null || currentPort === DEFAULT_SYNC_HOST_PORT) return;
     try {
+      // A successful move announces itself through the listener's
+      // onPortChanged, which updates everything that advertises the port.
       const migrated = await listener.tryMigrateToPort(DEFAULT_SYNC_HOST_PORT);
       // Migration awaits a bind + close; dispose can land during that window.
       if (disposed) return;
       if (migrated !== DEFAULT_SYNC_HOST_PORT) {
         scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_MS);
-        return;
       }
-      hostSingletonLease?.updatePort(migrated);
-      deviceRegistryService.touchLocalDevice({
-        lastSeenAt: nowIso(),
-        lastPort: migrated,
-      });
-      args.logger.warn("sync_listener.port_drifted", {
-        from: currentPort,
-        to: migrated,
-      });
-      hostService?.refreshLanDiscovery({ forceLan: true, forceTailnet: true });
-      void args.requestAccountMachinePublish?.();
     } catch (error) {
       args.logger.debug("sync_listener.canonical_port_migrate_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -1138,6 +1288,131 @@ export function createSyncService(args: SyncServiceArgs) {
     }
   };
 
+  // The shared listener moves off a port another program took (and back to
+  // 8787 when it frees). While this scope hosts, everything that advertises
+  // the port follows it: the sync lease, this device's row, Bonjour and
+  // Tailscale Serve, and the account directory.
+  const detachListenerPortChanged = args.sharedSyncListener?.onPortChanged((change) => {
+    if (disposed) return;
+    // The device row and the lease describe this machine whether or not this
+    // scope hosts right now; leaving them on the old port would advertise it.
+    hostSingletonLease?.updatePort(change.to);
+    deviceRegistryService.touchLocalDevice({
+      lastSeenAt: nowIso(),
+      lastPort: change.to,
+    });
+    args.logger.warn("sync_listener.port_drifted", {
+      from: change.from,
+      to: change.to,
+      reason: change.reason,
+    });
+    if (!hostService) return;
+    hostService.refreshLanDiscovery({ forceLan: true, forceTailnet: true });
+    void args.requestAccountMachinePublish?.();
+    scheduleStatusEmit();
+    if (change.to !== DEFAULT_SYNC_HOST_PORT) {
+      scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_MS);
+    }
+  }) ?? null;
+  // A loopback verdict change moves the Tailscale route (and the listener line
+  // in Settings); re-emit status and re-publish so neither waits for a poll.
+  const detachListenerStatusChanged = args.sharedSyncListener?.onLoopbackStatusChanged(() => {
+    if (disposed || !hostService) return;
+    scheduleStatusEmit();
+    void args.requestAccountMachinePublish?.();
+  }) ?? null;
+
+  const buildHostServiceArgs = (port: number): Parameters<typeof createSyncHostService>[0] => ({
+    db: args.db,
+    logger: args.logger,
+    projectId: args.projectId ?? null,
+    projectIdAliases: args.runtimeProjectId && args.runtimeProjectId !== args.projectId
+      ? [args.runtimeProjectId]
+      : [],
+    projectRoot: args.projectRoot,
+    fileService: args.fileService,
+    laneService: args.laneService,
+    gitService: args.gitService,
+    githubService: args.githubService,
+    diffService: args.diffService,
+    conflictService: args.conflictService,
+    operationService: args.operationService,
+    prService: args.prService,
+    sessionService: args.sessionService,
+    sessionDeltaService: args.sessionDeltaService,
+    ptyService: args.ptyService,
+    sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
+    agentChatService: args.agentChatService,
+    chatLaunchService: args.chatLaunchService,
+    cursorCloudFleetService: args.cursorCloudFleetService,
+    cloudActions: args.cloudActions,
+    cloudPhoneActions: args.cloudPhoneActions,
+    cloudAgentsService: args.cloudAgentsService,
+    aiIntegrationService: args.aiIntegrationService,
+    jevService: args.jevService,
+    accountSettingsStore: args.accountSettingsStore,
+    pushPublisherService: args.pushPublisherService,
+    ctoStateService: args.ctoStateService,
+    ctoMemoryService: args.ctoMemoryService,
+    ctoAccountCopyService: args.ctoAccountCopyService,
+    linearCredentialService: args.linearCredentialService,
+    getLinearIssueTracker: args.getLinearIssueTracker,
+    // Production always supplies `remoteCommandService` below, so the host's
+    // own fallback never builds one — but pass this anyway, or the day a
+    // caller omits that service the fallback silently advertises an action set
+    // without `workTools.*`, which is a mobile capability disappearing with no
+    // error anywhere.
+    workToolsStateService: args.workToolsStateService,
+    builtInBrowserService: args.builtInBrowserService ?? null,
+    macDesktopService,
+    getWebhookAutomations: args.getWebhookAutomations,
+    macDesktopSyncStream,
+    appControlSyncStream,
+    appleDeviceService: args.appleDeviceService,
+    appleStreamRelay: args.appleStreamRelay,
+    getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
+    androidDeviceService: args.androidDeviceService,
+    androidStreamRelay: args.androidStreamRelay,
+    projectConfigService: args.projectConfigService,
+    portAllocationService: args.portAllocationService,
+    laneEnvironmentService: args.laneEnvironmentService,
+    laneTemplateService: args.laneTemplateService,
+    dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
+    computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
+    pinStore,
+    accountAuthService,
+    laneShareGrants,
+    laneShareRights,
+    getLaneShareRepoKey: readLaneShareRepoKey,
+    laneShareMoves,
+    onLaneShareEvent: args.onLaneShareEvent,
+    getAccountAttestationConfig: args.getAccountAttestationConfig ?? (() =>
+      getSharedAccountAttestationConfig({ projectRoots: () => [args.projectRoot] })),
+    runtimeNameStore,
+    bootstrapTokenPath: tokenPath,
+    pairingSecretsPath,
+    port,
+    discoveryEnabled: hostDiscoveryEnabled,
+    runtimeKind: args.runtimeKind ?? "desktop-embedded",
+    runtimeVersion: args.appVersion ?? "",
+    deviceRegistryService,
+    projectCatalogProvider: args.projectCatalogProvider,
+    projectScopes: args.projectScopes,
+    onRemoteFileWrite: args.onRemoteFileWrite,
+    rosterProvider: args.rosterProvider,
+    foreignChatProvider: args.foreignChatProvider,
+    personalChatScope: args.personalChatScope,
+    remoteCommandService,
+    remoteCommandExecutor: args.remoteCommandExecutor,
+    productAnalyticsService: args.productAnalyticsService,
+    requireDpop: () => securityStore.getRequireDpop(),
+    getCloudRelayWssUrl: () =>
+      isCloudRelayUsable() ? cloudRelayStore.getRelayWssUrl() : null,
+    loopbackProbe: args.loopbackProbe,
+    onStateChanged: () => {
+      refreshRoleStateInBackground();
+    },
+  });
   const startHostIfNeeded = async (): Promise<void> => {
     if (!hostStartupEnabled || !isCrdtSyncAvailable()) {
       if (hostService) {
@@ -1181,90 +1456,6 @@ export function createSyncService(args: SyncServiceArgs) {
       }
       hostSingletonLease = lease;
     }
-    const buildHostServiceArgs = (port: number): Parameters<typeof createSyncHostService>[0] => ({
-      db: args.db,
-      logger: args.logger,
-      projectId: args.projectId ?? null,
-      projectIdAliases: args.runtimeProjectId && args.runtimeProjectId !== args.projectId
-        ? [args.runtimeProjectId]
-        : [],
-      projectRoot: args.projectRoot,
-      fileService: args.fileService,
-      laneService: args.laneService,
-      gitService: args.gitService,
-      githubService: args.githubService,
-      diffService: args.diffService,
-      conflictService: args.conflictService,
-      operationService: args.operationService,
-      prService: args.prService,
-      sessionService: args.sessionService,
-      sessionDeltaService: args.sessionDeltaService,
-      ptyService: args.ptyService,
-      sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
-      agentChatService: args.agentChatService,
-      chatLaunchService: args.chatLaunchService,
-      cursorCloudFleetService: args.cursorCloudFleetService,
-      cloudActions: args.cloudActions,
-      cloudAgentsService: args.cloudAgentsService,
-      aiIntegrationService: args.aiIntegrationService,
-      jevService: args.jevService,
-      accountSettingsStore: args.accountSettingsStore,
-      pushPublisherService: args.pushPublisherService,
-      ctoStateService: args.ctoStateService,
-      ctoMemoryService: args.ctoMemoryService,
-      linearCredentialService: args.linearCredentialService,
-      getLinearIssueTracker: args.getLinearIssueTracker,
-      // Production always supplies `remoteCommandService` below, so the host's
-      // own fallback never builds one — but pass this anyway, or the day a
-      // caller omits that service the fallback silently advertises an action set
-      // without `workTools.*`, which is a mobile capability disappearing with no
-      // error anywhere.
-      workToolsStateService: args.workToolsStateService,
-      builtInBrowserService: args.builtInBrowserService ?? null,
-      macDesktopService,
-      getWebhookAutomations: args.getWebhookAutomations,
-      macDesktopSyncStream,
-      appControlSyncStream,
-      appleDeviceService: args.appleDeviceService,
-      appleStreamRelay: args.appleStreamRelay,
-      getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
-      androidDeviceService: args.androidDeviceService,
-      androidStreamRelay: args.androidStreamRelay,
-      projectConfigService: args.projectConfigService,
-      portAllocationService: args.portAllocationService,
-      laneEnvironmentService: args.laneEnvironmentService,
-      laneTemplateService: args.laneTemplateService,
-      dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
-      computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
-      pinStore,
-      accountAuthService,
-      getAccountAttestationConfig: args.getAccountAttestationConfig ?? (() =>
-        getSharedAccountAttestationConfig({ projectRoots: () => [args.projectRoot] })),
-      runtimeNameStore,
-      bootstrapTokenPath: tokenPath,
-      pairingSecretsPath,
-      port,
-      discoveryEnabled: hostDiscoveryEnabled,
-      runtimeKind: args.runtimeKind ?? "desktop-embedded",
-      runtimeVersion: args.appVersion ?? "",
-      deviceRegistryService,
-      projectCatalogProvider: args.projectCatalogProvider,
-      projectScopes: args.projectScopes,
-      onRemoteFileWrite: args.onRemoteFileWrite,
-      rosterProvider: args.rosterProvider,
-      foreignChatProvider: args.foreignChatProvider,
-      personalChatScope: args.personalChatScope,
-      remoteCommandService,
-      remoteCommandExecutor: args.remoteCommandExecutor,
-      productAnalyticsService: args.productAnalyticsService,
-      requireDpop: () => securityStore.getRequireDpop(),
-      getCloudRelayWssUrl: () =>
-        isCloudRelayUsable() ? cloudRelayStore.getRelayWssUrl() : null,
-      loopbackProbe: args.loopbackProbe,
-      onStateChanged: () => {
-        refreshRoleStateInBackground();
-      },
-    });
     const finishHostStartup = (started: SyncHostService, resolvedPort: number): void => {
       const validation = started.getLoopbackValidationStatus();
       listenerValidationHistory = {
@@ -1272,6 +1463,8 @@ export function createSyncService(args: SyncServiceArgs) {
         lastSuccessAt: validation.lastSuccessAt ?? listenerValidationHistory.lastSuccessAt,
       };
       hostService = started;
+      // This project is served now: its guests-only host goes, and its guests reconnect here.
+      void stopLaneShareGuestHost();
       hostSingletonLease?.updatePort(resolvedPort);
       hostService.setLocalActiveLanePresence?.(activeLocalLanePresenceIds);
       deviceRegistryService.touchLocalDevice({
@@ -1354,7 +1547,7 @@ export function createSyncService(args: SyncServiceArgs) {
             };
           }
           await candidateHostService.dispose().catch(() => {});
-          const retryable = isRetryableHostBindError(error)
+          const retryable = isRetryableListenerBindError(error)
             && (attemptedPort !== 0 || isLoopbackShadowedError(error));
           args.logger.warn(
             isLoopbackShadowedError(error)
@@ -1388,6 +1581,9 @@ export function createSyncService(args: SyncServiceArgs) {
     }
     const current = hostService;
     hostService = null;
+    // Moving back to 8787 is this host's job; a scope that stopped hosting
+    // must not keep moving the shared listener.
+    stopCanonicalPortMigrateTimer();
     try {
       await current.dispose();
     } finally {
@@ -1805,15 +2001,20 @@ export function createSyncService(args: SyncServiceArgs) {
       }
       const cluster = deviceRegistryService.getClusterState();
       const savedDraft = readSavedDraft();
+      // This machine's own row was read just above. On a host, the cluster
+      // names it as brain and host, and a second read of the row would give
+      // the same answer (a status read runs every 5 s on a signed-in brain).
+      const readClusterDevice = (deviceId: string) =>
+        deviceId === localDevice.deviceId ? localDevice : deviceRegistryService.getDevice(deviceId);
       const rawCurrentBrain = cluster
-        ? deviceRegistryService.getDevice(cluster.brainDeviceId)
+        ? readClusterDevice(cluster.brainDeviceId)
         : localDevice;
       const currentBrain = rawCurrentBrain?.deviceId === localDevice.deviceId
         ? localDevice
         : rawCurrentBrain;
       const currentHostId = cluster?.hostDeviceId ?? cluster?.brainDeviceId ?? null;
       const rawCurrentHost = currentHostId
-        ? deviceRegistryService.getDevice(currentHostId)
+        ? readClusterDevice(currentHostId)
         : localDevice;
       const currentRuntime = rawCurrentHost?.deviceId === localDevice.deviceId
         ? localDevice
@@ -1905,10 +2106,18 @@ export function createSyncService(args: SyncServiceArgs) {
           "Account-directory publisher health is unavailable.",
         );
       }
+      // One read of the account and the relay switch for this status: the
+      // relay route health and the pairing connect info below used to read
+      // them again, and each tunnel status read re-reads the account status.
+      // Nothing between here and the pairing info awaits, so the values are
+      // the ones the separate reads returned.
+      const relayEnabled = cloudRelayStore.isRelayEnabled();
+      const relayAccountSignedIn = isRelayAccountSignedIn();
+      const relayUsable = relayEnabled && relayAccountSignedIn && relayTunnelUsable(tunnelStatus);
       const relayRouteHealth = buildRelayRouteHealth({
         relayConfigured: canHostPhonePairing,
-        relayTurnedOff: !cloudRelayStore.isRelayEnabled(),
-        relayAccountSignedIn: isRelayAccountSignedIn()
+        relayTurnedOff: !relayEnabled,
+        relayAccountSignedIn: relayAccountSignedIn
           && (tunnelStatus?.accountLeaseValid ?? true),
         loopbackAdeValidated,
         listenerReason,
@@ -1947,15 +2156,15 @@ export function createSyncService(args: SyncServiceArgs) {
         currentRuntime,
         clusterState: cluster,
         bootstrapToken:
-          canHostPhonePairing ? readToken() : null,
-        pairingPin: canHostPhonePairing ? pinStore.getPin() : null,
+          canHostPhonePairing && options?.includePairingSecrets !== false ? readToken() : null,
+        pairingPin: canHostPhonePairing && options?.includePairingSecrets !== false ? pinStore.getPin() : null,
         pairingPinConfigured: canHostPhonePairing ? pinStore.hasPin() : false,
         runtimeName: runtimeNameStore.getRuntimeName(),
         pairingConnectInfo:
           canHostPhonePairing
             ? buildPairingConnectInfo({
                 localDevice,
-                relayWssUrl: isCloudRelayUsable() ? cloudRelayStore.getRelayWssUrl() : null,
+                relayWssUrl: relayUsable ? cloudRelayStore.getRelayWssUrl() : null,
               })
             : null,
         connectedPeers,
@@ -2260,17 +2469,26 @@ export function createSyncService(args: SyncServiceArgs) {
     handlePtyData(
       event: Parameters<SyncHostService["handlePtyData"]>[0],
     ): void {
-      hostService?.handlePtyData(event);
+      // A guests-only host serves its guests' terminals too.
+      laneShareServingHost()?.handlePtyData(event);
     },
 
     handlePtyExit(
       event: Parameters<SyncHostService["handlePtyExit"]>[0],
     ): void {
-      hostService?.handlePtyExit(event);
+      laneShareServingHost()?.handlePtyExit(event);
     },
 
     notifyPrsUpdated(): void {
       hostService?.broadcastPrsUpdated();
+    },
+
+    notifyProviderLoginsChanged(): void {
+      hostService?.broadcastProviderLoginsChanged();
+    },
+
+    notifyAccountProjectsChanged(): void {
+      hostService?.broadcastAccountProjectsChanged();
     },
 
     /**
@@ -2353,19 +2571,52 @@ export function createSyncService(args: SyncServiceArgs) {
       return deviceRegistryService;
     },
 
+    /** The owner's lane sharing actions for lanes on this machine (`lane_share` action domain). */
+    getLaneShareService() {
+      return laneShareService;
+    },
+
+    /**
+     * A lane share guest's socket for this project, from the brain's router
+     * (`laneShareGuestRouter.ts`). The served project's host takes it; else a
+     * guests-only host of this project, made now. False when this runtime
+     * cannot serve guests (no shared listener, disposed) or the socket closed.
+     */
+    adoptLaneShareGuest(handoff: LaneShareGuestHandoff): boolean {
+      if (disposed || !args.sharedSyncListener) return false;
+      if (hostService) return hostService.adoptLaneShareGuest(handoff);
+      const guestHost = laneShareGuestHost ?? startLaneShareGuestHost(args.sharedSyncListener);
+      return guestHost.adoptLaneShareGuest(handoff);
+    },
+
+    /** Whether this project has the lane (a router picks between two checkouts of one repository). */
+    hasLaneShareLane(laneId: string): boolean {
+      return laneShareRights.laneState(laneId) !== "missing";
+    },
+
+    /** Moves of a chat to or from the other person of a share (`lane_share.move*` actions). */
+    getLaneShareMoveService() {
+      return laneShareMoves;
+    },
+
     getRegisteredPeerCount(): number | null {
       return pairingStore.countPairingRecords();
     },
 
     async dispose(): Promise<void> {
       disposed = true;
+      detachListenerPortChanged?.();
+      detachListenerStatusChanged?.();
       syncPeerService.disconnect();
       clearInterval(localLanePresenceHeartbeatTimer);
       stopCanonicalPortMigrateTimer();
       await stopHostIfRunning();
+      await stopLaneShareGuestHost();
       // After the host stops, so no pushed record can outlive its socket.
       macDesktopSyncStream?.dispose();
       appControlSyncStream?.dispose();
+      // Temp bundles of unfinished moves go with the runtime.
+      laneShareMoves.dispose();
       await syncPeerService.dispose();
     },
   };

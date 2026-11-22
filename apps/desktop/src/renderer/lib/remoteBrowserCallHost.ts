@@ -104,6 +104,11 @@ function servedChatFor(machine: ServedMachine, call: BuiltInBrowserRemoteCall): 
     const laneId = call.laneId ?? (typeof call.input.laneId === "string" ? call.input.laneId : null);
     return laneId ? { chatSessionId: "", laneId, projectRoot: null } : null;
   }
+  // A chat's lifecycle is about its tabs in every collection, like a lane's release.
+  if (call.broadcast && call.method === "chatBrowserLifecycle") {
+    const chatSessionId = call.chatSessionId ?? (typeof call.input.chatSessionId === "string" ? call.input.chatSessionId : null);
+    return chatSessionId ? { chatSessionId, laneId: call.laneId ?? null, projectRoot: null } : null;
+  }
   const registered = call.chatSessionId ? machine.chats.get(call.chatSessionId) ?? null : null;
   if (registered) return registered;
   const myId = getDesktopClientId();

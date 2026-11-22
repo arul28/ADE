@@ -43,6 +43,11 @@ needs:
   uses WHPX (or AEHD), and Linux uses KVM (`/dev/kvm`). ADE reads
   `emulator -accel-check`. WSL2 has no acceleration. A VM has it only when
   its host passes nested virtualization through (`/dev/kvm` in the VM).
+  ADE caches the check per emulator binary. A usable answer, and a definite
+  "not usable", hold for 10 minutes. A check that never answered (a timeout,
+  or a missing tool) is tried again after 30 s. An emulator step off ADE Cloud
+  checks a "not usable" answer again at most every 30 s, so a fixed `/dev/kvm`
+  works at once.
 
 `ade android status` and the pane report each part. A host that is not macOS,
 Windows or Linux reports `platformSupported: false`. A missing SDK is not
@@ -487,6 +492,21 @@ that machine cannot be reached (its frame-rate read failed or has hung for
 next frame, or a read that says the screen is still, turns it back to Live.
 A tap, key or swipe that fails shows one error toast per stall
 ("Input didn't reach the device").
+
+### Where a device runs
+
+An ADE Cloud computer runs no Android emulator yet. For a chat on ADE Cloud
+the Android tool is not hidden: it says "Android comes to ADE Cloud later" and
+offers the person's own machines (`workToolPanels.tsx`). The chat's cloud
+computer shows as "ADE Cloud", never by its own name, and no other cloud
+computer is listed.
+
+The **Runs on** machine row of a device tool lists the chat's machine first,
+then this computer, then the rest by name. The order is the same each time the
+tool opens. One switch per device kind runs at a time: the chosen chip shows a
+spinner and the others wait. A failed switch shows one toast per chat, in plain
+words ("<machine> is restarting. Try again when it is back." for an ADE Cloud
+computer).
 
 ### Closing the tab
 
@@ -1271,12 +1291,12 @@ goes with it. `docs/logging.md` holds the contract.
 |---|---|
 | `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, the action lists (`ANDROID_AGENT_ACTIONS`, `ANDROID_USER_ONLY_ACTIONS`, `ANDROID_PERSON_ONLY_ACTIONS`, `ANDROID_LANE_FREE_ACTIONS`, `ANDROID_CODE_SYNC_ACTIONS`), and the preload API. It re-exports its siblings: `androidEmulatorAgent.ts` (the agent suite, `ANDROID_PERMISSIONS`), `androidEmulatorSetup.ts` (the SDK install), `androidEmulatorLook.ts` (colour and render) and `androidEmulatorDrawer.ts` (the Tools drawer, `ANDROID_TEXT_SIZES`, `ANDROID_DISPLAY_SIZES`). |
 | `apps/desktop/src/main/services/android/androidEmulatorService.ts`, `androidEmulatorServiceDeps.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. Its inputs and its state for one lane are in `androidEmulatorServiceDeps.ts`. |
-| `apps/desktop/src/main/services/android/androidEmulatorLifecycle.ts` | The boot and the stop that run on the lane's queue (`startLocked`, `stopLocked`): the memory guard's reservation, the owner record's launch, boot and forget, the stop reason, the mid-boot abort, and the boot timeout. One implementation (`slots`) serves the lane's device and its extras. |
+| `apps/desktop/src/main/services/android/androidEmulatorLifecycle.ts` | The boot and the stop that run on the lane's queue (`startLocked`, `stopLocked`): the disk grow before a first start on a cloud computer, the memory guard's reservation, the owner record's launch, boot and forget, the stop reason, the mid-boot abort, and the boot timeout. One implementation (`slots`) serves the lane's device and its extras. |
 | `apps/desktop/src/main/services/android/androidMachinePreferences.ts`, `apps/desktop/src/shared/types/androidEmulatorRecording.ts` | The machine's Android settings file (`sdkPath` and `preferences`, atomic writes, a broken file refused), the machine preferences, and the recording types. |
 | `apps/desktop/src/main/services/android/androidAutoRecord.ts` | Auto-record: an agent's input starts a recording, the end of its turn stops it, and the opt-outs (`--no-record`, the lane switch, the person's own input). |
 | `apps/desktop/src/main/services/android/androidHandedOffEmulators.ts` | The state files of the emulators ADE started (the lanes' own and their extras'), and the stops that use them: on dispose, and when a project is removed after a hand-off. |
 | `apps/desktop/src/main/services/android/androidDeviceInventory.ts` | The lane's AVD: the device list, create, attach, release, delete and colour, and the work copy's borrow rule. |
-| `apps/desktop/src/main/services/android/androidSdk.ts` | SDK detection, tools and acceleration. |
+| `apps/desktop/src/main/services/android/androidSdk.ts` | SDK detection, tools and acceleration (the check's cache). |
 | `apps/desktop/src/main/services/android/androidSdkSetup.ts`, `androidSdkInstall.ts`, `androidSdkRepository.ts`, `androidZipExtract.ts`, `androidCli.ts` | The guided install: the plan, licence checks, the SDK setting, the installer job, Google's repository manifests, the zip reader, and the Android CLI. |
 | `apps/desktop/src/main/services/android/androidAvds.ts`, `androidHardwareProfiles.ts` | AVD list, create and delete, ADE's marker, and the hardware profiles. |
 | `apps/desktop/src/shared/androidDeviceCatalog.ts`, `apps/desktop/src/main/services/android/androidCatalogProfiles.ts` | The brand grid's devices (names, sizes, colours, bodies, profiles), and the merge of ADE's `ade_*` profiles into `devices.xml`. |
@@ -1387,5 +1407,6 @@ The full list is in §6 of the [plan](../../plans/android-emulator.md).
 | `preview`: "has no build.gradle" | Pass `--module <folder>`: the Gradle module that holds the `@Preview` functions, not the project's root. |
 | `ANDROID_NO_FREE_PORT` | All ports 5554–5682 are in use. Stop an emulator you do not need. |
 | `ANDROID_LOW_MEMORY` | The [memory guard](#the-memory-guard-p2) refused the start: the sentence says why (pressure, swapping, the emulators' budget, or free memory). Stop an emulator you do not need, or close apps. **Start anyway** (`--force`) boots past it. `android.start_low_memory` in the brain log has the numbers. |
+| `ANDROID_LOW_DISK` | A device's first start makes its data partition (6 GB), and the emulator wants 1.2 times that free. On an ADE Cloud computer ADE checks this before the start (one `statfs` of the AVD folder) and refuses; the sentence gives both numbers. Elsewhere the emulator's own "Not enough space to create userdata partition" exit reads the same. On ADE Cloud the first start grows the disk itself when it is short (inside the plan's disk; the computer restarts, and ADE continues the chat). If it can't, the Android pane offers **Grow the disk** (inside the plan's disk at one time, or as extra disk on a paid plan). That button uses the lane's size-change job and keeps the running chats: they continue after the restart. Elsewhere, free disk space and start again. `android.start_low_disk` in the brain log has the numbers. |
 | The emulator stopped by itself | ADE stops an emulator nobody used for 20 minutes, and one whose brain is gone ([Emulator lifecycle](#emulator-lifecycle)). Start it again, or turn on **Keep running** (`ade android keep-running on`). `android.emulator_stopped` in the brain log says why. |
 | `ANDROID_STREAM_FAILED` | The live view failed. `tap`, `swipe`, `button`, `type` and `screenshot` do not need it. Press **Reconnect** in the pane. |

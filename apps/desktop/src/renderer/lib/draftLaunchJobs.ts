@@ -93,6 +93,11 @@ export type DraftLaunchSnapshot = {
   visualContextPrefix: string;
   visualContextDisplayChips: string;
   isLiteralSlashCommand: boolean;
+  /**
+   * Wall-clock ms of the Enter press that started this launch, for the send
+   * timing (`clientSubmittedAtMs`). Absent for a launch with no Enter.
+   */
+  submittedAtMs?: number;
 };
 
 export type PreparedDraftLaunch = DraftLaunchSnapshot & {
@@ -136,7 +141,76 @@ export type DraftLaunchJob = {
   autoOpen: boolean;
   createdAtMs: number;
   snapshot: DraftLaunchSnapshot;
+  /** `markNewDraftRequests()` at the send; a later request means the person moved on. */
+  newDraftMarkAtSend?: NewDraftRequestMark;
 };
+
+/**
+ * Counts the person's requests for a new draft in each project tab: ⌘⇧N, the
+ * New chat button and the Chat/CLI switch (`showDraftKind`), and "New chat"
+ * from the palette, a lane's menu or a chip (`openStartChatDraft`). A launch
+ * notes its project's count when it is sent.
+ * When the count has changed by the time its chat or CLI starts, the person
+ * asked for something else in that project meanwhile, so the launch must not
+ * take the screen back: the new session shows in the list instead. A request
+ * in another project tab does not count.
+ */
+const newDraftRequestsByProject = new Map<string, number>();
+
+export type NewDraftRequestMark = { projectStateKey: string; count: number };
+
+export function noteNewDraftRequested(projectStateKey: string | null): void {
+  const key = projectStateKey ?? "";
+  newDraftRequestsByProject.set(key, (newDraftRequestsByProject.get(key) ?? 0) + 1);
+}
+
+export function markNewDraftRequests(projectStateKey: string | null): NewDraftRequestMark {
+  const key = projectStateKey ?? "";
+  return { projectStateKey: key, count: newDraftRequestsByProject.get(key) ?? 0 };
+}
+
+/** False when the person asked for a new draft in the launch's project after its send. */
+export function launchMayOpenItsSession(markAtSend: NewDraftRequestMark | undefined): boolean {
+  return markAtSend === undefined
+    || markAtSend.count === (newDraftRequestsByProject.get(markAtSend.projectStateKey) ?? 0);
+}
+
+/**
+ * The Work URL key that marks an open written by a launch
+ * (`/work?sessionId=…&launchOpen=1`), so only that URL is checked below; a
+ * session opened from the palette, a lane or a deeplink is not.
+ */
+export const LAUNCH_URL_OPEN_PARAM = "launchOpen";
+
+/**
+ * Sessions a launch opened through the Work URL, with the project's mark at
+ * that open. The Work page applies that URL only once the session is in its
+ * list, which can come after the person asked for a new draft; the draft then
+ * keeps the screen.
+ */
+const urlOpenMarksBySessionId = new Map<string, NewDraftRequestMark>();
+const URL_OPEN_MARKS_MAX = 32;
+
+export function noteLaunchUrlOpen(sessionId: string, projectStateKey: string | null): void {
+  urlOpenMarksBySessionId.delete(sessionId);
+  urlOpenMarksBySessionId.set(sessionId, markNewDraftRequests(projectStateKey));
+  // A URL that never applies leaves its entry; keep the newest few.
+  for (const oldest of urlOpenMarksBySessionId.keys()) {
+    if (urlOpenMarksBySessionId.size <= URL_OPEN_MARKS_MAX) break;
+    urlOpenMarksBySessionId.delete(oldest);
+  }
+}
+
+/**
+ * For a launch's Work URL (`LAUNCH_URL_OPEN_PARAM`), when it applies: false
+ * when a new draft was asked for since the launch opened the session. Reading
+ * it ends the launch's entry.
+ */
+export function takeLaunchUrlOpenAllowed(sessionId: string): boolean {
+  const mark = urlOpenMarksBySessionId.get(sessionId);
+  urlOpenMarksBySessionId.delete(sessionId);
+  return launchMayOpenItsSession(mark);
+}
 
 export function isDraftLaunchJobTerminal(status: DraftLaunchJobStatus): boolean {
   return status === "ready" || status === "failed";

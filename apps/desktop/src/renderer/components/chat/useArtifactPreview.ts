@@ -8,6 +8,9 @@ import {
 import { playableMediaDataUrl } from "../../lib/playableMedia";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { chatMachineMediaSentence, chatMachineReach, useChatMachineWake, type ChatMachineReach } from "./useChatMachineWake";
+import { withChatPin } from "./chatMachinePin";
+import { useSlowLinkActive } from "../../state/projectMachines";
 
 export function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
   return artifact.kind === "screenshot" || (artifact.mimeType?.startsWith("image/") ?? false);
@@ -62,8 +65,14 @@ function shortSourcePath(artifact: ComputerUseArtifactView): string | null {
 type ArtifactPreviewFailure = "offline" | "unsent" | "unplayable";
 
 type ArtifactPreviewProblem = {
-  reason: ArtifactPreviewFailure | null;
+  /**
+   * An offline paired machine that is an ADE Cloud computer reads `asleep`
+   * (`waking` while a wake from here runs), or `gone` once deleted.
+   */
+  reason: ArtifactPreviewFailure | ChatMachineReach | null;
   machineName: string;
+  /** Why the last wake failed, for `asleep`. */
+  wakeError?: string | null;
 };
 
 function artifactMediaNoun(artifact: ComputerUseArtifactView): string {
@@ -94,6 +103,10 @@ function artifactPreviewExplanation(
   switch (problem.reason) {
     case "offline":
       return `This ${noun} is on ${problem.machineName}, which is offline.`;
+    case "asleep":
+    case "waking":
+    case "gone":
+      return chatMachineMediaSentence(problem.reason, noun, problem.machineName, problem.wakeError);
     case "unsent":
       return `${problem.machineName} could not send this ${noun}.`;
     case "unplayable":
@@ -117,6 +130,11 @@ type ArtifactPreviewSource = "local-stream" | "remote-stream" | "data-url";
 
 type PreviewState = {
   preview: string | null;
+  /**
+   * The original, when `preview` is a paired machine's smaller display copy
+   * of a picture. The full-size viewer shows it; the tile shows the copy.
+   */
+  original?: string | null;
   source: ArtifactPreviewSource | null;
   loading: boolean;
   loaded: boolean;
@@ -134,22 +152,43 @@ const EMPTY_PREVIEW: PreviewState = {
   readThrew: false,
 };
 
+/** Waits before another size read of a held picture that found nothing. */
+const HELD_SIZE_RETRY_MS = [2_000, 6_000, 15_000];
+
 /** `E` is the element the caller attaches `containerRef` to; a tile uses a div, an inline citation a span. */
 export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   artifact: ComputerUseArtifactView,
   allowLocalArtifactProtocol: boolean,
+  options: {
+    /**
+     * In slow-connection mode a paired machine's picture waits for a tap
+     * (`held`), so a chat full of pictures does not fill a slow link.
+     */
+    holdOnSlowLink?: boolean;
+  } = {},
 ): {
   containerRef: RefObject<E>;
   preview: string | null;
+  /** What the full-size viewer shows: the original picture, not the tile's copy. */
+  fullPreview: string | null;
   loading: boolean;
   failed: boolean;
   explanation: string;
   onMediaError: () => void;
   /**
    * Loads again from the start. Null when another try cannot help: no stored
-   * bytes, a file at its source, or this computer's own read found nothing.
+   * bytes, a file at its source, this computer's own read found nothing, or
+   * the computer was deleted. On a sleeping cloud computer it wakes it first.
    */
   retry: (() => void) | null;
+  /** The retry's label: "Wake" on a sleeping cloud computer. */
+  retryLabel: "Retry" | "Wake";
+  /**
+   * Set while a picture waits for a tap on a slow connection, with the bytes
+   * it will take (null until known). `showHeld` loads it.
+   */
+  held: { bytes: number | null } | null;
+  showHeld: () => void;
 } {
   const scope = useChatRuntimeScope();
   const containerRef = useRef<E>(null);
@@ -162,7 +201,66 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   const projectId = remote?.projectId ?? null;
   const remoteRoot = remote?.rootPath ?? null;
   const remoteOffline = scope.isRemote && !scope.online;
-  const { preview, source, loading, loaded, failure, readThrew } = state;
+  const { preview, original, source, loading, loaded, failure, readThrew } = state;
+  const slowLink = useSlowLinkActive(targetId);
+  const [released, setReleased] = useState(false);
+  const [heldBytes, setHeldBytes] = useState<number | null>(null);
+  // Held only before the first load: a picture already shown stays shown
+  // when the link turns slow.
+  const holding = options.holdOnSlowLink === true
+    && slowLink
+    && !released
+    && !loaded
+    && !allowLocalArtifactProtocol
+    && !isWebClientMode()
+    && Boolean(targetId && projectId)
+    && isImageArtifact(artifact)
+    && !isBrokenArtifact(artifact);
+  const showHeld = useCallback(() => setReleased(true), []);
+
+  // The size a held picture will take: one small read of its display copy.
+  // A read can find nothing while the link is still coming up after a
+  // reload, or while the machine makes the copy; it tries again a few times.
+  const [heldSizeTry, setHeldSizeTry] = useState(0);
+  // A machine that comes back gets fresh tries.
+  useEffect(() => {
+    if (!remoteOffline) setHeldSizeTry(0);
+  }, [remoteOffline]);
+  useEffect(() => {
+    if (!holding || !visible || heldBytes !== null || remoteOffline) return;
+    if (heldSizeTry >= HELD_SIZE_RETRY_MS.length + 1) return;
+    const mediaSize = window.ade.computerUse.mediaSize;
+    if (typeof mediaSize !== "function") return;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const tryAgain = () => {
+      const wait = HELD_SIZE_RETRY_MS[heldSizeTry];
+      if (cancelled || wait === undefined) return;
+      retryTimer = setTimeout(() => setHeldSizeTry((n) => n + 1), wait);
+    };
+    void window.ade.computerUse.mediaBaseUrl()
+      .then((base) => {
+        if (!base || cancelled) return null;
+        const url = remoteArtifactMediaUrl(base, {
+          uri: artifact.uri,
+          targetId: targetId ?? "",
+          projectId: projectId ?? "",
+          remoteProjectRoot: remoteRoot,
+          display: true,
+        });
+        return url ? mediaSize(url) : null;
+      })
+      .then((bytes) => {
+        if (cancelled) return;
+        if (typeof bytes === "number") setHeldBytes(bytes);
+        else tryAgain();
+      })
+      .catch(tryAgain);
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [artifact.uri, heldBytes, heldSizeTry, holding, projectId, remoteOffline, remoteRoot, targetId, visible]);
 
   useEffect(() => {
     const node = containerRef.current;
@@ -183,6 +281,9 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   useEffect(() => {
     setState(EMPTY_PREVIEW);
     setStreamRefused(false);
+    setReleased(false);
+    setHeldBytes(null);
+    setHeldSizeTry(0);
   }, [artifact.id, artifact.uri]);
 
   // The machine came back: load again instead of keeping "is offline".
@@ -193,6 +294,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   useEffect(() => {
     if (
       !visible
+      || holding
       || loaded
       || !artifact.uri
       // The host already told us there are no bytes; asking for them anyway
@@ -216,7 +318,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
     let cancelled = false;
     const readDataUrl = () => {
       setState((s) => ({ ...s, loading: true }));
-      void window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin)
+      void withChatPin(scope.pin, (pin) => window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, pin))
         .then((dataUrl) => {
           if (cancelled) return;
           setState((s) => ({
@@ -261,15 +363,20 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
       .then((base) => {
         if (cancelled) return;
         let url: string | null = null;
+        let original: string | null = null;
         if (base && allowLocalArtifactProtocol) {
           url = localArtifactMediaUrl(base, artifact.uri, scope.rootPath);
         } else if (base) {
-          url = remoteArtifactMediaUrl(base, {
+          const remote = {
             uri: artifact.uri,
             targetId: targetId ?? "",
             projectId: projectId ?? "",
             remoteProjectRoot: remoteRoot,
-          });
+          };
+          original = remoteArtifactMediaUrl(base, remote);
+          // A picture's tile shows the machine's display copy: a fifth of the
+          // bytes on the link. The full-size viewer reads the original.
+          url = video ? original : remoteArtifactMediaUrl(base, { ...remote, display: true });
         }
         if (!url) {
           readDataUrl();
@@ -278,6 +385,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
         setState((s) => ({
           ...s,
           preview: url,
+          original: original !== url ? original : null,
           source: allowLocalArtifactProtocol ? "local-stream" : "remote-stream",
           loaded: true,
         }));
@@ -288,6 +396,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   }, [
     allowLocalArtifactProtocol,
     artifact,
+    holding,
     loaded,
     projectId,
     remoteOffline,
@@ -307,7 +416,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
       // which the host reads for this chat's project, before calling the
       // preview broken.
       setStreamRefused(true);
-      setState((s) => ({ ...s, preview: null, source: null, loaded: false }));
+      setState((s) => ({ ...s, preview: null, original: null, source: null, loaded: false }));
       return;
     }
     setState((s) => ({ ...s, failure: "unplayable" }));
@@ -320,27 +429,48 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
     setStreamRefused(false);
     setState(EMPTY_PREVIEW);
   }, []);
+  // Offline explains any failure on a paired machine, whatever broke first.
+  const offlineFailure = failed && !allowLocalArtifactProtocol && remoteOffline;
+  // Read only for a tile that failed offline: is the chat's machine a cloud computer asleep, or deleted?
+  const machine = useChatMachineWake();
+  const offlineReason = !offlineFailure ? null : chatMachineReach(machine) ?? "offline";
   const explanation = useMemo(() => artifactPreviewExplanation(artifact, {
-    // Offline explains any failure on a paired machine, whatever broke first.
-    reason: failed && !allowLocalArtifactProtocol && remoteOffline ? "offline" : failure,
+    reason: offlineReason ?? failure,
     machineName: scope.machineName,
-  }), [allowLocalArtifactProtocol, artifact, failed, failure, remoteOffline, scope.machineName]);
+    wakeError: machine.error,
+  }), [artifact, failure, machine.error, offlineReason, scope.machineName]);
+  const { wakeThen } = machine;
+  // The person's click wakes the computer; once it is connected, load again.
+  const wakeThenRetry = useCallback(() => void wakeThen(retry), [retry, wakeThen]);
 
+  // Retry only where another try can differ: a paired machine that was
+  // slow, away or did not send, a read that threw, or a player that refused
+  // what arrived. This computer's own read finding nothing will again. A
+  // sleeping cloud computer is woken first; a deleted or waking one offers
+  // nothing.
+  const action: { retry: (() => void) | null; retryLabel: "Retry" | "Wake" } = offlineReason === "asleep"
+    ? { retry: wakeThenRetry, retryLabel: "Wake" }
+    : {
+      retry: offlineReason !== "gone" && offlineReason !== "waking"
+        && failed
+        && !isBrokenArtifact(artifact)
+        && !externalArtifactUrl(artifact.uri)
+        && (failure !== null || readThrew || !allowLocalArtifactProtocol)
+        ? retry
+        : null,
+      retryLabel: "Retry",
+    };
+  const fullPreview = original ?? preview;
   return {
     containerRef,
     preview,
+    fullPreview,
     loading,
     failed,
     explanation,
     onMediaError,
-    // Retry only where another try can differ: a paired machine that was
-    // slow, away or did not send, a read that threw, or a player that refused
-    // what arrived. This computer's own read finding nothing will again.
-    retry: failed
-      && !isBrokenArtifact(artifact)
-      && !externalArtifactUrl(artifact.uri)
-      && (failure !== null || readThrew || !allowLocalArtifactProtocol)
-      ? retry
-      : null,
+    ...action,
+    held: holding ? { bytes: heldBytes } : null,
+    showHeld,
   };
 }

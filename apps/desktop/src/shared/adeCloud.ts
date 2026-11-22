@@ -1,5 +1,105 @@
-import type { CloudAccountState, CloudCatalog, CloudHoursState } from "../../../account-directory/src/cloud/contract";
-import type { CloudReadyMachineState } from "./cloudReady";
+import type {
+  CloudAccountState,
+  CloudCatalog,
+  CloudComputerActivityReport,
+  CloudComputerLimitDetail,
+  CloudComputerLimitLane,
+  CloudComputerStatus,
+  CloudDiskRefusalReason,
+  CloudNextPlan,
+  CloudDiskUsage,
+  CloudDiskUsageItem,
+  CloudDiskUsageKind,
+  CloudDiskUsageReport,
+  CloudIdleCleanupEntry,
+  CloudIgnoredFiles,
+  CloudLaneWork,
+  CloudHoursState,
+  CloudPaidPlanId,
+  CloudPlanChangeTiming,
+  CloudPlanCleanup,
+  CloudPlanCleanupComputer,
+  CloudPlanCleanupDone,
+  CloudPlanCleanupPick,
+  CloudPlanFacts,
+  CloudPlanId,
+  CloudSustainedCpuReport,
+  CloudTimedWakesCancelled,
+} from "../../../account-directory/src/cloud/contract";
+import { CLOUD_INVITE_REFUSAL_REASONS, CLOUD_PLAN_SENTENCE_NAMES, formatCloudCents } from "../../../account-directory/src/cloud/contract";
+import { cloudCatalog } from "../../../account-directory/src/cloud/plans";
+import type {
+  CloudEarnedHours,
+  CloudFreePlan,
+  CloudFreePlanGithub,
+  CloudFreePlanGithubState,
+  CloudFreePlanState,
+  CloudFreeUnlockResult,
+  CloudInviteRedeemResult,
+  CloudInviteRefusalReason,
+  CloudReferralSummary,
+} from "../../../account-directory/src/cloud/contract";
+export {
+  CLOUD_INVITE_REFUSAL_REASONS,
+  CLOUD_REFERRAL_ENTER_DAYS,
+  CLOUD_REFERRAL_REWARD_LIMIT,
+  CLOUD_REFERRAL_REWARD_MILLI,
+  CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
+  cloudFreeGithubSentence,
+  cloudFreePlanRefusedSentence,
+  formatCloudFreeGithubDay,
+  cloudInviteLink,
+  parseCloudInviteCode,
+} from "../../../account-directory/src/cloud/contract";
+export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanGithub, CloudFreePlanGithubState, CloudFreePlanState, CloudFreeUnlockResult, CloudInviteRedeemResult, CloudInviteRefusalReason, CloudReferralSummary, CloudSustainedCpuReport };
+/** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */
+export { overPlanLimitsSentence, planCleanupDoneSentence, planCleanupSentence, timedWakesCancelledSentence } from "../../../account-directory/src/cloud/contract";
+/** Pricing v2's shared sentences and codes (`docs/plans/pricing-v2-and-gravity.md`): every surface says the same. */
+export {
+  CLOUD_COMPUTER_LIMIT_CODE,
+  CLOUD_HOUR_UNIT_SENTENCE,
+  CLOUD_OUTSIDE_AGENT_FREE_CODE,
+  CLOUD_OUTSIDE_AGENT_FREE_MESSAGE,
+  CLOUD_SMALL_FAIR_USE_SENTENCE,
+  CLOUD_SMALL_UNLIMITED_SENTENCE,
+  cloudComputersPhrase,
+  computerLimitSentence,
+} from "../../../account-directory/src/cloud/contract";
+export type { CloudComputerLimitDetail, CloudComputerLimitLane, CloudDiskRefusalReason, CloudNextPlan };
+/** The idle cleanup's shared sentences (the server's emails say the same). */
+export {
+  CLOUD_IGNORED_FILES_MAX_PATHS,
+  idleCleanupHeldNext,
+  idleCleanupSaveSentence,
+  idleCleanupWhen,
+  ignoredFilesList,
+  ignoredFilesSentence,
+} from "../../../account-directory/src/cloud/contract";
+
+export { formatCloudCents };
+/** The disk-grow rules live in `cloudDiskGrowRules.ts`. */
+export { cloudDiskGrowFit, cloudDiskGrowPlan } from "./cloudDiskGrowRules";
+export type { CloudDiskGrowFit, CloudDiskGrowPlan } from "./cloudDiskGrowRules";
+/** The computer limit and outside agents live in `cloudComputerLimit.ts`. */
+export {
+  cloudAccountComputers,
+  cloudComputerLimitDetailOf,
+  cloudComputerLimitReached,
+  cloudComputerLimitTitle,
+  cloudComputerLimitUpgradeLabel,
+  cloudOutsideAgentsAllowed,
+  cloudPlanComputerLimitOf,
+  readCloudComputerLimitDetail,
+  readCloudNextPlan,
+} from "./cloudComputerLimit";
+
+/**
+ * Stamped on every ADE Cloud approval card (`providerMetadata`). Only the
+ * person answers one: the card is the consent to spend hours, delete a
+ * computer or clear its caches, so an agent's answer is refused
+ * (`isUserOnlyConsentCard`).
+ */
+export const ADE_CLOUD_APPROVAL_METADATA_KEY = "adeCloudApproval" as const;
 
 /**
  * ADE Cloud: Linux machines ADE runs for the person, each with ADE's brain as
@@ -9,8 +109,7 @@ import type { CloudReadyMachineState } from "./cloudReady";
  * Everything here is account-level: it acts on the account's cloud machines,
  * not on any lane, chat or machine.
  *
- * Ready machines live in cloudReady.ts and the sign-ins new machines start
- * with in cloudSignIns.ts.
+ * The sign-ins for cloud machines live in cloudSignIns.ts.
  */
 
 /** The own-provider card in Settings: layout only until a provider is wired to it. */
@@ -70,34 +169,86 @@ export function cloudKindLabel(kind: CloudMachineKind): string {
 
 /**
  * The server's sizes and plans (`GET /cloud/account`) for a surface that has
- * no account yet. The only copy on a client; everything else reads the answer.
+ * no account yet: the server's own catalog code, with only what every server
+ * sells (Pro and Max are offered only when the server sends them). No client
+ * keeps numbers of its own; everything else reads the answer.
  */
-const CLOUD_CATALOG_FALLBACK: CloudCatalog = {
-  sizes: [
-    { type: "default", cpu: 2, memoryGb: 4, multiplierMilli: 1000 },
-    { type: "default", cpu: 4, memoryGb: 8, multiplierMilli: 2000 },
-    { type: "default", cpu: 4, memoryGb: 16, multiplierMilli: 3300 },
-    { type: "default", cpu: 4, memoryGb: 32, multiplierMilli: 5800 },
-    { type: "vm", cpu: 2, memoryGb: 4, multiplierMilli: 2500 },
-    { type: "vm", cpu: 4, memoryGb: 8, multiplierMilli: 5000 },
-    { type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 8200 },
-    { type: "vm", cpu: 4, memoryGb: 32, multiplierMilli: 14500 },
-  ],
-  plans: {
-    free: { includedMilli: 50_000, computerLimit: 3, diskGb: 4 },
-    paid: { includedMilli: 500_000, computerLimit: 10, diskGb: 40 },
-  },
-  diskStepGb: 4,
-  paidPriceUsd: 5,
-  extraHourCents: 1,
-};
+const CLOUD_CATALOG_FALLBACK: CloudCatalog = cloudCatalog({ pro: false, max: false });
 
-/** The sizes and plans the server answers with, or the fallback until the account has loaded. */
+/**
+ * The sizes and plans the server answers with, or the fallback until the
+ * account has loaded. Nothing is added that the server didn't send: a server
+ * before Pro has no `plus` or `pro`, and its `paid` plan gets only its own
+ * price (`paidPriceUsd`) filled in.
+ */
 export function cloudCatalogOf(account: Pick<CloudAccountState, "catalog"> | null | undefined): CloudCatalog {
-  return account?.catalog ?? CLOUD_CATALOG_FALLBACK;
+  const catalog = account?.catalog;
+  if (!catalog) return CLOUD_CATALOG_FALLBACK;
+  return {
+    ...catalog,
+    plans: {
+      ...catalog.plans,
+      free: { ...catalog.plans.free, priceUsd: catalog.plans.free.priceUsd ?? 0 },
+      paid: { ...catalog.plans.paid, priceUsd: catalog.plans.paid.priceUsd ?? catalog.paidPriceUsd },
+    },
+  };
 }
 
-/** Hours of a Small computer this size uses per hour awake. */
+/** True when the server sells Plus and Pro (and so takes `{ plan }` at checkout). */
+export function cloudCatalogHasPro(catalog: CloudCatalog): catalog is CloudCatalog & { plans: { plus: CloudPlanFacts; pro: CloudPlanFacts } } {
+  return catalog.plans.plus != null && catalog.plans.pro != null;
+}
+
+/** True when the server sells Max too (it sends Max's facts only once its price is set). */
+export function cloudCatalogHasMax(catalog: CloudCatalog): catalog is CloudCatalog & { plans: { plus: CloudPlanFacts; pro: CloudPlanFacts; max: CloudPlanFacts } } {
+  return cloudCatalogHasPro(catalog) && catalog.plans.max != null;
+}
+
+const PAID_PLAN_IDS: readonly CloudPaidPlanId[] = ["plus", "pro", "max"];
+export const isPaidPlanId = (value: unknown): value is CloudPaidPlanId => (PAID_PLAN_IDS as readonly unknown[]).includes(value);
+
+/** Which plan the account has: `plus` for a paid account from a server that predates Pro, or one naming a plan this build doesn't know. */
+export function cloudPlanIdOf(account: Pick<CloudAccountState, "plan" | "planId">): CloudPlanId {
+  if (account.planId === "free" || isPaidPlanId(account.planId)) return account.planId;
+  return account.plan === "paid" ? "plus" : "free";
+}
+
+/** The facts of the account's plan, from what the server sent: a server before Pro has only `free` and `paid`. */
+export function cloudPlanFactsOf(account: Pick<CloudAccountState, "plan" | "planId">, catalog: CloudCatalog): CloudPlanFacts {
+  const byId = isPaidPlanId(account.planId) ? catalog.plans[account.planId] : undefined;
+  return byId ?? catalog.plans[account.plan];
+}
+
+/** "Free", "Plus", "Pro" or "Max"; a paid account on a server before Pro keeps its old name, "$5 plan". */
+export function cloudPlanLabelOf(account: Pick<CloudAccountState, "plan" | "planId">, catalog: CloudCatalog): string {
+  if (isPaidPlanId(account.planId)) return CLOUD_PLAN_LABELS[account.planId];
+  return account.plan === "paid" ? `$${catalog.paidPriceUsd} plan` : CLOUD_PLAN_LABELS.free;
+}
+
+/**
+ * What one extra hour costs on `planId`, in cents, or null when it has none
+ * (the free plan). A server before per-plan prices sends one price for all.
+ */
+export function cloudExtraHourCentsOf(planId: CloudPlanId, catalog: CloudCatalog): number | null {
+  if (planId === "free") return null;
+  const own = catalog.plans[planId]?.extraHourCents;
+  return own === undefined ? catalog.extraHourCents : own;
+}
+
+/** "2¢", "1.5¢": an extra hour's price as people read it. */
+export const formatCloudCentsPerHour = (cents: number): string => `${Number(cents.toFixed(2))}¢`;
+/** "2.5¢": an extra iPhone minute's price as people read it. */
+export const formatCloudCentsPerMinute = (cents: number): string => `${Number(cents.toFixed(2))}¢`;
+
+export const CLOUD_PLAN_LABELS: Readonly<Record<CloudPlanId, string>> = { free: "Free", plus: "Plus", pro: "Pro", max: "Max" };
+/** Plan order, cheapest first: whether a move between two plans is up or down. */
+export const CLOUD_PLAN_RANK: Readonly<Record<CloudPlanId, number>> = { free: 0, plus: 1, pro: 2, max: 3 };
+
+/**
+ * Hours of the plan this size uses per hour awake (Medium-hours since Pricing
+ * v2: Medium 1, Large 2.5, X-Large 4), from the catalog. 0 for Small, which
+ * never uses hours.
+ */
 export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK): number {
   const { cpu, memoryGb } = cloudShapeById(shape);
   const type = cloudInstanceType(kind);
@@ -105,14 +256,27 @@ export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, cata
   return (size?.multiplierMilli ?? 1000) / 1000;
 }
 
-/** "2× hours". */
+/**
+ * "uses no hours" for Small, "uses 2.5 hours an hour" for the rest: a size's
+ * rate in words, never a multiplier, lowercase to sit inside a sentence
+ * (`capitalizeCloudPhrase` where it starts one). Where the account's hours
+ * are known, surfaces say how long they last instead (`cloudTierHoursAt`).
+ */
 export function formatCloudHoursRate(rate: number): string {
-  return `${rate}× hours`;
+  if (!(rate > 0)) return "uses no hours";
+  return `uses ${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"} an hour`;
 }
 
-/** "about 3.3 hours" per hour awake, for approval cards. */
+/** A lowercase phrase as the start of a sentence: "Uses 2.5 hours an hour". */
+export function capitalizeCloudPhrase(phrase: string): string {
+  return phrase.charAt(0).toUpperCase() + phrase.slice(1);
+}
+
+/** What a size uses of the plan, as one sentence for approval cards: Small never uses hours. */
 export function describeCloudHoursUse(kind: CloudMachineKind, shape: CloudShapeId, catalog?: CloudCatalog): string {
-  return `about ${cloudHoursRate(kind, shape, catalog)} hours of your plan for each hour it's awake`;
+  const rate = cloudHoursRate(kind, shape, catalog);
+  if (!(rate > 0)) return "Small computers never use your hours.";
+  return `It uses about ${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"} of your plan for each hour it's awake, and none while it sleeps.`;
 }
 
 /** Android needs a full computer of Medium or bigger. */
@@ -129,22 +293,46 @@ export function cloudShapeForResources(cpu: number, memoryBytes: number): CloudS
 /** The smallest full computer that runs the Android emulator. */
 const CLOUD_ANDROID_VM_SHAPE = cloudShapeById("4x8");
 
+/** The full computer a computer of this size moves to for Android: Medium, or its own size when bigger. */
+export function cloudAndroidVmShape(boxShape: CloudShape | null): CloudShape {
+  return boxShape && CLOUD_SHAPES.indexOf(boxShape) > CLOUD_SHAPES.indexOf(CLOUD_ANDROID_VM_SHAPE)
+    ? boxShape
+    : CLOUD_ANDROID_VM_SHAPE;
+}
+
+/**
+ * Whether this cloud computer runs the Android emulator: a full computer of
+ * Medium or bigger. A full computer whose size ADE can't tell counts as one
+ * that does, so nothing claims what ADE doesn't know.
+ */
+export function cloudMachineRunsAndroid(machine: Pick<CloudMachine, "type" | "shapeId">): boolean {
+  if (machine.type !== "vm") return false;
+  return machine.shapeId ? cloudShapeRunsAndroid(machine.shapeId) : true;
+}
+
+/**
+ * The first half of {@link cloudAndroidNeedsVmMessage}: that this computer
+ * can't run the emulator, that a full computer of Medium or bigger can, and
+ * what that uses in hours. `kind` is what this computer is now.
+ */
+export function cloudAndroidNeedsVmCost(boxShape: CloudShape | null, kind: CloudMachineKind = "box"): string {
+  const vmShape = cloudAndroidVmShape(boxShape);
+  const rate = cloudHoursRate("vm", vmShape.id);
+  const boxRate = boxShape ? cloudHoursRate(kind, boxShape.id) : null;
+  const more = boxRate == null ? "" : boxRate > 0 ? `, about ${(rate - boxRate).toFixed(1).replace(/\.0$/, "")} more than this computer` : "; this Small computer uses none";
+  return "This computer can't run the Android emulator. A full computer can, at Medium or bigger. "
+    + `A ${vmShape.label} full computer uses about ${rate} hours for each hour it's awake${more}.`;
+}
+
 /**
  * Why a computer can't run the Android emulator, in plain words for the
  * person: a full computer can, what that uses in hours, and what happens to
  * this one. The agent's next steps are in the `ade-android` and `ade-cloud` skills.
  */
 export function cloudAndroidNeedsVmMessage(boxShape: CloudShape | null): string {
-  // A computer bigger than Medium moves to a full computer of its own size.
-  const vmShape = boxShape && CLOUD_SHAPES.indexOf(boxShape) > CLOUD_SHAPES.indexOf(CLOUD_ANDROID_VM_SHAPE)
-    ? boxShape
-    : CLOUD_ANDROID_VM_SHAPE;
-  const rate = cloudHoursRate("vm", vmShape.id);
-  const more = boxShape ? `, about ${(rate - cloudHoursRate("box", boxShape.id)).toFixed(1).replace(/\.0$/, "")} more than this computer` : "";
-  return "This computer can't run the Android emulator. A full computer can, at Medium or bigger. "
-    + `A ${vmShape.label} full computer uses about ${rate} hours for each hour it's awake${more}. `
-    + "ADE can make it and continue this chat there, with its history and changes. "
-    + "This computer stays, and you can delete it from the new chat.";
+  return `${cloudAndroidNeedsVmCost(boxShape)} `
+    + "ADE can start a new lane on this lane's pushed branch with a full computer of that size and continue the task there. "
+    + "This computer stays, and you can delete it later.";
 }
 
 /** ADE Cloud's state, as Settings and the machine picker read it. */
@@ -195,6 +383,13 @@ export type CloudCreateMachineResult = {
 
 /** How long the picker keeps watching for a box that signed in but wasn't ready to connect yet. */
 export const CLOUD_JOIN_WATCH_MS = 5 * 60_000;
+
+/**
+ * How long a start waits for a woken cloud computer's ADE to come online and
+ * take work. the provider answers a wake in about a second; ADE's own
+ * reconnect after a long sleep takes longer.
+ */
+export const CLOUD_WAKE_WAIT_MS = 120_000;
 
 /** The line for a box that signed in but whose row wasn't ready to connect yet. */
 export function cloudStillStartingMessage(name: string): string {
@@ -292,7 +487,7 @@ export type CloudMachine = {
   /** The size ADE offers this shape as, when it is one of them. */
   shapeId: CloudShapeId | null;
   region: string | null;
-  /** How fast it uses hours while awake, as multiples of a Small computer. Null at a size ADE doesn't offer. */
+  /** Hours of the plan it uses per hour awake (0 for Small, `cloudHoursRate`). Null at a size ADE doesn't offer. */
   hoursRate: number | null;
   /** Suspended for non-payment (the provider's `past_due`). */
   pastDue: boolean;
@@ -305,16 +500,79 @@ export type CloudMachine = {
    * these, and any other box only when an account row matches it.
    */
   createdAtMs: number | null;
-  /**
-   * Set when this is a project's ready machine (prepared and kept asleep for
-   * the next chat): the project it is for, and where it is in that life.
-   */
-  ready: { projectName: string; state: CloudReadyMachineState } | null;
   /** How the box sleeps when nothing runs on it (see `CloudSleepPolicy`). */
   sleep: CloudSleepPolicy;
   /** A plain sentence when its disk is full and can't grow, or null. */
   diskFull: string | null;
+  /** How it keeps its image and ADE current. Absent from servers before updates. */
+  update?: CloudMachineUpdate | null;
+  /** When it last did work (its own report), else when it was last awake; null when unknown. */
+  lastActiveAtMs?: number | null;
+  /** While it runs: when this stretch awake began (the server's record); null while it rests or unknown. */
+  awakeSinceMs?: number | null;
+  /** What uses its disk, as it last measured itself while awake; null before its first measure. */
+  diskUsage?: CloudDiskUsage | null;
+  /** Its lane's work as it last read it while awake (unpushed, the pull request); null before its first report. */
+  laneWork?: CloudLaneWork | null;
+  /** The files git ignores on it, as it last read them: a delete loses them. Null before its first read. */
+  ignoredFiles?: CloudIgnoredFiles | null;
 };
+
+/**
+ * A cloud computer updates itself (the server's `updates.ts`): when it is idle
+ * or asleep, never while work runs, onto its channel's image.
+ */
+export type CloudMachineUpdate = {
+  channel: "stable" | "beta";
+  /** The image it runs and the one its channel is on (`ade@N`). */
+  image: string | null;
+  target: string | null;
+  /**
+   * Its channel's automatic updates are on, so it updates itself. False when
+   * the channel is `off`: it then keeps the ordinary Update button.
+   */
+  auto: boolean;
+  /** `auto`: settled, it updates itself when idle. */
+  state: "auto" | "updating" | "failed";
+  /** Why the last update failed, one plain sentence; null unless `failed`. */
+  error: string | null;
+  updatedAtMs: number | null;
+};
+
+/**
+ * A cloud computer that updates itself: its server reports updates and its
+ * channel's automatic updates are on. Such a computer shows `cloudUpdateLine`
+ * instead of an Update button and never counts as behind.
+ */
+export function cloudMachineSelfUpdating(box: Pick<CloudMachine, "update"> | null | undefined): boolean {
+  return box?.update?.auto === true;
+}
+
+/**
+ * The machine keys of the cloud computers that update themselves, from a
+ * cloud list. A machine's connection names it by this key (its color key).
+ */
+export function selfUpdatingCloudMachineKeys(result: CloudMachinesResult | null | undefined): Set<string> {
+  if (result?.state !== "ok") return new Set();
+  return new Set(result.machines.flatMap((box) => (box.machineKey && cloudMachineSelfUpdating(box) ? [box.machineKey] : [])));
+}
+
+/**
+ * The one line a cloud computer shows where another machine has an Update
+ * button. `retry`: the line offers the person's own update again.
+ */
+export function cloudUpdateLine(update: CloudMachineUpdate | null | undefined): { text: string; tone: "muted" | "busy" | "error"; retry: boolean } {
+  if (update?.state === "updating") return { text: "Updating…", tone: "busy", retry: false };
+  if (update?.state === "failed") {
+    const reason = update.error?.trim().replace(/\.$/, "") ?? "";
+    return {
+      text: reason ? `Update failed: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}.` : "Update failed.",
+      tone: "error",
+      retry: true,
+    };
+  }
+  return { text: "Updates itself when idle", tone: "muted", retry: false };
+}
 
 /*
  * Sleep. the provider puts a box to sleep once nothing has reached its URLs for
@@ -331,16 +589,65 @@ export const CLOUD_WAKE_PORT_LABEL = "ADE wake";
 export const CLOUD_BACKSTOP_SLEEP_MINUTES = 5;
 /** The chat whose agent made a machine (create, copy, move): only that chat's unattended agent may delete it. */
 export const CLOUD_MADE_BY_CHAT_METADATA = "ade_made_by_chat";
+/**
+ * Which kind of agent made a machine (`chat`, `automation`, `mcp`), also with
+ * no chat: the agents' daily limit counts it from the account's list, so it
+ * holds across restarts and brains. A person's own make carries neither key.
+ */
+export const CLOUD_MADE_BY_AGENT_METADATA = "ade_made_by_agent";
+export type CloudAgentMaker = "chat" | "automation" | "mcp";
 
-/** Set by the computer's brain when its disk is full and can't grow: `free_limit` or `account_limit`. */
+/** The made-by keys for a new machine's metadata; empty for a person's own make. */
+export function cloudMadeByMetadata(made: { madeByChat?: string | null; madeByAgent?: CloudAgentMaker | null }): Record<string, string> {
+  return {
+    ...(made.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: made.madeByChat } : {}),
+    ...(made.madeByAgent ? { [CLOUD_MADE_BY_AGENT_METADATA]: made.madeByAgent } : {}),
+  };
+}
+
+/**
+ * Set by the computer's brain when its disk is full and can't grow:
+ * `free_limit` or `account_limit`. Builds before plans read only this one.
+ */
 export const CLOUD_DISK_FULL_METADATA = "ade_disk_full";
 export type CloudDiskFullReason = "free_limit" | "account_limit";
+/** The server's exact reason (`CloudDiskRefusalReason`), written next to `ade_disk_full` by newer computers. */
+export const CLOUD_DISK_FULL_REASON_METADATA = "ade_disk_full_reason";
 
-/** What a person reads on a computer whose disk is full and can't grow, or null. */
-export function cloudDiskFullMessage(reason: string | null | undefined, catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK): string | null {
-  if (reason === "free_limit") return `This computer's disk is full. Free computers stay at ${catalog.plans.free.diskGb} GB; a paid plan lets it grow.`;
-  if (reason === "account_limit") return `This computer's disk is full, and your computers have reached the ${catalog.plans.paid.diskGb} GB they share.`;
-  return null;
+/** The older key's value for an exact reason, so builds before plans still say something. */
+export function cloudDiskFullLegacyReason(reason: string): CloudDiskFullReason {
+  return reason === "plan_disk" ? "free_limit" : "account_limit";
+}
+
+/**
+ * What a person reads on a computer whose disk is full and can't grow, or
+ * null. The exact reason wins over the older one; a reason this build
+ * doesn't know still gets a plain sentence.
+ */
+export function cloudDiskFullMessage(
+  reason: string | null | undefined,
+  exactReason?: string | null,
+): string | null {
+  const wayOut = cloudDiskGrowRefusedWayOut(reason, exactReason);
+  return wayOut ? `This computer's disk is full. ${wayOut}` : null;
+}
+
+/**
+ * Why a cloud computer's disk can't grow and the way out, without the "disk
+ * is full" head (the chat's refusal and the card each say that their own
+ * way), or null with no reason. The exact reason wins over the older one.
+ */
+export function cloudDiskGrowRefusedWayOut(
+  reason: string | null | undefined,
+  exactReason?: string | null,
+): string | null {
+  // There is no plan or account disk: a size's own disk maximum
+  // (`tier_limit`) stops a grow, or ADE Cloud can't grow disks right now.
+  const value = exactReason || reason;
+  if (!value) return null;
+  if (value === "tier_limit") return "This size can't have a bigger disk. Move it to a bigger size.";
+  if (value === "unavailable") return "ADE Cloud can't grow it right now.";
+  return "Free up space on it, or move it to a bigger size.";
 }
 
 /**
@@ -357,7 +664,8 @@ export type CloudWakeForUseResult =
   | { state: "woken"; instanceId: string; wakeMs: number }
   | { state: "awake"; instanceId: string }
   | { state: "not_cloud" }
-  | { state: "refused"; message: string };
+  /** `code`: the server's refusal code (`CLOUD_REFUSAL_CODES`) when it sent one; `message` is its sentence. */
+  | { state: "refused"; message: string; code?: string | null };
 
 /** "Sleeps when idle" / "Sleeps once ADE on it updates". */
 export function describeCloudSleepPolicy(policy: CloudSleepPolicy): string {
@@ -369,12 +677,22 @@ export function describeCloudSleepPolicy(policy: CloudSleepPolicy): string {
  * without asking. An agent the person is watching always asks.
  */
 export type CloudAgentLimits = {
-  /** False: an unattended agent may not make, copy, move or resize anything. */
+  /** False: an unattended agent may not make, copy or move anything. A size change always needs the person. */
   unattendedSpend: boolean;
   /** New machines (made, copied or moved) unattended agents may start in a UTC day. */
   machinesPerDay: number;
   /** The largest size an unattended agent may pick. */
   maxShape: CloudShapeId;
+  /**
+   * Older apps' limit on paid extra disk, which ADE Cloud no longer sells.
+   * Read and kept as saved so an older app finds it; nothing here shows or uses it.
+   */
+  extraDiskMonthCents?: number | null;
+  /**
+   * Set when ADE couldn't read the account's copy: these are this computer's
+   * copy or the default, and may be out of date.
+   */
+  fallback?: true;
 };
 
 export type CloudLimitsPreset = "ask" | "balanced" | "hands_off";
@@ -385,11 +703,14 @@ export const CLOUD_LIMITS_PRESETS: Readonly<Record<CloudLimitsPreset, CloudAgent
 };
 export const CLOUD_DEFAULT_AGENT_LIMITS: CloudAgentLimits = CLOUD_LIMITS_PRESETS.balanced;
 export const CLOUD_MACHINES_PER_DAY_CHOICES = [1, 3, 5, 10] as const;
-
 /** The preset these limits match, or null (Custom). */
 export function cloudLimitsPresetOf(limits: CloudAgentLimits): CloudLimitsPreset | null {
   for (const [id, preset] of Object.entries(CLOUD_LIMITS_PRESETS) as Array<[CloudLimitsPreset, CloudAgentLimits]>) {
-    if (preset.unattendedSpend === limits.unattendedSpend && preset.machinesPerDay === limits.machinesPerDay && preset.maxShape === limits.maxShape) {
+    if (
+      preset.unattendedSpend === limits.unattendedSpend
+      && preset.machinesPerDay === limits.machinesPerDay
+      && preset.maxShape === limits.maxShape
+    ) {
       return id;
     }
   }
@@ -402,7 +723,19 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
   return order.indexOf(shape) <= order.indexOf(max);
 }
 
-export type { CloudAccountState, CloudCatalog, CloudHoursState };
+export type { CloudAccountState, CloudCatalog, CloudHoursState, CloudPaidPlanId, CloudPlanChangeTiming, CloudPlanFacts, CloudPlanId };
+export type { CloudPlanCleanup, CloudPlanCleanupComputer, CloudPlanCleanupDone, CloudPlanCleanupPick, CloudTimedWakesCancelled };
+export type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageKind, CloudDiskUsageReport, CloudIdleCleanupEntry, CloudIgnoredFiles, CloudLaneWork };
+/** A lane computer's live status (its status menu) and its brain's work report. */
+export type { CloudComputerActivityReport, CloudComputerStatus };
+
+/**
+ * What opening checkout did: a browser page opened, or the plan changed
+ * without one. A downgrade made with a pick carries `freeing`, the computers
+ * ADE frees now; one made without a pick over the cheaper plan's limits
+ * carries `cleanup`, what goes over (show its `sentence`).
+ */
+export type CloudOpenCheckoutResult = { opened: boolean; change?: CloudPlanChangeTiming; cleanup?: CloudPlanCleanup; freeing?: string[] };
 
 /** The server's sentence for what needs hours at 0. The server enforces it; these two only stop a request that can't work. */
 export const CLOUD_OUT_OF_HOURS_MESSAGE = "You're out of ADE Cloud hours for this period.";
@@ -413,6 +746,147 @@ export const CLOUD_HOURS_UNKNOWN_MESSAGE =
 export function cloudOutOfHours(account: Pick<CloudAccountState, "hours"> | null | undefined): boolean {
   return account?.hours.state === "zero";
 }
+
+/*
+ * Referrals, earned hours and the free plan per computer. A server from
+ * before them leaves these out; each reader answers what that server meant.
+ */
+
+const finite = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+
+/** Earned hours (used after the plan's hours, before extra hours; they never expire). Zeros from an older server. */
+export function cloudEarnedHoursOf(account: Pick<CloudAccountState, "earnedHours"> | null | undefined): CloudEarnedHours {
+  const earned = account?.earnedHours;
+  return { leftMilli: finite(earned?.leftMilli), usedThisPeriodMilli: finite(earned?.usedThisPeriodMilli), grantedMilli: finite(earned?.grantedMilli) };
+}
+
+/**
+ * The hours work can still use now: the plan's own left plus earned ones
+ * (used after the plan's). The one rule the header ring, the dashboard's
+ * forecast, the sizes and the composer read.
+ */
+export function cloudHoursLeftMilli(account: Pick<CloudAccountState, "hours" | "earnedHours">): number {
+  return account.hours.leftMilli + Math.max(0, cloudEarnedHoursOf(account).leftMilli);
+}
+
+/** The name ADE gives a computer it made with no lane name (`cloudMachineCreator`). */
+export const CLOUD_MACHINE_DEFAULT_NAME = "ADE Cloud computer";
+
+/** At this share of one computer's disk, ADE warns and offers "Free up space". */
+export const CLOUD_DISK_WARN_SHARE = 0.8;
+
+/** Percent of a limit used, 0 to 100; 0 for no limit. */
+export function percentOf(used: number, limit: number): number {
+  if (!(limit > 0)) return 0;
+  return Math.max(0, Math.min(100, (used / limit) * 100));
+}
+
+/** "3.4 GB", "820 MB". */
+export function formatCloudGb(gb: number): string {
+  if (gb > 0 && gb < 1) return `${Math.max(1, Math.round(gb * 1000))} MB`;
+  return `${gb >= 100 ? Math.round(gb) : Math.round(gb * 10) / 10} GB`;
+}
+
+/** Whether the account gets the free plan's hours. An older server gives every account the free plan: `unclaimed`. */
+export function cloudFreePlanOf(account: Pick<CloudAccountState, "freePlan"> | null | undefined): CloudFreePlan {
+  const state = account?.freePlan?.state;
+  const github = cloudFreePlanGithubOf(account?.freePlan?.github);
+  if (state !== "claimed" && state !== "refused" && state !== "unclaimed") return { state: "unclaimed", sentence: null, github };
+  const sentence = account?.freePlan?.sentence;
+  return { state, sentence: typeof sentence === "string" && sentence ? sentence : null, github };
+}
+
+const FREE_GITHUB_STATES = new Set<string>(["ok", "no_github", "too_new", "used", "checking"]);
+
+/** The free plan's GitHub rules from any answer; an older server (or an unknown state) reads as `ok`. */
+export function cloudFreePlanGithubOf(value: unknown): CloudFreePlanGithub {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  const state = typeof raw?.state === "string" && FREE_GITHUB_STATES.has(raw.state) ? raw.state as CloudFreePlanGithubState : "ok";
+  if (state === "ok") return { state, oldEnoughAt: null, canUnlockWithCard: false, githubLogin: null, sentence: null };
+  return {
+    state,
+    oldEnoughAt: typeof raw?.oldEnoughAt === "number" && Number.isFinite(raw.oldEnoughAt) ? raw.oldEnoughAt : null,
+    canUnlockWithCard: raw?.canUnlockWithCard === true,
+    githubLogin: typeof raw?.githubLogin === "string" && raw.githubLogin ? raw.githubLogin : null,
+    sentence: typeof raw?.sentence === "string" && raw.sentence ? raw.sentence : null,
+  };
+}
+
+/** The account's referral summary, or null when the server sent none (an older server, or it couldn't build one). */
+export function cloudReferralOf(account: Pick<CloudAccountState, "referral"> | null | undefined): CloudReferralSummary | null {
+  return readCloudReferralSummary(account?.referral);
+}
+
+/** A referral summary from any answer (`/cloud/referrals`, the account, a redeem), or null when it isn't one. */
+export function readCloudReferralSummary(value: unknown): CloudReferralSummary | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.code !== "string" || !raw.code || typeof raw.link !== "string") return null;
+  const referredState = raw.referredState === "pending" || raw.referredState === "rewarded" || raw.referredState === "refused" ? raw.referredState : null;
+  return {
+    code: raw.code,
+    link: raw.link,
+    friendsJoined: finite(raw.friendsJoined),
+    rewardsPaid: finite(raw.rewardsPaid),
+    rewardsLeft: finite(raw.rewardsLeft),
+    rewardLimit: finite(raw.rewardLimit),
+    rewardMilli: finite(raw.rewardMilli),
+    hoursEarnedMilli: finite(raw.hoursEarnedMilli),
+    canEnterCode: raw.canEnterCode === true,
+    enterCodeUntil: typeof raw.enterCodeUntil === "number" ? raw.enterCodeUntil : null,
+    hasReferrer: raw.hasReferrer === true,
+    referredState,
+  };
+}
+
+/** The server's reason for refusing an invite, or null when it isn't one it gives. */
+export function readCloudInviteRefusalReason(value: unknown): CloudInviteRefusalReason | null {
+  return (CLOUD_INVITE_REFUSAL_REASONS as readonly unknown[]).includes(value) ? value as CloudInviteRefusalReason : null;
+}
+
+/** What a cheaper plan would free (the checkout's warning), or null when the answer isn't one. */
+export function readCloudPlanCleanup(value: unknown): CloudPlanCleanup | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.sentence !== "string") return null;
+  if (raw.planId !== "free" && !isPaidPlanId(raw.planId)) return null;
+  const text = (entry: unknown): string | null => (typeof entry === "string" && entry ? entry : null);
+  const computersOf = (list: unknown): CloudPlanCleanupComputer[] => (Array.isArray(list)
+    ? list.flatMap((entry): CloudPlanCleanupComputer[] => {
+      if (!entry || typeof entry !== "object") return [];
+      const computer = entry as Record<string, unknown>;
+      if (typeof computer.instanceId !== "string" || !computer.instanceId) return [];
+      return [{
+        instanceId: computer.instanceId,
+        name: text(computer.name),
+        laneName: text(computer.laneName),
+        branch: text(computer.branch),
+        diskGb: finite(computer.diskGb),
+        ...(typeof computer.createdAt === "number" && Number.isFinite(computer.createdAt) ? { createdAt: computer.createdAt } : {}),
+      }];
+    })
+    : []);
+  const freeing = raw.freeing && typeof raw.freeing === "object" ? raw.freeing as Record<string, unknown> : null;
+  return {
+    planId: raw.planId,
+    computers: computersOf(raw.computers),
+    ...(Array.isArray(raw.choices) ? { choices: computersOf(raw.choices) } : {}),
+    usedGb: finite(raw.usedGb),
+    limitGb: finite(raw.limitGb),
+    ...(typeof raw.computerCount === "number" && Number.isFinite(raw.computerCount) ? { computerCount: raw.computerCount } : {}),
+    ...(typeof raw.computerLimit === "number" && Number.isFinite(raw.computerLimit) ? { computerLimit: raw.computerLimit } : {}),
+    startsAt: typeof raw.startsAt === "number" && Number.isFinite(raw.startsAt) ? raw.startsAt : null,
+    freeing: freeing && typeof freeing.push === "boolean" && Array.isArray(freeing.instanceIds) && typeof freeing.at === "number"
+      ? { push: freeing.push, at: freeing.at, instanceIds: freeing.instanceIds.filter((id): id is string => typeof id === "string") }
+      : null,
+    sentence: raw.sentence,
+  };
+}
+
+/** What entering an invite code did: taken (and whether it paid at once), or the server's one sentence and reason. */
+export type CloudInviteRedeemOutcome =
+  | { ok: true; rewarded: boolean; referral: CloudReferralSummary | null }
+  | { ok: false; reason: CloudInviteRefusalReason | "unavailable"; message: string };
 
 /**
  * Why work that nobody approves (a full-auto chat, an automation, the
@@ -442,10 +916,16 @@ export async function cloudDomainEnabled(
   }
 }
 
-/** "412" or "49.5" hours from thousandths. */
+/**
+ * "1,600", "299.8" or "49.5" hours from thousandths: whole hours plainly, any
+ * other value to the tenth, rounded down at every size. So 299.8 left of 300
+ * reads "299.8", never "299" (an hour used that wasn't) or "300" (none used).
+ * Integer tenths, so 0.3 h never prints as 0.2 through float error. The CLI
+ * (`cloudHoursText`) and the phone (`cloudHours`) write it the same way.
+ */
 export function formatCloudHours(milli: number): string {
-  const hours = Math.max(0, milli) / 1000;
-  return hours >= 100 ? String(Math.floor(hours)) : String(Math.floor(hours * 10) / 10);
+  const tenths = Math.floor(Math.max(0, Number.isFinite(milli) ? milli : 0) / 100);
+  return (tenths / 10).toLocaleString("en-US", { maximumFractionDigits: 1 });
 }
 
 /** The banner for an account, or null when there is nothing to warn about. */
@@ -460,6 +940,10 @@ export function formatCloudDate(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
+/** The account banner while the free plan's GitHub rules hold its hours (the dashboard's plan card says it there). */
+export const CLOUD_FREE_GITHUB_BANNER_ID = "cloud-free-github";
+export const CLOUD_FREE_REFUSED_BANNER_ID = "cloud-free-refused";
+
 /** "You're out of hours", "You've used 95%", a failed payment: one banner, the most urgent. */
 export function cloudAccountBanner(account: CloudAccountState): CloudAccountBanner | null {
   const resetDate = formatCloudDate(account.billing.periodEnd);
@@ -473,14 +957,29 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
       detail: "Your account follows the free plan until it's paid. Update your card to bring your plan back.",
     };
   }
+  // The free plan's GitHub rules hold its hours: they don't come back at the reset, so say why instead.
+  const github = account.rules === "free" ? cloudFreePlanOf(account).github : undefined;
+  if (account.hours.state === "zero" && github && github.state !== "ok" && github.sentence) {
+    return { id: CLOUD_FREE_GITHUB_BANNER_ID, tone: "warning", title: "Free hours wait on GitHub", detail: github.sentence };
+  }
+  // Another account already used this computer's free plan: those hours never come back at the reset, so never say "until Dec 1".
+  const freePlan = account.rules === "free" ? cloudFreePlanOf(account) : undefined;
+  if (account.hours.state === "zero" && freePlan?.state === "refused" && freePlan.sentence) {
+    return { id: CLOUD_FREE_REFUSED_BANNER_ID, tone: "warning", title: "No free hours on this account", detail: freePlan.sentence };
+  }
   if (account.hours.state === "zero") {
+    // Small computers never use hours, so they keep working: only the bigger sizes stop.
+    const bigger = `Medium, Large and X-Large computers are stopped until ${resetDate}. Small computers keep working.`;
+    const plans = cloudCatalogHasMax(catalog)
+      ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
+      : cloudCatalogHasPro(catalog)
+        ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, and Pro ${formatCloudHours(catalog.plans.pro.includedMilli)}.`
+        : ` The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} hours a month.`;
     return {
       id: "cloud-hours-zero",
       tone: "warning",
-      title: "You're out of ADE Cloud hours",
-      detail: account.extraHours.available
-        ? `Your computers are stopped until ${resetDate}. Turn on extra hours to keep going sooner.`
-        : `Your computers are stopped until ${resetDate}. The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} hours a month.`,
+      title: "You're out of hours for bigger computers",
+      detail: account.extraHours.available ? `${bigger} Turn on extra hours to keep going sooner.` : `${bigger}${plans}`,
     };
   }
   if (account.hours.state === "warn95" || account.hours.state === "warn80") {
@@ -516,6 +1015,12 @@ export type CloudMachinesResult = {
   deletedInstanceIds?: string[];
   /** A plain sentence for `access_refused` and `unreachable`. */
   message: string | null;
+  /**
+   * The web app with none of the account's computers online: the plan and
+   * hours came straight from the account server, and `machines` is empty
+   * because listing them needs a computer, not because there are none.
+   */
+  computersUnread?: boolean;
 };
 
 export type CloudMachineActionKind = "sleep" | "wake" | "resize" | "backup" | "delete" | "update";
@@ -525,10 +1030,25 @@ export type CloudMachineActionArgs = {
   action: CloudMachineActionKind;
   /** The new size, for `resize`. */
   shape?: CloudShapeId;
+  /** For `resize`: the new disk in GB (a multiple of the catalog's step, never smaller). Keeps the size when `shape` is unset. */
+  disk?: number;
+  /** For `wake` and `resize`: `mcp` when an outside agent (ADE MCP) asked; the server refuses it on the free plan (`outside_agent_free_plan`). */
+  origin?: "mcp";
+  /**
+   * For a `resize` that grows the disk: the person confirmed the restart it
+   * takes. The server refuses a grow on a running computer without it.
+   */
+  computerIdle?: boolean;
   /** For `delete`: the box's ADE machine, removed from the account once the box is gone. */
   machineKey?: string | null;
   /** For `delete`: who asked, for the server's delete log (an agent's chat; a person's desktop leaves it unset). */
   who?: string | null;
+  /**
+   * For `delete`: keep the lane the computer was made for, as a lane without
+   * a computer on `branchRef` ("Keep the lane on a fresh computer"). The
+   * caller pushed its work first.
+   */
+  keepLane?: { branchRef: string | null } | null;
 };
 
 export type CloudMachineActionResult = {
@@ -537,20 +1057,47 @@ export type CloudMachineActionResult = {
   message: string;
   /**
    * What stops the action, so the card can offer the way out:
-   * plans and hours, or wait for a backup window.
+   * plans and hours (0 hours, all the plan's computers in use, or more
+   * computers than the plan in force allows), or wait for a backup window.
    */
-  blocker: "rate_limited" | "out_of_hours" | null;
+  blocker: "rate_limited" | "out_of_hours" | "computer_limit" | "over_plan_limits" | null;
+  /** With `computer_limit`: what the limit card shows (the server's `CloudComputerLimitDetail`). */
+  computerLimit?: CloudComputerLimitDetail | null;
   /** For `delete`: the box is gone but its account row could not be removed. */
   accountRowLeft?: boolean;
+  /**
+   * For a refused disk grow or resize: the server's reason
+   * (`CloudDiskRefusalReason`, or another string from a newer server).
+   * `message` always says it plainly.
+   */
+  diskRefusal?: { reason: string };
 };
 
-/** "Small · 2 CPU · 4 GB", with "Full computer" in front for a VM. */
-export function describeCloudMachineSize(machine: Pick<CloudMachine, "type" | "resources" | "shapeId">): string {
-  const shape = machine.shapeId ? cloudShapeById(machine.shapeId) : null;
-  const size = machine.resources
-    ? `${machine.resources.cpu} CPU · ${machine.resources.memoryGb} GB`
-    : null;
-  return [machine.type === "vm" ? "Full computer" : null, shape?.label ?? null, size].filter(Boolean).join(" · ");
+/**
+ * "Full computer · Large · 4 CPU · 8 GB · 4 GB disk". A lane size's name is
+ * the catalog's for that kind and shape, the same name the size list and the
+ * pickers use (a full 4 CPU / 8 GB computer is Large, not Medium), never the
+ * bare shape's. A catalog size with no lane size has no name of its own (its
+ * label only repeats the CPU and memory), so the line names none. Pass the
+ * account's catalog (`cloudCatalogOf`); the fallback is for no account yet.
+ */
+export function describeCloudMachineSize(
+  machine: Pick<CloudMachine, "type" | "resources" | "shapeId">,
+  catalog: Pick<CloudCatalog, "sizes"> = CLOUD_CATALOG_FALLBACK,
+): string {
+  const kind = machine.type === "vm" ? "vm" : "default";
+  const resources = machine.resources;
+  const sized = resources
+    ? catalog.sizes.find((entry) => entry.type === kind && entry.cpu === resources.cpu && entry.memoryGb === resources.memoryGb)
+    : undefined;
+  const name = sized
+    ? (sized.tier ? sized.label : null)
+    : machine.shapeId ? cloudShapeById(machine.shapeId).label : null;
+  const size = resources ? `${resources.cpu} CPU · ${resources.memoryGb} GB` : null;
+  // Only when the provider says it: a grown disk is the one size a resize can't undo.
+  const diskGb = resources?.diskGb;
+  const disk = typeof diskGb === "number" && Number.isFinite(diskGb) && diskGb > 0 ? `${diskGb} GB disk` : null;
+  return [machine.type === "vm" ? "Full computer" : null, name, size, disk].filter(Boolean).join(" · ");
 }
 
 /** The kind of machine this instance type is. */

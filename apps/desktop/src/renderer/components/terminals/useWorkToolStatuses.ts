@@ -12,7 +12,7 @@ import { selectChatPrs } from "../lanes/lanePageModel";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { invalidatePrListCache, listPrsCached } from "../../lib/prReadCache";
 import { browserHostLabel } from "../../lib/browserUrl";
-import { machineNameForBinding } from "../../../shared/machineIdentity";
+import { useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { useLaneDevServers } from "../../lib/laneDevServers";
 import { relativeWhen } from "../../lib/format";
 import {
@@ -44,6 +44,8 @@ import {
   type WorkToolAvailability,
   type WorkToolDefinition,
 } from "./workTools";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
+import { withChatPin } from "../chat/chatMachinePin";
 
 /**
  * What a tool has to say about itself on the picker card and in the activity
@@ -78,6 +80,11 @@ export type WorkToolStatus = {
    * dot is asking for a hand.
    */
   attention?: boolean;
+  /**
+   * A second, quieter line of facts the pane already holds (the branch and
+   * its sync, a PR's checks, the device's origin). Null when there is none.
+   */
+  detail?: string | null;
   /**
    * The line repeats numbers that were not measured within their freshness
    * window (a lane's ahead/behind while its status read is out, or after one
@@ -132,9 +139,64 @@ export function openPullRequestCount(
   laneId: string,
   sessionId?: string | null,
 ): number {
+  return openPullRequests(prs, lane, laneId, sessionId).length;
+}
+
+/** The open and draft pull requests the PR tool shows, in its order. */
+function openPullRequests(
+  prs: readonly PrSummary[],
+  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef"> | null,
+  laneId: string,
+  sessionId?: string | null,
+): PrSummary[] {
   const scoped = selectPrsForChatInLane(prs, laneId, sessionId);
   const visible = lane ? selectChatPrs(lane, scoped, sessionId) : scoped;
-  return visible.filter((pr) => isOpenPullRequest(pr.state)).length;
+  return visible.filter((pr) => isOpenPullRequest(pr.state));
+}
+
+const PR_CHECKS_WORDS: Record<PrSummary["checksStatus"], string | null> = {
+  passing: "Checks passing",
+  failing: "Checks failing",
+  pending: "Checks running",
+  none: null,
+  not_run: null,
+};
+
+const PR_REVIEW_WORDS: Record<PrSummary["reviewStatus"], string | null> = {
+  approved: "Approved",
+  changes_requested: "Changes requested",
+  requested: "Review requested",
+  none: null,
+};
+
+/** "#212 · Checks passing · Approved": the open PR's number and where it stands. */
+function pullRequestDetail(pr: PrSummary | null): string | null {
+  if (!pr) return null;
+  return [`#${pr.githubPrNumber}`, PR_CHECKS_WORDS[pr.checksStatus], PR_REVIEW_WORDS[pr.reviewStatus]]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** "main · 2 ahead · 1 behind": the branch, and its sync when the line is about something else. */
+function gitDetail(lane: LaneSummary | null, line: string | null): string | null {
+  const branch = lane?.branchRef?.replace(/^refs\/heads\//, "") ?? null;
+  if (!branch) return null;
+  const ahead = nonNegativeCount(lane?.status?.ahead);
+  const behind = nonNegativeCount(lane?.status?.behind);
+  const sync = [ahead > 0 ? `${ahead} ahead` : null, behind > 0 ? `${behind} behind` : null].filter(Boolean).join(" · ");
+  return sync && !line?.includes("ahead") && !line?.includes("behind") ? `${branch} · ${sync}` : branch;
+}
+
+/** Which simulator or emulator it is: ADE's own for this lane, or the person's. */
+function deviceOriginDetail(origin: string | null | undefined): string | null {
+  if (origin === "created" || origin === "clone") return "Made for this lane";
+  if (origin === "attached") return "Your own device";
+  return null;
+}
+
+/** Fills a status's second line without touching the first. */
+function withDetail(status: WorkToolStatus, detail: string | null | undefined): WorkToolStatus {
+  return detail ? { ...status, detail } : status;
 }
 
 /**
@@ -450,6 +512,25 @@ export function appControlAppName(
   return label;
 }
 
+/** App Control's second line: how the app is attached, in a word or two. */
+function appControlDetail(session: AppControlSession | null): string | null {
+  if (!session) return null;
+  switch (session.status) {
+    case "connected":
+    case "running":
+      return isAppControlSessionAttached(session) ? "Attached" : "Launching";
+    case "starting":
+      return "Starting";
+    case "stopping":
+      return "Stopping";
+    case "failed":
+      return "Crashed";
+    case "exited":
+    case "stopped":
+      return "Stopped";
+  }
+}
+
 function looksLikeLaunchCommand(text: string): boolean {
   return /(?:^|[\s'"=])(?:sh|bash|zsh|cmd(?:\.exe)?|powershell)\b/i.test(text)
     || /\bADE_[A-Z0-9_]+=/.test(text)
@@ -576,14 +657,16 @@ export function useWorkToolStatuses(args: {
 
   const [browserErrors, setBrowserErrors] = useState<WorkToolErrorsByTab>(EMPTY_WORK_TOOL_ERRORS);
   const [prCount, setPrCount] = useState<number | null>(null);
+  const [firstOpenPr, setFirstOpenPr] = useState<PrSummary | null>(null);
   const [settled, setSettled] = useState(false);
 
   const runtimePinKey = runtimePin?.key ?? null;
   // Scopes the cached PR list when there is no pin (the tab's own machine).
   const prListProjectRoot = useActiveProjectRoot();
-  const prListBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
+  // The tab's copy: it scopes the PR list cache, and a pin with this key is the tab's own.
+  const tabBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
   // The store's status is this tab's machine's; a pinned lane carries its own.
-  const laneStatusStale = useAppStore((s) => s.laneStatusStale) && runtimePin == null;
+  const laneStatusStale = useAppStore((s) => s.laneStatusStale && (runtimePinKey == null || runtimePinKey === tabBindingKey));
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
 
@@ -684,38 +767,71 @@ export function useWorkToolStatuses(args: {
         return;
       }
       const read = typeof prs.listAll === "function"
-        ? listPrsCached({ projectRoot: prListProjectRoot, pin: runtimePinRef.current, bindingKey: prListBindingKey }).then((all: PrSummary[]) => openPullRequestCount(all, lane, laneId, prSessionId))
-        : prs.getForLane(laneId, runtimePinRef.current).then((one: PrSummary | null) => (one && isOpenPullRequest(one.state) ? 1 : 0));
-      void read.then((count) => {
-        if (!cancelled) setPrCount(count);
+        ? listPrsCached({ projectRoot: prListProjectRoot, pin: runtimePinRef.current, bindingKey: tabBindingKey }).then((all: PrSummary[]) => openPullRequests(all, lane, laneId, prSessionId))
+        : withChatPin(runtimePinRef.current, (chatPin) => prs.getForLane(laneId, chatPin)).then((one: PrSummary | null) => (one && isOpenPullRequest(one.state) ? [one] : []));
+      void read.then((open) => {
+        if (cancelled) return;
+        setPrCount(open.length);
+        setFirstOpenPr(open[0] ?? null);
       }).catch(() => {
-        if (!cancelled) setPrCount(null);
+        if (cancelled) return;
+        setPrCount(null);
+        setFirstOpenPr(null);
       });
     };
     load();
     // An issue webhook says nothing about this lane's pull requests.
-    const dispose = window.ade?.prs?.onEvent?.((event) => {
-      if (event?.type === "github-issue-changed") return;
-      invalidatePrListCache({ projectRoot: prListProjectRoot, pin: runtimePinRef.current, bindingKey: prListBindingKey });
-      load();
-    });
+    const feedPin = runtimePinRef.current;
+    const dispose = feedPin
+      ? window.ade?.prs?.onEvent?.((event) => {
+        if (event?.type === "github-issue-changed") return;
+        invalidatePrListCache({ projectRoot: prListProjectRoot, pin: feedPin, bindingKey: tabBindingKey });
+        load();
+      }, feedPin)
+      : undefined;
     return () => {
       cancelled = true;
       dispose?.();
     };
-  }, [enabled, lane, laneId, prListBindingKey, prListProjectRoot, prSessionId, runtimePinKey]);
+  }, [enabled, lane, laneId, tabBindingKey, prListProjectRoot, prSessionId, runtimePinKey]);
 
   const issueTabsProjectRoot = useActiveProjectRoot();
-  const openIssueTabCount = useIssueTabs(issueTabsScopeKey(issueTabsProjectRoot, laneId)).refs.length;
+  const openIssueRefs = useIssueTabs(issueTabsScopeKey(issueTabsProjectRoot, laneId)).refs;
+  const openIssueTabCount = openIssueRefs.length;
+  const issuesDetail = useMemo(() => openIssueRefs.slice(0, 3).map((ref) => (
+    ref.provider === "linear" ? ref.identifier : ref.provider === "jira" ? ref.key : `#${ref.number}`
+  )).join(", ") || null, [openIssueRefs]);
 
-  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop, desktopTool, context.hostPlatform ?? null);
+  // One read, but each card says its own product's name: while the host's
+  // platform is unknown (an asleep or unreachable cloud computer) both desktop
+  // cards show, and the Windows card must never read "Mac Desktop is off".
+  // A Linux host's Mac Desktop card is its Linux lane screen (`workTools.ts`).
+  const hostPlatform = context.hostPlatform ?? null;
+  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(
+    desktopTool === "mac-desktop" ? macDesktop : null,
+    "mac-desktop",
+    hostPlatform,
+  );
+  const { line: windowsDesktopLine, live: windowsDesktopLive } = macDesktopStatusLineText(
+    desktopTool === "windows-desktop" ? macDesktop : null,
+    "windows-desktop",
+    hostPlatform,
+  );
   const macDesktopStatus = useMemo(
     () => statusLine(macDesktopLine, macDesktopLive),
     [macDesktopLine, macDesktopLive],
   );
+  const windowsDesktopStatus = useMemo(
+    () => statusLine(windowsDesktopLine, windowsDesktopLive),
+    [windowsDesktopLine, windowsDesktopLive],
+  );
 
   // Keyed on the name, not the pin object: a pin can be rebuilt with the same key.
-  const remoteChatMachineName = runtimePin?.kind === "remote" ? machineNameForBinding(runtimePin) : null;
+  // The tab's own copy is not a "remote chat", even when the tab is bound to a remote machine.
+  const runtimeMachineLabel = useMachineLabelForBinding(runtimePin);
+  const remoteChatMachineName = runtimePin?.kind === "remote" && runtimePinKey !== tabBindingKey
+    ? runtimeMachineLabel
+    : null;
   const statuses = useMemo<WorkToolStatusMap>(() => {
     const browserLine = offline
       ? IDLE
@@ -725,27 +841,34 @@ export function useWorkToolStatuses(args: {
         workToolBrowserErrorCount(browserErrors, browserStatus),
         devServerPorts,
       );
+    const browserFacts = asBuiltInBrowserStatus(browserStatus);
+    const activeBrowserTab = browserFacts?.tabs.find((tab) => tab.id === browserFacts.activeTabId) ?? null;
+    const gitLine = gitStatusLine(lane, laneStatusStale);
+    const prLine = prToolStatusLine(prCount);
     return {
-      terminal: terminalStatusLine(terminalTitles, panelShellCount, remoteShellCount),
-      browser: !offline && remoteChatMachineName
+      terminal: withDetail(terminalStatusLine(terminalTitles, panelShellCount, remoteShellCount), terminalTitles?.[0] ?? null),
+      browser: withDetail(!offline && remoteChatMachineName
         ? browserStatusLineForRemoteChat(browserLine, remoteChatMachineName)
-        : browserLine,
-      git: gitStatusLine(lane, laneStatusStale),
-      files: filesStatusLine(lane),
-      ios: offline ? IDLE : iosStatusLine(appleDevice),
-      android: offline ? IDLE : androidStatusLine(androidDevice),
-      "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
+        : browserLine, (browserFacts?.tabs.length ?? 0) > 1 ? activeBrowserTab?.title?.trim() || null : null),
+      git: withDetail(gitLine, gitDetail(lane, gitLine.line)),
+      files: withDetail(filesStatusLine(lane), lane ? laneDisplayName(lane) : null),
+      ios: offline ? IDLE : withDetail(iosStatusLine(appleDevice), deviceOriginDetail(appleDevice?.origin)),
+      android: offline ? IDLE : withDetail(androidStatusLine(androidDevice), androidDevice ? [androidDevice.avdName, deviceOriginDetail(androidDevice.origin)].filter(Boolean).join(" · ") : null),
+      "app-control": offline ? IDLE : withDetail(appControlStatusLine(appControlSession), appControlDetail(appControlSession)),
       // No `offline ? IDLE` arm: an unreachable machine leaves the last known
       // answer standing rather than claiming the lane has no screen, and the
       // hook already stops reading.
       "mac-desktop": macDesktopStatus,
-      "windows-desktop": macDesktopStatus,
-      pr: prToolStatusLine(prCount),
-      issues: issuesToolStatusLine(openIssueTabCount),
+      "windows-desktop": windowsDesktopStatus,
+      pr: firstOpenPr && prCount === 1
+        ? { ...prLine, line: firstOpenPr.title, detail: pullRequestDetail(firstOpenPr) }
+        : withDetail(prLine, pullRequestDetail(firstOpenPr)),
+      issues: withDetail(issuesToolStatusLine(openIssueTabCount), issuesDetail),
     };
   }, [
     appControlSession,
     macDesktopStatus,
+    windowsDesktopStatus,
     appleDevice,
     androidDevice,
     browserErrors,
@@ -757,6 +880,8 @@ export function useWorkToolStatuses(args: {
     offline,
     panelShellCount,
     prCount,
+    firstOpenPr,
+    issuesDetail,
     openIssueTabCount,
     remoteChatMachineName,
     terminalTitles,

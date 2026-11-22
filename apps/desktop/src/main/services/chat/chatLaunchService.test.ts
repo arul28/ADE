@@ -14,7 +14,7 @@ import type {
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import type { LaneCreateRuntimeOptions } from "../lanes/laneService";
 import { createChatLaunchService, type ChatLaunchServiceDeps } from "./chatLaunchService";
-import { buildLaneSetupCard } from "../../../shared/chatLaunch";
+import { buildLaneSetupCard, chatLaunchAlreadyStartedMessage } from "../../../shared/chatLaunch";
 
 const LAUNCH_ID = "6f1c2a4e-1b2c-4d5e-8f90-123456789abc";
 const LANE_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
@@ -521,6 +521,171 @@ describe("chatLaunchService", () => {
     reloaded.dispose();
   });
 
+  /** A launch whose setup filled the disk, the grow asked for, and the brain gone before the disk read bigger. */
+  const launchWaitingForRoom = async () => {
+    const h = harness({ hasEnvironment: true, templateName: "npm packages" });
+    // The grow settles (not grown) when the brain shuts down for the restart and aborts it.
+    const makeRoom = vi.fn(async ({ signal }: { signal: AbortSignal }) => ({
+      state: "growing" as const,
+      detail: "Growing the disk to 8 GB",
+      ready: new Promise<boolean>((resolve) => signal.addEventListener("abort", () => resolve(false), { once: true })),
+    }));
+    const environmentDisk = { setupStarting: vi.fn(), setupEnded: vi.fn(), diskFull: vi.fn(() => ({ grow: true as const })), makeRoom };
+    const service = createChatLaunchService({ ...h.deps, environmentDisk });
+    await service.start(chatArgs());
+    h.laneCreate.resolve(laneSummary());
+    h.environment.resolve({
+      laneId: LANE_ID,
+      overallStatus: "failed",
+      steps: [{ kind: "setup-script", label: "Setup script", status: "failed", error: "npm error code ENOSPC\nnpm error nospc ENOSPC: no space left on device, write" }],
+    } as never);
+    await h.waitFor((snapshot) => snapshot.stages.find((stage) => stage.id === "environment")?.detail === "Growing the disk to 8 GB");
+    expect(h.latest().phase).toBe("running");
+    service.dispose();
+    h.service.dispose();
+    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    return { h, environmentDisk, makeRoom };
+  };
+  const setupRunning = () => vi.fn(() => new Promise<never>(() => {}));
+  const setupPasses = () => vi.fn(async () => ({ laneId: LANE_ID, overallStatus: "completed", steps: [{ kind: "setup-script", label: "Setup script", status: "completed" }] } as never));
+
+  it.each([
+    ["the grow's own restart", 0, 0, null],
+    ["two more restarts while setup runs again (restarts 2 and 3)", 2, 0, null],
+    ["a fourth restart (past the cap)", 3, 0, /kept being interrupted/],
+    ["a restart more than an hour after the grow (the computer slept)", 0, 61 * 60_000, /too much time went by/],
+  ])("a setup that filled the disk goes on after %s, or reads as interrupted past the bound", async (_label, restartsDuringRerun, laterMs, refused) => {
+    const { h, environmentDisk, makeRoom } = await launchWaitingForRoom();
+    // Each restart lands while the resumed setup is still running; the stage counts it.
+    for (let restart = 1; restart <= restartsDuringRerun; restart += 1) {
+      const runEnvironment = setupRunning();
+      const resumed = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment });
+      await vi.waitFor(() => expect(runEnvironment).toHaveBeenCalled());
+      expect(resumed.get({ launchId: LAUNCH_ID })?.stages.find((stage) => stage.id === "environment")?.detail).toMatch(new RegExp(`restart ${restart}\\)`));
+      resumed.dispose();
+    }
+
+    const reloaded = createChatLaunchService({
+      ...h.deps,
+      environmentDisk,
+      runEnvironment: setupPasses(),
+      ...(laterMs ? { now: () => new Date(Date.now() + laterMs) } : {}),
+    });
+    if (refused) {
+      expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("failed");
+      expect(reloaded.get({ launchId: LAUNCH_ID })?.error).toMatch(refused);
+    } else {
+      expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("running");
+      await vi.waitFor(() => expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("completed"));
+      const snapshot = reloaded.get({ launchId: LAUNCH_ID })!;
+      expect(snapshot.stages.find((stage) => stage.id === "environment")?.status).toBe("done");
+      expect(snapshot.agentStarted).toBe(true);
+    }
+    expect(makeRoom).toHaveBeenCalledTimes(1);
+    reloaded.dispose();
+  });
+
+  it("a setup the memory guard stopped moves the computer up instead of growing the disk, and goes on at the new size across its restarts", async () => {
+    const h = harness({ hasEnvironment: true, templateName: "npm packages" });
+    const moreMemory = vi.fn(async ({ signal }: { signal: AbortSignal }) => ({
+      state: "growing" as const,
+      detail: "Moving this computer to Medium",
+      ready: new Promise<boolean>((resolve) => signal.addEventListener("abort", () => resolve(false), { once: true })),
+    }));
+    const environmentDisk = {
+      setupStarting: vi.fn(),
+      setupEnded: vi.fn(),
+      diskFull: vi.fn(() => ({ grow: true as const })),
+      makeRoom: vi.fn(),
+      outOfMemory: vi.fn(() => ({ upsize: true as const })),
+      moreMemory,
+    };
+    const service = createChatLaunchService({ ...h.deps, environmentDisk });
+    await service.start(chatArgs());
+    h.laneCreate.resolve(laneSummary());
+    h.environment.resolve({
+      laneId: LANE_ID,
+      overallStatus: "failed",
+      steps: [{ kind: "setup-script", label: "Setup script", status: "failed", error: "Setup used nearly all of this computer's memory (4 GB), so ADE stopped it before the computer had to restart. Use a bigger size, or make setup use less memory, then retry." }],
+    } as never);
+    await h.waitFor((snapshot) => snapshot.stages.find((stage) => stage.id === "environment")?.detail === "Moving this computer to Medium");
+    service.dispose();
+    h.service.dispose();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    // The move's restart, then one more while setup runs again: each resumes it, and says why the computer is bigger.
+    for (let restart = 1; restart <= 2; restart += 1) {
+      const runEnvironment = setupRunning();
+      const resumed = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment });
+      await vi.waitFor(() => expect(runEnvironment).toHaveBeenCalled());
+      expect(resumed.get({ launchId: LAUNCH_ID })?.stages.find((stage) => stage.id === "environment")?.detail).toMatch(/moved this computer to Medium/);
+      resumed.dispose();
+    }
+    const reloaded = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment: setupPasses() });
+    await vi.waitFor(() => expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("completed"));
+
+    expect(moreMemory).toHaveBeenCalledTimes(1);
+    expect(environmentDisk.diskFull).not.toHaveBeenCalled();
+    expect(environmentDisk.makeRoom).not.toHaveBeenCalled();
+    reloaded.dispose();
+  });
+
+  it("Start now while setup runs again after the grow's restart starts the agent at once, and a later restart reads as interrupted instead of rerunning setup under it", async () => {
+    const { h, environmentDisk } = await launchWaitingForRoom();
+    const runEnvironment = setupRunning();
+    // The restart lands while the agent is still being started.
+    const sendMessage = vi.fn(() => new Promise<never>(() => {}));
+    const resumed = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment, agentChatService: { ...h.deps.agentChatService, sendMessage } });
+    await vi.waitFor(() => expect(runEnvironment).toHaveBeenCalled());
+
+    await resumed.startNow({ launchId: LAUNCH_ID });
+
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalled());
+    expect(resumed.get({ launchId: LAUNCH_ID })?.stages.find((stage) => stage.id === "environment")?.status).toBe("running");
+    resumed.dispose();
+
+    const reloaded = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment: setupPasses() });
+    expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("failed");
+    expect(reloaded.get({ launchId: LAUNCH_ID })?.error).toMatch(/interrupted when ADE restarted/);
+    reloaded.dispose();
+  });
+
+  it("a rerun's setup stopped by the brain's own service stop is resumed after the restart, not failed", async () => {
+    const { h, environmentDisk } = await launchWaitingForRoom();
+    let finish!: (progress: unknown) => void;
+    const runEnvironment = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const resumed = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment: runEnvironment as never });
+    await vi.waitFor(() => expect(runEnvironment).toHaveBeenCalled());
+    // The stop signals every process at once: the setup dies a moment before the brain hears of it.
+    finish({ laneId: LANE_ID, overallStatus: "failed", steps: [{ kind: "setup-script", label: "Setup script", status: "failed", error: "Setup script: stopped by a signal", stoppedBySignal: true }] });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    resumed.dispose();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const reloaded = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment: setupPasses() });
+    expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("running");
+    await vi.waitFor(() => expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("completed"));
+    reloaded.dispose();
+  });
+
+  it.each([
+    ["a file-watcher limit", "Error: ENOSPC: System limit for number of file watchers reached, watch '/work/src'", /file watchers/],
+    ["an inotify limit", "inotify watch limit reached: ENOSPC", /inotify/],
+  ])("%s's ENOSPC is not a full disk: setup fails as itself and no room is asked for", async (_label, error, shown) => {
+    const h = harness({ hasEnvironment: true, templateName: "npm packages" });
+    const environmentDisk = { setupStarting: vi.fn(), setupEnded: vi.fn(), diskFull: vi.fn(() => ({ grow: true as const })), makeRoom: vi.fn() };
+    const service = createChatLaunchService({ ...h.deps, environmentDisk });
+    await service.start(chatArgs());
+    h.laneCreate.resolve(laneSummary());
+    h.environment.resolve({ laneId: LANE_ID, overallStatus: "failed", steps: [{ kind: "setup-script", label: "Setup script", status: "failed", error }] } as never);
+    await h.waitFor((snapshot) => snapshot.phase === "failed");
+    expect(h.latest().error).toMatch(shown);
+    expect(environmentDisk.diskFull).not.toHaveBeenCalled();
+    expect(environmentDisk.makeRoom).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
   it("Retry after a restart never resends an opening prompt the chat already received", async () => {
     const h = harness();
     const send = deferred<void>();
@@ -766,9 +931,10 @@ describe("chatLaunchService", () => {
     h.laneCreate.resolve(laneSummary());
     await h.waitFor((snapshot) => snapshot.phase === "completed");
     await expect(h.service.cancel({ launchId: LAUNCH_ID }))
-      .rejects.toThrow("This chat already started — delete its lane from the lane menu instead.");
+      .rejects.toThrow(chatLaunchAlreadyStartedMessage("chat"));
     expect(h.calls).not.toContain("lane.delete");
     expect(h.calls).not.toContain("chat.delete");
+    expect(h.service.get({ launchId: LAUNCH_ID })?.phase).toBe("completed");
 
     const h2 = harness();
     await h2.service.start(chatArgs());

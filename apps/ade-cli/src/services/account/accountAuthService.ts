@@ -11,6 +11,7 @@ import {
   shouldIgnoreDevelopmentClerkConfiguration,
   warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
+import { buildWebClientSignInUrl } from "../../../../desktop/src/shared/webClientUrl";
 import {
   CREDENTIAL_STORE_LOCK_TIMEOUT_MS,
   type CredentialStoreReadFailureReason,
@@ -21,13 +22,35 @@ import {
   updateCredentialKeySync,
 } from "../credentials/updateCredentialKey";
 import { runWithAbortSignal } from "../sync/abortSignal";
+import { markExpected } from "../../../../desktop/src/shared/expectedError";
+import { isFetchTransportFailure } from "../../../../desktop/src/shared/fetchTransportFailure";
 import { createRotationJournal } from "./accountSessionRotationJournal";
+import { type DeviceLoginStartOptions, readDeviceStartRetryMs, requestDeviceCodeWithRetry } from "./deviceLoginStart";
 
 export const ACCOUNT_SESSION_CREDENTIAL_KEY = "account.session.v1";
+/**
+ * Set when the person signs this machine out, cleared by the next sign-in.
+ * Signing out drops ADE's tokens but not the browser's Clerk session, so
+ * without `prompt=login` the next sign-in finishes on its own as the account
+ * that just signed out. Kept in the credential store so it outlives a restart.
+ */
+const ACCOUNT_SIGNED_OUT_BY_USER_KEY = "account.signed-out-by-user.v1";
 export { ACCOUNT_SESSION_ROTATION_JOURNAL_KEY } from "./accountSessionRotationJournal";
 
 const LOOPBACK_HOST = "127.0.0.1";
-const LOGIN_SESSION_TTL_MS = 5 * 60_000;
+/**
+ * How long a browser sign-in waits for its callback. A new account signs up in
+ * that window too (an email code, a password, a second factor), so 5 minutes
+ * expired during sign-ups. The PKCE verifier and state stay in this process, so
+ * a longer wait does not make a late code any easier to use.
+ */
+const LOGIN_SESSION_TTL_MS = 15 * 60_000;
+/**
+ * After a browser sign-in expires, its loopback port keeps answering this long
+ * with a page that says what to do, instead of a browser error for a port that
+ * is gone. A sign-in that completes, is cancelled or is replaced closes at once.
+ */
+const EXPIRED_CALLBACK_PAGE_MS = 30 * 60_000;
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 const MAX_PENDING_LOGIN_SESSIONS = 5;
 const DEVICE_BRIDGE_REQUEST_TIMEOUT_MS = 15_000;
@@ -93,6 +116,21 @@ const FAILURE_HTML = `<!doctype html>
     <main>
       <h1>ADE sign-in failed</h1>
       <p>Return to ADE and try signing in again.</p>
+    </main>
+  </body>
+</html>`;
+
+const EXPIRED_HTML = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ADE sign-in timed out</title>
+  </head>
+  <body>
+    <main>
+      <h1>This ADE sign-in timed out</h1>
+      <p>Return to ADE and choose Sign in again. Your account is ready in this browser, so the next sign-in finishes at once.</p>
     </main>
   </body>
 </html>`;
@@ -277,7 +315,7 @@ class AccountTokenRequestError extends Error {
 export type AccountAuthService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(sessionId: string): Promise<AccountLoginPollResult>;
-  startDeviceLogin(options?: { ignoreEnvCredential?: boolean }): Promise<AccountDeviceLoginStartResult>;
+  startDeviceLogin(options?: DeviceLoginStartOptions): Promise<AccountDeviceLoginStartResult>;
   pollDeviceLogin(sessionId: string): Promise<AccountDeviceLoginPollResult>;
   getStatus(): AccountAuthStatus;
   /** Last persisted-session read result, refreshed by getStatus/getAccessToken. */
@@ -325,7 +363,7 @@ export type AccountAccessTokenOptions = {
 export type AccountActionDomainService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(args: { sessionId?: string }): Promise<AccountLoginPollResult>;
-  startDeviceLogin(args?: { ignoreEnvCredential?: boolean }): Promise<AccountDeviceLoginStartResult>;
+  startDeviceLogin(args?: DeviceLoginStartOptions): Promise<AccountDeviceLoginStartResult>;
   pollDeviceLogin(args: { sessionId?: string }): Promise<AccountDeviceLoginPollResult>;
   status(): AccountAuthStatus;
   cancelLogin(args: { sessionId?: string }): void;
@@ -411,7 +449,30 @@ function readIdentityProvider(value: unknown): AccountIdentityProvider | null {
   return null;
 }
 
+/**
+ * The last few decoded payloads, by token. Every status read decodes the
+ * session's access token two or three times (expiry, issuer, claims), and the
+ * account stores read the status on each cache read, so the brain decoded the
+ * same token hundreds of times a minute at idle. A token's text fixes its
+ * payload, so the answer for one text never changes. Callers only read the
+ * payload; none of them edits it.
+ */
+const DECODED_JWT_CACHE_LIMIT = 4;
+const decodedJwtPayloads = new Map<string, Record<string, unknown> | null>();
+
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  if (decodedJwtPayloads.has(token)) return decodedJwtPayloads.get(token) ?? null;
+  const payload = decodeJwtPayloadUncached(token);
+  decodedJwtPayloads.set(token, payload);
+  while (decodedJwtPayloads.size > DECODED_JWT_CACHE_LIMIT) {
+    const oldest = decodedJwtPayloads.keys().next().value;
+    if (oldest === undefined) break;
+    decodedJwtPayloads.delete(oldest);
+  }
+  return payload;
+}
+
+function decodeJwtPayloadUncached(token: string): Record<string, unknown> | null {
   try {
     const parts = token.split(".");
     if (parts.length !== 3 || !parts[1]) return null;
@@ -440,18 +501,44 @@ function isDevelopmentOAuthConfig(
     || isClerkDevelopmentOAuthClientId(config?.clientId);
 }
 
+/**
+ * The last answer of {@link isDevelopmentAccountMaterial}. Every session read
+ * in a packaged build asks it, several times a second in the brain (the relay
+ * lease check alone reads the session three times a second), and each answer
+ * decodes the token and parses two URLs. It depends only on these three
+ * strings, so the same strings give the same answer.
+ */
+let lastDevelopmentMaterialCheck: {
+  accessToken: string | null;
+  issuer: string | null;
+  clientId: string | null;
+  development: boolean;
+} | null = null;
+
+function isDevelopmentAccountMaterial(
+  accessToken: string | null | undefined,
+  oauthConfig: AccountOAuthConfig | null | undefined,
+): boolean {
+  const token = accessToken || null;
+  const issuer = oauthConfig?.issuer ?? null;
+  const clientId = oauthConfig?.clientId ?? null;
+  const last = lastDevelopmentMaterialCheck;
+  if (last && last.accessToken === token && last.issuer === issuer && last.clientId === clientId) {
+    return last.development;
+  }
+  const development = isDevelopmentOAuthConfig(oauthConfig)
+    || isClerkDevelopmentIssuer(token ? accessTokenIssuer(token) : null);
+  lastDevelopmentMaterialCheck = { accessToken: token, issuer, clientId, development };
+  return development;
+}
+
 function shouldRejectDevelopmentAccountMaterial(args: {
   env: NodeJS.ProcessEnv;
   accessToken?: string | null;
   oauthConfig?: AccountOAuthConfig | null;
 }): boolean {
   return shouldIgnoreDevelopmentClerkConfiguration(args.env)
-    && (
-      isDevelopmentOAuthConfig(args.oauthConfig)
-      || isClerkDevelopmentIssuer(
-        args.accessToken ? accessTokenIssuer(args.accessToken) : null,
-      )
-    );
+    && isDevelopmentAccountMaterial(args.accessToken, args.oauthConfig);
 }
 
 function classifyEnvCredential(token: string): "access_token" | "refresh_token" {
@@ -618,6 +705,8 @@ function buildAuthorizeUrl(args: {
   redirectUri: string;
   codeChallenge: string;
   state: string;
+  /** Show Clerk's sign-in form even when the browser holds a Clerk session. */
+  forceLogin?: boolean;
 }): string {
   const query = encodeAuthorizeQuery([
     ["response_type", "code"],
@@ -627,8 +716,22 @@ function buildAuthorizeUrl(args: {
     ["code_challenge_method", "S256"],
     ["state", args.state],
     ["scope", "openid profile email offline_access"],
+    ...(args.forceLogin ? ([["prompt", "login"]] as Array<[string, string]>) : []),
   ]);
   return `${args.config.issuer}/oauth/authorize?${query}`;
+}
+
+/**
+ * The page the browser opens. For ADE's production Clerk app that is ADE
+ * Web's own sign-in card (`/sign-in`), which signs the person in and then goes
+ * on to `authorizeUrl`; ADE Web accepts only that app's client id, so any other
+ * configuration (development Clerk, a custom issuer) opens Clerk's page as
+ * before.
+ */
+function signInPageUrl(config: AccountOAuthConfig, authorizeUrl: string): string {
+  const production = config.issuer.replace(/\/+$/, "") === DEFAULT_ADE_CLERK_ISSUER
+    && config.clientId === DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID;
+  return production ? buildWebClientSignInUrl(authorizeUrl) : authorizeUrl;
 }
 
 function isMatchingState(actual: string | null, expected: string): boolean {
@@ -687,8 +790,25 @@ function decodeAccountClaims(accessToken: string): {
   }
 }
 
+/**
+ * The last stored session string `parseStoredSession` read, and its result.
+ * Every account status read parses the stored session, and the brain reads
+ * status many times a minute while the credential stays the same.
+ */
+let lastParsedSession: { raw: string; record: AccountSessionRecord | null } | null = null;
+
+/** The stored session record for `raw`; the same string parses once. */
 function parseStoredSession(raw: string | null | undefined): AccountSessionRecord | null {
   if (!raw?.trim()) return null;
+  if (lastParsedSession?.raw !== raw) {
+    lastParsedSession = { raw, record: parseStoredSessionUncached(raw) };
+  }
+  const record = lastParsedSession.record;
+  // A copy, so a caller that edits its record cannot change the next read's.
+  return record ? { ...record } : null;
+}
+
+function parseStoredSessionUncached(raw: string): AccountSessionRecord | null {
   try {
     const parsed = asRecord(JSON.parse(raw));
     const accessToken = readNonEmptyString(parsed.accessToken);
@@ -877,6 +997,7 @@ export function createAccountActionDomainService(
     },
     startDeviceLogin: (args) => service.startDeviceLogin({
       ignoreEnvCredential: args?.ignoreEnvCredential === true,
+      retryUnreachableForMs: readDeviceStartRetryMs(args?.retryUnreachableForMs),
     }),
     pollDeviceLogin: async (args) => {
       const result = await service.pollDeviceLogin(readNonEmptyString(args?.sessionId) ?? "");
@@ -922,6 +1043,7 @@ export async function callAccountAction(args: {
   } else if (action === "startDeviceLogin") {
     result = await domain.startDeviceLogin({
       ignoreEnvCredential: actionArgs.ignoreEnvCredential === true,
+      retryUnreachableForMs: readDeviceStartRetryMs(actionArgs.retryUnreachableForMs),
     });
   } else if (action === "status") {
     result = domain.status();
@@ -1089,6 +1211,20 @@ export function createAccountAuthService(args: {
   );
   const resolveRefreshBroker = (): AccountRefreshBroker | null => args.getRefreshBroker?.() ?? null;
   const pendingSessions = new Map<string, PendingLoginSession>();
+  /**
+   * Expired browser sign-ins whose port still shows the expired page
+   * (`EXPIRED_CALLBACK_PAGE_MS`), with the timer that closes them. Closing one
+   * early clears its timer too: the timer holds the `Server` and the sign-in's
+   * closure, and an expired session leaves the map people poll.
+   */
+  const expiredCallbackServers = new Map<Server, ReturnType<typeof setTimeout>>();
+  const closeExpiredCallbackServers = (): void => {
+    for (const [server, timer] of expiredCallbackServers) {
+      clearTimeout(timer);
+      closeServer(server);
+    }
+    expiredCallbackServers.clear();
+  };
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
   const devicePollsInFlight = new Map<string, Promise<AccountDeviceLoginPollResult>>();
   let refreshInFlight: Promise<AccountSessionRecord | null> | null = null;
@@ -1270,6 +1406,12 @@ export function createAccountAuthService(args: {
     storedSessionRejected = false;
     if (record) {
       args.credentialStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(record));
+      try {
+        args.credentialStore.deleteSync(ACCOUNT_SIGNED_OUT_BY_USER_KEY);
+      } catch (error) {
+        // Best effort: a marker left behind costs one extra sign-in form.
+        logger.warn("account.signed_out_marker_failed", { op: "clear", error: error instanceof Error ? error.message : String(error) });
+      }
       // A successful sign-in is the definitive end of any prior rotation: the
       // journal describes a refresh token that no longer exists.
       rotationJournal.clear("session_replaced");
@@ -1665,6 +1807,8 @@ export function createAccountAuthService(args: {
     session.phase = phase;
     session.message = message;
     clearTimeout(session.expiryTimer);
+    // An expired session is in the map with a wait; ending it early drops both.
+    expiredCallbackServers.delete(session.server);
     closeServer(session.server);
   };
 
@@ -1677,6 +1821,8 @@ export function createAccountAuthService(args: {
    * it, because the machine is signed in; a device sign-in is forgotten.
    */
   const endOtherSignIns = (completed: PendingLoginSession | string): void => {
+    // The machine is signed in now, so "timed out, sign in again" is wrong.
+    closeExpiredCallbackServers();
     for (const pending of pendingSessions.values()) {
       if (pending === completed) continue;
       if (pending.phase === "pending" || pending.phase === "exchanging") {
@@ -1690,7 +1836,20 @@ export function createAccountAuthService(args: {
 
   const expirePendingSession = (session: PendingLoginSession): void => {
     if (session.phase !== "pending" && session.phase !== "exchanging") return;
-    finishPendingSession(session, "expired", "ADE account sign-in expired.");
+    session.phase = "expired";
+    session.message = "ADE account sign-in timed out. Choose Sign in again.";
+    clearTimeout(session.expiryTimer);
+    // The browser may still come back to this port (a sign-up that took
+    // longer): answer it with the expired page for a while, then close. The
+    // port must not keep the process alive for that.
+    const { server } = session;
+    server.unref();
+    session.expiryTimer = setTimeout(() => {
+      expiredCallbackServers.delete(server);
+      closeServer(server);
+    }, EXPIRED_CALLBACK_PAGE_MS);
+    session.expiryTimer.unref?.();
+    expiredCallbackServers.set(server, session.expiryTimer);
   };
 
   const pruneFinishedSessions = (): void => {
@@ -1862,9 +2021,9 @@ export function createAccountAuthService(args: {
       respondHtml(response, 404, FAILURE_HTML);
       return;
     }
-    if (session.expiresAtMs <= now()) {
-      expirePendingSession(session);
-      respondHtml(response, 410, FAILURE_HTML);
+    if (session.expiresAtMs <= now()) expirePendingSession(session);
+    if (session.phase === "expired") {
+      respondHtml(response, 410, EXPIRED_HTML);
       return;
     }
     if (!isMatchingState(requestUrl.searchParams.get("state"), session.oauthState)) {
@@ -1925,6 +2084,8 @@ export function createAccountAuthService(args: {
       throw new Error("ADE_ACCOUNT_TOKEN is already providing account authentication; no interactive sign-in is required.");
     }
     pruneFinishedSessions();
+    // A new attempt replaces the expired pages: their tabs now have a sign-in to go back to.
+    closeExpiredCallbackServers();
     while (pendingSessions.size >= MAX_PENDING_LOGIN_SESSIONS) {
       const oldestId = pendingSessions.keys().next().value as string | undefined;
       if (!oldestId) break;
@@ -1989,12 +2150,13 @@ export function createAccountAuthService(args: {
 
     return {
       sessionId,
-      authorizeUrl: buildAuthorizeUrl({
+      authorizeUrl: signInPageUrl(config, buildAuthorizeUrl({
         config,
         redirectUri,
         codeChallenge: derivePkceChallenge(codeVerifier),
         state: oauthState,
-      }),
+        forceLogin: readSignedOutByUser(),
+      })),
       expiresAt: new Date(expiresAtMs).toISOString(),
     };
   };
@@ -2050,17 +2212,8 @@ export function createAccountAuthService(args: {
     signal: AbortSignal.timeout(deviceBridgeRequestTimeoutMs),
   });
 
-  const deviceBridgeStartError = (error: unknown): Error => {
-    const errorName = error instanceof Error ? error.name : "";
-    return new Error(
-      errorName === "TimeoutError" || errorName === "AbortError"
-        ? "ADE account device service timed out. Check the account directory connection and retry."
-        : "ADE account device service could not be reached. Check the account directory connection and retry.",
-    );
-  };
-
   const startDeviceLogin = async (
-    options: { ignoreEnvCredential?: boolean } = {},
+    options: DeviceLoginStartOptions = {},
   ): Promise<AccountDeviceLoginStartResult> => {
     if (readAcceptedEnvCredential() && !options.ignoreEnvCredential) {
       throw new Error("ADE_ACCOUNT_TOKEN is already providing account authentication; no interactive sign-in is required.");
@@ -2098,26 +2251,18 @@ export function createAccountAuthService(args: {
         machineName = null;
       }
     }
-    let response: Response;
-    try {
-      response = await requestDeviceBridge(`${bridgeUrl}/device/code`, {
-        method: "POST",
-        headers: { accept: "application/json", "content-type": "application/json" },
-        body: JSON.stringify({
-          device_secret: deviceSecret,
-          ...(machineKey ? { machine_key: machineKey } : {}),
-          ...(machineName ? { machine_name: machineName } : {}),
-        }),
-      });
-    } catch (error) {
-      throw deviceBridgeStartError(error);
-    }
-    let payload: Record<string, unknown>;
-    try {
-      payload = asRecord(await response.json());
-    } catch (error) {
-      throw deviceBridgeStartError(error);
-    }
+    const requestBody = JSON.stringify({
+      device_secret: deviceSecret,
+      ...(machineKey ? { machine_key: machineKey } : {}),
+      ...(machineName ? { machine_name: machineName } : {}),
+    });
+    const { response, payload } = await requestDeviceCodeWithRetry({
+      request: requestDeviceBridge,
+      url: `${bridgeUrl}/device/code`,
+      body: requestBody,
+      retryUnreachableForMs: options.retryUnreachableForMs,
+      logger,
+    });
     if (!response.ok) {
       throw new Error(
         readNonEmptyString(payload.error_description)
@@ -2666,6 +2811,19 @@ export function createAccountAuthService(args: {
             });
             break;
           } catch (error) {
+            // Clerk never answered (offline, a dropped connection). undici
+            // throws that as a bare `TypeError: fetch failed`, which the RPC
+            // layer reads as a brain fault and sends on as "Internal error in
+            // account.call": name it, as the env-token exchange above does.
+            if (isFetchTransportFailure(error)) {
+              throw markExpected(
+                new AccountRefreshUnavailableError(
+                  "ADE could not reach the account service to refresh your sign-in. Try again in a moment.",
+                  { cause: error },
+                ),
+                "network",
+              );
+            }
             if (
               !(error instanceof AccountTokenRequestError)
               || error.oauthErrorCode !== "invalid_grant"
@@ -2822,16 +2980,22 @@ export function createAccountAuthService(args: {
   const getAccessToken = async (
     options: AccountAccessTokenOptions = {},
   ): Promise<string> => {
-    const controller = new AbortController();
-    const abortFromCaller = () => controller.abort(options.signal?.reason);
-    options.signal?.throwIfAborted();
-    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
     const requestedTimeoutMs = options.timeoutMs;
     const timeoutMs = typeof requestedTimeoutMs === "number"
       && Number.isFinite(requestedTimeoutMs)
       && requestedTimeoutMs > 0
       ? Math.trunc(requestedTimeoutMs)
       : null;
+    // With no signal and no timeout nothing can abort the request, so the
+    // controller, its listeners and the race would only cost time. The relay
+    // lease check asks for a token this way every few seconds.
+    if (!options.signal && timeoutMs == null) {
+      return await getAccessTokenWithSignal(options.forceRefresh ? { forceRefresh: true } : {});
+    }
+    const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(options.signal?.reason);
+    options.signal?.throwIfAborted();
+    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
     const timeout = timeoutMs == null
       ? null
       : setTimeout(() => {
@@ -2916,8 +3080,23 @@ export function createAccountAuthService(args: {
     return held && held.expiresAtMs > now() ? held.value : null;
   };
 
+  const readSignedOutByUser = (): boolean => {
+    try {
+      return args.credentialStore.getSync(ACCOUNT_SIGNED_OUT_BY_USER_KEY) != null;
+    } catch (error) {
+      logger.warn("account.signed_out_marker_failed", { op: "read", error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  };
+
   const signOut = (): AccountAuthStatus => {
     authEpoch += 1;
+    try {
+      args.credentialStore.setSync(ACCOUNT_SIGNED_OUT_BY_USER_KEY, "1");
+    } catch (error) {
+      // Best effort: without it the next sign-in may reuse the browser session.
+      logger.warn("account.signed_out_marker_failed", { op: "set", error: error instanceof Error ? error.message : String(error) });
+    }
     // A grant belongs to the session that earned it. Signing out ends that
     // session, so anything still holding one is holding a stale claim about a
     // user who is no longer here.
@@ -2969,6 +3148,7 @@ export function createAccountAuthService(args: {
       closeServer(session.server);
     }
     pendingSessions.clear();
+    closeExpiredCallbackServers();
     pendingDeviceSessions.clear();
     if (credentialChangeTimer) clearTimeout(credentialChangeTimer);
     credentialChangeTimer = null;

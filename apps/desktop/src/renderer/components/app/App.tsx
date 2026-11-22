@@ -11,6 +11,7 @@ import {
   useLocation,
   useNavigate
 } from "react-router-dom";
+import { laneShareGuestPath } from "../laneShare/guest/laneShareGuestRoute";
 import { shallow } from "zustand/shallow";
 import { useShallow } from "zustand/react/shallow";
 
@@ -32,6 +33,7 @@ import {
   type InboundDeeplinkTarget,
 } from "./InboundDeeplinkModal";
 import { DialogHost } from "../ui/dialog/confirm";
+import { LaneShareSheetHost } from "../laneShare/LaneShareSheetHost";
 import { BrowserAgentAccessPromptHost } from "./BrowserAgentAccessPrompt";
 import { QuitPromptHost } from "./QuitPromptHost";
 import { GitFolderTrustPromptHost } from "./GitFolderTrustPrompt";
@@ -48,22 +50,32 @@ import { ProjectSidebarHold, ProjectSidebarSlotProvider } from "./projectSidebar
 const ProjectWelcomePage = React.lazy(() => import("../projects/ProjectWelcomePage").then((module) => ({ default: module.ProjectWelcomePage })));
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
+import { UpdateRequiredGate } from "./UpdateRequiredGate";
 import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
 import { OnboardingTourHost } from "../onboarding/tour/OnboardingTourHost";
 import { AdeTipsDialogHost } from "../onboarding/tips/AdeTipsDialog";
 import { SpotlightHost } from "../onboarding/spotlight/SpotlightHost";
-import { AnnouncementsHost } from "../announcements/AnnouncementsHost";
+import { subscribeWhatsNewRequests, whatsNewRequested } from "../announcements/whatsNewEvents";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { openLaneInLanesTabPath, openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { whenBootPriorityOpen } from "../../webclient/adapter/infra/bootPriority";
+import { preloadRoute, registerRoutePreload, scheduleQuietRoutePreload } from "../../lib/routePreload";
 import { hydrateFastModeEnabled } from "../../lib/fastModePolicy";
 import { cn } from "../ui/cn";
 import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
 import { AppearanceRoot } from "./AppearanceRoot";
 import { AppearanceScheduleHost } from "./AppearanceScheduleHost";
 import { fgTint } from "../lanes/laneDesignTokens";
+import { WorkLoadingFallback } from "./EarlyWorkComposer";
+import { whenEarlyComposerSettled } from "../../lib/earlyComposer";
+import {
+  originUrlForBinding,
+  rememberedLocalOrigin,
+  subscribeProjectOriginMemory,
+} from "../lanes/laneMachines";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -90,6 +102,47 @@ function createPreloadableRoute<TProps extends object>(
   return { Component, preload: load };
 }
 
+// "What's new" (its pages and the bundled release notes) loads after the first
+// paint settles, or at once when something asks for it (`whatsNewEvents`).
+const AnnouncementsHost = React.lazy(() =>
+  import("../announcements/AnnouncementsHost").then((m) => ({ default: m.AnnouncementsHost }))
+);
+
+function AnnouncementsHostLoader() {
+  const [load, setLoad] = React.useState(() => whatsNewRequested());
+  React.useEffect(() => {
+    if (load) return undefined;
+    const unsubscribe = subscribeWhatsNewRequests(() => setLoad(true));
+    // A request made between the first render and this subscription.
+    if (whatsNewRequested()) {
+      setLoad(true);
+      return unsubscribe;
+    }
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    let cancelScheduled: () => void;
+    if (typeof idleWindow.requestIdleCallback === "function") {
+      const handle = idleWindow.requestIdleCallback(() => setLoad(true), { timeout: 3_000 });
+      cancelScheduled = () => idleWindow.cancelIdleCallback?.(handle);
+    } else {
+      const handle = window.setTimeout(() => setLoad(true), 1_500);
+      cancelScheduled = () => window.clearTimeout(handle);
+    }
+    return () => {
+      unsubscribe();
+      cancelScheduled();
+    };
+  }, [load]);
+  if (!load) return null;
+  return (
+    <React.Suspense fallback={null}>
+      <AnnouncementsHost />
+    </React.Suspense>
+  );
+}
+
 const lanesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../lanes/LanesPage").then((m) => ({ default: m.LanesPage }))
 );
@@ -101,7 +154,10 @@ const filesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
 const FilesTab = filesRoute.Component;
 const preloadFilesTab = filesRoute.preload;
 const workRoute = createPreloadableRoute<{ active?: boolean }>(() =>
-  import("../terminals/TerminalsPage").then((m) => ({ default: m.TerminalsPage }))
+  import("../terminals/TerminalsPage")
+    // A word the early prompt box is composing (IME) finishes there before the
+    // Work page replaces it (`whenEarlyComposerSettled`).
+    .then((m) => whenEarlyComposerSettled().then(() => ({ default: m.TerminalsPage })))
 );
 const TerminalsPage = workRoute.Component;
 const preloadTerminalsPage = workRoute.preload;
@@ -118,6 +174,9 @@ const AutomationsPage = React.lazy(() =>
 );
 const SettingsPage = React.lazy(() =>
   import("./SettingsPage").then((m) => ({ default: m.SettingsPage }))
+);
+const LaneShareGuestPage = React.lazy(() =>
+  import("../laneShare/guest/LaneShareGuestPage").then((m) => ({ default: m.LaneShareGuestPage }))
 );
 const PersonalChatsPage = React.lazy(() =>
   import("../personalChats/PersonalChatsPage").then((m) => ({ default: m.PersonalChatsPage }))
@@ -136,9 +195,20 @@ const ctoRoute = createPreloadableRoute<{ active?: boolean }>(() =>
 );
 const CtoPage = ctoRoute.Component;
 const preloadCtoPage = ctoRoute.preload;
+// The tab buttons load these on hover or focus (`preloadRoute`).
+registerRoutePreload("/work", preloadTerminalsPage);
+registerRoutePreload("/lanes", preloadLanesPage);
+registerRoutePreload("/files", preloadFilesTab);
+registerRoutePreload("/prs", preloadPrsPage);
+registerRoutePreload("/cto", preloadCtoPage);
+/** The tabs whose code loads after launch, when the person stops for a moment. */
+const OTHER_TAB_ROUTE_PATHS = ["/lanes", "/files", "/prs", "/cto"] as const;
+/** Once per window: the quiet-time load of `OTHER_TAB_ROUTE_PATHS`. */
+let otherTabRoutesPreload: "waiting" | "scheduled" | "done" = "waiting";
 import {
   AppStoreProvider,
   createProjectAppStore,
+  hasKnownProjectInfo,
   hydrateProjectAppStore,
   releaseProjectAppStore,
   retainProjectAppStoreState,
@@ -146,6 +216,7 @@ import {
   useAppStore,
   type AppStoreApi,
 } from "../../state/appStore";
+import { adeCloudProjectForTabId } from "../../state/adeCloudTabs";
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 import { filesProjectCacheKey, releaseFilesProjectCaches } from "../files/v2/filesTreeCache";
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
@@ -168,13 +239,17 @@ import {
   type GithubRepoSlug,
 } from "../../../shared/githubRemote";
 import {
+  accountProjectIdOfTarget,
   deeplinkToNavigationTarget,
   isValidRepoRelativePath,
   ownershipOfTarget,
   parseDeeplink,
 } from "../../../shared/deeplinks";
+import { showToast } from "./toast/toastStore";
+import { cloudKeptLaneSettingsPath, isCloudLaneKeptWithoutComputer } from "../cloudLane/cloudLaneActions";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
-import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
+import { CloudViewsShownContext, useCrossMachineLaneSync } from "../../state/crossMachineLanes";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { runFirstLoadWithRetry } from "../../lib/firstLoadRetry";
 import { useHomeAppEffects } from "../home/useHomeAppEffects";
 import { BootSplashReveal, useBootSplashHold } from "./BootSplashReveal";
@@ -183,6 +258,7 @@ import type {
   AppNavigationRequest,
   AppNavigationTarget,
   OpenProjectBinding,
+  ProjectFindForRepoResult,
   ProjectInfo,
 } from "../../../shared/types";
 
@@ -212,13 +288,11 @@ const StartupSplashScreen = (
   </div>
 );
 
-/** Used by React.lazy Suspense boundaries while route chunks load. */
-const GuardLoadingFallback = StartupSplashScreen;
-
 const RouteLoadingFallback = (
   <div
     className="flex h-full min-h-0 w-full flex-col"
     style={{ background: "var(--color-bg)" }}
+    role="status"
     aria-label="Loading tab"
   >
     <div
@@ -252,38 +326,20 @@ const RouteLoadingFallback = (
   </div>
 );
 
+/**
+ * Used by React.lazy Suspense boundaries while route chunks load. The web
+ * client has its own start screens, so the logo reveal (and its "local
+ * workspace" line) never plays there.
+ */
+const GuardLoadingFallback = isWebClientMode() ? RouteLoadingFallback : StartupSplashScreen;
+
 const LazyFallback = RouteLoadingFallback;
 
 /**
- * The Work tab's own placeholder while its chunk loads: shaped like the chat it
- * is about to show (a title bar, a few messages, the prompt box at the bottom)
- * rather than the generic list-and-panels grid, so the page does not change
- * shape when it arrives.
+ * The Work tab's own placeholder while its chunk loads (`WorkLoadingFallback`):
+ * shaped like the chat it is about to show, or, for an empty new chat, the
+ * new-chat screen with a prompt box that already takes typing.
  */
-const WorkLoadingFallback = (
-  <div className="flex h-full min-h-0 w-full flex-col" style={{ background: "var(--color-bg)" }} aria-label="Loading chats" aria-busy="true">
-    <div className="flex h-12 shrink-0 items-center gap-3 px-5" style={{ borderBottom: "1px solid var(--color-border)" }}>
-      <div className="h-3.5 w-56 animate-pulse rounded" style={{ background: fgTint(7) }} />
-      <span className="ml-auto text-[11px] text-muted-fg/60">Loading chats…</span>
-    </div>
-    <div className="mx-auto flex min-h-0 w-full max-w-[52rem] flex-1 flex-col gap-5 px-6 pt-8">
-      <div className="ml-auto h-14 w-2/3 animate-pulse rounded-2xl" style={{ background: fgTint(6) }} />
-      <div className="space-y-2.5">
-        {["w-11/12", "w-4/5", "w-3/5"].map((width) => (
-          <div key={width} className={`h-3 ${width} animate-pulse rounded`} style={{ background: fgTint(5) }} />
-        ))}
-      </div>
-      <div className="space-y-2.5">
-        {["w-5/6", "w-2/3"].map((width) => (
-          <div key={width} className={`h-3 ${width} animate-pulse rounded`} style={{ background: fgTint(5) }} />
-        ))}
-      </div>
-    </div>
-    <div className="mx-auto w-full max-w-[52rem] shrink-0 px-6 pb-5">
-      <div className="h-[88px] animate-pulse rounded-2xl border border-border" style={{ background: fgTint(4) }} />
-    </div>
-  </div>
-);
 
 function isWorkRoutePath(pathname: string): boolean {
   return pathname === "/work" || pathname.startsWith("/work/");
@@ -315,23 +371,21 @@ const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_PROJECT_INFO_BY_ROOT: Record<string, ProjectInfo> = {};
 
+/**
+ * The binding of a project folder on this computer. `ProjectInfo` has no git
+ * origin, so the binding takes the one the recents remember for the folder.
+ * Without it, a local GitHub repository reads as "this computer only" and its
+ * copies on other computers do not show.
+ */
 function localProjectBindingForProject(project: ProjectInfo): OpenProjectBinding {
-  return {
+  const binding: OpenProjectBinding = {
     kind: "local",
     key: `local:${project.rootPath}`,
     rootPath: project.rootPath,
     displayName: project.displayName,
   };
-}
-
-function bindingForProject(
-  project: ProjectInfo,
-  activeProjectBinding: OpenProjectBinding | null,
-): OpenProjectBinding {
-  if (activeProjectBinding?.rootPath === project.rootPath) {
-    return activeProjectBinding;
-  }
-  return localProjectBindingForProject(project);
+  const gitOriginUrl = originUrlForBinding(binding);
+  return gitOriginUrl ? { ...binding, gitOriginUrl } : binding;
 }
 
 function serializeProjectRoute(location: ReturnType<typeof useLocation>): string | null {
@@ -474,7 +528,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   // `ade ui show` for this project's runtime. Answered here, whatever tab is
   // showing, so the agent hears "held" instead of "no desktop" while the user
   // is somewhere else; the pane showing the chat takes it when it mounts.
-  useWorkToolShowRequestListener(Boolean(active && projectRoot));
+  // `ade ui show` requests come from the tab's copy, and the answer goes back there.
+  const showRequestPin = useTabCopyPin();
+  useWorkToolShowRequestListener(Boolean(active && projectRoot && showRequestPin), showRequestPin);
 
   // The account's Fast-mode permission, once per window and again whenever the
   // window regains focus (another machine may have turned it on or off). The
@@ -553,12 +609,15 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           <div
             ref={workSurfaceRef}
             className="h-full min-h-0 w-full"
+            data-ade-work-route=""
             {...parkedSurfaceProps(!isWorkRoute)}
           >
             <PageErrorBoundary>
-              <React.Suspense fallback={WorkLoadingFallback}>
+              <React.Suspense fallback={<WorkLoadingFallback shown={workShown} />}>
                 <ProjectSidebarHold held={heldWork}>
-                  <TerminalsPage active={workShown} />
+                  <CloudViewsShownContext.Provider value={workShown}>
+                    <TerminalsPage active={workShown} />
+                  </CloudViewsShownContext.Provider>
                 </ProjectSidebarHold>
               </React.Suspense>
             </PageErrorBoundary>
@@ -579,7 +638,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
               <ProjectSidebarHold held={heldLanes}>
-                <LanesPage active={active && isLanesRoute} />
+                <CloudViewsShownContext.Provider value={active && isLanesRoute}>
+                  <LanesPage active={active && isLanesRoute} />
+                </CloudViewsShownContext.Provider>
               </ProjectSidebarHold>
             </React.Suspense>
           </PageErrorBoundary>
@@ -590,7 +651,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
 
   return (
     <ProjectSidebarSlotProvider>
-      <div className="flex h-full min-h-0 w-full">
+      <div className="relative flex h-full min-h-0 w-full">
         <ProjectSidebar route={route} heldRoute={overlayOpen ? heldRoute : null} />
         <div className="ade-project-main relative h-full min-h-0 min-w-0 flex-1">
           {workSurface}
@@ -848,7 +909,9 @@ function ProjectTabHost() {
   const isBrowserRoute = !webMode && isBrowserTabRoute(location.pathname);
   // Music is machine-level too: Apple Music has nothing to do with a project.
   const isMusicRoute = !webMode && isMusicTabRoute(location.pathname);
-  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute || isMusicRoute;
+  // Lanes other accounts share with me: an account page, not a project's.
+  const isSharedLanesRoute = location.pathname === "/shared";
+  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute || isMusicRoute || isSharedLanesRoute;
   const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
   // Settings with no project open: the welcome screen's own Settings entry
   // sends you here, and the machine-scoped sections of the page are the only
@@ -858,9 +921,38 @@ function ProjectTabHost() {
   // project welcome page. Old links and restored tabs still arrive here.
   const isLegacyHubRoute = location.pathname === "/hub";
   const isExternalFilesRoute = location.pathname === "/files" && new URLSearchParams(location.search).has("externalPath");
-  const activeBinding = !showWelcome && activeProject?.rootPath
-    ? bindingForProject(activeProject, activeProjectBinding)
-    : null;
+  // The origin memory fills from the recents after a tab opens, so a local
+  // binding is built again when its folder's origin changes (same key, origin
+  // added). Other changes to the memory do not render the app again.
+  const activeRootPath = activeProject?.rootPath ?? null;
+  const readActiveLocalOrigin = React.useCallback(() => rememberedLocalOrigin(activeRootPath), [activeRootPath]);
+  const activeLocalOrigin = React.useSyncExternalStore(
+    subscribeProjectOriginMemory,
+    readActiveLocalOrigin,
+    readActiveLocalOrigin,
+  );
+  const localBindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
+  // Same fields, same object: a new binding object for a project that did not
+  // change re-renders everything in it that reads the binding.
+  const stableLocalBinding = React.useCallback((project: ProjectInfo): OpenProjectBinding => {
+    const built = localProjectBindingForProject(project);
+    const known = localBindingsRef.current.get(built.key);
+    const binding = known && shallow(known, built) ? known : built;
+    localBindingsRef.current.set(binding.key, binding);
+    return binding;
+  }, []);
+  const activeBinding = React.useMemo(
+    () => {
+      if (showWelcome || !activeProject?.rootPath) return null;
+      if (activeProjectBinding?.kind === "remote" && activeProjectBinding.rootPath === activeProject.rootPath) {
+        return activeProjectBinding;
+      }
+      return stableLocalBinding(activeProject);
+    },
+    // activeLocalOrigin: the folder's origin changed, so build the binding again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeProject, activeProjectBinding, activeLocalOrigin, showWelcome, stableLocalBinding],
+  );
   const activeSurfaceKey = activeBinding?.key ?? null;
   const previousActiveSurfaceKeyRef = React.useRef<string | null>(null);
   const pendingNavigationRef = React.useRef<{ surfaceKey: string; route: string } | null>(null);
@@ -881,23 +973,51 @@ function ProjectTabHost() {
 
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
-    const preload = () => {
+    // Work is the page a project opens on, so it loads at the first idle
+    // frame. The other tabs (Lanes, Files, PRs, CTO) load when the person
+    // stops for a moment after their first input (`scheduleQuietRoutePreload`),
+    // or at once when the pointer moves onto their tab (`preloadRoute`). Their
+    // parse work then stays out of launch and the first new chat.
+    const preloadWork = () => {
       void preloadTerminalsPage().catch(() => undefined);
-      void preloadLanesPage().catch(() => undefined);
-      void preloadFilesTab().catch(() => undefined);
-      void preloadPrsPage().catch(() => undefined);
-      void preloadCtoPage().catch(() => undefined);
     };
     const idleWindow = window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
       cancelIdleCallback?: (handle: number) => void;
     };
-    if (typeof idleWindow.requestIdleCallback === "function") {
-      const handle = idleWindow.requestIdleCallback(preload, { timeout: 900 });
-      return () => idleWindow.cancelIdleCallback?.(handle);
-    }
-    const handle = window.setTimeout(preload, 150);
-    return () => window.clearTimeout(handle);
+    let cancelled = false;
+    let cancelScheduled: (() => void) | null = null;
+    let cancelQuietPreload: (() => void) | null = null;
+    const schedule = () => {
+      if (cancelled) return;
+      if (otherTabRoutesPreload === "waiting") {
+        otherTabRoutesPreload = "scheduled";
+        cancelQuietPreload = scheduleQuietRoutePreload(() => {
+          otherTabRoutesPreload = "done";
+          for (const path of OTHER_TAB_ROUTE_PATHS) preloadRoute(path);
+        });
+      }
+      if (typeof idleWindow.requestIdleCallback === "function") {
+        const handle = idleWindow.requestIdleCallback(preloadWork, { timeout: 900 });
+        cancelScheduled = () => idleWindow.cancelIdleCallback?.(handle);
+        return;
+      }
+      const handle = window.setTimeout(preloadWork, 150);
+      cancelScheduled = () => window.clearTimeout(handle);
+    };
+    // ADE Web downloads this code over the network: on a page that opens on a
+    // chat, it waits until the chat has painted (bootPriority.ts).
+    if (isWebClientMode()) void whenBootPriorityOpen().then(schedule);
+    else schedule();
+    return () => {
+      cancelled = true;
+      cancelScheduled?.();
+      if (cancelQuietPreload && otherTabRoutesPreload === "scheduled") {
+        // Not run yet: the next surface schedules it again.
+        cancelQuietPreload();
+        otherTabRoutesPreload = "waiting";
+      }
+    };
   }, [activeSurfaceKey]);
 
   React.useEffect(() => {
@@ -944,7 +1064,17 @@ function ProjectTabHost() {
     setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === route ? prev : { ...prev, [activeSurfaceKey]: route }));
   }, [activeSurfaceKey, location]);
 
-  const localBindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
+  // The origins of the open local tabs, as one string: a change to another
+  // folder's origin in the memory does not render the app again.
+  const readOpenLocalOrigins = React.useCallback(
+    () => openProjectTabRoots.map((root) => rememberedLocalOrigin(root) ?? "").join("\n"),
+    [openProjectTabRoots],
+  );
+  const openLocalOrigins = React.useSyncExternalStore(
+    subscribeProjectOriginMemory,
+    readOpenLocalOrigins,
+    readOpenLocalOrigins,
+  );
   const projectEntries = React.useMemo<ProjectSurfaceEntry[]>(() => {
     const entries: ProjectSurfaceEntry[] = [];
     const activeRemoteRoot =
@@ -959,13 +1089,7 @@ function ProjectTabHost() {
         activeProject?.rootPath === root && !activeRemoteRoot ? activeProject : null
       );
       if (!project) continue;
-      // Same fields, same object: this list is rebuilt on every project
-      // switch, and a new binding object for a project that did not change
-      // re-rendered everything in it that reads the binding.
-      const built = localProjectBindingForProject(project);
-      const known = localBindingsRef.current.get(built.key);
-      const binding = known && shallow(known, built) ? known : built;
-      localBindingsRef.current.set(binding.key, binding);
+      const binding = stableLocalBinding(project);
       entries.push({ surfaceKey: binding.key, project, binding });
     }
     for (const binding of openRemoteProjectTabs) {
@@ -987,13 +1111,17 @@ function ProjectTabHost() {
       });
     }
     return entries;
+    // openLocalOrigins: a folder's origin changed, so build the local bindings again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeBinding,
     activeProject,
     activeProjectBinding,
+    openLocalOrigins,
     openProjectTabRoots,
     openRemoteProjectTabs,
     projectInfoByRoot,
+    stableLocalBinding,
   ]);
 
   React.useEffect(() => {
@@ -1188,6 +1316,13 @@ function ProjectTabHost() {
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}
+      {isSharedLanesRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <LaneShareGuestPage />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
       {isAccountRoute && !accountOpensInSettings ? (
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
@@ -1251,6 +1386,10 @@ function AppNavigationBridge() {
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectBindingRef = React.useRef(projectBinding ?? null);
   projectBindingRef.current = projectBinding ?? null;
+  // The tab's copy: the store's lanes and the "local" chat lookup are its machine's.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = React.useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
   const [otherMachineLookups, setOtherMachineLookups] = React.useState(0);
 
   const readOtherMachinesNow = React.useCallback(
@@ -1263,9 +1402,10 @@ function AppNavigationBridge() {
 
   const resolveActiveProjectRepo = React.useCallback(async (): Promise<GithubRepoSlug | null> => {
     const lane = lanesRef.current[0];
-    if (!lane) return null;
+    const pin = tabCopyPinRef.current;
+    if (!lane || !pin) return null;
     try {
-      const remote = await window.ade?.git?.getOriginRemote?.({ laneId: lane.id });
+      const remote = await window.ade?.git?.getOriginRemote?.({ laneId: lane.id }, pin);
       return parseGithubRemoteUrl(remote?.remoteUrl ?? null);
     } catch {
       return null;
@@ -1297,16 +1437,15 @@ function AppNavigationBridge() {
     }
 
     const projectApi = window.ade?.project as typeof window.ade.project & {
-      findForRepo?: (args: { repoOwner: string; repoName: string }) => Promise<{
-        rootPath: string;
-        displayName: string;
-      } | null>;
+      findForRepo?: (args: { repoOwner: string; repoName: string }) => Promise<ProjectFindForRepoResult>;
     };
     const match = await projectApi?.findForRepo?.({
       repoOwner: envelope.repoOwner,
       repoName: envelope.repoName,
     }).catch(() => null);
-    if (match?.rootPath && match.rootPath !== projectRootRef.current) {
+    // The active project is another repository (checked above), so a copy on
+    // another machine is always a switch, even at the same path string.
+    if (match?.rootPath && (match.remote || match.rootPath !== projectRootRef.current)) {
       setInboundTarget({ kind: "switch-project", entity, project: match, original });
       return true;
     }
@@ -1349,7 +1488,10 @@ function AppNavigationBridge() {
 
     if (target.kind === "chat" || target.kind === "work") {
       if (target.sessionId && !options.forceLocal) {
-        const localSession = await window.ade?.sessions?.get?.(target.sessionId).catch(() => null);
+        const tabPin = tabCopyPinRef.current;
+        const localSession = tabPin
+          ? await window.ade?.sessions?.get?.(target.sessionId, tabPin).catch(() => null)
+          : null;
         // Work lists the chats of every connected machine, so a chat that one
         // of them holds opens there like a local one.
         const sessionId = target.sessionId;
@@ -1461,12 +1603,47 @@ function AppNavigationBridge() {
       if (tab) params.set("tab", tab);
       const machineId = target.machineId?.trim();
       if (tab && machineId && machineId !== THIS_MACHINE_ID && isMachineSelectableSettingsTab(tab)) params.set("machine", machineId);
+      // `ade://invite/<CODE>`: Settings › Account reads `invite` and fills its code box.
+      const inviteCode = target.inviteCode?.trim();
+      if (inviteCode) params.set("invite", inviteCode);
+      // A kept ADE Cloud lane: Settings › ADE Cloud opens its row.
+      const cloudLaneId = target.cloudLaneId?.trim();
+      if (cloudLaneId) params.set("lane", cloudLaneId);
       const search = params.toString();
+      // As the Settings button does: leave the new-tab page (it holds Home in
+      // front), and with no project open, show Settings on its own. Without
+      // this, a link to Settings (the Usage menu's "Open ADE Cloud") changed
+      // the URL and Home stayed on screen.
+      const shell = useAppStore.getState();
+      shell.cancelNewTab();
+      if (!shell.project?.rootPath) shell.setStandaloneSettingsOpen(true);
       navigate({
         pathname: "/settings",
         search: search ? `?${search}` : "",
         hash: anchor ? `#${anchor}` : "",
       });
+      return true;
+    }
+
+    if (target.kind === "account-project") {
+      // Main resolved the link's account project id first (L33). No computer
+      // that can be reached has a copy: the repository opens on ADE Cloud,
+      // as a Home row does.
+      if (target.reason === "no-copy") {
+        void useAppStore.getState().openAdeCloudProject(
+          adeCloudProjectForTabId(target.accountProjectId, target.name?.trim() || "Project"),
+        ).catch(() => undefined);
+        return true;
+      }
+      showToast(target.reason === "removed"
+        ? { tone: "info", title: `${target.name?.trim() || "This project"} was removed from ADE.` }
+        : { tone: "info", title: "This project isn't in your ADE account." });
+      return true;
+    }
+
+    if (target.kind === "lane-share") {
+      // An invite link: the shared lanes page opens it (sign in, accept or open).
+      navigate(laneShareGuestPath(target.grantId));
       return true;
     }
 
@@ -1489,6 +1666,17 @@ function AppNavigationBridge() {
       if (laneMachineId) {
         // Lanes selects a lane on another machine from `?laneId&machineId`.
         navigate(openLaneOnMachinePath(target.laneId, laneMachineId, target.sessionId));
+        return true;
+      }
+      if (!lane && !options.forceLocal && !options.suppressUnresolved && await isCloudLaneKeptWithoutComputer(target.laneId)) {
+        // An ADE Cloud lane whose computer is gone: the account keeps it,
+        // with New computer and Delete, never "a lane from another computer".
+        // As a settings link does: leave the new-tab page, and with no
+        // project open, show Settings on its own.
+        const shell = useAppStore.getState();
+        shell.cancelNewTab();
+        if (!shell.project?.rootPath) shell.setStandaloneSettingsOpen(true);
+        navigate(cloudKeptLaneSettingsPath(target.laneId));
         return true;
       }
       if (!lane && !options.forceLocal) {
@@ -1578,7 +1766,9 @@ function AppNavigationBridge() {
       const parsed = parseDeeplink(url);
       if (!parsed.ok) return;
       const target = deeplinkToNavigationTarget(parsed.target);
-      if (!ownershipOfTarget(parsed.target)) {
+      // A link that names an account project goes through main too: main
+      // reads the account list and picks the copy (L33).
+      if (!ownershipOfTarget(parsed.target) && !accountProjectIdOfTarget(parsed.target)) {
         void dispatchLatest(target);
         return;
       }
@@ -1699,10 +1889,20 @@ export function App() {
     void getAiStatusCached({ projectRoot: projectRoot ?? null }).catch(() => undefined);
   }, [projectRoot]);
 
+  // A launch that can reopen a folder's Work view (saved project info) loads
+  // the Work page while the launch gate and the window session are read,
+  // rather than after them.
+  React.useEffect(() => {
+    if (isWebClientMode() || !hasKnownProjectInfo()) return;
+    void preloadTerminalsPage().catch(() => undefined);
+  }, []);
+
   return (
     // Interface, theme, reduce-motion and the OS colour scheme come from
     // AppearanceRoot, which the hosted sign-in screen mounts too.
     <AppearanceRoot>
+    {/* A build below the owner's minimum: the whole window, signed in or not. */}
+    <UpdateRequiredGate />
     <LaunchGate>
       <Router>
         <div
@@ -1727,12 +1927,14 @@ export function App() {
           </Routes>
           {/* The one host for confirmDialog / promptDialog (ui/dialog). */}
           <DialogHost />
+          {/* The lane share sheet, opened from any lane menu or mark. */}
+          <LaneShareSheetHost />
           {/* The guided tour after first-run setup, then contextual hints; both
               render nothing unless onboarding is on. */}
           <OnboardingTourHost />
           <OnboardingHintHost />
           {/* "What's new" pages: once per computer, inside a project, after onboarding. */}
-          <AnnouncementsHost />
+          <AnnouncementsHostLoader />
           {/* ADE Tips, opened from the help menu, the home widget or the palette. */}
           <AdeTipsDialogHost />
           {/* The ring "Try it" leaves around the control it went to. */}

@@ -14,7 +14,7 @@ Read this before editing Work tab surfaces:
 - `apps/desktop/src/renderer/components/chat/**` when mounted from Work
 - `apps/desktop/src/renderer/components/lanes/LaneGitActionsPane.tsx`
 - `apps/desktop/src/renderer/components/lanes/CommitTimeline.tsx`
-- `apps/desktop/src/renderer/components/files/FilesPage.tsx` when embedded
+- `apps/desktop/src/renderer/components/files/FilesTab.tsx` when embedded
 - `apps/desktop/src/preload/preload.ts`
 - `apps/desktop/src/main/services/ipc/registerIpc.ts`
 - Work-facing tool services for iOS Simulator, App Control, and built-in browser
@@ -193,7 +193,7 @@ Measured Work run `work-context-menu-edge-20260512-01`:
 When changing `SessionContextMenu`, verify with a small Work viewport and a context menu opened near the right edge. Keep the inset stable so users can still reach every menu item.
 
 Files context menus have the same requirement. The Files tree context menu is
-rendered by `FilesPage.tsx`; measure its actual rendered width/height and clamp
+rendered by `FilesTab.tsx`; measure its actual rendered width/height and clamp
 both axes to the viewport.
 
 Measured Work run `work-chat-other-controls-20260512-01`:

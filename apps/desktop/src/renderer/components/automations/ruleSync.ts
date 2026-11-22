@@ -1,7 +1,7 @@
 import type { Icon } from "@phosphor-icons/react";
 import { ArrowsLeftRight, ChatCircle, CloudArrowUp, CloudCheck, CloudSlash } from "@phosphor-icons/react";
 import type { AutomationRuleSummary } from "../../../shared/types";
-import { AUTOMATION_HOME_LEASE_MINUTES } from "../../../shared/automationHome";
+import { AUTOMATION_HOME_LEASE_MINUTES, isAdeCloudHome } from "../../../shared/automationHome";
 
 /**
  * Where a rule lives and who runs it, in one short line, for the rule row's
@@ -121,6 +121,8 @@ function localLine(reason: NonNullable<AutomationRuleSummary["localReason"]>): R
  */
 export function ruleElsewhereReason(rule: Pick<AutomationRuleSummary, "runsHere" | "home" | "needsNewerAde" | "source">): string | null {
   if (rule.needsNewerAde) return "Made with a newer ADE. Update ADE on this computer to run it here.";
+  // ADE Cloud's server runs it; Run now asks the server from any window.
+  if (isAdeCloudHome(rule.home)) return null;
   if (followsAccount(rule) && rule.runsHere === false) {
     return `Runs on ${rule.home!.name}, which this window isn't connected to.`;
   }

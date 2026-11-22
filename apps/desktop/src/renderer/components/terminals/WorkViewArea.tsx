@@ -1,7 +1,9 @@
 import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
-import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { useMemo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type CSSProperties } from "react";
+import { RemoteMachineUpdateGate } from "../remoteTargets/RemoteMachineUpdateGate";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { STANDARD_EASE } from "../../lib/motion";
+import { previewRowsFromTranscript, transcriptUsesAlternateScreen } from "./terminalPreviewRows";
 import {
   ArrowClockwise,
   ArrowUp,
@@ -29,9 +31,12 @@ import { WorkGridView, SingleSessionGridDropZone } from "./WorkGridView";
 import { fgTint } from "../lanes/laneDesignTokens";
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
-import { TerminalView } from "./TerminalView";
+// xterm loads with the first terminal, not with the Work page (LazyTerminalView).
+import { scheduleTerminalViewPreload, TerminalView } from "./LazyTerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
+import { SavedTerminalCopyView } from "./SavedTerminalCopy";
+import { isSavedTerminalSession } from "../../state/cloudSavedTerminals";
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
 import {
   composerTriggerSpansWholeDraft,
@@ -40,13 +45,22 @@ import {
   type ComposerTrigger,
 } from "../../../shared/composerTriggers";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
-import { ModelRowLogo } from "../shared/ProviderLogos";
-import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder } from "../shared/ModelPicker/modelCatalog";
+import { CliLaunchChips } from "./CliLaunchChips";
 import { WorkStartSurface } from "./WorkStartSurface";
-import { hasPendingComposerDock } from "../chat/launch/chatLaunchDock";
+import { useRemoteConnectionMark } from "../../state/projectMachines";
+import { hasPendingComposerDock, onSendHandoffSettle, startedWithSendHandoff } from "../chat/launch/chatLaunchDock";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
+import { SceneFrost } from "../../scene/SceneFrost";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
+import { CliActionsScope, CliActionsSidePane, CliActionsToggle, CliPromptSlot } from "./CliAgentPane";
+import { CliInputModeToggle, WorkCliInputBox } from "./WorkCliInputBox";
+import { isTrackedAgentCliToolType } from "../../../shared/types";
+import {
+  CLI_CONTINUE_DRAFT_CHANGED_EVENT,
+  moveCliInputQueueToContinueDraft,
+  useCliInputMode,
+} from "./cliInputBoxState";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import { isChatToolType, primarySessionLabel, providerFromChatToolType, stripTerminalLabelControls, formatToolTypeLabel } from "../../lib/sessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -66,6 +80,8 @@ import type {
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { isImeComposing } from "../../lib/imeComposition";
+import { noChatMachineError, withChatPin } from "../chat/chatMachinePin";
+import { useWorkInputFocusOnChatSwitch } from "../work/workShortcuts";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -259,6 +275,30 @@ function snapshotLooksLikeTui(rows: TerminalSnapshotRow[]): boolean {
   return nonBlankRows >= 3 && styledCells >= 8;
 }
 
+/** The most rows an ended session's replayed transcript shows, newest last. */
+const ENDED_PREVIEW_MAX_ROWS = 400;
+
+/**
+ * A full-screen CLI that exited left only the normal screen behind, and its
+ * raw transcript is cursor moves with the spaces left out: play it into an
+ * off-screen terminal to show the rows it drew.
+ */
+function previewNeedsReplay(preview: ChatTerminalPreviewResult | null): boolean {
+  return preview != null
+    && !previewShowsSnapshot(preview)
+    && transcriptUsesAlternateScreen(preview.transcript ?? "");
+}
+
+/** Whether the ended pane shows the machine's stored screen rows. */
+function previewShowsSnapshot(preview: ChatTerminalPreviewResult | null): boolean {
+  const rows = preview?.snapshot?.visibleRows ?? [];
+  return rows.length > 0 && (
+    preview?.session?.status === "running"
+    || !preview?.transcript
+    || snapshotLooksLikeTui(rows)
+  );
+}
+
 function TerminalSnapshotTranscript({ rows }: { rows: TerminalSnapshotRow[] }) {
   const renderedRows = useMemo(() => withStableDuplicateKeys(rows, (row) => [
     row.text,
@@ -323,19 +363,27 @@ function continuationProviderLabel(provider: TerminalResumeProvider | null): str
   return "agent CLI";
 }
 
-function continuationPermissionLabel(launch: TerminalResumeLaunchConfig | null): string | null {
-  if (launch?.codexApprovalPolicy === "on-request") return "Ask first";
-  if (launch?.codexApprovalPolicy === "on-failure") return "On failure";
-  if (launch?.codexApprovalPolicy === "untrusted") return "Restricted";
-  if (launch?.codexApprovalPolicy === "never" && launch.codexSandbox === "danger-full-access") return "Full access";
-  const mode = launch?.permissionMode;
-  if (mode === "full-auto") return "Full access";
-  if (mode === "plan") return "Plan";
-  if (mode === "edit") return "Edit";
-  if (mode === "auto") return "Auto";
-  if (mode === "config-toml") return "Config";
-  if (mode === "default") return "Default";
-  return null;
+// The continue box's unsent text, per session, so switching tabs or tiles does
+// not lose it. The component is keyed by session id, so one instance only ever
+// reads and writes its own session's key.
+const CLI_CONTINUE_DRAFT_KEY_PREFIX = "ade.work.cliContinueDraft.";
+
+function readCliContinueDraft(sessionId: string): string {
+  try {
+    return window.localStorage.getItem(`${CLI_CONTINUE_DRAFT_KEY_PREFIX}${sessionId}`) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeCliContinueDraft(sessionId: string, text: string): void {
+  try {
+    const key = `${CLI_CONTINUE_DRAFT_KEY_PREFIX}${sessionId}`;
+    if (text.trim()) window.localStorage.setItem(key, text);
+    else window.localStorage.removeItem(key);
+  } catch {
+    // Storage full or unavailable: the draft just is not kept.
+  }
 }
 
 function WorkCliContinuationComposer({
@@ -373,14 +421,23 @@ function WorkCliContinuationComposer({
   const recoveryIdentity = `${session.id}:${provider ?? ""}:${importedProvider ?? ""}:${importedTargetId}:${storedLaunchFingerprint}`;
   const appliedRecoveryIdentityRef = useRef<string | null>(null);
   const [resolvedLaunch, setResolvedLaunch] = useState<TerminalResumeLaunchConfig | null>(storedLaunch);
-  const modelId = resolvedLaunch?.model?.trim() || null;
-  const modelDescriptor = modelId
-    ? (resolveModelDescriptorWithRuntimeCatalog(modelId) ?? createUnknownModelPlaceholder(modelId))
-    : null;
-  const permissionLabel = continuationPermissionLabel(resolvedLaunch);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => readCliContinueDraft(session.id));
+  useEffect(() => {
+    writeCliContinueDraft(session.id, draft);
+  }, [draft, session.id]);
+  // Texts the running CLI's input box still had waiting when the CLI ended
+  // land here, where sending continues the session.
+  useEffect(() => {
+    const reread = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+      if (detail?.sessionId === session.id) setDraft(readCliContinueDraft(session.id));
+    };
+    window.addEventListener(CLI_CONTINUE_DRAFT_CHANGED_EVENT, reread);
+    moveCliInputQueueToContinueDraft(session.id);
+    return () => window.removeEventListener(CLI_CONTINUE_DRAFT_CHANGED_EVENT, reread);
+  }, [session.id]);
   const [slashCommands, setSlashCommands] = useState<AgentChatSlashCommand[]>([]);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<ComposerTrigger | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
@@ -407,12 +464,11 @@ function WorkCliContinuationComposer({
     )) return () => {
       cancelled = true;
     };
-    // Native provider history is machine-local and externalSessions has no
-    // pinned surface. A foreign session keeps its durable stored launch instead
-    // of consulting unrelated history on the active machine.
+    // Native provider history is machine-local: the lookup reads the session's
+    // own machine. With no machine known, the stored launch stands.
     const request = runtimePin
-      ? null
-      : recoverImportedContinuationLaunch(provider, importedProvider, importedTargetId);
+      ? recoverImportedContinuationLaunch(provider, importedProvider, importedTargetId, runtimePin)
+      : null;
     if (!request) return () => {
       cancelled = true;
     };
@@ -434,9 +490,7 @@ function WorkCliContinuationComposer({
       cancelled = true;
     };
     const args = { laneId: session.laneId, provider };
-    void (runtimePin
-      ? window.ade.agentChat.slashCommands(args, runtimePin)
-      : window.ade.agentChat.slashCommands(args))
+    void (withChatPin(runtimePin, (chatPin) => window.ade.agentChat.slashCommands(args, chatPin)))
       .then((commands) => {
         if (!cancelled) {
           setSlashCommands(commands.filter((command) => command.source !== "local"));
@@ -521,38 +575,7 @@ function WorkCliContinuationComposer({
         className="mx-auto w-full max-w-[var(--chat-column,46rem)]"
         footer={(
           <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 px-2.5 py-1.5">
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              {modelDescriptor ? (
-                <span className="inline-flex min-w-0 max-w-[min(12rem,42vw)] items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-2 py-1 text-[11px] text-fg/80">
-                  <ModelRowLogo
-                    modelFamily={modelDescriptor.family}
-                    cliCommand={modelDescriptor.cliCommand}
-                    modelId={modelDescriptor.id}
-                    providerModelId={modelDescriptor.providerModelId}
-                    size={13}
-                    className="shrink-0"
-                  />
-                  <span className="min-w-0 truncate font-medium leading-none">{modelDescriptor.displayName}</span>
-                </span>
-              ) : (
-                <span className="min-w-0 shrink truncate px-1 text-[11px] font-medium text-fg/70">{providerLabel}</span>
-              )}
-              {resolvedLaunch?.reasoningEffort ? (
-                <span className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-1 text-[10px] font-semibold uppercase text-fg/65">
-                  {resolvedLaunch.reasoningEffort}
-                </span>
-              ) : null}
-              {(resolvedLaunch?.fastMode ?? resolvedLaunch?.codexFastMode) ? (
-                <span className="rounded-md border border-amber-300/15 bg-amber-500/[0.06] px-1.5 py-1 text-[10px] font-semibold text-amber-100/80">
-                  Fast
-                </span>
-              ) : null}
-              {permissionLabel ? (
-                <span className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-1 text-[10px] text-fg/60">
-                  {permissionLabel}
-                </span>
-              ) : null}
-            </div>
+            <CliLaunchChips launch={resolvedLaunch} providerLabel={providerLabel} />
             <button
               type="button"
               disabled={sending || !draft.trim()}
@@ -591,6 +614,14 @@ function WorkCliContinuationComposer({
           onChange={(event) => updateDraft(event.currentTarget.value, event.currentTarget)}
           onKeyDown={(event) => {
             if (commandMenuTrigger && handleCommandMenuKeyDown(event, commandMenuRef, () => setCommandMenuTrigger(null))) {
+              return;
+            }
+            // Enter with the menu open but nothing matching closes the menu
+            // instead of sending a half-typed `/comp` to the CLI; a second
+            // Enter sends the text as typed.
+            if (commandMenuTrigger && event.key === "Enter" && !event.shiftKey && !isImeComposing(event)) {
+              event.preventDefault();
+              setCommandMenuTrigger(null);
               return;
             }
             if (event.key === "Enter" && !event.shiftKey && !isImeComposing(event)) {
@@ -642,6 +673,8 @@ function ClosedCliSessionSurface({
   toolsPaneOpen?: boolean;
 }) {
   const [preview, setPreview] = useState<ChatTerminalPreviewResult | null>(null);
+  // undefined while the transcript replay runs; null when it gave no rows.
+  const [replayedRows, setReplayedRows] = useState<TerminalSnapshotRow[] | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [resuming, setResuming] = useState(false);
@@ -668,13 +701,22 @@ function ClosedCliSessionSurface({
   useEffect(() => {
     let cancelled = false;
     setPreview(null);
+    setReplayedRows(undefined);
     setError(null);
     const args = { terminalId: session.id, maxBytes: 160_000 };
     void (runtimePin
       ? window.ade.terminal.preview(args, runtimePin)
-      : window.ade.terminal.preview(args))
-      .then((result) => {
-        if (!cancelled) setPreview(result);
+      : Promise.reject(noChatMachineError()))
+      .then(async (result) => {
+        if (cancelled) return;
+        setPreview(result);
+        if (!previewNeedsReplay(result)) return;
+        const rows = await previewRowsFromTranscript(
+          result.transcript ?? "",
+          { cols: result.snapshot?.cols ?? 100, rows: result.snapshot?.rows },
+          ENDED_PREVIEW_MAX_ROWS,
+        );
+        if (!cancelled) setReplayedRows(rows);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -684,18 +726,17 @@ function ClosedCliSessionSurface({
     };
   }, [runtimePin, session.id, session.endedAt, session.status]);
 
-  const snapshotRows = preview?.snapshot?.visibleRows ?? [];
-  const useSnapshotPreview = snapshotRows.length > 0 && (
-    preview?.session?.status === "running"
-    || !preview?.transcript
-    || snapshotLooksLikeTui(snapshotRows)
-  );
+  const useSnapshotPreview = previewShowsSnapshot(preview);
+  const needsReplay = useMemo(() => previewNeedsReplay(preview), [preview]);
+  const previewRows = useSnapshotPreview ? preview?.snapshot?.visibleRows ?? [] : needsReplay ? replayedRows : null;
   const transcriptText = stripTerminalControls(preview?.transcript ?? "").trimEnd()
     || session.lastOutputPreview
     || session.summary
     || "No transcript was captured for this session.";
 
+  const agentCli = Boolean(session.tracked && isTrackedAgentCliToolType(session.toolType));
   return (
+    <CliActionsScope session={session} runtimePin={runtimePin} enabled={agentCli}>
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-[color:var(--chat-canvas-bg)]">
       {layoutVariant !== "grid-tile" ? (
         <CliSessionWorkSurfaceHeader
@@ -706,9 +747,10 @@ function ClosedCliSessionSurface({
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
           onOpenFullView={onOpenFullView}
+          leadingTrailingAction={agentCli ? <CliActionsToggle /> : undefined}
         />
       ) : null}
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
+      <div className="relative flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-fg/[0.06] pb-2">
           <div className="min-w-0 truncate text-[11px] text-muted-fg/60">
             {endedLabel}
@@ -731,8 +773,11 @@ function ClosedCliSessionSurface({
             {resumeError ?? error}
           </div>
         ) : null}
-        {useSnapshotPreview ? (
-          <TerminalSnapshotTranscript rows={snapshotRows} />
+        {previewRows?.length ? (
+          <TerminalSnapshotTranscript rows={previewRows} />
+        ) : needsReplay && previewRows === undefined ? (
+          // The rows are on their way: no flash of the raw transcript first.
+          <div className="flex-1" />
         ) : (
           <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-md border border-fg/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
             {transcriptText}
@@ -740,13 +785,16 @@ function ClosedCliSessionSurface({
         )}
         {showComposer ? (
           <WorkCliContinuationComposer
+            key={session.id}
             session={session}
             runtimePin={runtimePin}
             onContinue={onContinue}
           />
         ) : null}
+        {agentCli && layoutVariant !== "grid-tile" ? <CliActionsSidePane /> : null}
       </div>
     </div>
+    </CliActionsScope>
   );
 }
 
@@ -787,7 +835,15 @@ function CliSessionSurface({
   toolsPaneOpen?: boolean;
 }) {
   const workSidebar = useWorkSidebarTool(session.laneId, runtimePin);
+  // The ADE input box is for a tracked agent CLI only; a raw CLI ADE does not
+  // track has no prompt ADE can tell is free.
+  const inputBoxAvailable = session.tracked && isTrackedAgentCliToolType(session.toolType);
+  const inputMode = useCliInputMode();
+  const showInputBox = inputBoxAvailable && inputMode === "box";
+  const inputProvider = continuationProviderForSession(session);
+  const showSidePane = inputBoxAvailable && layoutVariant !== "grid-tile";
   return (
+    <CliActionsScope session={session} runtimePin={runtimePin} enabled={inputBoxAvailable}>
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
       {layoutVariant !== "grid-tile" ? (
         <CliSessionWorkSurfaceHeader
@@ -804,6 +860,12 @@ function CliSessionSurface({
           prPaneOpen={workSidebar.tool === "pr"}
           runtimePin={runtimePin}
           prBadgeOnly
+          leadingTrailingAction={inputBoxAvailable ? (
+            <>
+              <CliActionsToggle />
+              <CliInputModeToggle sessionId={session.id} />
+            </>
+          ) : undefined}
         />
       ) : null}
       <div className="relative min-h-0 w-full flex-1 overflow-hidden">
@@ -818,12 +880,43 @@ function CliSessionSurface({
           imagePasteMode="agent-cli"
           className="h-full w-full"
         />
+        {showSidePane ? <CliActionsSidePane /> : null}
       </div>
+      <CliPromptSlot>
+      {showInputBox ? (
+        <WorkCliInputBox
+          key={session.id}
+          sessionId={session.id}
+          laneId={session.laneId || null}
+          provider={inputProvider}
+          providerLabel={continuationProviderLabel(inputProvider)}
+          runtimeState={session.runtimeState}
+          pin={runtimePin}
+          autoFocus={surfaceActive}
+          launch={session.resumeMetadata?.launch ?? null}
+        />
+      ) : null}
+      </CliPromptSlot>
     </div>
+    </CliActionsScope>
   );
 }
 
-export function SessionSurface({
+/**
+ * One Work session: its chat, CLI or shell, unless its machine runs a build
+ * below the owner's minimum; then that machine's update panel instead. A
+ * session on the tab's machine has no pin, so the tab's binding decides.
+ */
+export function SessionSurface(props: ComponentProps<typeof SessionSurfaceBody>) {
+  const boundBinding = useAppStore((state) => state.projectBinding);
+  return (
+    <RemoteMachineUpdateGate binding={props.runtimePin ?? boundBinding}>
+      <SessionSurfaceBody {...props} />
+    </RemoteMachineUpdateGate>
+  );
+}
+
+function SessionSurfaceBody({
   session,
   sessionTitleById,
   lanes,
@@ -917,6 +1010,8 @@ export function SessionSurface({
       />
     );
   }
+  // A CLI or shell of an ADE Cloud computer at rest: its saved text, read-only.
+  if (isSavedTerminalSession(session)) return <SavedTerminalCopyView session={session} />;
   if (isRunningPtySession(session)) {
     if (isAgentCliSession(session)) {
       return (
@@ -1052,16 +1147,69 @@ export function SessionSurface({
 const WORK_AREA_MODE_TRANSITION = { duration: 0.3, ease: STANDARD_EASE } as const;
 const WORK_AREA_DOCK_TRANSITION = { duration: 0.14, ease: STANDARD_EASE } as const;
 
-/** `custom` = the switch is a composer dock (no blur, quick swap). */
+/**
+ * `custom` = a quick swap (no blur): a composer dock, or a chat switching to
+ * a new draft.
+ *
+ * At rest the layer has no filter at all (`transitionEnd`), not `blur(0px)`:
+ * a filter on the whole Work area that holds a composited child (the usage
+ * chart's canvas, a chat's scroller) makes Chromium draw the whole area as
+ * one more window-sized layer, about 48 MB of tiles on a large screen. The
+ * blur is the same at 0 px, so nothing on screen changes. Motion animates the
+ * exit blur up from `none` as from 0 px.
+ */
 const WORK_AREA_MODE_VARIANTS = {
   enter: (dock: boolean) => (dock
-    ? { opacity: 1, filter: "blur(0px)", scale: 1 }
+    ? { opacity: 1, scale: 1 }
     : { opacity: 0, filter: "blur(12px)", scale: 0.992 }),
-  visible: { opacity: 1, filter: "blur(0px)", scale: 1, transition: WORK_AREA_MODE_TRANSITION },
+  visible: {
+    opacity: 1,
+    filter: "blur(0px)",
+    scale: 1,
+    transition: WORK_AREA_MODE_TRANSITION,
+    transitionEnd: { filter: "none" },
+  },
   exit: (dock: boolean) => (dock
-    ? { opacity: 0, filter: "blur(0px)", scale: 1, transition: WORK_AREA_DOCK_TRANSITION }
+    ? { opacity: 0, scale: 1, transition: WORK_AREA_DOCK_TRANSITION }
     : { opacity: 0, filter: "blur(12px)", scale: 0.992, transition: WORK_AREA_MODE_TRANSITION }),
 };
+
+/**
+ * One mode layer of the Work area. It is `inert` while it animates out: the
+ * leaving layer stays in the page for the exit animation, ahead of the layer
+ * that replaces it, so without this a keystroke or a focus helper looking for
+ * the first prompt box (`focusWorkInputSoon` after ⌘⇧N) could land in the chat
+ * the person just left. React 18 has no `inert` prop, so it is set directly.
+ */
+function WorkAreaModeLayer({ dock, children }: { dock: boolean; children: React.ReactNode }) {
+  const isPresent = useIsPresent();
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const layer = ref.current;
+    if (!layer) return;
+    if (isPresent) layer.removeAttribute("inert");
+    else layer.setAttribute("inert", "");
+  }, [isPresent]);
+  // A reply that answers before the dissolve ends shows at once, not blurred.
+  useEffect(() => onSendHandoffSettle((tookOverAtMs) => {
+    for (const animation of ref.current?.getAnimations() ?? []) {
+      if (animation.playState === "running" && startedWithSendHandoff(animation, tookOverAtMs)) animation.finish();
+    }
+  }), []);
+  return (
+    <motion.div
+      ref={ref}
+      className="absolute inset-0"
+      custom={dock}
+      variants={WORK_AREA_MODE_VARIANTS}
+      initial="enter"
+      animate="visible"
+      exit="exit"
+    >
+      {children}
+    </motion.div>
+  );
+}
 
 const MODE_OPTIONS: Array<{
   kind: WorkDraftKind;
@@ -1083,6 +1231,8 @@ function ModeSwitcherPills({
 }) {
   return (
     <div className="ade-liquid-glass-pill inline-flex items-center gap-1 rounded-full p-1" data-onboarding-anchor="draft-mode-switch">
+      {/* On the page, over the scene picture: frosted without a live blur. */}
+      <SceneFrost />
       {MODE_OPTIONS.map((opt) => {
         const active = draftKind === opt.kind;
         const Icon = opt.Icon;
@@ -1242,9 +1392,22 @@ export function WorkViewArea({
   );
 
   const showingDraft = activeItemId == null;
+  const listedActiveSession = showingDraft ? null : sessionsById.get(activeItemId) ?? null;
+  // The open chat, with its machine, as the list last had it. While that
+  // machine reconnects its rows leave the list; the open chat stays open
+  // instead of the view jumping to another chat or to the new chat draft.
+  const heldActiveSessionRef = useRef<{ session: TerminalSessionSummary; pin: OpenProjectBinding | null } | null>(null);
+  if (listedActiveSession && heldActiveSessionRef.current?.session !== listedActiveSession) {
+    heldActiveSessionRef.current = { session: listedActiveSession, pin: resolveSessionRuntimePin?.(listedActiveSession) ?? null };
+  }
+  const held = !showingDraft && !listedActiveSession && heldActiveSessionRef.current?.session.id === activeItemId
+    ? heldActiveSessionRef.current
+    : null;
+  const heldMachineMark = useRemoteConnectionMark(held?.pin?.kind === "remote" ? held.pin.targetId : null);
+  const holdActiveSession = held != null && held.pin?.kind === "remote" && heldMachineMark === "";
   const activeSession = showingDraft
     ? null
-    : sessionsById.get(activeItemId) ?? visibleSessions[0] ?? null;
+    : listedActiveSession ?? (holdActiveSession ? held.session : visibleSessions[0] ?? null);
   /* ---- Single / grid session view ---- */
   // The focused session decides the view: if it belongs to a grid set we render
   // the whole set (Cursor-style resizable tiles); otherwise the single session.
@@ -1294,6 +1457,15 @@ export function WorkViewArea({
   // Coarse work-area mode — switching sessions stays "single" (no remount), but
   // the new-chat → real-chat and grid↔single transitions cross-fade with a blur
   // dissolve (the "new-chat pane dissolves into the chat" showcase moment).
+  // A view that remembers an open chat shows this draft until the session list
+  // has it (at launch, `activeSession` is null until then), and then swaps to
+  // the chat. Text typed into the draft meanwhile means the person is on the
+  // draft: the view stays on it. Otherwise the swap takes the field away
+  // mid-word (an open IME composition is lost, and the keyboard with it) and
+  // the text turns up in the draft on the next launch.
+  const claimDraftWhileChatLoads = activeItemId != null && !activeSession
+    ? () => onShowDraftKind(draftKind)
+    : undefined;
   const workAreaMode: "grid" | "single" | "empty" = activeGridSet
     ? "grid"
     : activeSession
@@ -1344,6 +1516,8 @@ export function WorkViewArea({
         className="relative flex h-full min-h-0 flex-col overflow-hidden"
         data-work-draft-surface=""
         onContextMenu={draftBackgroundMenu.onContextMenu}
+        onInputCapture={claimDraftWhileChatLoads}
+        onCompositionStartCapture={claimDraftWhileChatLoads}
       >
         {draftBackgroundMenu.menu}
         {/* The new chat pane is part of the window gradient, so the top bar above
@@ -1383,20 +1557,33 @@ export function WorkViewArea({
   // composer glides down from the draft's position (`chatLaunchDock`), so the
   // surface underneath just swaps quickly instead of blurring the glide away.
   const composerDockTransition = workAreaMode === "single" && hasPendingComposerDock(activeSession?.id);
+  // From a chat to a new draft, the same quick swap: the person asked for a
+  // fresh prompt box and types at once, so it shows at once (no blur over the
+  // text). The draft dissolving into its chat keeps the blur. The choice is
+  // made once per mode change and held until the next one: the leaving
+  // layer's exit reads it for as long as it animates.
+  const modeSwitchRef = useRef<{ mode: typeof workAreaMode; quick: boolean }>({ mode: workAreaMode, quick: false });
+  if (modeSwitchRef.current.mode !== workAreaMode) {
+    modeSwitchRef.current = {
+      mode: workAreaMode,
+      quick: modeSwitchRef.current.mode === "single" && workAreaMode === "empty",
+    };
+  }
+  const quickModeSwap = composerDockTransition || modeSwitchRef.current.quick;
+  // The prompt box takes the keyboard when the view first shows a chat after
+  // launch, and after a click switches the chat (a new chat included). A grid
+  // focuses its own active tile (`shouldAutofocus`).
+  const workAreaBodyRef = useRef<HTMLDivElement>(null);
+  useWorkInputFocusOnChatSwitch(workAreaBodyRef, activeItemId ?? null, pageActive && workAreaMode !== "grid", workAreaMode);
+  // The terminal code loads once the person stops for a moment, so the first
+  // terminal they open does not wait for it (LazyTerminalView).
+  useEffect(() => scheduleTerminalViewPreload(), []);
   const tabBody = (
-    <div className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
-      <AnimatePresence initial={false} custom={composerDockTransition}>
-        <motion.div
-          key={workAreaMode}
-          className="absolute inset-0"
-          custom={composerDockTransition}
-          variants={WORK_AREA_MODE_VARIANTS}
-          initial="enter"
-          animate="visible"
-          exit="exit"
-        >
+    <div ref={workAreaBodyRef} className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
+      <AnimatePresence initial={false} custom={quickModeSwap}>
+        <WorkAreaModeLayer key={workAreaMode} dock={quickModeSwap}>
           {workAreaContent}
-        </motion.div>
+        </WorkAreaModeLayer>
       </AnimatePresence>
     </div>
   );

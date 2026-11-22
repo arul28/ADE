@@ -1,9 +1,11 @@
-import type { ProjectInfo } from "../../../shared/types";
+import type { AutoUpdateSnapshot, ProjectInfo } from "../../../shared/types";
 import type { UpdateTrack } from "../../../shared/updateTrack";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
 import { BrowserAccountClient } from "../account/client";
 import { createAccountNamespace, createAccountSettingsNamespace } from "./account";
+import { createWebClientUpdateGate } from "./clientUpdateGate";
+import { createLaneShareGuestDirectory } from "../../../shared/laneShareGuestDirectory";
 import { createAgentChatNamespace } from "./agentChat";
 import { createArchiveNamespace } from "./archive";
 import { createChatLaunchNamespace } from "./chatLaunch";
@@ -31,7 +33,14 @@ import { createPrsNamespace } from "./prs";
 import { createPersonalChatsNamespace } from "./personalChats";
 import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
+import { createWebCloudAccessNamespace, createWebCloudNamespace, createWebCloudLaunchesNamespace } from "./cloud";
+import { createWebProviderLoginsNamespace } from "./providerLogins";
+import { createWebCloudPhoneNamespace } from "./cloudPhone";
+import { createGithubAccountAppWebMethods } from "./githubStub";
+import { createWebGithubDirectNamespace } from "../github/directAdapter";
 import type { AdapterEvents, AdapterInfra } from "./types";
+import { guardPreloadPassPinnedMembers } from "./preloadPassPins";
+import { createSearchNamespace } from "./search";
 
 export type AdeWebAdapter = {
   ade: Window["ade"];
@@ -129,12 +138,14 @@ export function createAdeWebAdapter(
   const { git, diff, conflicts } = createGitNamespaces(infra);
   const misc = createMiscNamespaces(infra);
   const accountClient = providedAccountClient ?? new BrowserAccountClient();
+  const updateListeners = new Set<(snapshot: AutoUpdateSnapshot) => void>();
   const analytics = createAnalyticsNamespace(infra);
+  const githubDirect = createWebGithubDirectNamespace(accountClient);
 
   const surface = {
     app: createAppNamespace(infra),
     account: createAccountNamespace(accountClient),
-    accountSettings: createAccountSettingsNamespace(),
+    accountSettings: createAccountSettingsNamespace(infra, accountClient),
     attention: createAttentionNamespace(infra, accountClient),
     analytics,
     diagnostics: createDiagnosticsNamespace(analytics),
@@ -150,6 +161,7 @@ export function createAdeWebAdapter(
     terminal,
     diff,
     files: createFilesNamespace(infra),
+    search: createSearchNamespace(infra),
     git,
     conflicts,
     prs: createPrsNamespace(infra),
@@ -161,11 +173,28 @@ export function createAdeWebAdapter(
     modelPicker: misc.modelPicker,
     agentTools: misc.agentTools,
     cloudAgents: misc.cloudAgents,
-    cloudAccess: misc.cloudAccess,
+    // Whether ADE Cloud is on comes from the account server itself: no computer needed.
+    cloudAccess: createWebCloudAccessNamespace(infra, accountClient),
+    // Settings › ADE Cloud and the machine lists read the account through the connected machine;
+    // the plan and billing calls go to the account server with this browser's own sign-in.
+    cloud: createWebCloudNamespace(infra, accountClient),
+    // A chat on ADE Cloud from the account server itself, with no computer of the person's own.
+    cloudLaunches: createWebCloudLaunchesNamespace(accountClient),
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,
-    github: misc.github,
+    // The account's GitHub App sign-in asks the account directory with this
+    // browser's own account session; no machine and no GitHub token.
+    github: {
+      ...misc.github,
+      ...createGithubAccountAppWebMethods(
+        (request) => accountClient.githubAppRequest(request),
+        githubDirect.onGrantChanged,
+      ),
+    } as typeof misc.github,
+    // Direct GitHub reads with the account's GitHub App sign-in, from this
+    // browser to api.github.com; the token stays in memory (C10).
+    githubDirect: githubDirect.namespace,
     jira: createJiraNamespace(infra),
     rebase: misc.rebase,
     history: misc.history,
@@ -185,9 +214,18 @@ export function createAdeWebAdapter(
     // Live, read-only Mac Desktop view. The Electron namespace carries the
     // desktop-only members; this surface implements the live-view cut.
     macDesktop: createMacDesktopNamespace(infra),
+    // Music belongs to a physical desktop. Declared absent on purpose: the
+    // fallback proxy otherwise hands back a truthy stand-in, so
+    // `window.ade.music` checks would pass on web and offer a dead control.
+    music: undefined,
     builtInBrowser: misc.builtInBrowser,
     usage: misc.usage,
     providerInstances: misc.providerInstances,
+    // The account's sign-ins (Settings › Providers, the ADE Cloud page), through the connected machine.
+    providerLogins: createWebProviderLoginsNamespace(infra),
+    // The ADE Cloud iPhone through the connected machine. `cloudPhoneView` stays
+    // absent: the pane shows NoMac's flat view in an iframe on the web.
+    cloudPhone: createWebCloudPhoneNamespace(infra),
     automations: misc.automations,
     updateCheckForUpdates: async () => undefined,
     // The web app has no install of its own to move between tracks.
@@ -201,6 +239,27 @@ export function createAdeWebAdapter(
       target,
       reason: "Switch update tracks in the ADE desktop app on that computer.",
     }),
+    // The owner shares a lane from the desktop app on the account; the web
+    // client has no runtime action channel for the owner's lane_share verbs.
+    laneShare: {
+      list: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      create: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      updateRights: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      revoke: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      resendInvite: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      listReceived: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      leave: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      // A move lands work through a machine's own runtime; the web client has no such channel.
+      move: async () => { throw new Error("lane_share_desktop_only: Move chats from the ADE desktop app."); },
+      onEvent: () => () => {},
+    },
+    // The guest's side of lane sharing needs no machine: this browser's own
+    // account session asks the account directory (the token goes nowhere
+    // else). The shared lane is reached by the guest connection with a ticket.
+    laneShareGuest: createLaneShareGuestDirectory({
+      send: (request) => accountClient.laneShareRequest(request),
+      trustedRelayBaseUrls: () => accountClient.getRelayBaseUrls(),
+    }),
     // ADE MCP belongs to a physical machine; the manifest hides it on web.
     remoteMcpCall: async () => {
       throw new Error("Manage ADE MCP on the computer itself.");
@@ -208,7 +267,19 @@ export function createAdeWebAdapter(
     keepAwakeGet: webKeepAwakeMethods.keepAwakeGet,
     keepAwakeSetLevel: webKeepAwakeMethods.keepAwakeSetLevel,
     keepAwakeFixSystemSleep: webKeepAwakeMethods.keepAwakeFixSystemSleep,
-    updateGetState: webUpdateMethods.updateGetState,
+    // This tab installs nothing; the newest build on each track is only for
+    // "Update & restart" on the account's other machines (`machineUpdates.ts`).
+    // The last read answers at once and a fresh one arrives as an update
+    // event, so no Settings page waits on the account directory.
+    updateGetState: async () => {
+      const known = accountClient.peekLatestReleases();
+      void accountClient.readLatestReleases().then(async (latest) => {
+        if (latest.stable === known.stable && latest.beta === known.beta) return;
+        const next = { ...await webUpdateMethods.updateGetState(), latestByTrack: latest };
+        for (const listener of updateListeners) listener(next);
+      });
+      return { ...await webUpdateMethods.updateGetState(), latestByTrack: known };
+    },
     updateGetPreferences: webUpdateMethods.updateGetPreferences,
     updateSetPreferences: webUpdateMethods.updateSetPreferences,
     updateGetInstallImpact: webUpdateMethods.updateGetInstallImpact,
@@ -216,7 +287,14 @@ export function createAdeWebAdapter(
     updateCancelAutoApply: webUpdateMethods.updateCancelAutoApply,
     updateDismissInstalledNotice: async () => undefined,
     updateRelaunchApp: async () => false,
-    onUpdateEvent: () => () => {},
+    // Never blocks this tab; read for other machines' "runs an old ADE" panels.
+    clientUpdateGate: createWebClientUpdateGate(accountClient),
+    onUpdateEvent: (listener: (snapshot: AutoUpdateSnapshot) => void) => {
+      updateListeners.add(listener);
+      return () => {
+        updateListeners.delete(listener);
+      };
+    },
     perf: {
       getConfig: async () => ({
         active: false,
@@ -232,6 +310,10 @@ export function createAdeWebAdapter(
       finalize: async () => ({ ok: true }),
     },
   };
+
+  // A member that took a pin in the desktop preload pass refuses a pin this
+  // adapter cannot serve, as the members built with a pin already do.
+  guardPreloadPassPinnedMembers(surface as unknown as Record<string, unknown>, infra);
 
   return {
     ade: withFallbackProxy(surface as unknown as Window["ade"]),

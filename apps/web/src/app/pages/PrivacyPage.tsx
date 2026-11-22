@@ -9,7 +9,7 @@ import {
   setMarketingAnalyticsEnabled,
 } from "../../lib/marketingAnalyticsBrowser";
 
-const EFFECTIVE_DATE = "November 3, 2026";
+const EFFECTIVE_DATE = "November 11, 2026";
 const CONTACT_EMAIL = "arulsharma1028@gmail.com";
 
 type Section = {
@@ -72,6 +72,7 @@ const sections: Section[] = [
     title: "What the desktop app collects",
     body: [
       "Project files, git history, prompts, terminal content, and process output remain on your disk and are excluded from analytics and error reports. Product analytics is limited to the allowlisted categories described above, and error and crash reports to what is described under Error and crash reporting. A full diagnostic report with local logs is shared only when you choose to submit one.",
+      "We keep a scrambled id of your computer so the free plan is given once per computer.",
     ],
   },
   {
@@ -90,14 +91,13 @@ const sections: Section[] = [
           "GitHub — desktop releases are distributed through GitHub Releases.",
           "Vercel — this website is hosted on Vercel; standard request logs apply.",
           "Cloudflare — ADE's connectivity relay can route sync traffic between already-paired clients.",
-          "Freebuff — an advertising-measurement pixel on this website only. Unless you have turned website analytics off, it records visits, keeps the click identifier from a Freebuff ad link, and reports when you press a download or copy-install button, so ADE can tell which ads lead to downloads.",
           "PostHog — receives manually selected product events, content-free AI usage events, scrubbed error reports, and masked session replays when analytics is enabled. ADE creates a person profile, keyed by a hash of your account ID and carrying that ID, when you create an ADE account or sign in to an ADE app; autocapture is disabled, and its feature flags are used only to decide whether a session may be recorded.",
           "Sentry — receives error and crash reports as described under Error and crash reporting, in Sentry's United States region. On iOS, a short, fully masked screen recording may accompany an error.",
           "Mintlify — documentation is served at /docs through Mintlify.",
           "AI providers you enable — Anthropic, OpenAI, and similar, only when you turn on a model that uses them.",
         ],
       },
-      "ADE does not sell personal data. Apart from the Freebuff ad measurement on this website described above, ADE does not share analytics with advertisers.",
+      "ADE does not sell personal data and does not share analytics with advertisers.",
     ],
   },
   {

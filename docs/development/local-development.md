@@ -54,6 +54,13 @@ First-time setup:
 npm run setup
 ```
 
+That installs desktop, ade-cli, web, `packages/sdk` and `packages/chat-ui` in their own
+folders, and the five Cloudflare Workers (`apps/account-directory`, `password-key-service`,
+`push-relay`, `tunnel-relay`, `webhook-relay`) with one `npm install` at the repo root:
+they are one npm workspace with one root `package-lock.json`, so wrangler, workerd,
+TypeScript and Sentry are installed once and shared. To install only the Workers, run
+`npm ci` at the repo root.
+
 Since Electron 42, `npm install` no longer downloads the Electron binary; `npm run setup`
 fetches it afterwards through `apps/desktop/scripts/ensure-electron.cjs`, the same step
 `npm run dev` runs, and fails with the download's exit code if it cannot.
@@ -343,7 +350,12 @@ Node it runs on in the headless runtime, so a release brain built by CI gets
 Node 24's proxy and system-certificate support; the build warns when it embeds
 a Node older than 24.14, which ignores `HTTPS_PROXY`, and refuses one older
 than 22.19.0 because the runtime runs Pi's SDK worker on its own Node. Set
-`ADE_STATIC_NODE_BINARY` to use another Node binary for that build. The `ade`
+`ADE_STATIC_NODE_BINARY` to use another Node binary for that build. On Apple
+Silicon, `npm run build:static -- --target darwin-x64` builds the Intel runtime
+when `ADE_STATIC_NODE_BINARY` names an official darwin-x64 Node (`node
+scripts/release-tools/officialNodeBinary.mjs --target darwin-x64` downloads one
+and prints its path) and Rosetta 2 is installed; the release builds it that
+way. The `ade`
 CLI still runs on Node 22.13 or newer: before 24.14 it ignores `HTTPS_PROXY`
 (a brain says so once at start) and otherwise works as before.
 
@@ -593,6 +605,17 @@ To test auto-runtime creation, use the default dev commands after stopping the d
 npm run dev:stop
 npm run dev:desktop          # tests the desktop wrapper creating the dev runtime
 ```
+
+## Test the push relay locally
+
+Use these steps to test `/attention/*`, account settings and the `/cloud/*` reads against a local push relay:
+
+1. Run the relay as its own process: `wrangler dev --local --port 8824 --env-file <relay env file>`. Do not run it in one `wrangler dev -c a -c b` with the account directory. The env file reaches only the first worker, so the relay gets no Clerk settings and the production `SENTRY_DSN`.
+2. Put these values in the relay env file: `VAULT_ENCRYPTION_KEY` (32-byte base64), `DIRECTORY_AUTH_SECRET` (the same value as the directory), the Clerk client id, and `WEB_CLIENT_ORIGIN` set to the web client's dev origin (`http://localhost:5174` by default).
+   `WEB_CLIENT_ORIGIN` must be the exact origin of the web client you run. If vite starts on another port, set it to that port, or the relay refuses the browser's requests (CORS).
+3. Start the web client with `ADE_DEV_PUSH_RELAY_PROXY_TARGET=http://127.0.0.1:8824`. If you do not set it, the dev proxy sends `/attention/*` to the production relay.
+
+The directory's `ACTIVITY_RELAY` binding reaches the separate relay through the wrangler dev registry. With no `AGENT37_API_KEY`, `/cloud/instances` answers 503 locally; that is expected.
 
 ## Rebuild ADE Alpha locally
 

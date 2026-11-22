@@ -44,6 +44,11 @@ export type AgentCliSavedLogin = {
   fingerprint: string;
   /** The account the saved login names, when it names one (Copilot's GitHub login). */
   account?: string;
+  /**
+   * The CLI keeps this login in the OS keyring, where ADE does not read
+   * (Kimi set to keyring storage): `signedIn` is false, yet a login may exist.
+   */
+  inKeyring?: boolean;
 };
 
 export type AgentCliLoginStatus = {
@@ -56,6 +61,8 @@ export type AgentCliLoginStatus = {
   deviceCode?: string;
   /** The CLI is asking for a code pasted from the browser (Devin). */
   awaitingCode: boolean;
+  /** A pasted code was sent and the CLI has not answered yet ("Checking the code…"). */
+  checkingCode?: boolean;
   /**
    * The CLI opens the sign-in page in a browser on its own machine (Grok,
    * Muse, Droid try to). A sheet on that machine does not open it again.

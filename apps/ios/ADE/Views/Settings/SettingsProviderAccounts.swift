@@ -24,14 +24,6 @@ func providerAccountDetailLine(_ account: ProviderAccount) -> String? {
   return account.plan.map { $0.capitalized }
 }
 
-/// The other machine whose fresher reading this account's bars are, when the
-/// host borrowed one (`UsageAccount.readingFrom`). Nil for the host's own.
-func providerAccountReadingFrom(_ account: ProviderAccount, snapshot: MobileUsageQuotaSnapshot?) -> String? {
-  let usage = snapshot?.accounts?.first { $0.provider == account.provider && $0.instanceId == account.id }
-  let label = usage?.readingFrom?.label.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  return label.isEmpty ? nil : label
-}
-
 /// How many distinct logins the accounts hold: a copy (`sameLoginAs`) adds no
 /// quota, so it is not another account. Desktop `countProviderLogins`.
 func providerAccountLoginCount(_ accounts: [ProviderAccount]) -> Int {
@@ -82,7 +74,6 @@ struct ProviderAccountBadges: View {
 struct ProviderAccountsMachineOption: Identifiable, Equatable {
   let id: String
   let name: String
-  let isPrimary: Bool
 }
 
 /// Settings → AI accounts: the Claude and Codex logins of each connected
@@ -111,12 +102,12 @@ struct SettingsProviderAccountsPage: View {
   /// can manage its accounts from here.
   private var choices: [(option: ProviderAccountsMachineOption, host: ProviderAccountsHost)] {
     var result: [(ProviderAccountsMachineOption, ProviderAccountsHost)] = [(
-      ProviderAccountsMachineOption(id: primaryId, name: syncService.hostName ?? "This machine", isPrimary: true),
+      ProviderAccountsMachineOption(id: primaryId, name: syncService.hostName ?? "Connected computer"),
       syncService
     )]
     for machine in fleet.machines where machine.state == .live && machine.machineKey != primaryId {
       guard let connection = fleet.connection(for: machine.machineKey), connection.supportsProviderAccounts else { continue }
-      result.append((ProviderAccountsMachineOption(id: machine.machineKey, name: machine.name, isPrimary: false), connection))
+      result.append((ProviderAccountsMachineOption(id: machine.machineKey, name: machine.name), connection))
     }
     return result
   }
@@ -172,7 +163,7 @@ struct ProviderAccountsMachinePicker: View {
           } label: {
             // Two texts make an iOS menu row a title and a subtitle.
             Text(machine.name)
-            Text(machine.isPrimary ? "Primary connection" : "Connected")
+            Text("Connected")
             Image(systemName: machine.id == selectedId ? "checkmark" : "desktopcomputer")
           }
         }
@@ -187,11 +178,11 @@ struct ProviderAccountsMachinePicker: View {
     HStack(spacing: 12) {
       ADESettingsIconTile(symbol: "desktopcomputer", tint: .accent, size: 32)
       VStack(alignment: .leading, spacing: 1) {
-        Text(selected?.name ?? "This machine")
+        Text(selected?.name ?? "Connected computer")
           .font(.system(size: 15, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
-        Text(showsChevron ? "\(machines.count) machines" : "Accounts on this computer")
+        Text(showsChevron ? "\(machines.count) computers" : "Connected")
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
       }
@@ -285,7 +276,6 @@ struct ProviderAccountsScreen: View {
               account: account,
               ownerLabel: ownerLabel(account),
               windows: providerAccountWindows(account, snapshot: machine.quota),
-              readingFrom: providerAccountReadingFrom(account, snapshot: machine.quota),
               routingBadge: routingBadge(account),
               busy: store.busyAccountId == account.id
             )
@@ -524,8 +514,6 @@ struct ProviderAccountRow: View {
   let account: ProviderAccount
   var ownerLabel: String?
   var windows: [MobileUsageQuotaWindow] = []
-  /// The machine whose fresher reading `windows` are; nil for the host's own.
-  var readingFrom: String? = nil
   /// "New chats" or "Next chat"; see `providerAccountRoutingBadge`.
   var routingBadge: String? = nil
   var busy = false
@@ -561,11 +549,6 @@ struct ProviderAccountRow: View {
         HStack(spacing: 14) {
           ForEach(windows.prefix(2)) { window in
             ProviderAccountQuotaMeter(window: window, tint: ADEColor.providerBrand(for: account.provider))
-          }
-          if let readingFrom {
-            // These bars are another machine's fresher reading of this login.
-            ADEKitTag(text: "via \(readingFrom)", keepsCase: true)
-              .accessibilityLabel("Read on \(readingFrom)")
           }
         }
         .padding(.top, 4)
@@ -816,7 +799,7 @@ struct ProviderAccountsUnavailableView: View {
       symbol: connected ? "arrow.down.circle" : "desktopcomputer.trianglebadge.exclamationmark",
       title: connected ? "Update ADE to manage accounts" : "Connect a machine",
       message: connected
-        ? "\(hostName ?? "This machine") runs an ADE that cannot manage accounts from the phone yet. Update ADE there, then reconnect."
+        ? "\(hostName ?? "Your primary machine") runs an ADE that cannot manage accounts from the phone yet. Update ADE there, then reconnect."
         : "AI accounts live on your computer. Connect to it from Settings to manage them here."
     ) {
       EmptyView()

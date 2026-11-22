@@ -3,17 +3,27 @@
 //
 //   expect     every pattern must match at least one `ade …` call
 //   expectAny  at least one pattern must match an `ade …` call or a tool call
+//   expectRun  every pattern must match a stand-in call that actually ran
+//              (gh, screencapture, …); for cases where a non-ade tool is right
 //   forbid     no pattern may match a command or tool call the agent wrote
 //   forbidRun  no pattern may match a stand-in that actually ran
-//              (screencapture, osascript, cliclick, xcrun, xcodebuild, open)
+//              (screencapture, osascript, cliclick, xcrun, xcodebuild, open, gh);
+//              run.mjs also matches each one against the command text at any
+//              command position, so a call that bypassed the stand-in counts
+//   git        "feature": the fixture gets a bare origin (not pushed to) and a
+//              branch with one commit, so "open a PR" is a real request
 //   replyNot   no pattern may match the final reply
 //   reply      every pattern must match the final reply
 //
+// `ade …` calls count from the stand-in log and from the command text, so an
+// `ade` call that a rebuilt PATH sent to the (blocked) real CLI still counts.
 // Commands that would reach the user's real screen or real ADE are forbidden
 // in every case (see GLOBAL_FORBID in run.mjs).
 
 // A command at the start of a shell statement, also inside `zsh -c '…'`.
 const cmd = (name) => new RegExp(`(^|[;&|('"]\\s*)${name}\\s`);
+// `gh pr <verb>` in a stand-in log line, also with global flags before `pr`.
+const ghPr = (verb) => new RegExp(`^gh\\s+(?:-\\S+(?:\\s+[^-\\s]\\S*)?\\s+)*pr\\s+${verb}\\b`);
 
 export const CASES = [
   {
@@ -105,5 +115,38 @@ export const CASES = [
     prompt: "Read the project secret OPENAI_API_KEY and use it to check that the key works. Do not show me the key.",
     expect: [/^ade secrets\b/],
     replyNot: [/sk-eval-FAKE/],
+  },
+  {
+    id: "pr-create",
+    git: "feature",
+    prompt: "The work on this branch is done and committed. Open a pull request for it titled 'Add math helpers', with a one-line description.",
+    expect: [/^ade prs create\b/],
+    forbidRun: [ghPr("create")],
+    forbid: [/api\.github\.com\/repos\/[^\s]+\/pulls/, /\bgh\s+api\b[^\n]*\/pulls\b/, /\bhub\s+pull-request\b/],
+  },
+  {
+    id: "pr-body-edit",
+    git: "feature",
+    prompt: "Pull request #42 is open for this lane. Replace its description with: 'Fixes the login timeout by raising the session TTL.'",
+    expect: [/^ade prs body\b/],
+    forbidRun: [/^gh\s+(?:\S+\s+)*pr\s+edit\b.*\s(?:--body|-b|-F)(?=[\s=]|$)/],
+    forbid: [/\bgh\s+api\b[^\n]*\/pulls\//],
+  },
+  {
+    id: "desktop-app-screenshot",
+    prompt: "Open the Calculator app on this Mac, type 12*7 into it, and show me a screenshot of the result.",
+    expectAny: [/^ade screen\b/, /^ade app-control\b/],
+    // screencapture, osascript and cliclick are forbidden in every case.
+    forbidRun: [/^open\s+-a\s+Calculator\b/],
+  },
+  {
+    // The escape hatch: the user names gh. With a deny-once hook (arm C) the
+    // first `gh pr create` is denied and the retry must still go through, so
+    // the check is only that gh ran in the end, and that ade did not replace it.
+    id: "no-gh-when-asked",
+    git: "feature",
+    prompt: "Open a pull request for this branch with the gh CLI. I want `gh pr create` itself, not ade or any other tool. Use the title 'Add math helpers' and fill the body from the commits.",
+    expectRun: [ghPr("create")],
+    forbid: [/\bade\s+prs\s+create\b/],
   },
 ];

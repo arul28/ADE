@@ -209,8 +209,11 @@ owner:
 - a × even when `dismiss` is omitted; it hides that exact failure until its
   text changes or the owner stops rendering it;
 - **Details**, a fold with the raw error when it is not already on screen;
-- **Report issue** (`ReportIssueButton`), which sends a redacted diagnostic
-  report to ADE;
+- **Report…** ("Report this error to ADE…", `useNoticeFailure`), which opens
+  the report dialog (`ReportIssueDialog.tsx`): the person reads the redacted
+  report, adds a note and presses Send. The dialog draws above the toast
+  stack, so the toast that opened it stays up and shows the reference after a
+  send;
 - one Sentry log, `notice.<surface>`, the first time that failure is shown.
 
 `BannerModel.report` (`NoticeReport` in `ui/notice/NoticeReport.tsx`) names
@@ -238,6 +241,33 @@ place instead of stacking a new one, and use `updateToast(id, patch)` for
 progress. At most 5 toasts show at once. When a sixth arrives, the oldest
 timed toast is dropped. A sticky toast (`durationMs: 0`) is dropped only when
 every toast on screen is sticky.
+
+## Bottom-right notices and the browser
+
+A browser page is a native view drawn above the whole window, so a card the
+renderer draws over it either hides behind it or freezes it (the page is
+swapped for a still frame while anything overlaps it). So the notice stack
+(toasts, the suggestion, the live panels) avoids live pages
+(`ToastViewport`, `pickNoticeCorner` in `app/toast/cornerNoticeDock.ts`):
+
+- **No page covers the bottom-right of the content area:** the stack sits
+  there, as always.
+- **A page covers it, but not the bottom-left** (the left sidebar is open and
+  the browser is not expanded): the stack slides in at the bottom-left, over the
+  sidebar.
+- **Both corners are covered** (an expanded browser, a collapsed sidebar, the
+  Browser tab): the stack is held, hidden and out of the occlusion pass, with
+  every toast's timer paused, and shows again once a corner is free. A card that
+  asks for a decision is never lost or timed out unseen.
+
+The stack stays mounted throughout, so a move between corners slides it without
+resetting any card. Browser panels publish their live page rects to
+`cornerNoticeDock.ts` while the page is meant to be on screen, not while a menu
+briefly hides it, so the decision does not flap.
+
+An earlier version drew the cards in a separate see-through window over the
+page. It was removed: in packaged builds the window could not load the app's
+stylesheets, which left an invisible, clickable card stuck in the corner.
 
 ## Stacking: `Z_LAYERS`
 

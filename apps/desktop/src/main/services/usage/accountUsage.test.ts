@@ -4,12 +4,15 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AdeAccountMachinesResult,
+  AdeUsageActivityDay,
   AdeUsageRollup,
+  AdeUsageRollupActivity,
   AdeUsageRollupRow,
   AdeUsageStats,
   CostSnapshot,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   ACCOUNT_ROLLUP_STALE_AFTER_MS,
   buildRollupRows,
@@ -145,8 +148,16 @@ function contribution(
   };
 }
 
+/** A machine's activity: database id → day → [chats, shells, commits, prs]. */
+function activity(dbs: Record<string, Record<string, AdeUsageActivityDay>>): AdeUsageRollupActivity {
+  return {
+    version: 1,
+    dbs: Object.entries(dbs).map(([id, days]) => ({ id, scope: `folder-${id}`, days })),
+  };
+}
+
 describe("account usage merge", () => {
-  it("adds a second machine's tokens, cost, providers, models and daily points into the totals", () => {
+  it("adds a second machine's tokens, cost, providers, models and daily points into the totals, and leaves out session counts", () => {
     const local = makeRollup("local", [
       row({ date: TODAY, provider: "claude", inputTokens: 100, outputTokens: 50, totalTokens: 150, costUsd: 1 }),
     ]);
@@ -180,6 +191,9 @@ describe("account usage merge", () => {
     localStats.daily[1]!.outputTokens = 50;
     localStats.daily[1]!.totalTokens = 150;
     localStats.daily[1]!.byProvider = { claude: { totalTokens: 150, costUsd: 1 } };
+    // One project's database on this machine: no account total.
+    localStats.summary.chatSessions = 7;
+    localStats.summary.terminalSessions = 2;
 
     const merged = mergeAccountUsageStats({
       localStats,
@@ -191,6 +205,8 @@ describe("account usage merge", () => {
     });
 
     expect(merged.scope).toBe("account");
+    expect(merged.summary.chatSessions).toBeUndefined();
+    expect(merged.summary.terminalSessions).toBeUndefined();
     expect(merged.summary.observedProviderTokens).toBe(150 + 300 + 15);
     expect(merged.summary.observedProviderInputTokens).toBe(100 + 200 + 10);
     expect(merged.summary.observedProviderCostRangeUsd).toBeCloseTo(4.5, 5);
@@ -494,6 +510,111 @@ describe("account usage merge", () => {
 
     expect(merged.summary.observedProviderTokens).toBe(7);
   });
+
+  type ActivityCase = {
+    name: string;
+    contributions: AccountUsageContribution[];
+    /** The open project's fresh counts on `localStats` (database, today's sessions, summary chats). */
+    local?: { databaseId: string; todaySessions: number; chats: number };
+    expected: {
+      chats: number;
+      shells: number;
+      today: [sessions: number, commits: number, prs: number];
+      yesterdaySessions: number;
+      partial: boolean;
+    };
+  };
+  const OLD_DAY = localDayKey(NOW_MS - 30 * 86_400_000);
+  const tokensToday = [row({ date: TODAY, provider: "claude", totalTokens: 10 })];
+  it.each<ActivityCase>([
+    {
+      name: "adds up two machines' separate project databases",
+      contributions: [
+        contribution(makeRollup("local", tokensToday, {
+          activity: activity({ "db-a": { [TODAY]: [2, 1, 1, 0] } }),
+        }), { isLocal: true, origin: "live" }),
+        contribution(makeRollup("laptop", tokensToday, {
+          activity: activity({ "db-b": { [TODAY]: [3, 0, 2, 1], [YESTERDAY]: [1, 0, 0, 0] } }),
+        })),
+      ],
+      expected: { chats: 6, shells: 1, today: [6, 3, 1], yesterdaySessions: 1, partial: false },
+    },
+    {
+      // Both machines hold a copy of one synced database, so they report the
+      // same sessions under the same id: the larger count, never the sum.
+      name: "counts one synced database once when two machines hold copies of it",
+      contributions: [
+        contribution(makeRollup("local", tokensToday, {
+          activity: activity({ "db-a": { [TODAY]: [2, 1, 1, 0] } }),
+        }), { isLocal: true, origin: "live" }),
+        contribution(makeRollup("laptop", tokensToday, {
+          activity: activity({ "db-a": { [TODAY]: [3, 1, 1, 0], [YESTERDAY]: [1, 0, 0, 0] } }),
+        })),
+      ],
+      expected: { chats: 4, shells: 1, today: [4, 1, 0], yesterdaySessions: 1, partial: false },
+    },
+    {
+      // The open project's counts on `localStats` are fresher than this
+      // machine's last publish; they join that database's group, not add to it.
+      name: "takes the open project's fresh counts over its last published ones",
+      contributions: [
+        contribution(makeRollup("local", tokensToday, {
+          activity: activity({ "db-a": { [TODAY]: [1, 0, 0, 0] } }),
+        }), { isLocal: true, origin: "live" }),
+      ],
+      local: { databaseId: "db-a", todaySessions: 3, chats: 3 },
+      expected: { chats: 3, shells: 0, today: [3, 0, 0], yesterdaySessions: 0, partial: false },
+    },
+    {
+      // A machine on an older ADE used a model today but sent no counts: its
+      // share is unknown, so the total is a floor, not a claim.
+      name: "marks the counts a floor when a machine that used a model reports none",
+      contributions: [
+        contribution(makeRollup("local", tokensToday, {
+          activity: activity({ "db-a": { [TODAY]: [2, 0, 0, 0] } }),
+        }), { isLocal: true, origin: "live" }),
+        contribution(makeRollup("old-laptop", tokensToday, { source: { sourceId: "source-old", roots: ["/old"] } })),
+      ],
+      expected: { chats: 2, shells: 0, today: [2, 0, 0], yesterdaySessions: 0, partial: true },
+    },
+    {
+      name: "leaves the counts whole when the silent machine did nothing in the range",
+      contributions: [
+        contribution(makeRollup("local", tokensToday, {
+          activity: activity({ "db-a": { [TODAY]: [2, 0, 0, 0] } }),
+        }), { isLocal: true, origin: "live" }),
+        contribution(makeRollup("old-laptop", [row({ date: OLD_DAY, provider: "claude", totalTokens: 10 })], {
+          source: { sourceId: "source-old", roots: ["/old"] },
+        })),
+      ],
+      expected: { chats: 2, shells: 0, today: [2, 0, 0], yesterdaySessions: 0, partial: false },
+    },
+  ])("$name", ({ contributions, local, expected }) => {
+    const localStats = makeStats();
+    if (local) {
+      localStats.daily[1]!.sessions = local.todaySessions;
+      localStats.summary.chatSessions = local.chats;
+      localStats.summary.terminalSessions = 0;
+    }
+
+    const merged = mergeAccountUsageStats({
+      localStats,
+      contributions,
+      nowMs: NOW_MS,
+      localDatabaseId: local?.databaseId ?? null,
+    });
+
+    const today = merged.daily.find((point) => point.date === TODAY);
+    const yesterday = merged.daily.find((point) => point.date === YESTERDAY);
+    expect({
+      chats: merged.summary.chatSessions,
+      shells: merged.summary.terminalSessions,
+      today: [today?.sessions, today?.commits, today?.prs],
+      yesterdaySessions: yesterday?.sessions,
+      partial: merged.summary.sessionCountsPartial === true,
+    }).toEqual(expected);
+    expect(merged.summary.activeDays).toBe(expected.yesterdaySessions > 0 ? 2 : 1);
+  });
 });
 
 describe("transcript source identity", () => {
@@ -679,6 +800,19 @@ describe("account scope through the usage service", () => {
     for (let tick = 0; tick < 5; tick += 1) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
+  }
+
+  /**
+   * Let the first read's own background work land: its ledger scan and GitHub
+   * scan each emit an update, through real work that a loaded runner can stretch
+   * past `quiesce`. A test that counts updates starts counting after this.
+   */
+  async function settleFirstRead(service: ReturnType<typeof createService>) {
+    await vi.waitFor(async () => {
+      const stats = await service.getAdeUsageStats({ preset: "7d", scope: "machine" });
+      expect(stats.freshness?.state).toBe("fresh");
+    });
+    await quiesce();
   }
 
   function createLogger() {
@@ -1100,7 +1234,7 @@ describe("account scope through the usage service", () => {
       // Warm-up: let the first ledger scan and its own updates settle, so what
       // is measured below is only the account refresh.
       await service.getAdeUsageStats({ preset: "7d", scope: "account" });
-      await quiesce();
+      await settleFirstRead(service);
 
       // Genuinely new history: the page must be told.
       published = [laptop];
@@ -1136,7 +1270,7 @@ describe("account scope through the usage service", () => {
     service.setAccountRollupFetcher(async () => ({ rollups: [], failures: [failure] }));
     try {
       await service.getAdeUsageStats({ preset: "7d", scope: "account" });
-      await quiesce();
+      await settleFirstRead(service);
 
       // A permanently unreachable machine reports the same failure forever.
       // Reading that as a change would keep the page emitting news it already
@@ -1804,14 +1938,82 @@ describe("account usage rollup store", () => {
     const reader = fakeDb([storedRow()], storedMetaFor(rollup([rollupRow()])));
     const readBack = createAccountUsageRollupStore({ db: reader.db }).readAll();
     expect(readBack[0]?.source).toEqual({ sourceId: "laptop-marker", roots: ["abc"] });
+    // Never written: the machine's counts are unknown, not zero.
+    expect(readBack[0]?.activity).toBeUndefined();
   });
 
-  it("retains enough days for the longest range preset and not much more", () => {
-    // `year` asks for 365 days; the remainder absorbs timezone skew and the gap
-    // between a peer's last publish and the day the reader asks about.
-    expect(ROLLUP_RETAINED_DAYS).toBeGreaterThan(365);
-    expect(ROLLUP_RETAINED_DAYS).toBeLessThanOrEqual(400);
+  it("writes activity only when it moved, and never clears it for a rollup that has none", () => {
+    const counts = activity({ "db-a": { "2026-08-01": [2, 1, 1, 0] } });
+    const published: AdeUsageRollup = { ...rollup([rollupRow()]), activity: counts };
+    const activityParam = (write: Statement | undefined) =>
+      write?.params.find((param) => typeof param === "string" && param.startsWith("{"));
+
+    // First counts for a machine: a change, written to the retired column.
+    const first = fakeDb([storedRow()], storedMetaFor(published));
+    expect(createAccountUsageRollupStore({ db: first.db }).publish(published)).toBe(true);
+    expect(JSON.parse(String(activityParam(first.metaWrites()[0])))).toEqual(counts);
+    const storedText = String(activityParam(first.metaWrites()[0]));
+
+    // The same counts again: nothing to write, nothing to wake anyone for.
+    const same = fakeDb([storedRow()], { ...storedMetaFor(published), source_window: storedText });
+    expect(createAccountUsageRollupStore({ db: same.db }).publish(published)).toBe(false);
+    expect(same.metaWrites()).toEqual([]);
+
+    // A fresh capture time alone rewrites the meta row without naming the
+    // activity column, so its CRR clock does not tick.
+    const fresher = fakeDb([storedRow()], { ...storedMetaFor(published), source_window: storedText, captured_at: "2026-08-08T00:00:00.000Z" });
+    expect(createAccountUsageRollupStore({ db: fresher.db }).publish(published)).toBe(false);
+    expect(fresher.metaWrites()).toHaveLength(1);
+    expect(fresher.metaWrites()[0]?.sql).not.toMatch(/source_window/);
+
+    // An older machine's rollup, fetched live, carries no activity: the
+    // stored counts are left alone, and the column is not named at all.
+    const older = fakeDb([storedRow()], { ...storedMetaFor(published), source_window: storedText, label: "Renamed" });
+    expect(createAccountUsageRollupStore({ db: older.db }).publish(rollup([rollupRow()]), { ownerAuthoritative: false })).toBe(true);
+    expect(older.metaWrites()[0]?.sql).not.toMatch(/source_window/);
+
+    const reader = fakeDb([storedRow()], { ...storedMetaFor(published), source_window: storedText });
+    expect(createAccountUsageRollupStore({ db: reader.db }).readAll()[0]?.activity).toEqual(counts);
   });
+
+  it("replicates a machine's activity to a peer, and an older build's republish there keeps it", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-activity-"));
+    const silent = { debug() {}, info() {}, warn() {}, error() {} } as unknown as Parameters<typeof openFreshKvDb>[1];
+    const machineA = await openFreshKvDb(path.join(dir, "a.db"), silent);
+    const machineB = await openFreshKvDb(path.join(dir, "b.db"), silent);
+    try {
+      const counts = activity({ "db-a": { "2026-08-01": [2, 1, 1, 0] } });
+      createAccountUsageRollupStore({ db: machineA }).publish({ ...rollup([rollupRow()]), activity: counts });
+      machineB.sync.applyChanges(machineA.sync.exportChangesSince(0));
+      expect(createAccountUsageRollupStore({ db: machineB }).readAll()[0]?.activity).toEqual(counts);
+
+      // Machine B runs an ADE from before activity: its meta upsert names
+      // only the six columns that build knows. That must not clear A's counts
+      // on either machine once it replicates back.
+      machineB.run(
+        `insert into usage_machine_rollup_meta
+           (machine_key, label, platform, captured_at, source_id, source_roots)
+         values (?, ?, ?, ?, ?, ?)
+         on conflict(machine_key) do update set
+           label = excluded.label,
+           platform = excluded.platform,
+           captured_at = excluded.captured_at,
+           source_id = excluded.source_id,
+           source_roots = excluded.source_roots`,
+        ["laptop", "Laptop (renamed)", "darwin", "2026-08-10T00:00:00.000Z", "laptop-marker", JSON.stringify(["abc"])],
+      );
+      machineA.sync.applyChanges(machineB.sync.exportChangesSince(0));
+      const onA = createAccountUsageRollupStore({ db: machineA }).readAll()[0];
+      expect(onA?.label).toBe("Laptop (renamed)");
+      expect(onA?.activity).toEqual(counts);
+      // And no extra rollup rows: an older reader's provider list is unchanged.
+      expect(onA?.rows.map((entry) => entry.provider)).toEqual(["claude"]);
+    } finally {
+      machineA.close();
+      machineB.close();
+    }
+  });
+
 });
 
 const TIMEOUT_MS = 40;

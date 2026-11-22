@@ -38,6 +38,13 @@ import type {
  * then subscribes to the new one.
  */
 export type PinnedFilesApi = {
+  /**
+   * The copy these files live on. Path actions that only this computer can do
+   * (reveal in Finder, open in an editor) pass it, so a file on another
+   * computer gets a clear refusal instead of opening a local path of the same
+   * name.
+   */
+  readonly pin: OpenProjectBinding;
   listWorkspaces: (args?: FilesListWorkspacesArgs) => Promise<FilesWorkspace[]>;
   listTree: (args: FilesListTreeArgs) => Promise<FileTreeNode[]>;
   listTreeChildren: (args: FilesListTreeChildrenArgs) => Promise<FilesListTreeChildrenResult>;
@@ -67,10 +74,10 @@ export type PinnedFilesApi = {
 };
 
 /**
- * `pin` of `null` means "the machine this project tab is bound to" — the
- * unpinned path, byte-for-byte what every caller did before pins existed.
- */
-/**
+ * The pin is required: it names one copy on one machine, the tab's own copy
+ * included. A surface with no copy to read shows its empty state and builds no
+ * API at all.
+ *
  * Cached per machine so the returned object is referentially stable.
  *
  * The API is a pure function of the pin, and consumers put it in effect
@@ -85,11 +92,11 @@ export type PinnedFilesApi = {
  */
 const apiByPinKey = new Map<string, PinnedFilesApi>();
 
-export function createPinnedFilesApi(pin: OpenProjectBinding | null): PinnedFilesApi {
-  const cacheKey = pin?.key ?? "";
-  const cached = apiByPinKey.get(cacheKey);
+export function createPinnedFilesApi(pin: OpenProjectBinding): PinnedFilesApi {
+  const cached = apiByPinKey.get(pin.key);
   if (cached) return cached;
   const api: PinnedFilesApi = {
+    pin,
     listWorkspaces: (args = {}) => window.ade.files.listWorkspaces(args, pin),
     listTree: (args) => window.ade.files.listTree(args, pin),
     listTreeChildren: (args) => window.ade.files.listTreeChildren(args, pin),
@@ -107,7 +114,7 @@ export function createPinnedFilesApi(pin: OpenProjectBinding | null): PinnedFile
     stopWatching: (args) => window.ade.files.stopWatching(args, pin),
     onChange: (cb) => window.ade.files.onChange(cb, pin),
   };
-  apiByPinKey.set(cacheKey, api);
+  apiByPinKey.set(pin.key, api);
   return api;
 }
 

@@ -130,7 +130,7 @@ export function useAppleLoadingWatchdog(
     hidden: boolean;
     laneId: string | null;
     chatSessionId: string | null;
-    runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
+    runtimePinRef: MutableRefObject<OpenProjectBinding>;
     refreshList: () => void;
     reconnectStream: () => void;
     onGiveUp: (error: Error) => void;

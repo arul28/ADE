@@ -53,9 +53,12 @@ describe("confirmAppleToolClose", () => {
   });
 
   it("asks, by name, when the lane's device is booted", async () => {
-    installDeviceList(BOOTED);
-    const answer = confirmAppleToolClose({ laneId: "lane-1" });
+    const deviceList = installDeviceList(BOOTED);
+    const pin = { kind: "local" as const, key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+    const answer = confirmAppleToolClose({ laneId: "lane-1", runtimePin: pin });
     await waitFor(() => expect(getAppleShutdownConfirmRequest()?.deviceName).toBe("ADE Repro"));
+    // It reads the device on the lane's own machine.
+    expect(deviceList).toHaveBeenCalledWith({ laneId: "lane-1", installed: true }, pin);
     act(() => { getAppleShutdownConfirmRequest()?.resolve(false); resetAppleShutdownConfirmForTests(); });
     await expect(answer).resolves.toBe(false);
   });

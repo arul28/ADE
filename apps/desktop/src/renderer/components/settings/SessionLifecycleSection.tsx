@@ -3,6 +3,7 @@ import type { SessionLifecycleSettings } from "../../../shared/types";
 import { ModernRow, SettingsToggle } from "./primitives";
 import { Banner } from "../ui/notice";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { requirePin } from "../../state/repositoryScope";
 
 /**
  * The "Chats" group of Storage & cleanup → Rules: settle a lane's chats when
@@ -27,7 +28,9 @@ export function SessionLifecycleSection() {
     setSettings(null);
     setLoadFailed(false);
     setError(null);
-    void window.ade.sessions.getLifecycleSettings(pinRef.current)
+    const readPin = pinRef.current;
+    if (!readPin) return;
+    void window.ade.sessions.getLifecycleSettings(readPin)
       .then((next) => {
         if (!cancelled) setSettings(next);
       })
@@ -49,7 +52,7 @@ export function SessionLifecycleSection() {
       setSettings(await window.ade.sessions.updateLifecycleSettings({
         ...settings,
         ...patch,
-      }, pinRef.current));
+      }, requirePin(pinRef.current)));
     } catch {
       setError("ADE couldn't save this chat setting.");
     } finally {

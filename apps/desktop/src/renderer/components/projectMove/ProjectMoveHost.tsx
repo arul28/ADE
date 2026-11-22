@@ -1,13 +1,16 @@
-import React, { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import React, { Suspense, lazy, useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { FolderSimple } from "@phosphor-icons/react";
 import type { ProjectMoveRecord } from "../../../shared/types/projectMove";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import { isMacPlatform } from "../../lib/platform";
 import { arePathsEqual } from "../../lib/pathUtils";
 import { useAppStore } from "../../state/appStore";
-import { MoveProjectDialog } from "./MoveProjectDialog";
 import { chooseOldCopy } from "./oldCopyActions";
 import { displayPath, formatBytes, PROJECT_MOVE_CHANGED_EVENT, REMINDER_CHOICES } from "./projectMoveModel";
+import { isAdeAvailable } from "../../lib/adeAvailability";
+
+// The dialog's code (model controls, launch helpers) loads when a move starts, not with the window.
+const MoveProjectDialog = lazy(() => import("./MoveProjectDialog").then((module) => ({ default: module.MoveProjectDialog })));
 
 /**
  * The move dialog lives here, at the app shell, not in Settings: a finished
@@ -40,8 +43,9 @@ const REFRESH_MS = 10 * 60_000;
 export function ProjectMoveHost() {
   const target = useSyncExternalStore(subscribe, () => dialogTarget, () => null);
   const [attention, setAttention] = useState<ProjectMoveRecord[]>([]);
-  // Moving projects is macOS-only; elsewhere there is nothing to poll for.
-  const api = isMacPlatform() ? window.ade?.projectMove : undefined;
+  // Moving projects is macOS-only, and ADE Web has no moves (its stand-in
+  // rejects every call); elsewhere there is nothing to poll for.
+  const api = isMacPlatform() && isAdeAvailable(window.ade?.projectMove?.attention) ? window.ade?.projectMove : undefined;
 
   const [nextReminderAt, setNextReminderAt] = useState<number | null>(null);
 
@@ -103,14 +107,16 @@ export function ProjectMoveHost() {
 
   if (!target) return null;
   return (
-    <MoveProjectDialog
-      open
-      onClose={() => {
-        closeMoveProjectDialog();
-        refresh();
-      }}
-      projectRoot={target.projectRoot}
-      projectName={target.projectName}
-    />
+    <Suspense fallback={null}>
+      <MoveProjectDialog
+        open
+        onClose={() => {
+          closeMoveProjectDialog();
+          refresh();
+        }}
+        projectRoot={target.projectRoot}
+        projectName={target.projectName}
+      />
+    </Suspense>
   );
 }

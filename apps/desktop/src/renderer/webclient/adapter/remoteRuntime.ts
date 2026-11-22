@@ -41,6 +41,7 @@ export function createRemoteRuntimeNamespace(infra: AdapterInfra): AdeNamespace<
     pairWithMachine: unsupported,
     saveTarget: unsupported,
     setAutoConnect: unsupported,
+    setSlowLinkMode: unsupported,
     removeTarget: unsupported,
     getSshHostKeyTrust: unsupported,
     trustSshHostKey: unsupported,

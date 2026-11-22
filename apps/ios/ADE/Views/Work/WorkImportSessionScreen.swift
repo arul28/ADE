@@ -142,8 +142,11 @@ struct WorkImportSessionScreen: View {
   // MARK: - Machine
 
   private var machineOptions: [WorkNewChatMachineOption] {
+    // A CLI session to import lives on a computer: ADE Cloud's chats are
+    // chats already, so ADE Cloud is no import source.
     if let fleet = syncService.machineFleet {
-      return workNewChatMachineOptions(syncService: syncService, fleet: fleet)
+      let options = workNewChatMachineOptions(syncService: syncService, fleet: fleet).filter { !$0.isCloud }
+      if !options.isEmpty { return options }
     }
     let name = syncService.focusedMachineDisplayName
     return [WorkNewChatMachineOption(
@@ -495,7 +498,7 @@ struct WorkImportSessionScreen: View {
           Button {
             selectMachine(option)
           } label: {
-            Label(option.isPrimary ? "\(option.name) · Primary" : option.name, systemImage: option.symbol)
+            Label(option.name, systemImage: option.symbol)
           }
         }
       }
@@ -1264,7 +1267,7 @@ private struct WorkImportLaneFilterMenu: View {
   private var title: String {
     if selection == workImportAllLanesFilter { return "All lanes" }
     if selection == workImportOtherFoldersFilter { return "Other folders" }
-    return selectedLane?.name ?? "All lanes"
+    return selectedLane?.displayName ?? "All lanes"
   }
 
   var body: some View {
@@ -1272,7 +1275,7 @@ private struct WorkImportLaneFilterMenu: View {
       Picker("Lane", selection: $selection) {
         Text("All lanes · \(totalCount)").tag(workImportAllLanesFilter)
         ForEach(lanesWithSessions) { lane in
-          Text("\(lane.emoji.map { "\($0) " } ?? "")\(lane.name) · \(counts[lane.id] ?? 0)").tag(lane.id)
+          Text("\(lane.emoji.map { "\($0) " } ?? "")\(lane.displayName) · \(counts[lane.id] ?? 0)").tag(lane.id)
         }
         if scanKeys.contains(workImportOtherFoldersFilter) || selection == workImportOtherFoldersFilter {
           Text("Other folders · \(counts[workImportOtherFoldersFilter] ?? 0)").tag(workImportOtherFoldersFilter)
@@ -1350,6 +1353,7 @@ private func workImportToolType(provider: String) -> String {
   case "kimi": return "kimi"
   case "grok": return "grok"
   case "copilot": return "copilot"
+  case "antigravity": return "antigravity"
   default: return provider
   }
 }

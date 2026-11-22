@@ -8,6 +8,7 @@ import { restoredLaneToast } from "../app/toast/restoredLaneToast";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
+import { requirePin } from "../../state/repositoryScope";
 
 const TOAST_ID = "settings-deleted-lanes";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -40,8 +41,9 @@ export function DeletedLanesList({ pin }: { pin: OpenProjectBinding | null }) {
     setLoadError(null);
     setRunning(null);
     const list = window.ade.lanes?.listDeleted;
-    if (!list) return;
-    void list(pinRef.current)
+    const listPin = pinRef.current;
+    if (!list || !listPin) return;
+    void list(listPin)
       .then((result) => {
         if (!cancelled) setLanes(Array.isArray(result) ? result : []);
       })
@@ -62,7 +64,7 @@ export function DeletedLanesList({ pin }: { pin: OpenProjectBinding | null }) {
     if (running) return;
     setRunning({ id: lane.id, kind: "restore" });
     try {
-      const result = await window.ade.lanes.restoreDeleted({ id: lane.id }, pinRef.current);
+      const result = await window.ade.lanes.restoreDeleted({ id: lane.id }, requirePin(pinRef.current));
       if (result.restoredUncommitted) {
         setLanes((prev) => prev?.filter((entry) => entry.id !== lane.id) ?? prev);
       }
@@ -100,7 +102,7 @@ export function DeletedLanesList({ pin }: { pin: OpenProjectBinding | null }) {
     if (!ok) return;
     setRunning({ id: lane.id, kind: "remove" });
     try {
-      await window.ade.lanes.removeDeleted({ id: lane.id }, pinRef.current);
+      await window.ade.lanes.removeDeleted({ id: lane.id }, requirePin(pinRef.current));
       setLanes((prev) => prev?.filter((entry) => entry.id !== lane.id) ?? prev);
     } catch (error) {
       showToast({ id: TOAST_ID, tone: "error", title: "Couldn't drop that lane", message: ipcErrorMessage(error) || "Something went wrong." });

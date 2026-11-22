@@ -567,7 +567,9 @@ export type AndroidEmulatorAgentServiceApi = {
   setDeviceSetting(args: AndroidSetDeviceSettingArgs): Promise<AndroidDeviceSettings>;
   /**
    * A chat ended: its leases pass on and its recording stops (and is filed).
+   * With `turnEnded` (a chat on another machine whose turn ended) only its
+   * automatic recordings stop; one it started itself keeps going.
    * Not an action.
    */
-  releaseIfOwnedBy(chatSessionId: string): Promise<void>;
+  releaseIfOwnedBy(chatSessionId: string, options?: { turnEnded?: boolean }): Promise<void>;
 };

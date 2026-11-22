@@ -67,7 +67,7 @@ function resolveShared(
   const pending = inFlight.get(key);
   if (pending) return pending;
   const resolveMedia = window.ade?.prs?.resolveMedia;
-  const work = (typeof resolveMedia === "function" ? resolveMedia(args, pin) : Promise.reject(new Error("unsupported")))
+  const work = (typeof resolveMedia === "function" && pin ? resolveMedia(args, pin) : Promise.reject(new Error(pin ? "unsupported" : "no computer online")))
     .then((result): CacheEntry => {
       if (result?.status === "resolved") {
         const expiresAtMs = Date.parse(result.expiresAt);

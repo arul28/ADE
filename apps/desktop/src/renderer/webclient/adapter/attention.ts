@@ -26,12 +26,37 @@ import {
   parseDeeplink,
   type DeeplinkTarget,
 } from "../../../shared/deeplinks";
-import { targetToWebUrl } from "../shell/webRoutes";
+import { targetToWebUrl } from "../shell/webTargetPaths";
 import {
   browserAccountIsSignedIn,
   type BrowserAccountClient,
 } from "../account/client";
 import type { AdapterInfra } from "./types";
+import type { AccountLaneIndexRow } from "../../../../../account-directory/src/cloud/contract";
+import { PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
+
+/** How long one read of the account lane index names the lanes of later snapshots. */
+const LANE_INDEX_REUSE_MS = 60_000;
+
+/**
+ * Names the lane of each item its machine sent without one (an older
+ * machine, or a lane it no longer lists), from the account lane index. The
+ * index is for mentions only: it never changes an item that has a name.
+ */
+function withIndexedLaneNames(items: AttentionItem[], lanes: readonly AccountLaneIndexRow[]): AttentionItem[] {
+  if (lanes.length === 0) return items;
+  let changed = false;
+  const next = items.map((item) => {
+    if (item.laneName?.trim() || !item.laneId) return item;
+    const machineKey = item.machine.accountMachineKey?.trim() || item.machine.machineKey;
+    const row = lanes.find((lane) => lane.laneId === item.laneId && lane.machineKey === machineKey)
+      ?? lanes.find((lane) => lane.laneId === item.laneId);
+    if (!row) return item;
+    changed = true;
+    return { ...item, laneName: row.isPrimary ? PRIMARY_LANE_DISPLAY_NAME : row.name };
+  });
+  return changed ? next : items;
+}
 
 const DEFAULT_RELAY_URL = "https://ade-push-relay.arulsharma1028.workers.dev";
 
@@ -391,7 +416,7 @@ function parseAttentionPreferences(value: unknown): AttentionPreferences {
   } as AttentionPreferences;
 }
 
-function relayBaseUrl(): string {
+export function relayBaseUrl(): string {
   const configured = (
     import.meta.env.VITE_ADE_PUSH_RELAY_URL as string | undefined
   )?.trim();
@@ -486,6 +511,27 @@ export function createAttentionNamespace(
   // A read carries a fallback; a mutation has none — its fallback could never
   // be resolved — so the two shapes stay disjoint at the call site.
   const mutation = { idempotent: false } as const;
+
+  // One read of the account lane index serves the snapshots of the next
+  // minute, and only a snapshot with an unnamed lane asks for it.
+  let laneIndex: { at: number; lanes: Promise<readonly AccountLaneIndexRow[]> } | null = null;
+  const nameLanes = async (snapshot: AttentionSnapshot): Promise<AttentionSnapshot> => {
+    if (!snapshot.items.some((item) => item.laneId && !item.laneName?.trim())) return snapshot;
+    const now = Date.now();
+    if (!laneIndex || now - laneIndex.at > LANE_INDEX_REUSE_MS) {
+      const api = accountClient.cloudApi();
+      laneIndex = {
+        at: now,
+        lanes: api ? api.accountLanes().then((answer) => answer?.lanes ?? []).catch((error: unknown) => {
+          console.warn("[cloud] the account lane index read failed; lanes keep the names their machines sent", error instanceof Error ? error.message : String(error));
+          return [];
+        }) : Promise.resolve([]),
+      };
+    }
+    const lanes = await laneIndex.lanes;
+    const items = withIndexedLaneNames(snapshot.items, lanes);
+    return items === snapshot.items ? snapshot : { ...snapshot, items };
+  };
 
   const rememberSnapshot = (snapshot: AttentionSnapshot): AttentionSnapshot => {
     lastSnapshotScope = snapshot.scope ?? null;
@@ -614,7 +660,7 @@ export function createAttentionNamespace(
         `/attention/account/snapshot?${query.toString()}`,
       ));
       return rememberSnapshot({
-        ...snapshot,
+        ...(await nameLanes(snapshot)),
         scope: "account",
         accountOwnerId: accountClient.getSnapshot().userId?.trim() || null,
         availability: {

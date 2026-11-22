@@ -1,6 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
+import { electronMacAppBundlePath } from "../../serviceManager/brainExecutable";
 import { JsonRpcClient, JsonRpcResponseError } from "../../lib/jsonRpcClient";
+import type { UpdateRequestedBy } from "../../../../desktop/src/shared/types/remoteRuntime";
 
 /**
  * "Update & restart" for a machine whose ADE desktop app is open.
@@ -25,6 +27,11 @@ export const DESKTOP_APP_UPDATE_INSTALL_METHOD = `${DESKTOP_APP_UPDATE_BRIDGE_PR
 export type DesktopAppUpdateInstallRequest = {
   /** What the asking client believes is newest. Null means "whatever is latest". */
   targetVersion: string | null;
+  /**
+   * Who asked the brain for the update, sanitized. Absent from an older
+   * brain; an older app ignores it.
+   */
+  requestedBy?: UpdateRequestedBy | null;
 };
 
 export type DesktopAppUpdateInstallOutcome =
@@ -97,6 +104,7 @@ function readResult(value: unknown): DesktopAppUpdateInstallResult | null {
 export async function requestDesktopAppUpdate(args: {
   socketPath: string;
   targetVersion: string | null;
+  requestedBy?: UpdateRequestedBy | null;
   connectTimeoutMs?: number;
   requestTimeoutMs?: number;
 }): Promise<DesktopAppUpdateRouting> {
@@ -125,7 +133,7 @@ export async function requestDesktopAppUpdate(args: {
     try {
       raw = await client.request(
         DESKTOP_APP_UPDATE_INSTALL_METHOD,
-        { targetVersion: args.targetVersion },
+        { targetVersion: args.targetVersion, ...(args.requestedBy ? { requestedBy: args.requestedBy } : {}) },
         { timeoutMs: args.requestTimeoutMs ?? INSTALL_REQUEST_TIMEOUT_MS },
       );
     } catch (error) {
@@ -177,7 +185,7 @@ export async function requestDesktopAppUpdate(args: {
 /**
  * The installed ADE app this brain runs from, when the brain is the app's own:
  * launchd runs `/Applications/ADE.app/Contents/MacOS/ADE … cli.cjs serve`
- * (the bundle is returned), and the Windows per-user service runs
+ * or the app's helper or brain copy (the bundle is returned), and the Windows per-user service runs
  * `ADE.exe …\\ade-cli\\cli.cjs serve` as Node (the exe is returned). Null for
  * the standalone runtime (`ade` / `ade.exe`, which is not Electron), a
  * development brain (node, or the bare Electron under `node_modules`, which
@@ -189,7 +197,9 @@ export function hostAppPath(
   electronVersion: string | undefined = process.versions.electron,
 ): string | null {
   if (/[\\/]node_modules[\\/]/.test(execPath)) return null;
-  if (platform === "darwin") return /^(\/.*?\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1] ?? null;
+  // A brain on the app's helper or brain copy (the brain-executable switch)
+  // belongs to the app around it, never to the nested `ADE Helper.app`.
+  if (platform === "darwin") return electronMacAppBundlePath(execPath);
   if (platform === "win32") return electronVersion && /\.exe$/i.test(execPath) ? execPath : null;
   return null;
 }
@@ -251,6 +261,7 @@ export async function requestUpdateThroughClosedApp(args: {
   appPath: string;
   socketPath: string;
   targetVersion: string | null;
+  requestedBy?: UpdateRequestedBy | null;
 }): Promise<DesktopAppUpdateRouting> {
   const refuse = (detail: string): DesktopAppUpdateRouting => ({
     attached: true,
@@ -273,6 +284,7 @@ export async function requestUpdateThroughClosedApp(args: {
     const routing = await requestDesktopAppUpdate({
       socketPath: args.socketPath,
       targetVersion: args.targetVersion,
+      requestedBy: args.requestedBy ?? null,
       connectTimeoutMs: CLOSED_APP_POLL_MS,
     });
     if (routing.attached) {

@@ -9,6 +9,8 @@ import type { LaneType } from "./lanes";
 import type { ModelConfig, ThinkingLevel } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 import type { LocalProviderFamily } from "../modelRegistry";
+import type { CloudTierId } from "../cloudTiers";
+import { LANE_SETUP_PLATFORM_FIELDS } from "../laneSetupPlatform";
 
 export type TestRunStatus = "running" | "passed" | "failed" | "canceled" | "timed_out";
 export type TestSuiteTag = "unit" | "lint" | "integration" | "e2e" | "custom";
@@ -64,6 +66,11 @@ export type LaneEnvInitStep = {
   label: string;
   status: LaneEnvInitStepStatus;
   error?: string;
+  /**
+   * Failed because a signal ADE did not send stopped its command (SIGTERM to
+   * the brain's whole service on a restart, say), not because the command failed.
+   */
+  stoppedBySignal?: boolean;
   durationMs?: number;
 };
 
@@ -162,12 +169,20 @@ export type LaneSetupScriptConfig = {
   commands?: string[];
   /** Unix-specific setup commands (takes precedence on macOS/Linux) */
   unixCommands?: string[];
+  /** macOS-only setup commands (take precedence over `unixCommands` on macOS) */
+  macosCommands?: string[];
+  /** Linux-only setup commands (take precedence over `unixCommands` on Linux, e.g. ADE Cloud) */
+  linuxCommands?: string[];
   /** Windows-specific setup commands (takes precedence on Windows) */
   windowsCommands?: string[];
   /** Path to a script file relative to project root (fallback) */
   scriptPath?: string;
   /** Path to a Unix-specific script file (takes precedence on macOS/Linux) */
   unixScriptPath?: string;
+  /** Path to a macOS-only script file (takes precedence over `unixScriptPath` on macOS) */
+  macosScriptPath?: string;
+  /** Path to a Linux-only script file (takes precedence over `unixScriptPath` on Linux) */
+  linuxScriptPath?: string;
   /** Path to a Windows-specific script file (takes precedence on Windows) */
   windowsScriptPath?: string;
   /**
@@ -198,13 +213,25 @@ export function laneSetupScriptHasWork(
     Array.isArray(list) && list.some((entry) => typeof entry === "string" && entry.trim().length > 0);
   const hasPath = (value: string | undefined): boolean =>
     typeof value === "string" && value.trim().length > 0;
-  return (
-    hasCommand(script.commands)
-    || hasCommand(script.unixCommands)
-    || hasCommand(script.windowsCommands)
-    || hasPath(script.scriptPath)
-    || hasPath(script.unixScriptPath)
-    || hasPath(script.windowsScriptPath)
+  return LANE_SETUP_PLATFORM_FIELDS.some(
+    (field) => hasCommand(script[field.commandsKey]) || hasPath(script[field.scriptKey]),
+  );
+}
+
+/**
+ * Is this setup script worth keeping in a config layer? True when it has work
+ * (`laneSetupScriptHasWork`) or an explicit per-OS command list, even an empty
+ * one: `linuxCommands: []` means "run nothing on Linux", and dropping it while
+ * parsing or normalizing would let that layer's setup fall back to another.
+ * `injectPrimaryPath` alone still keeps nothing. The resolver still runs an
+ * empty list as nothing.
+ */
+export function laneSetupScriptIsConfigured(
+  script: LaneSetupScriptConfig | undefined | null,
+): script is LaneSetupScriptConfig {
+  if (laneSetupScriptHasWork(script)) return true;
+  return Boolean(script) && LANE_SETUP_PLATFORM_FIELDS.some(
+    (field) => field.key !== "shared" && Array.isArray(script![field.commandsKey]),
   );
 }
 
@@ -711,6 +738,12 @@ export type AutomationActiveHours = {
 export type AutomationTrigger = {
   type: AutomationTriggerType;
   cron?: string;
+  /**
+   * For `schedule` on ADE Cloud: the IANA zone `cron` is read in. Set from
+   * the zone of the computer that moved the rule to ADE Cloud. A computer
+   * reads a schedule on its own clock.
+   */
+  timezone?: string;
   branch?: string;
   targetBranch?: string;
   event?: string;
@@ -888,8 +921,25 @@ export type AutomationLaneNamePreset =
   | "pr-title-author"
   | "custom";
 
+/**
+ * Each run's lane on its own new ADE Cloud computer, instead of on the
+ * machine that runs the rule. That machine still watches the trigger and
+ * keeps the run history; the lane and the agent's chat live on the computer.
+ * See `shared/automationCloud.ts` for what such a rule may hold.
+ */
+export type AutomationCloudTarget = {
+  /** The computer's size; null or absent = the size the person saved for new lanes. */
+  sizeId?: CloudTierId | null;
+  /** With ADE Cloud as the home (C9): most runs an hour before the rule pauses (default 6). */
+  maxRunsPerHour?: number;
+  /** With ADE Cloud as the home: keep a run's computer after it (default: freed, its lane kept). */
+  keepComputer?: boolean;
+};
+
 export type AutomationExecution = {
   kind: AutomationExecutionKind;
+  /** Set: every run makes its lane on ADE Cloud (`laneMode` "create" or "pr-branch"). */
+  cloud?: AutomationCloudTarget | null;
   /**
    * Whether each run should spawn a fresh lane (`"create"`) or reuse the
    * configured / trigger / primary lane (`"reuse"`), or require the trigger
@@ -998,6 +1048,12 @@ export type AutomationRuleScope = {
  * a computer (the same id the CTO home machine uses).
  */
 export type AutomationRuleHome = {
+  /**
+   * `cloud`: ADE Cloud is the home (C9); `deviceId` is then
+   * `ADE_CLOUD_HOME_DEVICE_ID`, which no computer has, so an ADE that doesn't
+   * know this field still reads it as another computer's home.
+   */
+  kind?: "cloud";
   deviceId: string;
   /** The computer's own name, for showing on computers that cannot reach it. */
   name: string;
@@ -1254,6 +1310,35 @@ export type AiProviderConnectionStatus = {
   accountEmail?: string;
   /** Subscription the account is on, e.g. "ChatGPT Pro" / "Claude Max". */
   accountPlan?: string;
+  /**
+   * The sign-in as the status read saw it: a saved login on disk, or the last
+   * check that ran this provider for real (a chat, a sign-in, Re-check).
+   * "unknown" means ADE cannot tell from what it read, for example a keychain
+   * that did not answer. Absent on older hosts; read `authAvailable` there.
+   */
+  signInState?: AiProviderSignInState;
+};
+
+export type AiProviderSignInState = "signed-in" | "signed-out" | "unknown";
+
+/** Args for `ai.verifyProviderSignIn`: the one provider to check for real. */
+export type AiVerifyProviderSignInArgs = {
+  provider: string;
+};
+
+/**
+ * The answer of `ai.verifyProviderSignIn`. It runs that provider's own check
+ * (its CLI auth command, the agent's session handshake, the SDK's auth call)
+ * with a short limit. A timeout or an error is "unknown", never a long wait.
+ */
+export type AiProviderSignInCheck = {
+  provider: string;
+  state: AiProviderSignInState;
+  /** One short sentence: why, or what the provider said. Null when there is nothing to add. */
+  reason: string | null;
+  /** The account the provider named, when it names one. */
+  account: string | null;
+  checkedAt: string;
 };
 
 export type AiProviderConnections = {
@@ -2035,6 +2120,8 @@ export type AiSettingsStatus = {
     macosKeychainError?: string | null;
     legacyPlaintextDetected: boolean;
     decryptionFailed: boolean;
+    /** True until the OS credential store answers its first check (macOS can show a keychain prompt). */
+    secureStorageChecking?: boolean;
     encryptedStorePath?: string | null;
     legacyPlaintextPath?: string | null;
   };
@@ -2046,6 +2133,28 @@ export type AiSettingsStatus = {
    */
   harnessPresets?: AiHarnessPresetSummary[];
   providerAccounts?: AiProviderAccountSummary[];
+  /**
+   * Free models on this machine (`shared/freeModels.ts`). Omitted by a brain
+   * older than the Free page; read a missing block as "someone is signed in".
+   */
+  freeModels?: AiFreeModelsStatus;
+};
+
+/** What the machine that answers the status knows about free models. */
+export type AiFreeModelsStatus = {
+  /**
+   * Nothing on this machine can chat except free models: no provider signed
+   * in, no API key, no custom provider, no local model. New chats start on a
+   * free model.
+   */
+  nothingSignedIn: boolean;
+  /**
+   * A provider was signed in on this machine at some point, or an agent ran
+   * here. False only for a new person: their sign-in strip offers free models.
+   */
+  everSignedIn: boolean;
+  /** The free model the model manifest prefers for a new chat, in order. */
+  preferredDefaultModelIds: string[];
 };
 export type AiFeatureToggles = Partial<Record<AiFeatureKey, boolean>>;
 
@@ -2478,6 +2587,33 @@ export type ProjectConfigTrust = {
   localHash: string;
 };
 
+/**
+ * A setting that follows the ADE account (account project plan, slices
+ * Y2 to Y4) and needs the person: this computer had a different value when
+ * it moved (the account's is in use), or a value stays on this computer.
+ */
+export type ProjectConfigAccountNotice =
+  | {
+    kind: "account_setting";
+    /** The account row, such as `prs.pollIntervalSeconds`. */
+    key: string;
+    /** The setting's name in Settings. */
+    label: string;
+  }
+  | {
+    /**
+     * A value that stays on this computer instead of the account: it holds
+     * a credential-shaped key (`names`), names a folder on this computer, or
+     * is over the size cap.
+     */
+    kind: "kept_here";
+    key: string;
+    label: string;
+    reason: "secret" | "machine_path" | "too_large";
+    /** For `secret`: the key names, never their values. */
+    names?: string[];
+  };
+
 export type ProjectConfigSnapshot = {
   shared: ProjectConfigFile;
   local: ProjectConfigFile;
@@ -2488,6 +2624,8 @@ export type ProjectConfigSnapshot = {
     sharedPath: string;
     localPath: string;
   };
+  /** Settings that follow the account and need the person (a different value here, or a value kept here). Absent from older brains. */
+  accountNotices?: ProjectConfigAccountNotice[];
 };
 
 export type ProjectConfigDiff = {

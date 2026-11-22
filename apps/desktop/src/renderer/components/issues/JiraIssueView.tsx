@@ -123,7 +123,7 @@ function Activity({
   issue: JiraIssueDetail;
   siteUrl: string;
   projectRoot: string | null;
-  pin?: OpenProjectBinding | null;
+  pin: OpenProjectBinding | null;
   editing?: JiraIssueEditing;
 }) {
   const [expanded, setExpanded] = useState(true);
@@ -257,7 +257,7 @@ export function JiraIssueView({
   issue: JiraIssueDetail;
   siteUrl: string;
   projectRoot: string | null;
-  pin?: OpenProjectBinding | null;
+  pin: OpenProjectBinding | null;
   onOpenRelated: (ref: IssueRef) => void;
   editing?: JiraIssueEditing;
 }) {

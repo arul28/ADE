@@ -17,6 +17,7 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   [IPC.terminalWrite]: new Set(["data"]),
   [IPC.ptySendToSession]: new Set(["text"]),
   [IPC.ptyWrite]: new Set(["data"]),
+  [IPC.agentChatTypeIntoCli]: new Set(["text"]),
   [IPC.appOpenExternal]: new Set(["url"]),
   // A link a user handed to a browser can be a signed or presigned URL, or an
   // OAuth callback still carrying its `code`.
@@ -36,18 +37,16 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   // A code pasted from a sign-in page finishes that sign-in on its own.
   [IPC.providerInstancesLoginSubmitCode]: new Set(["code"]),
   [IPC.aiCliLoginSubmitCode]: new Set(["code"]),
+  [IPC.cloudLaunchSignInCode]: new Set(["code"]),
   // Both key-store channels carry the raw provider credential as `key`.
   // These entries are the ONLY thing redacting it: the generic guard below
   // does not treat a bare `key` as a secret, because it is the ordinary word
   // for a lookup key on channels that carry nothing sensitive.
   [IPC.aiStoreApiKey]: new Set(["key"]),
   [IPC.aiSetOpencodeProviderKey]: new Set(["key"]),
-  // A project secret's whole point is that its value never leaves the store in
-  // the clear. `value` is too ordinary a word for the generic guard, `content`
-  // is a whole .env file, and `secrets` is a list of name/value pairs.
-  [IPC.projectSecretsSet]: new Set(["value"]),
-  [IPC.projectSecretsPreviewEnvImport]: new Set(["content"]),
-  [IPC.projectSecretsImportEnv]: new Set(["secrets"]),
+  // Passwords & Secrets: a saved value travels inside `args` (`saveSecret`'s
+  // value, `importSecrets`' entries). The trace keeps only the action name.
+  [IPC.passwordsCall]: new Set(["args"]),
   // An answer can be a secret: the private secret card and every `isSecret`
   // question send their value here, under a generic word.
   [IPC.agentChatRespondToInput]: new Set(["answers", "responseText"]),

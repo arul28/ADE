@@ -1,10 +1,12 @@
 import type { WorkProjectViewState } from "../state/appStore";
+import { noteNewDraftRequested } from "./draftLaunchJobs";
 
 export type StartChatDraftPatch = Pick<
   WorkProjectViewState,
   | "draftKind"
   | "draftLaneId"
   | "draftMachineId"
+  | "draftCloudTarget"
   | "activeItemId"
   | "selectedItemId"
   | "workSidebarOpen"
@@ -50,6 +52,8 @@ export function openStartChatDraft(
   machineId: string | null,
   modelRequest?: WorkDraftModelRequest | null,
 ): void {
+  // A new draft asked for: a send still on its way must not open over it.
+  noteNewDraftRequested(projectStateKey);
   setWorkViewState(projectStateKey, (prev) => ({
     ...prev,
     ...startChatDraftPatch(laneId, machineId),
@@ -65,6 +69,8 @@ export function startChatDraftPatch(
     draftKind: "chat",
     draftLaneId: laneId || null,
     draftMachineId: machineId,
+    // A chat started in a named lane runs on that lane's machine, not a cloud picked earlier.
+    draftCloudTarget: null,
     activeItemId: null,
     selectedItemId: null,
     // New chat has no Tools toggle; close a leftover pane from the previous

@@ -593,8 +593,9 @@ matters here; each step below came from a release that waited on CI.
   such as open PRs' CI and the release-notes commit's own push run (the tag
   borrows its parent's result). Restart the PR runs after the tag. A cancelled
   run reports `ci-pass` as **failure**, not cancelled; `verify` still walks past
-  it to the parent because only a failed `validate-docs` blocks a notes-only
-  commit.
+  it to the parent, because on a notes-only commit only CI's `docs` job counts:
+  it blocks when that job failed, was skipped or has no check run, and a
+  cancelled `docs` job walks on.
 - **Do not wait on the notes commit's own CI.** Once the parent's `ci-pass` is
   green, tag. Waiting a second full CI round on a notes-only commit is what
   turned a 30-minute release into an hour.
@@ -1061,7 +1062,10 @@ the account half.
   binding/secret preflights, and the post-deploy auth smokes. `npx wrangler deploy`
   is a bypass, not a workaround. If an entry point stops on a preflight, a missing
   migration, or a missing smoke credential, repair that blocker and rerun the entry
-  point.
+  point. An entry point that is two halves (`deploy:production:prepare` then
+  `deploy:production:upload`, `deploy:prepare` then `deploy:upload`) may run as
+  those halves, as `deploy-web.yml` does, so the upload takes
+  `--var SENTRY_RELEASE:…`; check the halves still make up the whole script.
 - **Reconcile bindings against the account BEFORE deploying.** A binding that
   names a resource which does not exist in the account is a deploy-time failure
   no code test catches.
@@ -1191,22 +1195,25 @@ deploying, and verify it post-deploy.
 
 ### Step 3: Drift preflight — declared bindings vs the account
 
-Run this **before** any deploy. Every command runs inside an app directory whose
-`node_modules` is installed, because that is the only thing that pins the
-version: bare `npx wrangler` from the repo root has no wrangler dependency to
-resolve and silently fetches whatever is newest on npm. Install first, then keep
-every invocation wrapped:
+Run this **before** any deploy. The five Workers are one npm workspace (the
+root `package.json` lists them under `workspaces`, with one root
+`package-lock.json`), so one `npm ci` at the repo root installs every Worker and
+pins wrangler. Without that install, `npx wrangler` has nothing local to resolve
+and silently fetches whatever is newest on npm. Install first, then keep every
+invocation inside a Worker directory:
 
 ```bash
-(cd apps/account-directory && npm ci)
-(cd apps/account-directory && npx wrangler --version)   # expect 4.105.0
+npm ci                                                  # repo root: all five Workers
+(cd apps/account-directory && npx wrangler --version)   # expect 4.112.0
 (cd apps/account-directory && npx wrangler whoami)      # CLOUDFLARE_ACCOUNT_ID → right account
 ```
 
-Pinned versions: `4.105.0` in `apps/account-directory`, `4.112.0` in
-`apps/tunnel-relay`, `^4.53.0` in the other two. Account-level reads (R2, D1,
-`whoami`) are account-scoped, not app-scoped — run them from
-`apps/account-directory` so the exact pin is the one talking to the account.
+Pinned versions: `4.112.0` exactly in `apps/account-directory`,
+`apps/password-key-service` and `apps/tunnel-relay`, `^4.53.0` (locked to
+4.112.0) in the other two, so every Worker runs the one hoisted wrangler.
+Account-level reads (R2, D1, `whoami`) are account-scoped, not app-scoped; run
+them from `apps/account-directory` so the exact pin is the one talking to the
+account.
 Every subcommand below is verified against wrangler 4.105.0.
 
 R2 — buckets must exist before the deploy that first binds them:
@@ -1347,19 +1354,29 @@ run from the release commit on `main`.
 
 ```bash
 # Hosted web client (Cloudflare Pages project ade-web-client)
-# Pinned: the repo root has no wrangler dependency, so an unpinned npx here
-# resolves to whatever npm publishes that day.
+# Pinned: run before the root `npm ci` (or on a checkout without it), an
+# unpinned npx here resolves to whatever npm publishes that day.
 (cd apps/desktop && npm ci && npm run build:webclient)
 npx wrangler@4.105.0 pages deploy apps/desktop/dist/web-client \
   --project-name ade-web-client --branch main \
   --commit-hash "$(git rev-parse origin/main)" --commit-dirty=false
 
-# Workers
-(cd apps/account-directory && npm ci && npm run deploy:production)
-(cd apps/webhook-relay && npm ci && npm run deploy)
-(cd apps/tunnel-relay && npm ci && npm run deploy -- --tag "$(git rev-parse origin/main)" --message "release $(git rev-parse --short origin/main)")
-(cd apps/push-relay && npm ci && npm run deploy)
+# Workers: one install at the repo root covers all of them.
+# Each Worker sends to Sentry only when deployed with SENTRY_RELEASE
+# (`workerSentryEnabled` in src/sentryScrub.ts), so pass the release the way
+# deploy-web.yml computes it, or production errors go unreported.
+npm ci
+version="$(git describe --tags --match 'v[0-9]*' 2>/dev/null | sed 's/^v//')"
+[ -n "$version" ] || version="$(node -p "require('./apps/desktop/package.json').version")"
+SENTRY_RELEASE="ade@$version"
+(cd apps/account-directory && npm run deploy:production:prepare && npm run deploy:production:upload -- --var "SENTRY_RELEASE:$SENTRY_RELEASE")
+(cd apps/webhook-relay && npm run deploy:prepare && npm run deploy:upload -- --var "SENTRY_RELEASE:$SENTRY_RELEASE")
+(cd apps/tunnel-relay && npm run deploy -- --tag "$(git rev-parse origin/main)" --message "release $(git rev-parse --short origin/main)" --var "SENTRY_RELEASE:$SENTRY_RELEASE")
+(cd apps/push-relay && SENTRY_RELEASE="$SENTRY_RELEASE" npm run deploy)
 ```
+
+A hand deploy uploads no source maps, so Sentry stacks from it stay minified
+until the next CI deploy.
 
 `deploy-web.yml` still runs the Pages step as floating `npx wrangler@4`
 (`.github/workflows/deploy-web.yml:77`), so CI and a hand deploy can be on
@@ -1368,9 +1385,11 @@ if a Pages deploy ever behaves differently by hand than in CI, check that first.
 
 What each entry point actually guards, so you know what you lose by bypassing it:
 
-- `apps/account-directory` `deploy:production` = `verify-deployment-config.mjs production`
-  (asserts `DIRECTORY_AUTH_SECRET` is bound and `PUSH_RELAY_URL` is set **for that
-  environment**) → `d1:migrate:production` → `wrangler deploy --env production`.
+- `apps/account-directory` `deploy:production` = `deploy:production:prepare`
+  (`verify-deployment-config.mjs production`, which asserts `DIRECTORY_AUTH_SECRET`
+  is bound and `PUSH_RELAY_URL` is set **for that environment**, then
+  `d1:migrate:production`) → `deploy:production:upload` (`wrangler deploy --env
+  production`). CI runs the two parts as two steps and retries only the upload.
   **Known coverage gap:** that preflight checks one of the four secrets and one
   of the four vars. `CLERK_JWKS_URL`, `CLERK_ISSUER`, `CLERK_OAUTH_CLIENT_ID`,
   `ONLINE_WINDOW_MS`, `WEB_CLIENT_ORIGIN`, and

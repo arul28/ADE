@@ -1,6 +1,8 @@
 /**
  * Keeps a cloud machine awake exactly while ADE is doing something on it, and
- * puts it to sleep three minutes after that stops.
+ * puts it to sleep three minutes after that stops. At that idle moment it
+ * first moves to its channel's newer image when it is behind (the server's
+ * `updates.ts`), and each brain start reports in, which settles an update.
  *
  * The one busy list lives here (`decideCloudBusy`). Unknown is busy.
  *
@@ -24,6 +26,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
 
 /** One ping a minute: a 5-minute timeout (the provider's shortest) survives four missed pings. */
 export const CLOUD_KEEP_AWAKE_INTERVAL_MS = 60_000;
@@ -41,8 +44,15 @@ const PING_TIMEOUT_MS = 10_000;
 export const CLOUD_IDLE_SLEEP_AFTER_MS = 3 * 60_000;
 /** A command or turn this silent, with nothing typed, counts as idle. */
 export const CLOUD_UNTOUCHED_IDLE_MS = 60 * 60_000;
+/**
+ * The early disk grow (it restarts the computer) waits this long after
+ * someone last used the computer, and for as long as a chat waits on them.
+ */
+export const CLOUD_EARLY_GROW_QUIET_MS = 5 * 60_000;
 /** A gap this many intervals long between checks means the machine was asleep. */
 const SLEEP_GAP_INTERVALS = 2.5;
+/** The longest wait between boot report tries after failures. */
+const BOOT_REPORT_RETRY_MAX_MS = 30 * 60_000;
 
 /** What the busy list reads, per runtime on this brain. */
 export type CloudBusyTerminal = {
@@ -53,6 +63,8 @@ export type CloudBusyTerminal = {
   atPrompt: boolean | null;
   /** The foreground process's name, or null. */
   foreground: string | null;
+  /** The foreground process's command line, or null (an older brain, or `/proc` hides it). */
+  foregroundArgs?: readonly string[] | null;
   lastOutputAt: number;
   lastInputAt: number;
 };
@@ -68,35 +80,62 @@ export type CloudBusyFacts = {
   chats: CloudBusyChat[];
   terminals: CloudBusyTerminal[];
   setupRunning: boolean;
+  /**
+   * New-lane launches still setting up (fetch, checkout, environment). They
+   * run git and setup commands outside any terminal or chat turn.
+   */
+  laneSetups?: number;
   /** A move, copy, resize or first clone in progress (`holdCloudBusy`). */
   holds: string[];
 };
 
 /** Names an agent CLI runs under when someone starts it by hand in a shell. */
-const AGENT_CLI_PROCESS_NAMES = new Set(["claude", "codex", "cursor-agent", "agent", "droid", "opencode", "muse"]);
+export const AGENT_CLI_PROCESS_NAMES: ReadonlySet<string> = new Set(["claude", "codex", "cursor-agent", "agent", "droid", "opencode", "muse"]);
 
-function terminalBusyReason(terminal: CloudBusyTerminal, now: number): "agent_cli" | "terminal" | null {
+/**
+ * An `ade` command that grows the disk itself and waits on it: `ade cloud
+ * resize --free|--disk`, or `ade android start` (its first boot grows a full
+ * disk). The grow must not wait on the terminal that asked for it.
+ */
+function isAdeDiskGrowCommand(args: readonly string[] | null | undefined): boolean {
+  if (!args?.length) return false;
+  const at = args.findIndex((arg) => /(?:^|[\\/])(?:ade|cli\.c?js)$/.test(arg));
+  if (at < 0) return false;
+  const rest = args.slice(at + 1);
+  const has = (domain: string, verb: string) => rest.some((arg, index) => arg === domain && rest[index + 1] === verb);
+  if (has("cloud", "resize")) return rest.some((arg) => /^--(?:free|need-free|disk)(?:=|$)/.test(arg));
+  return has("android", "start");
+}
+
+function terminalBusyReason(terminal: CloudBusyTerminal, now: number): "agent_cli" | "shell_agent_cli" | "disk_grow_command" | "terminal" | null {
   const untouched = now - Math.max(terminal.lastOutputAt, terminal.lastInputAt) >= CLOUD_UNTOUCHED_IDLE_MS;
   if (terminal.kind === "agent_cli" || (terminal.foreground != null && AGENT_CLI_PROCESS_NAMES.has(terminal.foreground))) {
     // An agent CLI's own screen moves (a spinner, a timer) while it works, and
     // stops at its prompt. `waiting-input` is it asking the person: idle.
-    return terminal.state === "running" && !untouched ? "agent_cli" : null;
+    if (terminal.state !== "running" || untouched) return null;
+    // ADE reopens only the agent CLI sessions it tracks after a restart; one
+    // started by hand in a shell is a command that a restart would cut.
+    return terminal.kind === "agent_cli" ? "agent_cli" : "shell_agent_cli";
   }
   // A plain shell: its pty's output-based state reads idle under a quiet
   // command (`sleep 300`, a slow build), so what's in the foreground decides.
   // Not knowing is a command running; only 60 silent minutes make that idle.
   if (terminal.atPrompt === true) return null;
-  return untouched ? null : "terminal";
+  if (untouched) return null;
+  return isAdeDiskGrowCommand(terminal.foregroundArgs) ? "disk_grow_command" : "terminal";
 }
 
 /**
  * The busy list. Busy: a running chat turn, a real running command, an agent CLI
- * actually working, setup, first clone, move, copy, resize. Idle: a shell at its
+ * actually working, setup, a new lane setting up, first clone, move, copy, resize. Idle: a shell at its
  * prompt, an agent CLI at its prompt, a chat waiting on approval (answering wakes
  * it), and a command or turn with no output and no touch for an hour. Someone
  * watching a tool (`noteUse`) and a timer due soon are added by the keep-awake.
  */
-export function decideCloudBusy(facts: CloudBusyFacts, now: number): { busy: boolean; reasons: string[] } {
+export function decideCloudBusy(
+  facts: CloudBusyFacts,
+  now: number,
+): { busy: boolean; reasons: string[]; waitingOnPerson: boolean } {
   const reasons = new Set<string>();
   for (const chat of facts.chats) {
     if (!chat.waitingOnPerson && now - chat.lastActivityAt < CLOUD_UNTOUCHED_IDLE_MS) reasons.add("chat");
@@ -106,20 +145,35 @@ export function decideCloudBusy(facts: CloudBusyFacts, now: number): { busy: boo
     if (reason) reasons.add(reason);
   }
   if (facts.setupRunning) reasons.add("setup");
+  if ((facts.laneSetups ?? 0) > 0) reasons.add("lane_setup");
   for (const hold of facts.holds) reasons.add(hold);
-  return { busy: reasons.size > 0, reasons: [...reasons] };
+  return { busy: reasons.size > 0, reasons: [...reasons], waitingOnPerson: facts.chats.some((chat) => chat.waitingOnPerson) };
 }
 
 export type CloudKeepAwakeBusy = {
   busy: boolean;
-  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "setup", "move", "copy", "first_clone", "schedule", "in_use". */
+  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "shell_agent_cli" (one started by hand in a shell), "disk_grow_command" (an `ade` command waiting on its own disk grow), "setup", "lane_setup", "move", "copy", "first_clone", "lane_launch", "schedule", "in_use". */
   reasons: string[];
   /** When the machine's next timer is due (a scheduled wake-up, an automation), or null. */
   nextWakeAt?: number | null;
+  /** A chat's turn is stopped on the person's approval or question (idle, but they'd lose the card to a restart). */
+  waitingOnPerson?: boolean;
 };
 
 /** What the account server is asked to do: wake this machine at `at`, or nothing. */
 export type CloudTimedWake = { instanceId: string; url: string; at: number } | { instanceId: string; clear: true };
+
+/** The keep-awake's own idle clock after a check, for the status menu (`cloudActivityReporter.ts`). */
+export type CloudIdleFacts = {
+  /** What this check counted as work: the busy list, someone's use, a timer due soon. */
+  busy: boolean;
+  /** When the machine last had work, while it is idle; null while busy. */
+  idleSince: number | null;
+  /** The check that will ask the server to sleep it, unless work comes first; null while busy or with no sleep ask. */
+  sleepsAt: number | null;
+  /** The first check of this stretch awake (the brain's start, or the check after a wake). */
+  awakeSince: number;
+};
 
 export type CloudKeepAwakeOptions = {
   env?: NodeJS.ProcessEnv;
@@ -128,9 +182,57 @@ export type CloudKeepAwakeOptions = {
   /** Sends the next timer to ADE's account server (it wakes the machine then). Rejects when it couldn't. */
   sendTimedWake?: (wake: CloudTimedWake) => Promise<void>;
   /** Asks ADE's server to sleep this machine now (three minutes idle). Rejects when it couldn't; the provider's timer is the backstop. */
-  requestIdleSleep?: (instanceId: string) => Promise<void>;
+  /** `backupReportId`: the save just before said every lane is saved; the computer rests with it. */
+  requestIdleSleep?: (instanceId: string, extras?: { backupReportId: string | null }) => Promise<void>;
   /** Grows the disk if it's near full (it restarts the machine). True when it did, so sleep waits for the restart. */
-  growDiskIfNeeded?: (stillIdle: () => boolean) => Promise<boolean>;
+  growDiskIfNeeded?: (stillIdle: () => boolean | Promise<boolean>) => Promise<boolean>;
+  /**
+   * The disk is close to the storage guard's stop line (a local read, no
+   * server call): grow at the next check that finds nothing really running,
+   * not at the three-minute idle point, so the grow comes before the guard
+   * refuses a turn. Someone's use alone (`in_use`, a refused send, a watched
+   * tool) doesn't keep it busy, but a use in the last
+   * {@link CLOUD_EARLY_GROW_QUIET_MS} or a chat waiting on the person holds
+   * the restart back.
+   */
+  diskGrowDueNow?: () => boolean;
+  /**
+   * Moves the machine to its channel's newer image when the server says it is
+   * behind (it restarts the machine). True when an update started, so sleep
+   * waits for the restart. Runs before the disk grow, at the same idle moment.
+   */
+  updateIfBehind?: (stillIdle: () => boolean) => Promise<boolean>;
+  /**
+   * Sends the server when the machine last had work and, now and then, what
+   * uses its disk (the dashboard reads both without a wake). Runs at the idle
+   * moment, after the disk grow and before the sleep; a failure never holds
+   * the sleep back. `lastWorkAt` is null when nothing ran since this brain started.
+   */
+  reportUse?: (lastWorkAt: number | null, stillIdle: () => boolean) => Promise<void>;
+  /**
+   * Saves what a client reads while the machine rests (`cloudRestSave.ts`:
+   * the lane backups, the chats' last parts, shell and CLI copies, Git
+   * summaries). Runs at the idle moment, before `reportUse`; it stops early
+   * once someone uses the machine, and a failure never holds the sleep back.
+   * Answers the backup report id when every lane is saved, for the sleep.
+   */
+  saveForRest?: (stillIdle: () => boolean) => Promise<string | null | void>;
+  /**
+   * The machine woke from a sleep (or the brain's checks stopped for a long
+   * gap). Called once per wake, at the first check after it. Never throws.
+   */
+  onWoke?: () => void;
+  /**
+   * Tells the server this brain started, which settles a waiting update.
+   * `sleepWhenIdle`: the machine woke only for that update, so it sleeps at
+   * its first idle check instead of after three minutes. Rejects to be tried
+   * again at the next check.
+   */
+  reportBooted?: () => Promise<{ sleepWhenIdle: boolean }>;
+  /** The idle clock after each check (and after a boot report moves it). Never throws. */
+  onIdleFacts?: (facts: CloudIdleFacts) => void;
+  /** Each check's moment and busy reasons, for the sustained-CPU watch (`cloudSustainedCpu.ts`). Never throws. */
+  sampleCpu?: (at: number, reasons: readonly string[]) => void;
   fetch?: (url: string, init: { method: string; signal: AbortSignal }) => Promise<{ status: number }>;
   logger?: {
     info(event: string, data?: unknown): void;
@@ -160,11 +262,6 @@ export function cloudKeepAwakePaths(adeHome: string) {
   return { dir, wakeUrl: path.join(dir, "wake.json"), state: path.join(dir, "keep-awake.json") };
 }
 
-/** Whether this brain runs on a cloud machine (the machine template sets the variable). */
-export function isCloudMachine(env: NodeJS.ProcessEnv = process.env): boolean {
-  return /^[a-z0-9]{10}$/.test(env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "");
-}
-
 /** The machine's wake URL, only when it was written for this machine (a forked disk carries its source's). */
 function readWakeUrl(file: string, instanceId: string): string | null {
   try {
@@ -178,7 +275,7 @@ function readWakeUrl(file: string, instanceId: string): string | null {
 
 export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepAwake {
   const env = options.env ?? process.env;
-  const enabled = isCloudMachine(env);
+  const enabled = isAdeCloudComputer(env);
   const instanceId = env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
   const paths = cloudKeepAwakePaths(options.adeHome);
   const intervalMs = Math.max(1_000, options.intervalMs ?? CLOUD_KEEP_AWAKE_INTERVAL_MS);
@@ -198,11 +295,81 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   let sentWake: string | null = null;
   /** The last moment the machine had work. Starts at boot: a fresh machine gets the full three minutes. */
   let lastBusyAt = now();
+  /** The last moment someone used the machine (`noteUse`), for the early grow. */
+  let lastUseAt: number | null = null;
+  /** The last moment real work ran (never the boot itself), for `reportUse`. */
+  let lastWorkAt: number | null = null;
   let lastTickAt: number | null = null;
+  /** The first check of this stretch awake, for `onIdleFacts`. */
+  let awakeSince = lastBusyAt;
   /** The last check found work. */
   let wasBusy = false;
   /** Asked the server to sleep this machine; the next check runs after a wake, or a failed ask. */
   let askedToSleep = false;
+  /** When the open idle-sleep ask went out; a wake long after it means the ask worked. */
+  let sleepAskedAt: number | null = null;
+  /** The boot report reached the server (or there is none to send); one in flight at a time. */
+  let bootReported = !options.reportBooted;
+  let bootReporting = false;
+  /** After a failure the next try waits, doubling up to half an hour. */
+  let bootReportFailures = 0;
+  let bootReportRetryAt = 0;
+
+  /** Once per brain start, beside the checks: a slow server must not hold a busy machine's ping back. */
+  const reportBoot = (): void => {
+    if (bootReported || bootReporting || !options.reportBooted || now() < bootReportRetryAt) return;
+    bootReporting = true;
+    void options.reportBooted().then(
+      ({ sleepWhenIdle }) => {
+        bootReported = true;
+        options.logger?.info("cloud.boot_reported", { sleepWhenIdle });
+        // Woken only for an update: the next idle check may sleep it at once.
+        if (sleepWhenIdle && !wasBusy) {
+          lastBusyAt = Math.min(lastBusyAt, now() - CLOUD_IDLE_SLEEP_AFTER_MS);
+          emitIdleFacts();
+        }
+      },
+      (error: unknown) => {
+        // A server without the boot report (404) never gets one: stop for this brain's life.
+        if ((error as { status?: unknown } | null)?.status === 404) {
+          bootReported = true;
+          options.logger?.info("cloud.boot_report_unsupported", {});
+          return;
+        }
+        bootReportFailures += 1;
+        bootReportRetryAt = now() + Math.min(BOOT_REPORT_RETRY_MAX_MS, intervalMs * 2 ** (bootReportFailures - 1));
+        if (bootReportFailures === 1 || bootReportFailures % 10 === 0) {
+          options.logger?.warn("cloud.boot_report_failed", { error: error instanceof Error ? error.message : String(error), failures: bootReportFailures });
+        }
+      },
+    ).finally(() => {
+      bootReporting = false;
+    });
+  };
+
+  /**
+   * The idle clock as `sleepIfIdleLongEnough` reads it: it asks for the sleep
+   * at the first check (one every interval after the last) at least
+   * {@link CLOUD_IDLE_SLEEP_AFTER_MS} (less its 5 s slack) after the last work.
+   */
+  const emitIdleFacts = (): void => {
+    if (!options.onIdleFacts || lastTickAt == null) return;
+    const idleSince = wasBusy ? null : lastBusyAt;
+    let sleepsAt: number | null = null;
+    if (idleSince != null && options.requestIdleSleep) {
+      const due = idleSince + CLOUD_IDLE_SLEEP_AFTER_MS - 5_000;
+      sleepsAt = lastTickAt + Math.max(0, Math.ceil((due - lastTickAt) / intervalMs)) * intervalMs;
+      // Sent between checks (a boot report after one): a check that already
+      // passed asks nothing more, so the next one is when it sleeps.
+      const at = now();
+      if (sleepsAt < at - 1_000) sleepsAt += Math.ceil((at - sleepsAt) / intervalMs) * intervalMs;
+    }
+    try {
+      options.onIdleFacts({ busy: wasBusy, idleSince, sleepsAt, awakeSince });
+    } catch (error) {
+      options.logger?.warn("cloud.idle_facts_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
 
   /** Sends the next timer when it changed; true when the server holds it. */
   const syncTimedWake = async (url: string | null, nextWakeAt: number | null): Promise<boolean> => {
@@ -258,23 +425,92 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
     }
   };
 
-  /** Three minutes with no work: a grow if the disk is near full, else ask the server to sleep the machine. */
-  const sleepIfIdleLongEnough = async (at: number): Promise<void> => {
+  /**
+   * Three minutes with no work: an update or a grow if one is due, else ask
+   * the server to sleep the machine. Both restart the machine, so neither
+   * starts while a chat waits on the person (a restart would lose their
+   * approval card or question); the sleep still goes ahead.
+   */
+  const sleepIfIdleLongEnough = async (at: number, waitingOnPerson: boolean): Promise<void> => {
     // Checks land a few milliseconds around each minute; that shouldn't cost a whole extra minute.
     if (!options.requestIdleSleep || at - lastBusyAt < CLOUD_IDLE_SLEEP_AFTER_MS - 5_000) return;
     askedToSleep = true;
     try {
-      if (await options.growDiskIfNeeded?.(() => !usedSinceTick)) return;
-      // Work noted while the disk check ran wins: sleep waits for the next idle stretch.
-      if (usedSinceTick) {
+      // An image behind its channel's goes first: the update restarts the
+      // machine, and the new brain sleeps it once it is idle again. A failed
+      // check (an older server) never stands in the way of the sleep.
+      const updating = waitingOnPerson ? false : await options.updateIfBehind?.(() => !usedSinceTick).catch((error: unknown) => {
+        options.logger?.warn("cloud.idle_update_check_failed", { error: error instanceof Error ? error.message : String(error) });
+        return false;
+      });
+      if (updating) {
+        options.logger?.info("cloud.idle_update_started", { idleMs: at - lastBusyAt });
+        return;
+      }
+      if (!waitingOnPerson && await options.growDiskIfNeeded?.(() => !usedSinceTick)) return;
+      const backupReportId = await options.saveForRest?.(() => !usedSinceTick).catch((error: unknown) => {
+        options.logger?.warn("cloud.idle_rest_save_failed", { error: error instanceof Error ? error.message : String(error) });
+        return null;
+      }) ?? null;
+      await options.reportUse?.(lastWorkAt, () => !usedSinceTick).catch((error: unknown) => {
+        options.logger?.warn("cloud.idle_use_report_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
+      // Work noted while the save ran wins: sleep waits for the next idle stretch.
+      // Busy is read again too: work that started during the save may not be in it.
+      const busyAfterSave = usedSinceTick ? true : await options.readBusy().then((busy) => busy.busy, () => true);
+      if (usedSinceTick || busyAfterSave) {
         askedToSleep = false;
         return;
       }
-      await options.requestIdleSleep(instanceId);
+      // The report counts only for a sleep with no use since it: `usedSinceTick` is false here.
+      sleepAskedAt = now();
+      await options.requestIdleSleep(instanceId, { backupReportId });
       options.logger?.info("cloud.idle_sleep_requested", { idleMs: at - lastBusyAt });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // The server sleeps the machine while this ask is still open, so its
+      // answer is lost and the ask times out seconds after the next wake. A
+      // gap that long means the machine slept: the ask worked.
+      if (sleepAskedAt != null && now() - sleepAskedAt > intervalMs * SLEEP_GAP_INTERVALS) {
+        options.logger?.info("cloud.idle_sleep_answer_lost_to_sleep", { askedMsAgo: now() - sleepAskedAt });
+        return;
+      }
       // The provider's own timer still sleeps it a couple of minutes later.
-      options.logger?.warn("cloud.idle_sleep_failed", { error: error instanceof Error ? error.message : String(error) });
+      options.logger?.warn("cloud.idle_sleep_failed", { error: message });
+    } finally {
+      sleepAskedAt = null;
+    }
+  };
+
+  /**
+   * The early grow (`diskGrowDueNow`): only when nothing but someone's use
+   * keeps the machine busy, nobody used it in the last
+   * {@link CLOUD_EARLY_GROW_QUIET_MS}, and no chat waits on the person (a
+   * restart would lose their approval card or their shell), checked again
+   * right before the grow. True when a grow started (the machine restarts).
+   */
+  const growDiskEarlyIfDue = async (state: CloudKeepAwakeBusy): Promise<boolean> => {
+    if (!options.growDiskIfNeeded || !options.diskGrowDueNow?.()) return false;
+    if (!state.reasons.every((reason) => reason === "in_use")) return false;
+    const quiet = (): boolean => lastUseAt == null || now() - lastUseAt >= CLOUD_EARLY_GROW_QUIET_MS;
+    if (state.waitingOnPerson || !quiet()) return false;
+    const nothingRuns = async (): Promise<boolean> => {
+      if (usedSinceTick || !quiet()) return false;
+      try {
+        const busy = await options.readBusy();
+        return !busy.busy && !busy.waitingOnPerson;
+      } catch (error) {
+        options.logger?.warn("cloud.disk_grow_early_busy_read_failed", { error: error instanceof Error ? error.message : String(error) });
+        return false;
+      }
+    };
+    try {
+      const grew = await options.growDiskIfNeeded(nothingRuns);
+      if (grew) options.logger?.info("cloud.disk_grow_early", { reasons: state.reasons });
+      return grew;
+    } catch (error) {
+      options.logger?.warn("cloud.disk_grow_early_failed", { error: error instanceof Error ? error.message : String(error) });
+      return false;
     }
   };
 
@@ -284,6 +520,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   const tick = async (): Promise<void> => {
     if (!enabled || ticking || disposed) return;
     ticking = true;
+    reportBoot();
     try {
       const url = readWakeUrl(paths.wakeUrl, instanceId);
       let state: CloudKeepAwakeBusy;
@@ -317,14 +554,33 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       // minutes. A short sleep leaves no gap, so a check after an ask counts too.
       if (askedToSleep || (lastTickAt != null && at - lastTickAt > intervalMs * SLEEP_GAP_INTERVALS)) {
         lastBusyAt = at;
+        awakeSince = at;
         askedToSleep = false;
+        // A wake: messages queued while it slept go now (`cloudChatMessageQueue.ts`).
+        try {
+          options.onWoke?.();
+        } catch (error) {
+          options.logger?.warn("cloud.on_woke_failed", { error: error instanceof Error ? error.message : String(error) });
+        }
       }
       lastTickAt = at;
       // Work ends between checks. The first idle check still counts it, so a
       // machine sleeps at least three minutes after its last work, never less.
       if (state.busy || wasBusy) lastBusyAt = at;
+      if (state.busy) lastWorkAt = at;
       wasBusy = state.busy;
-      if (!state.busy) await sleepIfIdleLongEnough(at);
+      try {
+        options.sampleCpu?.(at, state.reasons);
+      } catch (error) {
+        options.logger?.warn("cloud.cpu_sample_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+      emitIdleFacts();
+      if (await growDiskEarlyIfDue(state)) {
+        lastBusyAt = now();
+        emitIdleFacts();
+      } else if (!state.busy) {
+        await sleepIfIdleLongEnough(at, state.waitingOnPerson === true);
+      }
       if (!url && state.busy && !warnedNoUrl) {
         warnedNoUrl = true;
         options.logger?.info("cloud.keep_awake_no_wake_url", {});
@@ -361,6 +617,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       if (!enabled) return;
       usedSinceTick = true;
       lastBusyAt = now();
+      lastWorkAt = lastBusyAt;
+      lastUseAt = lastBusyAt;
       if (pingIsDue()) await tick();
     },
     tick,
@@ -419,7 +677,12 @@ export function cloudBusyHolds(adeHome: string, now: number = Date.now()): strin
   return reasons;
 }
 
-/** The ready machine's setup job is running (cloudReadyMachines.ts writes it, the entrypoint runs it). */
+/**
+ * The template's setup job is running (`$ADE_HOME/ready/job.sh`, which the entrypoint runs). Only an older
+ * ADE's ready machines wrote one; ADE no longer does, so on a new computer this is false.
+ * Remove after 2026-12-31, with the template's `ready/job.sh` hook
+ * (`infra/ade-cloud/template/ade-entrypoint.sh`): by then no computer an older ADE prepared is left.
+ */
 export function cloudReadySetupRunning(adeHome: string): boolean {
   const dir = path.join(adeHome, "ready");
   return fs.existsSync(path.join(dir, "job.started")) && !fs.existsSync(path.join(dir, "job.exit"));

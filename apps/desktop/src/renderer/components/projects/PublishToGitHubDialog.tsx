@@ -17,6 +17,7 @@ import { GITHUB_OWNER_NOT_FOUND_CODE } from "../../../shared/githubApiPath";
 import { Dialog, type DialogAction } from "../ui/dialog";
 import { Banner, noticeKindModel, type NoticeKind } from "../ui/notice";
 import "./PublishToGitHubDialog.css";
+import { useOnlineCopyPins } from "../../state/repositoryScope";
 
 const GITHUB_CLASSIC_TOKEN_NEW_URL =
   "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow";
@@ -124,6 +125,11 @@ export function PublishToGitHubDialog({
   defaultRepoName,
   onPublished,
 }: PublishToGitHubDialogProps) {
+  // Publish is offered for a project with no GitHub remote, which has one
+  // copy: the tab's. Every call goes to that copy's machine.
+  const pin = useOnlineCopyPins(open)[0] ?? null;
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
   const [owner, setOwner] = useState("");
   const [name, setName] = useState(defaultRepoName);
   const [description, setDescription] = useState("");
@@ -160,7 +166,8 @@ export function PublishToGitHubDialog({
     setTokenSaving(false);
     setTokenError(null);
     setStoreUnreadable(false);
-    void window.ade.github.getStatus({ forceRefresh: false }).then((status) => {
+    if (!pinRef.current) return undefined;
+    void window.ade.github.getStatus({ forceRefresh: false }, pinRef.current).then((status) => {
       if (cancelled) return;
       const login = publishLogin(status);
       // The status read can land after the user has typed an owner; keep theirs.
@@ -172,16 +179,16 @@ export function PublishToGitHubDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, defaultRepoName]);
+  }, [open, defaultRepoName, pin?.key]);
 
   const ownerValidation = useMemo(() => validateOwner(owner), [owner]);
   const validation = useMemo(() => validateRepoName(name), [name]);
   const trimmedOwner = owner.trim();
   const trimmedName = name.trim();
-  const canSubmit = ownerValidation.ok && validation.ok && !pending;
+  const canSubmit = ownerValidation.ok && validation.ok && !pending && pin != null;
 
   const handleSubmit = useCallback(async () => {
-    if (!ownerValidation.ok || !validation.ok || pending) return;
+    if (!ownerValidation.ok || !validation.ok || pending || !pin) return;
     setPending(true);
     setError(null);
     try {
@@ -190,7 +197,7 @@ export function PublishToGitHubDialog({
         name: trimmedName,
         description: description.trim() || undefined,
         isPrivate,
-      });
+      }, pin);
       setPublishedPrivate(isPrivate);
       setSuccess(result);
     } catch (err) {
@@ -200,7 +207,7 @@ export function PublishToGitHubDialog({
         // unreadable store looks like, and the answer to that one is repair,
         // not a replacement token.
         const status = await window.ade.github
-          .getStatus({ forceRefresh: true })
+          .getStatus({ forceRefresh: true }, pin)
           .catch(() => null);
         if (status) setStoreUnreadable(status.credentialStoreUnreadable === true);
         setConnectMode(true);
@@ -219,7 +226,7 @@ export function PublishToGitHubDialog({
     } finally {
       setPending(false);
     }
-  }, [description, isPrivate, ownerValidation.ok, pending, trimmedName, trimmedOwner, validation.ok]);
+  }, [description, isPrivate, ownerValidation.ok, pending, pin, trimmedName, trimmedOwner, validation.ok]);
 
   const handleSaveToken = useCallback(async () => {
     const token = tokenDraft.trim();
@@ -230,7 +237,7 @@ export function PublishToGitHubDialog({
     setTokenSaving(true);
     setTokenError(null);
     try {
-      const result = await window.ade.github.setToken(token);
+      const result = await window.ade.github.setToken(token, pin);
       const verification = describeGithubPatVerification(result);
       if (!verification.verified) {
         setTokenError({ message: verification.message, kind: "hint" });
@@ -238,7 +245,7 @@ export function PublishToGitHubDialog({
       }
       setTokenDraft("");
       setConnectMode(false);
-      void window.ade.github.getStatus({ forceRefresh: true }).then((status) => {
+      void window.ade.github.getStatus({ forceRefresh: true }, pin).then((status) => {
         const login = publishLogin(status);
         if (login) setOwner((current) => (current.trim() ? current : login));
       }).catch(() => {});
@@ -247,7 +254,7 @@ export function PublishToGitHubDialog({
     } finally {
       setTokenSaving(false);
     }
-  }, [tokenDraft]);
+  }, [pin, tokenDraft]);
 
   // After a failed publish, put the cursor where the fix goes. The fields are
   // disabled while publishing, so this waits for `pending` to clear.

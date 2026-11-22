@@ -77,10 +77,41 @@ struct AccountLocalSignOutState {
 
   func suppress() {
     defaults.set(true, forKey: Self.suppressionKey)
+    // Written through before the next step, so an app kill keeps it.
+    defaults.synchronize()
   }
 
   func clearAfterInteractiveSignIn() {
     defaults.removeObject(forKey: Self.suppressionKey)
+  }
+}
+
+/// A sign-out that began and whose local half did not finish. `signOut()`
+/// writes it before its first step, so an app kill or a crash at any later
+/// point leaves it, and the next launch finishes that sign-out
+/// (`AccountService.finishInterruptedSignOutIfNeeded`). The value is the
+/// account that signed out, empty when the phone did not know it.
+struct AccountSignOutProgress {
+  static let key = "ade.account.sign-out-in-progress.v1"
+
+  private let defaults: UserDefaults
+
+  init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
+
+  var pendingOwnerId: String? {
+    defaults.string(forKey: Self.key)
+  }
+
+  func begin(ownerId: String?) {
+    defaults.set(ownerId ?? "", forKey: Self.key)
+    // Written through before the first sign-out step, so an app kill keeps it.
+    defaults.synchronize()
+  }
+
+  func finish() {
+    defaults.removeObject(forKey: Self.key)
   }
 }
 
@@ -162,24 +193,32 @@ struct AccountDeviceOwnershipStore {
   }
 
   var state: AccountDeviceOwnershipState {
-    let sharedState: AccountDeviceOwnershipState
+    resolved().state
+  }
+
+  /// The state, and whether both stored copies (App Group defaults and the
+  /// Keychain epoch) already hold it.
+  private func resolved() -> (state: AccountDeviceOwnershipState, stored: Bool) {
+    var savedState: AccountDeviceOwnershipState?
     if let data = defaults.data(forKey: key),
        let decoded = try? JSONDecoder().decode(AccountDeviceOwnershipState.self, from: data),
        Self.isValid(epoch: decoded.ownershipEpoch) {
-      sharedState = decoded
+      savedState = decoded
+    }
+    let sharedState = savedState ?? AccountDeviceOwnershipState(ownershipEpoch: 1, ownerId: nil)
+    let deviceId = normalizedDurableDeviceId
+    let durableEpoch = deviceId.flatMap(loadDurableEpoch).flatMap { Self.isValid(epoch: $0) ? $0 : nil }
+    let state: AccountDeviceOwnershipState
+    if let durableEpoch, durableEpoch > sharedState.ownershipEpoch {
+      // App Group defaults are removed on reinstall while the Keychain device
+      // identity survives. Recover the epoch high-water mark, but never infer an
+      // owner from stale defaults; the next signed-in transition advances it.
+      state = AccountDeviceOwnershipState(ownershipEpoch: durableEpoch, ownerId: nil)
     } else {
-      sharedState = AccountDeviceOwnershipState(ownershipEpoch: 1, ownerId: nil)
+      state = sharedState
     }
-    guard let deviceId = normalizedDurableDeviceId,
-          let durableEpoch = loadDurableEpoch(deviceId),
-          Self.isValid(epoch: durableEpoch),
-          durableEpoch > sharedState.ownershipEpoch else {
-      return sharedState
-    }
-    // App Group defaults are removed on reinstall while the Keychain device
-    // identity survives. Recover the epoch high-water mark, but never infer an
-    // owner from stale defaults; the next signed-in transition advances it.
-    return AccountDeviceOwnershipState(ownershipEpoch: durableEpoch, ownerId: nil)
+    let stored = savedState == state && (deviceId == nil || durableEpoch == state.ownershipEpoch)
+    return (state, stored)
   }
 
   /// Commits the account boundary before any network request is allowed to use
@@ -190,9 +229,12 @@ struct AccountDeviceOwnershipStore {
     let normalizedOwnerId = ownerId?
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let resolvedOwnerId = normalizedOwnerId?.isEmpty == false ? normalizedOwnerId : nil
-    let current = state
+    let (current, stored) = resolved()
     guard current.ownerId != resolvedOwnerId else {
-      persist(current)
+      // Every Clerk auth event (each token refresh) repeats the same owner.
+      // Rewriting unchanged copies cost a defaults sync and a Keychain update
+      // on the main thread each time; one held it for 47 s (ADE-IOS-28).
+      if !stored { persist(current) }
       return current
     }
     let nextEpoch = min(
@@ -832,6 +874,16 @@ final class AccountService: ObservableObject {
   func seedPreviewMachines(_ previewMachines: [AccountMachine]) {
     machines = previewMachines
   }
+
+  /// A fixture screen's signed-in account. Clerk is never configured there,
+  /// so every path that reads `Clerk.shared` checks this and stops first.
+  private(set) var isPreviewSeeded = false
+
+  func seedPreviewSignedIn(_ previewIdentity: AccountIdentity) {
+    isPreviewSeeded = true
+    identity = previewIdentity
+    phase = .signedIn
+  }
 #endif
 
   /// The account-directory row for a saved fleet key (`machine:<deviceId>`),
@@ -841,6 +893,34 @@ final class AccountService: ObservableObject {
     guard let fleetKey,
           let identity = HiddenMachineStore.identity(fromFleetKey: fleetKey) else { return nil }
     return machines.first { $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame }
+  }
+
+  /// The account machine key of a fleet key: from the loaded list, else from
+  /// the last list this account loaded. A launch that cannot reach the
+  /// account still knows which saved project copy is which connected
+  /// computer, so no computer counts twice.
+  func accountMachineKey(forFleetKey fleetKey: String?) -> String? {
+    if let machine = machine(forFleetKey: fleetKey) { return machine.machineKey }
+    guard let fleetKey, let ownerId = identity?.userId else { return nil }
+    return rememberedFleetKeys(ownerId: ownerId)[fleetKey]
+  }
+
+  private static func fleetKeyMapDefaultsKey(ownerId: String) -> String {
+    "ade.account.fleetKeyMap.v1.\(ownerId)"
+  }
+
+  private func rememberedFleetKeys(ownerId: String) -> [String: String] {
+    UserDefaults.standard.dictionary(forKey: Self.fleetKeyMapDefaultsKey(ownerId: ownerId)) as? [String: String] ?? [:]
+  }
+
+  private func rememberFleetKeys(of machines: [AccountMachine], ownerId: String) {
+    var map: [String: String] = [:]
+    for machine in machines {
+      guard let deviceId = machine.deviceId?.trimmingCharacters(in: .whitespacesAndNewlines), !deviceId.isEmpty else { continue }
+      map[HiddenMachineStore.fleetKey(deviceId: deviceId)] = machine.machineKey
+    }
+    guard map != rememberedFleetKeys(ownerId: ownerId) else { return }
+    UserDefaults.standard.set(map, forKey: Self.fleetKeyMapDefaultsKey(ownerId: ownerId))
   }
 
   @Published private(set) var authenticationOutcome: AccountAuthenticationOutcome = .unknown
@@ -862,6 +942,11 @@ final class AccountService: ObservableObject {
   private let directory = AccountDirectoryClient()
   private let attentionRelay = AccountAttentionRelayClient()
   private let localSignOutState = AccountLocalSignOutState()
+  private let signOutProgress = AccountSignOutProgress()
+  /// The account whose data this phone holds (the local copy, the saved
+  /// lists, the chat logs). Kept while a session only expires; another
+  /// account that signs in first removes that data. Removed by a sign-out.
+  static let localDataOwnerKey = "ade.account.local-data-owner.v1"
   private let deviceRevocationStore = AccountDeviceRevocationStore()
   private let deviceOwnershipStore = AccountDeviceOwnershipStore()
   private var pairingAuthorizationGeneration: UInt64 = 0
@@ -882,6 +967,7 @@ final class AccountService: ObservableObject {
   private let accountPreferencesQueue =
     LatestAccountRegistrationQueue<AccountAttentionDevicePreferencesRequest>()
   private let deviceKeychain = KeychainService()
+  private var keychainRetryObserver: NSObjectProtocol?
 
   var isConfigured: Bool { phase != .unconfigured }
   var isSignedIn: Bool { phase == .signedIn }
@@ -923,6 +1009,20 @@ final class AccountService: ObservableObject {
   func bootstrap() async {
     guard !didConfigure else { return }
     didConfigure = true
+#if DEBUG
+    // `-adeLiveAccountFixture <state>`: the full app (live pairing and sync)
+    // over a fixture account, so a paired dev test machine can be checked
+    // against an account list with no Clerk and no account directory.
+    if let state = HubAccountPreviewData.liveFixtureState {
+      HubAccountPreviewData.seed(state: state)
+      // The access gate never shows over a seeded account, so a launch
+      // `-adePairingLink` goes to Settings, which opens it like a scanned code.
+      if let raw = UserDefaults.standard.string(forKey: "adePairingLink"), !raw.isEmpty {
+        SyncService.shared?.requestedPairingQrNavigation = PairingQrNavigationRequest(raw: raw)
+      }
+      return
+    }
+#endif
     guard let key = AccountConfig.clerkPublishableKey else {
       phase = .unconfigured
       ProductAnalytics.shared.captureColdStart(afterReconcilingAccount: nil)
@@ -935,6 +1035,9 @@ final class AccountService: ObservableObject {
     // a determinate signed-in / signed-out state.
     Clerk.configure(publishableKey: key)
     observeAuthEvents()
+    // A sign-out an app kill stopped finishes before anything reads the
+    // account's data (SyncService's init ran it already when it could).
+    finishInterruptedSignOutIfNeeded()
     // A cached session shows at once. With none hydrated yet, the phase stays
     // `.loading` until the refresh below answers: publishing `.signedOut` here
     // made the launch gate settle on "signed out" (it decides once), so a
@@ -942,6 +1045,12 @@ final class AccountService: ObservableObject {
     // still being restored. A paired phone can still continue while loading.
     if accountSessionStatusAllowsAccess(Clerk.shared.session?.status), Clerk.shared.user != nil {
       syncFromClerk()
+    } else if !localSignOutState.isSuppressed, let ownerId = deviceOwnershipStore.state.ownerId {
+      // The phone has an owner but Clerk has not restored the session yet.
+      // The Hub lists that account's saved projects meanwhile: with no
+      // account list it falls back to every folder of every computer it
+      // reaches. A refresh that answers signed out deletes the list.
+      AccountProjectStore.shared.activate(userId: ownerId, beforeSession: true)
     }
 
     do {
@@ -950,6 +1059,9 @@ final class AccountService: ObservableObject {
     } catch {
       // Offline / transient — cached state (if any) still stands.
     }
+    // The person signed out here, but the sign-out stopped before Clerk
+    // ended its session: end it now, so the next sign-in is not refused.
+    await endStaleClerkSessionIfNeeded()
     syncFromClerk()
     ProductAnalytics.shared.captureColdStart(
       afterReconcilingAccount: phase == .signedIn ? identity?.userId : nil
@@ -1008,6 +1120,22 @@ final class AccountService: ObservableObject {
         SyncService.shared?.machineFleet?.reset()
       }
       deviceOwnershipStore.transition(to: nextIdentity.userId)
+      // The data on disk is another account's (a sign-out that never
+      // finished, or an expired session followed by another account): it
+      // leaves before this account's lists load.
+      let dataOwner = UserDefaults.standard.string(forKey: Self.localDataOwnerKey)
+      if let dataOwner, !dataOwner.isEmpty, dataOwner != nextIdentity.userId {
+        purgeOwnerLocalData(dataOwner)
+        SyncService.shared?.removeFormerAccountData(keepingOwnerId: nextIdentity.userId)
+      } else if dataOwner == nil {
+        // Earlier builds did not record the owner, so what is on disk may be
+        // left from another account's interrupted sign-out.
+        SyncService.shared?.removeCachesOfUnknownOwner(keepingOwnerId: nextIdentity.userId)
+        HubLayoutStore.removeAccountLayouts(keepingUserId: nextIdentity.userId)
+      }
+      if dataOwner != nextIdentity.userId {
+        UserDefaults.standard.set(nextIdentity.userId, forKey: Self.localDataOwnerKey)
+      }
       // A live signed-in owner has committed the account boundary, including
       // non-interactive Clerk session restoration.
       isEndingAccountOwnership = false
@@ -1018,6 +1146,12 @@ final class AccountService: ObservableObject {
       }
       SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nextIdentity.userId)
       identity = nextIdentity
+      // The account's saved project list shows at once, before any read.
+      AccountProjectStore.shared.activate(userId: nextIdentity.userId)
+      // The account's GitHub sign-in: another account's cached token is dropped.
+      GitHubAccountConnection.shared.activate(userId: nextIdentity.userId)
+      // Passwords: another account's vault key leaves this device.
+      PasswordsVault.shared.activate(userId: nextIdentity.userId)
       ProductAnalytics.shared.identifyAccount(nextIdentity.userId)
       SessionReplay.syncIdentity()
       if phase != .signedIn {
@@ -1044,7 +1178,8 @@ final class AccountService: ObservableObject {
           await PushNotificationService.shared.resumeAccountRegistrationIfAuthorized()
           async let machines: Void = self.loadMachines()
           async let attention: Void = self.refreshAttentionSnapshot()
-          _ = await (machines, attention)
+          async let projects: Void = AccountProjectStore.shared.refresh()
+          _ = await (machines, attention, projects)
           await LiveActivityService.shared.handleAccountSignIn()
         }
       }
@@ -1072,12 +1207,10 @@ final class AccountService: ObservableObject {
     accountRegistrationQueue.discardPending()
     accountPreferencesQueue.discardPending()
     if let previousOwnerId {
-      attentionPendingAckStore.clear(for: previousOwnerId)
       // A signed-in owner is signing out: their cached chat logs go too
       // (edge case 19). Repeated signed-out publishes have no owner and keep
       // a LAN-only user's cache.
-      SyncService.shared?.chatThreadRegistry.purgeAll()
-      SyncService.shared?.machineFleet?.reset()
+      purgeOwnerSessionData(previousOwnerId)
     }
     cancelAttentionRefresh()
     stopAttentionPolling()
@@ -1089,6 +1222,11 @@ final class AccountService: ObservableObject {
     if previousOwnerId != nil { CrashReporting.setUser(accountId: nil) }
     machines = []
     machinesState = .idle
+    // An owner signing out takes the saved project list with them.
+    AccountProjectStore.shared.deactivate(deletingCacheOf: previousOwnerId)
+    GitHubAccountConnection.shared.deactivate()
+    // Passwords: the vault key and every opened item leave this device.
+    PasswordsVault.shared.deactivate()
     phase = .signedOut
     clearAttentionSnapshot()
     LiveActivityService.shared.prepareForAccountSignOut()
@@ -1108,6 +1246,111 @@ final class AccountService: ObservableObject {
 
   private func invalidatePairingAuthorization() {
     pairingAuthorizationGeneration &+= 1
+  }
+
+  /// What an owner's session leaves on this phone that goes when the session
+  /// ends, also when it only expired: pending acknowledgements, the fleet key
+  /// map, the cached chat logs, the other computers' roster links, the cloud
+  /// lane names, the last computer per account project, and the Hub
+  /// composer's last project and lane.
+  private func purgeOwnerSessionData(_ ownerId: String) {
+    attentionPendingAckStore.clear(for: ownerId)
+    UserDefaults.standard.removeObject(forKey: Self.fleetKeyMapDefaultsKey(ownerId: ownerId))
+    SyncService.shared?.chatThreadRegistry.purgeAll()
+    SyncService.shared?.machineFleet?.reset()
+    UserDefaults.standard.removeObject(forKey: CloudLaneComputerLabels.defaultsKey)
+    UserDefaults.standard.removeObject(forKey: StartOnMemory.defaultsKey)
+    ADESharedContainer.defaults.removeObject(forKey: HubInlineComposer.lastDestinationKey)
+    HubLayoutStore.removeAccountLayout(userId: ownerId)
+  }
+
+  /// Everything of a former owner, for a sign-out that did not finish or an
+  /// account change: the session data, the saved project list, the GitHub
+  /// sign-in, the passwords key and the account Activity feed. The local copy
+  /// and the computers are `SyncService.removeFormerAccountData`.
+  private func purgeOwnerLocalData(_ ownerId: String) {
+    purgeOwnerSessionData(ownerId)
+    AccountProjectStore.shared.deactivate(deletingCacheOf: ownerId)
+    GitHubAccountConnection.shared.deactivate()
+    PasswordsVault.shared.deactivate()
+    clearAttentionSnapshot()
+  }
+
+  /// Finishes the local half of a sign-out that an app kill or a crash
+  /// stopped (`AccountSignOutProgress`), as `signOut()` does it: the account's
+  /// computers, the local copy, the caches and the account's saved data
+  /// leave, and the phone stays signed out. Runs before the first connect
+  /// (SyncService's init) and again at bootstrap; it does nothing without
+  /// the marker. The Clerk half is `endStaleClerkSessionIfNeeded`.
+  func finishInterruptedSignOutIfNeeded() {
+    guard let pending = signOutProgress.pendingOwnerId else { return }
+    // First, also when the local copy cannot be reached yet: no cached Clerk
+    // session may sign this phone back in while the sign-out is unfinished.
+    isEndingAccountOwnership = true
+    localSignOutState.suppress()
+    accountRegistrationQueue.discardPending()
+    accountPreferencesQueue.discardPending()
+    // The marker stays until the local copy is cleared (SyncService's init
+    // runs this again).
+    guard let sync = SyncService.shared else { return }
+    let ownerId = [
+      pending,
+      identity?.userId,
+      deviceOwnershipStore.state.ownerId,
+      UserDefaults.standard.string(forKey: Self.localDataOwnerKey),
+    ].lazy.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
+    if let ownerId {
+      purgeOwnerLocalData(ownerId)
+      // The device's push registration for that account is removed once a
+      // session can prove it (`endStaleClerkSessionIfNeeded`, or that
+      // account's next sign-in).
+      let unowned = deviceOwnershipStore.transition(to: nil)
+      if deviceRevocationStore.pending == nil {
+        _ = deviceRevocationStore.mark(
+          ownerId: ownerId,
+          deviceId: attentionDeviceId,
+          ownershipEpoch: unowned.ownershipEpoch
+        )
+      }
+    }
+    sync.removeFormerAccountData(keepingOwnerId: nil)
+    UserDefaults.standard.removeObject(forKey: Self.localDataOwnerKey)
+    signOutProgress.finish()
+  }
+
+  /// The person signed out on this phone (`localSignOutState`), but Clerk
+  /// still holds a session: the sign-out stopped before Clerk ended it (an
+  /// app kill, a crash, no network). Ends it, so a sign-in does not fail with
+  /// "You're already signed in". First the device's push registration for
+  /// that account goes, while the session can still prove it.
+  @discardableResult
+  func endStaleClerkSessionIfNeeded() async -> Bool {
+    guard localSignOutState.isSuppressed, Clerk.shared.session != nil else { return true }
+    if let pending = deviceRevocationStore.pending,
+       Clerk.shared.user?.id == pending.ownerId,
+       let token = try? await Clerk.shared.auth.getToken() {
+      await attemptDeviceRevocation(pending, token: token)
+    }
+    do {
+      try await Clerk.shared.auth.signOut()
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /// Runs a sign-in step. When Clerk refuses it because a session of this
+  /// client still exists (`session_exists`: a sign-out that never reached
+  /// Clerk), that session is ended and the step runs once more, so a sign-in
+  /// never ends at "You're already signed in".
+  private func signInStep<T>(_ step: () async throws -> T) async throws -> T {
+    await endStaleClerkSessionIfNeeded()
+    do {
+      return try await step()
+    } catch let error as ClerkAPIError where error.code == "session_exists" {
+      try await Clerk.shared.auth.signOut()
+      return try await step()
+    }
   }
 
   private func cancelAttentionRefresh() {
@@ -1191,17 +1434,21 @@ final class AccountService: ObservableObject {
     }
     lastError = nil
     emailVerificationKind = nil
-    emailVerificationKind = try await AccountEmailAuthFlow.sendCode(
-      to: trimmed,
-      actions: emailAuthActions()
-    )
+    emailVerificationKind = try await signInStep {
+      try await AccountEmailAuthFlow.sendCode(to: trimmed, actions: emailAuthActions())
+    }
   }
 
   /// Verify the emailed code against the attempt that sent it.
   func verifyEmailCode(_ code: String) async throws {
     let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
     guard let emailVerificationKind else {
-      ProductAnalytics.shared.captureSignInOutcome(.failed)
+      ProductAnalytics.shared.captureSignInOutcome(
+        .failed,
+        provider: ADEAnalyticsSignInProvider.email.rawValue,
+        reason: ADEAnalyticsSignInFailureReason.notStarted.rawValue,
+        errorCode: "missing_attempt"
+      )
       throw AccountError.message("Start the email verification again.")
     }
     lastError = nil
@@ -1217,7 +1464,7 @@ final class AccountService: ObservableObject {
         authenticationOutcome == .newAccount ? .newAccount : .returningUser
       )
     } catch {
-      ProductAnalytics.shared.captureSignInOutcome(.failed)
+      recordSignInFailure(provider: .email, error: error)
       throw error
     }
   }
@@ -1227,14 +1474,14 @@ final class AccountService: ObservableObject {
   func signInWithOAuth(_ provider: OAuthProvider) async throws {
     lastError = nil
     do {
-      let result = try await Clerk.shared.auth.signInWithOAuth(provider: provider)
+      let result = try await signInStep { try await Clerk.shared.auth.signInWithOAuth(provider: provider) }
       authenticationOutcome = Self.outcome(from: result)
       finishInteractiveSignIn()
       ProductAnalytics.shared.captureSignInOutcome(
         authenticationOutcome == .newAccount ? .newAccount : .returningUser
       )
     } catch {
-      ProductAnalytics.shared.captureSignInOutcome(.failed)
+      recordSignInFailure(provider: analyticsProvider(provider), error: error)
       throw error
     }
   }
@@ -1245,19 +1492,56 @@ final class AccountService: ObservableObject {
   func signInWithApple() async throws {
     lastError = nil
     do {
-      let result = try await Clerk.shared.auth.signInWithApple()
+      let result = try await signInStep { try await Clerk.shared.auth.signInWithApple() }
       authenticationOutcome = Self.outcome(from: result)
       finishInteractiveSignIn()
       ProductAnalytics.shared.captureSignInOutcome(
         authenticationOutcome == .newAccount ? .newAccount : .returningUser
       )
     } catch {
-      ProductAnalytics.shared.captureSignInOutcome(.failed)
+      recordSignInFailure(provider: .apple, error: error)
       throw error
     }
   }
 
+  /// A failed sign-in, with a closed reason and Clerk's code when it has one.
+  /// The message, the email and any token stay on the device.
+  private func recordSignInFailure(provider: ADEAnalyticsSignInProvider, error: Error) {
+    let failure = ProductAnalytics.signInFailure(
+      provider: provider,
+      error: error,
+      clerkCode: (error as? ClerkAPIError)?.code
+    )
+    ProductAnalytics.shared.captureSignInOutcome(
+      .failed,
+      provider: failure.provider.rawValue,
+      reason: failure.reason.rawValue,
+      errorCode: failure.errorCode
+    )
+  }
+
+  private func analyticsProvider(_ provider: OAuthProvider) -> ADEAnalyticsSignInProvider {
+    let name = String(describing: provider).lowercased()
+    if name.contains("github") { return .github }
+    if name.contains("google") { return .google }
+    if name.contains("apple") { return .apple }
+    return .oauth
+  }
+
   func signOut() async {
+#if DEBUG
+    // A fixture screen signs out locally; it has no Clerk session to end.
+    if isPreviewSeeded {
+      isPreviewSeeded = false
+      identity = nil
+      phase = .signedOut
+      return
+    }
+#endif
+    // First, before any step that can be cut short: the durable marker. An
+    // app kill at any later point leaves it, and the next launch finishes
+    // this sign-out (`finishInterruptedSignOutIfNeeded`).
+    signOutProgress.begin(ownerId: identity?.userId ?? deviceOwnershipStore.state.ownerId)
     // Capture the current credential and persist the cleanup obligation before
     // invalidating local authorization. The UI/account boundary is then
     // committed before the bounded Relay request begins.
@@ -1269,7 +1553,23 @@ final class AccountService: ObservableObject {
     // that request fails, cached Clerk state and subsequent auth events still
     // cannot restore account machines or issue a session token.
     localSignOutState.suppress()
+    let signingOutOwner = identity?.userId ?? revocation?.pending.ownerId
     publishSignedOut()
+    // The person chose to sign out: the computers this phone connected
+    // through the account leave with it, at once, and so does everything they
+    // synced (`resetLocalReplicaAfterAccountLeft`). Only machines paired
+    // directly with a code stay, as the sign-out dialog says. A session that
+    // only expired keeps them (`publishSignedOut` alone).
+    if let signingOutOwner {
+      SyncService.shared?.removeAccountOwnedPairings(ownerId: signingOutOwner)
+    }
+    // The chat transcript store closes and deletes its files on its own
+    // queue; the marker stays until it has, so a kill before then finishes
+    // the sign-out on the next launch.
+    await SyncService.shared?.chatThreadRegistry.purgeAllAndWait()
+    // The local half is done: the phone holds none of the account's data.
+    UserDefaults.standard.removeObject(forKey: Self.localDataOwnerKey)
+    signOutProgress.finish()
     if let revocation, let token = revocation.token {
       await attemptDeviceRevocation(revocation.pending, token: token)
     }
@@ -1319,13 +1619,20 @@ final class AccountService: ObservableObject {
     token: String
   ) async {
     guard let baseURL = AccountConfig.attentionRelayBaseURL else { return }
+    // A key that could not be read keeps the marker: the next sign-in retries.
+    let deviceKey: String?
+    switch deviceKeychain.readAccountDeviceKey(deviceId: pending.deviceId) {
+    case .value(let key): deviceKey = key
+    case .absent: deviceKey = nil
+    case .failed: return
+    }
     do {
       try await attentionRelay.unregisterDevice(
         baseURL: baseURL,
         token: token,
         deviceId: pending.deviceId,
         ownershipEpoch: pending.ownershipEpoch,
-        deviceKey: deviceKeychain.loadAccountDeviceKey(deviceId: pending.deviceId),
+        deviceKey: deviceKey,
         timeoutInterval: 2
       )
       deviceRevocationStore.clear(ifMatching: pending)
@@ -1352,6 +1659,9 @@ final class AccountService: ObservableObject {
   // MARK: - Token
 
   var currentPairingAuthorization: AccountPairingAuthorization? {
+#if DEBUG
+    if isPreviewSeeded { return nil }
+#endif
     guard let ownerId = identity?.userId,
           accountSessionStatusAllowsAccess(Clerk.shared.session?.status),
           accountSessionTokenIsAllowed(
@@ -1367,7 +1677,10 @@ final class AccountService: ObservableObject {
   }
 
   func isPairingCommitAuthorized(_ authorization: AccountPairingAuthorization) -> Bool {
-    accountPairingCommitIsAuthorized(
+#if DEBUG
+    if isPreviewSeeded { return false }
+#endif
+    return accountPairingCommitIsAuthorized(
       authorization,
       currentGeneration: pairingAuthorizationGeneration,
       localSignOutSuppressed: localSignOutState.isSuppressed,
@@ -1554,7 +1867,7 @@ final class AccountService: ObservableObject {
     } catch {
       // Keep the last-known account snapshot and machine-local fallback, but
       // say so: an unreachable relay must not read as "nothing is happening".
-      attentionRefreshFailure = "Couldn't reach your machines. Showing the last known activity."
+      attentionRefreshFailure = "Couldn't reach your computers. Showing the last known activity."
     }
   }
 
@@ -1943,6 +2256,24 @@ final class AccountService: ObservableObject {
     }
   }
 
+  /// A registration that stopped on a failed keychain read runs again when
+  /// the phone is unlocked. No timer.
+  private func retryRegistrationWhenKeychainAnswers() {
+    guard keychainRetryObserver == nil else { return }
+    keychainRetryObserver = NotificationCenter.default.addObserver(
+      forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard let self, let observer = self.keychainRetryObserver else { return }
+        NotificationCenter.default.removeObserver(observer)
+        self.keychainRetryObserver = nil
+        Task { await PushNotificationService.shared.resumeAccountRegistrationIfAuthorized() }
+      }
+    }
+  }
+
   private func performAttentionDeviceRegistration(
     _ request: AccountAttentionDeviceRegistrationRequest
   ) async -> Bool {
@@ -1955,6 +2286,21 @@ final class AccountService: ObservableObject {
             ownershipEpoch: request.ownershipEpoch,
             state: deviceOwnershipStore.state
           ) else {
+      return false
+    }
+    // A device key or epoch that could not be read is not "none": Relay
+    // would issue a new key over the stored one, and a too-low epoch would
+    // clear a pending revocation. Register once the keychain answers.
+    let storedDeviceKey: String?
+    switch deviceKeychain.readAccountDeviceKey(deviceId: request.deviceId) {
+    case .value(let key): storedDeviceKey = key
+    case .absent: storedDeviceKey = nil
+    case .failed:
+      retryRegistrationWhenKeychainAnswers()
+      return false
+    }
+    if case .failed = deviceKeychain.readAccountDeviceOwnershipEpoch(deviceId: request.deviceId) {
+      retryRegistrationWhenKeychainAnswers()
       return false
     }
     do {
@@ -2011,9 +2357,7 @@ final class AccountService: ObservableObject {
         }
         return issuedDeviceKey
       }
-      let issuedDeviceKey = try await register(
-        deviceKeychain.loadAccountDeviceKey(deviceId: request.deviceId)
-      )
+      let issuedDeviceKey = try await register(storedDeviceKey)
       guard isPairingCommitAuthorized(request.authorization),
             accountDeviceMutationMatchesCurrentOwnership(
               ownerId: request.authorization.ownerId,
@@ -2103,7 +2447,18 @@ final class AccountService: ObservableObject {
   /// Load the caller's machines from the directory Worker. Degrades quietly:
   /// no base URL → `.unconfigured`; unreachable → `.unreachable`; the local
   /// pairing flow is never blocked on this.
+  /// The order of machine reads: each read takes the next number when it
+  /// starts, and a read older than the last one applied never writes. Two
+  /// reads can be out at once (a pull and a launch's read), and an older
+  /// answer must not hide a computer a newer one listed.
+  private var machinesReadsStarted = 0
+  private var machinesReadApplied = 0
+
   func loadMachines() async {
+#if DEBUG
+    // A fixture screen keeps its seeded machines.
+    if isPreviewSeeded { return }
+#endif
     guard isSignedIn, let requestedOwnerId = identity?.userId else { return }
     guard let baseURL = AccountConfig.directoryBaseURL else {
       machinesState = .unconfigured
@@ -2120,6 +2475,8 @@ final class AccountService: ObservableObject {
     if machines.isEmpty {
       machinesState = .loading
     }
+    machinesReadsStarted += 1
+    let readOrder = machinesReadsStarted
     do {
       let fetched = try await directory.fetchMachines(
         baseURL: baseURL,
@@ -2132,18 +2489,21 @@ final class AccountService: ObservableObject {
           ).token
         }
       )
-      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
+      guard isPairingCommitAuthorized(initialSession.authorization),
+            readOrder > machinesReadApplied else { return }
+      machinesReadApplied = readOrder
       machines = fetched
+      rememberFleetKeys(of: fetched, ownerId: requestedOwnerId)
       SyncService.shared?.adoptVerifiedAccountRelayMetadata(
         from: fetched,
         ownerId: requestedOwnerId
       )
       machinesState = .loaded
     } catch let error as AccountDirectoryClient.DirectoryError {
-      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
+      guard isPairingCommitAuthorized(initialSession.authorization), readOrder > machinesReadApplied else { return }
       machinesState = .unreachable(error.localizedDescription)
     } catch {
-      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
+      guard isPairingCommitAuthorized(initialSession.authorization), readOrder > machinesReadApplied else { return }
       machinesState = .unreachable("Couldn't load your machines.")
     }
   }

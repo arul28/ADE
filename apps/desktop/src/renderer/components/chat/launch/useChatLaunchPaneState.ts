@@ -60,6 +60,7 @@ export function useChatLaunchPaneLifecycle({
   launchAwaitingSession,
   refreshSessions,
   setModelId,
+  seedComposer,
   optimisticSessionIdsRef,
   knownSessionIdsRef,
 }: {
@@ -67,6 +68,12 @@ export function useChatLaunchPaneLifecycle({
   launchAwaitingSession: boolean;
   refreshSessions: (options?: { force?: boolean }) => Promise<unknown>;
   setModelId: (modelId: string) => void;
+  /**
+   * Puts the whole pick this window launched with (model, effort, permission
+   * mode) back in the composer; false when this window has none (a launch
+   * started elsewhere), and then only the model is shown.
+   */
+  seedComposer?: (launch: ChatLaunchSnapshot) => boolean;
   optimisticSessionIdsRef: MutableRefObject<Set<string>>;
   knownSessionIdsRef: MutableRefObject<Set<string>>;
 }): void {
@@ -81,13 +88,17 @@ export function useChatLaunchPaneLifecycle({
     }
   }, [launchAwaitingSession, refreshSessions]);
 
-  // Until the chat exists there is no session to read its model from; show the
-  // model the launch runs with (once per launch — the user can still change it).
+  // Until the chat exists there is no session to read its settings from; show
+  // what the launch runs with (once per launch — the user can still change
+  // it). A failed launch keeps showing it, so Retry reads as the same run.
   const seededLaunchModelRef = useRef<string | null>(null);
+  const seedComposerRef = useRef(seedComposer);
+  seedComposerRef.current = seedComposer;
   useEffect(() => {
     if (!chatLaunch || !launchAwaitingSession || !chatLaunch.modelId) return;
     if (seededLaunchModelRef.current === chatLaunch.launchId) return;
     seededLaunchModelRef.current = chatLaunch.launchId;
+    if (seedComposerRef.current?.(chatLaunch)) return;
     setModelId(chatLaunch.modelId);
   }, [chatLaunch, launchAwaitingSession, setModelId]);
 

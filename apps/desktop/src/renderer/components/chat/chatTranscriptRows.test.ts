@@ -2081,9 +2081,18 @@ describe("chatTranscriptRows edge cases", () => {
         message: "Approaching Claude plan limit",
         turnId: "turn-2",
       }),
+      // Stand-ins for two different rows too large to page, same text.
+      ...[100, 9_000_000].map((offset) => env("2026-08-06T10:06:00.000Z", {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "history_row_omitted",
+        message: "One very large entry was left out of this chat's history.",
+        detail: "The entry is 3.0 MB.",
+        omittedRow: { offset, bytes: 3_000_000 },
+      })),
     ]);
 
-    expect(rows.filter((row) => row.event.type === "system_notice")).toHaveLength(4);
+    expect(rows.filter((row) => row.event.type === "system_notice")).toHaveLength(6);
   });
 
   it("keeps a plan-mode proposal as its own plan card beside the task list of the same turn", () => {

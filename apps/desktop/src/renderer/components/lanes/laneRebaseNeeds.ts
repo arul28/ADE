@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
-import type { LaneSummary, RebaseNeed } from "../../../shared/types";
-import { useActiveProjectRoot } from "../../state/appStore";
+import type { LaneSummary, OpenProjectBinding, RebaseNeed } from "../../../shared/types";
+import { foreignLaneKey } from "../../state/laneMachineRouting";
+import { callEachMachine, pinKeys, useEachMachineSubscription } from "../../state/repositoryScope";
 
 /** Wait this long after the Lanes tab shows before the first scan, so first paint stays local. */
 const FIRST_SCAN_DELAY_MS = 600;
@@ -13,32 +14,33 @@ const RESCAN_AFTER_MS = 30_000;
 
 const EMPTY_NEEDS: ReadonlyMap<string, RebaseNeed> = new Map();
 
+/** One scan per machine copy at a time, keyed by the copy's address. */
 const scanInFlight = new Map<string, Promise<RebaseNeed[]>>();
 /** Mounted scanners, so a catch-up that did not go through the rebase engine (a merge) can ask for a fresh scan. */
 const rescanRequests = new Set<() => void>();
 
 /**
- * Scan this machine's lanes again shortly, as a finished rebase does. A merge
- * of the base sends no rebase event, and a "built on merged work" need would
+ * Scan the lanes again shortly, as a finished rebase does. A merge of the
+ * base sends no rebase event, and a "built on merged work" need would
  * otherwise stay until the next scan.
  */
 export function requestLaneRebaseNeedsRescan(): void {
   for (const request of rescanRequests) request();
 }
-/** The last needs each project reported (scan or pushed event), so a revisit paints at once. */
-const lastNeedsByProject = new Map<string, { needs: ReadonlyMap<string, RebaseNeed>; atMs: number }>();
+/** The last needs each machine copy reported (scan or pushed event), so a revisit paints at once. */
+const lastNeedsByPin = new Map<string, { needs: ReadonlyMap<string, RebaseNeed>; atMs: number }>();
 
 /**
- * One scan per project at a time: a Lanes page that remounts while a scan is
- * in flight joins it. The PRs tab's rebase views run their own scans.
+ * One scan per copy at a time: a Lanes page that remounts while a scan is in
+ * flight joins it. The PRs tab's rebase views run their own scans.
  */
-function scanRebaseNeedsCoalesced(projectKey: string): Promise<RebaseNeed[]> {
-  const existing = scanInFlight.get(projectKey);
+function scanRebaseNeedsCoalesced(pin: OpenProjectBinding): Promise<RebaseNeed[]> {
+  const existing = scanInFlight.get(pin.key);
   if (existing) return existing;
-  const promise = window.ade.rebase.scanNeeds().finally(() => {
-    if (scanInFlight.get(projectKey) === promise) scanInFlight.delete(projectKey);
+  const promise = window.ade.rebase.scanNeeds(pin).finally(() => {
+    if (scanInFlight.get(pin.key) === promise) scanInFlight.delete(pin.key);
   });
-  scanInFlight.set(projectKey, promise);
+  scanInFlight.set(pin.key, promise);
   return promise;
 }
 
@@ -54,70 +56,125 @@ function needsByLaneId(needs: readonly RebaseNeed[]): ReadonlyMap<string, Rebase
   return map;
 }
 
+/** One machine whose lanes the page lists. */
+export type LaneRebaseScanMachine = {
+  /** The machine's copy of the repository. */
+  pin: OpenProjectBinding;
+  /** Null for the tab's own copy, whose rows are keyed by lane id; else the machine id of its row keys. */
+  machineId: string | null;
+};
+
+function rowKeyFor(machine: LaneRebaseScanMachine, laneId: string): string {
+  return machine.machineId ? foreignLaneKey(machine.machineId, laneId) : laneId;
+}
+
 /**
- * Rebase needs for the lanes on the tab's machine, keyed by lane id.
+ * Rebase needs for the lanes of every listed machine, keyed by row key (the
+ * lane id for the tab's copy, `machineId:laneId` for another machine).
  *
- * One scan shortly after the tab shows (skipped when the last one is under
- * 30 s old), then whatever the brain pushes in `rebase-needs-updated`, plus
- * one rescan after a rebase finishes. No timer polls it. Lanes on other machines are not in this map; their rows fall back
- * to the lane's own behind count.
+ * One scan for each machine shortly after the tab shows (skipped when that
+ * machine's last one is under 30 s old), then whatever each brain pushes in
+ * `rebase-needs-updated`, plus one rescan of that machine after a rebase
+ * finishes. No timer polls it. With no machine online, nothing is sent.
  */
-export function useLaneRebaseNeeds(active: boolean): ReadonlyMap<string, RebaseNeed> {
-  const projectRoot = useActiveProjectRoot();
-  const [needs, setNeeds] = useState<ReadonlyMap<string, RebaseNeed>>(
-    () => (projectRoot ? lastNeedsByProject.get(projectRoot)?.needs : null) ?? EMPTY_NEEDS,
-  );
+export function useLaneRebaseNeeds(
+  active: boolean,
+  machines: readonly LaneRebaseScanMachine[],
+): ReadonlyMap<string, RebaseNeed> {
+  const machinesRef = useRef(machines);
+  machinesRef.current = machines;
+  const pins = useMemo(() => machines.map((machine) => machine.pin), [machines]);
+  const keys = pinKeys(pins);
+  const shapeKey = machines.map((machine) => `${machine.pin.key}\t${machine.machineId ?? ""}`).join("\n");
+  const tabPinKey = machines.find((machine) => machine.machineId == null)?.pin.key ?? null;
+  // Bumped whenever a machine's cached needs change, so the merged map re-reads them.
+  const [version, setVersion] = useState(0);
+  const rescanTimersRef = useRef(new Map<string, number>());
 
-  useEffect(() => {
-    setNeeds((projectRoot ? lastNeedsByProject.get(projectRoot)?.needs : null) ?? EMPTY_NEEDS);
-  }, [projectRoot]);
+  const apply = (pinKey: string, next: readonly RebaseNeed[]) => {
+    lastNeedsByPin.set(pinKey, { needs: needsByLaneId(next), atMs: Date.now() });
+    setVersion((value) => value + 1);
+  };
+  const applyRef = useRef(apply);
+  applyRef.current = apply;
 
-  useEffect(() => {
-    if (!active || !projectRoot || !window.ade?.rebase) return;
-    let cancelled = false;
-    let rescanTimer: number | null = null;
-    const apply = (next: readonly RebaseNeed[]) => {
-      const map = needsByLaneId(next);
-      lastNeedsByProject.set(projectRoot, { needs: map, atMs: Date.now() });
-      if (!cancelled) setNeeds(map);
-    };
-    const scan = () => {
-      void scanRebaseNeedsCoalesced(projectRoot)
-        .then(apply)
-        .catch(() => {
-          // The rows fall back to each lane's behind count.
-        });
-    };
-    const last = lastNeedsByProject.get(projectRoot);
-    const firstScan = last && Date.now() - last.atMs < RESCAN_AFTER_MS
-      ? null
-      : window.setTimeout(scan, FIRST_SCAN_DELAY_MS);
-    const scheduleRescan = () => {
-      if (rescanTimer != null) window.clearTimeout(rescanTimer);
-      rescanTimer = window.setTimeout(() => {
-        rescanTimer = null;
-        scan();
-      }, RESCAN_AFTER_REBASE_MS);
-    };
-    rescanRequests.add(scheduleRescan);
-    const unsubscribe = window.ade.rebase.onEvent((event) => {
-      if (event.type === "rebase-needs-updated") {
-        apply(event.needs);
-        return;
+  const scan = (targets: readonly OpenProjectBinding[]) => {
+    if (targets.length === 0) return;
+    void callEachMachine(targets, scanRebaseNeedsCoalesced, { tabPinKey }).then((results) => {
+      for (const result of results) {
+        // A machine that cannot scan keeps its rows on each lane's behind count.
+        if (result.ok) applyRef.current(result.pin.key, result.value);
       }
-      if (event.type === "rebase-completed") scheduleRescan();
     });
+  };
+  const scanRef = useRef(scan);
+  scanRef.current = scan;
+
+  const scheduleRescan = (pin: OpenProjectBinding) => {
+    const timers = rescanTimersRef.current;
+    const pending = timers.get(pin.key);
+    if (pending != null) window.clearTimeout(pending);
+    timers.set(pin.key, window.setTimeout(() => {
+      timers.delete(pin.key);
+      scanRef.current([pin]);
+    }, RESCAN_AFTER_REBASE_MS));
+  };
+  const scheduleRescanRef = useRef(scheduleRescan);
+  scheduleRescanRef.current = scheduleRescan;
+
+  // The first scan of each machine, and a rescan of all of them on request.
+  useEffect(() => {
+    if (!active || keys.length === 0 || !window.ade?.rebase) return;
+    let cancelled = false;
+    const current = machinesRef.current.map((machine) => machine.pin);
+    const stale = current.filter((pin) => {
+      const last = lastNeedsByPin.get(pin.key);
+      return !last || Date.now() - last.atMs >= RESCAN_AFTER_MS;
+    });
+    const firstScan = stale.length > 0
+      ? window.setTimeout(() => {
+        if (!cancelled) scanRef.current(stale);
+      }, FIRST_SCAN_DELAY_MS)
+      : null;
+    const rescanAll = () => {
+      for (const pin of machinesRef.current.map((machine) => machine.pin)) scheduleRescanRef.current(pin);
+    };
+    rescanRequests.add(rescanAll);
     return () => {
       cancelled = true;
-      rescanRequests.delete(scheduleRescan);
+      rescanRequests.delete(rescanAll);
       if (firstScan != null) window.clearTimeout(firstScan);
-      if (rescanTimer != null) window.clearTimeout(rescanTimer);
-      unsubscribe();
     };
-  }, [active, projectRoot]);
+  }, [active, keys]);
 
-  return needs;
+  useEffect(() => () => {
+    for (const timer of rescanTimersRef.current.values()) window.clearTimeout(timer);
+    rescanTimersRef.current.clear();
+  }, []);
+
+  // One event subscription for each machine, kept while the page is active.
+  useEachMachineSubscription(active ? pins : NO_PINS, (pin) => window.ade.rebase.onEvent((event) => {
+    if (event.type === "rebase-needs-updated") {
+      applyRef.current(pin.key, event.needs);
+      return;
+    }
+    if (event.type === "rebase-completed") scheduleRescanRef.current(pin);
+  }, pin));
+
+  return useMemo(() => {
+    void version;
+    const merged = new Map<string, RebaseNeed>();
+    for (const machine of machinesRef.current) {
+      const needs = lastNeedsByPin.get(machine.pin.key)?.needs ?? EMPTY_NEEDS;
+      for (const [laneId, need] of needs) merged.set(rowKeyFor(machine, laneId), need);
+    }
+    return merged.size > 0 ? merged : EMPTY_NEEDS;
+    // `shapeKey` carries the machines; `version` the cached needs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shapeKey, version]);
 }
+
+const NO_PINS: readonly OpenProjectBinding[] = [];
 
 /** What the lane's quiet "behind" line says, and what its Catch up menu needs. */
 export type LaneRebaseLine = {
@@ -128,8 +185,8 @@ export type LaneRebaseLine = {
   title: string;
   /**
    * The files the scan expects to conflict; empty when none, or when no scan
-   * covers the lane (a lane on another machine). The Catch up menu runs its
-   * own check before offering a direct way.
+   * covers the lane yet. The Catch up menu runs its own check before offering
+   * a direct way.
    */
   conflictingFiles: string[];
   /** For `built_on_merged`: the merged PR whose commits the lane still carries. */

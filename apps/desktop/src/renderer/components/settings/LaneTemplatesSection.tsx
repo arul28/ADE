@@ -15,7 +15,14 @@ import {
   SettingsToggle,
 } from "./primitives";
 import "./machineSettings.css";
-import { laneSetupScriptHasWork } from "../../../shared/types";
+import { laneSetupScriptHasWork, laneSetupScriptIsConfigured } from "../../../shared/types";
+import {
+  LANE_SETUP_PLATFORM_FIELDS,
+  macosOnlyToolOnLinux,
+  type LaneSetupCommandsKey,
+  type LaneSetupPlatformKey,
+  type LaneSetupScriptPathKey,
+} from "../../../shared/laneSetupPlatform";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { showToast } from "../app/toast/toastStore";
 import type {
@@ -27,9 +34,11 @@ import type {
   LaneSetupScriptConfig,
 } from "../../../shared/types";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { AccountSettingNotices } from "./AccountSettingNotices";
 import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
 import { getNewLaneDefaultsCached } from "../../lib/newLaneDefaultsCache";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { requirePin } from "../../state/repositoryScope";
 
 function generateId(): string {
   return `tpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -135,47 +144,48 @@ function compact<T extends Record<string, unknown>>(obj: T): T {
  * string-shaped (not `LaneSetupScriptConfig`) because these are raw textarea
  * and input values — parsing into commands only happens on save.
  */
-type SetupScriptForm = {
-  commands: string;
-  scriptPath: string;
+type SetupScriptForm = Record<LaneSetupCommandsKey | LaneSetupScriptPathKey, string> & {
   injectPrimaryPath: boolean;
-  unixCommands: string;
-  unixScriptPath: string;
-  windowsCommands: string;
-  windowsScriptPath: string;
+  /**
+   * Per-OS lists the person set to "Run no commands": saved as an explicit
+   * `[]`, so the shared commands do not run on that OS. Off, an empty field
+   * inherits them.
+   */
+  noCommands: Partial<Record<LaneSetupCommandsKey, boolean>>;
 };
 
 function setupScriptFormFrom(script: LaneSetupScriptConfig | undefined): SetupScriptForm {
-  return {
-    commands: script?.commands?.join("\n") ?? "",
-    scriptPath: script?.scriptPath ?? "",
-    injectPrimaryPath: script?.injectPrimaryPath ?? false,
-    unixCommands: script?.unixCommands?.join("\n") ?? "",
-    unixScriptPath: script?.unixScriptPath ?? "",
-    windowsCommands: script?.windowsCommands?.join("\n") ?? "",
-    windowsScriptPath: script?.windowsScriptPath ?? "",
-  };
+  const form = { injectPrimaryPath: script?.injectPrimaryPath ?? false, noCommands: {} } as SetupScriptForm;
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    form[field.commandsKey] = script?.[field.commandsKey]?.join("\n") ?? "";
+    form[field.scriptKey] = script?.[field.scriptKey] ?? "";
+    if (field.key !== "shared" && script?.[field.commandsKey]?.length === 0) form.noCommands[field.commandsKey] = true;
+  }
+  return form;
 }
 
 /**
- * Turns the editor's raw text back into a config, or `undefined` when nothing in
- * it would actually run. The same predicate the card's "setup script" chip uses
- * decides that, so the editor and the card can never disagree.
+ * Turns the editor's raw text back into a config, or `undefined` when it holds
+ * nothing to keep: the same predicate config parsing uses
+ * (`laneSetupScriptIsConfigured`), so a saved template loads back as saved.
  */
 function setupScriptFromForm(form: SetupScriptForm): LaneSetupScriptConfig | undefined {
-  const commands = parseLines(form.commands);
-  const unixCommands = parseLines(form.unixCommands);
-  const windowsCommands = parseLines(form.windowsCommands);
-  const script: LaneSetupScriptConfig = compact({
-    commands: commands.length > 0 ? commands : undefined,
-    unixCommands: unixCommands.length > 0 ? unixCommands : undefined,
-    windowsCommands: windowsCommands.length > 0 ? windowsCommands : undefined,
-    scriptPath: form.scriptPath.trim() || undefined,
-    unixScriptPath: form.unixScriptPath.trim() || undefined,
-    windowsScriptPath: form.windowsScriptPath.trim() || undefined,
-    injectPrimaryPath: form.injectPrimaryPath || undefined,
-  });
-  return laneSetupScriptHasWork(script) ? script : undefined;
+  // Every commands list first, then every script path: the stored key order.
+  const script: LaneSetupScriptConfig = {};
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    if (form.noCommands[field.commandsKey]) {
+      script[field.commandsKey] = [];
+      continue;
+    }
+    const commands = parseLines(form[field.commandsKey]);
+    if (commands.length > 0) script[field.commandsKey] = commands;
+  }
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const scriptPath = form[field.scriptKey].trim();
+    if (scriptPath) script[field.scriptKey] = scriptPath;
+  }
+  if (form.injectPrimaryPath) script.injectPrimaryPath = true;
+  return laneSetupScriptIsConfigured(script) ? script : undefined;
 }
 
 /**
@@ -224,6 +234,9 @@ const GROUP = "New lanes";
 const TITLE = "Template";
 const DESCRIPTION = "Set up new lanes the same way: copy files in, install packages, run a script.";
 
+/** The repository recipes that follow the account (`projectConfigAccountKeys.ts`). */
+const RECIPE_ACCOUNT_KEYS = ["lanes.envInit", "tests.suite."] as const;
+
 export function LaneTemplatesSection() {
   // A project's templates follow the account (per repository); they are read
   // and written through the machine the Settings page shows, which also adds
@@ -244,8 +257,8 @@ export function LaneTemplatesSection() {
   const refresh = useCallback(async () => {
     try {
       const [tpls, defId] = await Promise.all([
-        window.ade.lanes.listTemplates(pin),
-        window.ade.lanes.getDefaultTemplate(pin),
+        window.ade.lanes.listTemplates(requirePin(pin)),
+        window.ade.lanes.getDefaultTemplate(requirePin(pin)),
       ]);
       setTemplates(tpls);
       setDefaultId(defId);
@@ -262,7 +275,7 @@ export function LaneTemplatesSection() {
   const handleSetDefault = useCallback(async (templateId: string) => {
     const newId = templateId || null;
     try {
-      await window.ade.lanes.setDefaultTemplate({ templateId: newId }, pin);
+      await window.ade.lanes.setDefaultTemplate({ templateId: newId }, requirePin(pin));
       setDefaultId(newId);
     } catch {
       await refresh();
@@ -272,7 +285,7 @@ export function LaneTemplatesSection() {
 
   const handleSave = useCallback(async (template: LaneTemplate) => {
     try {
-      await window.ade.lanes.saveTemplate({ template }, pin);
+      await window.ade.lanes.saveTemplate({ template }, requirePin(pin));
       setEditing(null);
       await refresh();
       refreshNewLaneDefaults();
@@ -283,7 +296,7 @@ export function LaneTemplatesSection() {
 
   const handleDelete = useCallback(async (templateId: string) => {
     try {
-      await window.ade.lanes.deleteTemplate({ templateId }, pin);
+      await window.ade.lanes.deleteTemplate({ templateId }, requirePin(pin));
       await refresh();
       refreshNewLaneDefaults();
     } catch (err: unknown) {
@@ -344,6 +357,9 @@ export function LaneTemplatesSection() {
       hint={DESCRIPTION}
       actions={templates.length > 0 ? <>{agentSetupButton}{newTemplateButton}</> : undefined}
     >
+      {/* The project's lane setup and test suites follow the account too;
+          one that stays on this computer says why here. */}
+      <AccountSettingNotices pin={pin} keys={RECIPE_ACCOUNT_KEYS} />
       {templates.length === 0 ? (
         <div className="ade-lt-empty">
           <Stack size={22} weight="light" />
@@ -530,13 +546,17 @@ function ConfigRow({ label, items }: { label: string; items: string[] }) {
 }
 
 function SetupScriptPreview({ script }: { script: LaneSetupScriptConfig }) {
+  const labelled = (label: string | null, text: string) => (label ? `${label}: ${text}` : text);
   const lines: string[] = [];
-  if (script.commands?.length) lines.push(script.commands.join("; "));
-  if (script.unixCommands?.length) lines.push(`macOS/Linux: ${script.unixCommands.join("; ")}`);
-  if (script.windowsCommands?.length) lines.push(`Windows: ${script.windowsCommands.join("; ")}`);
-  if (script.scriptPath) lines.push(script.scriptPath);
-  if (script.unixScriptPath) lines.push(`macOS/Linux: ${script.unixScriptPath}`);
-  if (script.windowsScriptPath) lines.push(`Windows: ${script.windowsScriptPath}`);
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const commands = script[field.commandsKey];
+    if (commands?.length) lines.push(labelled(field.label, commands.join("; ")));
+    else if (commands && field.key !== "shared") lines.push(labelled(field.label, "no commands"));
+  }
+  for (const field of LANE_SETUP_PLATFORM_FIELDS) {
+    const scriptPath = script[field.scriptKey];
+    if (scriptPath) lines.push(labelled(field.label, scriptPath));
+  }
   return (
     <>
       <dt>Setup script</dt>
@@ -588,11 +608,10 @@ function TemplateEditor({
 
   // Per-platform variants and the advanced block start open only when they
   // already hold something, so an existing template never hides its own config.
-  const hasPlatformVariants =
-    (initial.setupScript?.unixCommands?.length ?? 0) > 0 ||
-    (initial.setupScript?.windowsCommands?.length ?? 0) > 0 ||
-    !!initial.setupScript?.unixScriptPath ||
-    !!initial.setupScript?.windowsScriptPath;
+  const hasPlatformVariants = LANE_SETUP_PLATFORM_FIELDS.some((field) => (
+    field.key !== "shared"
+    && (Array.isArray(initial.setupScript?.[field.commandsKey]) || !!initial.setupScript?.[field.scriptKey])
+  ));
 
   const hasAdvanced =
     !!initial.docker?.composePath ||
@@ -802,6 +821,33 @@ function TemplateEditor({
 // Editor blocks
 // ---------------------------------------------------------------------------
 
+/** The per-OS editor column's heading and examples, in the order the table lists them. */
+const PLATFORM_EDITOR_COPY: Record<
+  Exclude<LaneSetupPlatformKey, "shared">,
+  { label: string; commandsPlaceholder: string; scriptPlaceholder: string }
+> = {
+  unix: {
+    label: "macOS and Linux",
+    commandsPlaceholder: "chmod +x scripts/setup.sh\n./scripts/setup.sh",
+    scriptPlaceholder: "scripts/setup-lane.sh",
+  },
+  macos: {
+    label: "macOS only",
+    commandsPlaceholder: "cp -cR $PRIMARY_WORKTREE_PATH/node_modules node_modules",
+    scriptPlaceholder: "scripts/setup-lane-mac.sh",
+  },
+  linux: {
+    label: "Linux only (ADE Cloud)",
+    commandsPlaceholder: "npm ci --prefer-offline",
+    scriptPlaceholder: "scripts/setup-lane-linux.sh",
+  },
+  windows: {
+    label: "Windows",
+    commandsPlaceholder: "powershell -File scripts\\setup.ps1",
+    scriptPlaceholder: "scripts\\setup-lane.ps1",
+  },
+};
+
 /**
  * The setup-script half of the editor: commands, script file, platform variants.
  * `defaultOpen` controls the per-platform disclosure only.
@@ -815,15 +861,9 @@ function SetupScriptFields({
   onChange: (patch: Partial<SetupScriptForm>) => void;
   defaultOpen: boolean;
 }) {
-  const {
-    commands,
-    scriptPath,
-    injectPrimaryPath,
-    unixCommands,
-    unixScriptPath,
-    windowsCommands,
-    windowsScriptPath,
-  } = value;
+  const { commands, scriptPath, injectPrimaryPath } = value;
+  // Shared commands that call a macOS-only tool also run on Linux (ADE Cloud) unless Linux has its own.
+  const macosTool = macosOnlyToolOnLinux(setupScriptFromForm(value) ?? {});
   return (
     <Field
       label="Setup script"
@@ -882,50 +922,55 @@ function SetupScriptFields({
           />
         </div>
 
+        {macosTool ? (
+          <div style={{ ...hintStyle, marginTop: 0, color: COLORS.warning }}>
+            <code style={codeStyle}>{macosTool}</code> only exists on macOS, and these commands also run on Linux,
+            including ADE Cloud. Add Linux commands below so cloud lanes don&apos;t take the slow path.
+          </div>
+        ) : null}
+
         {/* Per-platform variants — the script that runs depends on the OS */}
-        <SettingsDisclosure summary="Different commands on Windows" defaultOpen={defaultOpen}>
+        <SettingsDisclosure summary="Different commands per OS" defaultOpen={defaultOpen || macosTool != null}>
           <div style={{ ...hintStyle, marginTop: 0 }}>
-            When set, these run instead of the commands above on that platform.
+            When set, these run instead of the commands above on that OS. macOS-only and Linux-only commands
+            win over the shared macOS and Linux ones.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <div style={subLabelStyle}>macOS and Linux</div>
-              <textarea
-                style={{ ...textareaStyle, minHeight: 48 }}
-                value={unixCommands}
-                onChange={(e) => onChange({ unixCommands: e.target.value })}
-                placeholder={"chmod +x scripts/setup.sh\n./scripts/setup.sh"}
-                rows={2}
-              />
-              <div style={{ marginTop: 8 }}>
-                <div style={subLabelStyle}>Script file</div>
-                <SettingsTextField
-                  value={unixScriptPath}
-                  onChange={(next) => onChange({ unixScriptPath: next })}
-                  placeholder="scripts/setup-lane.sh"
-                  mono
-                />
-              </div>
-            </div>
-            <div>
-              <div style={subLabelStyle}>Windows</div>
-              <textarea
-                style={{ ...textareaStyle, minHeight: 48 }}
-                value={windowsCommands}
-                onChange={(e) => onChange({ windowsCommands: e.target.value })}
-                placeholder="powershell -File scripts\setup.ps1"
-                rows={2}
-              />
-              <div style={{ marginTop: 8 }}>
-                <div style={subLabelStyle}>Script file</div>
-                <SettingsTextField
-                  value={windowsScriptPath}
-                  onChange={(next) => onChange({ windowsScriptPath: next })}
-                  placeholder="scripts\setup-lane.ps1"
-                  mono
-                />
-              </div>
-            </div>
+            {LANE_SETUP_PLATFORM_FIELDS.map((field) => {
+              if (field.key === "shared") return null;
+              const copy = PLATFORM_EDITOR_COPY[field.key];
+              const noCommands = value.noCommands[field.commandsKey] === true;
+              return (
+                <div key={field.key}>
+                  <div style={subLabelStyle}>{copy.label}</div>
+                  <textarea
+                    style={{ ...textareaStyle, minHeight: 48, opacity: noCommands ? 0.5 : 1 }}
+                    value={noCommands ? "" : value[field.commandsKey]}
+                    onChange={(e) => onChange({ [field.commandsKey]: e.target.value } as Partial<SetupScriptForm>)}
+                    placeholder={noCommands ? "No commands run here" : copy.commandsPlaceholder}
+                    disabled={noCommands}
+                    rows={2}
+                  />
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 6 }}>
+                    <span style={{ ...hintStyle, marginTop: 0 }}>Run no commands here, not even the shared ones</span>
+                    <SettingsToggle
+                      checked={noCommands}
+                      onChange={(next) => onChange({ noCommands: { ...value.noCommands, [field.commandsKey]: next } })}
+                      label={`Run no commands on ${copy.label}`}
+                    />
+                  </div>
+                  <div style={{ marginTop: 8 }}>
+                    <div style={subLabelStyle}>Script file</div>
+                    <SettingsTextField
+                      value={value[field.scriptKey]}
+                      onChange={(next) => onChange({ [field.scriptKey]: next } as Partial<SetupScriptForm>)}
+                      placeholder={copy.scriptPlaceholder}
+                      mono
+                    />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </SettingsDisclosure>
       </div>

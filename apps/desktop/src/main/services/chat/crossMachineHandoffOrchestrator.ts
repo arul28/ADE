@@ -35,7 +35,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { isCodedError, parseCodedErrorMessage } from "../../../shared/codedError";
-import { markExpected } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 import {
   CROSS_MACHINE_RETURN_REFUSED_CODE,
   decodeAcceptCrossMachineHandoffResult,
@@ -163,6 +163,8 @@ export type CrossMachineHandoffSource = {
   /** The chat's own model: a move that names none continues with it. */
   modelId?: string | null;
   title: string | null;
+  /** Set when the session is a tracked agent CLI (its tool type), not a chat. */
+  cliToolType?: string | null;
 };
 
 export type CrossMachineSourceInspection = {
@@ -683,13 +685,15 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
   const refuseIfMoving = (sourceSessionId: string): CrossMachineHandoffPersisted | null => {
     const existing = deps.readPersisted(sourceSessionId);
     if (existing && isCrossMachineHandoffActive(existing.record)) {
-      throw new Error(
+      throw new AdeExpectedError(
         `This chat is already moving to ${existing.record.targetMachineName}. Cancel that move first.`,
+        "user",
       );
     }
     if (mayHaveLanded(existing?.record)) {
       const name = existing!.record.targetMachineName;
-      throw new Error(`A move to ${name} may have landed. Retry it, or open ${name} to check, or dismiss it.`);
+      // The person decides: the message names the three ways out.
+      throw new AdeExpectedError(`A move to ${name} may have landed. Retry it, or open ${name} to check, or dismiss it.`, "user");
     }
     // Moving a chat that already continues elsewhere would leave two live
     // copies. The person picks "Work here instead" first, then it may move.
@@ -1005,6 +1009,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         ...(prepared.capsule.batchMove
           ? { requireBatchMoveSupport: true, batchLaneImportId: prepared.capsule.batchMove.laneImportId }
           : {}),
+        ...(prepared.capsule.cli ? { cliToolType: prepared.capsule.cli.toolType } : {}),
       },
     };
     let preflight = await callPreflight(transport, input);
@@ -1030,6 +1035,12 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     if (prepared.capsule.batchMove && preflight.batchMoveSupport !== 1) {
       throw new Error(
         `${persisted.record.targetMachineName} needs an ADE update to preserve batch lane trees, chat parents, scheduled work, and arrival instructions.`,
+      );
+    }
+    // An older destination would open a moved CLI as a chat: refuse instead.
+    if (prepared.capsule.cli && preflight.cliMoveSupport !== 1) {
+      throw new Error(
+        `${persisted.record.targetMachineName} needs an ADE update to take a CLI session. Update ADE there, then move it again.`,
       );
     }
     if (persisted.record.mode === "fork" && preflight.forkHandoffSupport?.supported !== true) {
@@ -1242,6 +1253,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         // A fresh landing: new messages go there until the person says
         // otherwise, even if they had kept working here after an earlier move.
         resumedHere: false,
+        cliArrival: accepted.cli ?? null,
         continuedOn: {
           handoffId: persisted.record.handoffId,
           targetMachineKey: persisted.record.targetMachineKey,
@@ -1403,9 +1415,10 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
           requireTransport,
           resolveMachine: (selector) => resolveMachine(selector),
           callPreflight,
-          importLane: async (transport, machine, payload) => unwrapActionResult((await transport.callAction({
+          importLane: async (transport, machine, payload, options) => unwrapActionResult((await transport.callAction({
             machine,
             originUrl: payload.originUrl,
+            ...(options?.clone ? { clone: true } : {}),
             action: "importCrossMachineHandoffLane",
             args: payload,
             timeoutMs: ACCEPT_TIMEOUT_MS,
@@ -1463,6 +1476,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         mode: args.mode === "fork" ? "fork" : "brief",
         ...(source.provider ? { sourceProvider: source.provider } : {}),
         ...(args.includeChanges === true && inspection.changes ? { hasGitBundle: true } : {}),
+        ...(source.cliToolType ? { cliToolType: source.cliToolType } : {}),
       },
     });
     return { ...base, hasRepository: true, preflight };

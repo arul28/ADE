@@ -1,13 +1,31 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pullFileFromWorkCopy, pushFileToWorkCopy, withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
+import { chatLaunchStatusLine } from "../../desktop/src/shared/chatLaunch";
+import { CLOUD_LANE_MACHINE, followCloudLaneLaunch } from "../../desktop/src/shared/cloudLaneLaunch";
+import { CLOUD_TIER_IDS, isCloudTierId } from "../../desktop/src/shared/cloudTiers";
+import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
+import { quoteShellArg } from "../../desktop/src/shared/shell";
+import {
+  pullFileFromWorkCopy,
+  pushFileToWorkCopy,
+  withRemoteAndroidArgs,
+  withRemoteAppControlArgs,
+  withRemoteAppleArgs,
+  withRemoteScreenArgs,
+  withRemoteShellArgs,
+} from "./cliRemoteWork";
+import { JsonRpcError } from "./jsonrpc";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
-import { CLOUD_READY_WAKE_WAIT_MS, isCloudReadyMachineSelector } from "../../desktop/src/shared/cloudReady";
+import { ADE_CLOUD_NAME } from "../../desktop/src/shared/adeCloudMachine";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
 import { PROOF_DUPLICATE_CODE } from "../../desktop/src/shared/proofProvenance";
+import { MAC_DESKTOP_PROOF_BACKEND_NAME } from "../../desktop/src/shared/types/macDesktop";
+import { APP_CONTROL_PROOF_BACKEND_NAME } from "../../desktop/src/shared/types/appControl";
+import { remoteMachineLongCallBudgetMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { androidStoreShotCaption } from "../../desktop/src/shared/androidDevicePresentation";
 import {
   CLI_COMMAND_ALIASES,
@@ -20,6 +38,7 @@ import {
   connectMachineRuntimeDaemon,
   executePlan,
   firstStandalonePositional,
+  formatChatLaunch,
   firstArray,
   getGitRemote,
   isMachineRuntimeScopedMethod,
@@ -30,6 +49,7 @@ import {
   sessionIdFromCreateChatValue,
   unwrapToolResult,
   withProjectId,
+  type CloudLaneLaunchDraft,
   type CliConnection,
   type CliPlan,
   type GlobalOptions,
@@ -52,6 +72,14 @@ import {
 
 /** `ade apple` verbs that build the app: with --machine and no --lane they sync the work copy first. */
 const APPLE_BUILD_VERBS: ReadonlySet<string> = new Set(["launch", "open", "install", "install-app", "test", "tests"]);
+/**
+ * `ade android` verbs that can build the app: with --machine and no --lane
+ * they take `--code`. Install and launch build only with --gradle or --apk
+ * (`withRemoteAndroidArgs` decides); tests and previews always do.
+ */
+const ANDROID_BUILD_VERBS: ReadonlySet<string> = new Set(["install", "launch", "test", "preview"]);
+/** `ade app-control` verbs that run the app: with --machine and no --lane they sync the work copy first. */
+const APP_CONTROL_LAUNCH_VERBS: ReadonlySet<string> = new Set(["launch", "open", "start"]);
 
 /** Commands that can run on another machine with `--machine`. */
 const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
@@ -74,12 +102,22 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
   "usage",
   // Only `ade files push|pull` (this chat's work copy there); see below.
   "files",
+  // A scheduled send fires from the machine whose database holds it, so a
+  // send for a chat there is made there: each machine has its own copy of
+  // the project, and a row saved here never reaches the other one.
+  "drafts",
 ]);
 /**
- * Commands whose own `--machine` flag means something else (a draft's sending
- * machine, the machine `ade machines` acts on). They keep the flag.
+ * Commands whose own `--machine` flag means something else (the machine
+ * `ade machines` acts on). They keep the flag.
  */
-const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "machines", "help"]);
+const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["machines", "help"]);
+/**
+ * Where `--clone` sets this repository up on that machine first (GitHub only,
+ * `machines.cloneForAgent` there): a chat there, or a command, device or file
+ * copy in this chat's work copy there.
+ */
+const MACHINE_CLONE_PRIMARIES: ReadonlySet<string> = new Set(["chat", "shell", "apple", "android", "files"]);
 /** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
 const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
 /** Flags whose value is free text that may itself look like a flag. */
@@ -107,6 +145,45 @@ export function flagNamesOutsideFreeText(args: readonly string[]): Set<string> {
 }
 
 /**
+ * The older spellings of the code flags, and what each is now. They stay as
+ * hidden aliases, rewritten only on a command that runs your code
+ * (`ade apple record-stop --discard` keeps its own meaning).
+ */
+const CODE_FLAG_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  "--no-sync": ["--code", "as-is"],
+  "--discard": ["--code", "fresh"],
+  "--scratch": ["--no-code"],
+};
+
+/** `command` with each older code flag (outside free text and before `--`) in its current spelling. */
+function withCodeFlagAliases(command: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < command.length; index += 1) {
+    const token = command[index]!;
+    if (token === "--") {
+      out.push(...command.slice(index));
+      break;
+    }
+    if (FREE_TEXT_VALUE_FLAGS.has(token) && index + 1 < command.length) {
+      out.push(token, command[index + 1]!);
+      index += 1;
+      continue;
+    }
+    out.push(...(Object.hasOwn(CODE_FLAG_ALIASES, token) ? CODE_FLAG_ALIASES[token]! : [token]));
+  }
+  return out;
+}
+
+/** `--code synced|as-is|fresh`: how your code there is readied before the command. */
+function workCopySyncFromCode(value: string): "none" | "discard" | null {
+  const word = value.trim().toLowerCase();
+  if (word === "synced") return null;
+  if (word === "as-is") return "none";
+  if (word === "fresh") return "discard";
+  throw new CliUsageError(`--code takes synced, as-is or fresh, not "${value}".`);
+}
+
+/**
  * Pull `--machine <name>`, `--all-machines`, `--machine-project <sel>`,
  * `--clone` and (for chat and lanes, while targeting a machine)
  * `--project <sel>` out of a supported command's own arguments into the
@@ -125,21 +202,34 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       }
       throw new CliUsageError(
         `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
-        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, android, screen (mac-desktop, windows-desktop), app-control, files push|pull.",
+        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, drafts, apple, android, screen (mac-desktop, windows-desktop), app-control, files push|pull.",
       );
     }
     return parsed;
   }
-  // `ade chat handoff <session> --machine X` moves a chat FROM here TO X: the
-  // flag names the destination, so the command runs on this machine and is
-  // never forwarded. The other handoff forms act on this machine's own move,
-  // so --machine with them is a mistake, not a target.
-  if (primary === "chat" && parsed.command[1]?.toLowerCase() === "handoff") {
+  // `ade chat handoff <session> --to X` and `ade chat move <session…> --to X`
+  // move chats FROM here TO X: `--to` (or its alias `--machine`) names the
+  // destination, which the plans read, so the command runs on this machine
+  // and is never forwarded. The other forms act on this machine's own move,
+  // so a destination with them is a mistake, not a target.
+  const chatSub = primary === "chat" ? parsed.command[1]?.toLowerCase() : undefined;
+  if (chatSub === "handoff" || chatSub === "move") {
     const flags = flagNamesOutsideFreeText(parsed.command);
-    if (flags.has("--machine") && ["--cancel", "--retry", "--options"].some((flag) => flags.has(flag))) {
-      throw new CliUsageError("--machine names the destination of a move; drop it for --cancel/--retry/--options.");
+    const ownMoveFlags = chatSub === "handoff" ? ["--cancel", "--retry", "--options"] : ["--status", "--retry"];
+    if ((flags.has("--to") || flags.has("--machine")) && ownMoveFlags.some((flag) => flags.has(flag))) {
+      throw new CliUsageError(`--to names the destination of a move; drop it for ${ownMoveFlags.join("/")}.`);
     }
     return parsed;
+  }
+  if (primary === "drafts") {
+    // An --image is a path on this computer; the draft made there would name a file that machine lacks.
+    const flags = flagNamesOutsideFreeText(parsed.command);
+    if (flags.has("--machine") && flags.has("--image")) {
+      throw new CliUsageError(
+        "A draft made on another machine can't carry an image from this one. "
+        + "Drop --image, or run ade drafts on that machine itself with the image there.",
+      );
+    }
   }
   if (primary === "files") {
     // The other `ade files` verbs act on a workspace (a lane) here; with
@@ -160,18 +250,34 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   let machineProject: string | null = null;
   let projectAlias: string | null = null;
   let machineClone = false;
+  let cloudSize: string | null = null;
   let workCopySync: "none" | "discard" | null = null;
+  let scratch = false;
   let terminatorArgs: string[] | null = null;
-  const command = parsed.command;
-  // A shell start or an Apple build with --machine runs in this chat's work
-  // copy there unless --lane names a lane there; only those take --no-sync
-  // and --discard (`ade apple record-stop --discard` keeps its own meaning).
-  const commandFlags = flagNamesOutsideFreeText(command);
   // The subcommand wherever it sits (`ade shell --machine m start …`).
-  const subcommand = firstStandalonePositional(command.slice(1))?.toLowerCase() ?? "";
-  const workCopyVerb = commandFlags.has("--machine")
-    && ((primary === "shell" && (subcommand === "start" || subcommand === "create"))
-      || (primary === "apple" && APPLE_BUILD_VERBS.has(subcommand)));
+  const subcommand = firstStandalonePositional(parsed.command.slice(1))?.toLowerCase() ?? "";
+  // A shell start, a build, or an app launch runs your code. With --machine
+  // and no --lane it runs in this chat's copy of it there: only those take
+  // `--code synced|as-is|fresh` and `--no-code` (and their older spellings).
+  const runsCode = (primary === "shell" && (subcommand === "start" || subcommand === "create"))
+    || (primary === "apple" && APPLE_BUILD_VERBS.has(subcommand))
+    || (primary === "android" && ANDROID_BUILD_VERBS.has(subcommand))
+    || (primary === "app-control" && APP_CONTROL_LAUNCH_VERBS.has(subcommand));
+  const typedFlags = flagNamesOutsideFreeText(parsed.command);
+  // The older spelling of a code flag the person typed, so an error names
+  // what they wrote (`--discard (now --code fresh)`), not only the new flag.
+  const typedOld = Object.keys(CODE_FLAG_ALIASES).find((flag) => typedFlags.has(flag)) ?? null;
+  const spelled = (flag: "--code" | "--no-code"): string => {
+    const now = typedOld ? CODE_FLAG_ALIASES[typedOld]! : null;
+    return now && now[0] === flag ? `${typedOld} (now ${now.join(" ")})` : flag;
+  };
+  if (primary === "shell" && !runsCode && typedOld) {
+    throw new CliUsageError(`${typedOld} is for a command that runs your code on another machine: ade shell start --machine <name>.`);
+  }
+  const command = runsCode ? withCodeFlagAliases(parsed.command) : parsed.command;
+  const commandFlags = flagNamesOutsideFreeText(command);
+  const workCopyVerb = runsCode && commandFlags.has("--machine");
+  let codeChosen: string | null = null;
   for (let index = 0; index < command.length; index += 1) {
     const token = command[index]!;
     if (token === "--") {
@@ -198,10 +304,18 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     if (flag === "--machine") { machine = takeValue(); continue; }
     if (flag === "--machine-project") { machineProject = takeValue(); continue; }
     if (flag === "--all-machines" && inline == null) { allMachines = true; continue; }
-    if (flag === "--clone" && inline == null && primary === "chat") { machineClone = true; continue; }
-    if ((flag === "--no-sync" || flag === "--discard") && inline == null && workCopyVerb) {
-      if (workCopySync) throw new CliUsageError("Use --no-sync or --discard, not both.");
-      workCopySync = flag === "--no-sync" ? "none" : "discard";
+    if (flag === "--clone" && inline == null && MACHINE_CLONE_PRIMARIES.has(primary)) { machineClone = true; continue; }
+    // A one-off command that needs no code: no copy of it, no repository there.
+    if (flag === "--no-code" && inline == null && workCopyVerb && primary === "shell") { scratch = true; continue; }
+    // The size of a new ADE Cloud computer (`--machine cloud`); no chat or lane verb has a --size of its own.
+    if (flag === "--size" && MACHINE_PROJECT_ALIAS_PRIMARIES.has(primary)) { cloudSize = takeValue(); continue; }
+    if (flag === "--code" && workCopyVerb) {
+      const value = takeValue();
+      const sync = workCopySyncFromCode(value);
+      const typed = `--code ${value.trim().toLowerCase()}`;
+      if (codeChosen) throw new CliUsageError(`Use ${codeChosen} or ${typed}, not both.`);
+      codeChosen = typed;
+      workCopySync = sync;
       continue;
     }
     if (flag === "--project" && MACHINE_PROJECT_ALIAS_PRIMARIES.has(primary)) {
@@ -216,18 +330,50 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   if (machine && allMachines) throw new CliUsageError("Use --machine <name> or --all-machines, not both.");
   if (machineClone && !machine) throw new CliUsageError("--clone sets the repository up on another machine; add --machine <name>.");
   const usesWorkCopy = workCopyVerb && !commandFlags.has("--lane") && !commandFlags.has("--lane-id");
-  if (workCopySync && !usesWorkCopy) {
-    throw new CliUsageError("--no-sync and --discard are for this chat's work copy there; leave out --lane to use it.");
+  if (codeChosen && !usesWorkCopy) {
+    throw new CliUsageError(`${codeChosen} is for your code there; leave out --lane to use it.`);
+  }
+  if (!codeChosen && commandFlags.has("--code")) {
+    throw new CliUsageError(
+      machine
+        ? `${spelled("--code")} is for a command that builds or runs your code on another machine: ade shell start, ade apple launch|install|test, `
+          + "ade android install|launch|test|preview, ade app-control launch."
+        : `${spelled("--code")} is for your code on another machine: add --machine <name>.`,
+    );
+  }
+  if (!scratch && commandFlags.has("--no-code")) {
+    throw new CliUsageError(`${spelled("--no-code")} runs one command on another machine with no code: ade shell start --machine <name> --no-code [--wait] -- <command>.`);
+  }
+  if (scratch) {
+    if (!usesWorkCopy) throw new CliUsageError("--no-code runs in an empty folder there, not a lane: leave out --lane.");
+    if (codeChosen) throw new CliUsageError(`--no-code has no code to ready: leave out ${codeChosen}.`);
+    if (machineClone) throw new CliUsageError("--no-code needs no repository there: leave out --clone.");
+    if (!terminatorArgs?.length) throw new CliUsageError("--no-code runs one command: ade shell start --machine <name> --no-code [--wait] -- <command>.");
   }
   if (machineProject && !machine && !allMachines) throw new CliUsageError("--machine-project needs --machine <name>.");
+  const cloudLane = isCloudLaneMachineSelector(machine);
+  if (cloudSize !== null && !cloudLane) {
+    throw new CliUsageError("--size picks the size of a new ADE Cloud computer: add --machine cloud.");
+  }
+  const sizeId = cloudSize === null ? null : cloudSize.toLowerCase().replace(/[\s-]+/g, "");
+  if (sizeId !== null && !isCloudTierId(sizeId)) {
+    throw new CliUsageError(`--size must be one of: ${CLOUD_TIER_IDS.join(", ")}.`);
+  }
+  if (cloudLane && (machineProject || projectAlias)) {
+    throw new CliUsageError("--machine cloud makes a new lane for this project on its own computer: leave out --project and --machine-project.");
+  }
+  if (cloudLane && machineClone) {
+    throw new CliUsageError("--machine cloud always gets the repository on the new computer: leave out --clone.");
+  }
+  if (machine && !cloudLane && machine.split(",").some((entry) => isCloudLaneMachineSelector(entry))) {
+    throw new CliUsageError("--machine cloud makes one new computer for one lane: don't list other machines with it.");
+  }
   if (!machine && primary === "shell") {
-    const flags = flagNamesOutsideFreeText(parsed.command);
     if (subcommand === "clean") {
-      throw new CliUsageError("ade shell clean deletes this chat's work copy on another machine: add --machine <name>.");
+      throw new CliUsageError("ade shell clean deletes your code on another machine: add --machine <name>.");
     }
-    const workCopyFlag = ["--no-sync", "--discard", "--wait"].find((flag) => flags.has(flag));
-    if (workCopyFlag) {
-      throw new CliUsageError(`${workCopyFlag} is for a command on another machine: add --machine <name>. Here, run the command in your own shell.`);
+    if (commandFlags.has("--wait")) {
+      throw new CliUsageError("--wait is for a command on another machine: add --machine <name>. Here, run the command in your own shell.");
     }
   }
   if (!machine && !allMachines) return parsed;
@@ -239,6 +385,8 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       allMachines,
       machineProject: machineProject ?? projectAlias,
       machineClone,
+      // No --size stays null: the brain picks the person's saved size for new lanes.
+      ...(cloudLane ? { cloudSize: sizeId } : {}),
       ...(usesWorkCopy
         ? {
             machineWorkCopy: {
@@ -246,6 +394,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
               // A shell command's argv (after `--`), sent as argv so the other
               // machine renders it for its own shell.
               argv: primary === "shell" ? terminatorArgs : null,
+              ...(scratch ? { scratch: true } : {}),
             },
           }
         : {}),
@@ -269,7 +418,8 @@ function machineCallScopeFor(
   if (method.startsWith("projects.")) return { kind: "machine" };
   const selector = options.machineProject?.trim();
   if (selector) return { kind: "project", selector };
-  if (isMachineWideAction(method, params)) {
+  if (isMachineWideAction(method, params) || isScratchShell(method, params) || isScratchShellFollow(method, params, options)) {
+    // A scratch command needs no code, so any project there can run it.
     // The machine's quota is the same from every project there, so a machine
     // without this repository can still answer. Sent as a `repo` scope that
     // allows any project: a brain older than `anyProject` still reads the repo
@@ -292,10 +442,43 @@ function machineCallScopeFor(
  */
 const MACHINE_WIDE_ACTIONS: ReadonlySet<string> = new Set(["usage.getUsageLimits", "usage.getUsageSnapshot"]);
 
+/** The tool, domain, action and args of an `ade/actions/call` request; null for any other request. */
+function actionCallParts(
+  method: string,
+  params: JsonObject | undefined,
+): { name: unknown; domain: string | null; action: string | null; args: JsonObject | null } | null {
+  if (method !== "ade/actions/call" || !params || !isRecord(params.arguments)) return null;
+  const { domain, action, args } = params.arguments;
+  return {
+    name: params.name,
+    domain: typeof domain === "string" ? domain : null,
+    action: typeof action === "string" ? action : null,
+    args: isRecord(args) ? args : null,
+  };
+}
+
+/** `ade shell start --machine … --no-code`: a command that needs no checkout there. */
+function isScratchShell(method: string, params: JsonObject | undefined): boolean {
+  const call = actionCallParts(method, params);
+  const remoteWork = call?.args?.remoteWork;
+  return call?.name === "run_ade_action" && call.domain === "pty" && call.action === "create"
+    && isRecord(remoteWork) && remoteWork.scratch === true;
+}
+
+/**
+ * `--no-code --wait` reading back the scratch shell it started: the reads go
+ * where the shell was made, not to this repository's checkout there.
+ */
+function isScratchShellFollow(method: string, params: JsonObject | undefined, options: GlobalOptions): boolean {
+  if (options.machineWorkCopy?.scratch !== true) return false;
+  const call = actionCallParts(method, params);
+  return call?.name === "run_ade_action" && call.domain === "terminal";
+}
+
 function isMachineWideAction(method: string, params: JsonObject | undefined): boolean {
-  if (method !== "ade/actions/call" || !params || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
-  const { domain, action } = params.arguments;
-  return typeof domain === "string" && typeof action === "string" && MACHINE_WIDE_ACTIONS.has(`${domain}.${action}`);
+  const call = actionCallParts(method, params);
+  return call?.name === "run_ade_action" && call.domain != null && call.action != null
+    && MACHINE_WIDE_ACTIONS.has(`${call.domain}.${call.action}`);
 }
 
 /** The most a proof command reads back from another machine for one capture. */
@@ -315,6 +498,31 @@ function withoutLocalPaths(params: JsonObject | undefined): JsonObject {
   const toolArgs = strip(params.arguments);
   if (isRecord(toolArgs.args)) toolArgs.args = strip(toolArgs.args);
   return { ...params, arguments: toolArgs };
+}
+
+/** `domain.action` of an action call, the name the other machine's budgets use; null for anything else. */
+function remoteCallLabel(method: string, params: JsonObject | undefined): string | null {
+  const call = actionCallParts(method, params);
+  return call?.domain != null && call.action != null ? `${call.domain}.${call.action}` : null;
+}
+
+/** How often a long call to another machine says it is still waiting. */
+const REMOTE_WAIT_PROGRESS_EVERY_MS = 30_000;
+
+/**
+ * "· still running ios_simulator.launch on MacBook Pro (97)… 2m30s" on
+ * stderr every 30 s while a long call waits, so an agent reading the output
+ * knows the build goes on there. Returns the stop.
+ */
+function startRemoteWaitProgress(label: string, machine: string): () => void {
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    const elapsed = seconds >= 60 ? `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s` : `${seconds}s`;
+    process.stderr.write(`· still running ${label} on ${machine}… ${elapsed}\n`);
+  }, REMOTE_WAIT_PROGRESS_EVERY_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 /**
@@ -345,15 +553,27 @@ export async function createMachineRemoteConnection(
 
   /** The other machine's answer, and its display name when the brain says it. */
   const callRemoteAnswer = async (method: string, params?: JsonObject): Promise<{ result: unknown; machineName: string | null }> => {
-    const answer = await socketClient.request("machines.call", {
-      machine,
-      scope: machineCallScopeFor(method, params, options, localOriginUrl),
-      request: { method, params: withoutLocalPaths(params) },
-      timeoutMs: options.timeoutMs,
-      ...(options.machineClone ? { clone: true } : {}),
-    });
-    const machineName = isRecord(answer) && isRecord(answer.machine) ? asString(answer.machine.name) : null;
-    return { result: isRecord(answer) && "result" in answer ? answer.result : answer, machineName };
+    // A verb that runs long there too (an iOS build, a Gradle install, a test
+    // run): this brain waits that verb's own budget for it, so this end
+    // waits a minute longer still, and says on stderr that it is waiting.
+    const label = remoteCallLabel(method, params);
+    const longBudgetMs = remoteMachineLongCallBudgetMs(label);
+    const progress = longBudgetMs != null && label ? startRemoteWaitProgress(label, machine) : null;
+    try {
+      const answer = await socketClient.request("machines.call", {
+        machine,
+        scope: machineCallScopeFor(method, params, options, localOriginUrl),
+        request: { method, params: withoutLocalPaths(params) },
+        timeoutMs: options.timeoutMs,
+        ...(options.machineClone ? { clone: true } : {}),
+      }, longBudgetMs != null ? { timeoutMs: Math.max(options.timeoutMs, longBudgetMs + 60_000) } : undefined);
+      const machineName = isRecord(answer) && isRecord(answer.machine) ? asString(answer.machine.name) : null;
+      return { result: isRecord(answer) && "result" in answer ? answer.result : answer, machineName };
+    } catch (error) {
+      throw machineRefusal(error, machine);
+    } finally {
+      progress?.();
+    }
   };
   const callRemote = async (method: string, params?: JsonObject): Promise<unknown> =>
     (await callRemoteAnswer(method, params)).result;
@@ -389,6 +609,11 @@ export async function createMachineRemoteConnection(
     // The name only (the path is the other machine's, in its own separator),
     // numbered so two captures with one name cannot overwrite each other.
     const localPath = path.join(tempDir, `${index}-${path.basename(remotePath.replace(/\\/g, "/"))}`);
+    return await fetchRemoteCaptureTo(remotePath, localPath);
+  };
+
+  /** Read a capture this caller made there back into `localPath` here. */
+  const fetchRemoteCaptureTo = async (remotePath: string, localPath: string): Promise<string> => {
     const handle = fs.openSync(localPath, "w");
     try {
       let offset = 0;
@@ -477,7 +702,7 @@ export async function createMachineRemoteConnection(
       name: "ingest_computer_use_artifacts",
       arguments: {
         backendStyle: "manual",
-        backendName: "ade-app-control",
+        backendName: APP_CONTROL_PROOF_BACKEND_NAME,
         toolName: "app-control proof",
         inputs: [{ kind: "screenshot", title, description: title, path: filePath }],
       },
@@ -485,22 +710,17 @@ export async function createMachineRemoteConnection(
   };
 
   /**
-   * The Apple verbs that file proof (`screenshot`, `captureProofBundle`,
-   * `duoAppStoreScreenshots`, `recordStop`) file it where they run, which on
-   * another machine is that machine's drawer: the chat would cite an id its
-   * own machine has never heard of. So the verb runs there with `proof: false`,
-   * the files it made are read back, and each is filed in THIS chat's drawer;
-   * the answer carries the ids filed here.
+   * File one capture read back from another machine in THIS chat's drawer.
+   * Answers the id filed here, or null when the drawer refused it.
    */
-  const fileOneRemoteAppleCaptureHere = async (
-    where: string,
+  const fileCaptureHere = async (
     input: { kind: "screenshot" | "video_recording"; title: string; description: string; path: string; mimeType: string; metadata: JsonObject },
-    toolName: string,
+    filing: { backendName: string; toolName: string; where: string; noun?: "capture" | "recording" },
   ): Promise<string | null> => {
     try {
       const filed = unwrapToolResult(await fileRemoteCapturesHere({
         name: "ingest_computer_use_artifacts",
-        arguments: { backendStyle: "manual", backendName: "ade-ios-simulator", toolName, inputs: [input] },
+        arguments: { backendStyle: "manual", backendName: filing.backendName, toolName: filing.toolName, inputs: [input] },
       }));
       return firstFiledArtifactId(filed);
     } catch (error) {
@@ -512,11 +732,54 @@ export async function createMachineRemoteConnection(
         ? /ade-proof:\/\/([0-9a-f-]{36})/iu.exec(message)?.[1] ?? null
         : null;
       // The capture is what was asked for; a drawer that refused it is said, not thrown.
-      if (!duplicateOf) process.stderr.write(`Could not file the ${toolName} capture from ${where} as proof here: ${message}\n`);
+      if (!duplicateOf) {
+        process.stderr.write(`Could not file the ${filing.toolName} ${filing.noun ?? "capture"} from ${filing.where} as proof here: ${message}\n`);
+      }
       return duplicateOf;
     }
   };
 
+  const fileOneRemoteAppleCaptureHere = (
+    where: string,
+    input: Parameters<typeof fileCaptureHere>[0],
+    toolName: string,
+  ): Promise<string | null> => fileCaptureHere(input, { backendName: "ade-ios-simulator", toolName, where });
+
+  /**
+   * `ade apple screenshot --out <path> --machine …`: the shot is a file on
+   * that Mac. Its bytes are read back (as a proof capture's are) into `--out`
+   * here, so the copy the plan makes finds it.
+   */
+  const bringRemoteScreenshotHere = async (answer: unknown, copyTo: string): Promise<unknown> => {
+    if (isRecord(answer) && (answer.isError === true || answer.ok === false)) return answer;
+    const record = appleActionResult(answer);
+    const remotePath = record ? asString(record.filePath) : null;
+    if (!record || !remotePath) return answer;
+    fs.mkdirSync(path.dirname(copyTo), { recursive: true });
+    // Beside the target, renamed when whole: a failed read leaves no half file at --out.
+    const partPath = `${copyTo}.ade-part-${process.pid}`;
+    try {
+      await fetchRemoteCaptureTo(remotePath, partPath);
+      fs.renameSync(partPath, copyTo);
+    } catch (error) {
+      fs.rmSync(partPath, { force: true });
+      throw new CliToolError(
+        `The screenshot was taken on ${machine}, at ${remotePath} there, but could not be copied to ${copyTo} here: `
+          + `${error instanceof Error ? error.message : String(error)}. Leave out --out (the proof drawer here has the shot unless --no-proof).`,
+        { machine },
+      );
+    }
+    return withAppleActionResult(answer, { ...record, filePath: copyTo, savedFrom: `${remotePath} on ${machine}` });
+  };
+
+  /**
+   * The Apple verbs that file proof (`screenshot`, `captureProofBundle`,
+   * `duoAppStoreScreenshots`, `recordStop`) file it where they run, which on
+   * another machine is that machine's drawer: the chat would cite an id its
+   * own machine has never heard of. So the verb runs there with `proof: false`,
+   * the files it made are read back, and each is filed in THIS chat's drawer;
+   * the answer carries the ids filed here.
+   */
   const fileRemoteAppleProofHere = async (params: JsonObject, action: AppleProofAction): Promise<unknown> => {
     const toolArgs = isRecord(params.arguments) ? params.arguments : {};
     const actionArgs = isRecord(toolArgs.args) ? toolArgs.args : {};
@@ -602,22 +865,8 @@ export async function createMachineRemoteConnection(
     if (!record) return answer;
     const where = machineName ?? machine;
     const caption = asString(actionArgs.caption);
-    const fileOne = async (input: { kind: "screenshot" | "video_recording"; title: string; description: string; path: string; mimeType: string; metadata: JsonObject }, toolName: string) => {
-      try {
-        const filed = unwrapToolResult(await fileRemoteCapturesHere({
-          name: "ingest_computer_use_artifacts",
-          arguments: { backendStyle: "manual", backendName: "android-emulator", toolName, inputs: [input] },
-        }));
-        return firstFiledArtifactId(filed);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const duplicateOf = message.includes(PROOF_DUPLICATE_CODE)
-          ? /ade-proof:\/\/([0-9a-f-]{36})/iu.exec(message)?.[1] ?? null
-          : null;
-        if (!duplicateOf) process.stderr.write(`Could not file the ${toolName} capture from ${where} as proof here: ${message}\n`);
-        return duplicateOf;
-      }
-    };
+    const fileOne = (input: Parameters<typeof fileCaptureHere>[0], toolName: string) =>
+      fileCaptureHere(input, { backendName: "android-emulator", toolName, where });
     if (action === "screenshot" || action === "captureProofBundle") {
       const filePath = asString(action === "screenshot" ? record.path : record.screenshotPath);
       if (!filePath) return answer;
@@ -726,6 +975,45 @@ export async function createMachineRemoteConnection(
     return withAppleActionResult(answer, { ...record, proofArtifactIds: ids });
   };
 
+  /**
+   * `ade screen record stop --machine` and `ade app-control record stop
+   * --machine`: a captioned recording files itself where it ran, which is
+   * the other machine's drawer. So the stop runs there with `proof: false`,
+   * the video is read back, and it is filed in THIS chat's drawer under the
+   * caption it was started with; the answer carries the id filed here.
+   */
+  const fileRemoteRecordingHere = async (
+    params: JsonObject,
+    surface: { backendName: string; toolName: string; label: string },
+  ): Promise<unknown> => {
+    const toolArgs = isRecord(params.arguments) ? params.arguments : {};
+    const actionArgs = isRecord(toolArgs.args) ? toolArgs.args : {};
+    const { result: answer, machineName } = await callRemoteAnswer("ade/actions/call", {
+      ...params,
+      arguments: { ...toolArgs, args: { ...actionArgs, proof: false } },
+    });
+    if (isRecord(answer) && (answer.isError === true || answer.ok === false)) return answer;
+    const record = appleActionResult(answer);
+    const filePath = record ? asString(record.filePath) : null;
+    const caption = record ? asString(record.caption) : null;
+    // No caption is a scratch recording, here as there: nothing is filed.
+    if (!record || !filePath || !caption || asString(record.lastError)) return answer;
+    const where = machineName ?? machine;
+    const proofArtifactId = await fileCaptureHere({
+      kind: "video_recording",
+      title: caption,
+      description: `${surface.label} recording on ${where}.`,
+      path: filePath,
+      mimeType: "video/mp4",
+      metadata: {
+        durationMs: typeof record.durationMs === "number" ? record.durationMs : null,
+        ...(typeof record.wallDurationMs === "number" ? { wallDurationMs: record.wallDurationMs } : {}),
+        ...(typeof record.idleCutMs === "number" ? { idleCutMs: record.idleCutMs } : {}),
+      },
+    }, { backendName: surface.backendName, toolName: surface.toolName, where, noun: "recording" });
+    return withAppleActionResult(answer, { ...record, proofArtifactId });
+  };
+
   return {
     mode: "runtime-socket",
     projectRoot: roots.projectRoot,
@@ -741,7 +1029,8 @@ export async function createMachineRemoteConnection(
         return await fileRemoteCapturesHere(params);
       }
       if (method === "ade/actions/call" && params && isAppControlCaptureProof(params)) {
-        return await fileRemoteAppControlProofHere(params);
+        // Observed in this chat's work copy's session there.
+        return await fileRemoteAppControlProofHere(withRemoteAppControlArgs(params, roots.workspaceRoot, null));
       }
       if (method === "ade/actions/call" && params?.name === "work_copy_file" && isRecord(params.arguments)
         && (params.arguments.op === "push" || params.arguments.op === "pull")) {
@@ -784,16 +1073,32 @@ export async function createMachineRemoteConnection(
         }
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "ios_simulator") {
-        const appleParams = withRemoteAppleArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null);
+        const { params: appleCall, copyTo } = takeScreenshotCopyTarget(params);
+        const appleParams = withRemoteAppleArgs(appleCall, roots.workspaceRoot, options.machineWorkCopy ?? null);
         const proofAction = appleActionFiledAsProof(appleParams);
-        if (proofAction) return await fileRemoteAppleProofHere(appleParams, proofAction);
-        return await callRemote(method, appleParams);
+        const answer = proofAction ? await fileRemoteAppleProofHere(appleParams, proofAction) : await callRemote(method, appleParams);
+        return copyTo ? await bringRemoteScreenshotHere(answer, copyTo) : answer;
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "android_emulator") {
-        const androidParams = withRemoteAndroidArgs(params, roots.workspaceRoot);
+        const androidParams = withRemoteAndroidArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null);
         const proofAction = androidActionFiledAsProof(androidParams);
         if (proofAction) return await fileRemoteAndroidProofHere(androidParams, proofAction);
         return await callRemote(method, androidParams);
+      }
+      if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "mac_desktop") {
+        // The screen there is this chat's work copy's (Mac, Windows or Linux Desktop).
+        const screenParams = withRemoteScreenArgs(params, roots.workspaceRoot);
+        if (recordingStopFiledAsProof(method, screenParams)) {
+          return await fileRemoteRecordingHere(screenParams, { backendName: MAC_DESKTOP_PROOF_BACKEND_NAME, toolName: "desktop record", label: "Desktop screen" });
+        }
+        return await callRemote(method, screenParams);
+      }
+      if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "app_control") {
+        const appControlParams = withRemoteAppControlArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null);
+        if (recordingStopFiledAsProof(method, appControlParams)) {
+          return await fileRemoteRecordingHere(appControlParams, { backendName: APP_CONTROL_PROOF_BACKEND_NAME, toolName: "app-control record", label: "App Control" });
+        }
+        return await callRemote(method, appControlParams);
       }
       if (method === "ade/actions/call" && (params?.name === "list_computer_use_artifacts" || params?.name === "review_computer_use_artifact")) {
         // A proof command's verify step checks the drawer it filed into, and a
@@ -809,6 +1114,18 @@ export async function createMachineRemoteConnection(
     },
     close: () => socketClient.close(),
   };
+}
+
+/**
+ * A JSON-RPC error from `machines.call` is an answer, not a broken connection
+ * here: the other machine (or this brain, about reaching it) said no, and its
+ * sentence is the whole message. As a `CliToolError` naming the machine it is
+ * printed as it is; otherwise the CLI added "run ade doctor … or retry with
+ * --socket", which is about this machine and fixes nothing there.
+ */
+function machineRefusal(error: unknown, machine: string): unknown {
+  if (!(error instanceof JsonRpcError)) return error;
+  return new CliToolError(error.message, { machine, ...(error.data !== undefined ? { data: error.data as JsonObject } : {}) });
 }
 
 function isShellOrTerminalAction(params: JsonObject): boolean {
@@ -844,6 +1161,20 @@ function androidActionFiledAsProof(params: JsonObject): AndroidProofAction | nul
   return (ANDROID_PROOF_ACTIONS as readonly string[]).includes(action ?? "") ? action as AndroidProofAction : null;
 }
 
+/**
+ * `ade apple screenshot --out` names a path HERE (`copyToCallerPath`), which
+ * means nothing to the Mac that takes the shot: it is taken off the call and
+ * kept for the copy back.
+ */
+function takeScreenshotCopyTarget(params: JsonObject): { params: JsonObject; copyTo: string | null } {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : null;
+  const args = toolArgs && isRecord(toolArgs.args) ? toolArgs.args : null;
+  if (!toolArgs || !args || !("copyToCallerPath" in args)) return { params, copyTo: null };
+  const { copyToCallerPath, ...rest } = args;
+  const copyTo = toolArgs.action === "screenshot" ? asString(copyToCallerPath) : null;
+  return { params: { ...params, arguments: { ...toolArgs, args: rest } }, copyTo };
+}
+
 /** The action's own record in an `ade/actions/call` answer: `{ structuredContent: { domain, action, result } }` or a bare one. */
 function appleActionResult(answer: unknown): JsonObject | null {
   let value: unknown = answer;
@@ -870,6 +1201,12 @@ function firstFiledArtifactId(value: unknown): string | null {
   const artifacts = record && Array.isArray(record.artifacts) ? record.artifacts : [];
   const first = artifacts.find(isRecord);
   return first ? asString(first.artifactId) ?? asString(first.id) : null;
+}
+
+/** A recording stop the other machine would file as proof; `proof: false` files nothing at all. */
+function recordingStopFiledAsProof(method: string, params: JsonObject): boolean {
+  const call = actionCallParts(method, params);
+  return call?.name === "run_ade_action" && call.action === "stopRecording" && call.args?.proof !== false;
 }
 
 function isAppControlCaptureProof(params: JsonObject | undefined): boolean {
@@ -900,6 +1237,54 @@ function failureCause(error: unknown): string {
 }
 
 /** One short-lived connection to this machine's brain, for machine-level calls. */
+/** How long a list waits for the account's ADE Cloud computers before it shows plain names. */
+export const CLOUD_COMPUTER_LIST_BUDGET_MS = 5_000;
+
+/** The `cloud.call` request that lists the account's ADE Cloud computers (a read: it wakes nothing). */
+export const CLOUD_COMPUTER_LIST_REQUEST = { action: "list", args: {} } as const;
+
+/**
+ * The machine keys of the account's ADE Cloud computers, from the answer of
+ * a `cloud.call` list. Empty for no answer, or an account with no ADE Cloud.
+ */
+export function cloudComputerKeysOf(answer: unknown): ReadonlySet<string> {
+  const body = isRecord(answer) && isRecord(answer.result) ? answer.result : answer;
+  const machines = isRecord(body) && Array.isArray(body.machines) ? body.machines.filter(isRecord) : [];
+  return new Set(machines.map((machine) => asString(machine.machineKey)).filter((key): key is string => key != null));
+}
+
+/** `cloudComputerKeysOf` read from this machine's brain, inside a budget. Empty on any failure. */
+async function readCloudComputerKeys(client: SocketJsonRpcClient): Promise<ReadonlySet<string>> {
+  const answer = await Promise.race([
+    client.request("cloud.call", CLOUD_COMPUTER_LIST_REQUEST).catch(() => null),
+    new Promise<null>((resolve) => { setTimeout(() => resolve(null), CLOUD_COMPUTER_LIST_BUDGET_MS).unref?.(); }),
+  ]);
+  return cloudComputerKeysOf(answer);
+}
+
+/**
+ * The machine rows of a list, each ADE Cloud computer marked `cloud: true`
+ * (the `--json` output carries the mark too). Rows are not changed otherwise.
+ */
+export function markCloudComputers(machines: unknown, cloudKeys: ReadonlySet<string>): unknown {
+  if (!Array.isArray(machines) || !cloudKeys.size) return machines;
+  return machines.map((machine) => {
+    const key = isRecord(machine) ? asString(machine.machineKey) : null;
+    return key && cloudKeys.has(key) ? { ...(machine as JsonObject), cloud: true } : machine;
+  });
+}
+
+/**
+ * The name a list shows for a machine. The app shows each ADE Cloud computer
+ * as "ADE Cloud" (`adeCloudMachineLabel`), and the computer's own name is its
+ * lane's name, so a list here reads "ADE Cloud · <lane>". Any other machine
+ * keeps its name. A label only: `--machine` still takes the key or the name.
+ */
+export function machineListLabel(name: string, cloud: boolean): string {
+  if (!cloud) return name;
+  return name.startsWith(ADE_CLOUD_NAME) ? name : `${ADE_CLOUD_NAME} · ${name}`;
+}
+
 async function withMachineBrain<T>(
   options: GlobalOptions,
   run: (client: SocketJsonRpcClient) => Promise<T>,
@@ -931,10 +1316,11 @@ async function executePlanOnAllMachines(
   }
   const single: GlobalOptions = { ...options, allMachines: false, machine: null };
   const perProject = kind === "chats" || kind === "inbox" || kind === "lanes";
-  const [roster, localProjects] = await withMachineBrain(options, async (client) => [
-    await client.request("machines.list", { includeProjects: perProject }),
-    perProject ? await client.request("projects.list", {}).catch(() => []) : [],
-  ] as const);
+  const [roster, localProjects, cloudKeys] = await withMachineBrain(options, async (client) => await Promise.all([
+    client.request("machines.list", { includeProjects: perProject }),
+    perProject ? client.request("projects.list", {}).catch(() => []) : Promise.resolve([]),
+    readCloudComputerKeys(client),
+  ]));
   const machines = isRecord(roster) && Array.isArray(roster.machines) ? roster.machines.filter(isRecord) : [];
   if (isRecord(roster) && roster.state !== "ok") {
     process.stderr.write(`ade: ${String(roster.message ?? "Other machines are unavailable.")} Showing this machine only.\n`);
@@ -991,7 +1377,9 @@ async function executePlanOnAllMachines(
       if (typeof note === "string" && note.trim()) notes.push(`${machineName}: ${note.trim()}`);
     }
   };
-  const localName = asString(machines.find((machine) => machine.isThisMachine === true)?.name) ?? THIS_MACHINE_NAME;
+  const localMachine = machines.find((machine) => machine.isThisMachine === true);
+  const localKey = asString(localMachine?.machineKey);
+  const localName = machineListLabel(asString(localMachine?.name) ?? THIS_MACHINE_NAME, localKey != null && cloudKeys.has(localKey));
   const results = await Promise.all([
     executePlan(plan, single).then(
       (value) => {
@@ -1003,7 +1391,8 @@ async function executePlanOnAllMachines(
     ...machines
       .filter((machine) => machine.isThisMachine !== true)
       .map(async (machine): Promise<JsonObject[]> => {
-        const name = asString(machine.name) ?? asString(machine.machineKey) ?? "machine";
+        const key = asString(machine.machineKey);
+        const name = machineListLabel(asString(machine.name) ?? key ?? "machine", key != null && cloudKeys.has(key));
         if (machine.online !== true) {
           const lastSeen = asString(machine.lastSeenAt);
           return [{
@@ -1094,24 +1483,6 @@ async function executePlanOnMachines(
   return { machineFanOut: rows };
 }
 
-const READY_MACHINE_POLL_MS = 1_000;
-/** One reachability check on the woken machine; the overall wait is CLOUD_READY_WAKE_WAIT_MS. */
-const READY_MACHINE_PROBE_TIMEOUT_MS = 15_000;
-
-/**
- * The plan with `laneId` in its chat create when the command named no lane:
- * lane ids are per machine, so a ready machine says which lane is its
- * project's primary one.
- */
-function withDefaultChatLane<T extends CliPlan & { kind: "execute" }>(plan: T, laneId: string): T {
-  return {
-    ...plan,
-    steps: plan.steps.map((step) => (isRecord(step.params) && chatCreateCallWithoutLane(step.params)
-      ? { ...step, params: withChatCreateLane(step.params, laneId) }
-      : step)),
-  };
-}
-
 /** The `chat.createSession` call in an `ade/actions/call` request, when it names no lane. */
 function chatCreateCallWithoutLane(params: JsonObject): (JsonObject & { args: JsonObject }) | null {
   if (params.name !== "run_ade_action" || !isRecord(params.arguments)) return null;
@@ -1125,115 +1496,250 @@ function withChatCreateLane(params: JsonObject, laneId: string): JsonObject {
   return call ? { ...params, arguments: { ...call, args: { ...call.args, laneId } } } : params;
 }
 
-/** An `cloud` action on this machine's brain, in the project the CLI runs in; its `result`. */
-async function runCloudAction(options: GlobalOptions, projectRoot: string, action: string, args: JsonObject): Promise<unknown> {
+/* ──────────────────────────────────────────────────────────────────────────
+   ADE CLOUD LANES: `--machine cloud [--size <size>]`.
+
+   One new ADE Cloud computer for one new lane, the repository there, and the
+   chat started there. This machine's brain owns the launch (`cloud.lane_launch`
+   in cloudAgentActions.ts, the core in cloudLaneLaunchService.ts): it holds
+   the account and the provider key, which this process never has. The CLI
+   starts it and follows it. A Ctrl-C stops the following only; the launch
+   goes on in the brain, and the same `--launch-id` again follows it, or goes
+   on from a failed step, never with a second computer.
+   ────────────────────────────────────────────────────────────────────────── */
+
+const CLOUD_LANE_POLL_MS = 2_000;
+/** Covers a new computer, the 10 minutes a join may wait for the person, and a large clone. */
+const CLOUD_LANE_WAIT_MS = 30 * 60_000;
+
+/** `--machine cloud`: a new lane on its own new ADE Cloud computer. */
+export function isCloudLaneMachineSelector(machine: string | null | undefined): boolean {
+  return machine?.trim().toLowerCase() === CLOUD_LANE_MACHINE;
+}
+
+/** `ade chat create`'s choices as a lane launch: a chat in a new lane with the project's lane defaults. */
+function cloudLaunchArgsFromChatCreate(draft: CloudLaneLaunchDraft): JsonObject {
+  // The computer binds the issue to the new lane; it has no Linear lookup for a bare id.
+  const linearIssue = draft.linearIssue ? parseLaneLinearIssueValue(draft.linearIssue) : null;
+  if (draft.linearIssue && !linearIssue) {
+    throw new CliUsageError("--machine cloud needs the whole Linear issue (id, identifier, title, team and state) in --linear-issue-json.");
+  }
+  if (draft.notify) throw new CliUsageError("--notify-url doesn't work with --machine cloud yet.");
+  if (asString(draft.create.laneId)) {
+    throw new CliUsageError("--machine cloud makes a new lane for the chat: leave out --lane.");
+  }
+  const prompt = draft.prompt?.trim() ? draft.prompt : null;
+  // Going on with a launch this computer's ADE already holds: it kept the
+  // prompt and every choice, so the id alone is enough.
+  if (!prompt && draft.launchId) return { kind: "chat", mode: "background", launchId: draft.launchId };
+  if (!prompt) throw new CliUsageError("A chat on ADE Cloud starts with its first message: pass --prompt or --prompt-file.");
+  // The lane is the launch's; a parent on this machine can't follow a chat on another computer.
+  const {
+    laneId: _laneId,
+    sessionId: _sessionId,
+    orchestrationParentSessionId: parent,
+    spawnKind,
+    ...create
+  } = draft.create;
+  const provider = asString(create.provider) ?? "codex";
+  if (process.env.ADE_CHAT_SESSION_ID?.trim() && (parent || spawnKind)) {
+    process.stderr.write("note: a chat on ADE Cloud starts as its own chat, so it doesn't report back to you. Read it with ade chat read --machine <its computer>.\n");
+  }
+  const modelId = asString(create.modelId) ?? asString(create.model);
+  // A name given here is the lane's one name: the lane, its computer and the
+  // ADE Cloud page all use it, and nothing renames it from the prompt.
+  const laneName = draft.laneName?.trim() || null;
+  return {
+    kind: "chat",
+    mode: "background",
+    launchId: draft.launchId ?? randomUUID(),
+    prompt,
+    provider,
+    ...(modelId ? { modelId } : {}),
+    ...(asString(create.title) ? { title: asString(create.title) } : {}),
+    ...(laneName ? { laneName } : {}),
+    ...(linearIssue || laneName ? { laneConfig: { mode: "new", ...(linearIssue ? { linearIssue } : {}) } } : {}),
+    chat: {
+      create: { ...create, provider, model: asString(create.model) ?? "" },
+      message: { text: prompt },
+    },
+  };
+}
+
+/** The result a caller reads: the launch, and where the lane and its chat are. */
+function cloudLaneResult(status: JsonObject): JsonObject {
+  const launch = isRecord(status.launch) ? status.launch : {};
+  const machine = isRecord(status.machine) ? status.machine : {};
+  return {
+    ok: launch.phase !== "failed" && launch.phase !== "cancelled",
+    launchId: asString(launch.launchId),
+    phase: asString(launch.phase),
+    laneId: asString(launch.laneId),
+    laneName: asString(launch.laneName),
+    // A lane launch starts no chat; a chat launch's chat id is its launch id.
+    sessionId: launch.kind === "lane" ? null : asString(launch.sessionId) ?? asString(launch.launchId),
+    machine: {
+      name: asString(machine.name),
+      instanceId: asString(machine.instanceId),
+      machineKey: asString(machine.machineKey),
+    },
+    approvalUrl: asString(status.approvalUrl),
+    launch,
+  };
+}
+
+/** One connection to this machine's brain for a run of `cloud` actions, in the project the CLI runs in. */
+async function withCloudActions<T>(
+  options: GlobalOptions,
+  projectRoot: string,
+  run: (call: (action: string, args: JsonObject) => Promise<unknown>) => Promise<T>,
+): Promise<T> {
   return await withMachineBrain(options, async (client) => {
     const registered = await client.request("projects.add", automaticProjectRegistrationParams(projectRoot));
     const projectId = isRecord(registered) ? asString(registered.projectId) : null;
     if (!projectId) throw new Error("This machine's brain did not register the project.");
-    const answer = unwrapToolResult(await client.request("ade/actions/call", withProjectId({
-      name: "run_ade_action",
-      arguments: { domain: "cloud", action, args },
-    }, projectId)));
-    return isRecord(answer) && isRecord(answer.result) ? answer.result : answer;
+    return await run(async (action, args) => {
+      const answer = unwrapToolResult(await client.request("ade/actions/call", withProjectId({
+        name: "run_ade_action",
+        arguments: { domain: "cloud", action, args },
+      }, projectId)));
+      return isRecord(answer) && "result" in answer && ("domain" in answer || "action" in answer) ? answer.result : answer;
+    });
   });
 }
 
 /**
- * Waits until the woken machine takes a request: online in the account, then
- * one harmless call through it (`projects.list`), retried while it sends
- * nothing. Only after this does the chat go, once, so a flapping presence
- * can never start a second chat.
+ * Starts a lane launch on ADE Cloud in this machine's brain and follows it
+ * until the agent starts there. Progress goes to stderr (not with --json).
+ * A failure throws the sentence the lane's card shows; the launch id rides
+ * along so the same command can go on from it.
  */
-async function waitForReadyMachine(options: GlobalOptions, machineKey: string, name: string, deadline: number): Promise<void> {
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  let lastError: unknown = null;
-  const timedOut = () => new CliExecutionError(
-    `${name} woke on ADE Cloud but its ADE didn't answer within ${CLOUD_READY_WAKE_WAIT_MS / 1000} s`
-      + `${lastError ? ` (${failureCause(lastError)})` : ""}. Nothing was sent; ADE put it back to sleep for the next chat.`,
-    {},
-  );
-  for (;;) {
-    const roster = await withMachineBrain(options, (client) => client.request("machines.list", { includeProjects: false }))
-      .catch(() => null);
-    const row = isRecord(roster) && Array.isArray(roster.machines)
-      ? roster.machines.find((machine) => isRecord(machine) && machine.machineKey === machineKey)
-      : null;
-    if (isRecord(row) && row.online === true) break;
-    if (Date.now() > deadline) throw timedOut();
-    await sleep(READY_MACHINE_POLL_MS);
+export async function runCloudLaneLaunch(launchArgs: JsonObject, options: GlobalOptions): Promise<JsonObject> {
+  const laneConfig = isRecord(launchArgs.laneConfig) ? launchArgs.laneConfig : null;
+  const start = laneConfig && isRecord(laneConfig.start) ? laneConfig.start : null;
+  if (start?.on === "uncommitted") {
+    throw new CliUsageError("An ADE Cloud lane starts from the pushed copy of its branch, so it can't bring uncommitted changes.");
   }
-  for (;;) {
-    try {
-      await withMachineBrain(options, (client) => client.request("machines.call", {
-        machine: machineKey,
-        scope: { kind: "machine" },
-        request: { method: "projects.list", params: {} },
-        timeoutMs: READY_MACHINE_PROBE_TIMEOUT_MS,
-      }));
-      return;
-    } catch (error) {
-      // Right after a wake the brain may still be starting, refuse, or drop the
-      // connection; `projects.list` is harmless to repeat, so any error waits.
-      lastError = error;
-      if (Date.now() > deadline) throw timedOut();
-      await sleep(READY_MACHINE_POLL_MS);
-    }
+  if (start?.on === "local") {
+    throw new CliUsageError("An ADE Cloud lane starts from the pushed copy of its branch, so it can't start from this computer's copy. Leave out --on.");
   }
-}
-
-/**
- * `ade chat create --machine cloud:ready`: take this project's ready the provider
- * machine (prepared and asleep), wake it, wait until it takes requests, then
- * start the chat there like on any machine. A machine ADE still shows offline
- * refuses work at once ("Nothing was sent"), so all the waiting comes before
- * the send. If nothing was sent, the claim is given back (ready again,
- * asleep); once the chat create went out, the machine is the caller's.
- */
-async function executePlanOnCloudReadyMachine(
-  plan: CliPlan & { kind: "execute" },
-  options: GlobalOptions,
-): Promise<unknown> {
-  if (!plan.machineFanOut) {
-    throw new CliUsageError("--machine cloud:ready starts a new chat: use it with `ade chat create`.");
+  if (options.machineProject) {
+    throw new CliUsageError("--machine cloud makes a new lane for this project on its own computer: leave out --project and --machine-project.");
   }
   const roots = resolveRoots(options);
   const originUrl = getGitRemote(roots.projectRoot);
   if (!originUrl) {
-    throw new CliUsageError("--machine cloud:ready needs a project with a git origin: the ready machine is the one kept for that repository.");
+    throw new CliUsageError("--machine cloud needs a project with a GitHub origin: ADE Cloud gets the repository from there.");
   }
+  const launchId = asString(launchArgs.launchId) ?? randomUUID();
+  // No --size: the brain uses the size the person saved for new lanes (Small when none).
+  const sizeId = options.cloudSize ?? null;
+  const launch: JsonObject = { ...launchArgs, launchId, cloud: sizeId ? { sizeId } : {} };
   const say = (line: string) => {
     if (!options.json) process.stderr.write(`ade: ${line}\n`);
   };
-  const startedAt = Date.now();
-  const claim = await runCloudAction(options, roots.projectRoot, "claim_ready", { originUrl });
-  const field = (key: string) => (isRecord(claim) ? asString(claim[key]) : null);
-  const instanceId = field("instanceId");
-  const machineKey = field("machineKey");
-  const laneId = field("laneId");
-  const claimToken = field("claimToken");
-  const name = field("name") ?? "the ready machine";
-  const wakeMs = isRecord(claim) && typeof claim.wakeMs === "number" ? claim.wakeMs : null;
-  let sending = false;
+  // The launch is the brain's: an interrupt here leaves it running there, and says how to reach it.
+  const onInterrupt = () => {
+    process.stderr.write(
+      `\nade: the lane keeps starting on ADE Cloud. Check it: ade chat launch-status ${launchId} --machine cloud`
+      + ` · stop it and delete its computer: ade chat launch-cancel ${launchId} --machine cloud\n`,
+    );
+    process.exit(130);
+  };
+  process.once("SIGINT", onInterrupt);
   try {
-    if (!machineKey) throw new CliExecutionError("ADE Cloud answered the claim without a machine. Try again.", {});
-    say(`Woke ${name} on ADE Cloud (${Math.round(wakeMs ?? 0)} ms). Waiting for its ADE…`);
-    await waitForReadyMachine(options, machineKey, name, startedAt + CLOUD_READY_WAKE_WAIT_MS);
-    const onlineMs = Date.now() - startedAt;
-    say(`${name} is online (${(onlineMs / 1000).toFixed(1)} s). Starting the chat…`);
-    // From here a request may reach the machine: never repeated, never given back.
-    sending = true;
-    const result = await executePlan(laneId ? withDefaultChatLane(plan, laneId) : plan, { ...options, machine: machineKey });
-    // Which machine took it, for a caller (a benchmark harness) that reads it there next.
-    const readyMachine = { name, machineKey, instanceId, laneId, wakeMs, onlineMs, sentMs: Date.now() - startedAt };
-    return isRecord(result) ? { ...result, readyMachine } : { result, readyMachine };
-  } finally {
-    if (!sending && instanceId && claimToken) {
-      await runCloudAction(options, roots.projectRoot, "release_ready", { instanceId, claimToken }).catch((error: unknown) => {
-        say(`couldn't put ${name} back to sleep (${error instanceof Error ? error.message : String(error)}). Sleep it from its row under Your computers.`);
+    return await withCloudActions(options, roots.projectRoot, async (call) => {
+      // A launch this computer's ADE already holds (any retry: by id alone, a
+      // repeated chat command, a lane) keeps the size it was given, whatever
+      // --size says now. A new launch carries a fresh id, so the brain is asked.
+      const held = Boolean(await call("lane_launch_status", { launchId }));
+      // A chat launch with no message only goes on with one ADE already holds.
+      if (launch.kind === "chat" && !isRecord(launch.chat) && !held) {
+        throw new CliUsageError(`This computer's ADE has no ADE Cloud lane launch ${launchId}. To start a new one, pass --prompt.`);
+      }
+      // Always, --json too (stderr), before the launch waits: the id is what follows or resumes it.
+      const sizeText = held ? "the size it started with" : (sizeId ?? "your default size");
+      process.stderr.write(`ade: ${held ? "going on with" : "starting"} a lane on ADE Cloud (${sizeText}). Launch id ${launchId}.\n`);
+      let lastLine = "";
+      const { outcome, status, answer } = await followCloudLaneLaunch({
+        start: () => call("lane_launch", { launch, originUrl }),
+        read: () => call("lane_launch_status", { launchId }),
+        onStatus: ({ launch: snapshot }) => {
+          const line = chatLaunchStatusLine(snapshot);
+          if (line !== lastLine) say(line);
+          lastLine = line;
+        },
+        onApprovalLink: (link) => say(`Approve the new computer joining your ADE account: open ${link} on your phone or in a browser signed in to ADE.`),
+        pollMs: CLOUD_LANE_POLL_MS,
+        waitMs: CLOUD_LANE_WAIT_MS,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       });
-    }
+      switch (outcome) {
+        case "missing":
+          throw new CliExecutionError("This computer's ADE no longer has the ADE Cloud lane launch.", { launchId });
+        case "succeeded":
+          return cloudLaneResult(answer as JsonObject);
+        case "failed":
+          throw new CliExecutionError(status?.launch.error?.trim() || "The lane didn't start on ADE Cloud.", {
+            launchId,
+            phase: "failed",
+            nextAction: cloudLaneRetryCommand(launchId, launch, status?.launch.laneName ?? null),
+          });
+        case "cancelled":
+          throw new CliExecutionError("The lane launch was cancelled, and its computer deleted.", { launchId, phase: "cancelled" });
+        case "timeout":
+          throw new CliExecutionError(`The lane is still starting on ADE Cloud after ${CLOUD_LANE_WAIT_MS / 60_000} minutes.`, {
+            launchId,
+            nextAction: `ade chat launch-status ${launchId} --machine cloud`,
+          });
+      }
+    });
+  } finally {
+    process.removeListener("SIGINT", onInterrupt);
   }
+}
+
+/**
+ * The command that goes on from a failed launch's failed step: the same
+ * `--launch-id` on the command that started it. A lane alone came from
+ * `lanes create`, which needs a name; a known launch keeps the choices it
+ * started with, so the name only completes the command.
+ */
+function cloudLaneRetryCommand(launchId: string, launch: JsonObject, laneName: string | null): string {
+  if (launch.kind === "lane") {
+    const name = laneName?.trim() || asString(launch.laneName) || "lane";
+    return `ade lanes create --machine cloud --launch-id ${launchId} --name ${quoteShellArg(name, { platform: process.platform })} (the lane's choices are kept) goes on from the failed step.`;
+  }
+  return `ade chat create --machine cloud --launch-id ${launchId} (the prompt and choices are kept) goes on from the failed step.`;
+}
+
+/** `--machine cloud` on an execute plan: `chat create`, or a launch's status or cancel. */
+async function executePlanOnCloudLane(plan: CliPlan & { kind: "execute" }, options: GlobalOptions): Promise<unknown> {
+  if (plan.cloudLaneCall) {
+    const { action, launchId } = plan.cloudLaneCall;
+    const roots = resolveRoots(options);
+    const status = await withCloudActions(options, roots.projectRoot, (call) => call(action, { launchId }));
+    if (!isRecord(status)) throw new CliExecutionError("This computer's ADE has no ADE Cloud lane launch with that id.", { launchId });
+    return cloudLaneResult(status);
+  }
+  if (plan.cloudLaunch) {
+    const result = await runCloudLaneLaunch(cloudLaunchArgsFromChatCreate(plan.cloudLaunch), options);
+    // `chat create` has no launch formatter: text mode gets the launch view (a string passes the formatters as it is).
+    return options.text ? formatChatLaunch(result) : result;
+  }
+  if (plan.cloudLaneCreate) {
+    // The lane alone: no chat, so no agent stage. Same launch, same id rules.
+    if (plan.cloudLaneCreate.refused) throw new CliUsageError(plan.cloudLaneCreate.refused);
+    const result = await runCloudLaneLaunch({
+      ...plan.cloudLaneCreate.launch,
+      ...(plan.cloudLaneCreate.launchId ? { launchId: plan.cloudLaneCreate.launchId } : {}),
+    }, options);
+    return options.text ? formatChatLaunch(result) : result;
+  }
+  throw new CliUsageError(
+    "--machine cloud starts a new lane on ADE Cloud: use it with ade chat create, ade chat launch, or ade lanes create (the lane alone). "
+    + "To reach a lane already there, use --machine with its computer's name.",
+  );
 }
 
 /**
@@ -1245,8 +1751,14 @@ export async function executePlanAcrossMachines(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
 ): Promise<{ value: unknown } | null> {
+  if (plan.cloudLaunch?.launchId && !isCloudLaneMachineSelector(options.machine)) {
+    throw new CliUsageError("--launch-id on chat create is for a new lane on ADE Cloud: add --machine cloud.");
+  }
+  if (plan.cloudLaneCreate?.launchId && !isCloudLaneMachineSelector(options.machine)) {
+    throw new CliUsageError("--launch-id on lanes create is for a new lane on ADE Cloud: add --machine cloud.");
+  }
+  if (isCloudLaneMachineSelector(options.machine)) return { value: await executePlanOnCloudLane(plan, options) };
   if (options.allMachines) return { value: await executePlanOnAllMachines(plan, options) };
-  if (isCloudReadyMachineSelector(options.machine)) return { value: await executePlanOnCloudReadyMachine(plan, options) };
   const machineList = [...new Set((options.machine ?? "").split(",").map((entry) => entry.trim()).filter(Boolean))];
   if (machineList.length > 1) return { value: await executePlanOnMachines(plan, options, machineList) };
   if (options.machine && plan.steps.some((step) => step.injectProjectRootIntoArgs)) {
@@ -1266,16 +1778,19 @@ export function formatMachinesRoster(value: unknown): string {
   const machines = firstArray(record, ["machines"]);
   return renderTable(
     ["machine", "key", "status", "platform", "last seen", "projects"],
-    machines.map((machine) => [
-      machine.isThisMachine === true ? `${String(machine.name ?? "")} (this machine)` : machine.name,
-      machine.machineKey,
-      asString(machine.presence) ?? (machine.online === true ? "online" : "offline"),
-      machine.platform,
-      asString(machine.lastSeenAt) ? new Date(String(machine.lastSeenAt)).toLocaleString() : "never",
-      Array.isArray(machine.projects)
-        ? machine.projects.filter(isRecord).map((project) => project.name ?? project.rootPath).join(", ")
-        : asString(machine.note) ?? "",
-    ]),
+    machines.map((machine) => {
+      const label = machineListLabel(String(machine.name ?? ""), machine.cloud === true);
+      return [
+        machine.isThisMachine === true ? `${label} (this machine)` : label,
+        machine.machineKey,
+        asString(machine.presence) ?? (machine.online === true ? "online" : "offline"),
+        machine.platform,
+        asString(machine.lastSeenAt) ? new Date(String(machine.lastSeenAt)).toLocaleString() : "never",
+        Array.isArray(machine.projects)
+          ? machine.projects.filter(isRecord).map((project) => project.name ?? project.rootPath).join(", ")
+          : asString(machine.note) ?? "",
+      ];
+    }),
     "ADE machines\n(no machines on this account)",
     { fullColumns: ["key"] },
   );

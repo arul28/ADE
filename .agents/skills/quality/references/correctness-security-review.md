@@ -65,9 +65,11 @@ It is easy to break the ability to run/build/test locally. Catch:
 - **Node version assumptions** — the desktop suite runs under Node 24 (`.nvmrc`;
   `node:sqlite` is the DB engine). A change that assumes a newer Node, or that
   trips renderer tests on the default toolchain, is a devex break.
-- **Per-app dependency drift** — each app under `apps/` has its own
-  `node_modules` + `package-lock.json` (no workspaces). A `package.json` change
-  without a regenerated lock file breaks CI's `npm ci`.
+- **Per-app dependency drift** — desktop, ade-cli, web and each package under
+  `packages/` have their own `node_modules` + `package-lock.json`. The five
+  Cloudflare Workers are one npm workspace with one root `package-lock.json`
+  (root `package.json` `workspaces`). A `package.json` change without a
+  regenerated lock file breaks CI's `npm ci`.
 - **New required scripts/steps** — a change that forces a developer to run a new
   build step, native rebuild, or flag to keep working. Adding an *alternative*
   way to run something is fine; changing the *existing* way is a devex break.

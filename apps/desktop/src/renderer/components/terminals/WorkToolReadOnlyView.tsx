@@ -9,6 +9,7 @@ import {
   type WorkToolsMacDesktopState,
   type WorkToolsObservation,
 } from "../../../shared/types/workTools";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { H264StreamView } from "../device/H264StreamView";
 import { isWebCodecsAvailable, type H264StreamStatus } from "../device/h264StreamPlayer";
 import {
@@ -80,6 +81,8 @@ export const WORK_TOOL_READ_ONLY_MAX_POLL_MS = 30_000;
 export type WorkToolReadOnlyViewProps = {
   tool: "browser" | "app-control" | DesktopWorkTool;
   laneId: string | null;
+  /** The lane's machine. Null: no machine to read, so the view says so. */
+  runtimePin: OpenProjectBinding | null;
 };
 
 type PreviewState = {
@@ -87,7 +90,9 @@ type PreviewState = {
   dataUrl: string | null;
 };
 
-export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps): JSX.Element {
+export function WorkToolReadOnlyView({ tool, laneId, runtimePin }: WorkToolReadOnlyViewProps): JSX.Element {
+  const pinRef = useRef(runtimePin);
+  pinRef.current = runtimePin;
   const [state, setState] = useState<WorkToolsLaneState | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [preview, setPreview] = useState<PreviewState | null>(null);
@@ -120,12 +125,14 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
       return false;
     }
     const read = window.ade?.workTools?.getLaneState;
-    if (!read) {
+    const pin = pinRef.current;
+    if (!read || !pin) {
+      setState(null);
       setLoaded(true);
       return false;
     }
     try {
-      const next = await read(laneId);
+      const next = await read(laneId, pin);
       if (requestedLaneId.current !== laneId) return false;
       // Every read is stamped with a fresh `capturedAt`, so it is left out of
       // the comparison; the state is still applied, since the takeover hold
@@ -200,9 +207,10 @@ export function WorkToolReadOnlyView({ tool, laneId }: WorkToolReadOnlyViewProps
     setPreview((current) => (current?.path === observationPath ? current : { path: observationPath, dataUrl: null }));
     void (async () => {
       const read = window.ade?.workTools?.readObservationPreview;
-      if (!read) return;
+      const pin = pinRef.current;
+      if (!read || !pin) return;
       try {
-        const result = await read(observationPath);
+        const result = await read(observationPath, pin);
         if (cancelled) return;
         setPreview({ path: observationPath, dataUrl: result?.dataUrl ?? null });
       } catch {

@@ -1,0 +1,694 @@
+import SwiftUI
+
+// The account's projects on the Hub. The account list says which projects
+// exist; the machines say where each one has a folder and what runs there.
+// A Hub card that a machine already shows (the focused machine's catalog, or
+// another machine's roster) is matched to its account project; a project no
+// card shows becomes a card of its own, so an account with no computer, or
+// with every computer offline, still lists its projects.
+
+// MARK: - Join
+
+/// One machine folder behind a Hub card: the account machine key and that
+/// machine's registry id of the folder.
+struct HubAccountCopyRef: Hashable {
+  let accountMachineKey: String
+  let checkoutId: String
+}
+
+/// A Hub card as the join sees it.
+struct HubAccountJoinCard: Equatable {
+  let cardId: String
+  /// `owner/name`, lowercased, only for a github.com origin.
+  let gitHubIdentity: String?
+  let copies: [HubAccountCopyRef]
+  /// The account project a machine says the card's folder is a copy of
+  /// (newer brains), or the one `HubAccountResolver` found for it.
+  var accountProjectId: String? = nil
+}
+
+struct HubAccountJoin: Equatable {
+  /// Card id -> the account project it shows.
+  var accountIdByCardId: [String: String] = [:]
+  /// Projects on the account that no card shows, in the list's order.
+  var unmatchedProjects: [AccountProject] = []
+  /// Cards of repositories that were removed from the account.
+  var hiddenCardIds: Set<String> = []
+  /// GitHub repositories a machine shows that the list does not name yet.
+  var unknownIdentities: Set<String> = []
+  /// Cards of a project another card already shows (a second folder of the
+  /// same repository): card id -> that project. The Hub lists the project
+  /// once; these folders stay reachable from the project's copies.
+  var duplicateCardIds: [String: String] = [:]
+}
+
+/// Pure: match Hub cards to account projects. For each card, in order:
+/// 0. the account project id a machine sent (or the resolver found): a live
+///    project claims the card, a merged one claims it as the project it
+///    became, a removed one hides it; an id the list does not hold yet asks
+///    for a list read and falls through;
+/// 1. one of its folders is a copy on the account (machine key + registry id);
+/// 2. its GitHub `owner/name` is the project's address or an old address.
+/// The first card that claims a project keeps it; a later card is a
+/// duplicate of it (one row per account project). A card that matches no live project but names a removed one
+/// (by a copy it had, or by its address) is hidden. Only github.com addresses match by name, because a machine's
+/// catalog drops the host.
+func hubJoinAccountProjects(
+  cards: [HubAccountJoinCard],
+  live: [AccountProject],
+  removed: [AccountProject],
+  merged: [String: String] = [:]
+) -> HubAccountJoin {
+  var join = HubAccountJoin()
+  // The same tables the fleet merge resolves folders with.
+  let index = hubAccountResolver(live: live, removed: removed, merged: merged, accountMachineKey: { _ in nil })
+
+  var claimed = Set<String>()
+  for card in cards {
+    if let sent = card.accountProjectId {
+      let id = merged[sent] ?? sent
+      if index.liveIds.contains(id) {
+        if claimed.insert(id).inserted {
+          join.accountIdByCardId[card.cardId] = id
+        } else {
+          join.duplicateCardIds[card.cardId] = id
+        }
+        continue
+      }
+      if index.removedIds.contains(id) {
+        join.hiddenCardIds.insert(card.cardId)
+        continue
+      }
+      join.unknownIdentities.insert("id:\(id)")
+    }
+    let byCopy = card.copies.lazy.compactMap { index.projectByCopy[$0] }.first
+    let byName = card.gitHubIdentity.flatMap { index.projectByIdentity[$0] }
+    if let projectId = byCopy ?? byName {
+      if claimed.insert(projectId).inserted {
+        join.accountIdByCardId[card.cardId] = projectId
+      } else {
+        join.duplicateCardIds[card.cardId] = projectId
+      }
+      continue
+    }
+    if card.copies.contains(where: { index.removedByCopy[$0] != nil }) {
+      join.hiddenCardIds.insert(card.cardId)
+      continue
+    }
+    if let identity = card.gitHubIdentity {
+      if index.removedByIdentity[identity] != nil {
+        join.hiddenCardIds.insert(card.cardId)
+      } else {
+        join.unknownIdentities.insert(identity)
+      }
+    }
+  }
+  join.unmatchedProjects = live.filter { !claimed.contains($0.id) }
+  return join
+}
+
+/// Every github.com `owner/name` (lowercased) a project answers to: its
+/// current owner and name, then each address in `aliases`.
+func accountProjectGitHubIdentities(_ project: AccountProject) -> [String] {
+  var identities: [String] = []
+  if project.host.lowercased() == "github.com",
+     let current = workRepoIdentity(owner: project.owner, name: project.name) {
+    identities.append(current)
+  }
+  for alias in project.aliases {
+    guard let parsed = accountRepoKeyParts(alias), parsed.host == "github.com" else { continue }
+    let identity = "\(parsed.owner)/\(parsed.name)".lowercased()
+    if !identities.contains(identity) { identities.append(identity) }
+  }
+  return identities
+}
+
+/// `repo:<host>/<owner>/<name>` into its parts, host lowercased.
+func accountRepoKeyParts(_ key: String) -> (host: String, owner: String, name: String)? {
+  guard key.hasPrefix("repo:") else { return nil }
+  let parts = key.dropFirst("repo:".count).split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+  guard parts.count == 3 else { return nil }
+  return (parts[0].lowercased(), parts[1], parts[2])
+}
+
+/// `owner/name`, lowercased, for an origin on github.com only. A roster's
+/// origin can be any host, and only github.com addresses may match by name.
+func hubGitHubRepoIdentity(originUrl: String?) -> String? {
+  guard workRepoHost(originUrl: originUrl) == "github.com" else { return nil }
+  return workRepoIdentity(originUrl: originUrl)
+}
+
+/// The lowercase host of a git origin in any common form (`www.` and `ssh.`
+/// of github.com read as `github.com`). A roster's normalized origin
+/// (`github.com/owner/name`, no scheme) names the host first.
+func workRepoHost(originUrl: String?) -> String? {
+  guard let raw = originUrl?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+  let host: String?
+  if raw.contains("://") {
+    host = URL(string: raw)?.host?.lowercased()
+  } else if let colon = raw.firstIndex(of: ":") {
+    let beforeColon = raw[..<colon]
+    host = beforeColon.split(separator: "@").last.map { String($0).lowercased() }
+  } else if raw.contains("/") {
+    host = raw.split(separator: "/").first.map { String($0).lowercased() }
+  } else {
+    host = nil
+  }
+  return host == "www.github.com" || host == "ssh.github.com" ? "github.com" : host
+}
+
+// MARK: - Resolver
+
+/// Finds the account project of one machine folder, for the fleet merge (so
+/// one project on several computers is one card) and the join.
+struct HubAccountResolver {
+  var liveIds: Set<String> = []
+  var removedIds: Set<String> = []
+  var mergedTargets: [String: String] = [:]
+  var projectByCopy: [HubAccountCopyRef: String] = [:]
+  var projectByIdentity: [String: String] = [:]
+  /// The copies a removed project had (`AccountProjectListState.removedCopies`).
+  var removedByCopy: [HubAccountCopyRef: String] = [:]
+  var removedByIdentity: [String: String] = [:]
+  /// Fleet key -> account machine key.
+  var accountMachineKey: (String) -> String? = { _ in nil }
+
+  /// In order: the id the machine sent (a merged id becomes the project it
+  /// became); the copy table; the GitHub `owner/name` of a live project; then
+  /// a removed project by a copy it had or by its address (so the join hides
+  /// it). Nil when nothing names it.
+  func accountProjectId(fleetKey: String?, checkoutId: String, gitHubIdentity: String?, sentId: String?) -> String? {
+    if let sentId, !sentId.isEmpty { return mergedTargets[sentId] ?? sentId }
+    let copy = fleetKey.flatMap(accountMachineKey).map { HubAccountCopyRef(accountMachineKey: $0, checkoutId: checkoutId) }
+    if let copy, let id = projectByCopy[copy] { return id }
+    if let gitHubIdentity, let id = projectByIdentity[gitHubIdentity] { return id }
+    if let copy, let id = removedByCopy[copy] { return id }
+    return gitHubIdentity.flatMap { removedByIdentity[$0] }
+  }
+}
+
+/// Pure: the resolver for an account list.
+func hubAccountResolver(
+  live: [AccountProject],
+  removed: [AccountProject],
+  merged: [String: String],
+  accountMachineKey: @escaping (String) -> String?
+) -> HubAccountResolver {
+  var resolver = HubAccountResolver(
+    liveIds: Set(live.map(\.id)),
+    removedIds: Set(removed.map(\.id)),
+    mergedTargets: merged,
+    accountMachineKey: accountMachineKey
+  )
+  for project in live {
+    for copy in project.copies {
+      let ref = HubAccountCopyRef(accountMachineKey: copy.machineKey, checkoutId: copy.checkoutId)
+      if resolver.projectByCopy[ref] == nil { resolver.projectByCopy[ref] = project.id }
+    }
+    for identity in accountProjectGitHubIdentities(project) where resolver.projectByIdentity[identity] == nil {
+      resolver.projectByIdentity[identity] = project.id
+    }
+  }
+  for project in removed {
+    for copy in project.copies {
+      let ref = HubAccountCopyRef(accountMachineKey: copy.machineKey, checkoutId: copy.checkoutId)
+      if resolver.projectByCopy[ref] == nil, resolver.removedByCopy[ref] == nil { resolver.removedByCopy[ref] = project.id }
+    }
+    for identity in accountProjectGitHubIdentities(project)
+    where resolver.projectByIdentity[identity] == nil && resolver.removedByIdentity[identity] == nil {
+      resolver.removedByIdentity[identity] = project.id
+    }
+  }
+  return resolver
+}
+
+// MARK: - Account-only cards
+
+/// The Hub card of a project that no reachable machine shows: the account's
+/// name, and the icon a machine showed last.
+func hubAccountProjectSummary(_ project: AccountProject, display: AccountProjectDisplay?) -> MobileProjectSummary {
+  MobileProjectSummary(
+    id: project.id,
+    displayName: project.name,
+    repoOwner: project.owner,
+    repoName: project.name,
+    defaultBaseRef: project.defaultBranch,
+    iconDataUrl: display?.iconDataUrl,
+    laneCount: 0,
+    isAvailable: false,
+    isCached: false
+  )
+}
+
+/// The account machines that hold a folder of the project, one per machine,
+/// the main folder first.
+func accountProjectCopyMachines(_ project: AccountProject, machines: [AccountMachine]) -> [(copy: AccountProjectCopy, machine: AccountMachine?)] {
+  var seen = Set<String>()
+  let ordered = project.copies.sorted { lhs, rhs in
+    if lhs.isMain != rhs.isMain { return lhs.isMain }
+    return lhs.lastSeenAt > rhs.lastSeenAt
+  }
+  return ordered.compactMap { copy in
+    guard seen.insert(copy.machineKey).inserted else { return nil }
+    return (copy, machines.first { $0.machineKey == copy.machineKey })
+  }
+}
+
+/// The line under an account-only card's name: how many computers hold it, or
+/// why nothing shows it. A Hub card never names a machine; the machine shows
+/// once the project is open, and in the menus where new work starts.
+func hubAccountProjectNote(_ project: AccountProject, machines: [AccountMachine], hasOwnComputer: Bool = true) -> String {
+  let held = accountProjectCopyMachines(project, machines: machines)
+  // With no computer of their own, a chat starts a computer on ADE Cloud.
+  guard !held.isEmpty else { return hasOwnComputer ? "Not on a computer yet" : "Chats run on ADE Cloud" }
+  let online = held.filter { $0.machine?.online == true }
+  // The computer list did not load (offline): say how many hold a copy, not
+  // that none is online.
+  guard !online.isEmpty || held.allSatisfy({ $0.machine == nil }) else { return "No computer online" }
+  let count = online.isEmpty ? held.count : online.count
+  return count == 1 ? "On 1 computer" : "On \(count) computers"
+}
+
+// MARK: - What the Hub says above the projects
+
+/// At most one line of status above the project grid.
+enum HubAccountNotice: Equatable {
+  /// The account list could not be read; the saved list shows.
+  case savedProjects
+  /// A paired computer is connecting; the projects show meanwhile.
+  case connecting(machineName: String?)
+  /// The phone has a computer, but none is reachable. `byUser`: the user
+  /// disconnected it. `failed`: the last attempt to reach it failed.
+  case noComputerOnline(machineName: String?, lastSeen: String?, failed: Bool, byUser: Bool, cloud: Bool = false)
+  /// Signed in with projects; the account has computers of the person's own,
+  /// but this phone is connected to none.
+  case noComputer
+}
+
+/// What the grid says when it has no card.
+enum HubAccountEmptyKind: Equatable {
+  /// The first read of the account list is running.
+  case loading
+  /// The first read failed and nothing is saved.
+  case cantLoad
+  /// A computer is connecting and has shown nothing yet.
+  case connecting
+  /// The account has no projects.
+  case noProjects(hasComputer: Bool, canAddProject: Bool)
+  /// The machine-only Hub (signed out, or an older server): a connected
+  /// machine with no projects.
+  case machineEmpty
+}
+
+struct HubAccountStatusInputs: Equatable {
+  /// The account list decides which projects exist.
+  var governedByAccount: Bool
+  var listPhase: AccountProjectStore.Phase
+  var listHasSavedCopy: Bool
+  var focusedState: RemoteConnectionState
+  var focusedDisconnectedByUser: Bool
+  var focusedMachineName: String?
+  var focusedLastSeen: String?
+  /// The focused machine is one of the account's ADE Cloud computers: it
+  /// wakes on its own, so nobody has to start ADE on it.
+  var focusedIsCloud: Bool = false
+  var anyFleetMachineLive: Bool
+  var anyFleetMachineConnecting: Bool
+  /// The phone holds a pairing it can reconnect with (primary or fleet).
+  var hasPairedComputer: Bool
+  var accountHasComputers: Bool
+  var hasCards: Bool
+  var canAddProject: Bool
+}
+
+/// Pure: the one notice above the grid, if any. A failed list read comes
+/// first (it explains why the list may be old), then the computers.
+func hubAccountNotice(_ inputs: HubAccountStatusInputs) -> HubAccountNotice? {
+  guard inputs.hasCards else { return nil }
+  if inputs.governedByAccount, inputs.listPhase == .offline, inputs.listHasSavedCopy {
+    return .savedProjects
+  }
+  if inputs.focusedState == .connected || inputs.anyFleetMachineLive { return nil }
+  if inputs.focusedState == .connecting || inputs.anyFleetMachineConnecting {
+    return .connecting(machineName: inputs.focusedMachineName)
+  }
+  // A failed connect names its computer even before the phone saved a
+  // pairing (an Open from a project's sheet), so the line matches the header.
+  let failedAttempt = inputs.focusedState == .error && inputs.focusedMachineName != nil
+  if inputs.hasPairedComputer || failedAttempt {
+    return .noComputerOnline(
+      machineName: inputs.focusedMachineName,
+      lastSeen: inputs.focusedLastSeen,
+      failed: inputs.focusedState == .error,
+      byUser: inputs.focusedDisconnectedByUser,
+      cloud: inputs.focusedIsCloud
+    )
+  }
+  // With no computer of their own, nothing is missing: chats run on ADE
+  // Cloud from each project.
+  if inputs.governedByAccount, inputs.accountHasComputers {
+    return .noComputer
+  }
+  return nil
+}
+
+/// Pure: what an empty grid says.
+func hubAccountEmptyKind(_ inputs: HubAccountStatusInputs) -> HubAccountEmptyKind {
+  let computerConnecting = inputs.focusedState == .connecting || inputs.anyFleetMachineConnecting
+  guard inputs.governedByAccount else {
+    return inputs.focusedState == .connected ? .machineEmpty : .connecting
+  }
+  if !inputs.listHasSavedCopy {
+    switch inputs.listPhase {
+    case .loading: return computerConnecting ? .connecting : .loading
+    case .offline: return .cantLoad
+    default: break
+    }
+  }
+  if computerConnecting { return .connecting }
+  return .noProjects(
+    hasComputer: inputs.hasPairedComputer || inputs.accountHasComputers,
+    canAddProject: inputs.canAddProject
+  )
+}
+
+/// One formatter for every copy row and status line (a new one per row is
+/// slow to make).
+private let hubAccountRelativeTimeFormatter: RelativeDateTimeFormatter = {
+  let formatter = RelativeDateTimeFormatter()
+  formatter.unitsStyle = .full
+  return formatter
+}()
+
+/// "2 hours ago" for an epoch-ms time; nil when unknown.
+func hubAccountRelativeTime(epochMs: Double?, now: Date = Date()) -> String? {
+  guard let epochMs, epochMs > 0 else { return nil }
+  return hubAccountRelativeTimeFormatter.localizedString(for: Date(timeIntervalSince1970: epochMs / 1000), relativeTo: now)
+}
+
+// MARK: - Views
+
+/// The status line above the grid: a calm card with a status dot, a title,
+/// one sentence and its actions. One at a time.
+struct HubAccountStatusCard: View {
+  let notice: HubAccountNotice
+  var onRetryList: () -> Void = {}
+  var onReconnect: () -> Void = {}
+  var onConnectComputer: () -> Void = {}
+  var onOpenSettings: () -> Void = {}
+
+  var body: some View {
+    switch notice {
+    case .connecting(let name):
+      HStack(spacing: 10) {
+        ProgressView().controlSize(.small)
+        Text(name.map { "Connecting to \($0)…" } ?? "Connecting to your computer…")
+          .font(.system(size: 13.5))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 11)
+      .adeKitCard(padding: nil)
+      .accessibilityElement(children: .combine)
+    default:
+      VStack(alignment: .leading, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          ADEKitDot(tone: tone, size: 7)
+            .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
+          VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+              .font(.system(size: 14.5, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text(message)
+              .font(.system(size: 13))
+              .foregroundStyle(ADEColor.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        actions
+          .padding(.leading, 15)
+      }
+      .padding(14)
+      .adeKitCard(padding: nil)
+    }
+  }
+
+  private var tone: ADEKitTone {
+    switch notice {
+    case .savedProjects: return .warn
+    case .noComputerOnline(_, _, let failed, _, _): return failed ? .crit : .neutral
+    case .noComputer, .connecting: return .neutral
+    }
+  }
+
+  private var title: String {
+    switch notice {
+    case .savedProjects: return "Showing saved projects"
+    case .connecting: return ""
+    case .noComputerOnline(let name, _, let failed, let byUser, _):
+      if failed { return name.map { "Can’t reach \($0)" } ?? "Can’t reach your computer" }
+      if byUser { return name.map { "Disconnected from \($0)" } ?? "Disconnected" }
+      return name.map { "\($0) is offline" } ?? "No computer online"
+    case .noComputer: return "No computer connected"
+    }
+  }
+
+  private var message: String {
+    switch notice {
+    case .savedProjects:
+      return "ADE could not reach your account. The list may be out of date."
+    case .connecting:
+      return ""
+    case .noComputerOnline(_, let lastSeen, let failed, let byUser, let cloud):
+      // An ADE Cloud computer sleeps and wakes on its own: nobody starts ADE on it.
+      if cloud {
+        if failed { return "ADE Cloud didn't answer. Check that this phone is online, then reconnect." }
+        return "Its computer is asleep or restarting. Reconnect, or send a message: it wakes in about 20 seconds."
+      }
+      if failed { return "Check that ADE is running on it and that both are online." }
+      if byUser { return "Reconnect to run agents. Your projects stay here." }
+      if let lastSeen { return "Last seen \(lastSeen). Start ADE on it to run agents." }
+      return "Start ADE on it to run agents. Your projects stay here."
+    case .noComputer:
+      return "Connect one of your computers to run agents on these projects."
+    }
+  }
+
+  @ViewBuilder
+  private var actions: some View {
+    HStack(spacing: 8) {
+      switch notice {
+      case .savedProjects:
+        Button("Try again", action: onRetryList)
+          .buttonStyle(ADEKitButtonStyle())
+      case .noComputerOnline:
+        Button("Reconnect", action: onReconnect)
+          .buttonStyle(ADEKitButtonStyle())
+        Button("Connection settings", action: onOpenSettings)
+          .buttonStyle(ADEKitButtonStyle())
+      case .noComputer:
+        Button("Connect a computer", action: onConnectComputer)
+          .buttonStyle(ADEKitButtonStyle())
+      case .connecting:
+        EmptyView()
+      }
+    }
+  }
+}
+
+/// The grid with no card: why, and the one thing to do.
+struct HubAccountEmptyCard: View {
+  let kind: HubAccountEmptyKind
+  var onRetryList: () -> Void = {}
+  var onConnectComputer: () -> Void = {}
+  var onAddProject: () -> Void = {}
+
+  var body: some View {
+    switch kind {
+    case .loading:
+      HStack(spacing: 10) {
+        ProgressView().controlSize(.small)
+        Text("Loading your projects…")
+          .font(.system(size: 14))
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 28)
+    case .connecting:
+      HubConnectingCard()
+    case .machineEmpty:
+      HubEmptyProjectsCard()
+    case .cantLoad:
+      emptyLayout(
+        symbol: "wifi.exclamationmark",
+        title: "Can’t load your projects",
+        message: "Connect to the internet, then try again."
+      ) {
+        Button("Try again", action: onRetryList)
+          .buttonStyle(ADEKitButtonStyle(prominent: true))
+      }
+    case .noProjects(let hasComputer, let canAddProject):
+      emptyLayout(
+        symbol: "folder.badge.plus",
+        title: "No projects yet",
+        message: hasComputer
+          ? "Add a project on one of your computers. It shows here, on every device."
+          : "Add a repository from GitHub. Your first chat starts a computer on ADE Cloud for it."
+      ) {
+        if canAddProject {
+          Button("Add project", action: onAddProject)
+            .buttonStyle(ADEKitButtonStyle(prominent: true))
+        } else if !hasComputer {
+          Button("Connect a computer", action: onConnectComputer)
+            .buttonStyle(ADEKitButtonStyle(prominent: true))
+        }
+      }
+    }
+  }
+
+  private func emptyLayout<Actions: View>(
+    symbol: String,
+    title: String,
+    message: String,
+    @ViewBuilder actions: () -> Actions
+  ) -> some View {
+    VStack(spacing: 6) {
+      Image(systemName: symbol)
+        .font(.system(size: 22, weight: .regular))
+        .foregroundStyle(ADEColor.textMuted)
+      Text(title)
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Text(message)
+        .font(.system(size: 12.5))
+        .foregroundStyle(ADEColor.textSecondary)
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: 320)
+      actions()
+        .padding(.top, 10)
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 28)
+    .padding(.horizontal, 16)
+  }
+}
+
+// MARK: - Copy row
+
+/// How one computer stands for a project, for its copy row.
+enum HubCopyReach: Equatable {
+  /// Connected now.
+  case live
+  /// Online on the account; a tap connects it.
+  case online
+  /// The phone is connecting to it.
+  case connecting
+  /// The phone is copying the project onto it.
+  case copying
+  /// Offline. `lastSeen` is a relative time ("2 hours ago").
+  case offline(lastSeen: String?)
+
+  var tone: ADEKitTone {
+    switch self {
+    case .live: return .ok
+    case .online, .connecting, .copying: return .accent
+    case .offline: return .neutral
+    }
+  }
+}
+
+/// One computer and its copy of a project: the machine glyph, its name, a
+/// status dot and a short status, then an action. The tile chip, the project
+/// home, Start on, Location and Delete all use it, so a computer looks the
+/// same on every screen.
+struct HubCopyRow<Trailing: View>: View {
+  let name: String
+  let reach: HubCopyReach
+  /// The second line after the status ("main copy", "copies the project
+  /// first", a folder path).
+  var detail: String? = nil
+  var detailIsPath = false
+  var symbol: String = "desktopcomputer"
+  @ViewBuilder var trailing: () -> Trailing
+
+  var body: some View {
+    HStack(spacing: 12) {
+      ADESettingsIconTile(symbol: symbol, tint: .slate, size: 28)
+        .opacity(isOffline ? 0.55 : 1)
+      VStack(alignment: .leading, spacing: 3) {
+        Text(name)
+          .font(.system(size: 15))
+          .foregroundStyle(isOffline ? ADEColor.textSecondary : ADEColor.textPrimary)
+          .lineLimit(1)
+        HStack(spacing: 6) {
+          ADEKitDot(tone: reach.tone, size: 6)
+          Text(statusText)
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+        if let detail, !detail.isEmpty {
+          Text(detail)
+            .font(detailIsPath ? .adeMono(11) : .system(size: 12))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(detailIsPath ? .middle : .tail)
+        }
+      }
+      .layoutPriority(1)
+      Spacer(minLength: 8)
+      // A button keeps its label ("Wake", "Open"); the status line gives way.
+      trailing()
+        .fixedSize()
+        .layoutPriority(2)
+    }
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+    // The whole row takes a tap when it is a button's label.
+    .contentShape(Rectangle())
+    .accessibilityElement(children: .combine)
+  }
+
+  private var isOffline: Bool {
+    if case .offline = reach { return true }
+    return false
+  }
+
+  private var statusText: String {
+    switch reach {
+    case .live: return "Connected"
+    case .online: return "Online"
+    case .connecting: return "Connecting…"
+    case .copying: return "Copying…"
+    case .offline(let lastSeen): return lastSeen.map { "Offline, last seen \($0)" } ?? "Offline"
+    }
+  }
+}
+
+extension HubCopyRow where Trailing == EmptyView {
+  init(name: String, reach: HubCopyReach, detail: String? = nil, detailIsPath: Bool = false, symbol: String = "desktopcomputer") {
+    self.init(name: name, reach: reach, detail: detail, detailIsPath: detailIsPath, symbol: symbol, trailing: { EmptyView() })
+  }
+}
+
+/// How an account computer stands for this phone: live through a link the
+/// phone holds, online on the account, or offline.
+@MainActor
+func hubCopyReach(_ machine: AccountMachine?, isLive: Bool, isConnecting: Bool = false) -> HubCopyReach {
+  if isLive { return .live }
+  if isConnecting { return .connecting }
+  guard let machine else { return .offline(lastSeen: nil) }
+  let lastSeen = machine.lastSeenAt.map { Date(timeIntervalSince1970: $0 / 1000) }
+  let sleepStateAt = machine.sleepStateAt.map { Date(timeIntervalSince1970: $0 / 1000) }
+  if syncMachineWakeNeed(online: machine.online, lastSeenAt: lastSeen, sleepState: machine.sleepState, sleepStateAt: sleepStateAt) == nil {
+    return .online
+  }
+  return .offline(lastSeen: hubAccountRelativeTime(epochMs: machine.lastSeenAt))
+}
+

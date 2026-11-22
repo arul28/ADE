@@ -3,6 +3,12 @@ import { AdeExpectedError } from "../../../shared/expectedError";
 import { existsSync, mkdirSync } from "node:fs";
 import { Menu, WebContentsView, app, clipboard, nativeImage, screen, session } from "electron";
 import type { BrowserWindow, WebContents } from "electron";
+import type { BuiltInBrowserLoginSubmission } from "../../../shared/types/builtInBrowserLoginCapture";
+import { createBuiltInBrowserLoginOffers, loginOfferTarget } from "./builtInBrowserLoginOffers";
+import { passwordFillTarget } from "../../../shared/passwordFillTarget";
+import { generateSitePassword } from "../../../../../ade-cli/src/services/passwords/passwordCrypto";
+import type { MessagesIntegrationService } from "../messagesIntegration/messagesIntegrationService";
+import type { ReadRecentMessagesOptions } from "../messages";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -69,11 +75,14 @@ import type {
   BuiltInBrowserTrustCertificateArgs,
   BuiltInBrowserTrustedCertificatesResult,
   BuiltInBrowserTabArgs,
+  BuiltInBrowserRemoteInputEvent,
+  BuiltInBrowserRemoteTabFrame,
   BuiltInBrowserTabTargetArgs,
   BuiltInBrowserTraceArgs,
   BuiltInBrowserTraceResult,
   BuiltInBrowserWaitArgs,
   BuiltInBrowserFillArgs,
+  BuiltInBrowserSigninArgs,
   BuiltInBrowserTypeTextArgs,
   BuiltInBrowserDevToolsMode,
   BuiltInBrowserDevToolsResult,
@@ -244,10 +253,15 @@ import {
 } from "./builtInBrowserCertificateTrust";
 import { buildBuiltInBrowserPageContextMenuTemplate } from "./builtInBrowserContextMenu";
 import { migrateLegacyBuiltInBrowserProfiles } from "./builtInBrowserProfileMigration";
+import { chromeUserAgent, withChromeIdentityHeaders } from "./builtInBrowserChromeIdentity";
 import {
   createBuiltInBrowserPermissionController,
 } from "./builtInBrowserPermissions";
-import { configureBuiltInBrowserSessionWebAuthn } from "./builtInBrowserWebAuthn";
+import {
+  builtInBrowserSessionOpened,
+  configureBuiltInBrowserSessionWebAuthn,
+  openBuiltInBrowserSession,
+} from "./builtInBrowserWebAuthn";
 import {
   createBuiltInBrowserIsolatedSessions,
   type BrowserDownloadListener,
@@ -298,6 +312,23 @@ const MAX_BROWSER_WAIT_TIMEOUT_MS = 60_000;
 const DEFAULT_BROWSER_NETWORK_IDLE_MS = 500;
 const MAX_BROWSER_NETWORK_IDLE_MS = 10_000;
 const DEFAULT_TAB_LEASE_TTL_MS = 10 * 60_000;
+/** An agent's tabs close this long after its chat goes idle, unless kept. */
+export const CHAT_IDLE_CLOSE_MS = 15 * 60_000;
+/** A tab that could not close yet (on screen, recording, signing in) is tried again after this. */
+const AUTO_CLOSE_RETRY_MS = 5 * 60_000;
+/** Input this soon after an agent action is the agent's own, not a person's. */
+const AGENT_INPUT_QUIET_MS = 1_500;
+/**
+ * The safety net: an agent tab nobody kept and no agent touched for this long
+ * closes even if its chat never said it went idle (a brain restarted, an older
+ * brain, a lost message).
+ */
+const STALE_AGENT_TAB_MS = 2 * 60 * 60_000;
+const STALE_SWEEP_INTERVAL_MS = 5 * 60_000;
+/** A hidden tab an agent used this recently keeps full speed (see `detachedTabMayThrottle`). */
+const HIDDEN_TAB_AGENT_FULL_SPEED_MS = 2 * 60_000;
+/** A background tab nobody used for this long sleeps (its page is dropped until it is needed). */
+const TAB_SLEEP_AFTER_MS = 30 * 60_000;
 const MAX_TAB_LEASE_TTL_MS = 60 * 60_000;
 const DEFAULT_OBSERVATION_MAX_AGE_MS = 30 * 60_000;
 const OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "browser-observations");
@@ -310,6 +341,102 @@ const MAX_TRACKED_DOWNLOADS = 100;
 const DOWNLOAD_TRIGGER_ACTIONS = new Set([
   "click", "dispatchKey", "fill", "typeText", "paste", "dropFiles", "uploadFile", "selectOption", "drag",
 ]);
+/**
+ * Agent actions that send input into the page. While one runs, the input the
+ * tab sees is the agent's; `wait` sends none, so a person's clicks during it
+ * still make the tab theirs.
+ */
+const AGENT_INPUT_ACTIONS = new Set([...DOWNLOAD_TRIGGER_ACTIONS, "scroll", "clear", "signin", "signup"]);
+
+/** The isolated world the login-field finder runs in (any id unused by ADE's other page scripts). */
+const BUILT_IN_BROWSER_LOGIN_WORLD_ID = 1_071_141;
+
+/**
+ * Finds the page's login fields and marks them, in an isolated world of the
+ * top frame only (a cross-origin iframe is never searched, never filled): the
+ * first visible password field, and the visible text/email field before it.
+ * A username-only step (the password comes on the next page) marks just that.
+ * Every field it marks also carries `data-ade-vault-filled`, which agent
+ * observations always mask, and the password stays drawn as dots.
+ */
+const LOGIN_FIELD_FINDER = `(() => {
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    const st = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none" && !el.disabled && !el.readOnly;
+  };
+  for (const el of document.querySelectorAll("[data-ade-fill-target]")) el.removeAttribute("data-ade-fill-target");
+  const inputs = Array.from(document.querySelectorAll("input")).filter(visible);
+  const password = inputs.find((el) => el.type === "password" && el.autocomplete !== "new-password")
+    || inputs.find((el) => el.type === "password");
+  const userish = (el) => ["text", "email", "tel", ""].includes(el.type)
+    && /user|email|login|account|name|phone|identifier/i.test([el.name, el.id, el.autocomplete, el.placeholder, el.getAttribute("aria-label")].join(" "));
+  let username = null;
+  if (password) {
+    const before = inputs.slice(0, inputs.indexOf(password)).reverse();
+    username = before.find((el) => el.autocomplete === "username" || el.type === "email") || before.find(userish) || null;
+  } else {
+    username = inputs.find((el) => el.autocomplete === "username") || inputs.find((el) => el.type === "email") || inputs.find(userish) || null;
+  }
+  // The authenticator step: a one-time-code field, or a row of one-digit boxes
+  // (typing the code into the first moves along them). Only with no password
+  // on the page, so a login form's other fields are never mistaken for it.
+  let code = null;
+  if (!password) {
+    const codeish = (el) => ["text", "tel", "number", ""].includes(el.type)
+      && (el.autocomplete === "one-time-code"
+        || /otp|one.?time|2fa|mfa|totp|verif|auth.*code|security.?code|^code$/i.test([el.name, el.id, el.placeholder, el.getAttribute("aria-label")].join(" ")));
+    code = inputs.find((el) => el.autocomplete === "one-time-code") || inputs.find(codeish) || null;
+    if (!code) {
+      const boxes = inputs.filter((el) => el.maxLength === 1 && ["text", "tel", "number", ""].includes(el.type));
+      if (boxes.length >= 6 && boxes.length <= 8) code = boxes[0];
+    }
+    if (code) username = null;
+  }
+  for (const [el, role] of [[username, "username"], [password, "password"], [code, "code"]]) {
+    if (!el) continue;
+    el.setAttribute("data-ade-fill-target", role);
+    el.setAttribute("data-ade-vault-filled", "");
+  }
+  // Drawn as dots even after the page's own "show password" switch turns it
+  // into a text field, so a screenshot an agent takes never shows it.
+  if (password) password.style.setProperty("-webkit-text-security", "disc", "important");
+  return { username: Boolean(username), password: Boolean(password), code: Boolean(code) };
+})()`;
+/**
+ * The sign-up form's fields, in the same isolated world: every visible
+ * new-password field (the password and its "confirm" box), and the
+ * username/email field before the first one, whose value the agent typed.
+ * The password fields are marked, masked from observations and drawn as dots.
+ */
+const SIGNUP_FIELD_FINDER = `(() => {
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    const st = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none" && !el.disabled && !el.readOnly;
+  };
+  for (const el of document.querySelectorAll("[data-ade-fill-target]")) el.removeAttribute("data-ade-fill-target");
+  const inputs = Array.from(document.querySelectorAll("input")).filter(visible);
+  const all = inputs.filter((el) => el.type === "password");
+  const fresh = all.filter((el) => el.autocomplete === "new-password");
+  const passwords = (fresh.length ? fresh : all).slice(0, 2);
+  let maxLength = 0;
+  passwords.forEach((el, index) => {
+    el.setAttribute("data-ade-fill-target", "new-password-" + index);
+    el.setAttribute("data-ade-vault-filled", "");
+    el.style.setProperty("-webkit-text-security", "disc", "important");
+    if (el.maxLength > 0) maxLength = maxLength ? Math.min(maxLength, el.maxLength) : el.maxLength;
+  });
+  let username = null;
+  if (passwords.length) {
+    const before = inputs.slice(0, inputs.indexOf(passwords[0])).reverse();
+    const userish = (el) => ["text", "email", "tel", ""].includes(el.type)
+      && /user|email|login|account|name|phone|identifier/i.test([el.name, el.id, el.autocomplete, el.placeholder, el.getAttribute("aria-label")].join(" "));
+    const field = before.find((el) => el.autocomplete === "username" || el.autocomplete === "email" || el.type === "email") || before.find(userish) || null;
+    username = field && field.value.trim() ? field.value.trim().slice(0, 256) : null;
+  }
+  return { passwords: passwords.length, maxLength, username };
+})()`;
 const DEFAULT_DOWNLOAD_WAIT_MS = 60_000;
 const MAX_DOWNLOAD_WAIT_MS = 120_000;
 /**
@@ -447,6 +574,28 @@ export type BrowserTabState = {
    * one task, and nobody sits at the machine to close it (ledger T1).
    */
   keptByPerson: boolean;
+  /**
+   * When ADE will close this agent tab on its own: its chat went idle (or
+   * ended) and nobody kept the tab. Null while the chat is working, for a
+   * person's tab, and for a kept one. See `chatBrowserLifecycle`.
+   */
+  autoCloseAtMs: number | null;
+  /** When an agent command last drove input into this tab (any action, not only downloads). */
+  lastAgentInputAtMs: number | null;
+  /**
+   * Input-sending agent actions running on this tab right now, counted once
+   * their access check and wake are done. While any runs, input the tab sees
+   * is the agent's own.
+   */
+  agentActionsInFlight: number;
+  /** Last time a person saw this tab on screen, or an agent or a watcher used it. */
+  lastUsedAtMs: number;
+  /**
+   * Set while the tab sleeps: its page was dropped to free memory, as Chrome
+   * discards a tab, and it remembers where it was and its history. Waking
+   * (a person switching to it, an agent using it, a watcher) loads it again.
+   */
+  sleeping: { url: string; title: string | null; entries: Electron.NavigationEntry[]; index: number } | null;
   createdAt: string;
   /** When the agent last acted on this tab; scopes "the download I just made". */
   lastActionAtMs: number | null;
@@ -617,10 +766,23 @@ type BrowserNetworkObserver = {
   onRequestFinished: (details: Record<string, unknown>, error: string | null) => void;
 };
 
-/** Teams sends an Electron User-Agent to its error page before sign-in. */
-const ELECTRON_UA_REFUSING_URLS = ["https://teams.cloud.microsoft/*", "https://teams.microsoft.com/*"];
 
-function createBrowserNetworkRouter() {
+function normalizeRemoteInputEvent(value: unknown): BuiltInBrowserRemoteInputEvent | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const type = record.type;
+  if (type === "click" || type === "scroll") {
+    const x = Number(record.x);
+    const y = Number(record.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return type === "click" ? { type, x, y } : { type, x, y, deltaY: Number(record.deltaY) || 0 };
+  }
+  if (type === "key" && typeof record.key === "string") return { type, key: record.key };
+  if (type === "text" && typeof record.text === "string") return { type, text: record.text };
+  return null;
+}
+
+function createBrowserNetworkRouter(getLogger?: () => Logger) {
   const configuredSessions = new WeakSet<Electron.Session>();
   const observers = new Set<BrowserNetworkObserver>();
 
@@ -628,11 +790,29 @@ function createBrowserNetworkRouter() {
     configureSession(browserSession: Electron.Session): void {
       if (configuredSessions.has(browserSession)) return;
       configuredSessions.add(browserSession);
+      // Chrome's identity for every tab this session creates (navigator and
+      // headers alike); the header pass below covers requests made before a
+      // tab picked it up and adds the client hints Chromium drops for an
+      // overridden UA. See builtInBrowserChromeIdentity.ts.
+      try {
+        const sessionWithUa = browserSession as unknown as {
+          getUserAgent?: () => string;
+          setUserAgent?: (userAgent: string) => void;
+        };
+        const current = sessionWithUa.getUserAgent?.();
+        if (current) sessionWithUa.setUserAgent?.(chromeUserAgent(current));
+      } catch (error) {
+        // The header pass still rewrites requests; pages would see the
+        // Electron UA from script, which is what this warns about.
+        getLogger?.().warn("built_in_browser.chrome_identity_failed", {
+          err: error instanceof Error ? error.message : String(error),
+        });
+      }
       const webRequest = browserSession.webRequest as unknown as {
         onBeforeSendHeaders?: (
           filter: { urls: string[] },
           listener: (
-            details: { requestHeaders: Record<string, string> },
+            details: { requestHeaders: Record<string, string>; url?: string },
             callback: (response: { requestHeaders?: Record<string, string> }) => void,
           ) => void,
         ) => void;
@@ -640,13 +820,10 @@ function createBrowserNetworkRouter() {
         onCompleted?: (listener: (details: Record<string, unknown>) => void) => void;
         onErrorOccurred?: (listener: (details: Record<string, unknown>) => void) => void;
       };
-      webRequest.onBeforeSendHeaders?.({ urls: ELECTRON_UA_REFUSING_URLS }, ({ requestHeaders }, callback) => {
-        const name = Object.keys(requestHeaders).find((key) => key.toLowerCase() === "user-agent");
-        if (!name) {
-          callback({});
-          return;
-        }
-        callback({ requestHeaders: { ...requestHeaders, [name]: requestHeaders[name]!.replace(/ Electron\/\S+/, "") } });
+      webRequest.onBeforeSendHeaders?.({ urls: ["<all_urls>"] }, (details, callback) => {
+        const url = typeof details.url === "string" ? details.url : "";
+        const rewritten = withChromeIdentityHeaders(details.requestHeaders, url);
+        callback(rewritten ? { requestHeaders: rewritten } : {});
       });
       webRequest.onBeforeRequest?.((details, callback) => {
         for (const observer of observers) observer.onRequestStarted(details);
@@ -793,10 +970,33 @@ export function isBuiltInBrowserNoTabError(error: unknown): error is BuiltInBrow
     || (error instanceof Error && error.name === "BuiltInBrowserNoTabError" && "tabId" in error);
 }
 
+/** What the browser needs from Passwords to fill a login: summaries to choose, then one login's values. */
+export type BuiltInBrowserPasswordsAccess = {
+  loginsForPage(pageUrl: string, options?: { exactOrigin?: boolean }): Promise<Array<{ id: string; username: string | null; sites: string[] }>>;
+  resolveForFill(input: { itemId: string; pageUrl: string; exactOrigin?: boolean }): Promise<{ username: string; password: string; code: string | null } | null>;
+  /** Pull what other computers saved (a login the sign-in card just saved elsewhere). */
+  sync(): Promise<void>;
+  /** Whether Passwords is on here: "Save to Passwords?" is offered only then. */
+  enabled(): Promise<boolean>;
+  /** Activity: the person filled a saved login with the key button. */
+  recordUse(input: { itemId: string; target: string }): Promise<unknown>;
+  /** The person's "Save to Passwords?" answer. */
+  /** The saved item's id; null when this computer's brain did not answer. */
+  saveLogin(input: { id?: string; origins?: string[]; username?: string; password: string }): Promise<{ id: string } | null>;
+};
+
 export function createBuiltInBrowserService(args: {
   getLogger?: () => Logger;
   /** Makes a recording's demo video. Without one, a recording fails at its stop. */
   demoEngine?: DemoEngine | null;
+  /**
+   * Passwords on this computer (its local brain's `passwords` actions). The
+   * values only ever come back here, to fill the page in front of the person;
+   * null when Passwords is not available on this computer.
+   */
+  passwords?: BuiltInBrowserPasswordsAccess | null;
+  /** The Messages integration on this Mac (null elsewhere). */
+  messages?: MessagesIntegrationService | null;
   getProjectRootForWindow?: (win: BrowserWindow) => string | null | undefined;
   getWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
   /**
@@ -961,11 +1161,11 @@ export function createBuiltInBrowserService(args: {
     onChange: args.onAgentAccessChange ?? undefined,
     initialMode: args.agentAccessInitialMode,
   });
-  const networkRouter = createBrowserNetworkRouter();
+  const networkRouter = createBrowserNetworkRouter(args.getLogger);
   const profileMigrationPromise = userDataPath
     ? migrateLegacyBuiltInBrowserProfiles({
         userDataPath,
-        getSession: (partition) => session.fromPartition(partition),
+        getSession: (partition) => (partition === BROWSER_PARTITION ? openBuiltInBrowserSession() : session.fromPartition(partition)),
         getLogger: args.getLogger,
       }).catch((error) => {
         let migrationLogger = null;
@@ -1043,6 +1243,7 @@ export function createBuiltInBrowserService(args: {
       createRecordingWindow: args.createRecordingWindow ?? null,
       createTabRecorder: args.createTabRecorder ?? null,
       demoEngine: args.demoEngine ?? null,
+      passwords: args.passwords ?? null,
     });
 
   /**
@@ -1269,6 +1470,7 @@ export function createBuiltInBrowserService(args: {
         createRecordingWindow: args.createRecordingWindow ?? null,
         createTabRecorder: args.createTabRecorder ?? null,
         demoEngine: args.demoEngine ?? null,
+        passwords: args.passwords ?? null,
       });
       fallbackServices.set("window", fallbackService);
     }
@@ -1337,6 +1539,7 @@ export function createBuiltInBrowserService(args: {
           waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
           onHandoff: args.onHandoff ?? null,
           presenceHolds: presenceRouter,
+          passwords: args.passwords ?? null,
         });
         fallbackServices.set("personal", fallbackService);
       }
@@ -1435,10 +1638,20 @@ export function createBuiltInBrowserService(args: {
 
   const allWindowEntries = (): WindowBrowserEntry[] => [...windowServices.values()];
 
+  /** The Messages integration (main always gives one; a test host may not). */
+  const messagesIntegration = (): MessagesIntegrationService => {
+    if (!args.messages) throw new AdeExpectedError("Messages isn't available on this computer.", "user");
+    return args.messages;
+  };
+
   const allWindowServices = (): WindowBrowserService[] => [
     ...[...windowServices.values()].map((entry) => entry.service),
     ...fallbackServices.values(),
   ];
+
+  /** The collection that holds this tab (ids are unique across collections), else the usual pick. */
+  const serviceOwningTab = (input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): WindowBrowserService =>
+    allWindowServices().find((service) => service.listTabIds().includes(input.tabId)) ?? serviceForInput(input, sourceWindow);
 
   /**
    * Picks the collection a detected dev server belongs to.
@@ -1613,12 +1826,18 @@ export function createBuiltInBrowserService(args: {
   const flushStorage = async (): Promise<void> => {
     const startedAt = Date.now();
     await profileMigrationPromise;
-    const browserSession = session.fromPartition(BROWSER_PARTITION);
+    // A run that never opened the shared profile has nothing of it to flush;
+    // opening it here would only cost the quit a browser context.
+    const browserSession = builtInBrowserSessionOpened() ? openBuiltInBrowserSession() : null;
     const results = await Promise.allSettled([
       stateStore?.flush() ?? Promise.resolve(),
       permissionController.flush(),
-      Promise.resolve().then(() => browserSession.cookies.flushStore()),
-      Promise.resolve().then(() => browserSession.flushStorageData()),
+      ...(browserSession
+        ? [
+            Promise.resolve().then(() => browserSession.cookies.flushStore()),
+            Promise.resolve().then(() => browserSession.flushStorageData()),
+          ]
+        : []),
     ]);
     const failures = results
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
@@ -1687,12 +1906,14 @@ export function createBuiltInBrowserService(args: {
       const { partitions } = await certificateTrust.revoke(input.id ?? null);
       // Chromium keeps a TLS connection it was told to accept open for reuse;
       // close them so the next request meets the certificate check again.
-      await Promise.allSettled(partitions.map((partition) => session.fromPartition(partition).closeAllConnections()));
+      // An unopened shared profile holds no connections; do not open it to close none.
+      const open = partitions.filter((partition) => partition !== BROWSER_PARTITION || builtInBrowserSessionOpened());
+      await Promise.allSettled(open.map((partition) => session.fromPartition(partition).closeAllConnections()));
       return { certificates: certificateTrust.list() };
     },
     async getProfileDiagnostics(): Promise<BuiltInBrowserProfileDiagnostics> {
       await profileMigrationPromise;
-      const browserSession = session.fromPartition(BROWSER_PARTITION);
+      const browserSession = openBuiltInBrowserSession();
       const cookies = await browserSession.cookies.get({});
       let cacheSizeBytes: number | null = null;
       try {
@@ -1830,6 +2051,20 @@ export function createBuiltInBrowserService(args: {
       for (const service of allWindowServices()) released += service.releaseLane(laneId);
       return { released };
     },
+    /**
+     * A chat started a turn, went idle, or ended: its agent tabs in every
+     * collection keep running, start their 15-minute countdown, or close.
+     * Reached from the brain (bridge-served, never an agent command) and from
+     * a brain on another machine.
+     */
+    chatBrowserLifecycle(input: { chatSessionId?: string | null; state?: string | null }): { tabs: number } {
+      const chatSessionId = typeof input.chatSessionId === "string" ? input.chatSessionId.trim() : "";
+      const state = input.state === "running" || input.state === "idle" || input.state === "ended" ? input.state : null;
+      if (!chatSessionId || !state) return { tabs: 0 };
+      let count = 0;
+      for (const service of allWindowServices()) count += service.chatBrowserLifecycle(chatSessionId, state);
+      return { tabs: count };
+    },
     requestOriginAccess(
       input: BuiltInBrowserRequestOriginAccessArgs = {},
       sourceWindow?: BrowserWindow | null,
@@ -1906,6 +2141,28 @@ export function createBuiltInBrowserService(args: {
     switchTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
       return serviceForInput(input, sourceWindow).switchTab(input);
     },
+    /**
+     * One tab's newest frame for a viewer on another machine. Bridge-served
+     * for the brain's `work_tools.readBrowserTabFrame`, never an agent
+     * command; the tab is found in whichever collection holds it.
+     */
+    captureTabFrameForRuntime(input: { tabId?: string | null; maxWidth?: number | null }): BuiltInBrowserRemoteTabFrame | null {
+      const tabId = typeof input.tabId === "string" ? input.tabId.trim() : "";
+      if (!tabId) return null;
+      const service = allWindowServices().find((entry) => entry.hasLiveTab(tabId));
+      return service ? service.captureTabFrameForRemote({ tabId, maxWidth: input.maxWidth ?? null }) : null;
+    },
+    /** A person on another machine's input into one tab (Take control). Bridge-served. */
+    async sendTabInputForRuntime(input: { tabId?: string | null; event?: unknown }): Promise<{ ok: boolean }> {
+      const tabId = typeof input.tabId === "string" ? input.tabId.trim() : "";
+      const event = normalizeRemoteInputEvent(input.event);
+      if (!tabId || !event) return { ok: false };
+      const service = allWindowServices().find((entry) => entry.hasLiveTab(tabId));
+      return service ? await service.sendRemoteHumanInput({ tabId, event }) : { ok: false };
+    },
+    keepTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
+      return serviceForInput(input, sourceWindow).keepTab(input);
+    },
     handTabToChat(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
       return serviceForInput(input, sourceWindow).handTabToChat(input);
     },
@@ -1965,6 +2222,45 @@ export function createBuiltInBrowserService(args: {
     },
     fill(input: BuiltInBrowserFillArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
       return serviceForInput(input, sourceWindow).fill(input);
+    },
+    signin(input: BuiltInBrowserSigninArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).signin(input);
+    },
+    signup(input: BuiltInBrowserSigninArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).signup(input);
+    },
+    // The Messages integration on this Mac, for the brain's `messages` domain.
+    messagesStatus: () => messagesIntegration().status(),
+    messagesSetSettings: (next: Record<string, unknown>) => messagesIntegration().setSettings(next),
+    messagesRecent: (input: ReadRecentMessagesOptions = {}) => messagesIntegration().recent(input),
+    messagesChats: (input: { limit?: number } = {}) => messagesIntegration().chats(input),
+    messagesSend: (input: { to: string; text: string }) => messagesIntegration().send(input),
+    /** A login form the person sent in a tab (the tab preload's message); the tab's own window handles it. */
+    handleLoginSubmission(wc: WebContents, mainFrame: boolean, submission: BuiltInBrowserLoginSubmission): void {
+      for (const service of allWindowServices()) {
+        if (service.handleLoginSubmission(wc, mainFrame, submission)) return;
+      }
+    },
+    // The key button names only a tab: the collection that owns it answers
+    // (the personal Browser's tabs live outside the window's project).
+    savedLoginsForTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null) {
+      return serviceOwningTab(input, sourceWindow).savedLoginsForTab(input);
+    },
+    fillSavedLogin(input: BuiltInBrowserTabArgs & { itemId: string }, sourceWindow?: BrowserWindow | null) {
+      return serviceOwningTab(input, sourceWindow).fillSavedLogin(input);
+    },
+    loginOfferForTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null) {
+      return serviceOwningTab(input, sourceWindow).loginOfferForTab(input.tabId);
+    },
+    async acceptLoginOffer(input: { offerId: string }): Promise<{ saved: boolean }> {
+      for (const service of allWindowServices()) {
+        const result = await service.acceptLoginOffer(input.offerId);
+        if (result.saved) return result;
+      }
+      return { saved: false };
+    },
+    dismissLoginOffer(input: { offerId: string }): void {
+      for (const service of allWindowServices()) service.dismissLoginOffer(input.offerId);
     },
     clear(input: BuiltInBrowserClearArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
       return serviceForInput(input, sourceWindow).clear(input);
@@ -2344,6 +2640,12 @@ function createBuiltInBrowserWindowService(args: {
   createTabRecorder?: BuiltInBrowserRecorderFactory | null;
   /** Makes a recording's demo video. */
   demoEngine?: DemoEngine | null;
+  /**
+   * Passwords on this computer (its local brain's `passwords` actions). The
+   * values only ever come back here, to fill the page in front of the person;
+   * null when Passwords is not available on this computer.
+   */
+  passwords?: BuiltInBrowserPasswordsAccess | null;
 }) {
   const presenceHolds = args.presenceHolds ?? builtInBrowserAgentPresence;
   let win: BrowserWindow | null = null;
@@ -2522,7 +2824,7 @@ function createBuiltInBrowserWindowService(args: {
       const activeIndex = Math.max(0, liveTabs.findIndex((tab) => tab.id === activeTabId));
       args.onStateChange({
         tabs: liveTabs.map((tab) => ({
-          url: tab.webContents.getURL(),
+          url: tab.sleeping?.url ?? tab.webContents.getURL(),
           id: tab.id,
           openedBy: tab.openedBy,
           openedByChatSessionId: tab.openedByChatSessionId,
@@ -2836,6 +3138,11 @@ function createBuiltInBrowserWindowService(args: {
     const touchedAt = new Date().toISOString();
     if (ownerChanged) tab.ownerClaimedAt = touchedAt;
     tab.ownerLastActiveAt = touchedAt;
+    // A chat that drives the browser while "idle" (a subagent, a background
+    // task) is working: its countdown starts again from now.
+    // A close pass already under way for it stops too.
+    if (chatSessionId) bumpChatGeneration(chatSessionId);
+    if (chatSessionId && chatIdleTimers.has(chatSessionId)) armChatIdleClose(chatSessionId, CHAT_IDLE_CLOSE_MS);
     /*
      * A new owner is news the moment it happens. Reads and actions claim the
      * tab they touch (`prepareAgentReadTabAsync`, `prepareAgentActionTab`) but
@@ -2931,6 +3238,7 @@ function createBuiltInBrowserWindowService(args: {
   ): void => {
     if (stringOrNull(input.laneId) || stringOrNull(input.chatSessionId)) return;
     tab.keptByPerson = true;
+    tab.autoCloseAtMs = null;
     tab.ownerLaneId = null;
     tab.ownerChatSessionId = null;
     tab.ownerClaimedAt = null;
@@ -2955,6 +3263,95 @@ function createBuiltInBrowserWindowService(args: {
     throw new BuiltInBrowserHandoffActiveError(tab.id, tab.handoff.reason);
   };
 
+  /** The page a tab is on, a sleeping tab's remembered one included. */
+  const tabPageUrl = (tab: BrowserTabState): string => tab.sleeping?.url ?? tab.webContents.getURL();
+
+  /** Load a sleeping tab's page again, with its history. Returns at once. */
+  const wakeTab = (tab: BrowserTabState): Promise<void> | null => {
+    tab.lastUsedAtMs = Date.now();
+    // Every agent action and every attach starts here: the page runs at full speed from now.
+    setTabBackgroundThrottling(tab, false);
+    const asleep = tab.sleeping;
+    if (!asleep || tab.webContents.isDestroyed()) return null;
+    tab.sleeping = null;
+    const wc = tab.webContents;
+    logger()?.info("built_in_browser.tab_woke", { tabId: tab.id });
+    const history = (wc as unknown as {
+      navigationHistory?: { restore?: (options: { entries: Electron.NavigationEntry[]; index: number }) => Promise<void> };
+    }).navigationHistory;
+    const restoring = history?.restore && asleep.entries.length > 0 && asleep.index >= 0
+      ? history.restore({ entries: asleep.entries, index: asleep.index }).catch(() => loadUrlSafely(wc, asleep.url))
+      : loadUrlSafely(wc, asleep.url);
+    emitStatus();
+    return Promise.resolve(restoring).then(() => undefined, () => undefined);
+  };
+
+  /** Wake a sleeping tab and wait (bounded) for its page, before an agent uses it. */
+  const wakeTabAndWait = async (tab: BrowserTabState): Promise<void> => {
+    const waking = wakeTab(tab);
+    if (!waking) return;
+    await Promise.race([waking, new Promise<void>((resolve) => setTimeout(resolve, 15_000))]);
+  };
+
+  /** Whether anything keeps this tab awake right now (checked again after every await). */
+  const tabMustStayAwake = (tab: BrowserTabState): boolean => {
+    const wc = tab.webContents;
+    if (tab.sleeping || wc.isDestroyed() || tab.isolation) return true;
+    if (tab.id === activeTabId || tab.agentActionsInFlight > 0) return true;
+    if (Date.now() - tab.lastUsedAtMs < TAB_SLEEP_AFTER_MS) return true;
+    if (tab.handoff || tab.recording || tab.emulation || tab.devToolsMode || tab.networkLoggingEnabled) return true;
+    if (tabCapabilities.hasPreviewWatchers(tab.id)) return true;
+    if (wc.isLoading() || wc.isCurrentlyAudible() || BACKGROUND_AUDIO_WEB_CONTENTS.has(wc)) return true;
+    return !/^https?:\/\//i.test(wc.getURL());
+  };
+
+  /**
+   * Put one background tab to sleep, as Chrome discards a tab it has not shown
+   * in a while. Never a tab on screen, playing sound, recording, being signed
+   * in on, watched, emulating, or with a text field in use (unsaved typing is
+   * the one thing a reload would lose).
+   */
+  const maybeSleepTab = async (tab: BrowserTabState): Promise<void> => {
+    if (tabMustStayAwake(tab)) return;
+    const wc = tab.webContents;
+    const url = wc.getURL();
+    // Anything a reload would lose blocks sleep: a field in use, a field whose
+    // value differs from what the page loaded with, and any editor area with
+    // text in it (a rich-text draft keeps no "default" to compare against).
+    const editing = await wc.executeJavaScript(
+      `(() => {
+        const a = document.activeElement;
+        if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return true;
+        for (const f of document.querySelectorAll("textarea, input")) {
+          if (/^(button|submit|reset|hidden|image|file)$/i.test(f.type || "")) continue;
+          if (f.type === "checkbox" || f.type === "radio") { if (f.checked !== f.defaultChecked) return true; continue; }
+          if (f.value !== f.defaultValue) return true;
+        }
+        for (const e of document.querySelectorAll("[contenteditable]:not([contenteditable=false])")) {
+          if ((e.textContent || "").trim()) return true;
+        }
+        return false;
+      })()`,
+      true,
+    ).catch(() => true);
+    // The page check awaited: a watcher, a wake, an agent or a navigation may
+    // have arrived meanwhile, so every blocker is read again, and the page
+    // must still be the one that was checked.
+    if (editing || tabMustStayAwake(tab) || wc.getURL() !== url) return;
+    const history = (wc as unknown as {
+      navigationHistory?: { getAllEntries?: () => Electron.NavigationEntry[]; getActiveIndex?: () => number };
+    }).navigationHistory;
+    tab.sleeping = {
+      url,
+      title: emptyToNull(wc.getTitle()),
+      entries: history?.getAllEntries?.() ?? [],
+      index: history?.getActiveIndex?.() ?? -1,
+    };
+    logger()?.info("built_in_browser.tab_slept", { tabId: tab.id });
+    await wc.loadURL("about:blank").catch(() => {});
+    emitStatus();
+  };
+
   const prepareAgentActionTab = async <T extends BuiltInBrowserAgentActionArgs>(
     tab: BrowserTabState,
     input: T,
@@ -2963,13 +3360,14 @@ function createBuiltInBrowserWindowService(args: {
     assertHandoffAllowsAgentAction(tab, input);
     assertTabLeaseAvailable(tab, input);
     await args.agentAccessController.requireUrlAccess(
-      tab.webContents.getURL(),
+      tabPageUrl(tab),
       input,
       "The agent requested an interactive browser action.",
       { waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS },
     );
     claimTabOwnerFromInput(tab, input);
     armAgentNavigationGuard(tab, input);
+    await wakeTabAndWait(tab);
     // A recording tab may still be moving onto the recording viewport, which
     // relays the page out. Locating a target before that lands would aim at
     // the old layout.
@@ -2981,7 +3379,7 @@ function createBuiltInBrowserWindowService(args: {
     input: BuiltInBrowserTabTargetArgs,
   ): void => {
     assertTabLeaseAvailable(tab, input);
-    args.agentAccessController.assertUrlAccessSync(tab.webContents.getURL(), input);
+    args.agentAccessController.assertUrlAccessSync(tabPageUrl(tab), input);
     claimTabOwnerFromInput(tab, input);
   };
 
@@ -2993,10 +3391,11 @@ function createBuiltInBrowserWindowService(args: {
     await args.waitForProfileMigration();
     assertHandoffAllowsAgentAction(tab, input);
     assertTabLeaseAvailable(tab, input);
-    await args.agentAccessController.requireUrlAccess(tab.webContents.getURL(), input, reason, {
+    await args.agentAccessController.requireUrlAccess(tabPageUrl(tab), input, reason, {
       waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS,
     });
     claimTabOwnerFromInput(tab, input);
+    await wakeTabAndWait(tab);
     await settleRecordingViewport(tab);
   };
 
@@ -3413,12 +3812,22 @@ function createBuiltInBrowserWindowService(args: {
     const traceDraft = beginActionTrace(tab, action, input as Record<string, unknown>);
     const effectEntry: ActionEffectEntry = { action, tracker: createAgentActionEffectTracker(), navigationApproval: null };
     actionEffectTrackers.set(tab, effectEntry);
+    let inFlight = false;
     try {
       // Only an action that can start a download moves this mark. `wait` and
       // `observe` between the click and `downloads wait` used to move it past
       // the finished file, so the wait timed out on a download it had made.
       if (DOWNLOAD_TRIGGER_ACTIONS.has(action)) tab.lastActionAtMs = Date.now();
+      tab.lastAgentInputAtMs = Date.now();
       await prepareAgentActionTab(tab, input);
+      // Counted from here, not before the access check, the wake and the
+      // recording viewport: a person using the tab while the agent waits on
+      // those is still a person.
+      if (AGENT_INPUT_ACTIONS.has(action)) {
+        tab.lastAgentInputAtMs = Date.now();
+        tab.agentActionsInFlight += 1;
+        inFlight = true;
+      }
       // A tab nobody is looking at has no compositor surface, and Chromium
       // drops synthesized input to it: a click found its element, was sent,
       // and nothing happened. Hold the tab parked (attached, off screen) for
@@ -3442,6 +3851,8 @@ function createBuiltInBrowserWindowService(args: {
       touchSession(sessionEntry, { lastTraceEntryId: trace.id });
       throw error;
     } finally {
+      if (inFlight) tab.agentActionsInFlight = Math.max(0, tab.agentActionsInFlight - 1);
+      tab.lastAgentInputAtMs = Date.now();
       if (actionEffectTrackers.get(tab) === effectEntry) actionEffectTrackers.delete(tab);
     }
   };
@@ -3682,6 +4093,9 @@ function createBuiltInBrowserWindowService(args: {
         inspectAt: (x, y) => {
           if (live()) wc.inspectElement(x, y);
         },
+        print: () => {
+          if (live()) wc.print({}, () => {});
+        },
       });
       Menu.buildFromTemplate(template).popup({ window: host });
     });
@@ -3834,6 +4248,36 @@ function createBuiltInBrowserWindowService(args: {
       if (tab) refreshRecordingViewport(tab);
       emitStatus();
     });
+    // A person clicking or typing in the page makes an agent's tab theirs:
+    // ADE never closes it on its own after that. Opening or looking at a tab
+    // does not count, and neither does an agent's own synthetic input, which
+    // also arrives through these events (hence the quiet window after any
+    // agent action).
+    const noteHumanInput = () => {
+      const tab = tabForWebContents(wc);
+      if (!tab || tab.keptByPerson || tab.openedBy !== "chat") return;
+      if (tab.agentActionsInFlight > 0) return;
+      if (tab.lastAgentInputAtMs != null && Date.now() - tab.lastAgentInputAtMs < AGENT_INPUT_QUIET_MS) return;
+      if (tab.id !== activeTabId || !visible || !win || win.isDestroyed() || !win.isFocused()) return;
+      keepTabForPerson(tab, "input");
+    };
+    wc.on("before-input-event", (_event, input) => {
+      if (input.type === "keyDown") noteHumanInput();
+    });
+    // A sleeping tab sent anywhere new (an agent's navigate, a load from
+    // elsewhere) is awake on that page: forget the remembered one, or status
+    // would keep reporting it and the next wake would restore it over this.
+    wc.on("did-start-navigation", (details) => {
+      if (!details.isMainFrame || details.isSameDocument || details.url === "about:blank") return;
+      const tab = tabForWebContents(wc);
+      if (!tab?.sleeping) return;
+      tab.sleeping = null;
+      emitStatus();
+    });
+    (wc as unknown as { on: (event: string, listener: (event: unknown, mouse: { type?: string }) => void) => void })
+      .on("before-mouse-event", (_event, mouse) => {
+        if (mouse?.type === "mouseDown") noteHumanInput();
+      });
     wc.on("page-favicon-updated", (_event, favicons: string[]) => {
       const tab = tabForWebContents(wc);
       if (!tab) return;
@@ -3967,6 +4411,9 @@ function createBuiltInBrowserWindowService(args: {
     sandbox: true,
     webSecurity: true,
     backgroundThrottling: false,
+    // Chromium's own PDF viewer, as in Chrome: a PDF link opens the document
+    // in the tab instead of downloading it. Electron gates the viewer on this.
+    plugins: true,
   });
 
   const createTabStateForView = (
@@ -4005,6 +4452,11 @@ function createBuiltInBrowserWindowService(args: {
       openedByChatSessionId: null,
       openedByLaneId: null,
       keptByPerson: false,
+      autoCloseAtMs: null,
+      lastAgentInputAtMs: null,
+      agentActionsInFlight: 0,
+      lastUsedAtMs: Date.now(),
+      sleeping: null,
       createdAt: new Date().toISOString(),
       lastActionAtMs: null,
       agentNavigationGuard: null,
@@ -4477,6 +4929,7 @@ function createBuiltInBrowserWindowService(args: {
       }
       const isActive = tab.id === activeTabId;
       const shouldAttach = visible && isActive;
+      if (shouldAttach || tabCapabilities.hasPreviewWatchers(tab.id)) void wakeTab(tab);
       if (!shouldAttach) {
         // Leaving the screen: the size it was passing through is not a size
         // the person chose.
@@ -4524,6 +4977,8 @@ function createBuiltInBrowserWindowService(args: {
           else syncRecordingViewport(tab, parkedRect);
           if (warming) scheduleParkAfterWarming(tab.id);
           tab.view.setVisible(true);
+          // Parked means somebody needs its pixels or input: full speed.
+          setTabBackgroundThrottling(tab, false);
           // Still not the active tab: parked means composited, not attended, so
           // it stays muted like any other background tab.
           applyTabLifecycle(tab, false);
@@ -4539,6 +4994,7 @@ function createBuiltInBrowserWindowService(args: {
         removeTabViewFromWindow(tab);
         applyTabLifecycle(tab, false);
         syncRecordingViewport(tab, null);
+        setTabBackgroundThrottling(tab, detachedTabMayThrottle(tab));
         continue;
       }
       // Parked (off screen) or detached a moment ago: Chromium can present the
@@ -4559,6 +5015,7 @@ function createBuiltInBrowserWindowService(args: {
       tab.view.setBounds(viewRect);
       noteSurfacedSize(tab.id, viewRect);
       syncRecordingViewport(tab, viewRect);
+      setTabBackgroundThrottling(tab, false);
       tab.view.setVisible(true);
       applyTabLifecycle(tab, true);
       if (cameOnScreen) repaintTab(tab);
@@ -4590,6 +5047,55 @@ function createBuiltInBrowserWindowService(args: {
     if (tab?.view) repaintTab(tab);
   };
 
+  /**
+   * Hidden tabs run at Chromium's background speed (timers batched to once a
+   * second, no animation frames), as in Chrome. Every tab starts with
+   * throttling off (`browserWebPreferences`), because an agent, a recording or
+   * a preview needs a hidden page at full speed. So throttling turns on only
+   * for a tab that is off the window (not on screen, not parked) and that
+   * nothing uses: no agent action, capture hold, recording, sign-in handoff,
+   * DevTools or sound, no live agent lease, and no agent touch in the last
+   * two minutes. A wake (every agent action starts with one), a park and an
+   * attach turn it off again before the page is used.
+   */
+  const throttledTabWebContents = new WeakSet<WebContents>();
+  const setTabBackgroundThrottling = (tab: BrowserTabState, throttle: boolean): void => {
+    const wc = tab.webContents;
+    if (wc.isDestroyed() || throttledTabWebContents.has(wc) === throttle) return;
+    try {
+      if (typeof wc.setBackgroundThrottling !== "function") return;
+      wc.setBackgroundThrottling(throttle);
+    } catch {
+      return;
+    }
+    if (throttle) throttledTabWebContents.add(wc);
+    else throttledTabWebContents.delete(wc);
+  };
+  const detachedTabMayThrottle = (tab: BrowserTabState): boolean => {
+    const wc = tab.webContents;
+    if (wc.isDestroyed() || tab.sleeping) return false;
+    if (tab.agentActionsInFlight > 0 || needsParkedSurface(tab.id)) return false;
+    if (tab.recording || tab.recordingStarting || tab.handoff || tab.devToolsMode) return false;
+    if ((tab.ownerLaneId || tab.ownerChatSessionId) && !isLeaseExpired(tab.ownerLeaseExpiresAt)) return false;
+    const lastAgentTouch = Math.max(
+      tab.ownerLastActiveAt ? Date.parse(tab.ownerLastActiveAt) || 0 : 0,
+      tab.lastAgentInputAtMs ?? 0,
+    );
+    if (Date.now() - lastAgentTouch < HIDDEN_TAB_AGENT_FULL_SPEED_MS) return false;
+    try {
+      if (wc.isCurrentlyAudible() || BACKGROUND_AUDIO_WEB_CONTENTS.has(wc)) return false;
+    } catch {
+      return false;
+    }
+    return true;
+  };
+  /** For the periodic sweep: a detached tab whose agent went quiet slows down now. */
+  const refreshDetachedTabThrottling = (tab: BrowserTabState): void => {
+    if (!tab.view || (visible && tab.id === activeTabId) || parkedTabIds.has(tab.id)) return;
+    if (win && !win.isDestroyed() && win.contentView.children.includes(tab.view)) return;
+    setTabBackgroundThrottling(tab, detachedTabMayThrottle(tab));
+  };
+
   const applyTabLifecycle = (tab: BrowserTabState, active: boolean): void => {
     const wc = tab.webContents;
     if (wc.isDestroyed()) return;
@@ -4600,7 +5106,7 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
-  const browserSessionForProfile = () => session.fromPartition(BROWSER_PARTITION);
+  const browserSessionForProfile = () => openBuiltInBrowserSession();
 
   const removeBrowserDownloadListener = (): void => {
     if (!browserDownloadListener) return;
@@ -5165,13 +5671,288 @@ function createBuiltInBrowserWindowService(args: {
     return scopeStatusForInput(getStatus(), input);
   }
 
+  /*
+    Agent tabs clean themselves up.
+
+    Agents rarely close what they open, and a tab nobody holds just sits in
+    the cap until a person finds it. So the brain tells every desktop when a
+    chat starts a turn, goes idle, or ends (`chatBrowserLifecycle`), and the
+    chat's agent tabs close 15 minutes after it goes idle, or at once when it
+    ends or its lane is archived. A tab a person kept — clicked or typed in,
+    navigated, attached to a chat, or pressed Keep on — is never closed by
+    ADE. A tab that is on screen, recording, being watched or being signed in
+    on waits and is tried again a few minutes later.
+  */
+  const chatIdleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /**
-   * A lane was deleted or archived: its tabs stay open and become free. Its
-   * chats are gone, so nothing would ever renew or drop their leases, and
-   * every other agent would see the tabs as taken until the lease ran out.
-   * A handed-off tab is handed back to nobody.
+   * Bumped on every lifecycle word for a chat. A close pass that started
+   * before the chat came back to work sees a newer generation and stops, so
+   * a tab never closes in the middle of a turn.
+   */
+  const chatLifecycleGenerations = new Map<string, number>();
+  const chatGeneration = (chatSessionId: string): number => chatLifecycleGenerations.get(chatSessionId) ?? 0;
+  const bumpChatGeneration = (chatSessionId: string): void => {
+    // Read before the delete (the delete only moves the chat to the newest end).
+    const next = chatGeneration(chatSessionId) + 1;
+    chatLifecycleGenerations.delete(chatSessionId);
+    chatLifecycleGenerations.set(chatSessionId, next);
+    // Bounded: only the most recent chats can still have a pass in flight.
+    if (chatLifecycleGenerations.size > 1_000) {
+      const oldest = chatLifecycleGenerations.keys().next().value;
+      if (oldest !== undefined) chatLifecycleGenerations.delete(oldest);
+    }
+  };
+
+  const isAgentWorkTab = (tab: BrowserTabState): boolean => tab.openedBy === "chat" && !tab.keptByPerson;
+  const tabBelongsToChat = (tab: BrowserTabState, chatSessionId: string): boolean => (
+    tab.ownerChatSessionId === chatSessionId
+    || (!tab.ownerChatSessionId && tab.openedByChatSessionId === chatSessionId)
+  );
+  const tabsOfChat = (chatSessionId: string): BrowserTabState[] => tabs.filter((tab) => (
+    !tab.webContents.isDestroyed() && isAgentWorkTab(tab) && tabBelongsToChat(tab, chatSessionId)
+  ));
+  /** Not now: someone is looking at it, recording it, watching it or signing in on it. */
+  const tabBusyForAutoClose = (tab: BrowserTabState): boolean => Boolean(
+    tab.handoff
+    || tab.recording
+    || tabCapabilities.hasPreviewWatchers(tab.id)
+    || (tab.id === activeTabId && visible),
+  );
+
+  const setAutoCloseAt = (chatSessionId: string, atMs: number | null): void => {
+    let changed = false;
+    for (const tab of tabsOfChat(chatSessionId)) {
+      if (tab.autoCloseAtMs === atMs) continue;
+      tab.autoCloseAtMs = atMs;
+      changed = true;
+    }
+    if (changed) emitStatus();
+  };
+
+  const cancelChatIdleClose = (chatSessionId: string): void => {
+    const timer = chatIdleTimers.get(chatSessionId);
+    if (timer) clearTimeout(timer);
+    chatIdleTimers.delete(chatSessionId);
+    setAutoCloseAt(chatSessionId, null);
+  };
+
+  /** Close a chat's agent tabs that can close now; true when some had to wait. */
+  const closeChatTabsNow = async (chatSessionId: string, reason: "idle" | "ended" | "lane"): Promise<boolean> => {
+    let deferred = false;
+    const generation = chatGeneration(chatSessionId);
+    for (const tab of tabsOfChat(chatSessionId)) {
+      // The chat went back to work (or the person kept the tab) while an
+      // earlier close in this pass was awaited: leave the rest open.
+      if (chatGeneration(chatSessionId) !== generation) return false;
+      if (!isAgentWorkTab(tab) || tab.webContents.isDestroyed()) continue;
+      if (tabBusyForAutoClose(tab)) {
+        deferred = true;
+        continue;
+      }
+      try {
+        await closeTab({ tabId: tab.id });
+        logger()?.info("built_in_browser.tab_auto_closed", { tabId: tab.id, reason });
+      } catch (error) {
+        logger()?.warn("built_in_browser.tab_auto_close_failed", {
+          tabId: tab.id,
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return deferred;
+  };
+
+  function armChatIdleClose(chatSessionId: string, delayMs: number): void {
+    const existing = chatIdleTimers.get(chatSessionId);
+    if (existing) clearTimeout(existing);
+    if (disposed || tabsOfChat(chatSessionId).length === 0) {
+      chatIdleTimers.delete(chatSessionId);
+      return;
+    }
+    const timer = setTimeout(() => {
+      chatIdleTimers.delete(chatSessionId);
+      void closeChatTabsNow(chatSessionId, "idle").then((deferred) => {
+        if (deferred) armChatIdleClose(chatSessionId, AUTO_CLOSE_RETRY_MS);
+        else setAutoCloseAt(chatSessionId, null);
+      });
+    }, delayMs);
+    (timer as { unref?: () => void }).unref?.();
+    chatIdleTimers.set(chatSessionId, timer);
+    setAutoCloseAt(chatSessionId, Date.now() + delayMs);
+  }
+
+  /**
+   * The brain's word on one chat: `running` (a turn started; nothing closes),
+   * `idle` (a turn ended; its agent tabs close in 15 minutes), `ended` (the
+   * chat was closed or deleted; they close now). Returns how many of this
+   * collection's tabs the chat holds.
+   */
+  function chatBrowserLifecycle(chatSessionId: string, state: "running" | "idle" | "ended"): number {
+    bumpChatGeneration(chatSessionId);
+    const count = tabsOfChat(chatSessionId).length;
+    if (state === "running") {
+      cancelChatIdleClose(chatSessionId);
+      return count;
+    }
+    if (state === "idle") {
+      if (count > 0) armChatIdleClose(chatSessionId, CHAT_IDLE_CLOSE_MS);
+      return count;
+    }
+    cancelChatIdleClose(chatSessionId);
+    if (count > 0) {
+      void closeChatTabsNow(chatSessionId, "ended").then((deferred) => {
+        if (deferred) armChatIdleClose(chatSessionId, AUTO_CLOSE_RETRY_MS);
+      });
+    }
+    return count;
+  }
+
+  const lastAgentTouchMs = (tab: BrowserTabState): number => Math.max(
+    Date.parse(tab.createdAt) || 0,
+    tab.ownerLastActiveAt ? Date.parse(tab.ownerLastActiveAt) || 0 : 0,
+    tab.lastAgentInputAtMs ?? 0,
+  );
+  const sweepStaleAgentTabs = (): void => {
+    if (disposed) return;
+    for (const tab of [...tabs]) refreshDetachedTabThrottling(tab);
+    for (const tab of [...tabs]) {
+      void maybeSleepTab(tab).catch((error: unknown) => logger()?.warn("built_in_browser.tab_sleep_failed", {
+        tabId: tab.id,
+        err: error instanceof Error ? error.message : String(error),
+      }));
+    }
+    const cutoff = Date.now() - STALE_AGENT_TAB_MS;
+    for (const tab of [...tabs]) {
+      if (tab.webContents.isDestroyed() || !isAgentWorkTab(tab) || tab.autoCloseAtMs != null) continue;
+      if (tabBusyForAutoClose(tab) || lastAgentTouchMs(tab) > cutoff) continue;
+      void closeTab({ tabId: tab.id }).then(
+        () => logger()?.info("built_in_browser.tab_auto_closed", { tabId: tab.id, reason: "stale" }),
+        (error: unknown) => logger()?.warn("built_in_browser.tab_auto_close_failed", {
+          tabId: tab.id,
+          reason: "stale",
+          err: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  };
+  const staleSweepTimer = setInterval(sweepStaleAgentTabs, STALE_SWEEP_INTERVAL_MS);
+  (staleSweepTimer as { unref?: () => void }).unref?.();
+
+  /** The person keeps a tab: ADE will not close it on its own. */
+  function keepTabForPerson(tab: BrowserTabState, reason: "input" | "keep"): void {
+    if (tab.keptByPerson) return;
+    tab.keptByPerson = true;
+    tab.autoCloseAtMs = null;
+    logger()?.info("built_in_browser.tab_kept", { tabId: tab.id, reason });
+    emitStatus();
+  }
+
+  /** This collection holds the tab (and it is alive). */
+  function hasLiveTab(tabId: string): boolean {
+    return tabs.some((tab) => tab.id === tabId && !tab.webContents.isDestroyed());
+  }
+
+  /**
+   * A frame of one tab for a viewer on another machine (a desktop pinned to
+   * this one, the phone), with what the tab is showing. See
+   * `watchTabForRemote` for the lease the poll renews.
+   */
+  function captureTabFrameForRemote(input: { tabId: string; maxWidth?: number | null }): BuiltInBrowserRemoteTabFrame | null {
+    const tab = tabs.find((entry) => entry.id === input.tabId && !entry.webContents.isDestroyed());
+    if (!tab) return null;
+    const { frame } = tabCapabilities.watchTabForRemote({ tabId: tab.id, maxWidth: input.maxWidth ?? null });
+    const status = tabStatus(tab);
+    return {
+      tabId: tab.id,
+      url: status.url,
+      title: status.title,
+      isLoading: status.isLoading,
+      frame,
+    };
+  }
+
+  /**
+   * A person on another machine took control and clicked, scrolled or typed.
+   * Coordinates arrive as fractions of the frame they saw, so the viewer's
+   * picture size never matters. A person's input keeps the tab theirs.
+   */
+  async function sendRemoteHumanInput(input: { tabId: string; event: BuiltInBrowserRemoteInputEvent }): Promise<{ ok: boolean }> {
+    const tab = tabs.find((entry) => entry.id === input.tabId && !entry.webContents.isDestroyed());
+    if (!tab) return { ok: false };
+    const wc = tab.webContents;
+    const event = input.event;
+    // Null when the page cannot say its size (mid-navigation, crashed): the
+    // input is refused rather than landing in the top-left corner.
+    const point = async (at: { x: number; y: number }): Promise<{ x: number; y: number } | null> => {
+      const size = await wc.executeJavaScript("[window.innerWidth, window.innerHeight]", true)
+        .catch(() => null) as [number, number] | null;
+      if (!size || !(size[0] > 0) || !(size[1] > 0)) return null;
+      const zoom = wc.getZoomFactor?.() ?? 1;
+      const fx = Math.min(1, Math.max(0, Number(at.x) || 0));
+      const fy = Math.min(1, Math.max(0, Number(at.y) || 0));
+      return { x: Math.round(fx * size[0] * zoom), y: Math.round(fy * size[1] * zoom) };
+    };
+    if (event.type === "click") {
+      const at = await point(event);
+      if (!at) return { ok: false };
+      const { x, y } = at;
+      wc.sendInputEvent({ type: "mouseMove", x, y });
+      wc.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
+      wc.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+    } else if (event.type === "scroll") {
+      const at = await point(event);
+      if (!at) return { ok: false };
+      const { x, y } = at;
+      const deltaY = Math.max(-2_000, Math.min(2_000, Number(event.deltaY) || 0));
+      wc.sendInputEvent({ type: "mouseWheel", x, y, deltaX: 0, deltaY: -deltaY, canScroll: true } as Electron.MouseWheelInputEvent);
+    } else if (event.type === "key") {
+      const key = typeof event.key === "string" ? event.key.slice(0, 32) : "";
+      if (!key) return { ok: false };
+      wc.sendInputEvent({ type: "keyDown", keyCode: key });
+      wc.sendInputEvent({ type: "keyUp", keyCode: key });
+    } else if (event.type === "text") {
+      const text = typeof event.text === "string" ? event.text.slice(0, 2_000) : "";
+      if (!text) return { ok: false };
+      wc.insertText(text);
+    } else {
+      return { ok: false };
+    }
+    keepTabForPerson(tab, "input");
+    return { ok: true };
+  }
+
+  /** The tab strip's Keep: renderer-only, never an agent command. */
+  function keepTab(input: BuiltInBrowserTabArgs): BuiltInBrowserStatus {
+    const tabId = input.tabId?.trim();
+    if (!tabId) throw new Error("Browser tab id is required.");
+    const tab = tabs.find((entry) => entry.id === tabId);
+    if (!tab) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
+    keepTabForPerson(tab, "keep");
+    return scopeStatusForInput(getStatus(), input);
+  }
+
+  /**
+   * A lane was deleted or archived. Its agent tabs nobody kept close now (or
+   * when they stop being on screen); every other tab it held stays open and
+   * becomes free. Its chats are gone, so nothing would ever renew or drop
+   * their leases, and every other agent would see the tabs as taken until the
+   * lease ran out. A handed-off tab is handed back to nobody.
    */
   function releaseLane(laneId: string): number {
+    const laneChats = new Set<string>();
+    for (const tab of tabs) {
+      if (tab.webContents.isDestroyed() || !isAgentWorkTab(tab)) continue;
+      const tabLane = tab.ownerLaneId ?? tab.openedByLaneId;
+      const chat = tab.ownerChatSessionId ?? tab.openedByChatSessionId;
+      if (tabLane === laneId && chat) laneChats.add(chat);
+    }
+    for (const chatSessionId of laneChats) {
+      cancelChatIdleClose(chatSessionId);
+      void closeChatTabsNow(chatSessionId, "lane").then((deferred) => {
+        if (deferred) armChatIdleClose(chatSessionId, AUTO_CLOSE_RETRY_MS);
+      });
+    }
     let released = 0;
     for (const tab of tabs) {
       let changed = false;
@@ -5825,6 +6606,7 @@ function createBuiltInBrowserWindowService(args: {
     const chatSessionId = stringOrNull(input.chatSessionId);
     const laneId = chatSessionId ? stringOrNull(input.laneId) : null;
     tab.keptByPerson = true;
+    tab.autoCloseAtMs = null;
     tab.ownerChatSessionId = chatSessionId;
     tab.ownerLaneId = laneId;
     tab.ownerClaimedAt = chatSessionId ? new Date().toISOString() : null;
@@ -5863,9 +6645,8 @@ function createBuiltInBrowserWindowService(args: {
   async function closeTab(input: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> {
     const tabId = input.tabId?.trim();
     if (!tabId) throw new Error("Browser tab id is required.");
-    const index = tabs.findIndex((entry) => entry.id === tabId);
-    if (index < 0) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
-    const closing = tabs[index]!;
+    const closing = tabs.find((entry) => entry.id === tabId);
+    if (!closing) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
     // Any agent may close any tab, one another chat holds included: a tab whose
     // chat stopped working would otherwise sit in the cap until a person found
     // it. The skill tells agents to check the owner first. Two things still
@@ -5883,9 +6664,15 @@ function createBuiltInBrowserWindowService(args: {
     if (tabId === activeTabId) {
       await stopInspectQuietly("built_in_browser.close_tab_stop_inspect_failed");
     }
+    // Find the tab again after the awaits: closes run concurrently (the
+    // cleanup sweep, a group's "Close tabs"), and a position taken before
+    // them would now name a different tab.
+    const index = tabs.indexOf(closing);
+    if (index < 0) return { ...scopeStatusForInput(getStatus(), input), closedTab };
     const [removed] = tabs.splice(index, 1);
     if (removed) {
       parkedTabIds.delete(removed.id);
+      loginOffers.forgetTab(removed.id);
       // The close path removes the view itself rather than going through
       // `removeTabViewFromWindow`, so it has to drop the same warming state:
       // an armed timer fires after the tab is gone, re-adds a dead id to
@@ -6375,6 +7162,239 @@ function createBuiltInBrowserWindowService(args: {
     });
   }
 
+  /**
+   * Sign in to the tab's site with a saved login from Passwords.
+   *
+   * The site is the tab's own top-frame URL, never one the caller names, and
+   * the login must belong to it (Passwords checks the site again). Values go
+   * from this computer's brain straight into the page; the result names the
+   * site, the account and which fields were filled, never a value.
+   */
+  async function signin(input: BuiltInBrowserSigninArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open the site's sign-in page first.");
+    const passwords = args.passwords;
+    if (!passwords) throw new AdeExpectedError("Passwords & Secrets isn't available on this computer.", "user");
+    return runTracedAgentAction(tab, "signin", input, async () => {
+      const pageUrl = tab.webContents.getURL();
+      const target = passwordFillTarget(pageUrl);
+      if (!target) {
+        throw new AdeExpectedError(/^https?:/i.test(pageUrl) ? "Saved logins are only filled on https pages." : "Open the site's sign-in page first.", "user");
+      }
+      const site = target.host;
+      const expectedSite = stringOrNull(input.expectedSite)?.toLowerCase() ?? null;
+      if (expectedSite && expectedSite !== site) {
+        throw new AdeExpectedError(`browser signin --site ${expectedSite} does not match the tab's page (${site}). The site is always the tab's own page; drop --site or open ${expectedSite} in the tab.`, "user");
+      }
+      const wanted = stringOrNull(input.username);
+      // An agent's sign-in (`passwords.signin`) asks for the login's exact
+      // saved address; the person's key button matches the whole site.
+      const exactOrigin = input.exactOrigin === true;
+      const askedItemId = stringOrNull(input.itemId);
+      // A login saved a moment ago on another computer (the sign-in card
+      // saves on the chat's machine) reaches this one on its next sync, so a
+      // miss syncs once before it says there is none.
+      const pick = async () => {
+        if (askedItemId) {
+          const values = await passwords.resolveForFill({ itemId: askedItemId, pageUrl, exactOrigin });
+          return values ? { values, username: null as string | null, itemId: askedItemId } : null;
+        }
+        const logins = await passwords.loginsForPage(pageUrl, { exactOrigin });
+        const chosen = (wanted ? logins.find((login) => login.username === wanted) : null) ?? (wanted ? null : logins[0] ?? null);
+        if (!chosen) return null;
+        const values = await passwords.resolveForFill({ itemId: chosen.id, pageUrl, exactOrigin });
+        return values ? { values, username: chosen.username, itemId: chosen.id } : null;
+      };
+      let picked = await pick();
+      if (!picked) {
+        await passwords.sync();
+        picked = await pick();
+      }
+      if (!picked) {
+        // Not an error: the caller (passwords.signin) may ask the person.
+        emitStatus();
+        const result = await actionResult(tab, input);
+        return { ...result, signin: { site, username: wanted, filled: [], needsLogin: true, pageUrl } } as BuiltInBrowserAgentActionResult;
+      }
+      const { values } = picked;
+      const username = picked.username;
+      const pageOrigin = target.origin;
+      // The page must still be the one the login was picked for: a redirect
+      // mid-fill must not receive the password.
+      const assertSamePage = () => {
+        let current: string | null = null;
+        try {
+          current = new URL(tab.webContents.getURL()).origin;
+        } catch {
+          current = null;
+        }
+        if (current !== pageOrigin) throw new AdeExpectedError(`The page left ${site} before ADE could sign in. Nothing was filled.`, "user");
+      };
+      const fields = await tab.webContents.executeJavaScriptInIsolatedWorld(BUILT_IN_BROWSER_LOGIN_WORLD_ID, [{ code: LOGIN_FIELD_FINDER }]) as { username: boolean; password: boolean; code?: boolean } | null;
+      const filled: string[] = [];
+      if (fields?.username && values.username) {
+        assertSamePage();
+        await focusElementTarget(tab, { selector: '[data-ade-fill-target="username"]' }, { select: true, clear: true });
+        await insertTextForAction(tab, values.username, null);
+        filled.push("username");
+      }
+      if (fields?.password) {
+        assertSamePage();
+        await focusElementTarget(tab, { selector: '[data-ade-fill-target="password"]' }, { select: true, clear: true });
+        await insertTextForAction(tab, values.password, null);
+        filled.push("password");
+      }
+      if (fields?.code && values.code) {
+        assertSamePage();
+        await focusElementTarget(tab, { selector: '[data-ade-fill-target="code"]' }, { select: true, clear: true });
+        await insertTextForAction(tab, values.code, null);
+        filled.push("code");
+      }
+      if (filled.length === 0) {
+        throw new AdeExpectedError(fields?.code
+          ? `${site} asks for a code, and the saved login has no authenticator. Read the code from Messages or email (\`ade code wait\`), then type it.`
+          : `No sign-in fields were found on ${site}.`, "user");
+      }
+      logger()?.info("built_in_browser.signin_filled", { tabId: tab.id, fields: filled.join(",") });
+      emitStatus();
+      const result = await actionResult(tab, input);
+      return { ...result, signin: { site, username: username ?? values.username, filled, itemId: picked.itemId } } as BuiltInBrowserAgentActionResult;
+    });
+  }
+
+  /**
+   * Make a new account's password: generate one, type it into the tab's
+   * sign-up form (the password and its confirm box), check the form kept all
+   * of it, then save the login to Passwords. The site is the tab's own page,
+   * as for `signin`; the result names the site and the account, never the
+   * password. Nothing is submitted: the agent sends the form.
+   */
+  async function signup(input: BuiltInBrowserSigninArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open the site's sign-up page first.");
+    const passwords = args.passwords;
+    if (!passwords) throw new AdeExpectedError("Passwords & Secrets isn't available on this computer.", "user");
+    return runTracedAgentAction(tab, "signup", input, async () => {
+      if (!(await passwords.enabled())) {
+        throw new AdeExpectedError("Passwords & Secrets is off on this computer. The person can turn it on in Settings › Passwords & Secrets.", "user");
+      }
+      const pageUrl = tab.webContents.getURL();
+      const target = passwordFillTarget(pageUrl);
+      if (!target) {
+        throw new AdeExpectedError(/^https?:/i.test(pageUrl) ? "New passwords are only made on https pages." : "Open the site's sign-up page first.", "user");
+      }
+      const site = target.host;
+      const expectedSite = stringOrNull(input.expectedSite)?.toLowerCase() ?? null;
+      if (expectedSite && expectedSite !== site) {
+        throw new AdeExpectedError(`browser signup --site ${expectedSite} does not match the tab's page (${site}). The site is always the tab's own page; drop --site or open ${expectedSite} in the tab.`, "user");
+      }
+      const fields = await tab.webContents.executeJavaScriptInIsolatedWorld(BUILT_IN_BROWSER_LOGIN_WORLD_ID, [{ code: SIGNUP_FIELD_FINDER }]) as { passwords: number; maxLength: number; username: string | null } | null;
+      if (!fields?.passwords) throw new AdeExpectedError(`No new-password field was found on ${site}. Open the sign-up form first.`, "user");
+      if (fields.maxLength > 0 && fields.maxLength < 12) {
+        throw new AdeExpectedError(`${site}'s password box takes at most ${fields.maxLength} characters, and ADE makes passwords of at least 12. Nothing was filled; hand the tab to the person to choose one.`, "user");
+      }
+      const username = stringOrNull(input.username) ?? fields.username;
+      if (username && (await passwords.loginsForPage(pageUrl, { exactOrigin: true })).some((login) => login.username === username)) {
+        throw new AdeExpectedError(`Passwords already has a login for ${username} on ${site}. Sign in with \`ade browser signin\`; the person can change it in Settings › Passwords & Secrets.`, "user");
+      }
+      const password = generateSitePassword(fields.maxLength >= 12 ? Math.min(20, fields.maxLength) : 20);
+      const fieldSelector = (index: number) => `[data-ade-fill-target="new-password-${index}"]`;
+      const clearFields = async () => {
+        for (let index = 0; index < fields.passwords; index += 1) {
+          // Best effort while already failing: the error says the form is not to be sent.
+          await focusElementTarget(tab, { selector: fieldSelector(index) }, { select: true, clear: true })
+            .catch((error: unknown) => logger()?.warn("built_in_browser.signup_clear_failed", { err: error instanceof Error ? error.message : String(error) }));
+        }
+      };
+      const filled: string[] = [];
+      for (let index = 0; index < fields.passwords; index += 1) {
+        let current: string | null = null;
+        try {
+          current = new URL(tab.webContents.getURL()).origin;
+        } catch {
+          current = null;
+        }
+        if (current !== target.origin) {
+          throw new AdeExpectedError(`The page left ${site} before ADE finished. Nothing was saved; open the sign-up form again.`, "user");
+        }
+        await focusElementTarget(tab, { selector: fieldSelector(index) }, { select: true, clear: true });
+        await insertTextForAction(tab, password, null);
+        filled.push(index === 0 ? "password" : "confirm password");
+      }
+      // Saved only once the form holds exactly that password (a page script
+      // can trim, refuse or change characters): what Passwords keeps is what
+      // the site gets. Compared as SHA-256 in ADE's isolated world; neither
+      // the value nor its hash comes back, only whether each box matches.
+      const passwordHash = createHash("sha256").update(password, "utf8").digest("hex");
+      const kept = await tab.webContents.executeJavaScriptInIsolatedWorld(BUILT_IN_BROWSER_LOGIN_WORLD_ID, [{
+        code: `(async () => {
+          const hex = (buffer) => Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
+          const boxes = Array.from(document.querySelectorAll('[data-ade-fill-target^="new-password-"]'));
+          const matches = [];
+          for (const box of boxes) matches.push(hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(box.value))) === ${JSON.stringify(passwordHash)});
+          return matches;
+        })()`,
+      }]) as boolean[] | null;
+      if (!Array.isArray(kept) || kept.length !== fields.passwords || kept.some((matches) => matches !== true)) {
+        await clearFields();
+        throw new AdeExpectedError(`${site}'s form changed the new password, so nothing was saved and the boxes were cleared. Hand the tab to the person to choose one.`, "user");
+      }
+      let itemId: string;
+      try {
+        const saved = await passwords.saveLogin({ origins: [target.origin], ...(username ? { username } : {}), password });
+        if (!saved) throw new Error("Passwords did not answer.");
+        itemId = saved.id;
+      } catch (error) {
+        await clearFields();
+        throw new AdeExpectedError(`ADE could not save the new password for ${site}, so the boxes were cleared; do not submit the form. ${error instanceof Error ? error.message : ""}`.trim(), "user");
+      }
+      logger()?.info("built_in_browser.signup_filled", { tabId: tab.id, fields: filled.join(",") });
+      emitStatus();
+      const result = await actionResult(tab, input);
+      return { ...result, signin: { site, username, filled, itemId, created: true } };
+    });
+  }
+
+  /* ── Passwords for the person: the key button and "Save to Passwords?" ── */
+
+  const loginOffers = createBuiltInBrowserLoginOffers({
+    passwords: args.passwords ?? null,
+    emit: (tabId, offer) => emit({ type: "login-offer", tabId, offer }),
+    warn: (event, data) => logger()?.warn(event, data),
+  });
+
+  /** A login form the person sent in one of this window's tabs; false when the tab is not ours. */
+  function handleLoginSubmission(wc: WebContents, mainFrame: boolean, submission: BuiltInBrowserLoginSubmission): boolean {
+    const tab = tabForWebContents(wc);
+    if (!tab) return false;
+    // An agent's own click or key that sent the form is not the person
+    // signing in (ADE's fills are skipped in the tab already).
+    if (tab.lastActionAtMs !== null && Date.now() - tab.lastActionAtMs < 3_000) return true;
+    void loginOffers.handleSubmission({ tabId: tab.id, pageUrl: wc.getURL(), mainFrame, submission });
+    return true;
+  }
+
+  /** The key button: saved logins for the tab's own page (never a value). */
+  async function savedLoginsForTab(input: BuiltInBrowserTabArgs): Promise<Array<{ id: string; username: string | null; sites: string[] }>> {
+    const tab = tabs.find((entry) => entry.id === input.tabId) ?? null;
+    // A tab closed while the key button's read was on its way has no page.
+    if (!tab || tab.webContents.isDestroyed() || !args.passwords) return [];
+    const pageUrl = tab.webContents.getURL();
+    if (!loginOfferTarget(pageUrl)) return [];
+    if (!(await args.passwords.enabled())) return [];
+    return (await args.passwords.loginsForPage(pageUrl)).map((login) => ({ id: login.id, username: login.username, sites: login.sites }));
+  }
+
+  /** The key button's pick: fill that login into the tab's own page. */
+  async function fillSavedLogin(input: BuiltInBrowserTabArgs & { itemId: string }): Promise<{ filled: string[] }> {
+    const result = await signin({ tabId: input.tabId, itemId: input.itemId });
+    if (result.signin?.needsLogin) throw new AdeExpectedError("That saved login is not for this page.", "user");
+    const filled = result.signin?.filled ?? [];
+    if (filled.length && result.signin) {
+      void args.passwords?.recordUse({ itemId: input.itemId, target: result.signin.site })
+        .catch((error: unknown) => logger()?.warn("built_in_browser.passwords_activity_failed", { err: error instanceof Error ? error.message : String(error) }));
+    }
+    return { filled };
+  }
+
   async function clear(input: BuiltInBrowserClearArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before clearing.");
     return runTracedAgentAction(tab, "clear", input, async () => {
@@ -6560,6 +7580,10 @@ function createBuiltInBrowserWindowService(args: {
 
   function dispose(): void {
     disposed = true;
+    for (const timer of chatIdleTimers.values()) clearTimeout(timer);
+    chatIdleTimers.clear();
+    tabCapabilities.stopRemoteWatches();
+    clearInterval(staleSweepTimer);
     if (recentlyAttendedTimer) clearTimeout(recentlyAttendedTimer);
     recentlyAttendedTimer = null;
     recentlyAttendedUntil.clear();
@@ -7545,6 +8569,11 @@ function createBuiltInBrowserWindowService(args: {
     requestOriginAccess,
     claim,
     releaseLane,
+    chatBrowserLifecycle,
+    keepTab,
+    hasLiveTab,
+    captureTabFrameForRemote,
+    sendRemoteHumanInput,
     startHandoff,
     endHandoff,
     waitForHandoff,
@@ -7570,6 +8599,14 @@ function createBuiltInBrowserWindowService(args: {
     dispatchKey,
     scroll,
     fill,
+    signin,
+    signup,
+    handleLoginSubmission,
+    savedLoginsForTab,
+    fillSavedLogin,
+    loginOfferForTab: (tabId: string) => loginOffers.offerForTab(tabId),
+    acceptLoginOffer: (offerId: string) => loginOffers.accept(offerId),
+    dismissLoginOffer: (offerId: string) => loginOffers.dismiss(offerId),
     clear,
     wait,
     startInspect,
@@ -7769,14 +8806,15 @@ async function fetchFaviconDataUrl(wc: WebContents, value: string): Promise<stri
 
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
   const wc = tab.webContents;
-  const url = wc.isDestroyed() ? null : emptyToNull(wc.getURL());
+  const url = tab.sleeping ? tab.sleeping.url : (wc.isDestroyed() ? null : emptyToNull(wc.getURL()));
   // A launchpad tab stops being one the moment it points at a real page, even
   // if the flag has not been cleared yet (a redirect chain, a restored tab).
   const isLaunchpad = tab.isLaunchpad && (url == null || url === "about:blank");
   return {
     id: tab.id,
     url,
-    title: isLaunchpad ? "New tab" : (wc.isDestroyed() ? null : emptyToNull(wc.getTitle())),
+    title: isLaunchpad ? "New tab" : tab.sleeping ? tab.sleeping.title : (wc.isDestroyed() ? null : emptyToNull(wc.getTitle())),
+    sleeping: tab.sleeping != null,
     isLaunchpad,
     loadError: tab.loadError,
     isolatedProfile: tab.isolation?.profile ?? null,
@@ -7794,6 +8832,7 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     openedByChatSessionId: tab.openedByChatSessionId,
     openedByLaneId: tab.openedByLaneId,
     keptByPerson: tab.keptByPerson,
+    autoCloseAt: tab.autoCloseAtMs != null && !tab.keptByPerson ? new Date(tab.autoCloseAtMs).toISOString() : null,
     createdAt: tab.createdAt,
     zoomFactor: tab.zoomFactor,
     devToolsOpen: tab.devToolsMode !== null,

@@ -9,7 +9,7 @@ import type {
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected, type ExpectedErrorKind } from "../../../shared/expectedError";
 import {
   coerceProjects,
   validateRemoteRuntimeInitializeResult,
@@ -35,6 +35,7 @@ import {
   pairedRuntimeFailureCode,
   pairedRuntimeFailureMessage,
   pairedRouteConnectTimeoutMs,
+  PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS,
   pairedRuntimeRouteHost,
   recordPairedRouteFailure,
   type PairedRuntimeAccountHelloCode,
@@ -128,10 +129,20 @@ export async function bootstrapPairedRuntime(args: {
   const openTransport = args.options?.openTransport ?? openSyncRuntimeTransport;
   const correlationId = randomUUID();
   const attemptRecorder = createRouteAttemptRecorder();
-  const { attempts, record: recordAttempt } = attemptRecorder;
+  const { attempts } = attemptRecorder;
+  // Seen on every attempt, also the ones the capped list drops: one malformed
+  // hello anywhere keeps the failure a report.
+  let protocolDriftSeen = false;
+  const recordAttempt: typeof attemptRecorder.record = (attempt) => {
+    if (isProtocolDrift(attempt)) protocolDriftSeen = true;
+    attemptRecorder.record(attempt);
+  };
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
   let accountHelloCode: PairedRuntimeAccountHelloCode | null = null;
   let relayRetried = false;
+  // A route whose socket and hello went through but whose runtime never
+  // answered `ade/initialize`: the final message names that step.
+  let handshakeTimedOut = false;
   // Keep the phases explicit even if a future candidate-builder change
   // accidentally reorders endpoints.
   const orderedCandidates = orderPairedCandidates(candidates);
@@ -266,8 +277,9 @@ export async function bootstrapPairedRuntime(args: {
     const initializing = client.initialize(
       DESKTOP_CLIENT_NAMES.remote,
       args.appVersion,
+      { timeoutMs: PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS },
     );
-    const pipelinedProjects = client.call("projects.list", {});
+    const pipelinedProjects = client.call("projects.list", {}, { timeoutMs: PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS });
     pipelinedProjects.catch(() => {});
     try {
       initializeResult = await initializing;
@@ -275,6 +287,7 @@ export async function bootstrapPairedRuntime(args: {
       client.close();
       if (isPairedTransportFailure(error)) {
         const failure = classifyPairedRuntimeFailure(error);
+        if (failure === "timeout") handshakeTimedOut = true;
         failEndpoint(candidate, candidateIndex, error, failure);
         recordAttempt({
           kind: candidate.kind,
@@ -283,7 +296,7 @@ export async function bootstrapPairedRuntime(args: {
           durationMs: Math.max(0, Date.now() - attemptStartedAt),
           outcome: "failed",
           failure,
-          errorCode: pairedRuntimeFailureCode(error),
+          errorCode: failure === "timeout" ? "handshake_timeout" : pairedRuntimeFailureCode(error),
         });
         continue;
       }
@@ -306,7 +319,7 @@ export async function bootstrapPairedRuntime(args: {
     try {
       projects = coerceProjects(await pipelinedProjects.catch(async (error) => {
         if (isPairedTransportFailure(error)) throw error;
-        return await client.call("projects.list", {});
+        return await client.call("projects.list", {}, { timeoutMs: PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS });
       }));
     } catch (error) {
       client.close();
@@ -378,6 +391,8 @@ export async function bootstrapPairedRuntime(args: {
           arch: updated.lastSeenArch ?? "unknown",
           version: initializeInfo.version,
           appVersion: initializeInfo.desktopAppVersion,
+          hostStartedAt: initializeInfo.hostStartedAt,
+          hostUpdateBlock: initializeInfo.hostUpdateBlock,
           updateInstallMode: initializeInfo.updateInstallMode,
           downloadUrl: initializeInfo.downloadUrl,
           route: {
@@ -424,9 +439,53 @@ export async function bootstrapPairedRuntime(args: {
       diagnostic,
     );
   }
-  throw new PairedRuntimeTransportUnavailableError(
-    pairedRuntimeFailureMessage(failure, credentials.hostIdentity.name, accountHelloCode),
+  const unavailable = new PairedRuntimeTransportUnavailableError(
+    // The message names the computer as ADE shows it (its ADE name), not
+    // the host name of its operating system.
+    pairedRuntimeFailureMessage(failure, args.target.name.trim() || credentials.hostIdentity.name, accountHelloCode, { handshakeTimedOut }),
     undefined,
     diagnostic,
   );
+  const kind = pairedRouteFailureKind(failure, protocolDriftSeen);
+  throw kind ? markExpected(unavailable, kind) : unavailable;
 }
+
+/**
+ * Only an older or newer ADE on the other machine is the person's to fix
+ * among protocol failures. A malformed hello or a payload this build cannot
+ * read is contract drift between two ADE builds, and stays a report.
+ */
+const VERSION_SKEW_ERROR_CODES = new Set(["hello_host_update_required", "hello_protocol_version_mismatch"]);
+
+function isProtocolDrift(attempt: { failure?: RemoteRuntimeConnectionAttemptFailure; errorCode?: string }): boolean {
+  return attempt.failure === "protocol" && !VERSION_SKEW_ERROR_CODES.has(attempt.errorCode ?? "");
+}
+
+/**
+ * Drift on any route stays a report, whatever cause dominates the headline;
+ * otherwise every protocol failure was version skew, the person's to fix.
+ */
+function pairedRouteFailureKind(
+  failure: RemoteRuntimeConnectionAttemptFailure,
+  protocolDriftSeen: boolean,
+): ExpectedErrorKind | null {
+  return protocolDriftSeen ? null : PAIRED_ROUTE_FAILURE_KIND[failure];
+}
+
+/**
+ * Every route spent, by its dominant cause. The machine asleep, busy, or
+ * another computer at its saved address is the network between the two; a
+ * stale pairing, a sign-in or an older ADE there is the person's to fix, and
+ * the headline says how. Only a cause ADE could not name stays a report.
+ */
+const PAIRED_ROUTE_FAILURE_KIND: Record<RemoteRuntimeConnectionAttemptFailure, ExpectedErrorKind | null> = {
+  unreachable: "network",
+  timeout: "network",
+  identity: "network",
+  superseded: "network",
+  pairing: "user",
+  authentication: "user",
+  capability: "user",
+  protocol: "user",
+  unknown: null,
+};

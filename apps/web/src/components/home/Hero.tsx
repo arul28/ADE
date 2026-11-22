@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { motion, useReducedMotion, useScroll, useTransform } from "framer-motion";
-import { ArrowUpRight, BookOpen, Github, Smartphone, Terminal } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ArrowRight, ArrowUpRight, BookOpen, Github, Smartphone, Terminal } from "lucide-react";
 import { LINKS } from "../../lib/links";
 import { MAC_INSTALL_COMMAND, WINDOWS_INSTALL_COMMAND } from "../../lib/installTargets";
 import {
@@ -10,11 +11,13 @@ import {
 } from "../../lib/marketingAnalytics";
 import { CopyButton } from "../CopyButton";
 import { cn } from "../../lib/cn";
-import { CompetitorEquation } from "../editorial/CompetitorEquation";
+import { CLOUD_SMALL_UNLIMITED_SHORT } from "../../lib/cloudPricing";
 import { useInstallDialog } from "../install/InstallDialogProvider";
 import { AppleMark, WindowsMark } from "./marks";
 import { guessPlatform } from "./SiteNav";
 import { LiveDemo } from "./LiveDemo";
+import { CloudMark } from "../cloud/CloudMark";
+import { CloudBank, HeroSky } from "../cloud/HeroSky";
 
 const secondaryButton =
   "inline-flex h-11 items-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-5 text-[14px] font-medium text-white/85 transition-all hover:-translate-y-px hover:border-white/35 hover:bg-white/[0.08] hover:text-white";
@@ -25,35 +28,31 @@ const quietLink =
 export function Hero() {
   return (
     <section className="relative overflow-x-clip">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background: [
-            "radial-gradient(ellipse 60% 40% at 50% 0%, rgba(167,139,250,0.16) 0%, transparent 70%)",
-            "radial-gradient(ellipse 70% 45% at 50% 72%, rgba(124,58,237,0.32) 0%, transparent 70%)",
-            "radial-gradient(ellipse 35% 30% at 8% 30%, rgba(124,58,237,0.10) 0%, transparent 70%)",
-            "radial-gradient(ellipse 35% 30% at 92% 40%, rgba(56,189,248,0.06) 0%, transparent 70%)",
-          ].join(", "),
-        }}
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 opacity-[0.05]"
-        style={{
-          backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.8) 1px, transparent 1px)",
-          backgroundSize: "24px 24px",
-          maskImage: "linear-gradient(to bottom, black 0%, black 55%, transparent 100%)",
-        }}
-      />
+      <HeroSky />
 
-      <div className="relative mx-auto flex max-w-[1240px] flex-col items-center px-5 pt-[clamp(28px,4vw,52px)] text-center sm:px-8">
-        <div className="ade-rise">
-          <CompetitorEquation />
+      <div className="relative z-[1] mx-auto flex max-w-[1240px] flex-col items-center px-5 pt-[clamp(28px,4vw,52px)] text-center sm:px-8">
+        <div className="ade-rise max-w-full">
+          <Link
+            to="/#ade-cloud"
+            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_ADE_CLOUD}
+            className="ade-cloud-pill focus-ring group inline-flex max-w-full items-center gap-3 rounded-full py-1.5 pl-2 pr-4 text-[13.5px] transition-transform hover:-translate-y-px"
+          >
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/[0.07] ring-1 ring-white/10">
+              <CloudMark className="h-[17px]" />
+            </span>
+            <span className="flex min-w-0 flex-col items-start leading-[1.2] sm:flex-row sm:items-center sm:gap-2.5">
+              <span className="font-semibold text-white">ADE Cloud: agents on cloud computers</span>
+              <span className="hidden h-3.5 w-px bg-white/20 sm:block" aria-hidden />
+              <span className="text-[color:var(--color-lamp)]">
+                {CLOUD_SMALL_UNLIMITED_SHORT} on the free plan
+              </span>
+            </span>
+            <ArrowRight className="h-4 w-4 shrink-0 text-white/70 transition-transform group-hover:translate-x-0.5 group-hover:text-white" />
+          </Link>
         </div>
 
         <h1
-          className="ade-rise mt-[clamp(14px,2vw,24px)] font-serif font-normal text-white"
+          className="ade-rise mt-[clamp(20px,2.6vw,32px)] font-serif font-normal text-white"
           style={{
             animationDelay: "60ms",
             fontSize: "clamp(44px, 6vw, 88px)",
@@ -78,6 +77,9 @@ export function Hero() {
         <InstallBlock position={MARKETING_CTA_POSITIONS.HERO} animated />
       </div>
 
+      <div className="relative h-0">
+        <CloudBank className="absolute inset-x-0 top-[clamp(-150px,-9vw,-60px)] h-[clamp(190px,24vw,390px)]" />
+      </div>
       <HeroDevices />
     </section>
   );

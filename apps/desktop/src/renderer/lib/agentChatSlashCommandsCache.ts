@@ -3,6 +3,7 @@ import type {
   AgentChatSlashCommandsArgs,
   OpenProjectBinding,
 } from "../../shared/types";
+import { cacheScopeKey } from "./tabBindingKey";
 
 type CacheEntry = {
   value?: AgentChatSlashCommand[];
@@ -24,14 +25,17 @@ function cacheScope(args: AgentChatSlashCommandsArgs): string {
 }
 
 function cacheKey(args: AgentChatSlashCommandsArgs, pin?: OpenProjectBinding | null): string {
-  return `binding:${pin?.key ?? "__active_binding__"}:${cacheScope(args)}`;
+  return `binding:${cacheScopeKey(pin) ?? "__active_binding__"}:${cacheScope(args)}`;
 }
 
 export async function getAgentChatSlashCommandsCached(
   args: AgentChatSlashCommandsArgs,
-  options?: { force?: boolean; ttlMs?: number; pin?: OpenProjectBinding | null },
+  /** `pin`: the chat's machine. Null: none is online, so there are no commands. */
+  options: { force?: boolean; ttlMs?: number; pin: OpenProjectBinding | null },
 ): Promise<AgentChatSlashCommand[]> {
-  const key = cacheKey(args, options?.pin);
+  const pin = options.pin;
+  if (!pin) return [];
+  const key = cacheKey(args, pin);
   const ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
   const now = Date.now();
   const cached = slashCommandCache.get(key);
@@ -41,11 +45,7 @@ export async function getAgentChatSlashCommandsCached(
     return cached.value;
   }
 
-  const promise = (
-    options?.pin
-      ? window.ade.agentChat.slashCommands(args, options.pin)
-      : window.ade.agentChat.slashCommands(args)
-  ).then((value) => {
+  const promise = window.ade.agentChat.slashCommands(args, pin).then((value) => {
     const current = slashCommandCache.get(key);
     if (current?.promise === promise) {
       slashCommandCache.set(key, {

@@ -1,0 +1,808 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  CaretDown,
+  CaretUp,
+  CheckCircle,
+  CircleDashed,
+  CircleNotch,
+  Desktop,
+  DotsThree,
+  XCircle,
+} from "@phosphor-icons/react";
+import type { RecentProjectSummary } from "../../../shared/types";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
+import { extractError } from "../../lib/format";
+import { captureError } from "../../../shared/sentry/capture";
+import { isWebClientMode } from "../../lib/webClientMode";
+import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
+import { useAppStore } from "../../state/appStore";
+import { showToast } from "../app/toast/toastStore";
+import { Banner } from "../ui/notice";
+import { useAddToAccount } from "./useAddToAccount";
+import {
+  COLORS,
+  MONO_FONT,
+  SANS_FONT,
+  fgTint,
+  outlineButton,
+  primaryButton,
+} from "../lanes/laneDesignTokens";
+import { RepoField, inputStyle, sectionLabelStyle } from "./AddProjectRepoField";
+import {
+  copyMachines,
+  existingCopiesForRepo,
+  expandRepoInput,
+  splitUnconnectedMachines,
+  unconnectedMachinesLabel,
+  isGitHubRepoUrl,
+  repoKeyForUrl,
+  readMachineDefaultParentDir,
+  repoNameForUrl,
+  type CopyMachine,
+  type CopyOpenTarget,
+  type ExistingCopy,
+} from "./projectCopies";
+import {
+  copyJobKey,
+  listCopyJobs,
+  retryCopyJob,
+  startCopyJob,
+  useCopyJobs,
+  watchCopyJobs,
+  whenCopyJobReady,
+  type CopyJob,
+} from "./projectCopyJobs";
+
+/**
+ * Opens a copy in this window. Its repository tab shows that copy; nothing
+ * moves the tab back to this computer's copy (S4).
+ */
+export async function openProjectCopy(target: CopyOpenTarget): Promise<void> {
+  const store = useAppStore.getState();
+  if (target.kind === "remote") {
+    await store.switchRemoteProject(target.targetId, target.projectId);
+    return;
+  }
+  await store.switchProjectToPath(target.rootPath, { skipWorktreeGate: true });
+}
+
+export type AddProjectFormProps = {
+  /** Fills the repository, e.g. for another copy of a project that is open. */
+  initialUrl?: string;
+  /** Machines ticked at first, in place of the default. */
+  initialMachineIds?: readonly string[];
+  onCancel: () => void;
+  /** The work is handed off (or done): the host may close. */
+  onClose: () => void;
+  /** Opens the project on the machine "Opens on" names, once its copy is there. */
+  onOpenProject: (target: CopyOpenTarget) => Promise<void>;
+  /** The other ways to add a project (open a folder, a new empty project), under the form. */
+  moreActions?: React.ReactNode;
+};
+
+
+/** The machine the person last worked on, when the recent projects say so clearly. */
+function lastUsedMachineId(recents: readonly RecentProjectSummary[]): string | null {
+  let latest: RecentProjectSummary | null = null;
+  let latestAt = -1;
+  for (const recent of recents) {
+    const at = Date.parse(recent.lastOpenedAt);
+    if (Number.isFinite(at) && at > latestAt) {
+      latest = recent;
+      latestAt = at;
+    }
+  }
+  return latest?.kind === "remote" && latest.remote ? latest.remote.targetId : null;
+}
+
+/**
+ * The machines in "Start on" order (decision 8): this computer, then the
+ * machines that already have a copy, then the machine last worked on, then
+ * the rest as saved. New work in the project starts on the first one with a
+ * copy, so the list reads top to bottom in that order.
+ *
+ * ADE Cloud as a place to add a project is the Cloud lane's (a cloud computer
+ * that clones with no computer of the person's). When `main` has it, it goes
+ * here as the last row, after the computers.
+ */
+function startOnOrder(
+  machines: readonly CopyMachine[],
+  hasCopy: (machineId: string) => boolean,
+  lastUsed: string | null,
+): CopyMachine[] {
+  const rank = (machine: CopyMachine): number => {
+    if (machine.isLocal) return 0;
+    if (hasCopy(machine.machineId)) return 1;
+    if (machine.machineId === lastUsed) return 2;
+    return 3;
+  };
+  return machines
+    .map((machine, index) => ({ machine, index }))
+    .sort((left, right) => rank(left.machine) - rank(right.machine) || left.index - right.index)
+    .map((entry) => entry.machine);
+}
+
+type RowState =
+  | { kind: "job"; job: CopyJob }
+  | { kind: "existing"; copy: ExistingCopy }
+  | { kind: "unconnected" }
+  | { kind: "available" };
+
+/**
+ * Add project: the repository first, then one row per machine to put a copy
+ * on. Each ticked machine clones on its own; a failure on one never stops the
+ * others, and each row shows its own state. The project opens on the "Opens
+ * on" machine as soon as its copy is there, while the other rows still clone.
+ */
+export function AddProjectForm({
+  initialUrl,
+  initialMachineIds,
+  onCancel,
+  onClose,
+  onOpenProject,
+  moreActions = null,
+}: AddProjectFormProps) {
+  const webMode = isWebClientMode();
+  const { snapshot, loaded: snapshotLoaded } = useRemoteConnectionSnapshot(true);
+  const [recents, setRecents] = useState<RecentProjectSummary[] | null>(null);
+  const [urlInput, setUrlInput] = useState(initialUrl ?? "");
+  const [ticked, setTicked] = useState<Set<string>>(() => new Set(initialMachineIds ?? []));
+  const ticksInitializedRef = useRef(initialMachineIds != null);
+  const [parentByMachine, setParentByMachine] = useState<Record<string, string>>({});
+  const [editingMachineId, setEditingMachineId] = useState<string | null>(null);
+  const [openOnChoice, setOpenOnChoice] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // One read of the recent projects, for this computer's copies and the last machine used.
+  useEffect(() => {
+    let cancelled = false;
+    void window.ade.project
+      .listRecent()
+      .then((rows) => {
+        if (!cancelled) setRecents(rows);
+      })
+      .catch((error: unknown) => {
+        // No recents: the form still lists the machines, with no copy marked as there.
+        captureError(error, { fingerprint: ["add-project", "list-recent"], level: "warning", handled: true });
+        if (!cancelled) setRecents([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const repoUrl = expandRepoInput(urlInput);
+  const urlValid = isGitHubRepoUrl(repoUrl);
+  const repoKey = urlValid ? repoKeyForUrl(repoUrl) : null;
+  const folderName = urlValid ? repoNameForUrl(repoUrl) : "";
+  const { accountError, addingToAccount, canAddToAccount, addToAccount } = useAddToAccount({ folderName, onClose });
+
+  useEffect(() => (repoKey ? watchCopyJobs(repoKey) : undefined), [repoKey]);
+  const jobs = useCopyJobs(repoKey);
+
+  const existing = useMemo(
+    () => existingCopiesForRepo(repoKey, { recents: recents ?? [], snapshot }),
+    [recents, repoKey, snapshot],
+  );
+  const machines = useMemo(
+    () => startOnOrder(
+      copyMachines(snapshot, { includeLocal: !webMode }),
+      (machineId) => existing.has(machineId),
+      recents ? lastUsedMachineId(recents) : null,
+    ),
+    [existing, recents, snapshot, webMode],
+  );
+  const jobByMachine = useMemo(() => new Map(jobs.map((job) => [job.machine.machineId, job])), [jobs]);
+
+  const rowState = useCallback(
+    (machine: CopyMachine): RowState => {
+      const job = jobByMachine.get(machine.machineId);
+      if (job) return { kind: "job", job };
+      const copy = existing.get(machine.machineId);
+      if (copy) return { kind: "existing", copy };
+      if (!machine.online) return { kind: "unconnected" };
+      return { kind: "available" };
+    },
+    [existing, jobByMachine],
+  );
+
+  // A long list of machines not connected here collapses into one row, so the folder
+  // row and the Add button stay in view. A machine with a copy or a clone job
+  // of this repository stays out of the collapsed group.
+  const [unconnectedExpanded, setUnconnectedExpanded] = useState(false);
+  const { visible: visibleMachines, unconnected: unconnectedMachines } = useMemo(
+    () => splitUnconnectedMachines(machines, (machine) => machine, (machine) => {
+      const kind = rowState(machine).kind;
+      return kind === "job" || kind === "existing";
+    }),
+    [machines, rowState],
+  );
+
+  // The machine new work starts on: the first, in "Start on" order, that has
+  // a copy or gets one now.
+  const startsHereId = machines.find((machine) => {
+    const state = rowState(machine);
+    if (state.kind === "existing") return true;
+    if (state.kind === "job") return state.job.status !== "failed";
+    return state.kind === "available" && ticked.has(machine.machineId);
+  })?.machineId ?? null;
+
+  const renderMachineRow = (machine: CopyMachine, index: number) => (
+    <MachineRow
+      key={machine.machineId}
+      machine={machine}
+      first={index === 0}
+      startsHere={Boolean(repoKey) && machine.machineId === startsHereId}
+      state={rowState(machine)}
+      ticked={ticked.has(machine.machineId)}
+      repoChosen={Boolean(repoKey)}
+      folder={parentByMachine[machine.machineId] ?? ""}
+      editing={editingMachineId === machine.machineId}
+      onToggle={(next) =>
+        setTicked((current) => {
+          const updated = new Set(current);
+          if (next) updated.add(machine.machineId);
+          else updated.delete(machine.machineId);
+          return updated;
+        })
+      }
+      onEditFolder={() => {
+        if (machine.isLocal) {
+          void chooseLocalFolder(machine);
+          return;
+        }
+        setEditingMachineId((current) => (current === machine.machineId ? null : machine.machineId));
+      }}
+      onFolderChange={(value) =>
+        setParentByMachine((current) => ({ ...current, [machine.machineId]: value }))
+      }
+      onRetry={(job) => {
+        // The folder the row shows now, which the person may have changed after the failure.
+        const folder = parentByMachine[machine.machineId]?.trim();
+        setEditingMachineId((current) => (current === machine.machineId ? null : current));
+        retryCopyJob(job.key, folder ? { parentDir: folder } : {});
+      }}
+    />
+  );
+
+  // Default ticks, once the machines and recents are known: this computer,
+  // plus the machine last worked on when it is connected.
+  useEffect(() => {
+    if (ticksInitializedRef.current || recents == null || !snapshotLoaded) return;
+    ticksInitializedRef.current = true;
+    const next = new Set<string>();
+    if (!webMode) next.add(THIS_MACHINE_ID);
+    const lastUsed = lastUsedMachineId(recents);
+    if (lastUsed && machines.some((machine) => machine.machineId === lastUsed && machine.online)) next.add(lastUsed);
+    setTicked(next);
+  }, [machines, recents, snapshotLoaded, webMode]);
+
+  // The default folder of each machine, read once per machine, and only from
+  // a machine that is connected: this form never connects to or wakes one.
+  const fetchedDefaultsRef = useRef(new Set<string>());
+  const onlineTargetsKey = machines
+    .filter((machine) => machine.online && !machine.isLocal)
+    .map((machine) => machine.targetId)
+    .join("|");
+  useEffect(() => {
+    const wanted = machines.filter((machine) =>
+      machine.online
+      && !fetchedDefaultsRef.current.has(machine.machineId)
+      && (machine.isLocal || machine.targetId != null));
+    for (const machine of wanted) {
+      fetchedDefaultsRef.current.add(machine.machineId);
+      // A machine that cannot say uses its own default when it clones.
+      void readMachineDefaultParentDir(machine.targetId).then((value) => {
+        if (!mountedRef.current || !value) return;
+        setParentByMachine((current) => (current[machine.machineId] ? current : { ...current, [machine.machineId]: value }));
+      });
+    }
+    // Keyed on the connected machines, not the list object: a snapshot tick
+    // that changes nothing must not read again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onlineTargetsKey]);
+
+  const cloneableTicked = machines.filter(
+    (machine) => ticked.has(machine.machineId) && rowState(machine).kind === "available",
+  );
+  const openOnOptions = useMemo(() => {
+    const options: CopyMachine[] = [];
+    for (const machine of machines) {
+      const state = rowState(machine);
+      const pickable =
+        (state.kind === "available" && ticked.has(machine.machineId))
+        || (state.kind === "existing" && machine.online)
+        || (state.kind === "job" && state.job.status !== "failed");
+      if (pickable) options.push(machine);
+    }
+    return options;
+  }, [machines, rowState, ticked]);
+  const defaultOpenOn =
+    openOnOptions.find((machine) => machine.isLocal && ticked.has(machine.machineId))
+    ?? openOnOptions.find((machine) => ticked.has(machine.machineId))
+    ?? openOnOptions[0]
+    ?? null;
+  const openOn = openOnOptions.find((machine) => machine.machineId === openOnChoice) ?? defaultOpenOn;
+
+  const localNeedsFolder = cloneableTicked.some((machine) => machine.isLocal && !parentByMachine[machine.machineId]);
+  const canAdd = Boolean(repoKey) && folderName.length > 0 && cloneableTicked.length > 0 && !localNeedsFolder;
+  const openTarget = useCallback(
+    async (target: CopyOpenTarget) => {
+      try {
+        await onOpenProject(target);
+      } catch (error) {
+        const message = extractError(error);
+        if (mountedRef.current) setOpenError(message);
+        else showToast({ tone: "error", title: "Couldn't open the project", message });
+        return;
+      }
+      if (!mountedRef.current) return;
+      // Stay open while other copies still clone, so their rows stay in view.
+      const stillCloning = repoKey ? listCopyJobs(repoKey).some((job) => job.status === "cloning") : false;
+      if (!stillCloning) onClose();
+    },
+    [onClose, onOpenProject, repoKey],
+  );
+
+  const existingTarget = (machine: CopyMachine, copy: ExistingCopy): CopyOpenTarget | null => {
+    if (machine.isLocal) return { kind: "local", rootPath: copy.rootPath, displayName: copy.displayName };
+    if (!machine.targetId || !copy.projectId) return null;
+    return {
+      kind: "remote",
+      targetId: machine.targetId,
+      projectId: copy.projectId,
+      rootPath: copy.rootPath,
+      displayName: copy.displayName,
+    };
+  };
+
+  /**
+   * The copy a row can open now: one that was there, or one this form
+   * finished cloning (a failed open of it can be tried again).
+   */
+  const openableTarget = (machine: CopyMachine, state: RowState): CopyOpenTarget | null => {
+    if (state.kind === "existing") return existingTarget(machine, state.copy);
+    if (state.kind === "job" && state.job.status === "ready") return state.job.result;
+    return null;
+  };
+  const openOnlyCopy =
+    Boolean(repoKey)
+    && cloneableTicked.length === 0
+    && openOn != null
+    && openableTarget(openOn, rowState(openOn)) != null;
+  // No computer picked and nothing to open: the add puts the project on the
+  // account only, with no copy anywhere.
+  const accountOnly =
+    Boolean(repoKey)
+    && canAddToAccount
+    && !submitted
+    && cloneableTicked.length === 0
+    && !openOnlyCopy
+    && !jobs.some((job) => job.status === "cloning");
+
+  const handleAdd = () => {
+    if (!repoKey) return;
+    setOpenError(null);
+    if (accountOnly) {
+      void addToAccount(repoUrl, { openTab: true });
+      return;
+    }
+    if (openOnlyCopy && openOn) {
+      const target = openableTarget(openOn, rowState(openOn));
+      if (target) void openTarget(target);
+      return;
+    }
+    if (!canAdd) return;
+    // The account lists the project too; a clone does not wait for it.
+    if (canAddToAccount) void addToAccount(repoUrl, { openTab: false });
+    const opensOnId = openOn?.machineId ?? null;
+    for (const machine of cloneableTicked) {
+      startCopyJob({
+        repoKey,
+        url: repoUrl,
+        name: folderName,
+        parentDir: parentByMachine[machine.machineId] ?? null,
+        displayName: folderName,
+        machine: { machineId: machine.machineId, name: machine.name, targetId: machine.targetId },
+      });
+    }
+    setTicked(new Set());
+    setSubmitted(true);
+    if (!openOn || !opensOnId) return;
+    const state = rowState(openOn);
+    if (state.kind === "existing") {
+      const target = existingTarget(openOn, state.copy);
+      if (target) void openTarget(target);
+      return;
+    }
+    const machineName = openOn.name;
+    const repoName = folderName;
+    whenCopyJobReady(copyJobKey(repoKey, opensOnId), (target) => {
+      if (mountedRef.current) {
+        void openTarget(target);
+        return;
+      }
+      // The form was closed before the copy was there: the window does not
+      // change project under the person. The notice opens the same copy, on
+      // the same machine, when they ask.
+      showToast({
+        id: `project-copy-ready:${copyJobKey(repoKey, opensOnId)}`,
+        tone: "success",
+        title: `${repoName} is ready on ${machineName}`,
+        actions: [
+          {
+            label: "Open",
+            onClick: () => {
+              void onOpenProject(target).catch((error: unknown) => {
+                showToast({ tone: "error", title: "Couldn't open the project", message: extractError(error) });
+              });
+            },
+          },
+        ],
+      });
+    });
+  };
+
+  const chooseLocalFolder = async (machine: CopyMachine) => {
+    const choose = window.ade.project.chooseDirectory;
+    if (typeof choose !== "function") return;
+    try {
+      const picked = await choose({
+        title: "Choose where the copy goes",
+        defaultPath: parentByMachine[machine.machineId] || undefined,
+      });
+      if (picked) setParentByMachine((current) => ({ ...current, [machine.machineId]: picked }));
+    } catch (error) {
+      // The picker closing with an error leaves the folder as it was.
+      captureError(error, { fingerprint: ["add-project", "choose-folder"], level: "warning", handled: true });
+    }
+  };
+
+  const anyJobRunning = jobs.some((job) => job.status === "cloning");
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}>
+      <RepoField value={urlInput} onChange={setUrlInput} valid={urlValid} />
+
+      {machines.length === 0 ? (
+        // No machine at all (a person with no computer): the project goes on
+        // the account, and ADE Cloud makes its copy at the first chat.
+        <p style={{ margin: 0, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+          ADE Cloud makes a copy when you send the first chat.
+        </p>
+      ) : (
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <span style={sectionLabelStyle}>Put a copy on</span>
+        <div
+          role="group"
+          aria-label="Machines to put a copy on"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 10,
+            background: fgTint(2),
+            overflow: "hidden",
+          }}
+        >
+          {machines.length === 0 ? (
+            <div style={{ padding: "12px 14px", fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+              No machines are connected.
+            </div>
+          ) : (
+            <>
+              {visibleMachines.map((machine, index) => renderMachineRow(machine, index))}
+              {unconnectedMachines.length > 0 ? (
+                <button
+                  type="button"
+                  aria-expanded={unconnectedExpanded}
+                  onClick={() => setUnconnectedExpanded((current) => !current)}
+                  className="kit-row"
+                  style={{
+                    minHeight: 36,
+                    padding: "6px 12px",
+                    borderRadius: 0,
+                    borderTop: visibleMachines.length > 0 ? `1px solid ${COLORS.border}` : undefined,
+                    fontFamily: SANS_FONT,
+                    fontSize: 12,
+                    color: COLORS.textMuted,
+                  }}
+                >
+                  <span aria-hidden style={{ width: 16, display: "inline-flex", justifyContent: "center", flexShrink: 0 }}>
+                    {unconnectedExpanded ? <CaretUp size={11} weight="bold" /> : <CaretDown size={11} weight="bold" />}
+                  </span>
+                  {unconnectedMachinesLabel(unconnectedMachines.length)}
+                </button>
+              ) : null}
+              {unconnectedExpanded
+                ? unconnectedMachines.map((machine, index) => renderMachineRow(machine, visibleMachines.length + 1 + index))
+                : null}
+            </>
+          )}
+        </div>
+        {repoKey && !submitted && cloneableTicked.length === 0 && !openOnlyCopy ? (
+          <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+            {accountOnly
+              ? "No computer picked: ADE adds it to your account with no copy. Add a copy any time."
+              : "Pick at least one computer."}
+          </span>
+        ) : repoKey && !submitted && cloneableTicked.length > 1 ? (
+          <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+            New work starts on the first computer in this list that has a copy.
+          </span>
+        ) : null}
+      </div>
+      )}
+
+      {openOnOptions.length > 0 ? (
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+          Opens on:
+          <select
+            value={openOn?.machineId ?? ""}
+            onChange={(event) => setOpenOnChoice(event.target.value)}
+            aria-label="Opens on"
+            style={{
+              ...inputStyle,
+              width: "auto",
+              minWidth: 160,
+              height: 30,
+              fontFamily: SANS_FONT,
+              padding: "0 8px",
+            }}
+          >
+            {openOnOptions.map((machine) => (
+              <option key={machine.machineId} value={machine.machineId}>
+                {machine.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+
+      {accountError ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "add-project-account",
+            tone: "error",
+            title: `Couldn't add ${folderName || "the project"} to your account`,
+            detail: accountError,
+            report: { surface: "add-project", code: "account_add_failed", technicalDetail: accountError },
+            actions: accountOnly ? [{ label: "Try again", onClick: () => void addToAccount(repoUrl, { openTab: true }) }] : [],
+          }}
+        />
+      ) : null}
+
+      {openError ? (
+        <span role="alert" style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.danger }}>
+          Couldn't open the project: {openError}
+        </span>
+      ) : null}
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+        <button
+          type="button"
+          style={outlineButton()}
+          onClick={submitted || anyJobRunning ? onClose : onCancel}
+        >
+          {submitted || anyJobRunning ? "Close" : "Cancel"}
+        </button>
+        <button
+          type="button"
+          style={primaryButton({
+            opacity: (canAdd || openOnlyCopy || accountOnly) && !addingToAccount ? 1 : 0.55,
+            cursor: (canAdd || openOnlyCopy || accountOnly) && !addingToAccount ? "pointer" : "not-allowed",
+            minWidth: 120,
+          })}
+          disabled={(!canAdd && !openOnlyCopy && !accountOnly) || addingToAccount}
+          onClick={handleAdd}
+        >
+          {addButtonLabel({ openOnlyCopy, accountOnly, adding: addingToAccount, machineCount: machines.length })}
+        </button>
+      </div>
+      {moreActions}
+    </div>
+  );
+}
+
+/** The Add button: open the one copy, add to the account (no computer needed), or clone. */
+function addButtonLabel(state: { openOnlyCopy: boolean; accountOnly: boolean; adding: boolean; machineCount: number }): string {
+  if (state.openOnlyCopy) return "Open";
+  if (!state.accountOnly) return "Add project";
+  if (state.adding) return "Adding…";
+  return state.machineCount === 0 ? "Add project" : "Add to account";
+}
+
+function MachineRow({
+  machine,
+  first,
+  startsHere,
+  state,
+  ticked,
+  repoChosen,
+  folder,
+  editing,
+  onToggle,
+  onEditFolder,
+  onFolderChange,
+  onRetry,
+}: {
+  machine: CopyMachine;
+  first: boolean;
+  /** New work in the project starts on this machine ("Start on" order). */
+  startsHere: boolean;
+  state: RowState;
+  ticked: boolean;
+  repoChosen: boolean;
+  folder: string;
+  editing: boolean;
+  onToggle: (next: boolean) => void;
+  onEditFolder: () => void;
+  onFolderChange: (value: string) => void;
+  onRetry: (job: CopyJob) => void;
+}) {
+  const muted = state.kind === "unconnected";
+  const rowStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    minHeight: 40,
+    padding: "6px 12px",
+    borderTop: first ? "none" : `1px solid ${COLORS.border}`,
+    fontFamily: SANS_FONT,
+    fontSize: 12,
+    color: muted ? COLORS.textMuted : COLORS.textPrimary,
+  };
+  const nameStyle: CSSProperties = {
+    width: 132,
+    flexShrink: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    fontWeight: 500,
+  };
+  const detailStyle: CSSProperties = {
+    flex: 1,
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    color: COLORS.textMuted,
+  };
+  const pathStyle: CSSProperties = { ...detailStyle, fontFamily: MONO_FONT, fontSize: 11 };
+  const glyph = (node: React.ReactNode) => (
+    <span aria-hidden style={{ width: 16, display: "inline-flex", justifyContent: "center", flexShrink: 0 }}>{node}</span>
+  );
+
+  let lead: React.ReactNode;
+  let detail: React.ReactNode;
+  let trailing: React.ReactNode = null;
+  switch (state.kind) {
+    case "job": {
+      const { job } = state;
+      if (job.status === "cloning") {
+        lead = glyph(<CircleNotch size={13} weight="bold" className="animate-spin" />);
+        detail = <span style={detailStyle}>cloning…</span>;
+      } else if (job.status === "ready") {
+        lead = glyph(<CheckCircle size={14} weight="fill" color={COLORS.success} />);
+        detail = <span style={detailStyle}>ready</span>;
+      } else {
+        lead = glyph(<XCircle size={14} weight="fill" color={COLORS.danger} />);
+        detail = (
+          <span style={{ ...detailStyle, color: COLORS.danger }} title={job.failure?.detail}>
+            {job.failure?.reason ?? "Couldn't add the copy"}
+            {folder.trim() && folder.trim() !== (job.parentDir ?? "") ? ` · Retry uses ${folder.trim()}` : null}
+          </span>
+        );
+        // A retry calls the machine, so it waits until the machine is
+        // connected again: this form never connects to or wakes one. The
+        // folder can change first (a folder that does not exist, no access).
+        trailing = machine.online ? (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+            <button
+              type="button"
+              className="kit-icon-btn"
+              aria-label={`Change folder on ${machine.name}`}
+              aria-expanded={machine.isLocal ? undefined : editing}
+              onClick={onEditFolder}
+              style={{ width: 24, height: 24, flexShrink: 0 }}
+            >
+              <DotsThree size={14} weight="bold" />
+            </button>
+            <button
+              type="button"
+              style={outlineButton({ height: 24, padding: "0 10px", fontSize: 11 })}
+              aria-label={`Retry on ${machine.name}`}
+              onClick={() => onRetry(job)}
+            >
+              Retry
+            </button>
+          </span>
+        ) : null;
+      }
+      break;
+    }
+    case "existing":
+      lead = glyph(<CheckCircle size={14} weight="regular" />);
+      detail = (
+        <span style={pathStyle} title={state.copy.rootPath}>
+          already here · {state.copy.rootPath}
+        </span>
+      );
+      break;
+    case "unconnected":
+      lead = glyph(<CircleDashed size={14} />);
+      // Not connected here; the account may still show it online.
+      detail = <span style={detailStyle}>not connected</span>;
+      break;
+    case "available":
+      lead = (
+        <input
+          type="checkbox"
+          checked={ticked}
+          disabled={!repoChosen}
+          aria-label={`Put a copy on ${machine.name}`}
+          onChange={(event) => onToggle(event.target.checked)}
+          style={{ width: 14, height: 14, margin: 1, flexShrink: 0, accentColor: "var(--color-accent)" }}
+        />
+      );
+      detail = (
+        <span style={pathStyle} title={folder || undefined}>
+          {folder || "Default folder"}
+        </span>
+      );
+      trailing = (
+        <button
+          type="button"
+          className="kit-icon-btn"
+          aria-label={`Change folder on ${machine.name}`}
+          aria-expanded={machine.isLocal ? undefined : editing}
+          onClick={onEditFolder}
+          style={{ width: 24, height: 24, flexShrink: 0 }}
+        >
+          <DotsThree size={14} weight="bold" />
+        </button>
+      );
+      break;
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      <div style={rowStyle} aria-live={state.kind === "job" ? "polite" : undefined}>
+        {lead}
+        <span style={{ ...nameStyle, display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <Desktop size={12} weight="regular" aria-hidden style={{ flexShrink: 0, opacity: 0.7 }} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{machine.name}</span>
+        </span>
+        {detail}
+        {startsHere ? (
+          <span className="kit-tag" data-tone="accent" title="New work in this project starts here" style={{ flexShrink: 0 }}>
+            Starts here
+          </span>
+        ) : null}
+        {trailing}
+      </div>
+      {editing && (state.kind === "available" || (state.kind === "job" && state.job.status === "failed")) && !machine.isLocal ? (
+        <div style={{ padding: "0 12px 10px 38px" }}>
+          <input
+            type="text"
+            value={folder}
+            autoFocus
+            aria-label={`Folder on ${machine.name}`}
+            placeholder="Folder on that machine"
+            onChange={(event) => onFolderChange(event.target.value)}
+            style={{ ...inputStyle, height: 30 }}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}

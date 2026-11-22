@@ -1,9 +1,6 @@
 {
   "version": 1,
   "files": {
-    "apps/desktop/src/renderer/components/app/CommandPalette.tsx": {
-      "ade-ui/no-fixed-overlay": 1
-    },
     "apps/desktop/src/renderer/components/capture/CaptureFlyIn.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
@@ -29,12 +26,6 @@
     "apps/desktop/src/renderer/components/files/v2/ContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/files/v2/FilesSearchPanel.tsx": {
-      "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/lanes/LaneContextMenu.tsx": {
-      "ade-ui/no-fixed-overlay": 1
     },
     "apps/desktop/src/renderer/components/lanes/sidebar/PointMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1

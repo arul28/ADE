@@ -1,0 +1,13 @@
+-- Lane sharing: the receiver's name as the host machine shows it
+-- (src/laneShares/routes.ts, README "Lane sharing").
+--
+-- Written once, when the receiver accepts: the Worker reads the receiver's
+-- name from Clerk in that same call (it already reads the verified
+-- addresses there) and stores it cleaned (`boundedDisplayText`, 80
+-- characters). The host read (`POST /lane-shares/host`, and the redeem
+-- answer) hands it to the host as `receiverName`, cleaned again like the
+-- invite email's sender name. The host uses it as the author name of the
+-- guest's messages and in the commit trailer of a guest turn, so it never
+-- comes from the guest's own client. Null on every grant accepted before this
+-- column, and for an account with no name: the host then shows no name.
+alter table lane_shares add column receiver_label text;

@@ -38,9 +38,12 @@ extension LanesTabView {
 
   /// A host-side lane delete may take several minutes. Keep its stale local
   /// snapshot out of navigation and list affordances while SyncService owns
-  /// that cleanup request.
+  /// that cleanup request. Past its reconnect window the focused machine's
+  /// lanes are not listed, so the open-lane tray and the filter counts drop
+  /// them too.
   var visibleLaneSnapshots: [LaneListSnapshot] {
-    laneSnapshots.filter { !syncService.isLaneDeletionPending($0.lane.id) }
+    guard syncService.focusedMachineListsWork else { return [] }
+    return laneSnapshots.filter { !syncService.isLaneDeletionPending($0.lane.id) }
   }
 
   var manageableVisibleLaneIds: [String] {
@@ -124,9 +127,15 @@ extension LanesTabView {
       searchText: searchText,
       pinnedLaneIds: pinnedLaneIds
     )
+    // Every lane the list can show counts: this machine's, then the other
+    // machines' the machine filter keeps.
+    let remoteCounted = remoteLanes.machines.flatMap { machine -> [LaneListSnapshot] in
+      machineFilterKeeps(machine.machineKey) ? machine.snapshots : []
+    }
+    let counted = (showsFocusedMachineLanes ? visible : []) + remoteCounted
     var counts: [LaneQuickFilter: Int] = [:]
     for filter in LaneQuickFilter.allCases {
-      counts[filter] = visible.reduce(0) { $0 + (filter.matches($1) ? 1 : 0) }
+      counts[filter] = counted.reduce(0) { $0 + (filter.matches($1) ? 1 : 0) }
     }
     let next = LaneListPresentation(
       filteredSnapshots: filtered,
@@ -142,6 +151,17 @@ extension LanesTabView {
     laneListPresentation = next
   }
 
+  /// Whether the machine filter shows another machine's lanes. "ADE Cloud"
+  /// is one machine: its chip keeps every cloud lane's computer.
+  func machineFilterKeeps(_ machineKey: String) -> Bool {
+    switch machineFilter {
+    case .all: return true
+    case .focused: return false
+    case .machine(let key):
+      return key == ADECloudMachine.id ? syncService.isCloudFleetKey(machineKey) : key == machineKey
+    }
+  }
+
   /// The focused machine's name for its chip and filter.
   var focusedMachineName: String {
     syncService.focusedMachineDisplayName
@@ -150,21 +170,19 @@ extension LanesTabView {
   var laneMachineChips: LaneMachineChips {
     guard !remoteLanes.machines.isEmpty else { return .none }
     return LaneMachineChips(
-      focused: LaneMachineChip(
-        name: focusedMachineName,
-        isLive: true,
-        symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: focusedMachineName)
-      ),
+      // The focused machine's rows keep their saved data and stay open while
+      // its link reconnects.
+      focused: LaneMachineChip(name: focusedMachineName, isLive: true),
       byMachineKey: Dictionary(
-        remoteLanes.machines.map {
-          ($0.machineKey, LaneMachineChip(name: $0.name, isLive: $0.isLive, symbol: machineSymbol(machineKey: $0.machineKey, name: $0.name)))
-        },
+        remoteLanes.machines.map { ($0.machineKey, LaneMachineChip(name: $0.name, isLive: $0.isLive)) },
         uniquingKeysWith: { first, _ in first }
       )
     )
   }
 
   var showsFocusedMachineLanes: Bool {
+    // Off past its reconnect window: its lanes are not listed.
+    guard syncService.focusedMachineListsWork else { return false }
     switch machineFilter {
     case .all, .focused: return true
     case .machine: return false
@@ -172,14 +190,12 @@ extension LanesTabView {
   }
 
   /// The other machines the filter shows, each with its rows filtered and
-  /// ordered the same way as the focused list.
+  /// ordered the same way as the focused list. Live computers come first,
+  /// then the ones the phone has no live link to (Start on's order).
   var visibleRemoteMachineLanes: [(machine: LaneRemoteMachinesModel.MachineLanes, snapshots: [LaneListSnapshot])] {
-    remoteLanes.machines.compactMap { machine in
-      switch machineFilter {
-      case .focused: return nil
-      case .machine(let key) where key != machine.machineKey: return nil
-      default: break
-      }
+    let liveFirst = remoteLanes.machines.filter(\.isLive) + remoteLanes.machines.filter { !$0.isLive }
+    return liveFirst.compactMap { machine in
+      guard machineFilterKeeps(machine.machineKey) else { return nil }
       let filtered = laneListFilteredSnapshots(
         machine.snapshots.filter(quickFilter.matches),
         scope: quickFilter.scope,
@@ -203,15 +219,18 @@ extension LanesTabView {
         ) {
           machineFilter = .all
         }
-        LaneMachineFilterChip(
-          title: focusedMachineName,
-          symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: focusedMachineName),
-          liveDot: true,
-          selected: machineFilter == .focused
-        ) {
-          machineFilter = machineFilter == .focused ? .all : .focused
+        // A project with no computer's copy (account scope) has no focused machine.
+        if !syncService.isAccountProjectScope, !syncService.isCloudFleetKey(syncService.focusedMachineKey) {
+          LaneMachineFilterChip(
+            title: focusedMachineName,
+            symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: focusedMachineName),
+            liveDot: true,
+            selected: machineFilter == .focused
+          ) {
+            machineFilter = machineFilter == .focused ? .all : .focused
+          }
         }
-        ForEach(remoteLanes.machines) { machine in
+        ForEach(remoteLanes.machines.filter { !syncService.isCloudFleetKey($0.machineKey) }) { machine in
           LaneMachineFilterChip(
             title: machine.name,
             symbol: machineSymbol(machineKey: machine.machineKey, name: machine.name),
@@ -219,6 +238,19 @@ extension LanesTabView {
             selected: machineFilter == .machine(machine.machineKey)
           ) {
             machineFilter = machineFilter == .machine(machine.machineKey) ? .all : .machine(machine.machineKey)
+          }
+        }
+        // Every cloud lane's computer under one chip.
+        let cloudMachines = remoteLanes.machines.filter { syncService.isCloudFleetKey($0.machineKey) }
+        if !cloudMachines.isEmpty || syncService.isAccountProjectScope {
+          let cloudFilter = LaneMachineFilter.machine(ADECloudMachine.id)
+          LaneMachineFilterChip(
+            title: ADECloudMachine.name,
+            symbol: ADECloudMachine.symbol,
+            liveDot: cloudMachines.contains(where: \.isLive),
+            selected: machineFilter == cloudFilter
+          ) {
+            machineFilter = machineFilter == cloudFilter ? .all : cloudFilter
           }
         }
       }
@@ -233,7 +265,7 @@ extension LanesTabView {
   /// "Show only <machine>" for a lane's machine, from its long-press menu.
   func showOnlyMachine(ofLaneId laneId: String) {
     if let remote = workParseRemoteLaneId(laneId) {
-      machineFilter = .machine(remote.machineKey)
+      machineFilter = .machine(syncService.isCloudFleetKey(remote.machineKey) ? ADECloudMachine.id : remote.machineKey)
     } else {
       machineFilter = .focused
     }
@@ -255,7 +287,18 @@ extension LanesTabView {
   /// another machine holds for a namespaced id.
   @ViewBuilder
   func laneDestination(_ route: LaneRoute, showsBackButton: Bool = true) -> some View {
-    if let snapshot = laneSnapshots.first(where: { $0.lane.id == route.laneId }) {
+    if let snapshot = laneSnapshots.first(where: { $0.lane.id == route.laneId }),
+       let fleetKey = syncService.focusedMachineKey,
+       cloudLaneShowsAtRest(fleetKey: fleetKey, sync: syncService),
+       let subject = cloudLaneAtRestSubject(fleetKey: fleetKey, lane: snapshot.lane, sync: syncService) {
+      // The focused computer is an ADE Cloud computer that is not up: what
+      // the account keeps for the lane, with no wake.
+      CloudLaneAtRestScreen(subject: subject, onAwake: { await reload(refreshRemote: true) }, onAwakeToMove: {
+        moveAfterWakeLaneId = route.laneId
+        await reload(refreshRemote: true)
+      })
+        .showsCloudLaneState(fleetKey: fleetKey, context: .lane, onAwake: { await reload(refreshRemote: true) })
+    } else if let snapshot = laneSnapshots.first(where: { $0.lane.id == route.laneId }) {
       LaneDetailScreen(
         laneId: route.laneId,
         initialSnapshot: snapshot,
@@ -263,8 +306,31 @@ extension LanesTabView {
         transitionNamespace: transitionNamespace,
         showsBackButton: showsBackButton,
         machineName: focusedMachineName,
+        moveAfterWake: moveAfterWake(route.laneId),
         onRefreshRoot: { await reload(refreshRemote: true) }
       )
+      // The focused computer can be an ADE Cloud computer that is asleep.
+      .showsCloudLaneState(
+        fleetKey: syncService.focusedMachineKey,
+        context: .lane,
+        onAwake: { await reload(refreshRemote: true) }
+      )
+    } else if let machine = remoteLanes.machines.first(where: { $0.snapshots.contains { $0.lane.id == route.laneId } }),
+      let snapshot = machine.snapshots.first(where: { $0.lane.id == route.laneId }),
+      cloudLaneShowsAtRest(fleetKey: machine.machineKey, sync: syncService),
+      let subject = cloudLaneAtRestSubject(fleetKey: machine.machineKey, lane: snapshot.lane, sync: syncService)
+    {
+      // A lane on an ADE Cloud computer that is not up: its saved Git state
+      // and its branch on GitHub. Opening it never wakes the computer.
+      CloudLaneAtRestScreen(subject: subject, onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }, onAwakeToMove: {
+        moveAfterWakeLaneId = route.laneId
+        await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+      })
+        .showsCloudLaneState(
+          fleetKey: machine.machineKey,
+          context: .lane,
+          onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
+        )
     } else if let machine = remoteLanes.machines.first(where: { $0.snapshots.contains { $0.lane.id == route.laneId } }),
       let snapshot = machine.snapshots.first(where: { $0.lane.id == route.laneId })
     {
@@ -275,15 +341,30 @@ extension LanesTabView {
         transitionNamespace: transitionNamespace,
         showsBackButton: showsBackButton,
         machineName: machine.name,
+        moveAfterWake: moveAfterWake(route.laneId),
         onRefreshRoot: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
       )
-    } else {
-      ADEEmptyStateView(
-        symbol: "square.stack.3d.up.slash",
-        title: "Lane unavailable",
-        message: "This lane is no longer on this phone. Refresh Lanes and try again."
+      // A lane on an ADE Cloud computer: its state and the "deleting soon"
+      // notice show; opening it never wakes the computer.
+      .showsCloudLaneState(
+        fleetKey: machine.machineKey,
+        context: .lane,
+        onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
       )
+    } else {
+      UnavailableLaneDestination(laneId: route.laneId)
     }
+  }
+
+  /// Whether a lane's live detail opens its move: set by "Wake and move" on
+  /// the lane at rest, cleared once the detail takes it.
+  func moveAfterWake(_ laneId: String) -> Binding<Bool> {
+    Binding(
+      get: { moveAfterWakeLaneId == laneId },
+      set: { open in
+        if !open, moveAfterWakeLaneId == laneId { moveAfterWakeLaneId = nil }
+      }
+    )
   }
 
   var laneRowInsets: EdgeInsets {
@@ -296,28 +377,28 @@ extension LanesTabView {
   func laneListRow(
     _ snapshot: LaneListSnapshot,
     pullRequest: LanePrTag?,
-    showsMachineChip: Bool,
     chips: LaneMachineChips
   ) -> some View {
     let laneId = snapshot.lane.id
     let pinned = pinnedLaneIds.contains(laneId)
     let machine = chips.chip(forLaneId: laneId)
-    // A machine with no live link shows its last roster dimmed and inert, so
-    // its rows carry no swipe actions either.
+    // Pin and archive need a live link: a lane of a machine that is waking or
+    // reconnecting has no swipe actions until it is back.
     let actionable = machine?.isLive != false
     let isDuoSelected = duoLayout.isWide && duoSelectedLaneId == laneId
+    let computerDeleted = laneComputerDeleted(laneId)
     LaneTreeRow(
       snapshot: snapshot,
       pullRequest: pullRequest,
+      machineName: machine?.name,
       isPinned: pinned,
       isOpen: openLaneIds.contains(laneId),
       transitionNamespace: transitionNamespace,
       isSelectedTransitionSource: isDuoSelected || selectedLaneTransitionId == laneId,
+      computerDeleted: computerDeleted,
       onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
       onSelectLane: { selectedLaneTransitionId = $0 },
-      onOpen: { openLane(laneId) },
-      machine: machine,
-      showsMachineChip: showsMachineChip
+      onOpen: { computerDeleted ? openDeletedComputerLane(laneId) : openLane(laneId) }
     )
     // The Duo's list column marks its selected row the way a desktop sidebar
     // does (a tinted rounded rectangle inset from the column's edges); the
@@ -341,7 +422,8 @@ extension LanesTabView {
       }
     }
     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-      if actionable {
+      // Archive runs on the lane's computer: none for a lane whose ADE Cloud computer is asleep.
+      if actionable, !laneRestsOnCloud(laneId, sync: syncService) {
         archiveOrRestoreButton(snapshot)
           .tint(snapshot.lane.archivedAt == nil ? ADEColor.warning : ADEColor.success)
       }
@@ -373,22 +455,81 @@ extension LanesTabView {
     }
   }
 
+  /// "Manage lane"; for a lane whose ADE Cloud computer is asleep, "Manage
+  /// computer" (size, free, delete: none of them wakes it).
+  @ViewBuilder
   func manageLaneButton(_ snapshot: LaneListSnapshot) -> some View {
-    Button {
-      detailSheetTarget = LaneDetailSheetTarget(laneId: snapshot.lane.id, snapshot: snapshot, initialSection: .git)
-    } label: {
-      Label("Manage lane", systemImage: "slider.horizontal.3")
+    if laneRestsOnCloud(snapshot.lane.id, sync: syncService) {
+      if let instanceId = cloudLaneComputer(snapshot.lane.id, sync: syncService)?.id {
+        Button {
+          CloudLaneActions.shared.manageComputer(instanceId: instanceId, fromMenu: true)
+        } label: {
+          Label("Manage computer", systemImage: "slider.horizontal.3")
+        }
+      }
+    } else {
+      Button {
+        detailSheetTarget = LaneDetailSheetTarget(laneId: snapshot.lane.id, snapshot: snapshot, initialSection: .git)
+      } label: {
+        Label("Manage lane", systemImage: "slider.horizontal.3")
+      }
     }
   }
 
-  /// The lane rows: the focused machine's lanes (primary first, then the
-  /// rest oldest first), then each other machine's lanes under its name.
+  /// "Delete lane" for a lane on its own ADE Cloud computer, awake or
+  /// asleep: the account deletes the computer, with no wake.
+  @ViewBuilder
+  func cloudLaneDeleteButton(_ snapshot: LaneListSnapshot) -> some View {
+    if let target = cloudLaneDeleteTarget(laneId: snapshot.lane.id, laneName: snapshot.lane.name, sync: syncService, onDeleted: {
+      await reloadAfterLaneAction(snapshot.lane.id, refreshRemote: true)
+    }) {
+      Button(role: .destructive) {
+        CloudLaneActions.shared.delete(target, fromMenu: true)
+      } label: {
+        Label("Delete lane", systemImage: "trash")
+      }
+    }
+  }
+
+  /// The lane rows of every listed machine with a copy, in one list: the
+  /// focused machine's lanes (primary first, then the rest oldest first),
+  /// then each other machine's lanes, live machines first. A row never names
+  /// its machine; an offline, parked or disconnected computer's lanes are not
+  /// listed (`fleetMachineListsWork`).
   @ViewBuilder
   var laneListSections: some View {
     // Built once per pass, not once per row.
     let chips = laneMachineChips
     let remoteSections = visibleRemoteMachineLanes
-    if showsFocusedMachineLanes, laneSnapshots.isEmpty, remoteLanes.machines.isEmpty {
+    let accountHasNoLanes = syncService.isAccountProjectScope
+      // A failed read did not show there are none: its machine row says so.
+      && remoteLanes.machines.allSatisfy { $0.snapshots.isEmpty && $0.error == nil }
+    // Lanes ADE Cloud kept without a computer are rows too: with any, no
+    // "no lanes" state shows, only the filter's.
+    let hasKept = !inputs.keptCloudLanes.isEmpty
+    let keptRows = keptCloudLaneRows
+    if accountHasNoLanes, !hasKept, !remoteLanes.hasRead {
+      // The first read of the cloud lanes is still out: nothing to say yet.
+      EmptyView()
+    } else if accountHasNoLanes, !hasKept {
+      // No computer's copy, and no cloud lane yet.
+      ADEEmptyStateView(
+        symbol: ADECloudMachine.symbol,
+        title: "No lanes on ADE Cloud yet",
+        message: "A chat you start on ADE Cloud in Work makes its own lane."
+      )
+      .padding(.top, 32)
+      .adeFlatRow(separator: .hidden)
+    } else if !hasKept, !syncService.focusedMachineListsWork, remoteLanes.machines.isEmpty, machineFilter == .all {
+      // Nothing to list until a computer is back: say so, not "No lanes".
+      ADEEmptyStateView(
+        symbol: "wifi.slash",
+        title: "\(focusedMachineName) is offline",
+        message: "Its lanes show here again when it is back online."
+      )
+      .padding(.top, 32)
+      .adeFlatRow(separator: .hidden)
+    } else if !hasKept, showsFocusedMachineLanes, laneSnapshots.isEmpty, remoteLanes.machines.isEmpty {
       if let emptyStatePresentation {
         emptyStateCard(emptyStatePresentation)
           .padding(.top, 16)
@@ -402,7 +543,7 @@ extension LanesTabView {
         .padding(.top, 32)
         .adeFlatRow(separator: .hidden)
       }
-    } else if (!showsFocusedMachineLanes || filteredSnapshots.isEmpty) && remoteSections.isEmpty {
+    } else if (!showsFocusedMachineLanes || filteredSnapshots.isEmpty) && remoteSections.isEmpty && keptRows.isEmpty {
       ADEEmptyStateView(
         symbol: "square.stack.3d.up.slash",
         title: quickFilter.emptyTitle,
@@ -412,39 +553,25 @@ extension LanesTabView {
       .adeFlatRow(separator: .hidden)
     } else {
       if showsFocusedMachineLanes, !orderedSnapshots.isEmpty {
-        Section {
-          ForEach(orderedSnapshots) { snapshot in
-            laneListRow(
-              snapshot,
-              pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
-              // Each machine's lanes are their own section, named in its
-              // header: a machine chip on every row only repeated it.
-              showsMachineChip: false,
-              chips: chips
-            )
-          }
-        } header: {
-          if !remoteLanes.machines.isEmpty {
-            ADEFlatSectionHeader(focusedMachineName, detail: "\(orderedSnapshots.count)")
-          }
+        ForEach(orderedSnapshots) { snapshot in
+          laneListRow(
+            snapshot,
+            pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
+            chips: chips
+          )
         }
       }
       ForEach(remoteSections, id: \.machine.machineKey) { entry in
-        Section {
-          ForEach(entry.snapshots) { snapshot in
-            laneListRow(
-              snapshot,
-              pullRequest: nil,
-              showsMachineChip: false,
-              chips: chips
-            )
-          }
-        } header: {
-          ADEFlatSectionHeader(
-            entry.machine.isLive ? entry.machine.name : "\(entry.machine.name) · not live",
-            detail: "\(entry.snapshots.count)"
+        ForEach(entry.snapshots) { snapshot in
+          laneListRow(
+            snapshot,
+            pullRequest: nil,
+            chips: chips
           )
         }
+      }
+      ForEach(keptRows) { lane in
+        keptCloudLaneRow(lane)
       }
     }
   }
@@ -497,7 +624,7 @@ extension LanesTabView {
     ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: 7) {
         ForEach(LaneQuickFilter.allCases) { filter in
-          let count = laneListPresentation.quickFilterCounts[filter] ?? 0
+          let count = laneQuickFilterCount(filter)
           LaneQuickFilterChip(
             title: filter.title,
             count: count,
@@ -526,6 +653,11 @@ extension LanesTabView {
       let hydrationNotice = laneStatus.inlineHydrationFailureNotice(for: .lanes)
     {
       ADEFlatInlineNotice(message: hydrationNotice.title, retry: { Task { await reload(refreshRemote: true) } })
+        .adeFlatRow(separator: .hidden)
+    }
+    // With no computer connected too: this read goes to the account server.
+    if cloudReadFailed {
+      ADEFlatInlineNotice(message: "ADE couldn't read your machines and ADE Cloud computers, so a new one may be missing.", tint: ADEColor.danger, retry: { Task { await refreshFromPullGesture() } })
         .adeFlatRow(separator: .hidden)
     }
     if let errorMessage, laneStatus.phase == .ready, hostReachable {
@@ -597,6 +729,14 @@ extension LanesTabView {
 
   @ViewBuilder
   func laneContextMenu(snapshot: LaneListSnapshot) -> some View {
+    // A tap opens the lane's newest saved chat: the lane page is here.
+    if laneComputerDeleted(snapshot.lane.id) {
+      Button {
+        openLane(snapshot.lane.id)
+      } label: {
+        Label("Open lane", systemImage: "square.stack.3d.up")
+      }
+    }
     if let chip = laneMachineChips.chip(forLaneId: snapshot.lane.id) {
       Button {
         showOnlyMachine(ofLaneId: snapshot.lane.id)
@@ -648,19 +788,23 @@ extension LanesTabView {
     } label: {
       LanePinLabel(pinned: pinnedLaneIds.contains(snapshot.lane.id))
     }
-    Menu {
-      ForEach(LaneColorPalette.entries) { entry in
-        let used = LaneColorPalette.colorsInUse(amongLanes: laneSnapshots.map(\.lane), excluding: snapshot.lane.id)
-        let isTaken = used.contains(entry.hex.lowercased()) && snapshot.lane.color?.lowercased() != entry.hex.lowercased()
-        Button {
-          Task { await applyLaneColor(entry.hex, to: snapshot.lane.id) }
-        } label: {
-          Label(entry.name, systemImage: snapshot.lane.color?.lowercased() == entry.hex.lowercased() ? "checkmark.circle.fill" : "circle.fill")
+    // Color and archive run on the lane's computer.
+    let resting = laneRestsOnCloud(snapshot.lane.id, sync: syncService)
+    if !resting {
+      Menu {
+        ForEach(LaneColorPalette.entries) { entry in
+          let used = LaneColorPalette.colorsInUse(amongLanes: laneSnapshots.map(\.lane), excluding: snapshot.lane.id)
+          let isTaken = used.contains(entry.hex.lowercased()) && snapshot.lane.color?.lowercased() != entry.hex.lowercased()
+          Button {
+            Task { await applyLaneColor(entry.hex, to: snapshot.lane.id) }
+          } label: {
+            Label(entry.name, systemImage: snapshot.lane.color?.lowercased() == entry.hex.lowercased() ? "checkmark.circle.fill" : "circle.fill")
+          }
+          .disabled(isTaken || !canRunLiveActions)
         }
-        .disabled(isTaken || !canRunLiveActions)
+      } label: {
+        Label("Color", systemImage: "paintpalette")
       }
-    } label: {
-      Label("Color", systemImage: "paintpalette")
     }
     Button {
       openLaneIds = [snapshot.lane.id]
@@ -685,7 +829,10 @@ extension LanesTabView {
       }
       .disabled(!canRunLiveActions)
     }
-    archiveOrRestoreButton(snapshot, archiveRole: .destructive)
+    if !resting {
+      archiveOrRestoreButton(snapshot, archiveRole: .destructive)
+    }
+    cloudLaneDeleteButton(snapshot)
     Button {
       UIPasteboard.general.string = snapshot.lane.worktreePath
     } label: {
@@ -723,7 +870,14 @@ extension LanesTabView {
       if refreshRemote {
         try await syncService.refreshLaneSnapshots(includeDecorations: includeDecorations)
       }
-      let loadedSnapshots = try await syncService.fetchLaneListSnapshots(includeArchived: true)
+      let loadedSnapshots = laneSnapshotsByHubRule(
+        laneSnapshotsWithoutCloudMainCheckout(
+          try await syncService.fetchLaneListSnapshots(includeArchived: true),
+          machineKey: syncService.focusedMachineKey,
+          sync: syncService
+        ),
+        roster: syncService.activeProject.flatMap { syncService.rosterProject(for: $0) }
+      )
       let loadedPullRequests = try await syncService.fetchPullRequestListItems()
       if laneSnapshots != loadedSnapshots {
         laneSnapshots = loadedSnapshots
@@ -842,6 +996,21 @@ extension LanesTabView {
     }
 
     guard let resolvedSnapshot = snapshot else {
+      // An ADE Cloud lane whose computer is gone (a PR's or a chat's "Go to
+      // lane"): its kept page, with New computer and Delete.
+      let accountLaneId = workParseRemoteLaneId(request.laneId)?.laneId ?? request.laneId
+      let keptStore = AccountCloudStore.shared
+      if !keptStore.lanesWithoutComputer.contains(where: { $0.laneId == accountLaneId }),
+         AccountService.shared.phase == .signedIn {
+        // Its computer may have gone on another device since the last read.
+        await keptStore.refreshLanesWithoutComputer(using: syncService, force: true)
+        guard !Task.isCancelled, syncService.requestedLaneNavigation?.id == request.id else { return }
+      }
+      if keptStore.lanesWithoutComputer.contains(where: { $0.laneId == accountLaneId }) {
+        syncService.requestedLaneNavigation = nil
+        openLane(request.laneId)
+        return
+      }
       errorMessage = request.projectName.map { "That lane isn't in \($0) any more." }
         ?? "The requested lane is not cached on this phone yet. Refresh Lanes and try again."
       syncService.requestedLaneNavigation = nil
@@ -862,10 +1031,17 @@ extension LanesTabView {
 
   @MainActor
   func refreshFromPullGesture() async {
-    // The other machines are read now, not on their 30-second beat.
-    async let remote: Void = remoteLanes.refresh(sync: syncService, fleet: machineFleet)
-    await reload(refreshRemote: true)
-    await remote
+    async let focused: Void = reload(refreshRemote: true)
+    // The ADE Cloud lanes kept without a computer, from the account.
+    async let kept: Void = AccountCloudStore.shared.refreshLanesWithoutComputer(using: syncService, force: true)
+    // A computer made since the last look lists once the account's machines
+    // and ADE Cloud computers are read again; then the other machines are
+    // read now, not on their 30-second beat.
+    let cloudRead = await syncService.readCloudForPull()
+    await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+    await focused
+    await kept
+    if cloudReadFailed == cloudRead { cloudReadFailed = !cloudRead }
     if errorMessage == nil {
       withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
         refreshFeedbackToken += 1
@@ -974,5 +1150,84 @@ struct LanePinLabel: View {
 
   var body: some View {
     Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash.fill" : "pin.fill")
+  }
+}
+
+
+/// A lane page whose lane is on no machine's list. A cloud lane whose
+/// computer was deleted (freed, or removed by the idle cleanup) is still the
+/// account's: the page is its kept-lane page, the chat's "computer deleted"
+/// line on top, then New computer on the same branch, its saved chats and
+/// Delete, instead of a dead end.
+struct UnavailableLaneDestination: View {
+  let laneId: String
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+
+  /// A lane opened from another machine's row keeps that machine in its id
+  /// (`fleet|machine|lane`); the account keeps the lane under its own id.
+  private var accountLaneId: String { workParseRemoteLaneId(laneId)?.laneId ?? laneId }
+
+  /// This lane's New computer launch, as `launchId:state`: once its computer is up, the kept lane leaves the list.
+  private var launchState: String {
+    guard let lane = cloudStore.lanesWithoutComputer.first(where: { $0.laneId == accountLaneId }),
+          let launch = launches.laneLaunch(for: lane) else { return "" }
+    return "\(launch.launchId):\(launch.record?.state ?? "")"
+  }
+
+  var body: some View {
+    Group {
+      if let lane = cloudStore.lanesWithoutComputer.first(where: { $0.laneId == accountLaneId }) {
+        // A lane with a saved chat gets its new computer from a message
+        // there; one with none from New computer.
+        let facts = cloudDeletedComputerFacts(
+          kept: lane,
+          computer: nil,
+          viaQueue: !KeptCloudLane.savedChats(lane, sync: syncPublishes.service).isEmpty,
+          store: cloudStore
+        )
+        ScrollView {
+          CloudKeptLaneActionsCard(lane: lane, lineReason: facts.blocked)
+            .padding(16)
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+        // What happened and what makes the new computer (or why ADE
+        // can't), in the top inset as on every cloud lane page.
+        .safeAreaInset(edge: .top, spacing: 0) {
+          CloudLaneStateLinesContent(state: .deleted, deletingDays: nil, deleted: facts, context: .lane)
+        }
+        .refreshable { await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true) }
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .navigationTitle(lane.laneName)
+        .navigationBarTitleDisplayMode(.inline)
+      } else {
+        ADEEmptyStateView(
+          symbol: "square.stack.3d.up.slash",
+          title: "Lane unavailable",
+          message: "This lane is no longer on this phone. Refresh Lanes and try again."
+        )
+      }
+    }
+    // The page can open as the computer goes, before the server has kept the
+    // lane: read again a few times (about half a minute), and stop once it's
+    // there or the page closes.
+    .task(id: laneId) {
+      for attempt in 0..<6 {
+        await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true)
+        if Task.isCancelled || cloudStore.lanesWithoutComputer.contains(where: { $0.laneId == accountLaneId }) { return }
+        try? await Task.sleep(for: .seconds(attempt == 0 ? 2 : 5))
+      }
+    }
+    // As in the kept-lanes block: the new computer is up, so the account lists
+    // it and the kept lane (with its held Delete) leaves this page.
+    .onChange(of: launchState) { _, state in
+      guard state.hasSuffix(":running") || state.hasSuffix(":done") else { return }
+      Task { @MainActor in
+        await syncPublishes.service.readCloudForLaunchedChat()
+        await cloudStore.refreshLanesWithoutComputer(using: syncPublishes.service, force: true)
+      }
+    }
   }
 }

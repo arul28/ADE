@@ -120,7 +120,12 @@ for a reason:
    chat in `background` mode (nobody is watching for a handoff); an
    existing-chat target is checked for existence and non-archival, and a
    deleted chat **blocks** ("The chat this send was aimed at is gone. Pick
-   another target.") rather than throwing.
+   another target.") rather than throwing. A tracked agent CLI target (Claude
+   Code, Codex, ... in a terminal) has no chat: the text is typed at its prompt
+   once it can take a turn (an ended CLI is resumed first), and a mid-turn CLI
+   is a `retry`. A plain shell, images aimed at a CLI, or a CLI that cannot be
+   resumed **block** with the reason. Arming refuses a plain-shell target the
+   runtime knows about.
 
 A throw from the send itself is treated as a transport or session problem, not
 a decision: the row stays `scheduled` and the scheduler retries it. `skipped`
@@ -181,6 +186,13 @@ columns (`kind`, `status`, `scheduled_at`, `delivery_policy`, `grace_seconds`,
 `scheduled_by`, `scheduled_by_session_id`, `fired_at`, `last_error`) are all
 nullable and added in place, so an older peer's rows stay valid and a newer
 peer's values still sync into this build.
+
+`author_json` holds the draft's author as `AdeMessageAuthor` JSON
+(`shared/messageAuthor.ts`). Only the host sets it: a lane share guest's
+draft names the guest, and every other row is null, which reads as the
+host's own user. A guest's draft is plain text for an existing chat, with no
+schedule and no attachments. Only the owner sends it, and the send then
+counts for the owner. See [lane sharing](../lanes/lane-sharing.md#message-author).
 
 ## Agent access boundary
 

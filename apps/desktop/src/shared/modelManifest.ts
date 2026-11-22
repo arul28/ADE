@@ -93,6 +93,11 @@ export type ModelManifestDefaults = {
   app?: ModelManifestDefault[];
   /** Per-provider default, e.g. `{ codex: [{ model: "openai/gpt-6-astra" }] }`. */
   providers?: Partial<Record<ModelProviderGroup, ModelManifestDefault[]>>;
+  /**
+   * The free model a new chat starts on when nothing is signed in, in order
+   * (`shared/freeModels.ts`). Older builds ignore this key.
+   */
+  free?: ModelManifestDefault[];
 };
 
 export type ModelManifest = {
@@ -345,6 +350,8 @@ export function parseModelManifest(
     } else {
       const app = parseDefaultList(raw.defaults.app, "defaults.app", errors);
       if (app.length) defaults.app = app;
+      const free = parseDefaultList(raw.defaults.free, "defaults.free", errors);
+      if (free.length) defaults.free = free;
       if (raw.defaults.providers !== undefined) {
         if (!isRecord(raw.defaults.providers)) {
           errors.push("defaults.providers must be an object");
@@ -370,7 +377,7 @@ export function parseModelManifest(
     manifest: {
       version: MODEL_MANIFEST_SCHEMA_VERSION,
       updatedAt: (raw.updatedAt as string).trim(),
-      ...(defaults.app || defaults.providers ? { defaults } : {}),
+      ...(defaults.app || defaults.providers || defaults.free ? { defaults } : {}),
       models,
     },
   };

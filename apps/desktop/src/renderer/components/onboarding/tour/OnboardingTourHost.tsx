@@ -32,6 +32,7 @@ import { AdeTourCursorArt } from "./AdeTourCursorArt";
 import { FIRST_CHAT_PROMPT, pickFirstChatModel, type FirstChatModel } from "./firstChat";
 import { setOpenDraftModel } from "../../chat/draftModelSeam";
 import {
+  TOUR_CARD_COUNT,
   TOUR_FINISH_ID,
   TOUR_STEPS,
   isDoStep,
@@ -43,12 +44,16 @@ import {
 } from "./onboardingTourSteps";
 import { TourCursorMotion, type Point } from "./tourCursor";
 import { TourFinishCard } from "./TourFinishCard";
-import { watchTourDom, type TourWatch } from "./tourWatch";
+import { TOUR_WATCH_IGNORE_STREAMING_CONTENT, watchTourDom, type TourWatch } from "./tourWatch";
 import { useGoTo } from "../spotlight/useGoTo";
+import { captureOnboarding } from "../../../onboarding/onboardingAnalytics";
+import { useOnboardingSync } from "../../../onboarding/onboardingSync";
 import "./onboardingTour.css";
 
 /**
- * The guided tour that follows first-run setup (and "Show me around again").
+ * The guided tour (and "Show me around again"). It waits for a project: the
+ * first time one is open in front, on the desktop or in ADE Web, it starts on
+ * Work; on Home or any other screen it shows nothing and keeps its place.
  * One ADE cursor glides from control to control, a ring settles on each, and
  * a small card beside it says what it is: a read step ends in Next, a do-it
  * step asks for one thing ("Click New chat") and moves on when it is done.
@@ -83,9 +88,12 @@ const CARD_WIDTH = 300;
 const CARD_GAP = 14;
 
 export function OnboardingTourHost() {
+  // Always mounted, desktop and ADE Web: onboarding follows the account from here.
+  useOnboardingSync();
   const [progress, setProgress] = useState(readOnboardingProgress);
   useEffect(() => subscribeOnboardingProgress(() => setProgress(readOnboardingProgress())), []);
-  if (!isTourOpen(progress)) return null;
+  const inProject = useAppStore((state) => state.project != null && !state.showWelcome);
+  if (!isTourOpen(progress) || !inProject) return null;
   return <TourRunner stepId={progress.tour.step ?? null} />;
 }
 
@@ -160,7 +168,7 @@ function useFirstChatPrefill(active: boolean): FirstChatSetup {
         })
         .catch(() => undefined);
     };
-    watch = watchTourDom(check, { minIntervalMs: CHECK_INTERVAL_MS });
+    watch = watchTourDom(check, { minIntervalMs: CHECK_INTERVAL_MS, ignoreWithin: TOUR_WATCH_IGNORE_STREAMING_CONTENT });
     return () => {
       cancelled = true;
       watch?.dispose();
@@ -201,21 +209,10 @@ function cursorTarget(frame: Frame): Point {
   return { x: frame.left + frame.width / 2, y: frame.top + frame.height / 2 };
 }
 
-/** The tour's own first step, reused to send the user to a project when a later step needs one. */
-const OPEN_PROJECT_STEP = TOUR_STEPS.find((candidate) => candidate.id === "open-project")!;
-
 function TourRunner({ stepId }: { stepId: string | null }) {
   const finishing = stepId === TOUR_FINISH_ID;
   const index = stepIndexOf(stepId);
-  const noProjectOpen = useAppStore((state) => state.project == null);
-  const step = useMemo(() => {
-    const own = TOUR_STEPS[index]!;
-    // A step that lives inside a project, with none open (the user closed
-    // it, or the tour resumed on a fresh launch): point at the projects
-    // first, holding this step's place until one opens.
-    if (!noProjectOpen || (own.goTo !== "draft" && own.goTo !== "work")) return own;
-    return { ...OPEN_PROJECT_STEP, id: `${own.id}:open-project`, skipIf: undefined };
-  }, [index, noProjectOpen]);
+  const step = TOUR_STEPS[index]!;
   const [view, setView] = useState<View>({ kind: "hidden" });
   const viewRef = useRef<View>(view);
   const directionRef = useRef<1 | -1>(1);
@@ -327,7 +324,10 @@ function TourRunner({ stepId }: { stepId: string | null }) {
       }
       commit({ kind: "waiting", outOfView: findOutOfViewAnchor(step.anchors) });
     };
-    watch = watchTourDom(evaluate, { minIntervalMs: CHECK_INTERVAL_MS });
+    watch = watchTourDom(evaluate, {
+      minIntervalMs: CHECK_INTERVAL_MS,
+      ignoreWithin: TOUR_WATCH_IGNORE_STREAMING_CONTENT,
+    });
     recheckRef.current = () => watch?.scheduleCheck();
     return () => {
       recheckRef.current = null;
@@ -362,7 +362,14 @@ function TourRunner({ stepId }: { stepId: string | null }) {
 
   const firstChat = useFirstChatPrefill(!finishing && step.id === "first-chat");
 
-  const skip = useCallback(() => skipOnboarding(), []);
+  const skip = useCallback(() => {
+    skipOnboarding();
+    captureOnboarding("onboarding_tour_skipped");
+  }, []);
+  const done = useCallback(() => {
+    completeTour();
+    captureOnboarding("onboarding_tour_completed");
+  }, []);
   const backIndex = useMemo(() => {
     if (finishing) return null;
     // The nearest earlier step that would not skip itself right away.
@@ -402,7 +409,7 @@ function TourRunner({ stepId }: { stepId: string | null }) {
           <AdeTourCursorArt />
         </div>
         {finishing ? (
-          <TourFinishCard cursor={cursor} onReplay={() => moveTo(0, 1)} onDone={completeTour} />
+          <TourFinishCard cursor={cursor} onReplay={() => moveTo(0, 1)} onDone={done} />
         ) : null}
         {!finishing && shownAnchor && shownKey ? (
           <TourStepOverlay
@@ -426,7 +433,6 @@ function TourRunner({ stepId }: { stepId: string | null }) {
         {!finishing && view.kind === "waiting" ? (
           <TourPill
             step={step}
-            index={index}
             seen={seenRef.current.has(step.id)}
             outOfView={outOfView != null}
             onShowMe={outOfView || step.goTo ? showMe : null}
@@ -568,7 +574,7 @@ function TourStepOverlay({
           <span ref={caretRef} className="ade-tour-caret" aria-hidden />
           <div className="ade-tour-card-top">
             <span className="ade-tour-count">
-              {index + 1} of {TOUR_STEPS.length}
+              {step.number} of {TOUR_CARD_COUNT}
             </span>
             <button type="button" className="ade-tour-skip" onClick={onSkip}>
               Skip tour
@@ -620,14 +626,12 @@ function caretOffset(card: { x: number; y: number; side: string }, ring: Box): n
 
 function TourPill({
   step,
-  index,
   seen,
   outOfView,
   onShowMe,
   onSkip,
 }: {
   step: TourStepDef;
-  index: number;
   /** The step's card showed before: the user stepped away from it. */
   seen: boolean;
   /** The control is on this page but clipped or scrolled out of view. */
@@ -635,7 +639,7 @@ function TourPill({
   onShowMe: (() => void) | null;
   onSkip: () => void;
 }) {
-  const count = `${index + 1} of ${TOUR_STEPS.length}`;
+  const count = `${step.number} of ${TOUR_CARD_COUNT}`;
   let title: string;
   let sub: string;
   if (outOfView) {

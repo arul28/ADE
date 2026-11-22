@@ -531,6 +531,54 @@ describe("push relay", () => {
     expect(await response.json()).toMatchObject({ error: "payload too large" });
   });
 
+  // The trust boundary for secrets: a page on the ADE Web origin holds a valid
+  // session, so only routes that never return a secret may answer a browser.
+  it.each([
+    ["GET", "/attention/account/vault", 403],
+    ["PUT", "/attention/account/vault", 403],
+    ["GET", "/attention/account/vault/item?scope=all&kind=integration&key=github", 403],
+    ["GET", "/attention/account/vault/keys?scope=all", 403],
+    ["POST", "/attention/account/passwords/key", 403],
+    ["POST", "/attention/account/passwords/reset", 403],
+    ["GET", "/attention/account/passwords/items", 403],
+    ["DELETE", "/attention/account/machines/abc", 403],
+    ["PUT", "/attention/account/devices/abc", 403],
+    ["POST", "/attention/account/notify", 403],
+    ["DELETE", "/attention/account/settings", 403],
+    ["OPTIONS:GET", "/attention/account/vault", 403],
+    ["OPTIONS:POST", "/attention/account/passwords/key", 403],
+    ["OPTIONS:PUT", "/attention/account/snapshot", 405],
+    ["OPTIONS:PATCH", "/attention/account/preferences/machines/abc", 204],
+    ["OPTIONS:DELETE", "/attention/account/settings/all/chat.launchDefaults.v1", 204],
+    ["OPTIONS:PUT", "/attention/account/settings", 204],
+  ])("answers a browser %s %s with %i before auth", async (method, path, status) => {
+    const env: PushRelayEnv = { ...makeEnv(db, undefined), WEB_CLIENT_ORIGIN: "https://app.ade-app.dev" };
+    const [verb, preflightFor] = method.split(":");
+    const response = await handleRequest(
+      new Request(`https://push.example${path}`, {
+        method: verb,
+        headers: {
+          origin: "https://app.ade-app.dev",
+          authorization: "Bearer not-checked",
+          ...(preflightFor ? { "access-control-request-method": preflightFor } : {}),
+        },
+      }),
+      env,
+    );
+    expect(response.status).toBe(status);
+    if (status === 403) expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("lets a native caller (no Origin) reach the vault's auth", async () => {
+    const env: PushRelayEnv = { ...makeEnv(db, undefined), WEB_CLIENT_ORIGIN: "https://app.ade-app.dev" };
+    const response = await handleRequest(
+      new Request("https://push.example/attention/account/vault", { headers: { authorization: "Bearer x" } }),
+      env,
+    );
+    expect(response.status).not.toBe(403);
+    expect(await response.text()).not.toBe("origin not allowed");
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -1153,6 +1201,39 @@ describe("push relay", () => {
     expect(bodies[1]).toMatchObject({ error: "rate limited" });
     expect(bodies[2]).toMatchObject({ error: "rate limited" });
     expect(bodies[3]).toMatchObject({ error: "relay daily budget reached" });
+  });
+
+  it("answers a request whose shared budget wait belonged to a request that ended", async () => {
+    // Workers settles a promise only in the request that made it. When the
+    // request that started the shared reservation ends first, the others'
+    // wait fails with this error; each must then reserve on its own, not 503.
+    const realPrepare = db.prepare.bind(db);
+    let failed = false;
+    const env: PushRelayEnv = {
+      ...makeEnv(db, undefined),
+      IP_RATE_LIMIT_PER_MIN: "1000",
+      DB: {
+        ...db,
+        prepare: (sql: string) => {
+          const statement = realPrepare(sql);
+          const bind = statement.bind.bind(statement);
+          statement.bind = (...values: unknown[]) => {
+            const bound = bind(...values);
+            if (!failed && String(values[0]).startsWith("budget:")) {
+              failed = true;
+              bound.first = async () => {
+                throw new Error("This promise was created by a request that has since ended, so it can never settle.");
+              };
+            }
+            return bound;
+          };
+          return statement;
+        },
+      } as unknown as PushRelayEnv["DB"],
+    };
+    const response = await handleRequest(ipRequest(`/machines/${"f".repeat(40)}/devices`, "9.9.9.9", { method: "GET" }), env);
+    expect(failed).toBe(true);
+    expect(response.status).not.toBe(503);
   });
 
   it("rate limits a flooding IP without affecting a different IP", async () => {

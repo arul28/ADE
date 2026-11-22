@@ -1,7 +1,6 @@
 import { extractError } from "../../../lib/format";
 import React from "react";
 import { usePrRuntimePin } from "../state/prMachines";
-import { pinArg } from "../../../state/laneMachineRouting";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
@@ -44,6 +43,7 @@ import {
 } from "./prChatActions";
 import { readLastMergeMethod } from "./prMergeRailUtils";
 import { useOptionalPrs } from "../state/PrsContext";
+import { requirePin } from "../../../state/repositoryScope";
 
 /**
  * The PR actions menu. One item model, two renderers: the header's `⋯`
@@ -82,8 +82,16 @@ export type PrActionsContext = {
   onError?: (message: string) => void;
   /** Opens the "Manage lane" dialog. Undefined, or a PR with no lane, hides the item. */
   onManageLane?: () => void;
-  /** Lane chats the caller already has. When set, the menu does not fetch them again. */
-  laneChats?: AgentChatSessionSummary[];
+  /**
+   * Lane chats the caller already has, including its failure and retry. One
+   * atomic value: a caller that owns the read cannot supply an error without
+   * the way to retry it.
+   */
+  laneChats?: {
+    sessions: AgentChatSessionSummary[];
+    error: string | null;
+    retry: () => void;
+  };
 };
 
 type PrMenuItem = {
@@ -123,26 +131,46 @@ export function usePrActionsMenu(context: PrActionsContext) {
     laneChats: providedChats,
   } = context;
   const [fetchedChats, setFetchedChats] = React.useState<AgentChatSessionSummary[] | null>(null);
+  const [fetchedChatsError, setFetchedChatsError] = React.useState<string | null>(null);
   // Every call below reaches the machine that owns the PR's lane.
   const runtimePin = usePrRuntimePin();
-  const onPin = React.useMemo(() => pinArg(runtimePin), [runtimePin]);
+  const runtimePinKey = runtimePin?.key ?? null;
   // Chat hand-offs keep the lane's machine (a draft or focus on the owner).
   const handOff = usePrChatHandoff();
-  const laneChats = providedChats ?? fetchedChats;
+  const laneChats = providedChats?.sessions ?? fetchedChats;
+  const chatsError = providedChats ? (providedChats.error ?? null) : fetchedChatsError;
   const [busy, setBusy] = React.useState<string | null>(null);
 
+  const chatsRequestRef = React.useRef(0);
   const ensureChats = React.useCallback(() => {
-    if (!pr.laneId || laneChats !== null) return;
+    // No machine online: no list; the menu offers no chat until one connects.
+    if (!pr.laneId || laneChats !== null || !runtimePin) return;
+    const request = ++chatsRequestRef.current;
     void window.ade.agentChat
-      .list({ laneId: pr.laneId, includeArchived: false }, ...onPin)
-      .then(setFetchedChats)
-      .catch(() => setFetchedChats([]));
-  }, [laneChats, onPin, pr.laneId]);
+      .list({ laneId: pr.laneId, includeArchived: false }, runtimePin)
+      .then((sessions) => {
+        if (chatsRequestRef.current !== request) return;
+        setFetchedChats(sessions);
+        setFetchedChatsError(null);
+      })
+      // Do not cache a failed read as an empty list: that would silently offer
+      // "Starts a chat in this lane" to a PR that already has chats and never
+      // retry. Keep `fetchedChats` null so the next open reads again.
+      .catch((error) => {
+        if (chatsRequestRef.current !== request) return;
+        setFetchedChatsError(extractError(error));
+      });
+  }, [laneChats, runtimePin, pr.laneId]);
 
-  // A different PR (or lane) invalidates the cached chat list.
+  // A different PR (or lane) invalidates the cached chat list and any read in
+  // flight, so a superseded answer cannot land after the switch.
+  // The owning machine can change without the PR or lane id (a foreign machine
+  // goes offline), so the pin is part of the key too.
   React.useEffect(() => {
+    chatsRequestRef.current += 1;
     setFetchedChats(null);
-  }, [pr.id, pr.laneId]);
+    setFetchedChatsError(null);
+  }, [pr.id, pr.laneId, runtimePinKey]);
 
   // Close and reopen paint the list at once, before the refetch, like a merge.
   const prs = useOptionalPrs();
@@ -201,7 +229,11 @@ export function usePrActionsMenu(context: PrActionsContext) {
         const target = linked[0] ?? null;
         return {
           id, label, icon, tone,
-          description: description ?? (target ? `In ${chatLabel(target)}` : "Starts a chat in this lane"),
+          description: description ?? (target
+            ? `In ${chatLabel(target)}`
+            : chatsError
+              ? "Couldn't check existing chats; starts a new one"
+              : "Starts a chat in this lane"),
           onSelect: () => handOff({ laneId, sessionId: target?.sessionId ?? null, prompt: prompt() }),
         };
       };
@@ -236,6 +268,23 @@ export function usePrActionsMenu(context: PrActionsContext) {
           icon: <Sparkle size={14} weight="duotone" />, tone: TONE.chat, description: "Rewrite it from the current diff",
         }));
       }
+      if (chatsError) {
+        items.push({
+          id: "chats-error",
+          label: "Couldn't read this lane's chats",
+          description: chatsError,
+          icon: <WarningCircle size={14} weight="duotone" />,
+          tone: TONE.danger,
+          onSelect: () => {
+            if (providedChats) {
+              providedChats.retry();
+              return;
+            }
+            setFetchedChatsError(null);
+            ensureChats();
+          },
+        });
+      }
       out.push({ id: "chat", label: "Chat", items });
     }
 
@@ -245,13 +294,13 @@ export function usePrActionsMenu(context: PrActionsContext) {
       stateItems.push({
         id: "draft", label: "Convert to draft", icon: <FileDashed size={14} />, tone: TONE.draft,
         disabled: busy === "draft",
-        onSelect: () => void run("draft", () => window.ade.prs.setDraft({ prId: pr.id, draft: true }, ...onPin)),
+        onSelect: () => void run("draft", () => window.ade.prs.setDraft({ prId: pr.id, draft: true }, requirePin(runtimePin))),
       });
     } else if (pr.state === "draft") {
       stateItems.push({
         id: "ready", label: "Ready for review", icon: <GitPullRequest size={14} />, tone: TONE.positive,
         disabled: busy === "draft",
-        onSelect: () => void run("draft", () => window.ade.prs.setDraft({ prId: pr.id, draft: false }, ...onPin)),
+        onSelect: () => void run("draft", () => window.ade.prs.setDraft({ prId: pr.id, draft: false }, requirePin(runtimePin))),
       });
     }
     if (pr.state === "open") {
@@ -259,14 +308,14 @@ export function usePrActionsMenu(context: PrActionsContext) {
         stateItems.push({
           id: "auto-merge-off", label: "Turn off auto-merge", icon: <GitMerge size={14} />, tone: TONE.merge,
           disabled: busy === "auto-merge",
-          onSelect: () => void run("auto-merge", () => window.ade.prs.setAutoMerge({ prId: pr.id, enabled: false }, ...onPin)),
+          onSelect: () => void run("auto-merge", () => window.ade.prs.setAutoMerge({ prId: pr.id, enabled: false }, requirePin(runtimePin))),
         });
       } else if (status?.autoMergeAllowed !== false) {
         stateItems.push({
           id: "auto-merge-on", label: "Enable auto-merge", icon: <GitMerge size={14} weight="duotone" />, tone: TONE.merge,
           description: "Merges once every requirement passes",
           disabled: busy === "auto-merge",
-          onSelect: () => void run("auto-merge", () => window.ade.prs.setAutoMerge({ prId: pr.id, enabled: true, method: readLastMergeMethod(mergeMethod ?? "squash") }, ...onPin)),
+          onSelect: () => void run("auto-merge", () => window.ade.prs.setAutoMerge({ prId: pr.id, enabled: true, method: readLastMergeMethod(mergeMethod ?? "squash") }, requirePin(runtimePin))),
         });
       } else if (status?.canBypass) {
         // Only an admin can change the setting, so only an admin is told where it is.
@@ -319,7 +368,7 @@ export function usePrActionsMenu(context: PrActionsContext) {
             }).then((ok) => {
               if (ok) {
                 void run("close", async () => {
-                  await window.ade.prs.close({ prId: pr.id }, ...onPin);
+                  await window.ade.prs.close({ prId: pr.id }, requirePin(runtimePin));
                   prs?.markPrTerminalLocally(pr, "closed");
                 });
               }
@@ -334,14 +383,14 @@ export function usePrActionsMenu(context: PrActionsContext) {
           id: "reopen", label: "Reopen pull request", icon: <ArrowCounterClockwise size={14} />, tone: TONE.positive,
           disabled: busy === "reopen",
           onSelect: () => void run("reopen", async () => {
-            await window.ade.prs.reopen({ prId: pr.id }, ...onPin);
+            await window.ade.prs.reopen({ prId: pr.id }, requirePin(runtimePin));
             prs?.clearPrTerminalLocally(pr);
           }),
         }],
       });
     }
     return out;
-  }, [busy, failingChecks, findings, handOff, laneChats, mergeMethod, onManageLane, onPin, onRefresh, pr, prs, refreshing, run, status]);
+  }, [busy, chatsError, ensureChats, failingChecks, findings, handOff, laneChats, mergeMethod, onManageLane, onRefresh, providedChats, pr, prs, refreshing, run, runtimePin, status]);
 
   return { sections, ensureChats, busy };
 }

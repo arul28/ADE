@@ -21,7 +21,7 @@ export function useAppleDrawerActions({
   visible,
 }: {
   scope: AppleDrawerScope;
-  pinRef: MutableRefObject<OpenProjectBinding | null>;
+  pinRef: MutableRefObject<OpenProjectBinding>;
   visible: boolean;
 }): AppleDrawerActions {
   const { laneId, deviceUdid } = scope;

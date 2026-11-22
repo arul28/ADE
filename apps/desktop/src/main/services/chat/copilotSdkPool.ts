@@ -30,6 +30,7 @@ import type {
   CopilotSdkWorkerResponse,
 } from "./copilotSdkProtocol";
 import { COPILOT_SDK_WAITERS, type CopilotSdkWaiterType } from "./copilotSdkProtocol";
+import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 
 type Waiter = { resolve: (value: unknown) => void; reject: (error: Error) => void; type: string };
 export type CopilotSdkBridge = {
@@ -111,7 +112,18 @@ function poolKey(init: CopilotSdkWorkerInit): string {
   return `${init.cliPath}\0${init.baseDirectory}\0${envFingerprint}`;
 }
 
-async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<CopilotSdkPooled> {
+/** `promise`, or a rejection with `message` once `ms` pass. */
+function withinMs<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, limit]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+async function create(init: CopilotSdkWorkerInit, logger?: Logger, initLimitMs?: number): Promise<CopilotSdkPooled> {
   // The shared SDK orphan sweep reads this marker to distinguish a worker
   // whose owning brain died from one owned by another live ADE instance.
   const child = startSdkWorker({
@@ -214,7 +226,15 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
     const chatId = typeof init.baseEnv.ADE_CHAT_SESSION_ID === "string" ? init.baseEnv.ADE_CHAT_SESSION_ID : null;
     if (chatId) bridge.onWorkerExit?.(chatId, error);
   });
-  try { await pooled.request("init", init); }
+  // A caller with a limit (the sign-in check) must not leave a worker whose
+  // runtime never answers running: past the limit it is disposed, and the
+  // dispose kills it after its grace.
+  const initialized = pooled.request("init", init);
+  try {
+    await (initLimitMs != null
+      ? withinMs(initialized, initLimitMs, `The Copilot runtime did not start in ${Math.round(initLimitMs / 1000)} seconds.`)
+      : initialized);
+  }
   catch (error) { pooled.dispose(); throw error; }
   return pooled;
 }
@@ -255,9 +275,13 @@ export async function acquireCopilotSdkConnection(args: {
   baseDirectory: string;
   baseEnv: NodeJS.ProcessEnv;
   logger?: Logger;
+  /** Dispose a new worker whose runtime has not answered `init` by then. */
+  initLimitMs?: number;
 }): Promise<{ pooled: CopilotSdkPooled; generation: number; poolKey: string }> {
-  // The runtime gets this env; ADE's pinned copy must not update itself.
-  const init = { cliPath: args.cliPath, baseDirectory: args.baseDirectory, baseEnv: { ...args.baseEnv, ...pinnedToolSelfUpdateEnv("copilot") } };
+  // The runtime gets this env; ADE's pinned copy must not update itself. On a
+  // cloud computer the account's Copilot token joins it here, and only here
+  // (before the pool key, so a new token gets a new worker).
+  const init = { cliPath: args.cliPath, baseDirectory: args.baseDirectory, baseEnv: { ...withCopilotCarriedEnv(args.baseEnv), ...pinnedToolSelfUpdateEnv("copilot") } };
   const key = poolKey(init);
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
     const active = pools.get(key);
@@ -273,7 +297,7 @@ export async function acquireCopilotSdkConnection(args: {
     }
     let promise = pending.get(key);
     if (!promise) {
-      promise = create(init, args.logger).finally(() => pending.delete(key));
+      promise = create(init, args.logger, args.initLimitMs).finally(() => pending.delete(key));
       pending.set(key, promise);
     }
     const pooled = await promise;

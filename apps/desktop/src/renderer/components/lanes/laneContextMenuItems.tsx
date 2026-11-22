@@ -13,8 +13,10 @@ import {
   Path,
   PushPin,
   PushPinSlash,
+  ShareNetwork,
   Smiley,
   Stack,
+  UsersThree,
   X,
   type Icon,
 } from "@phosphor-icons/react";
@@ -37,6 +39,9 @@ import { LaneEmojiPicker } from "./LaneEmojiPicker";
 import { promptDialog } from "../ui/dialog";
 import { branchNameProblem } from "../../../shared/laneBranchName";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
+import type { LaneMenuShareArgs } from "../laneShare/useLaneShareMenu";
+import { requirePin } from "../../state/repositoryScope";
+import { machineErrorText } from "../../lib/machineErrorText";
 
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
   return (
@@ -69,6 +74,8 @@ export type LaneMenuAction = {
   onSelect: () => void;
   dataTour?: string;
   icon?: Icon;
+  /** Shown dimmed and inert: a short reason on the right, the full one on hover. */
+  disabledReason?: { short: string; detail: string };
 };
 
 /** A group entry that is not a row — today only the colour swatch grid. */
@@ -126,6 +133,8 @@ export type LaneMenuArgs = {
    * that tab, so the session card's Lane submenu omits them.
    */
   omitTabActions?: boolean;
+  /** Lane sharing entries (`useLaneShareMenu`), already addressed to the lane's machine. */
+  share?: LaneMenuShareArgs | null;
 };
 
 /**
@@ -138,10 +147,11 @@ function branchNameFromRef(ref: string | null | undefined): string {
   return ref.replace(/^refs\/heads\//, "");
 }
 
-async function fetchRepoForCopy(): Promise<{ owner: string; name: string } | null> {
+/** The repository of the lane's copy, read on the lane's machine. */
+async function fetchRepoForCopy(pin: OpenProjectBinding | null): Promise<{ owner: string; name: string } | null> {
   try {
-    const status = await window.ade.github.getRemoteStatus();
-    return status.repo ?? null;
+    const status = await (pin ? window.ade.github.getRemoteStatus({}, pin) : null);
+    return status?.repo ?? null;
   } catch {
     return null;
   }
@@ -234,7 +244,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       dataTour: "lanes.manageLane",
       onSelect: () => {
         onClose();
-        void revealLaneWorktree(laneId);
+        void revealLaneWorktree(laneId, runtimePin);
       },
     });
   }
@@ -268,10 +278,8 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       onSelect: () => {
         onClose();
         void (async () => {
-          const repo = await fetchRepoForCopy();
-          const pr = await (runtimePin
-            ? window.ade.prs.getForLane(lane.id, runtimePin)
-            : window.ade.prs.getForLane(lane.id)).catch(() => null);
+          const repo = await fetchRepoForCopy(runtimePin);
+          const pr = runtimePin ? await window.ade.prs.getForLane(lane.id, runtimePin).catch(() => null) : null;
           const ownership = await linkOwnershipFor(runtimePin);
           const url = buildDeeplink(
             {
@@ -305,7 +313,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
         icon: GitBranch,
         onSelect: () => {
           onClose();
-          void fetchRepoForCopy().then((repo) => {
+          void fetchRepoForCopy(runtimePin).then((repo) => {
             if (!repo) {
               // No GitHub origin — fall back to lane link as the best we can offer.
               const fallback = buildDeeplink({ kind: "lane", laneId }, { form: "ade" });
@@ -483,6 +491,28 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     groups.push({ key: "manage", joinPrevious: groups[groups.length - 1]?.key === "tabs" && !groups[groups.length - 1]?.label, entries: manage });
   }
 
+  // ── Share: only where the caller passes the lane's share entries.
+  const share = args.share;
+  if (share && lane) {
+    const shareEntries: LaneMenuEntry[] = [
+      {
+        kind: "action",
+        key: "share-lane",
+        label: "Share lane…",
+        icon: ShareNetwork,
+        ...(share.disabledReason ? { disabledReason: share.disabledReason } : {}),
+        onSelect: () => { onClose(); share.onShare(); },
+      },
+    ];
+    if (share.liveCount > 0) {
+      shareEntries.push(
+        { kind: "action", key: "manage-sharing", label: "Manage sharing…", icon: UsersThree, onSelect: () => { onClose(); share.onManage(); } },
+        { kind: "action", key: "stop-sharing", label: "Stop sharing with all", icon: X, onSelect: () => { onClose(); share.onStopAll(); } },
+      );
+    }
+    groups.push({ key: "share", entries: shareEntries });
+  }
+
   return groups;
 }
 
@@ -495,10 +525,8 @@ async function renameLaneBranch(
   runtimePin: OpenProjectBinding | null,
   onRenamed?: () => void | Promise<void>,
 ): Promise<void> {
-  const errorText = (error: unknown) =>
-    (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "");
   try {
-    const check = await window.ade.lanes.renameBranch({ laneId: lane.id, dryRun: true }, runtimePin);
+    const check = await window.ade.lanes.renameBranch({ laneId: lane.id, dryRun: true }, requirePin(runtimePin, "No computer with this lane is online."));
     if (check.blocked) {
       showToast({ title: `Can't rename ${check.branchRef}`, message: check.blocked, tone: "warning" });
       return;
@@ -514,7 +542,7 @@ async function renameLaneBranch(
     if (!next || next === current) return;
     let result: Awaited<ReturnType<typeof window.ade.lanes.renameBranch>>;
     try {
-      result = await window.ade.lanes.renameBranch({ laneId: lane.id, branchName: next }, runtimePin);
+      result = await window.ade.lanes.renameBranch({ laneId: lane.id, branchName: next }, requirePin(runtimePin, "No computer with this lane is online."));
     } catch (error) {
       captureLaneSetupAnalytics({ action: "branch_renamed", outcome: "failed" });
       throw error;
@@ -526,7 +554,7 @@ async function renameLaneBranch(
     captureLaneSetupAnalytics({ action: "branch_renamed", outcome: "completed" });
     await onRenamed?.();
   } catch (error) {
-    showToast({ title: "Couldn't rename the branch", message: errorText(error), tone: "error" });
+    showToast({ title: "Couldn't rename the branch", message: machineErrorText(error), tone: "error" });
   }
 }
 
@@ -566,10 +594,10 @@ export function ColorSwatchRow({
     setError(null);
     setBusy(true);
     try {
-      await window.ade.lanes.updateAppearance({ laneId: ctxLane.id, color: next }, runtimePin);
+      await window.ade.lanes.updateAppearance({ laneId: ctxLane.id, color: next }, requirePin(runtimePin, "No computer with this lane is online."));
       await onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to set color");
+      setError(machineErrorText(err) || "Failed to set color");
     } finally {
       setBusy(false);
     }
@@ -617,12 +645,12 @@ function LaneEmojiRow({
   const apply = async (next: string | null) => {
     setBusy(true);
     try {
-      await window.ade.lanes.updateAppearance({ laneId: lane.id, emoji: next }, runtimePin);
+      await window.ade.lanes.updateAppearance({ laneId: lane.id, emoji: next }, requirePin(runtimePin, "No computer with this lane is online."));
       await onChanged?.();
     } catch (err) {
       showToast({
         title: "Could not set the lane emoji",
-        message: err instanceof Error ? err.message : "Failed to set emoji",
+        message: machineErrorText(err) || "Failed to set emoji",
         tone: "error",
       });
     } finally {

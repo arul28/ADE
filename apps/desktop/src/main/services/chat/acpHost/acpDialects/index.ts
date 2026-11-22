@@ -14,7 +14,7 @@ import { grokDialect } from "./grok";
 import { kimiDialect } from "./kimi";
 import { qwenDialect } from "./qwen";
 
-export const ACP_DIALECTS: Record<AcpProviderId, AcpDialect> = {
+const ACP_DIALECTS: Record<AcpProviderId, AcpDialect> = {
   qwen: qwenDialect,
   kimi: kimiDialect,
   grok: grokDialect,
@@ -33,10 +33,9 @@ export function acpDialectFor(providerId: AcpProviderId, options?: { cloud?: boo
 
 export { antigravityDialect, devinCloudDialect, devinDialect, grokDialect, kimiDialect, qwenDialect };
 export {
-  ANTIGRAVITY_AUTH_URL_PREFIX,
+  ANTIGRAVITY_ACP_ARGS,
   ANTIGRAVITY_CONFIG_OPTION_IDS,
-  ANTIGRAVITY_LICENSE_URL_PREFIX,
-  antigravityHarnessPath,
+  antigravityNoopBrowser,
   antigravitySpawnEnv,
 } from "./antigravity";
 export {

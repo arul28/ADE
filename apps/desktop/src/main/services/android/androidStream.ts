@@ -17,6 +17,7 @@
  */
 
 import type { Logger } from "../logging/logger";
+import { carryExpected } from "../../../shared/expectedError";
 import { getErrorMessage } from "../shared/utils";
 import type {
   AndroidEmulatorErrorCode,
@@ -75,7 +76,13 @@ class AndroidStreamError extends Error {
 
 /** Rethrows a stream's refusal as the service's coded one; anything else as it is. */
 export function asStreamFailure(error: unknown): never {
-  if (error instanceof AndroidStreamError) throw new AndroidEmulatorFailure(error.code, error.message);
+  if (error instanceof AndroidStreamError) {
+    // The code's own kind wins; a stream code with none (ANDROID_STREAM_FAILED)
+    // keeps the kind the scrcpy step marked (a device that never opened its
+    // socket is the device's state), so the rewrap does not report it.
+    const failure = new AndroidEmulatorFailure(error.code, error.message);
+    throw failure.adeExpected ? failure : carryExpected(error, failure);
+  }
   throw error;
 }
 
@@ -357,7 +364,7 @@ export function createAndroidStreamHub() {
         } catch (error) {
           if (devices.get(args.serial) === device) await stopStream(args.serial);
           if (error instanceof AndroidStreamError) throw error;
-          throw new AndroidStreamError("ANDROID_STREAM_FAILED", getErrorMessage(error), serverLogOf(error));
+          throw carryExpected(error, new AndroidStreamError("ANDROID_STREAM_FAILED", getErrorMessage(error), serverLogOf(error)));
         } finally {
           device.starting = null;
         }

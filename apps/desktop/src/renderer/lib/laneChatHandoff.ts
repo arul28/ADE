@@ -56,7 +56,9 @@ export function useLaneChatHandoff(
   const startDraftInLane = options.startDraftInLane === true;
   return useCallback((args: LaneChatHandoffArgs) => {
     const prompt = args.prompt ?? null;
-    if (!pin && !(startDraftInLane && !args.sessionId)) {
+    // A pin that names the tab's own copy takes the tab's path, as no pin did.
+    const foreignPin = pin && pin.key !== projectBinding?.key ? pin : null;
+    if (!foreignPin && !(startDraftInLane && !args.sessionId)) {
       if (prompt != null) {
         handPromptToChat({ laneId: args.laneId, sessionId: args.sessionId, prompt });
       } else {
@@ -64,10 +66,10 @@ export function useLaneChatHandoff(
       }
       return;
     }
-    if (pin && args.sessionId) {
+    if (foreignPin && args.sessionId) {
       if (prompt != null) queueAgentChatDraftHandoff({ sessionId: args.sessionId }, prompt);
       window.dispatchEvent(new CustomEvent("ade:work:select-session", {
-        detail: { sessionId: args.sessionId, laneId: args.laneId, binding: pin },
+        detail: { sessionId: args.sessionId, laneId: args.laneId, binding: foreignPin },
       }));
       navigateToAppTarget({ kind: "work" });
       return;
@@ -75,7 +77,7 @@ export function useLaneChatHandoff(
     if (prompt != null) {
       queueAgentChatDraftHandoff({ draftTargetId: `work:draft:${args.laneId}:chat` }, prompt);
     }
-    const draftMachineId = pin ? chatDraftMachineId(machineIdForBinding(pin), machineIdForBinding(projectBinding)) : null;
+    const draftMachineId = foreignPin ? chatDraftMachineId(machineIdForBinding(foreignPin), machineIdForBinding(projectBinding)) : null;
     // The project's own store, which Work reads. A caller outside the project
     // surface (the app shell: suggestions, the onboarding tour) holds the
     // root store, and a draft written there never reaches Work.

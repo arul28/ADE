@@ -21,18 +21,20 @@ import "./dialog.css";
  */
 
 export type DialogSize = "sm" | "md" | "lg";
-export type DialogLayer = "dialog" | "nestedDialog";
+export type DialogLayer = "dialog" | "nestedDialog" | "dialogOverToasts";
 /**
  * `center` is the modal. `right` is a side sheet: full height, docked to the
  * window's right edge, floating over the page rather than pushing it aside, for
  * "peek at this thing" content (an issue) that you read beside the page.
+ * `top` is the modal with a fixed top edge: for a flow whose body changes
+ * height step by step (a sign-in), so its header does not move each time.
  */
-export type DialogPlacement = "center" | "right";
+export type DialogPlacement = "center" | "right" | "top";
 
 const SIZE_WIDTH: Record<DialogSize, number> = { sm: 400, md: 520, lg: 720 };
 
-/** The scrim: one tint, one blur, everywhere. */
-const DIALOG_SCRIM_STYLE: CSSProperties = {
+/** The scrim: one tint, one blur, everywhere (the command palette uses it too). */
+export const DIALOG_SCRIM_STYLE: CSSProperties = {
   position: "fixed",
   inset: 0,
   background: "rgba(6, 5, 10, 0.58)",
@@ -49,6 +51,14 @@ const SHEET_SCRIM_STYLE: CSSProperties = {
 
 /** Gap between a side sheet and the window edges. */
 const SHEET_EDGE_GAP = 8;
+
+/**
+ * The top edge of a `top` panel. `--ade-web-zoom-factor` keeps the viewport
+ * units right in the hosted web client.
+ */
+const TOP_PANEL_EDGE = "clamp(16px, calc(10vh / var(--ade-web-zoom-factor, 1)), 80px)";
+/** A `top` panel's room: the window under its top edge, less a 16 px gap (the body scrolls inside). */
+const TOP_PANEL_MAX_HEIGHT = `calc(100vh / var(--ade-web-zoom-factor, 1) - ${TOP_PANEL_EDGE} - 16px)`;
 
 /** The panel material (the notice card, lifted). */
 const DIALOG_PANEL_MATERIAL: CSSProperties = {
@@ -93,6 +103,12 @@ export type DialogProps = {
   maxHeight?: number | string;
   /** Draw no header; `title` is still rendered for screen readers. */
   hideHeader?: boolean;
+  /**
+   * With `hideHeader`: the body draws the title itself, in a `DialogTitle`
+   * (a visible heading), so the dialog renders no hidden copy of it and the
+   * heading names the dialog.
+   */
+  titleInBody?: boolean;
   /** Hide the × close button. */
   hideClose?: boolean;
   closeLabel?: string;
@@ -133,7 +149,11 @@ export type DialogProps = {
   returnFocus?: boolean;
   /** Override the default return-focus behavior on close. */
   onCloseAutoFocus?: (event: Event) => void;
-  /** `nestedDialog` for a dialog raised from inside another dialog. */
+  /**
+   * `nestedDialog` for a dialog raised from inside another dialog.
+   * `dialogOverToasts` for a dialog that raises no toasts of its own and must
+   * not be covered by them (the report dialog, opened from an error toast).
+   */
   layer?: DialogLayer;
   /** Aria role. `alertdialog` for confirmations. */
   role?: "dialog" | "alertdialog";
@@ -190,6 +210,7 @@ export function Dialog({
   height,
   maxHeight,
   hideHeader = false,
+  titleInBody = false,
   hideClose = false,
   closeLabel = "Close",
   actions,
@@ -325,14 +346,18 @@ export function Dialog({
                 left: "auto",
                 margin: 0,
               }
-              : { inset: 0, margin: "auto" }),
+              : placement === "top"
+                ? { inset: 0, margin: "auto", top: TOP_PANEL_EDGE, bottom: "auto", marginTop: 0, marginBottom: 0 }
+                : { inset: 0, margin: "auto" }),
             zIndex,
             // Viewport units ignore the hosted web client's body zoom
             // (`webZoom.ts`); dividing by its factor keeps a wide dialog inside
             // the window there. Electron's page zoom needs nothing (factor 1).
             width: `min(${resolvedWidth}, calc((100vw - ${placement === "right" ? SHEET_EDGE_GAP * 2 : 32}px) / var(--ade-web-zoom-factor, 1)))`,
             height: placement === "right" ? "auto" : cssLength(height) ?? "fit-content",
-            maxHeight: placement === "right" ? "none" : cssLength(maxHeight) ?? "calc((100vh - 48px) / var(--ade-web-zoom-factor, 1))",
+            maxHeight: placement === "right"
+              ? "none"
+              : cssLength(maxHeight) ?? (placement === "top" ? TOP_PANEL_MAX_HEIGHT : "calc((100vh - 48px) / var(--ade-web-zoom-factor, 1))"),
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
@@ -362,7 +387,7 @@ export function Dialog({
         >
           <PortalContainerContext.Provider value={panelEl}>
             {hideHeader ? (
-              <RadixDialog.Title className="ade-dialog-sr-only">{title}</RadixDialog.Title>
+              titleInBody ? null : <RadixDialog.Title className="ade-dialog-sr-only">{title}</RadixDialog.Title>
             ) : (
               <div
                 // Session replay shows the title and description (ADE's words,
@@ -484,3 +509,9 @@ export function Dialog({
     </RadixDialog.Root>
   );
 }
+
+/**
+ * The dialog's title, drawn by the body of a `Dialog` with `hideHeader` and
+ * `titleInBody`. It names the dialog (`aria-labelledby`).
+ */
+export const DialogTitle = RadixDialog.Title;

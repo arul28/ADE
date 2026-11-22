@@ -54,6 +54,11 @@ export type BuildAcpPromptBlocksArgs = {
   agentSupportsImages: boolean;
   imagePrompt: AcpImagePromptBehavior | null;
   readAttachmentBytes: (attachment: AcpResolvedAttachment) => Promise<Buffer>;
+  /**
+   * The agent's own read tool opens any file (PDF, video, audio) from a path,
+   * so a binary attachment is handed over by path instead of being omitted.
+   */
+  agentReadsBinaryFiles?: boolean;
 };
 
 export async function buildAcpPromptBlocks(
@@ -136,7 +141,9 @@ export async function buildAcpPromptBlocks(
       if (bytes.byteLength > MAX_INLINE_TEXT_BYTES) {
         blocks.push(inlineAttachmentHintPart(attachment.path, bytes.byteLength, MAX_INLINE_TEXT_BYTES));
       } else if (hasNullByte(bytes)) {
-        blocks.push(textBlock(`\nAttachment omitted: ${attachment.path} (binary or unsupported file).`));
+        blocks.push(textBlock(args.agentReadsBinaryFiles
+          ? `\n${attachmentPathHint(attachment)} Open it with your file-reading tool.`
+          : `\nAttachment omitted: ${attachment.path} (binary or unsupported file).`));
       } else {
         blocks.push(textBlock(`\n[File: ${attachment.path}]\n${bytes.toString("utf8")}`));
       }

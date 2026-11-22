@@ -8,6 +8,7 @@ import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
 import { MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS, MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
+import { withChatPin } from "./chatMachinePin";
 
 type Choice = { mode: PrWatchMode | null; label: string; hint: string };
 
@@ -62,7 +63,7 @@ export function PrWatchPill({
     if (typeof window.ade.prs.getChatWatches !== "function") return;
     const seq = ++requestSeqRef.current;
     try {
-      const watches = await window.ade.prs.getChatWatches({ sessionId }, runtimePinRef.current);
+      const watches = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getChatWatches({ sessionId }, chatPin));
       if (seq !== requestSeqRef.current) return;
       setWatch(watches.find((entry) => entry.prId === prId) ?? null);
       setUnknown(false);
@@ -79,13 +80,15 @@ export function PrWatchPill({
   }, [load]);
 
   useEffect(() => {
+    const feedPin = runtimePinRef.current;
+    if (!feedPin) return undefined;
     const unsubscribe = window.ade.prs.onEvent((event) => {
       if (event.type !== "pr-chat-watch-changed") return;
       if (event.sessionId !== sessionId || event.prId !== prId) return;
       requestSeqRef.current += 1;
       setUnknown(false);
       setWatch(event.watch && event.watch.status !== "stopped" ? event.watch : null);
-    }, runtimePinRef.current);
+    }, feedPin);
     return () => unsubscribe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prId, sessionId, runtimePinKey]);
@@ -97,7 +100,7 @@ export function PrWatchPill({
     setBusy(true);
     const seq = ++requestSeqRef.current;
     try {
-      const next = await window.ade.prs.setChatWatch({ prId, sessionId, mode }, runtimePinRef.current);
+      const next = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.setChatWatch({ prId, sessionId, mode }, chatPin));
       if (seq === requestSeqRef.current) {
         setWatch(next && next.status !== "stopped" ? next : null);
         setUnknown(false);

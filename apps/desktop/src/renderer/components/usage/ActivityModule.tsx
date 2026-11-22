@@ -76,7 +76,7 @@ function isPreset(value: unknown): value is AdeUsageRangePreset {
   return RANGE_OPTIONS.some((option) => option.preset === value);
 }
 
-export function readActivityPersisted(): PersistedState {
+function readActivityPersisted(): PersistedState {
   const fallback: PersistedState = { tab: "activity", preset: DEFAULT_PRESET };
   if (typeof localStorage === "undefined") return fallback;
   try {
@@ -172,8 +172,16 @@ function persistActivityPatch(patch: Partial<PersistedState>): void {
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-function sessionsTotal(stats: AdeUsageStats): number {
-  return (stats.summary.chatSessions ?? 0) + (stats.summary.terminalSessions ?? 0);
+/** Null when the host has no count (no machine on the account reports one). */
+function sessionsTotal(stats: AdeUsageStats): number | null {
+  const { chatSessions, terminalSessions } = stats.summary;
+  if (chatSessions == null && terminalSessions == null) return null;
+  return (chatSessions ?? 0) + (terminalSessions ?? 0);
+}
+
+/** "12", or "12+" when a machine too old to report its sessions is left out. */
+function formatSessions(stats: AdeUsageStats, sessions: number): string {
+  return `${formatCompact(sessions)}${stats.summary.sessionCountsPartial ? "+" : ""}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -906,7 +914,8 @@ function FooterChip({
 function ariaSummary(stats: AdeUsageStats | null, preset: AdeUsageRangePreset): string {
   const rangeLabel = RANGE_OPTIONS.find((option) => option.preset === preset)?.label ?? preset;
   if (!stats) return `Activity summary for ${rangeLabel}. Loading.`;
-  return `Activity for ${rangeLabel}: ${formatTokens(stats.summary.totalTokens)} tokens, ${sessionsTotal(stats)} sessions, ${stats.summary.activeDays ?? 0} active days.`;
+  const sessions = sessionsTotal(stats);
+  return `Activity for ${rangeLabel}: ${formatTokens(stats.summary.totalTokens)} tokens, ${sessions != null ? `${stats.summary.sessionCountsPartial ? "at least " : ""}${sessions} sessions, ` : ""}${stats.summary.activeDays ?? 0} active days.`;
 }
 
 export function ActivityModule({
@@ -1006,6 +1015,7 @@ export function ActivityModule({
 
   const summary = stats?.summary;
   const activeDays = summary?.activeDays;
+  const sessions = stats ? sessionsTotal(stats) : null;
 
   // The heatmap is the one view whose height is content-derived, so it opts out
   // of the reserved chart band the fixed-height bar charts still need.
@@ -1086,8 +1096,12 @@ export function ActivityModule({
             {stats ? (
               <>
                 <b>{formatTokens(stats.summary.totalTokens)}</b> tokens
-                {" · "}
-                <b>{formatCompact(sessionsTotal(stats))}</b> sessions
+                {sessions != null ? (
+                  <>
+                    {" · "}
+                    <b>{formatSessions(stats, sessions)}</b> sessions
+                  </>
+                ) : null}
                 {activeDays != null ? (
                   <>
                     {" · "}

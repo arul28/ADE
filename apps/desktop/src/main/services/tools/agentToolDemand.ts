@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { listPinnedTools, tryResolvePreviousTool, tryResolveTool, type ToolsContext } from "../../../../../ade-cli/src/services/tools/install";
-import { pinnedToolDownload, pinnedToolFetchInFlight, pinnedToolNeedsFetch } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { readToolUsage, toolUsageRootFor } from "../../../../../ade-cli/src/services/tools/usage";
 import { ENV_KEY_MAP } from "../ai/authDetector";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { resolveMuseConfigDir } from "../ai/museAuth";
+import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import {
   claudeConfigHome,
   codexConfigHome,
@@ -24,12 +24,14 @@ import {
  * Which pinned agent tools this machine downloads on its own, at desktop launch
  * and `ade serve`.
  *
- * A tool is fetched when it is already in the cache (so an ADE update keeps it
- * current) or the machine shows signs of using its provider: the provider's own
- * CLI, its login files, or its tokens. Everything else waits until something
- * needs it: a chat, a one-shot task, or a status refresh that finds the
- * provider signed in (`pinnedToolDownload`, `startDemandedAgentToolFetches`). A machine
- * that only uses Claude no longer downloads Codex, OpenCode, Copilot and Muse.
+ * A tool is fetched when it ran here recently (`usage.ts`, so an ADE update
+ * keeps it current) or the machine shows signs of using its provider: the
+ * provider's own CLI, its login files, or its tokens (`ADE_TOOLS_PREFETCH`
+ * narrows this, below). Being in the cache is not a sign. Everything else
+ * waits until it runs: a chat, a one-shot task or a terminal
+ * (`pinnedToolDownload`), or the person's Download in Settings. A status read
+ * or model list never downloads. A machine that only uses Claude no longer
+ * downloads Codex, OpenCode, Copilot and Muse.
  *
  * Cheap on purpose: file and env checks and a PATH walk, never a spawn, so it
  * can run at startup. The user's own CLI on the PATH only counts as a sign of
@@ -41,8 +43,6 @@ type DemandArgs = {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   platform?: NodeJS.Platform;
-  /** Tools-cache context, e.g. `toolsRoot` in a test. */
-  tools?: ToolsContext;
 };
 
 export type AgentToolDemand = { fetch: string[]; skip: string[] };
@@ -67,7 +67,29 @@ function onPath(command: string, env: NodeJS.ProcessEnv): boolean {
   }
 }
 
-/** Signs that this machine uses the provider behind a pinned tool, or null for a tool with no rule. */
+/** Copilot's own signs: its CLI, its tokens or its config. */
+function copilotOwnSignals(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): boolean {
+  return onPath("copilot", env)
+    || hasEnv(withCopilotCarriedEnv(env, platform), COPILOT_TOKEN_ENV_KEYS)
+    || exists(path.join(copilotConfigHome({ env, homeDir: home }), "config.json"));
+}
+
+/**
+ * A GitHub CLI sign-in. Copilot follows that account, but alone it is a weak
+ * sign: most developers have one with no Copilot plan.
+ */
+function ghCliSignedIn(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): boolean {
+  return ghHostsFiles({ env, homeDir: home, platform }).some(exists);
+}
+
+/** Pinned tools that are not agents: their use or download says nothing about a sign-in. */
+export const NON_AGENT_TOOLS: ReadonlySet<string> = new Set(["opencode", "node", "ffmpeg"]);
+
+/**
+ * Signs that this machine uses the provider behind a pinned tool, or null for
+ * a tool with no rule here. Copilot's rule (both its runtime and its terminal
+ * CLI, one account) is in `selectDemandedAgentTools`.
+ */
 function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, platform: NodeJS.Platform): boolean | null {
   const homeArgs = { env, homeDir: home };
   switch (tool) {
@@ -78,16 +100,12 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
         || exists(path.join(home, ".claude.json"));
     case "codex":
       return onPath("codex", env) || exists(path.join(codexConfigHome(homeArgs), "auth.json"));
-    // The terminal CLI follows the same account as the SDK runtime.
-    case "copilot":
-    case "copilot-cli":
-      return onPath("copilot", env)
-        || hasEnv(env, COPILOT_TOKEN_ENV_KEYS)
-        || exists(path.join(copilotConfigHome(homeArgs), "config.json"))
-        || ghHostsFiles({ env, homeDir: home, platform }).some(exists);
     case "opencode":
       // OpenCode is also the engine for API-key, OpenRouter and local models.
-      // Keys saved in ADE's own store are caught by the status refresh instead.
+      // Keys saved only in ADE's own store are not read here: saving one starts
+      // the download (`storeApiKey`), a machine that runs OpenCode stays
+      // current through its record of use, and otherwise the first turn
+      // after a pin bump downloads the new copy.
       return onPath("opencode", env)
         || hasEnv(env, [...Object.keys(ENV_KEY_MAP), "OPENROUTER_API_KEY"])
         || openCodeDataDirs({ ...homeArgs, platform }).some((dir) => exists(path.join(dir, "auth.json")))
@@ -116,8 +134,9 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
     case "devin":
       return onPath("devin", env) || hasEnv(env, ["WINDSURF_API_KEY"]) || devinCredentialFiles({ ...homeArgs, platform }).some(exists);
     case "antigravity": {
-      // The agy CLI and the ACP server keep their state under GEMINI_HOME. A
-      // bare GEMINI_API_KEY is not a sign: plenty of tools read it.
+      // The agy CLI keeps its state in ~/.gemini/antigravity-cli; the old
+      // standalone ACP server used antigravity-acp. A bare GEMINI_API_KEY is
+      // not a sign: plenty of tools read it.
       const geminiHome = env.GEMINI_HOME?.trim() ? path.resolve(env.GEMINI_HOME.trim()) : path.join(home, ".gemini");
       return onPath("agy", env)
         || exists(path.join(geminiHome, "antigravity-acp"))
@@ -150,67 +169,62 @@ function cursorAuthFile(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.P
   return path.join(env.XDG_CONFIG_HOME?.trim() || path.join(home, ".config"), "cursor", "auth.json");
 }
 
-function inCache(tool: string, context: ToolsContext): boolean {
-  try {
-    return tryResolveTool(tool, context) != null || tryResolvePreviousTool(tool, context) != null;
-  } catch {
-    // No pin for this host, or a malformed manifest: ensure reports it per tool.
-    return false;
-  }
+/** A tool that ran this recently is kept current at launch; older use waits for the next one. */
+const RECENT_TOOL_USE_MS = 30 * 24 * 60 * 60_000;
+
+/**
+ * What counts as a sign of use, from the machine's own environment
+ * (`ADE_TOOLS_PREFETCH`, set by a machine image):
+ *   - `signals` (default): a recent use, or the provider's CLI, login files or tokens.
+ *   - `used`: a recent use only. For a machine whose sign-ins are copied onto
+ *     it for every provider at once (an ADE Cloud computer), where a login
+ *     file says nothing about which agent the lane runs.
+ *   - `off`: nothing at launch; everything downloads on its first use.
+ */
+type PrefetchPolicy = "signals" | "used" | "off";
+
+function prefetchPolicy(env: NodeJS.ProcessEnv): PrefetchPolicy {
+  const raw = env.ADE_TOOLS_PREFETCH?.trim().toLowerCase();
+  return raw === "used" || raw === "off" ? raw : "signals";
 }
 
 export function selectDemandedAgentTools(pinned: readonly string[], args: DemandArgs = {}): AgentToolDemand {
   const env = args.env ?? process.env;
   const home = args.homeDir ?? (env.HOME?.trim() || env.USERPROFILE?.trim() || homedir());
   const platform = args.platform ?? process.platform;
-  const context: ToolsContext = { env, platform, ...args.tools };
-  const fetch: string[] = [];
-  const skip: string[] = [];
-  for (const tool of pinned) {
-    const wanted = inCache(tool, context) || (providerSignals(tool, env, home, platform) ?? false);
-    (wanted ? fetch : skip).push(tool);
+  const policy = prefetchPolicy(env);
+  const toolsRoot = toolUsageRootFor({ env, platform });
+  // Installed is not used: a copy on disk alone never counts, or one wrong
+  // download would keep itself current forever.
+  const usage = policy === "off" ? {} : readToolUsage(toolsRoot);
+  const now = Date.now();
+  const wanted = new Set<string>();
+  // Some agent is set up here: used lately, or a sign of it beyond a GitHub
+  // CLI sign-in (`ghCliSignedIn`).
+  let agentSetUp = false;
+  for (const tool of policy === "off" ? [] : pinned) {
+    const usedAt = usage[tool];
+    const recentlyUsed = usedAt !== undefined && now - usedAt < RECENT_TOOL_USE_MS;
+    const copilot = tool === "copilot" || tool === "copilot-cli";
+    // Copilot's own signs set it up; a GitHub CLI sign-in alone only fetches it.
+    const copilotOwn = copilot && policy === "signals" && copilotOwnSignals(env, home, platform);
+    const signals = policy === "signals" && (copilot
+      ? copilotOwn || ghCliSignedIn(env, home, platform)
+      : providerSignals(tool, env, home, platform) ?? false);
+    if (!recentlyUsed && !signals) continue;
+    wanted.add(tool);
+    if (NON_AGENT_TOOLS.has(tool) || agentSetUp) continue;
+    agentSetUp = recentlyUsed || !copilot || copilotOwn;
   }
-  return { fetch, skip };
-}
-
-/** The Settings provider whose switch governs a pinned tool. */
-const TOOL_PROVIDER: Record<string, string> = {
-  "claude-code": "claude",
-  codex: "codex",
-  copilot: "copilot",
-  "copilot-cli": "copilot",
-  "cursor-cli": "cursor",
-  node: "pi",
-  muse: "muse",
-  opencode: "opencode",
-};
-
-/**
- * Start downloading the pinned tools a status refresh finds this machine using
- * but missing: the launch fetch saw no sign of them, and since then the user
- * signed in (`gh auth login`, `claude` login) or saved an API key in ADE.
- * Without this a signed-in provider would read "not detected" until a chat
- * forced the download, and a provider with no models offers no chat to start.
- *
- * `opencodeBacked` is the status refresh's own verdict that API-key, OpenRouter
- * or local models are set up, which covers keys kept in ADE's store. A provider
- * switched off in Settings never downloads. Returns the tools it started.
- */
-export function startDemandedAgentToolFetches(args: {
-  enabled: (provider: string) => boolean;
-  opencodeBacked: boolean;
-}): string[] {
-  const missing = listPinnedTools()
-    .filter((tool) => !pinnedToolFetchInFlight(tool) && pinnedToolNeedsFetch(tool))
-    .filter((tool) => args.enabled(TOOL_PROVIDER[tool] ?? tool));
-  if (!missing.length) return [];
-  const demanded = new Set(selectDemandedAgentTools(missing).fetch);
-  if (args.opencodeBacked) demanded.add("opencode");
-  const started: string[] = [];
-  for (const tool of missing) {
-    if (!demanded.has(tool)) continue;
-    const download = pinnedToolDownload(tool);
-    if (download) started.push(tool);
+  // A computer with no agent set up gets OpenCode anyway: its free models
+  // need no account and no key, so they are the only chat such a person can
+  // start. Only under `signals`: an ADE Cloud computer (`used`) has every
+  // sign-in copied onto it.
+  if (policy === "signals" && pinned.includes("opencode") && !agentSetUp) {
+    wanted.add("opencode");
   }
-  return started;
+  return {
+    fetch: pinned.filter((tool) => wanted.has(tool)),
+    skip: pinned.filter((tool) => !wanted.has(tool)),
+  };
 }

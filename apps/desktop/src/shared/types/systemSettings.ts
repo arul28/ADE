@@ -26,6 +26,9 @@ export const SYSTEM_SETTINGS_PANE_URLS = {
   /** macOS Privacy & Security › Accessibility. Same address form as above. */
   "macos-accessibility":
     "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
+  /** macOS Privacy & Security › Automation (sending texts through Messages). */
+  "macos-automation":
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Automation",
   /** macOS Privacy & Security › Microphone. */
   "macos-microphone":
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",

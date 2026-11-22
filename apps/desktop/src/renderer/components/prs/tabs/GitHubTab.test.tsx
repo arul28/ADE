@@ -45,6 +45,7 @@ import {
   makeGitHubPr,
   makePrsContext,
   snapshot,
+  PRS_READER_PIN,
 } from "./GitHubTab.testFixtures";
 
 describe("GitHubTab snapshot lifecycle", () => {
@@ -164,7 +165,7 @@ describe("GitHubTab snapshot lifecycle", () => {
         repo: { owner: "ade-dev", name: "ade" },
         stackNumber: 18,
         pullRequests: [105, 106],
-      });
+      }, PRS_READER_PIN);
     });
   });
 
@@ -401,6 +402,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     mockUsePrs.mockReturnValue({
       prs: [],
       mergeContextByPrId: {},
+      pin: PRS_READER_PIN,
       detailStatus: null,
       detailChecks: [],
       detailReviews: [],
@@ -427,7 +429,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     await waitFor(() => {
       expect(screen.getByText(/Connect GitHub in Settings.*sync pull requests/)).toBeTruthy();
     });
-    expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false }, PRS_READER_PIN);
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
     expect(screen.getByRole("button", { name: /connect github/i })).toBeTruthy();
   });
@@ -437,6 +439,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     mockUsePrs.mockReturnValue({
       prs: [],
       mergeContextByPrId: {},
+      pin: PRS_READER_PIN,
       detailStatus: null,
       detailChecks: [],
       detailReviews: [],
@@ -469,6 +472,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     const context = {
       prs: [],
       mergeContextByPrId: {},
+      pin: PRS_READER_PIN,
       detailStatus: null,
       detailChecks: [],
       detailReviews: [],
@@ -529,6 +533,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     const emptyContext = {
       prs: [],
       mergeContextByPrId: {},
+      pin: PRS_READER_PIN,
       detailStatus: null,
       detailChecks: [],
       detailReviews: [],
@@ -557,7 +562,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     );
 
     await waitFor(() => {
-      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false }, PRS_READER_PIN);
     });
 
     mockUsePrs.mockReturnValue(loadedContext);
@@ -585,6 +590,7 @@ describe("GitHubTab snapshot lifecycle", () => {
         { id: "pr-open", checksStatus: "pending", reviewStatus: "requested", additions: 12, deletions: 3, updatedAt: "2026-03-13T11:30:00.000Z" },
       ],
       mergeContextByPrId: {},
+      pin: PRS_READER_PIN,
       detailStatus: null,
       detailChecks: [],
       detailReviews: [],
@@ -607,7 +613,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     );
 
     await waitFor(() => {
-      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false }, PRS_READER_PIN);
     });
 
     mockUsePrs.mockReturnValue({
@@ -640,6 +646,7 @@ describe("GitHubTab snapshot lifecycle", () => {
         { id: "pr-open", checksStatus: "pending", reviewStatus: "requested", additions: 12, deletions: 3, updatedAt: "2026-03-13T11:30:00.000Z" },
       ],
       mergeContextByPrId: {},
+      pin: PRS_READER_PIN,
       detailStatus: null,
       detailChecks: [],
       detailReviews: [],
@@ -662,7 +669,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     );
 
     await waitFor(() => {
-      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false }, PRS_READER_PIN);
     });
 
     vi.useFakeTimers();
@@ -700,7 +707,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     renderTab();
 
     await waitFor(() => {
-      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false }, PRS_READER_PIN);
     });
     await waitFor(() => {
       expect(screen.getByText("Open PR")).toBeTruthy();
@@ -711,7 +718,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: /^sync now$/i }));
 
     await vi.advanceTimersByTimeAsync(0);
-    expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: true });
+    expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: true }, PRS_READER_PIN);
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(29_000);
@@ -733,7 +740,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     renderTab();
 
     await waitFor(() => {
-      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false }, PRS_READER_PIN);
     });
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
     vi.useFakeTimers();
@@ -752,7 +759,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     });
 
     await vi.waitFor(() => {
-      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false }, PRS_READER_PIN);
     });
   });
 
@@ -771,7 +778,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     renderTab();
 
     await waitFor(() => {
-      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false }, PRS_READER_PIN);
     });
     await user.click(screen.getByRole("button", { name: /^merged/i }));
     await waitFor(() => {
@@ -779,7 +786,7 @@ describe("GitHubTab snapshot lifecycle", () => {
         force: false,
         includeExternalClosed: true,
         historyPageLimit: 2,
-      });
+      }, PRS_READER_PIN);
     });
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
 
@@ -790,7 +797,7 @@ describe("GitHubTab snapshot lifecycle", () => {
         force: true,
         includeExternalClosed: true,
         historyPageLimit: 4,
-      });
+      }, PRS_READER_PIN);
     });
   });
 
@@ -799,7 +806,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     renderTab();
 
     await waitFor(() => {
-      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false }, PRS_READER_PIN);
     });
 
     await user.click(screen.getByRole("button", { name: /^merged/i }));
@@ -808,7 +815,7 @@ describe("GitHubTab snapshot lifecycle", () => {
         force: false,
         includeExternalClosed: true,
         historyPageLimit: 2,
-      });
+      }, PRS_READER_PIN);
     });
 
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
@@ -820,7 +827,7 @@ describe("GitHubTab snapshot lifecycle", () => {
         force: true,
         includeExternalClosed: true,
         historyPageLimit: 2,
-      });
+      }, PRS_READER_PIN);
     });
   });
 
@@ -863,13 +870,13 @@ describe("GitHubTab snapshot lifecycle", () => {
     renderTab();
 
     await waitFor(() => {
-      expect(getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+      expect(getGitHubSnapshot).toHaveBeenCalledWith({ force: false }, PRS_READER_PIN);
     });
     await screen.findByText("Open PR");
 
     await user.click(screen.getByRole("button", { name: /^sync now$/i }));
     await waitFor(() => {
-      expect(getGitHubSnapshot).toHaveBeenCalledWith({ force: true });
+      expect(getGitHubSnapshot).toHaveBeenCalledWith({ force: true }, PRS_READER_PIN);
     });
     await user.click(screen.getByRole("button", { name: /^merged/i }));
     await waitFor(() => {
@@ -877,7 +884,7 @@ describe("GitHubTab snapshot lifecycle", () => {
         force: false,
         includeExternalClosed: true,
         historyPageLimit: 2,
-      });
+      }, PRS_READER_PIN);
     });
 
     resolveFullHistory(fullHistorySnapshot);
@@ -899,7 +906,7 @@ describe("GitHubTab snapshot lifecycle", () => {
         force: true,
         includeExternalClosed: true,
         historyPageLimit: 2,
-      });
+      }, PRS_READER_PIN);
     });
   });
 
@@ -939,7 +946,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     renderTab();
 
     await waitFor(() => {
-      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false }, PRS_READER_PIN);
     });
     expect(screen.queryByText("Stale open snapshot")).toBeNull();
 
@@ -1070,7 +1077,7 @@ describe("GitHubTab explicit coordinate targets", () => {
         force: false,
         includeExternalClosed: true,
         historyPageLimit: 2,
-      });
+      }, PRS_READER_PIN);
     });
     await act(async () => {
       deferredHistory.resolve({

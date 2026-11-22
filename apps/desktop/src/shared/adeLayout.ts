@@ -106,7 +106,7 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     worktreesDir,
     secretsDir,
     dbPath: path.join(adeDir, "ade.db"),
-    socketPath: resolveAdeRuntimeIpcPath(projectRoot),
+    socketPath: "",
     apiKeysPath: path.join(secretsDir, "api-keys.v1.bin"),
     legacyApiKeysPath: path.join(secretsDir, "api-keys.json"),
     logsDir,
@@ -122,8 +122,35 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     workerPromptsDir: path.join(orchestratorCacheDir, "worker-prompts"),
     githubSecretsDir: path.join(secretsDir, "github"),
   };
+  // Resolved on first read: on Windows it `realpath`s the project folder,
+  // which only the callers that need the socket should pay. A caller after
+  // the database or the cache folder of a project whose drive stopped
+  // answering must not wait on that drive.
+  let socketPath: string | null = null;
+  Object.defineProperty(result, "socketPath", {
+    enumerable: true,
+    get: () => (socketPath ??= resolveAdeRuntimeIpcPath(projectRoot)),
+  });
   _layoutCache.set(projectRoot, result);
   return result;
+}
+
+/**
+ * The empty placeholder files ADE writes under `.ade/` so git keeps the shared
+ * folders, relative to `.ade/` with forward slashes.
+ */
+export const ADE_TRACKED_PLACEHOLDER_PATHS = ["templates/.gitkeep", "skills/.gitkeep"] as const;
+
+/**
+ * The files ADE itself writes under `.ade/` when it opens a project, that git
+ * can show as untracked, with the exact content ADE writes. A file at one of
+ * these paths with other content was changed by a person.
+ */
+export function adeScaffoldFileContents(): ReadonlyMap<string, string> {
+  return new Map<string, string>([
+    [".gitignore", buildAdeGitignore()],
+    ...ADE_TRACKED_PLACEHOLDER_PATHS.map((relativePath) => [relativePath, ""] as [string, string]),
+  ]);
 }
 
 export function buildAdeGitignore(): string {

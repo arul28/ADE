@@ -53,6 +53,7 @@ export const PROVIDER_IMPORT_RULES: Record<ExternalSessionProvider, ProviderImpo
   kimi: { chatContinue: "none", chatCopy: "any", cliContinue: "home", cliCopy: "none" },
   grok: { chatContinue: "none", chatCopy: "any", cliContinue: "home", cliCopy: "home" },
   copilot: { chatContinue: "root", chatCopy: "any", cliContinue: "home", cliCopy: "none" },
+  antigravity: { chatContinue: "none", chatCopy: "any", cliContinue: "home", cliCopy: "none" },
 };
 
 const RULE_RANK: Record<ImportLaneRule, number> = { none: 0, root: 1, home: 2, any: 3 };

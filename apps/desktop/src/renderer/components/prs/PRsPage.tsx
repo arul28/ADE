@@ -1,7 +1,8 @@
 import React from "react";
-import { Plus } from "@phosphor-icons/react";
+import { Desktop, Plus } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { EmptyState } from "../ui/EmptyState";
+import { Button } from "../ui/Button";
 import { PrsProvider, usePrs } from "./state/PrsContext";
 import { CreatePrModal, type CreatePrModalInitialValues } from "./CreatePrModal";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
@@ -22,6 +23,8 @@ import {
   type PrRouteSelectionTarget,
 } from "./prsRouteState";
 import type { PrSummary } from "../../../shared/types";
+import { settingsRouteFor } from "../settings/settingsManifest";
+import { DirectPrsList } from "./DirectPrsList";
 
 type PrRefreshArgs = { prId?: string; prIds?: string[] };
 
@@ -92,7 +95,11 @@ function PRsPageInner({ active }: { active: boolean }) {
     loading,
     error,
     refresh,
+    reader,
   } = usePrs();
+  // No machine: `direct` shows the account's read-only list, `none` an empty state.
+  const direct = reader.kind === "direct";
+  const noMachine = reader.kind !== "machine";
 
   const [createPrOpen, setCreatePrOpen] = React.useState(false);
   const [createPrInitialValues, setCreatePrInitialValues] = React.useState<CreatePrModalInitialValues | null>(null);
@@ -310,7 +317,31 @@ function PRsPageInner({ active }: { active: boolean }) {
     writeStoredPrsRoute(hashRoute ?? `${location.pathname}${location.search}`, projectRoot);
   }, [location.hash, location.pathname, location.search, projectRoot]);
 
-  const errorContent = error && prs.length === 0 ? (
+  // No computer that has this project is online, so nothing can read its pull
+  // requests. Nothing is called in this state (PrsProvider reads nothing).
+  const noMachineContent = direct ? (
+    // A hidden page passes no repository, so the read has no subscriber and does not poll.
+    <DirectPrsList repo={active ? reader.repo : null} />
+  ) : noMachine ? (
+    <EmptyState
+      title="No computer is online"
+      description="Pull requests are read through a computer that has this project. Open ADE on one, or connect it."
+      icon={Desktop}
+      iconSize={32}
+      className="m-auto"
+    >
+      <Button
+        type="button"
+        size="sm"
+        className="mt-4"
+        onClick={() => void navigate(settingsRouteFor("machines.list"))}
+      >
+        Machines
+      </Button>
+    </EmptyState>
+  ) : null;
+
+  const errorContent = !noMachine && error && prs.length === 0 ? (
     <EmptyState title="PRs" description={`Failed to load PRs: ${error}`}>
       <button
         type="button"
@@ -370,14 +401,14 @@ function PRsPageInner({ active }: { active: boolean }) {
       <Plus size={13} weight="bold" />
     </button>
   );
-  const listReady = !errorContent && !loadingContent;
+  const listReady = !noMachineContent && !errorContent && !loadingContent;
 
   // The list column: an empty host that the GitHub view fills with its own
   // controls and list. Create PR sits at the end of its search row; while the
   // list is loading or failed, it has a row of its own.
   const listColumn = (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="prs-list-column" data-tour="prs.list">
-      {listReady ? null : (
+      {listReady || noMachine ? null : (
         <div className="flex shrink-0 items-center justify-end px-2.5 pb-2 pt-1">{createPrButton}</div>
       )}
       <div ref={setListHost} className="flex min-h-0 flex-1 flex-col" />
@@ -396,7 +427,7 @@ function PRsPageInner({ active }: { active: boolean }) {
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <PrsListHostProvider host={listHost}>
-          {errorContent ?? loadingContent ?? (
+          {noMachineContent ?? errorContent ?? loadingContent ?? (
             <GitHubTab
               lanes={visibleLanes}
               mergeMethod={mergeMethod}
@@ -416,7 +447,7 @@ function PRsPageInner({ active }: { active: boolean }) {
       </div>
 
       <CreatePrModal
-        open={createPrOpen}
+        open={createPrOpen && !noMachine}
         onOpenChange={setCreatePrOpen}
         onCreated={handlePrCreated}
         initialValues={createPrInitialValues}

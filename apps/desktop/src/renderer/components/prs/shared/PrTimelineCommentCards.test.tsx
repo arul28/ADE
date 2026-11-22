@@ -6,6 +6,10 @@ import userEvent from "@testing-library/user-event";
 
 import type { PrTimelineEvent } from "../../../../shared/types/prs";
 import { DescriptionContent } from "./PrTimelineCommentCards";
+import { PrRuntimePinProvider } from "../state/prMachines";
+
+/** The machine that reads this PR: reactions go there. */
+const PR_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
 
 vi.mock("./PrMarkdown", () => ({
   PrMarkdown: ({ children }: { children: string }) => <div data-testid="pr-markdown">{children}</div>,
@@ -41,13 +45,15 @@ describe("DescriptionContent", () => {
     const user = userEvent.setup();
     reactToComment.mockRejectedValue(new Error("reaction denied"));
     render(
-      <DescriptionContent
-        event={DESCRIPTION}
-        prId="pr-1"
-        viewerLogin="octocat"
-        repoOwner="acme"
-        repoName="ade"
-      />,
+      <PrRuntimePinProvider value={PR_PIN}>
+        <DescriptionContent
+          event={DESCRIPTION}
+          prId="pr-1"
+          viewerLogin="octocat"
+          repoOwner="acme"
+          repoName="ade"
+        />
+      </PrRuntimePinProvider>,
     );
 
     await user.click(screen.getByRole("button", { name: /add reaction/i }));

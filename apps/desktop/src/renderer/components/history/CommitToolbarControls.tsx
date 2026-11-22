@@ -10,7 +10,7 @@ import {
   MagnifyingGlass,
   X,
 } from "@phosphor-icons/react";
-import type { LaneSummary } from "../../../shared/types";
+import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import { Z_LAYERS } from "../ui/zLayers";
@@ -231,28 +231,31 @@ export function CommitColumnsMenu() {
 /** `git fetch` for the lane, then refresh the graph. */
 export function CommitFetchButton({
   laneId,
+  pin,
   disabledReason,
   onFetched,
 }: {
   laneId: string | null;
+  /** The lane's machine; the fetch runs there. */
+  pin: OpenProjectBinding | null;
   disabledReason: string | null;
   onFetched: () => void;
 }) {
   const [state, setState] = useState<"idle" | "running" | "failed">("idle");
   const [error, setError] = useState<string | null>(null);
   const run = useCallback(async () => {
-    if (!laneId) return;
+    if (!laneId || !pin) return;
     setState("running");
     setError(null);
     try {
-      await window.ade.git.fetch({ laneId });
+      await window.ade.git.fetch({ laneId }, pin);
       setState("idle");
       onFetched();
     } catch (err) {
       setState("failed");
       setError(stripIpcErrorPrefix(err));
     }
-  }, [laneId, onFetched]);
+  }, [laneId, onFetched, pin]);
   useEffect(() => {
     if (state !== "failed") return;
     const timer = window.setTimeout(() => setState("idle"), 5000);

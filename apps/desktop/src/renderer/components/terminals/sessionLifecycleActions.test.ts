@@ -15,6 +15,9 @@ vi.mock("../app/toast/toastStore", () => ({
   showToast: (toast: Record<string, unknown>) => { toasts.push(toast); },
 }));
 
+/** The chat's machine, for the calls that do not test routing. */
+const LOCAL: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
 function draft(id: string): AutomationRuleDraft {
   return { id, name: id, enabled: true, actions: [] } as unknown as AutomationRuleDraft;
 }
@@ -53,6 +56,7 @@ describe("saveAutoHandoffRules", () => {
       drafts: [draft("rule-limit"), draft("rule-failure")],
       staleRuleIds: ["rule-ended"],
       sessionId: "chat-42",
+      pin: LOCAL,
     });
 
     expect(saved).toBe(true);
@@ -74,6 +78,7 @@ describe("saveAutoHandoffRules", () => {
       drafts: [draft("rule-limit"), draft("rule-failure")],
       staleRuleIds: ["rule-ended"],
       sessionId: "chat-42",
+      pin: LOCAL,
     });
 
     expect(saved).toBe(false);
@@ -90,6 +95,7 @@ describe("saveAutoHandoffRules", () => {
       drafts: [draft("rule-limit")],
       staleRuleIds: ["rule-ended"],
       sessionId: "chat-42",
+      pin: LOCAL,
     });
 
     // The rule the user turned off is still armed; saying "saved" would be a lie.
@@ -107,6 +113,7 @@ describe("saveAutoHandoffRules", () => {
       drafts: [draft("rule-limit")],
       staleRuleIds: ["rule-ended"],
       sessionId: "chat-42",
+      pin: LOCAL,
     });
 
     expect(saved).toBe(true);
@@ -175,14 +182,14 @@ describe("bulk lifecycle writes", () => {
 
   it("settles each row on its own machine, reports a partial failure once, and undoes only what settled", async () => {
     await settleSessions([
-      { session: { id: "local-a" } },
-      { session: { id: "local-b" } },
+      { session: { id: "local-a" }, pin: LOCAL },
+      { session: { id: "local-b" }, pin: LOCAL },
       { session: { id: "remote-broken" }, pin: studio },
     ]);
 
     // Each row reaches its owning machine, and none asks to dismiss pending
     // input: bulk settle only ever files at-rest rows away.
-    expect(sessionsApi.settle.mock.calls).toEqual([["local-a"], ["local-b"], ["remote-broken", undefined, studio]]);
+    expect(sessionsApi.settle.mock.calls).toEqual([["local-a", undefined, LOCAL], ["local-b", undefined, LOCAL], ["remote-broken", undefined, studio]]);
     const failures = toasts.filter((toast) => toast.tone === "error");
     expect(failures).toHaveLength(1);
     expect(String(failures[0]!.title)).toContain("1 of 3");
@@ -196,8 +203,8 @@ describe("bulk lifecycle writes", () => {
 
   it("keeps a separate Undo for each batch snoozed to the same deadline", async () => {
     const now = Date.parse("2026-10-02T10:00:00Z");
-    await snoozeSessionsForDuration([{ session: { id: "a1" } }, { session: { id: "a2" } }], "hour", now);
-    await snoozeSessionsForDuration([{ session: { id: "b1" }, pin: studio }, { session: { id: "b2" } }], "hour", now);
+    await snoozeSessionsForDuration([{ session: { id: "a1" }, pin: LOCAL }, { session: { id: "a2" }, pin: LOCAL }], "hour", now);
+    await snoozeSessionsForDuration([{ session: { id: "b1" }, pin: studio }, { session: { id: "b2" }, pin: LOCAL }], "hour", now);
 
     expect(toasts).toHaveLength(2);
     // A shared id would let the second toast replace the first and strand

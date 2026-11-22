@@ -22,12 +22,14 @@ import {
   SESSION_LIFECYCLE_ATTRIBUTE,
   installSessionLifecycleChrome,
 } from "../sessionLifecycleChrome";
-import { parseOpenTarget, parseWebPath, targetToWebPath } from "../webRoutes";
+import { parseOpenTarget, parseWebPath } from "../webRoutes";
+import { targetToWebPath } from "../webTargetPaths";
 
 const mocks = vi.hoisted(() => {
   const federated = {
     ade: {} as Window["ade"],
     restore: vi.fn<[], Promise<unknown>>(),
+    takeRestoreFailure: vi.fn(() => null),
     dispose: vi.fn(),
     getOpenBindings: vi.fn(() => []),
     getActiveBinding: vi.fn(() => null),
@@ -185,6 +187,11 @@ function accountClient(
     bootstrap: vi.fn(async () => snapshot),
     getAccessToken: vi.fn(async () => "token"),
     getRelayBaseUrls: vi.fn(() => snapshot.relayBaseUrls),
+    onMachinesChanged: vi.fn(() => () => undefined),
+    // No Clerk configuration: the sign-in card shows its one button.
+    clerkFrontendApiBase: vi.fn(() => null),
+    signInHandoff: vi.fn(() => null),
+    signedOutByUser: vi.fn(() => false),
     ...overrides,
   } as unknown as BrowserAccountClient;
 }

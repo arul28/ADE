@@ -61,7 +61,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import { sideChatSendBlocksToMarkdown } from "../../../shared/sideChat";
-import { SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS } from "../../../shared/types/chat";
+import { CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS, CTO_CONTEXT_REFRESHED_STATUS, SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS } from "../../../shared/types/chat";
 import { SideChatTranscriptContext } from "./sideChatState";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
@@ -71,6 +71,7 @@ import { cn } from "../ui/cn";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
+import { isRestartInterruptedNotice } from "../../../shared/chatAutoResume";
 import { subscribeToTicker } from "../../lib/ticker";
 import { toLayoutPx } from "../../lib/webZoom";
 import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
@@ -121,6 +122,7 @@ import {
 } from "./chatTranscriptChrome";
 import { useAppStore } from "../../state/appStore";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { confirmRootFullAccess } from "./rootFullAccessPrompt";
 import { transcriptRowGapPx } from "./chatAppearance";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
 import type { AgentChatContextAttachment, AgentChatFileRef } from "../../../shared/types";
@@ -213,6 +215,8 @@ import { workflowRunShape } from "./SubagentWorkflowRunView";
 import { PrWatchWakeLine } from "./PrWatchWakeLine";
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
+import { CloudTierRequestCard } from "../cloudLane/CloudLaneChatCards";
+import { CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudLaneLife";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { spawnCompletionNoticeOf, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import { isQuietNoticeEvent, type QuietNoticeSibling, type SystemNoticeEvent } from "./quietNoticeLines";
@@ -231,7 +235,7 @@ import {
   isUsageLimitTurn,
   usageLimitTurnFooterLabel,
 } from "../../../shared/usageLimitResumePresentation";
-import { chatErrorKindFromCategory, presentChatFailure, readChatErrorPresentation } from "../../../shared/chatErrorPresentation";
+import { chatErrorKindFromCategory, presentChatFailure, presentDiskFullRefusal, readChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
   collectUserMessageMinimapSourceEntries,
@@ -249,7 +253,9 @@ import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts
 import { ProjectSecretRequestReceipt } from "./ProjectSecretCard";
 import { IntegrationConnectReceipt } from "./IntegrationConnectCard";
 import { McpServerRequestReceipt } from "./McpServerCard";
+import { MachineRemovalReceipt } from "./MachineRemovalCard";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
+import { PasswordLoginRequestReceipt } from "./PasswordLoginCard";
 import { isQuestionKind } from "../../../shared/pendingInputAnswers";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatTaskListCard } from "./ChatTaskListCard";
@@ -270,6 +276,8 @@ import {
 import {
   calculateVirtualWindowAnchoredToEnd,
   calculateVirtualWindowFromOffsets,
+  CHAT_TRANSCRIPT_FIRST_PAINT_OVERSCAN,
+  CHAT_TRANSCRIPT_OVERSCAN,
   reconcileMeasuredScrollTop,
   resolveAnchoredChatRowIndex,
   shouldAbsorbProgrammaticScrollEvent,
@@ -281,6 +289,7 @@ import {
 import { BackgroundJobRunRow } from "./BackgroundJobRunRow";
 import { ThinkingIndicator } from "../ui/ThinkingIndicator";
 import { ScheduledWorkChips, ScheduledWorkLine, WakeChainChip, WakeChainRow } from "./ScheduledWorkLine";
+import { SCHEDULED_WORK_PENDING_STATUSES } from "../../../shared/chatScheduledWork";
 import { applyWakeChains, foldIdsByHiddenRowKey, foldScheduledWorkRows, insertNewSinceDivider, moveScheduledWorkToTurnEnds } from "./chatScheduledWorkRows";
 import { useWakeLoopFolds } from "./useWakeLoopFolds";
 
@@ -329,6 +338,11 @@ import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDr
 import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
 import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { parseMessageAuthor } from "../../../shared/messageAuthor";
+import { withChatPin } from "./chatMachinePin";
+import { CtoFreshContextDivider, CtoToolChips } from "./cto/CtoToolChips";
+import { CtoWorkingLine } from "./cto/CtoWorkingLine";
+import { drawsCtoChips, keepCtoChipRowsVisible } from "./cto/ctoToolWords";
 
 /**
  * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
@@ -457,6 +471,57 @@ function ResetCreditNoticeRow({
 }
 
 /**
+ * Claude held a chat back to Accept edits because ADE runs as root on its
+ * machine. The person can allow Full access there, once, for the machine; the
+ * call goes to the chat's machine.
+ */
+function RootFullAccessNoticeRow({
+  message,
+  className,
+  icon,
+  chipLabel,
+}: {
+  message: string;
+  className?: string;
+  icon: React.ReactNode;
+  chipLabel: string;
+}) {
+  const { pin } = useChatRuntimeScope();
+  const [allowed, setAllowed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const canAllow = typeof window.ade?.agentChat?.setRootFullAccess === "function" && !allowed;
+  const allow = useCallback(async () => {
+    setBusy(true);
+    try {
+      setAllowed(await confirmRootFullAccess(pin));
+    } finally {
+      setBusy(false);
+    }
+  }, [pin]);
+  return (
+    <div className={cn(
+      "inline-flex max-w-[var(--chat-content-width,52rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
+      className,
+    )}>
+      {icon}
+      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
+      <span className="normal-case tracking-normal text-fg/55">{message}</span>
+      {canAllow ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => { void allow(); }}
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
+        >
+          Allow on this machine
+        </button>
+      ) : null}
+      {allowed ? <span className="normal-case tracking-normal text-fg/42">Allowed. The next message runs with Full access.</span> : null}
+    </div>
+  );
+}
+
+/**
  * A subagent's question answered after the subagent was gone (ADE restarted).
  * The answer was not sent anywhere; this row offers to send it to the main
  * agent, and only that click sends it. The send goes to this chat's machine.
@@ -481,7 +546,7 @@ function SubagentAnswerUnsentNoticeRow({
     if (!sessionId || !answerText || !isAdeAvailable(call)) return;
     setState("sending");
     try {
-      await call({ sessionId, text: answerText }, pin);
+      await withChatPin(pin, (chatPin) => call({ sessionId, text: answerText }, chatPin));
       setState("sent");
     } catch {
       setState("failed");
@@ -507,7 +572,7 @@ function SubagentAnswerUnsentNoticeRow({
   );
 }
 
-function CodexTurnRecoveryCard({
+function QuietTurnCard({
   event,
   sessionId,
   onRecover,
@@ -521,18 +586,20 @@ function CodexTurnRecoveryCard({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const targetSessionId = event.sourceSessionId?.trim() || sessionId?.trim() || "";
+  // One card for every provider (`turn_health`); a legacy Codex event names none.
+  const name = providerDisplayLabel(event.provider ?? "codex", "The agent");
   const optionLabels: Record<AgentChatRecoverCodexTurnArgs["action"], string> = {
     wait: "Keep waiting",
     steer: "Send nudge",
     interrupt_retry_same_thread: "Retry same server",
-    restart_resume_thread: "Restart & resume",
+    restart_resume_thread: `Restart ${name}`,
   };
-  const resultLabels: Record<AgentChatRecoverCodexTurnResult["status"], string> = {
-    waiting: "Waiting for Codex output…",
+  const resultLabels = useMemo<Record<AgentChatRecoverCodexTurnResult["status"], string>>(() => ({
+    waiting: `Waiting for ${name}…`,
     nudged: "Status nudge sent.",
     retrying: "Retry started in this thread.",
-    resumed: "Codex app-server restarted and the thread resumed.",
-  };
+    resumed: `${name} restarted and picked up your last request.`,
+  }), [name]);
   const recoveryOptions = event.recoveryOptions ?? [
     "restart_resume_thread",
     "wait",
@@ -544,12 +611,12 @@ function CodexTurnRecoveryCard({
   const secondaryOptions = (["steer", "interrupt_retry_same_thread"] as const)
     .filter((option) => recoveryOptions.includes(option));
   const title = event.reason === "waiting_on_approval"
-    ? "Codex is waiting for approval"
+    ? `${name} is waiting for approval`
     : event.reason === "waiting_on_input"
-      ? "Codex is waiting for your input"
+      ? `${name} is waiting for your input`
       : event.reason === "no_progress"
-        ? "Codex stopped making progress"
-        : "Codex did not start responding";
+        ? `${name} has gone quiet`
+        : `${name} is slow to answer`;
   const timing = (() => {
     const detectedAt = event.detectedAt ? Date.parse(event.detectedAt) : Number.NaN;
     const turnStartedAt = event.turnStartedAt ? Date.parse(event.turnStartedAt) : Number.NaN;
@@ -590,6 +657,7 @@ function CodexTurnRecoveryCard({
         {event.message}
       </div>
       {event.automaticRecoveryAttempted ? (
+        // Only on cards from older brains, which restarted Codex once on their own.
         <div className="mt-1 text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/48">
           ADE already tried one automatic restart. It will not restart again without you.
         </div>
@@ -1149,14 +1217,18 @@ function UserMessageStatusRow({
   onRunUnprocessedMessage,
   onEditUnprocessedMessage,
   onDismissUnprocessedMessage,
+  quiet = false,
 }: {
   event: UserMessageEvent;
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
   onDismissUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
+  /** The CTO answers mid-task input itself: show only a send that went wrong. */
+  quiet?: boolean;
 }) {
   const status = describeUserMessageStatus(event);
   if (!status) return null;
+  if (quiet && status.tone === "muted" && status.kind !== "steer_unprocessed") return null;
   return (
     <div className="mt-1 flex min-w-0 max-w-[82%] flex-col items-end" data-testid="user-message-status-row">
       {status.kind === "steer_unprocessed" ? (
@@ -1360,6 +1432,10 @@ type RenderEnvelope = {
   quietNoticeSiblings?: QuietNoticeSibling[];
   /** On a `done` row: the turn ended at a usage limit; see ChatTranscriptRenderEnvelope. */
   endedAtUsageLimit?: boolean;
+  /** On a failed turn's `done` row: its failure line is drawn; see ChatTranscriptGroupedEnvelope. */
+  failureShown?: boolean;
+  /** On a failure line: the turn's later errors, under Details; see ChatTranscriptGroupedEnvelope. */
+  failureNotes?: string[];
   /** True when `timestamp` is an ordering placeholder with no real clock behind it. */
   timestampSynthetic?: boolean;
   /** Row identity for a scene's still; see ChatTranscriptRenderEnvelope. */
@@ -1556,9 +1632,15 @@ function stripLeadingWarningGlyph(message: string): string {
 function QuietNoticeRow({
   event,
   siblings,
+  timeLabel,
+  onOpenChat,
 }: {
   event: SystemNoticeEvent;
   siblings?: readonly QuietNoticeSibling[];
+  /** Shown after the message: when it happened (the restart notice). */
+  timeLabel?: string | null;
+  /** Opens the chat a notice points at (`event.openSessionId`). */
+  onOpenChat?: (sessionId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
@@ -1577,6 +1659,11 @@ function QuietNoticeRow({
       <span className={QUIET_LINE_TEXT_CLASS} title={event.message}>
         {event.message}
       </span>
+      {timeLabel ? (
+        <span className="shrink-0 tabular-nums text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/35">
+          {timeLabel}
+        </span>
+      ) : null}
       {extraCount > 0 ? (
         <span className="shrink-0 tabular-nums text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/28">
           +{extraCount}
@@ -1596,11 +1683,13 @@ function QuietNoticeRow({
     </>
   );
   const summaryClass = "flex min-w-0 max-w-full items-center gap-2 text-left font-sans";
+  const openTarget = event.openSessionId;
   return (
     <div
       className="flex min-w-0 max-w-[var(--chat-content-width,52rem)] flex-col"
       data-testid="quiet-notice"
     >
+      <div className="flex min-w-0 items-center gap-1">
       {expandable ? (
         <button
           type="button"
@@ -1624,6 +1713,17 @@ function QuietNoticeRow({
           {summary}
         </div>
       )}
+      {openTarget && onOpenChat ? (
+        <button
+          type="button"
+          className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45 transition-colors hover:bg-fg/[0.05] hover:text-fg/75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-fg/20"
+          onClick={() => onOpenChat(openTarget)}
+        >
+          <ArrowSquareOut size={11} weight="regular" aria-hidden />
+          Open chat
+        </button>
+      ) : null}
+      </div>
       {open ? (
         <div
           id={panelId}
@@ -1650,12 +1750,14 @@ const FOLDED_MESSAGE_ICON: Record<FoldedMessageSource, typeof Robot> = {
   agent: Robot,
   automation: Lightning,
   schedule: Clock,
+  ade: Info,
 };
 
 const FOLDED_MESSAGE_KIND_LABEL: Record<FoldedMessageSource, string> = {
   agent: "Message from another agent",
   automation: "Automation prompt",
   schedule: "Scheduled prompt",
+  ade: "Message ADE sent",
 };
 
 /**
@@ -1870,12 +1972,21 @@ export const ChatInfoHostContext = React.createContext(false);
 function ChatActivityBundle({
   event,
   sessionId,
+  hidePendingSchedules = false,
 }: {
   event: ChatActivityBundleEvent;
   sessionId?: string | null;
+  /**
+   * The CTO thread: a routine still waiting to run is already a "Scheduled"
+   * chip in the thread and a row in the side panel, so only runs show here.
+   */
+  hidePendingSchedules?: boolean;
 }) {
   // `foldScheduledWorkRows` already left one item per schedule id.
-  const displayItems = event.items;
+  const displayItems = hidePendingSchedules
+    ? event.items.filter((item) => !SCHEDULED_WORK_PENDING_STATUSES.has(item.event.status))
+    : event.items;
+  if (displayItems.length === 0) return null;
   const rows = displayItems.map((item) => (
     <ScheduledWorkLine
       key={item.event.id}
@@ -2687,7 +2798,22 @@ function FileChangeEventCard({
 // Tracks which user messages have already played their send-up entrance, so the
 // optimistic→delivered swap (and virtualized re-mounts) don't replay it — that
 // replay read as a flicker once the bubble settled.
+// Bounded, so a long-lived window does not keep a key for every message of
+// every chat it ever showed. Each render moves the key to the newest end, so
+// only messages that no view has rendered for a long time drop out.
+const ANIMATED_USER_MESSAGE_KEY_LIMIT = 1_000;
 const animatedUserMessageKeys = new Set<string>();
+
+/** True the first time a user message renders; later renders get false. */
+function claimUserMessageSendEntrance(key: string): boolean {
+  const first = !animatedUserMessageKeys.delete(key);
+  animatedUserMessageKeys.add(key);
+  if (animatedUserMessageKeys.size > ANIMATED_USER_MESSAGE_KEY_LIMIT) {
+    const oldest = animatedUserMessageKeys.values().next().value;
+    if (oldest !== undefined) animatedUserMessageKeys.delete(oldest);
+  }
+  return first;
+}
 
 /**
  * Whether a row plays its entrance (the fade or send-up its motion wrapper
@@ -2912,7 +3038,7 @@ function renderEvent(
   envelope: RenderEnvelope,
   options?: SpawnedChatProviderProps & {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-    onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
     onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
     /** Re-runs compaction through the pane's guarded compact action. */
@@ -3073,7 +3199,7 @@ function renderEvent(
           type="button"
           onClick={() => openSpawnedChat(event.childSessionId, null, event.childMachineName)}
           className="group inline-flex min-w-0 max-w-[var(--chat-content-width,52rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55 transition-colors hover:bg-fg/[0.05] hover:text-fg/80"
-          title={`Open ${event.spawnKind === "peer" ? "peer chat" : "subagent"} "${event.childTitle}"`}
+          title={`Open ${event.spawnKind === "peer" ? "chat" : "subagent"} "${event.childTitle}"`}
         >
           <Robot size={12} weight="duotone" className="shrink-0 text-violet-300/80" aria-hidden />
           <span className="max-w-[16rem] shrink-0 truncate font-medium text-fg/80">{event.childTitle}</span>
@@ -3201,6 +3327,7 @@ function renderEvent(
           onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
           onEditUnprocessedMessage={options?.onEditUnprocessedMessage}
           onDismissUnprocessedMessage={options?.onDismissUnprocessedMessage}
+          quiet={options?.surfaceProfile === "persistent_identity"}
         />
       </div>
     );
@@ -3208,8 +3335,7 @@ function renderEvent(
 
   /* ── User message ── */
   if (event.type === "user_message" && userBody) {
-    const playSendEntrance = playEntrance && !animatedUserMessageKeys.has(envelope.key);
-    animatedUserMessageKeys.add(envelope.key);
+    const playSendEntrance = claimUserMessageSendEntrance(envelope.key) && playEntrance;
     const hasPastedTextPromptAttachment = userMessageHasPastedPrompt(event);
     const copyText = event.displayText?.trim() || (
       event.metadata?.hideFullPrompt === true
@@ -3225,6 +3351,10 @@ function renderEvent(
       : event.metadata?.sideChat
         ? "your side chat"
         : "";
+    // Lane sharing: a guest's message names its author (set by the host).
+    // The owner's own messages stay unlabelled, as before.
+    const guestAuthor = parseMessageAuthor(event.metadata?.author);
+    const guestAuthorLabel = guestAuthor?.kind === "guest" ? (guestAuthor.name?.trim() || "A guest") : null;
     // A brief handoff's first message is the hidden brief. The thread marks it
     // with a line, like the fork line, not with a label inside the bubble.
     const handoffBriefLabel = metadataKind === "handoff"
@@ -3253,7 +3383,7 @@ function renderEvent(
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "ade-chat-message-card-user group relative min-w-0 max-w-[82%] overflow-hidden px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
+            "ade-chat-message-card-user group group/user-card relative min-w-0 max-w-[82%] overflow-hidden px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
           )}
           style={MESSAGE_CARD_STYLE}
           data-chat-user-message-card=""
@@ -3262,8 +3392,11 @@ function renderEvent(
           data-chat-find-text=""
         >
           {/* Frosted so the actions stay legible over a long first line or a
-              brief's heading, instead of printing on top of the words. */}
-          <div data-ade-find-skip="" className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+              brief's heading, instead of printing on top of the words. The
+              blur comes with the hover that shows them: a backdrop-filter on
+              the page, even an invisible one, makes Chromium on macOS redraw
+              the whole window for every change. */}
+          <div data-ade-find-skip="" className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 transition-opacity duration-200 group-hover/user-card:opacity-100 group-hover/user-card:backdrop-blur-md focus-within:opacity-100 focus-within:backdrop-blur-md">
             {envelope.timestampSynthetic === true
               ? null
               : <RowHoverTimestamp iso={envelope.timestamp} className="mr-0.5" />}
@@ -3365,12 +3498,23 @@ function renderEvent(
               via {remoteMcpLabel}
             </div>
           ) : null}
+          {guestAuthorLabel ? (
+            <div
+              data-ade-find-skip=""
+              data-testid="chat-user-message-author"
+              className="mt-2 truncate text-right font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/55"
+              title={guestAuthorLabel}
+            >
+              From {guestAuthorLabel}
+            </div>
+          ) : null}
         </div>
         <UserMessageStatusRow
           event={event}
           onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
           onEditUnprocessedMessage={options?.onEditUnprocessedMessage}
           onDismissUnprocessedMessage={options?.onDismissUnprocessedMessage}
+          quiet={options?.surfaceProfile === "persistent_identity"}
         />
       </motion.div>
     );
@@ -3386,7 +3530,10 @@ function renderEvent(
         // `overflow-x-clip`, not `overflow-hidden`: an interim row's hover
         // actions float below the row, and `hidden` would clip them.
         className="flex min-w-0 max-w-full w-full justify-start overflow-x-clip"
-        initial={playEntrance ? { opacity: 0 } : false}
+        // The reply's first words are readable on their first frame: the row
+        // settles from 0.8, not from nothing, so the fade never holds back
+        // text the person is waiting for.
+        initial={playEntrance ? { opacity: 0.8 } : false}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
       >
@@ -3724,10 +3871,10 @@ function renderEvent(
 
   if (event.type === "codex_turn_stalled") {
     return (
-      <CodexTurnRecoveryCard
+      <QuietTurnCard
         event={event}
         sessionId={options?.sessionId}
-        onRecover={options?.onCodexRecovery}
+        onRecover={options?.onQuietTurnRecovery}
       />
     );
   }
@@ -3892,6 +4039,8 @@ function renderEvent(
 
   /* ── System Notice ── */
   if (event.type === "system_notice") {
+    // The CTO got a fresh provider thread: a hairline, not a card.
+    if (event.status === CTO_CONTEXT_REFRESHED_STATUS) return <CtoFreshContextDivider message={event.message} />;
     if (event.status === "model_switched") {
       const message = event.message.trim() || "switched models";
       return (
@@ -3914,6 +4063,7 @@ function renderEvent(
     // notice, drawn below as one quiet line that navigates to the child.
     if (event.noticeKind === "info" && event.status === "subagent_spawned") {
       const detail = (event.detail && typeof event.detail === "object" ? event.detail : {}) as {
+        // `peer` is the stored name of a chat that does not report back.
         spawnKind?: "subagent" | "peer";
         spawnedSession?: { sessionId?: string; laneId?: string | null; title?: string };
       };
@@ -3936,7 +4086,7 @@ function renderEvent(
         >
           <Robot size={11} weight="duotone" className={cn("shrink-0", isPeer ? "text-slate-300/60" : "text-violet-300/70")} aria-hidden />
           <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", isPeer ? "text-slate-300/50" : "text-violet-300/55")}>
-            {isPeer ? "peer" : "subagent"}
+            {isPeer ? "chat" : "subagent"}
           </span>
           <span className="min-w-0 truncate">{childTitle}</span>
           {childSessionId ? <CaretRight size={10} className={cn("shrink-0", isPeer ? "text-slate-300/55" : "text-violet-300/55")} /> : null}
@@ -4150,6 +4300,17 @@ function renderEvent(
       );
     }
 
+    if (event.status === CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS) {
+      return (
+        <RootFullAccessNoticeRow
+          message={event.message}
+          className={cn(style.border, style.bg, style.text)}
+          icon={<NoticeIcon size={11} weight="bold" />}
+          chipLabel={chipLabel}
+        />
+      );
+    }
+
     // Warnings are one text-sized line, like the thread's other rows; the full
     // message and any detail open on click. Usage and sign-in keep their own
     // treatment, and errors keep their cards.
@@ -4183,7 +4344,14 @@ function renderEvent(
     // message, and the detail behind a click. Neighbouring receipts share the
     // line (`+N`), folded in `filterVisibleTranscriptRows`.
     if (isQuietNoticeEvent(event)) {
-      return <QuietNoticeRow event={event} siblings={envelope.quietNoticeSiblings} />;
+      return (
+        <QuietNoticeRow
+          event={event}
+          siblings={envelope.quietNoticeSiblings}
+          timeLabel={isRestartInterruptedNotice(event.message) ? formatTime(envelope.timestamp) : null}
+          onOpenChat={(sessionId) => openSpawnedChat(sessionId, null)}
+        />
+      );
     }
 
     if (hasDetail) {
@@ -4388,10 +4556,32 @@ function renderEvent(
       );
     }
 
+    if (nativeCard?.kind === "login") {
+      // The secure sign-in card's record: the site and the outcome only.
+      return (
+        <PasswordLoginRequestReceipt
+          card={nativeCard.card}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
     if (nativeCard?.kind === "mcp-server") {
       // The MCP server card's record: the definition and the approval only.
       return (
         <McpServerRequestReceipt
+          card={nativeCard.card}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
+    if (nativeCard?.kind === "machine-removal") {
+      // The computer removal card's record: which computer, and the answer.
+      return (
+        <MachineRemovalReceipt
           card={nativeCard.card}
           resolution={isResolved ? (resolvedState ?? "cancelled") : null}
           answers={options?.resolvedInputAnswers?.get(event.itemId)}
@@ -4472,13 +4662,23 @@ function renderEvent(
     const recovery = classifyProviderFailure(event);
     const errorCategory = typeof event.errorInfo === "object" ? event.errorInfo?.category : undefined;
     const errorProvider = typeof event.errorInfo === "object" ? event.errorInfo?.provider : undefined;
-    const presentation = readChatErrorPresentation(event.errorInfo)
-      ?? presentChatFailure({
-        kind: chatErrorKindFromCategory(errorCategory),
-        message: event.message,
-        detail: event.detail,
-        provider: errorProvider,
-      });
+    const errorCode = typeof event.errorInfo === "object" ? event.errorInfo?.code : undefined;
+    const basePresentation = readChatErrorPresentation(event.errorInfo)
+      ?? (errorCode === "disk_full"
+        ? presentDiskFullRefusal(event.message)
+        : presentChatFailure({
+          kind: chatErrorKindFromCategory(errorCategory),
+          message: event.message,
+          detail: event.detail,
+          provider: errorProvider,
+        }));
+    // The turn's later errors ride under this one line's Details (`foldTurnFailureRows`).
+    const presentation = envelope.failureNotes?.length
+      ? {
+          ...basePresentation,
+          technicalDetail: [basePresentation.technicalDetail, ...envelope.failureNotes].filter(Boolean).join("\n"),
+        }
+      : basePresentation;
     const renderAgentCliAuthCard = () => agentCliInfo ? (
       <AgentCliAuthCard
         agentCli={agentCliInfo}
@@ -4589,6 +4789,10 @@ function renderEvent(
     // while setup runs; afterwards it is a one-line summary that expands.
     if (event.variant === "lane_setup") {
       return <LaneSetupTranscriptCard card={event} />;
+    }
+    // An agent asks the person for a new ADE Cloud size: the tier-change card, then its steps.
+    if (event.variant === CLOUD_TIER_REQUEST_CARD_VARIANT) {
+      return <CloudTierRequestCard card={event} sessionId={options?.sessionId ?? null} />;
     }
     // An MCP App: the page a server ships with a tool, run in the scene
     // sandbox. Where this build cannot host one (the web client) the card
@@ -4874,6 +5078,7 @@ function DoneTurnDivider({
   turnDiffSummaries = null,
   usageLimitResumeTurnId,
   endedAtUsageLimit = false,
+  failureShown = false,
   repeatCount = 1,
   workSummaryInFold = false,
   turnSources,
@@ -4903,6 +5108,8 @@ function DoneTurnDivider({
   usageLimitResumeTurnId?: string | null;
   /** The transcript read this turn's own error as a usage limit (`foldTurnFailureRows`). */
   endedAtUsageLimit?: boolean;
+  /** This failed turn's failure line is drawn above (`foldTurnFailureRows`): no second "failed" here. */
+  failureShown?: boolean;
   /** Identical failed retries folded into this turn, itself included. */
   repeatCount?: number;
   toolEntries: ChatWorkLogEntry[];
@@ -4934,7 +5141,10 @@ function DoneTurnDivider({
 }) {
   const [usageDetailsOpen, setUsageDetailsOpen] = useState(false);
   const turnProof = proofArtifacts ?? EMPTY_PROOF_ARTIFACTS;
-  const completed = event.status === "completed";
+  // A failed turn whose failure line is already drawn ends like any other turn.
+  // (A turn the live usage limit is anchored to keeps its paused footer.)
+  const completed = event.status === "completed"
+    || (failureShown && !isUsageLimitTurn(event, usageLimitResumeTurnId));
   const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
   const reasonLabel = completed ? null : terminalReasonLabel(event.terminalReason);
   // Same rule as the fold row's `Worked for …`: any measured duration shows.
@@ -5314,7 +5524,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   turnEndDurationMs?: number | null;
   turnToolEntries?: ChatWorkLogEntry[];
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-  onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   /** Re-runs compaction through the pane's guarded compact action. */
@@ -5402,7 +5612,7 @@ const EventRow = React.memo(function EventRow({
   turnEndDurationMs,
   turnToolEntries = [],
   onApproval,
-  onCodexRecovery,
+  onQuietTurnRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
   onRetryCompaction,
@@ -5527,13 +5737,23 @@ const EventRow = React.memo(function EventRow({
         <WakeChainRow event={envelope.event} open={turnFoldOpen} onToggle={onToggleTurnFold} />
       ) : envelope.event.type === "work_log_group" ? (
         // Only groups holding computer-use actions reach the timeline; their
-        // other tools stay in the tools toggle.
-        <ChatComputerUseActionRun entries={envelope.event.entries} compactAll={envelope.event.computerUseCompact === true} />
+        // other tools stay in the tools toggle. The CTO thread also keeps its
+        // state changes, drawn as quiet chips.
+        surfaceProfile === "persistent_identity" && drawsCtoChips(envelope.event.entries) ? (
+          <>
+            <CtoToolChips entries={envelope.event.entries} />
+            {hasComputerUseEntries(envelope.event.entries)
+              ? <ChatComputerUseActionRun entries={envelope.event.entries} compactAll={envelope.event.computerUseCompact === true} />
+              : null}
+          </>
+        ) : (
+          <ChatComputerUseActionRun entries={envelope.event.entries} compactAll={envelope.event.computerUseCompact === true} />
+        )
       ) : envelope.event.type === "activity_bundle"
-        ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
+        ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} hidePendingSchedules={surfaceProfile === "persistent_identity"} />
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
-            onCodexRecovery,
+            onQuietTurnRecovery,
             onRecoverContinuity,
             onRetryProviderFailure,
             onRetryCompaction,
@@ -5581,37 +5801,42 @@ const EventRow = React.memo(function EventRow({
             playEntrance,
           })}
       {envelope.event.type === "done" && !(compactOnlyTurn && envelope.event.status === "completed") ? (
-        <DoneTurnDivider
-          event={envelope.event}
-          timestamp={envelope.timestamp}
-          assistantTurnCopyText={assistantTurnCopyText}
-          durationMs={turnEndDurationMs ?? null}
-          toolEntries={turnToolEntries}
-          proofArtifacts={turnProof}
-          scheduledWork={turnScheduledWork}
-          turnEndFold={turnEndFold}
-          wakeChain={turnEndWakeChain}
-          onToggleFold={onToggleTurnFold}
-          onOpenProofDrawer={onOpenProofDrawer}
-          onNavigateSuggestion={onNavigateSuggestion}
-          onInsertDraft={onInsertDraft}
-          onRevealChatTerminal={onRevealChatTerminal}
-          sessionId={sessionId}
-          onReviewInFiles={onReviewChanges}
-          turnFileEntries={turnFileEntries}
-          hasCheckpointDiffSummary={hasCheckpointDiffSummary}
-          turnDiffSummary={doneTurnId
-            ? (turnDiffSummaries?.find((summary) => summary.turnId === doneTurnId) ?? null)
-            : null}
-          turnDiffSummaries={turnDiffSummaries}
-          usageLimitResumeTurnId={usageLimitResumeTurnId}
-          endedAtUsageLimit={envelope.endedAtUsageLimit === true}
-          repeatCount={envelope.repeatCount ?? 1}
-          workSummaryInFold={turnWorkInFold}
-          turnSources={turnSources}
-          onOpenTurnSources={onOpenTurnSources}
-          onForkFromTurn={onForkFromTurn}
-        />
+        // The CTO thread keeps a finished turn's stats line (time, tokens,
+        // tool count) out of sight until the person hovers the reply.
+        <div className={surfaceProfile === "persistent_identity" && envelope.event.status === "completed" ? "ade-cto-turnend" : "contents"}>
+          <DoneTurnDivider
+            event={envelope.event}
+            timestamp={envelope.timestamp}
+            assistantTurnCopyText={assistantTurnCopyText}
+            durationMs={turnEndDurationMs ?? null}
+            toolEntries={turnToolEntries}
+            proofArtifacts={turnProof}
+            scheduledWork={turnScheduledWork}
+            turnEndFold={turnEndFold}
+            wakeChain={turnEndWakeChain}
+            onToggleFold={onToggleTurnFold}
+            onOpenProofDrawer={onOpenProofDrawer}
+            onNavigateSuggestion={onNavigateSuggestion}
+            onInsertDraft={onInsertDraft}
+            onRevealChatTerminal={onRevealChatTerminal}
+            sessionId={sessionId}
+            onReviewInFiles={onReviewChanges}
+            turnFileEntries={turnFileEntries}
+            hasCheckpointDiffSummary={hasCheckpointDiffSummary}
+            turnDiffSummary={doneTurnId
+              ? (turnDiffSummaries?.find((summary) => summary.turnId === doneTurnId) ?? null)
+              : null}
+            turnDiffSummaries={turnDiffSummaries}
+            usageLimitResumeTurnId={usageLimitResumeTurnId}
+            endedAtUsageLimit={envelope.endedAtUsageLimit === true}
+            failureShown={envelope.failureShown === true}
+            repeatCount={envelope.repeatCount ?? 1}
+            workSummaryInFold={turnWorkInFold}
+            turnSources={turnSources}
+            onOpenTurnSources={onOpenTurnSources}
+            onForkFromTurn={onForkFromTurn}
+          />
+        </div>
       ) : null}
       {inlineProof?.length ? (
         <div className="w-full max-w-[var(--chat-content-width,52rem)]">
@@ -5692,6 +5917,18 @@ const EMPTY_FIND_EXCLUDED_KEYS: ReadonlySet<string> = new Set();
 
 /** Estimated height per message row (px) used before real measurement. */
 const ESTIMATED_ROW_HEIGHT = 80;
+/**
+ * The virtual box while the list follows the bottom: its rows sit at its end.
+ * Rows that just mounted keep their estimated height in the box until they
+ * measure; estimates that ran high left that slack under the last message, and
+ * the view pinned to the end showed an empty pane for a frame. At the end, the
+ * slack sits above the mounted rows, out of view.
+ */
+const END_ALIGNED_VIRTUAL_BOX_STYLE: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "flex-end",
+};
 /** Column width assumed by the per-row estimate before the column is measured. */
 const ESTIMATE_DEFAULT_COLUMN_WIDTH_PX = 720;
 /** The per-row estimate is recomputed only when the column width moves a full step. */
@@ -5911,6 +6148,24 @@ const OLDER_HISTORY_AUTO_FILL_DELAY_MS = 1_500;
 const OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS = 1_000;
 /** How often backfill looks again while a scroll restore is still landing. */
 const OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS = 500;
+/**
+ * A backfill page waits until the reader's scrolling has been quiet this long.
+ * Each page re-runs the row pipeline over the resident transcript, and one
+ * that lands during a wheel scroll drops frames. A reader near the top is
+ * waiting for the page and still gets it at once.
+ */
+const OLDER_HISTORY_BACKFILL_SCROLL_QUIET_MS = 400;
+/**
+ * A page that arrives while the reader scrolls (wheel, touch, momentum, a held
+ * press) waits until the scrolling has been quiet this long before it is
+ * prepended. The prepend re-lays out the list and moves scrollTop; inside a
+ * gesture that drops frames and fights the scroll.
+ */
+const OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS = 150;
+/** Longest a page waits for a quiet scroll, so a scroll that never ends (or a lost pointerup) cannot hold it. */
+const OLDER_HISTORY_PREPEND_MAX_HOLD_MS = 2_000;
+/** How often a held page looks again, for the quiet spell or the reader reaching the top. */
+const OLDER_HISTORY_PREPEND_RECHECK_MS = 50;
 function scrollCommitKeyOf(startIndex: number, endIndex: number, activeOrdinal: number | null): string {
   return `${startIndex}:${endIndex}:${activeOrdinal ?? -1}`;
 }
@@ -6043,6 +6298,13 @@ function readLaidOutChatRowTop(container: HTMLElement, rowKey: string): number |
   return null;
 }
 
+/**
+ * How many mounted rows, top down, a turn that folds under the reader checks
+ * for one that stays drawn. More than a screen of rows, so a short screen of
+ * folded narration still finds the next row that stays.
+ */
+const CHAT_FOLD_ANCHOR_SCAN_ROWS = 64;
+
 type PendingFoldAnchor = {
   /** Row whose on-screen top must not move across the fold change. */
   key: string;
@@ -6114,9 +6376,10 @@ function AgentChatMessageListMain({
   showStreamingIndicator = false,
   textPacingEnabled = true,
   transcriptPending = false,
+  emptyTranscript = null,
     className,
   onApproval,
-  onCodexRecovery,
+  onQuietTurnRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
   onRetryCompaction,
@@ -6129,6 +6392,7 @@ function AgentChatMessageListMain({
   surfaceProfile = "standard",
   assistantLabel,
   sessionTurnActive = false,
+  wakingSinceMs = null,
   usageLimitResumeActive = false,
   usageLimitResumeTurnId = null,
   onOpenWorkspacePath,
@@ -6194,9 +6458,11 @@ function AgentChatMessageListMain({
    * without their entrance (`RowEntranceGate`).
    */
   transcriptPending?: boolean;
+  /** Shown in place of a transcript that has no messages once its first read is done. */
+  emptyTranscript?: React.ReactNode;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-  onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   /** Re-runs compaction through the pane's guarded compact action. */
@@ -6211,6 +6477,12 @@ function AgentChatMessageListMain({
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
   sessionTurnActive?: boolean;
+  /**
+   * Set while a send wakes the chat's sleeping cloud computer: when the wake
+   * started. Until a live turn takes over, the working indicator shows
+   * "Waking the computer…" and counts from here.
+   */
+  wakingSinceMs?: number | null;
   /**
    * The host's live usage-limit resume state for this chat, or null. Only two
    * facts are read here — that a limit is live (the quota card stands down for
@@ -6259,7 +6531,12 @@ function AgentChatMessageListMain({
   /** Retryable error from the most recent older-history request. */
   olderHistoryError?: string | null;
   /** Called when automatic scroll-back needs an older page. */
-  onLoadOlderHistory?: (options?: { backfill?: boolean }) => void;
+  /**
+   * `whenScrollQuiet` is null while the reader is not scrolling, else a promise
+   * that settles once the scrolling goes quiet. The owner awaits it before it
+   * prepends a page that arrived mid-scroll.
+   */
+  onLoadOlderHistory?: (options?: { backfill?: boolean; whenScrollQuiet?: () => Promise<void> | null }) => void;
   /**
    * Page the rest of the transcript in during idle time. Only for owners whose
    * loader refuses a backfill page that would hit the resident cap (the cap
@@ -6572,6 +6849,36 @@ function AgentChatMessageListMain({
   backfillArmStateRef.current = { armed: backfillArmed, key: backfillSessionKey };
   /** A press on the list is held (a scrollbar drag, among others). */
   const readerPointerHeldRef = useRef(false);
+  /** When the reader last scrolled (`performance.now()`); backfill waits for a quiet spell. */
+  const lastReaderScrollAtRef = useRef(Number.NEGATIVE_INFINITY);
+  /** A finger is on the list: a touch scroll can pause without lifting. */
+  const touchHeldRef = useRef(false);
+  /** See `OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS`. Null at once when nothing is scrolling. */
+  const whenScrollQuiet = useCallback((): Promise<void> | null => {
+    const busyFor = () => {
+      if (readerPointerHeldRef.current || touchHeldRef.current) return OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS;
+      // At the top the wheel has nothing left to move: the reader waits for
+      // this page, and the prepend cannot fight the gesture. Holding it here
+      // kept a reader who scrolled up without a pause at the top for the full
+      // hold (about 1.8 s) on every page.
+      if ((scrollRef.current?.scrollTop ?? Number.POSITIVE_INFINITY) < 1) return 0;
+      return OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS - (performance.now() - lastReaderScrollAtRef.current);
+    };
+    if (busyFor() <= 0) return null;
+    const giveUpAt = performance.now() + OLDER_HISTORY_PREPEND_MAX_HOLD_MS;
+    return new Promise<void>((resolve) => {
+      const check = () => {
+        const wait = busyFor();
+        if (wait <= 0 || performance.now() >= giveUpAt) {
+          resolve();
+          return;
+        }
+        // Look at least every 50 ms, so a reader who reaches the top gets the page then.
+        setTimeout(check, Math.max(16, Math.min(wait, OLDER_HISTORY_PREPEND_RECHECK_MS, giveUpAt - performance.now())));
+      };
+      check();
+    });
+  }, []);
   const armOlderHistoryBackfill = useCallback(() => {
     const { armed, key } = backfillArmStateRef.current;
     if (armed) return;
@@ -6606,8 +6913,8 @@ function AgentChatMessageListMain({
       if (autoOlderLoadsSinceUserScrollRef.current >= MAX_CHAINED_AUTO_OLDER_PAGES) return;
       autoOlderLoadsSinceUserScrollRef.current += 1;
     }
-    onLoadOlderHistoryRef.current?.(source === "backfill" ? { backfill: true } : undefined);
-  }, []);
+    onLoadOlderHistoryRef.current?.({ backfill: source === "backfill", whenScrollQuiet });
+  }, [whenScrollQuiet]);
 
   // Re-arm after a batch that changed nothing visible.
   //
@@ -6659,6 +6966,15 @@ function AgentChatMessageListMain({
       // (a timer, not another idle slot, which can come back every frame).
       if (scrollRestoreActiveRef.current) {
         timer = setTimeout(run, OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS);
+        return;
+      }
+      // The reader is scrolling: a prepend now would drop frames. Look again
+      // once the scroll has been quiet, unless they are near the top and waiting.
+      const sinceScrollMs = performance.now() - lastReaderScrollAtRef.current;
+      const root = scrollRef.current;
+      const readerWaiting = root != null && root.scrollTop <= resolveOlderHistoryPrefetchTriggerPx(root.clientHeight);
+      if (!readerWaiting && sinceScrollMs < OLDER_HISTORY_BACKFILL_SCROLL_QUIET_MS) {
+        timer = setTimeout(run, OLDER_HISTORY_BACKFILL_SCROLL_QUIET_MS - sinceScrollMs);
         return;
       }
       maybeRequestOlderHistory(scrollRef.current?.scrollTop ?? 0, "backfill");
@@ -6840,9 +7156,15 @@ function AgentChatMessageListMain({
   // rendering an empty block) keeps them from consuming a `--chat-row-gap`.
   // Then one row per schedule (`foldScheduledWorkRows`), and an ended turn's
   // schedules move onto its turn-end line (`moveScheduledWorkToTurnEnds`).
+  const ctoSurface = surfaceProfile === "persistent_identity";
   const scheduledWorkAtTurnEnd = useMemo(
     () => moveScheduledWorkToTurnEnds(foldScheduledWorkRows(allGroupedRows.filter((row) => {
-      if (row.event.type === "work_log_group") return hasComputerUseEntries(row.event.entries);
+      if (row.event.type === "work_log_group") {
+        return hasComputerUseEntries(row.event.entries) || (ctoSurface && drawsCtoChips(row.event.entries));
+      }
+      // The CTO re-sends the person's message after a fresh context or a model
+      // switch; the bubble they typed is already on screen, so the copy is not drawn.
+      if (ctoSurface && row.event.type === "user_message" && row.event.metadata?.ctoResend) return false;
       if (
         row.event.type === "turn_diff_summary"
         && row.event.turnId
@@ -6850,7 +7172,7 @@ function AgentChatMessageListMain({
       ) return false;
       return true;
     }))),
-    [allGroupedRows, doneTurnIds],
+    [allGroupedRows, ctoSurface, doneTurnIds],
   );
   const scheduledWorkByTurnEndKey = scheduledWorkAtTurnEnd.byTurnEndKey;
   const previousPresentedRowsRef = useRef<readonly TranscriptGroupedEnvelope[]>([]);
@@ -6916,8 +7238,11 @@ function AgentChatMessageListMain({
       () => deriveChatTranscriptTurnFolds(
         presentedRows,
         readTurnEndSnapshots(collapseCacheState.cache.context),
+        // The CTO's state chips stay visible under its fold: they are what
+        // the turn changed, not how it got there.
+        ctoSurface ? keepCtoChipRowsVisible : undefined,
       ),
-      [collapseCacheState, presentedRows],
+      [collapseCacheState, ctoSurface, presentedRows],
     ),
     sameTurnFolds,
   );
@@ -7080,9 +7405,164 @@ function AgentChatMessageListMain({
   // What decides that a row draws nothing (`transcriptEventDrawsNothing`):
   // `renderEvent` and the Thought-run merge read the same answer.
   const rowDrawContext = useMemo<TranscriptRowDrawContext>(
-    () => ({ staleInterruptReceipts, usageLimitResumeActive }),
-    [staleInterruptReceipts, usageLimitResumeActive],
+    () => ({ staleInterruptReceipts, usageLimitResumeActive, ctoSurface }),
+    [staleInterruptReceipts, usageLimitResumeActive, ctoSurface],
   );
+  /**
+   * Proof an answer already shows inline. The turn's "N proof filed" links
+   * skip it, so a picture never shows twice in one thread.
+   *
+   * Text streams in pieces, so each turn's pieces are joined before reading
+   * citations, which keeps a split citation whole. Per turn, the result is
+   * kept with the turn's text size and piece count: a streaming delta only
+   * grows the live turn, so only that turn is joined and read again.
+   */
+  const citedIdsByTurnRef = useRef(new Map<string, { pieces: number; chars: number; ids: string[] }>());
+  const answerCitedProofIds = useMemo(() => {
+    if (!proofArtifacts.length) return EMPTY_PROOF_IDS;
+    const piecesByTurn = new Map<string, string[]>();
+    for (const envelope of events) {
+      if (envelope.event.type !== "text") continue;
+      const key = envelope.event.turnId ?? "";
+      const pieces = piecesByTurn.get(key);
+      if (pieces) pieces.push(envelope.event.text);
+      else piecesByTurn.set(key, [envelope.event.text]);
+    }
+    const previous = citedIdsByTurnRef.current;
+    const next = new Map<string, { pieces: number; chars: number; ids: string[] }>();
+    const cited = new Set<string>();
+    for (const [key, pieces] of piecesByTurn) {
+      let chars = 0;
+      for (const piece of pieces) chars += piece.length;
+      const cachedTurn = previous.get(key);
+      const entry = cachedTurn && cachedTurn.pieces === pieces.length && cachedTurn.chars === chars
+        ? cachedTurn
+        : { pieces: pieces.length, chars, ids: turnCitedProofIds(pieces.join("")) };
+      next.set(key, entry);
+      for (const id of entry.ids) cited.add(id);
+    }
+    citedIdsByTurnRef.current = next;
+    return cited.size ? cited : EMPTY_PROOF_IDS;
+  }, [events, proofArtifacts.length]);
+
+  // Proof a "Filed proof" row already shows under its line. While the turn
+  // runs, the inline "N proof filed" line skips it; the turn-end count keeps it.
+  const actionShownProofIds = useMemo(() => {
+    let ids: Set<string> | null = null;
+    for (const env of allGroupedRows) {
+      if (env.event.type !== "work_log_group") continue;
+      for (const { summary } of collectComputerUseActions(env.event.entries)) {
+        for (const id of computerUseShownProofIds(summary)) (ids ??= new Set()).add(id);
+      }
+    }
+    return ids ?? EMPTY_PROOF_IDS;
+  }, [allGroupedRows]);
+
+  /**
+   * Proof captured during each turn, keyed by the turn's `done` row, for its
+   * "N proof filed" link — a way into the drawer, not a second copy of the
+   * pictures, which show on the rows that filed them. Proof outside a finished
+   * turn anchors on the row it follows. Bucketing is by wall clock because
+   * artifacts carry `createdAt`, not turnId.
+   */
+  const turnProofTimeline = useMemo(() => {
+    const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();
+    const inlineByRowKey = new Map<string, ComputerUseArtifactView[]>();
+    if (!proofArtifacts.length) {
+      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
+    }
+    const stamped = proofArtifacts
+      .filter((artifact) => !answerCitedProofIds.has(artifact.id))
+      .map((artifact) => ({ artifact, at: Date.parse(artifact.createdAt) }))
+      .filter((entry) => Number.isFinite(entry.at))
+      .sort((left, right) => left.at - right.at);
+    if (!stamped.length) {
+      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
+    }
+    const loadedTranscriptStart = allGroupedRows.reduce((earliest, env) => {
+      const at = Date.parse(env.timestamp);
+      return Number.isFinite(at) ? Math.min(earliest, at) : earliest;
+    }, Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(loadedTranscriptStart)) {
+      return {
+        byDoneRowKey,
+        inlineByRowKey,
+        // With no loaded rows, an older page means this is not the transcript
+        // boundary. Do not pull unknown historic proof into the visible tail.
+        unanchored: hasOlderHistory ? EMPTY_PROOF_ARTIFACTS : stamped.map((entry) => entry.artifact),
+      };
+    }
+    const visibleStamped = stamped.filter((entry) => entry.at >= loadedTranscriptStart);
+    const assignedIds = new Set<string>();
+    let turnStartMs: number | null = null;
+    for (const env of allGroupedRows) {
+      const rowMs = Date.parse(env.timestamp);
+      if (!Number.isFinite(rowMs)) continue;
+      if (
+        turnStartMs == null
+        && (getGroupedTurnId(env) != null || env.event.type === "user_message")
+      ) {
+        turnStartMs = rowMs;
+      }
+      if (env.event.type !== "done") continue;
+      const endMs = rowMs;
+      const startMs = turnStartMs ?? endMs;
+      const captured = visibleStamped
+        .filter((entry) => entry.at >= startMs && entry.at <= endMs)
+        .map((entry) => entry.artifact);
+      if (captured.length > 0) {
+        byDoneRowKey.set(env.key, captured);
+        for (const artifact of captured) assignedIds.add(artifact.id);
+      }
+      turnStartMs = null;
+    }
+
+    // Anchored on the unfolded rows so opening or closing a fold never moves
+    // proof between rows; `inlineProofByRowKey` below lifts proof whose row is
+    // hidden onto the fold row.
+    const visibleRows = presentedRows
+      .map((row) => ({ row, at: Date.parse(row.timestamp) }))
+      .filter((entry) => Number.isFinite(entry.at))
+      .sort((left, right) => left.at - right.at);
+    const unanchored: ComputerUseArtifactView[] = [];
+    for (const entry of visibleStamped) {
+      if (assignedIds.has(entry.artifact.id) || actionShownProofIds.has(entry.artifact.id)) continue;
+      let anchorKey: string | null = null;
+      for (const row of visibleRows) {
+        if (row.at > entry.at) break;
+        anchorKey = row.row.key;
+      }
+      if (!anchorKey) {
+        unanchored.push(entry.artifact);
+        continue;
+      }
+      const existing = inlineByRowKey.get(anchorKey) ?? [];
+      existing.push(entry.artifact);
+      inlineByRowKey.set(anchorKey, existing);
+    }
+
+    return {
+      byDoneRowKey,
+      inlineByRowKey,
+      unanchored,
+    };
+  }, [allGroupedRows, presentedRows, hasOlderHistory, proofArtifacts, answerCitedProofIds, actionShownProofIds]);
+  const turnProofByRowKey = turnProofTimeline.byDoneRowKey;
+  // Sources the agent used per turn: the turn-end chip and the fold count.
+  // A turn's list keeps its identity while its sources are unchanged, so a
+  // streaming delta does not re-render every memoized turn-end row.
+  const turnSourcesCacheRef = useRef<Map<string, ChatSource[]>>(new Map());
+  const turnSourcesByTurnId = useMemo(() => {
+    const previous = turnSourcesCacheRef.current;
+    const next = new Map<string, ChatSource[]>();
+    const derived = chatSources ?? deriveChatSources(events, { provider: sessionProvider });
+    for (const [turnId, list] of derived.byTurn) {
+      const prior = previous.get(turnId);
+      next.set(turnId, prior && sameChatSourceList(prior, list) ? prior : list);
+    }
+    turnSourcesCacheRef.current = next;
+    return next;
+  }, [chatSources, events, sessionProvider]);
   // The rows the timeline draws: every fold applied, then Thought rows that
   // ended up next to each other (the rows between them are not drawn: tools,
   // an open fold's duplicate answer) merged into one (`mergeAdjacentThoughtRows`).
@@ -7123,9 +7603,33 @@ function AgentChatMessageListMain({
     // A row that draws nothing (a queued steer, a stale interrupt receipt, …)
     // is not a row: kept, it measures 0, which never replaces its estimate,
     // and a run of them at the tail strands the thread above a blank band.
-    const drawn = arranged.rows.filter((row) => !transcriptEventDrawsNothing(row.event, rowDrawContext));
+    // The CTO thread's live turn: its thinking stays inside the one working
+    // line (`CtoWorkingLine`) until the turn ends and the fold takes over.
+    const calmTurnId = ctoSurface && showStreamingIndicator && !sessionEnded ? activeTurnId : null;
+    // A finished CTO turn has no stats line: the reply's hover footer keeps
+    // its time and Copy, and a hidden line still took a row of blank space.
+    // A turn-end row that carries something stays: a wake turn's fold toggle,
+    // a wake chain's toggle, scheduled work, its proof link, its sources, or its
+    // file changes.
+    const quietCtoTurnEnd = (row: (typeof arranged.rows)[number]): boolean =>
+      ctoSurface
+      && row.event.type === "done"
+      && row.event.status === "completed"
+      && !wakeTurnFoldIdByTurnEndKey.has(row.key)
+      && !wakeChainByAnchorKey.has(row.key)
+      && !scheduledWorkByTurnEndKey.has(row.key)
+      && !turnProofByRowKey.has(row.key)
+      && !turnProofTimeline.inlineByRowKey.has(row.key)
+      && !(transcriptToolActivity.fileEntriesByDoneRowKey.get(row.key)?.length)
+      && !(row.event.turnId && (
+        checkpointDiffTurnIds.has(row.event.turnId)
+        || (turnSourcesByTurnId.get(row.event.turnId)?.length ?? 0) > 0
+      ));
+    const drawn = arranged.rows.filter((row) => !transcriptEventDrawsNothing(row.event, rowDrawContext)
+      && !(calmTurnId && row.event.type === "reasoning" && row.event.turnId === calmTurnId)
+      && !quietCtoTurnEnd(row));
     return drawn.length === arranged.rows.length ? arranged.rows : drawn;
-  }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds, unreadSince, wakeChains, wakeTurnIds]);
+  }, [activeTurnId, checkpointDiffTurnIds, ctoSurface, openTurnFolds, presentedRows, rowDrawContext, scheduledWorkByTurnEndKey, sessionEnded, transcriptToolActivity, turnProofByRowKey, turnProofTimeline, turnSourcesByTurnId, showStreamingIndicator, turnFolds, unreadSince, wakeChainByAnchorKey, wakeChains, wakeTurnFoldIdByTurnEndKey, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
   // name it land on the merged row.
@@ -7282,8 +7786,25 @@ function AgentChatMessageListMain({
           const swallowing = newFolds.find((fold) => (
             fold.hiddenKeys.has(first.key) && !openTurnFolds.has(fold.foldId)
           ));
+          // The row being read folded away. A row still on screen that stays
+          // drawn holds the reader's place; the fold row does that only when
+          // nothing on screen stays. In a long turn that ends under the reader,
+          // the fold row sits at the turn's top, so taking it moved the view
+          // there in one frame. `placeKey` is the previous row whose position
+          // the anchor takes: the fold row takes the place of the row it hid.
+          let anchor = { key: first.key, top: first.top, placeKey: first.key };
+          if (swallowing) {
+            const nextKeys = new Set(groupedRowKeys);
+            const staying = readVisibleChatRows(container, CHAT_FOLD_ANCHOR_SCAN_ROWS)
+              // The task-list row keeps its key as it moves to its latest
+              // update's turn, so holding it would shift the answer instead.
+              .find((row) => row.top < container.clientHeight && nextKeys.has(row.key) && !isTaskListRowKey(row.key));
+            anchor = staying
+              ? { key: staying.key, top: staying.top, placeKey: staying.key }
+              : { key: swallowing.foldId, top: first.top, placeKey: first.key };
+          }
           const previousKeys = groupedRowKeysRef.current;
-          const previousIndex = previousKeys.indexOf(first.key);
+          const previousIndex = previousKeys.indexOf(anchor.placeKey);
           const previousOffsets = previousIndex >= 0
             ? computeRowStartOffsets(
                 previousIndex + 1,
@@ -7292,8 +7813,8 @@ function AgentChatMessageListMain({
               )
             : null;
           pendingFoldAnchorRef.current = {
-            key: swallowing ? swallowing.foldId : first.key,
-            top: first.top,
+            key: anchor.key,
+            top: anchor.top,
             modelTop: previousOffsets ? previousOffsets[previousIndex]! - container.scrollTop : null,
             wasStuck: false,
             fromToggle: false,
@@ -7460,161 +7981,6 @@ function AgentChatMessageListMain({
     [allGroupedRows, turnStartedAtMs],
   );
 
-  /**
-   * Proof an answer already shows inline. The turn's "N proof filed" links
-   * skip it, so a picture never shows twice in one thread.
-   *
-   * Text streams in pieces, so each turn's pieces are joined before reading
-   * citations, which keeps a split citation whole. Per turn, the result is
-   * kept with the turn's text size and piece count: a streaming delta only
-   * grows the live turn, so only that turn is joined and read again.
-   */
-  const citedIdsByTurnRef = useRef(new Map<string, { pieces: number; chars: number; ids: string[] }>());
-  const answerCitedProofIds = useMemo(() => {
-    if (!proofArtifacts.length) return EMPTY_PROOF_IDS;
-    const piecesByTurn = new Map<string, string[]>();
-    for (const envelope of events) {
-      if (envelope.event.type !== "text") continue;
-      const key = envelope.event.turnId ?? "";
-      const pieces = piecesByTurn.get(key);
-      if (pieces) pieces.push(envelope.event.text);
-      else piecesByTurn.set(key, [envelope.event.text]);
-    }
-    const previous = citedIdsByTurnRef.current;
-    const next = new Map<string, { pieces: number; chars: number; ids: string[] }>();
-    const cited = new Set<string>();
-    for (const [key, pieces] of piecesByTurn) {
-      let chars = 0;
-      for (const piece of pieces) chars += piece.length;
-      const cachedTurn = previous.get(key);
-      const entry = cachedTurn && cachedTurn.pieces === pieces.length && cachedTurn.chars === chars
-        ? cachedTurn
-        : { pieces: pieces.length, chars, ids: turnCitedProofIds(pieces.join("")) };
-      next.set(key, entry);
-      for (const id of entry.ids) cited.add(id);
-    }
-    citedIdsByTurnRef.current = next;
-    return cited.size ? cited : EMPTY_PROOF_IDS;
-  }, [events, proofArtifacts.length]);
-
-  // Proof a "Filed proof" row already shows under its line. While the turn
-  // runs, the inline "N proof filed" line skips it; the turn-end count keeps it.
-  const actionShownProofIds = useMemo(() => {
-    let ids: Set<string> | null = null;
-    for (const env of allGroupedRows) {
-      if (env.event.type !== "work_log_group") continue;
-      for (const { summary } of collectComputerUseActions(env.event.entries)) {
-        for (const id of computerUseShownProofIds(summary)) (ids ??= new Set()).add(id);
-      }
-    }
-    return ids ?? EMPTY_PROOF_IDS;
-  }, [allGroupedRows]);
-
-  /**
-   * Proof captured during each turn, keyed by the turn's `done` row, for its
-   * "N proof filed" link — a way into the drawer, not a second copy of the
-   * pictures, which show on the rows that filed them. Proof outside a finished
-   * turn anchors on the row it follows. Bucketing is by wall clock because
-   * artifacts carry `createdAt`, not turnId.
-   */
-  const turnProofTimeline = useMemo(() => {
-    const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();
-    const inlineByRowKey = new Map<string, ComputerUseArtifactView[]>();
-    if (!proofArtifacts.length) {
-      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
-    }
-    const stamped = proofArtifacts
-      .filter((artifact) => !answerCitedProofIds.has(artifact.id))
-      .map((artifact) => ({ artifact, at: Date.parse(artifact.createdAt) }))
-      .filter((entry) => Number.isFinite(entry.at))
-      .sort((left, right) => left.at - right.at);
-    if (!stamped.length) {
-      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
-    }
-    const loadedTranscriptStart = allGroupedRows.reduce((earliest, env) => {
-      const at = Date.parse(env.timestamp);
-      return Number.isFinite(at) ? Math.min(earliest, at) : earliest;
-    }, Number.POSITIVE_INFINITY);
-    if (!Number.isFinite(loadedTranscriptStart)) {
-      return {
-        byDoneRowKey,
-        inlineByRowKey,
-        // With no loaded rows, an older page means this is not the transcript
-        // boundary. Do not pull unknown historic proof into the visible tail.
-        unanchored: hasOlderHistory ? EMPTY_PROOF_ARTIFACTS : stamped.map((entry) => entry.artifact),
-      };
-    }
-    const visibleStamped = stamped.filter((entry) => entry.at >= loadedTranscriptStart);
-    const assignedIds = new Set<string>();
-    let turnStartMs: number | null = null;
-    for (const env of allGroupedRows) {
-      const rowMs = Date.parse(env.timestamp);
-      if (!Number.isFinite(rowMs)) continue;
-      if (
-        turnStartMs == null
-        && (getGroupedTurnId(env) != null || env.event.type === "user_message")
-      ) {
-        turnStartMs = rowMs;
-      }
-      if (env.event.type !== "done") continue;
-      const endMs = rowMs;
-      const startMs = turnStartMs ?? endMs;
-      const captured = visibleStamped
-        .filter((entry) => entry.at >= startMs && entry.at <= endMs)
-        .map((entry) => entry.artifact);
-      if (captured.length > 0) {
-        byDoneRowKey.set(env.key, captured);
-        for (const artifact of captured) assignedIds.add(artifact.id);
-      }
-      turnStartMs = null;
-    }
-
-    // Anchored on the unfolded rows so opening or closing a fold never moves
-    // proof between rows; `inlineProofByRowKey` below lifts proof whose row is
-    // hidden onto the fold row.
-    const visibleRows = presentedRows
-      .map((row) => ({ row, at: Date.parse(row.timestamp) }))
-      .filter((entry) => Number.isFinite(entry.at))
-      .sort((left, right) => left.at - right.at);
-    const unanchored: ComputerUseArtifactView[] = [];
-    for (const entry of visibleStamped) {
-      if (assignedIds.has(entry.artifact.id) || actionShownProofIds.has(entry.artifact.id)) continue;
-      let anchorKey: string | null = null;
-      for (const row of visibleRows) {
-        if (row.at > entry.at) break;
-        anchorKey = row.row.key;
-      }
-      if (!anchorKey) {
-        unanchored.push(entry.artifact);
-        continue;
-      }
-      const existing = inlineByRowKey.get(anchorKey) ?? [];
-      existing.push(entry.artifact);
-      inlineByRowKey.set(anchorKey, existing);
-    }
-
-    return {
-      byDoneRowKey,
-      inlineByRowKey,
-      unanchored,
-    };
-  }, [allGroupedRows, presentedRows, hasOlderHistory, proofArtifacts, answerCitedProofIds, actionShownProofIds]);
-  const turnProofByRowKey = turnProofTimeline.byDoneRowKey;
-  // Sources the agent used per turn: the turn-end chip and the fold count.
-  // A turn's list keeps its identity while its sources are unchanged, so a
-  // streaming delta does not re-render every memoized turn-end row.
-  const turnSourcesCacheRef = useRef<Map<string, ChatSource[]>>(new Map());
-  const turnSourcesByTurnId = useMemo(() => {
-    const previous = turnSourcesCacheRef.current;
-    const next = new Map<string, ChatSource[]>();
-    const derived = chatSources ?? deriveChatSources(events, { provider: sessionProvider });
-    for (const [turnId, list] of derived.byTurn) {
-      const prior = previous.get(turnId);
-      next.set(turnId, prior && sameChatSourceList(prior, list) ? prior : list);
-    }
-    turnSourcesCacheRef.current = next;
-    return next;
-  }, [chatSources, events, sessionProvider]);
   // Proof stays visible when its row folds: it draws on the fold row.
   // Likewise proof anchored on a Thought row that merged into the one before it
   // draws on the merged row.
@@ -7928,6 +8294,16 @@ function AgentChatMessageListMain({
   // flip the list between the plain and virtualized render paths, which would
   // remount every row and drop its measured height.
   const shouldVirtualize = presentedRows.length >= VIRTUALIZATION_THRESHOLD;
+  // A chat opening at its end paints only the rows on screen and two above
+  // them; the rest of the overscan mounts in the commit after that paint. Rows
+  // above the view are parsed, drawn and measured for a scroll that has not
+  // started, and on a long chat they were half the open (a 1,000 px reply
+  // among them). A window that does not fill the pane widens before paint.
+  // Once a list has drawn rows any other way (a short chat, a reader scrolled
+  // up), it never narrows later.
+  const [firstWindowWidened, setFirstWindowWidened] = useState(false);
+  const firstWindowSettledRef = useRef(false);
+  const narrowFirstWindow = !firstWindowWidened && !firstWindowSettledRef.current && shouldVirtualize && stickToBottom;
 
   useLayoutEffect(() => {
     measureScrollContainerHeight();
@@ -8286,6 +8662,7 @@ function AgentChatMessageListMain({
         containerHeight: windowContainerHeight,
         rowHeight,
         rowGap: timelineRowGapPx,
+        overscan: narrowFirstWindow ? CHAT_TRANSCRIPT_FIRST_PAINT_OVERSCAN : CHAT_TRANSCRIPT_OVERSCAN,
       });
     }
 
@@ -8296,7 +8673,46 @@ function AgentChatMessageListMain({
       rowHeight,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, windowContainerHeight, rowHeight, rowStartOffsets, timelineRowGapPx]);
+  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, windowContainerHeight, rowHeight, rowStartOffsets, timelineRowGapPx, narrowFirstWindow]);
+
+  // The narrow first window, checked against the rows' own heights: the rows
+  // measured themselves in their layout effects (they run before this one),
+  // and estimates can run high. Rows that leave part of the pane empty widen
+  // the window now, in a render before paint.
+  useLayoutEffect(() => {
+    if (!narrowFirstWindow || endIndex <= startIndex) return;
+    const paneHeight = windowContainerHeight;
+    if (paneHeight <= 0) return;
+    let mountedHeight = 0;
+    for (let index = startIndex; index < endIndex; index += 1) {
+      mountedHeight += rowHeight(index) + timelineRowGapPx;
+    }
+    if (mountedHeight < paneHeight) setFirstWindowWidened(true);
+  }, [narrowFirstWindow, startIndex, endIndex, windowContainerHeight, rowHeight, timelineRowGapPx]);
+
+  // The rest of the overscan: in the first task after the narrow window's
+  // paint (a frame, then a task), so a scroll right after the open still finds
+  // rows above. Pinned to the end, the rows that mount above keep the view in
+  // place.
+  const firstWindowHasRows = groupedRows.length > 0;
+  useEffect(() => {
+    if (!firstWindowHasRows) return undefined;
+    if (!narrowFirstWindow) {
+      firstWindowSettledRef.current = true;
+      return undefined;
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const raf = requestAnimationFrame(() => {
+      timer = setTimeout(() => {
+        firstWindowSettledRef.current = true;
+        setFirstWindowWidened(true);
+      }, 0);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [firstWindowHasRows, narrowFirstWindow]);
 
   // Not on `totalHeight`: it moves on every render of a growing reply, and the
   // content observer already pins the view when the content's box grows. This
@@ -8583,6 +8999,7 @@ function AgentChatMessageListMain({
 
   /** Wheel, touch, press, or a scroll key: the reader is driving now. */
   const noteReaderScrollIntent = useCallback(() => {
+    lastReaderScrollAtRef.current = performance.now();
     autoOlderLoadsSinceUserScrollRef.current = 0;
     if (scrollRestoreActiveRef.current) finishScrollRestore();
   }, [finishScrollRestore]);
@@ -8751,6 +9168,7 @@ function AgentChatMessageListMain({
     }
     // A scroll we did not author is the reader moving: automatic older pages
     // get their one chained page back.
+    lastReaderScrollAtRef.current = performance.now();
     autoOlderLoadsSinceUserScrollRef.current = 0;
     // A scrollbar drag upward (wheel, keys and touch arm through the scroll direction).
     if (readerPointerHeldRef.current && target.scrollTop < previousScrollTop - 0.5) armOlderHistoryBackfill();
@@ -8774,6 +9192,7 @@ function AgentChatMessageListMain({
 
   const handleTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     noteReaderScrollIntent();
+    touchHeldRef.current = true;
     lastTouchYRef.current = event.touches[0]?.clientY ?? null;
   }, [noteReaderScrollIntent]);
 
@@ -8807,8 +9226,11 @@ function AgentChatMessageListMain({
     lastTouchYRef.current = nextY;
   }, [noteReaderScrollDirection]);
 
-  const handleTouchEnd = useCallback(() => {
+  const handleTouchEnd = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     lastTouchYRef.current = null;
+    touchHeldRef.current = event.touches.length > 0;
+    // A fling keeps scrolling after the finger lifts; those scroll events keep the hold.
+    lastReaderScrollAtRef.current = performance.now();
   }, []);
 
   const jumpToLatest = useCallback(() => {
@@ -9006,7 +9428,7 @@ function AgentChatMessageListMain({
           inlineProof={inlineProof}
           onOpenProofDrawer={onOpenProofDrawer}
           onApproval={handleApproval}
-          onCodexRecovery={onCodexRecovery}
+          onQuietTurnRecovery={onQuietTurnRecovery}
           onRecoverContinuity={onRecoverContinuity}
           onRetryProviderFailure={onRetryProviderFailure}
           onRetryCompaction={onRetryCompaction}
@@ -9084,7 +9506,7 @@ function AgentChatMessageListMain({
         inlineProof={inlineProof}
         onOpenProofDrawer={onOpenProofDrawer}
         onApproval={handleApproval}
-        onCodexRecovery={onCodexRecovery}
+        onQuietTurnRecovery={onQuietTurnRecovery}
         onRecoverContinuity={onRecoverContinuity}
         onRetryProviderFailure={onRetryProviderFailure}
         onRetryCompaction={onRetryCompaction}
@@ -9140,7 +9562,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -9156,7 +9578,18 @@ function AgentChatMessageListMain({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
-  const streamingIndicator = showStreamingIndicator && !sessionEnded && !(activeTurnId && compactOnlyTurnIds.has(activeTurnId)) ? (
+  const liveTurnIndicator = showStreamingIndicator && !sessionEnded && !(activeTurnId && compactOnlyTurnIds.has(activeTurnId));
+  // The same indicator element, so a live turn that follows the wake takes it
+  // over in place instead of a second one fading in.
+  const wakingIndicator = !liveTurnIndicator && !sessionEnded && wakingSinceMs != null;
+  const workingActivity = wakingIndicator
+    ? "Waking the computer…"
+    : activeProviderRetryActivity || resolveWorkingIndicatorLabel(
+      latestActivity?.activity ?? null,
+      transcriptToolActivity.activeFileEntries,
+      transcriptToolActivity.activeEntries,
+    );
+  const streamingIndicator = liveTurnIndicator || wakingIndicator ? (
     <motion.div
       className="w-fit max-w-[var(--chat-content-width,52rem)] pt-3 pb-2"
       // Read when it mounts: shown with the chat it opened with, it does not fade in.
@@ -9164,24 +9597,28 @@ function AgentChatMessageListMain({
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
-      <WorkingIndicator
-        activity={
-          activeProviderRetryActivity
-            ? activeProviderRetryActivity
-            : resolveWorkingIndicatorLabel(
-              latestActivity?.activity ?? null,
-              transcriptToolActivity.activeFileEntries,
-              transcriptToolActivity.activeEntries,
-            )
-        }
-        startedAt={activeTurnStartedAt}
-        toolEntries={transcriptToolActivity.activeEntries}
-        replyWritesScene={activeTurnReplyWritesScene}
-        onNavigateSuggestion={handleNavigateSuggestion}
-        onInsertDraft={onInsertDraft}
-        onRevealChatTerminal={onRevealChatTerminal}
-        sessionId={sessionId}
-      />
+      {ctoSurface ? (
+        <CtoWorkingLine
+          activity={workingActivity}
+          startedAt={wakingIndicator ? wakingSinceMs : activeTurnStartedAt}
+          toolEntries={wakingIndicator ? EMPTY_WORK_LOG_ENTRIES : transcriptToolActivity.activeEntries}
+          onNavigateSuggestion={handleNavigateSuggestion}
+          onInsertDraft={onInsertDraft}
+          onRevealChatTerminal={onRevealChatTerminal}
+          sessionId={sessionId}
+        />
+      ) : (
+        <WorkingIndicator
+          activity={workingActivity}
+          startedAt={wakingIndicator ? wakingSinceMs : activeTurnStartedAt}
+          toolEntries={wakingIndicator ? EMPTY_WORK_LOG_ENTRIES : transcriptToolActivity.activeEntries}
+          replyWritesScene={activeTurnReplyWritesScene}
+          onNavigateSuggestion={handleNavigateSuggestion}
+          onInsertDraft={onInsertDraft}
+          onRevealChatTerminal={onRevealChatTerminal}
+          sessionId={sessionId}
+        />
+      )}
     </motion.div>
   ) : null;
 
@@ -9274,13 +9711,15 @@ function AgentChatMessageListMain({
           {/* Proof with no following turn completion is a chronological tail
               row, not the old permanently pinned footer. */}
           {rows.length === 0 && !streamingIndicator && !trailingProof ? (
-            null
+            transcriptPending || hasOlderHistory ? null : emptyTranscript
           ) : shouldVirtualize ? (
             /* ── Virtualized path: only render rows in / near the viewport ── */
             <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">
               {/* A minimum, not a height: a mounted row that grew since this
-                  render pushes what follows down instead of drawing over it. */}
-              <div style={{ minHeight: totalHeight, position: "relative" }}>
+                  render pushes what follows down instead of drawing over it.
+                  Following the bottom, its rows sit at its end
+                  (END_ALIGNED_VIRTUAL_BOX_STYLE). */}
+              <div style={{ minHeight: totalHeight, position: "relative", ...(stickToBottom ? END_ALIGNED_VIRTUAL_BOX_STYLE : null) }}>
                 {/* Top spacer pushes rendered rows to their correct scroll position */}
                 <div style={{ height: offsetTop }} aria-hidden />
                 <div className="flex flex-col gap-[length:var(--chat-row-gap)]">

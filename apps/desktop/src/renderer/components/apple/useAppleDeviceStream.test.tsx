@@ -6,8 +6,10 @@ import { useRef } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { appleStreamLeaseCount, appleStreamLeaseKey, resetAppleStreamLeases } from "./appleStreamLease";
 
+/** The lane's machine: the device streams from there. */
+const DEVICE_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
 const heldOn = (deviceUdid: string) =>
-  appleStreamLeaseCount(appleStreamLeaseKey({ pin: null, bound: null, laneId: "lane-1", deviceUdid }));
+  appleStreamLeaseCount(appleStreamLeaseKey({ pin: DEVICE_PIN, bound: null, laneId: "lane-1", deviceUdid }));
 import {
   APPLE_FIRST_FRAME_TIMEOUT_MS,
   APPLE_FRAME_STALL_MS,
@@ -75,16 +77,16 @@ function Harness({
   enabled = true,
   machineName = null,
   deviceUdid = "UDID-1",
-  runtimePin = null,
+  runtimePin = DEVICE_PIN,
 }: {
   onStream: (stream: AppleDeviceStream) => void;
   deviceUdid?: string;
   hidden?: boolean;
   enabled?: boolean;
   machineName?: string | null;
-  runtimePin?: OpenProjectBinding | null;
+  runtimePin?: OpenProjectBinding;
 }) {
-  const pinRef = useRef<OpenProjectBinding | null>(runtimePin);
+  const pinRef = useRef<OpenProjectBinding>(runtimePin);
   pinRef.current = runtimePin;
   const stream = useAppleDeviceStream({
     deviceUdid,

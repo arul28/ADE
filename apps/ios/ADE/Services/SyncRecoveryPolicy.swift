@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 func syncTransportProbeTimeoutNanoseconds(isExpensive: Bool, isConstrained: Bool) -> UInt64 {
   if isConstrained {
@@ -326,6 +327,36 @@ func syncSocketCompletionAction(
     : .failHandshake
 }
 
+/// Relay close codes that mean the phone got through to the computer's relay
+/// connection, but ADE on that computer did not answer: its bridge refused
+/// the tunnel (4507). Only a code the computer itself sends belongs here:
+/// 4501 (no host connection at the relay) also means the computer is asleep or
+/// offline, and 4509 can come from the relay side. Copy only: these codes
+/// recover exactly like every other close.
+let syncRelayHostDidNotAnswerCloseCodes: Set<Int> = [4507]
+
+/// What the phone says when the relay reached the computer but ADE on it did
+/// not answer. With a machine name it names the route; without one (the
+/// primary banner) it stays route-neutral.
+func syncRelayHostDidNotAnswerMessage(machineName: String? = nil) -> String {
+  let fix = "It usually repairs itself in a few seconds; if it doesn’t, open ADE on that computer to see why."
+  guard let machineName = machineName?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !machineName.isEmpty else {
+    return "This computer is online, but ADE on it didn’t answer. \(fix)"
+  }
+  return "ADE relay reached \(machineName), but ADE on it didn’t answer. \(fix)"
+}
+
+/// Whether `error` ended with one of `syncRelayHostDidNotAnswerCloseCodes`.
+func syncErrorIsRelayHostDidNotAnswer(_ error: Error?) -> Bool {
+  guard let error else { return false }
+  if let mailboxError = error as? SyncConnectionRaceMailboxError {
+    return mailboxError.closeCode.map(syncRelayHostDidNotAnswerCloseCodes.contains) ?? false
+  }
+  let code = (error as NSError).userInfo["ADESocketCloseCode"] as? Int
+  return code.map(syncRelayHostDidNotAnswerCloseCodes.contains) ?? false
+}
+
 func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
   let message: String
   switch closeCodeRawValue {
@@ -335,8 +366,8 @@ func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
     message = "Connection attempts are paused briefly. Try again shortly."
   case 4503:
     message = "This computer is handling too many connections. Try again shortly."
-  case 4000, 4001, 4002, 4008, 4501, 4502, 4505, 4506, 4507:
-    message = "Can’t reach this computer right now. Reconnecting now."
+  case _ where syncRelayHostDidNotAnswerCloseCodes.contains(closeCodeRawValue):
+    message = syncRelayHostDidNotAnswerMessage()
   default:
     message = "Can’t reach this computer right now. Reconnecting now."
   }
@@ -527,5 +558,93 @@ func syncRunRelayReauthorizationLoop<Attempt>(
       try? await Task.sleep(nanoseconds: retryDelay)
       guard !Task.isCancelled else { return }
     }
+  }
+}
+
+
+/// Notes a live connection to a machine that dropped without either side
+/// closing it (no close frame: 1006, or none at all). The phone reconnects on
+/// its own, so a drop is expected, not a bug: it leaves a breadcrumb that rides
+/// on whatever is reported next (a reconnect that fails, a hang), never an
+/// issue of its own. As an issue it was 84 events from two phones (Sentry
+/// 7847464039). Names and counts only: no address, machine name or content.
+///
+/// A drop on a connection that lived through a trip to the background is iOS
+/// suspending the app and killing its sockets; the breadcrumb says so.
+@MainActor
+enum SyncLiveDropReport {
+  /// Uptime of the app's last move to the background.
+  private static var lastBackgroundedUptime: TimeInterval?
+
+  static func noteAppBackgrounded(uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    lastBackgroundedUptime = uptime
+  }
+
+  /// Close codes that mean nobody closed the connection on purpose.
+  static func isUnexplainedDrop(closeCode: Int?) -> Bool {
+    guard let closeCode else { return true }
+    return closeCode == 0 || closeCode == 1006
+  }
+
+  /// Whether the app was in the background at some point while the connection
+  /// was open (or is now), so iOS may have killed the socket.
+  static func wasSuspendedDuringConnection(
+    connectionAgeSeconds: TimeInterval?,
+    lastBackgroundedUptime: TimeInterval?,
+    appIsInBackground: Bool,
+    nowUptime: TimeInterval
+  ) -> Bool {
+    if appIsInBackground { return true }
+    guard let lastBackgroundedUptime else { return false }
+    // Unknown age: any background since launch may have been during it.
+    guard let connectionAgeSeconds else { return true }
+    return lastBackgroundedUptime >= nowUptime - connectionAgeSeconds
+  }
+
+  static func report(
+    connection: String,
+    routeKind: SyncConnectionRouteKind?,
+    closeCode: Int?,
+    connectionAgeSeconds: TimeInterval?,
+    error: Error? = nil
+  ) {
+    guard isUnexplainedDrop(closeCode: closeCode) else { return }
+    let route = routeKind.map { String(describing: $0) } ?? "unknown"
+    let ageBucket: String
+    switch connectionAgeSeconds ?? -1 {
+    case ..<0: ageBucket = "unknown"
+    case ..<10: ageBucket = "under_10s"
+    case ..<60: ageBucket = "under_1m"
+    case ..<600: ageBucket = "under_10m"
+    default: ageBucket = "over_10m"
+    }
+    var data: [String: String] = [
+      "connection": connection,
+      "route": route,
+      "close_code": String(closeCode ?? 0),
+      "age": ageBucket,
+    ]
+    if let error {
+      let nsError = error as NSError
+      data["error_domain"] = nsError.domain
+      data["error_code"] = String(nsError.code)
+      if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+        data["underlying_domain"] = underlying.domain
+        data["underlying_code"] = String(underlying.code)
+      }
+    }
+    let suspended = wasSuspendedDuringConnection(
+      connectionAgeSeconds: connectionAgeSeconds,
+      lastBackgroundedUptime: lastBackgroundedUptime,
+      appIsInBackground: UIApplication.shared.applicationState == .background,
+      nowUptime: ProcessInfo.processInfo.systemUptime
+    )
+    CrashReporting.breadcrumb(
+      "sync.live_drop",
+      message: suspended
+        ? "live connection dropped after the app was suspended"
+        : "live connection dropped without a close frame",
+      data: data
+    )
   }
 }

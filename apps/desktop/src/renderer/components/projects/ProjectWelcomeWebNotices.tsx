@@ -1,13 +1,13 @@
 import React from "react";
 
-import { CloudSlash, Desktop, UserCircle } from "@phosphor-icons/react";
+import { CloudSlash, UserCircle } from "@phosphor-icons/react";
 
 import type { BrowserAccountSnapshot } from "../../webclient/account/client";
 import { Banner, type NoticeTone } from "../ui/notice";
 
 // ---------------------------------------------------------------------------
 // What the hosted welcome surface says when it has no machines to list, and
-// what "Add project" can honestly offer there.
+// nothing when a signed-in account simply has none.
 //
 // Separate from the recents-row chrome because this is copy-and-account-state
 // logic, not row rendering: `webZeroMachinesNotice` is a pure function of the
@@ -16,7 +16,7 @@ import { Banner, type NoticeTone } from "../ui/notice";
 
 export type WebZeroMachinesNotice = {
   /** Stable hook for the reason the list is empty, for tests and telemetry. */
-  kind: "loading" | "no_machines" | "signed_out" | "unconfigured" | "unavailable";
+  kind: "loading" | "signed_out" | "unconfigured" | "unavailable";
   headline: string;
   detail: string | null;
   /**
@@ -29,12 +29,13 @@ export type WebZeroMachinesNotice = {
 };
 
 /**
- * What the hosted welcome surface says when it can list no machines.
+ * What the hosted welcome surface says when it can list no machines, or null.
  *
- * Zero rows can mean "this account really has no machines" — but it just as easily
- * means the directory read failed or the session lapsed, and telling those
- * users their account is empty is a lie they cannot act on. The account state,
- * not the row count, decides which sentence they get.
+ * A signed-in account with no computer is not a problem to report: Home is
+ * the normal Home, and "Get started with ADE" leads to a first chat on ADE
+ * Cloud. Zero rows can also mean the directory read failed or the session
+ * lapsed, and telling those users their account is empty is a lie they cannot
+ * act on. The account state, not the row count, decides which sentence they get.
  */
 export function webZeroMachinesNotice(args: {
   account: BrowserAccountSnapshot;
@@ -43,17 +44,11 @@ export function webZeroMachinesNotice(args: {
   retryError: string | null;
   onRetry: () => void;
   onSignIn: () => void;
-}): WebZeroMachinesNotice {
+}): WebZeroMachinesNotice | null {
   const { account, directoryLoading } = args;
   switch (account.state) {
     case "signed_in":
-      return {
-        kind: "no_machines",
-        headline:
-          "No machines on this account yet. Open ADE on a computer and sign in with the same account — it shows up here the moment it does.",
-        detail: null,
-        action: null,
-      };
+      return null;
     case "signed_out":
       return {
         kind: "signed_out",
@@ -104,50 +99,11 @@ export function webZeroMachinesNotice(args: {
   }
 }
 
-/**
- * What "Add project" can honestly offer on the hosted client.
- *
- * Adding a project is a filesystem act on the machine that hosts it, and the web
- * adapter has none of the three routes the desktop flow needs: `chooseDirectory`
- * returns null (no native picker in a browser), `getDroppedPath` returns "", and
- * `createLocal`/`clone`/`getDefaultParentDir` are absent, so the fallback proxy
- * answers them with `Promise.resolve(null)` — the create form would read a null
- * parent directory and the clone would silently succeed at nothing. The host
- * *does* advertise a `projectActions` capability over sync (browse, create,
- * clone, GitHub repos — iOS already consumes it), so this is a wiring gap, not a
- * wall; until it is wired, say so instead of opening a flow that goes nowhere.
- */
-export function WebAddProjectNotice({
-  machineName,
-  onDismiss,
-}: {
-  machineName: string | null;
-  onDismiss: () => void;
-}) {
-  return (
-    <Banner
-      testId="ade-web-add-project-notice"
-      layout="inline"
-      style={{ marginTop: -4, maxWidth: 460, width: "100%" }}
-      model={{
-        id: "web-add-project",
-        tone: "info",
-        title: "Projects are added on the machine that hosts them.",
-        detail: machineName
-          ? `Open ADE on ${machineName} to add, create, or clone one — it shows up here as soon as it does. ADE Web opens the projects that machine already has.`
-          : "Open ADE on the host machine to add, create, or clone one. ADE Web opens the projects that machine already has.",
-        actions: [{ label: "Got it", onClick: onDismiss }],
-      }}
-    />
-  );
-}
-
 const ZERO_MACHINES_LOOK: Record<
   WebZeroMachinesNotice["kind"],
   { tone: NoticeTone; icon?: React.ReactNode }
 > = {
   loading: { tone: "neutral" },
-  no_machines: { tone: "info", icon: <Desktop size={13} weight="fill" /> },
   signed_out: { tone: "warning", icon: <UserCircle size={13} weight="fill" /> },
   unconfigured: { tone: "neutral" },
   unavailable: { tone: "error", icon: <CloudSlash size={13} weight="fill" /> },

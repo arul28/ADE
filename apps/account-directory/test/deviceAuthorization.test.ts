@@ -98,7 +98,7 @@ describe("device authorization bridge", () => {
     );
     expect(callback.status).toBe(200);
     const callbackBody = await callback.text();
-    expect(callbackBody).toContain("You're signed in");
+    expect(callbackBody).toMatch(/You(?:'|&#39;)re signed in/);
     expect(callbackBody).toContain("Go back to ADE.");
 
     const wrongSecret = await handleRequest(
@@ -202,7 +202,7 @@ describe("device authorization bridge", () => {
         { now: () => now },
       );
       expect(receivers).toHaveLength(1);
-      expect(await callback.text()).toContain("You're signed in");
+      expect(await callback.text()).toMatch(/You(?:'|&#39;)re signed in/);
       expect(env.DB.deviceRows[0]?.status).toBe("approved");
     } finally {
       vi.unstubAllGlobals();
@@ -394,7 +394,8 @@ describe("device authorization bridge", () => {
     // never tells the reader the request came from their own computer.
     const unnamedHtml = await unnamedPreview.text();
     expect(unnamedHtml).toContain("Confirm this sign-in");
-    expect(unnamedHtml).not.toContain("<strong>");
+    expect(unnamedHtml).not.toContain("A computer named");
+    expect(unnamedHtml).toContain("did not give its name");
     expect(unnamedHtml).not.toMatch(/your computer/i);
     // Format characters go: a right-to-left override could make the name read
     // as another computer.

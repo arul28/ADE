@@ -16,7 +16,7 @@
  */
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
-import { CODEX_NO_UPDATE_CHECK_ARGS, PINNED_PROVIDER_TOOLS, pinnedToolSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { CODEX_NO_UPDATE_CHECK_ARGS, PINNED_PROVIDER_TOOLS, codexLinuxShellArgs, pinnedToolSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import type { TerminalToolType } from "../../../shared/types";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -40,6 +40,7 @@ export type PinnedCliProvider =
   | "kimi"
   | "grok"
   | "devin"
+  | "antigravity"
   | "muse";
 
 export type PinnedProviderCli = {
@@ -83,9 +84,9 @@ function nativeCli(
   return command ? { provider, command, leadingArgs: [...leadingArgs], env: pinnedToolSelfUpdateEnv(tool) } : null;
 }
 
-/** Qwen, Kimi, Grok, Devin and Copilot's terminal CLI: env override, then the pin (Qwen's is its Node plus a script). */
+/** Qwen, Kimi, Grok, Devin, Antigravity and Copilot's terminal CLI: env override, then the pin (Qwen's is its Node plus a script). */
 function acpCli(
-  provider: Extract<PinnedCliProvider, "qwen" | "kimi" | "grok" | "devin" | "copilot">,
+  provider: Extract<PinnedCliProvider, "qwen" | "kimi" | "grok" | "devin" | "antigravity" | "copilot">,
   tool: string,
   selfUpdateArgs: readonly string[] = [],
 ): PinnedProviderCli | null {
@@ -120,8 +121,9 @@ const PROVIDER_CLIS: Readonly<Record<PinnedCliProvider, ProviderCliSpec>> = {
     label: terminalSpec("codex").label,
     binaries: terminalSpec("codex").binaries,
     tools: terminalSpec("codex").tools,
-    // Codex's update check is a config key, not a variable; `-c` is a global flag.
-    resolve: () => nativeCli("codex", resolveCodexExecutable().path, terminalSpec("codex").selfUpdateTool, CODEX_NO_UPDATE_CHECK_ARGS),
+    // Codex's update check is a config key, not a variable; `-c` is a global
+    // flag. On Linux its commands also skip the login shell (codexLinuxShellArgs).
+    resolve: () => nativeCli("codex", resolveCodexExecutable().path, terminalSpec("codex").selfUpdateTool, [...CODEX_NO_UPDATE_CHECK_ARGS, ...codexLinuxShellArgs(process.platform)]),
   },
   opencode: {
     label: terminalSpec("opencode").label,
@@ -181,6 +183,14 @@ const PROVIDER_CLIS: Readonly<Record<PinnedCliProvider, ProviderCliSpec>> = {
     binaries: terminalSpec("devin").binaries,
     tools: terminalSpec("devin").tools,
     resolve: () => acpCli("devin", terminalSpec("devin").selfUpdateTool),
+  },
+  antigravity: {
+    label: terminalSpec("antigravity").label,
+    // `agy` is what users type; `antigravity` is the pinned binary's own name.
+    binaries: terminalSpec("antigravity").binaries,
+    tools: terminalSpec("antigravity").tools,
+    // The TUI is the bare binary; chats run the same one as `agy acp`.
+    resolve: () => acpCli("antigravity", terminalSpec("antigravity").selfUpdateTool),
   },
   muse: {
     label: terminalSpec("muse").label,
@@ -243,6 +253,9 @@ export function pinnedCliProviderForToolType(toolType: TerminalToolType | null |
     case "devin":
     case "devin-chat":
       return "devin";
+    case "antigravity":
+    case "antigravity-chat":
+      return "antigravity";
     default:
       return null;
   }

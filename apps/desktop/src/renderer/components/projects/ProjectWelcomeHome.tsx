@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { ChartBar, GitMerge, GitPullRequest, Gauge, Pulse, type Icon } from "@phosphor-icons/react";
+import { Banner } from "../ui/notice";
 import type {
   AdeUsageDailyPoint,
   AdeUsageStats,
@@ -11,6 +14,7 @@ import type {
 import { getGitHubSnapshotCoalesced, listPrsCoalesced } from "../../lib/prReadCache";
 import { useAccountStatus } from "../../lib/account";
 import { useAppStore } from "../../state/appStore";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { usageProviderLogo } from "../terminals/ToolLogos";
 import { providerColor } from "../usage/providerColors";
 import { usageLeftLevel, usageLeftLevelColor } from "../usage/usageDesign";
@@ -80,7 +84,10 @@ export function WelcomeHero({
       <div className="ade-home-hero-text">
         <div className="kit-eyebrow ade-home-eyebrow">
           {date}
-          {machinesTotal > 1 ? ` · ${machinesOnline} of ${machinesTotal} machines online` : null}
+          {/* The count is of live connections: a computer the directory sees
+              online but this tab has not connected (parked, or never opened)
+              is not counted, so the word is "connected", not "online". */}
+          {machinesTotal > 1 ? ` · ${machinesOnline} of ${machinesTotal} computers connected` : null}
         </div>
         <h1 className="ade-home-title">
           {greetingFor(now.getHours())}
@@ -344,9 +351,15 @@ export function useMachineRows(
   remoteSnapshot: RemoteRuntimeConnectionSnapshot | null,
   webMachines: readonly WebMachineEntry[],
 ): MachineRow[] {
+  // ADE Cloud is one machine every account has; its computers never show by name.
+  const cloudShown = useAdeCloudEnabled();
+  const cloudIndex = useAdeCloudLaneComputers();
   return useMemo(
-    () => (webMode ? webMachineRows(webMachines) : desktopMachineRows(remoteSnapshot)),
-    [remoteSnapshot, webMachines, webMode],
+    () => {
+      const cloud = { shown: cloudShown, index: cloudIndex };
+      return webMode ? webMachineRows(webMachines, cloud) : desktopMachineRows(remoteSnapshot, cloud);
+    },
+    [cloudIndex, cloudShown, remoteSnapshot, webMachines, webMode],
   );
 }
 
@@ -454,6 +467,8 @@ export type HomePr = {
   additions: number | null;
   deletions: number | null;
   tracked: PrSummary | null;
+  /** The pull request on GitHub, for a row with no ADE page to open (the direct read). */
+  htmlUrl?: string | null;
 };
 
 export function prBucket(pr: HomePr): PrBucket {
@@ -478,43 +493,107 @@ const RECENT_PR_WINDOW_MS = 7 * 86_400_000;
  * state. Reloads on PR
  * events and when the window regains focus — never on a timer of its own.
  */
-export type HomePullRequests = { open: HomePr[]; recent: HomePr[]; loaded: boolean; viewer: string | null };
+export type HomePullRequests = {
+  open: HomePr[];
+  recent: HomePr[];
+  loaded: boolean;
+  viewer: string | null;
+  error: string | null;
+  /** The next step for `error` when Retry is not it (connect GitHub, install the App). */
+  errorAction?: { label: string; onClick: () => void } | null;
+  retrying: boolean;
+  retry: () => void;
+};
+
+/**
+ * The card's two lists from a set of pull requests: open ones (yours first,
+ * then by bucket, then the newest) and the ones merged this week.
+ */
+function homePullRequestLists(prs: readonly HomePr[], viewer: string | null): Pick<HomePullRequests, "open" | "recent" | "viewer"> {
+  // Yours first among open PRs: what you authored or a lane of yours tracks.
+  const mine = (pr: HomePr) => (pr.tracked != null || (viewer != null && pr.author === viewer) ? 0 : 1);
+  const open = prs
+    .filter((pr) => pr.state === "open" || pr.state === "draft")
+    .sort((a, b) => (mine(a) - mine(b)) || (PR_BUCKET[prBucket(a)].order - PR_BUCKET[prBucket(b)].order) || b.updatedAt.localeCompare(a.updatedAt));
+  const cutoff = Date.now() - RECENT_PR_WINDOW_MS;
+  const recent = prs
+    .filter((pr) => pr.state === "merged" && Date.parse(pr.mergedAt || pr.updatedAt) >= cutoff)
+    .sort((a, b) => (b.mergedAt || b.updatedAt).localeCompare(a.mergedAt || a.updatedAt));
+  return { open, recent, viewer };
+}
 
 export function usePullRequests(projectRoot: string | null): HomePullRequests {
-  const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
+  // A repository read: the reader copy (the tab's copy while it has one). With
+  // none online, the card shows its empty state and reads nothing.
+  const reader = useActiveRepositoryReader();
+  const readerKey = reader?.key ?? null;
+  const readerRef = useRef(reader);
+  readerRef.current = reader;
   const [data, setData] = useState<{ snapshot: GitHubPrSnapshot | null; tracked: PrSummary[] } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const requestRef = useRef(0);
+  /** Set by the person's Retry: the next read bypasses a cached auth refusal. */
+  const forceNextRef = useRef(false);
+  /** While a forced read runs, automatic reloads must not supersede it. */
+  const forcedInFlightRef = useRef(false);
   // What the last reload returned, as text: PR events arrive every few seconds
   // during a sync, and a reload that changed nothing must not re-render the
   // whole home page (every widget under it renders with it).
   const lastSignatureRef = useRef<string | null>(null);
   useEffect(() => {
     lastSignatureRef.current = null;
+    setLoadError(null);
     const bridge = window.ade?.prs;
-    if (!projectRoot || !bridge?.getGitHubSnapshot) {
+    const pin = readerRef.current;
+    if (!projectRoot || !pin || !bridge?.getGitHubSnapshot) {
+      forceNextRef.current = false;
+      forcedInFlightRef.current = false;
       setData({ snapshot: null, tracked: [] });
+      setLoadError(null);
+      setRetrying(false);
       return undefined;
     }
     let timer: number | null = null;
     const load = async () => {
+      // A person's Retry forces past the cached "no GitHub sign-in" answer;
+      // automatic reloads keep the short cache and wait for that forced read.
+      const force = forceNextRef.current;
+      if (!force && forcedInFlightRef.current) return;
+      forceNextRef.current = false;
+      if (force) forcedInFlightRef.current = true;
       const request = ++requestRef.current;
-      const [snapshot, tracked] = await Promise.all([
-        // One page of closed history (cached ten minutes in main) brings the
-        // week's merges with it; open PRs come in the same snapshot.
-        getGitHubSnapshotCoalesced({ automaticRefresh: true, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: projectBindingKey }).catch(() => null),
-        listPrsCoalesced({ projectRoot }).catch(() => [] as PrSummary[]),
+      // One page of closed history (cached ten minutes in main) brings the
+      // week's merges with it; open PRs come in the same snapshot.
+      const [snapshotResult, trackedResult] = await Promise.allSettled([
+        getGitHubSnapshotCoalesced({ automaticRefresh: !force, force, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: pin.key, pin }),
+        listPrsCoalesced({ projectRoot, pin }),
       ]);
       if (requestRef.current !== request) return;
+      if (force) forcedInFlightRef.current = false;
+      const failed = snapshotResult.status === "rejected" || trackedResult.status === "rejected";
+      const snapshot = snapshotResult.status === "fulfilled" ? snapshotResult.value : null;
+      const tracked = trackedResult.status === "fulfilled" ? trackedResult.value : [];
       const signature = JSON.stringify([
         snapshot?.viewerLogin ?? null,
         snapshot?.repoPullRequests ?? null,
         snapshot?.externalPullRequests ?? null,
         // lastSyncedAt moves on every sync and the home page never shows it.
-        (tracked ?? []).map((pr) => ({ ...pr, lastSyncedAt: null })),
+        tracked.map((pr) => ({ ...pr, lastSyncedAt: null })),
       ]);
-      if (signature === lastSignatureRef.current) return;
+      const nextError = failed ? "ADE couldn't read this project's pull requests." : null;
+      // The error is not part of the data signature: a failure and a recovery
+      // can carry identical data, and the error must still update.
+      if (signature === lastSignatureRef.current) {
+        setLoadError(nextError);
+        setRetrying(false);
+        return;
+      }
       lastSignatureRef.current = signature;
-      setData({ snapshot, tracked: tracked ?? [] });
+      setData({ snapshot, tracked });
+      setLoadError(nextError);
+      setRetrying(false);
     };
     const soon = () => {
       if (timer != null) window.clearTimeout(timer);
@@ -522,14 +601,18 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     };
     void load();
     // PR events arrive in bursts during a sync; one reload per quiet second.
-    const unsubscribe = bridge.onEvent?.(soon);
+    const unsubscribe = bridge.onEvent?.(soon, pin);
     window.addEventListener("focus", soon);
     return () => {
       if (timer != null) window.clearTimeout(timer);
+      // A project/binding switch or a new retry invalidates the read in
+      // flight, so its answer cannot land under the new scope.
+      requestRef.current += 1;
+      forcedInFlightRef.current = false;
       unsubscribe?.();
       window.removeEventListener("focus", soon);
     };
-  }, [projectRoot, projectBindingKey]);
+  }, [projectRoot, readerKey, reloadKey]);
   return useMemo(() => {
     const snapshot = data?.snapshot ?? null;
     const trackedById = new Map((data?.tracked ?? []).map((pr) => [pr.id, pr]));
@@ -555,18 +638,18 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
         tracked: item.linkedPrId ? trackedById.get(item.linkedPrId) ?? null : null,
       });
     }
-    const viewer = snapshot?.viewerLogin ?? null;
-    // Yours first among open PRs: what you authored or a lane of yours tracks.
-    const mine = (pr: HomePr) => (pr.tracked != null || (viewer != null && pr.author === viewer) ? 0 : 1);
-    const open = prs
-      .filter((pr) => pr.state === "open" || pr.state === "draft")
-      .sort((a, b) => (mine(a) - mine(b)) || (PR_BUCKET[prBucket(a)].order - PR_BUCKET[prBucket(b)].order) || b.updatedAt.localeCompare(a.updatedAt));
-    const cutoff = Date.now() - RECENT_PR_WINDOW_MS;
-    const recent = prs
-      .filter((pr) => pr.state === "merged" && Date.parse(pr.mergedAt || pr.updatedAt) >= cutoff)
-      .sort((a, b) => (b.mergedAt || b.updatedAt).localeCompare(a.mergedAt || a.updatedAt));
-    return { open, recent, loaded: data != null, viewer };
-  }, [data]);
+    return {
+      ...homePullRequestLists(prs, snapshot?.viewerLogin ?? null),
+      loaded: data != null,
+      error: loadError,
+      retrying,
+      retry: () => {
+        forceNextRef.current = true;
+        setRetrying(true);
+        setReloadKey((key) => key + 1);
+      },
+    };
+  }, [data, loadError, retrying]);
 }
 
 /** GitHub's own state colours, as a `data-state` the stylesheet maps per theme. */
@@ -606,7 +689,7 @@ function PullRequestRow({ pr, onOpen }: { pr: HomePr; onOpen?: () => void }) {
       role="listitem"
       className="kit-row ade-home-pr-row"
       data-settled={settled || undefined}
-      onClick={onOpen}
+      onClick={onOpen ?? (pr.htmlUrl ? () => { void window.ade.app.openExternal(pr.htmlUrl as string); } : undefined)}
       title={tracked?.checksReason ? `${pr.title} — ${tracked.checksReason}` : pr.title}
     >
       <span className="ade-home-pr-icon" data-state={state} aria-label={state}>
@@ -644,7 +727,8 @@ export function PullRequestsCard({
   prs: HomePullRequests;
   onOpenPrs?: () => void;
 }) {
-  const { open, recent, loaded } = prs;
+  const { open, recent, loaded, error: prLoadError, retrying, retry: retryPullRequests } = prs;
+  const errorAction = prs.errorAction ?? { label: "Retry", onClick: retryPullRequests };
   const counts = useMemo(() => {
     const result = { failing: 0, review: 0, ready: 0 };
     for (const pr of open) {
@@ -670,16 +754,33 @@ export function PullRequestsCard({
           </div>
         ) : (
           <>
-            <dl className="ade-home-pr-stats">
+            {/* A direct read that needs a step (connect GitHub) has no counts to show; zeros would read as "no pull requests". */}
+            {prs.errorAction && open.length + recent.length === 0 ? null : <dl className="ade-home-pr-stats">
               <div data-tone={counts.failing > 0 ? "crit" : undefined}><dd className="kit-num">{counts.failing}</dd><dt>failing</dt></div>
               <div data-tone={counts.review > 0 ? "warn" : undefined}><dd className="kit-num">{counts.review}</dd><dt>in review</dt></div>
               <div data-tone={counts.ready > 0 ? "ok" : undefined}><dd className="kit-num">{counts.ready}</dd><dt>ready</dt></div>
               <div><dd className="kit-num">{recent.length}</dd><dt>merged · 7d</dt></div>
-            </dl>
+            </dl>}
+            {prLoadError && open.length + recent.length > 0 ? (
+              <Banner
+                layout="inline"
+                model={{
+                  id: "home-prs-read",
+                  tone: "warning",
+                  title: prLoadError,
+                  actions: [errorAction],
+                }}
+              />
+            ) : null}
             {open.length === 0 && recent.length === 0 ? (
               <div className="ade-home-empty">
                 <GitPullRequest size={18} aria-hidden />
-                <span>{loaded ? "No pull requests this week." : "Reading pull requests…"}</span>
+                <span>{retrying || !loaded ? "Reading pull requests…" : prLoadError ?? "No pull requests this week."}</span>
+                {prLoadError ? (
+                  <button type="button" className="ade-home-line-link" onClick={errorAction.onClick}>
+                    {errorAction.label}
+                  </button>
+                ) : null}
               </div>
             ) : (
               <FitList

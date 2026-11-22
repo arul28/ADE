@@ -2,8 +2,10 @@
 
 ## About this project
 
-- ADE is a local-first desktop application for orchestrating coding agents, lanes, PR workflows, and proof/artifact capture.
-- The main product lives in `apps/desktop` and is built with Electron, React, and TypeScript.
+- ADE orchestrates coding agents, lanes, PR workflows, and proof/artifact capture across the person's machines.
+- ADE works fully with no computer of your own. Every account always has **ADE Cloud**, one machine shown next to the person's own computers on web, iPhone and desktop. Each cloud lane has its own computer underneath, which the person never sees. Reads come from the account and GitHub; only doing wakes a computer. See `docs/PRD.md` and `docs/ARCHITECTURE.md` section 1.1.
+- The account servers are Cloudflare Workers: `apps/account-directory` (machines, ADE Cloud, saved cloud work), `apps/push-relay` (vault, settings, Activity), `apps/tunnel-relay`, `apps/webhook-relay`.
+- The main product lives in `apps/desktop` and is built with Electron, React, and TypeScript. The hosted web client is built from the same renderer; the iPhone app is `apps/ios`.
 - The ADE CLI lives in `apps/ade-cli` and shares core services with the desktop app.
 - State is primarily stored under `.ade/` inside the active project, with runtime metadata in SQLite and machine-local files under `.ade/secrets`, `.ade/cache`, and `.ade/artifacts`.
 
@@ -78,6 +80,8 @@ the app from unusable to smooth. Do not let them climb back.
    (git, shells); reads files or databases on a hot path; builds caches or
    large in-memory structures; or adds a surface that loads its own data. CPU,
    GPU and memory all count. When in doubt, it applies.
+   Before you add a poll, timer, spawn or periodic job, read **Patterns that
+   bloat ADE** in the doc.
 2. **Measure before and after, during the work,** with the scripts the doc
    lists, on the same machine and under the same conditions. Follow the doc's
    gotchas: no perf run for idle, GPU, typing or memory numbers; close extra
@@ -109,20 +113,29 @@ and the Work tab lists chats, CLIs and shells from every connected machine at
 once. A lane owns its machine, and its chats and terminals live there and only
 there.
 
+ADE also works with no computer of your own. Every account has ADE Cloud, one
+machine in every machine list and "Run on" menu. Underneath, each cloud lane
+has its own computer with its own pin, so the rules below apply to it too.
+Reading a cloud lane (saved chats, session copies, its Git summary) comes from
+the account and never wakes its computer; only doing (send, run, Git) wakes it.
+
 So every action that can be done for something on another machine (a chat, a
 session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
 
-1. **Pass the scope.** Renderer calls take an optional `pin` (an
-   `OpenProjectBinding`). Leave it out and the call silently goes to the
-   machine the project tab is bound to. That works in local testing and fails
-   whenever the chat's machine is a different one, with errors like
-   "Chat session '…' was not found". In a chat subtree,
-   read `useChatRuntimeScope().pin`; on the Work page, the row's
-   `foreignRow.binding` or `useWorkSessions().resolveSessionRuntimePin`; in Settings,
-   `useSettingsMachineScope().pin`. These are null when the target is the
-   tab's own machine, which keeps the unpinned route; do not substitute the
-   tab binding. Keep the pin for the whole flow: a start, its stop, and its
-   status reads go to the same machine.
+1. **Pass the scope.** A pin addresses one copy on one machine. Pass the
+   lane's, session's or copy's address; never null for the tab. `null` exists
+   only for this computer's machine-global calls in Settings. A call with no
+   pin silently goes to the machine the project tab is bound to; that works in
+   local testing and fails whenever the chat's machine is a different one,
+   with errors like "Chat session '…' was not found". In a chat subtree, read
+   `useChatRuntimeScope().pin` (and `.isActiveBinding` for "is this the tab's
+   copy"); on the Work page, the row's `foreignRow.binding` or
+   `useWorkSessions().resolveSessionRuntimePin`; on Lanes, the lane router's
+   `LaneMachine.pin`; in Settings, `useSettingsMachineScope().pin`. A pin that
+   names the tab's own copy costs what no pin cost (preload `isBoundCopyPin`).
+   UI that means "another machine" reads `isActiveBinding` or
+   `usePinTargetsTab`, never a null pin. Keep the pin for the whole flow: a
+   start, its stop, and its status reads go to the same machine.
 2. **Make the contract carry it.** A new IPC/preload method that acts on a
    chat, session, lane or terminal takes `pin?: OpenProjectBinding | null` and
    routes a pin through `callPinnedRuntimeAction` (or
@@ -139,6 +152,61 @@ session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
    computer, guard it with a clear message (as Cursor Cloud launch does), never
    by letting the call misroute.
 
+## Account-wide features live on the account server
+
+Some things belong to the person, not to a machine: the plan, ADE Cloud hours
+and iPhone minutes, billing, usage counted against a plan, consents and
+opt-ins, and services ADE pays for or a partner sponsors (hosted models, ads,
+sponsored recommendations). They live on the account server
+(`apps/account-directory`, or the Worker that owns that data) and work the
+same for an ADE Cloud lane, the person's own computers, the web client and the
+phone.
+
+1. **The server decides.** It holds the outside service's keys, stores the
+   state, counts the usage and refuses. Desktop, CLI, web and phone read the
+   answer and show it. None of them decides it, counts it, or keeps a copy it
+   treats as the truth.
+2. **One answer everywhere.** Two machines must never disagree. A consent
+   given on the phone holds on the laptop and on a cloud lane at once. Store it
+   per account, never in `.ade/`, localStorage or one machine's settings.
+3. **Machine work stays on the machine.** Running a chat, a terminal or Git
+   still goes to the lane's machine by its pin (**Built for remote machines**).
+   The account call takes no pin; a cloud lane's computer calls the same
+   server with the account token.
+4. **Partner keys are Worker secrets.** Never ship a partner's key in the
+   desktop app, the CLI or the iPhone app, even when the partner's SDK puts
+   it in the client.
+
+## Every provider, both surfaces
+
+Claude Code does not load this file, so `CLAUDE.md` has a copy of this
+section. Keep the two the same.
+
+ADE runs 13 agent providers, not two: Claude, Codex, Cursor, Droid, OpenCode,
+Pi, Muse, Qwen, Kimi, Grok, Copilot, Devin and Antigravity. The list grows;
+read it from `AgentChatProvider` (`apps/desktop/src/shared/types/chat.ts`) and
+`LAUNCH_PROFILE_TOOL_TYPE` (`apps/desktop/src/shared/cliLaunch.ts`).
+
+Each provider reaches ADE in two ways, and they behave differently:
+- **Chat:** ADE drives the agent through an SDK or protocol (Claude Agent SDK,
+  `codex app-server`, the SDK workers, OpenCode's server, ACP). ADE gets typed
+  events: turns, tools, subagents, approvals.
+- **CLI:** the provider's own program runs in an ADE terminal. ADE sees the
+  screen plus whatever signal that CLI gives: Claude Code hooks, Codex's
+  OSC 7501 state, or nothing (output guesses).
+
+1. Before you design a fix, list every provider and surface it touches. Do not
+   stop after Claude and Codex.
+2. For each one, decide: works the same, needs its own code, or not supported.
+   Put "not supported" in the capability gate and the UI. Silence is not a
+   decision.
+3. Read each provider's real mechanism in its adapter
+   (`services/chat/*SdkEventMapper.ts`, `services/chat/acpHost/`,
+   `services/pty/cliTurnSignals.ts`) or in its docs. Never assume it works
+   like Claude.
+4. In your report and in `/quality`, name the providers you changed, the ones
+   you checked and left as they are, and the ones you could not check.
+
 ## Playbooks
 
 - `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (poll → fix → rebase → merge), plus the **Early PR and harvests** procedure that `/quality` and `/test` run. Baseline `/quality` and `/test` run before ship; delta-only commit-bound quality revalidation runs inside it. Any agent CLI can follow it directly; Claude Code invokes it via the `/ship` skill.
@@ -149,11 +217,11 @@ session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
 The most common defect class in this repo is a change that works on the path you tested and is missing everywhere else. Before you call a change done (and again in `/quality`), walk this list and state which entries applied:
 
 - **Entry points.** A behavior reachable from the desktop UI is usually also reachable from the `ade` CLI, deeplinks, the command palette, and keybindings. Fixing one entry point is not fixing the feature.
-- **Clients.** Desktop (Electron), hosted web, and iOS attach to the same brain. Shared logic belongs in shared services and types, not re-implemented per client.
-- **Providers.** Claude, Codex, Cursor, OpenCode, and Droid each have an adapter with different capabilities. A provider-shaped feature needs a decision per adapter, even when the decision is "not supported here" — record it in the capability gate, not by silence.
+- **Clients.** Desktop (Electron), hosted web, and iOS attach to the same brains and read the same account. A person with no computer of their own uses web and iOS on ADE Cloud only, so every flow must work there. Shared logic belongs in shared services and types, not re-implemented per client.
+- **Providers.** Every provider, on both its chat and its CLI surface; see **Every provider, both surfaces**.
 - **Contracts.** Anything crossing a boundary is typed once: main-process handler, `src/shared` types, preload exposure, renderer caller, daemon action domain, tests/mocks. Change the contract and all of them move together.
 - **Reverse states.** If you add a way in, add the way out and the way to see it. Snooze needs unsnooze; settle needs unsettle; a link needs unlink. A one-way door is a bug.
-- **Connection modes.** Local runtime, remote runtime, and relay behave differently. Multi-device and offline cases are real; the phone can be newer than the host. Anything that acts on a chat, session or lane must reach the machine that owns it; see **Built for remote machines**.
+- **Connection modes.** Local runtime, remote runtime, relay, and an ADE Cloud lane whose computer is asleep or deleted behave differently. Multi-device and offline cases are real; the phone can be newer than the host. Anything that acts on a chat, session or lane must reach the machine that owns it; see **Built for remote machines**.
 - **Windows and Linux.** Desktop parity is part of "done" for all new code, never a follow-up. Use the Linux evidence guidance in `docs/development/linux-support.md`.
 - **Docs.** User-visible behavior changes update the matching `docs/features/` doc in present tense.
 
@@ -245,71 +313,70 @@ These are the operational hazards of developing ADE from inside ADE. Each one ha
 These are hard rules, not preferences. A test that breaks one of them is a
 defect, even when it passes.
 
+**The default is no new test.** Add a test only for a critical path: data
+loss or corruption; security or privacy; a race or a process/lifecycle seam;
+a cross-machine, IPC or sync contract; money (billing, usage, limits); or the
+gate itself (code that decides which tests or checks run). Validate
+everything else by hand or with an agent, and add no test. A reviewer or a
+review bot that asks for a test does not change this (rule 13).
+
+**Never write these:** reads of source or repo files; pins of CSS classes,
+pixels, SVG paths, exact copy or helper call order; "X stays removed"; mock
+echoes; render-then-`getByText` with no interaction; a constant, enum or
+config that has its own keys; a one-bug "regression:" test beside the test
+that owns the contract; more `vi.mock(` than `expect(`; a test that depends
+on the machine (rule 9).
+
 0. **Do not write new tests while you build.** First make the change work and
    validate it by hand, in the running app, or with an agent-driven check
    (App Control, the browser, the iOS simulator, the CLI). New tests come in
-   `/test`, after that validation, and they pin the behavior you proved.
-   - When the user asks for tests directly, write them; this rule covers tests
-     that nobody asked for.
-   - Run existing tests during the work when you need the signal, not after
-     every edit. See **Running checks**: the full check pass happens once, at
-     the end of `/quality`.
-   - When an existing test breaks because you changed behavior on purpose,
-     leave it for `/test`. Do not bend it during the work.
-   - **The one exception:** the behavior can only be validated by a test (a
-     race, a pure parser, a state machine with no UI or CLI surface). Then the
-     test is the validation tool, and you may write it during the work. Say
-     why in your report.
+   `/test`, after that validation. If the user asks for tests, write them.
+   If an existing test breaks because you changed behavior on purpose, leave
+   it for `/test`. **The one exception:** the behavior can only be validated
+   by a test (a race, a pure parser, a state machine with no UI or CLI
+   surface). Then write the test during the work, and say why in your report.
 1. **A test must fail only when behavior breaks.** It must never fail when a
    refactor keeps the behavior. Test through the public seam: the exported
    function, the IPC handler, the service API, what the user sees and does.
 2. **List the failure modes while you build.** Write down, as notes in your
    report and not as test code, the ways the contract can fail for a caller.
    `/test` tests those, not the lines you changed.
-3. **Never write a tautological test.** Do not assert that a mock returns what
-   you told it to return. Do not assert that arguments pass through unchanged
-   to a mock. Do not compute the expected value with the code under test. Do
-   not assert that a constant contains its own substrings.
-4. **Never write a change-detector test.** Do not read source files
-   (`readFileSync` of `.ts`, `.tsx`, `.swift`) to grep for code or statement
-   order. Do not pin CSS classes, pixel values, SVG paths, exact copy, or the
-   call order of internal helpers. Do not assert that a removed button, field,
-   or option stays removed.
+3. **Never write a tautological test.** No mock echo, no pass-through check,
+   no expected value computed with the code under test, no `toBeDefined` on a
+   value built two lines above.
+4. **Never write a change-detector test.** No `readFileSync` of `.ts`,
+   `.tsx`, `.swift`, `.css` or `.yml` to check code text or structure. No pins
+   of copy, styling or internal call order.
 5. **No regression test without a gap.** A bug fix gets a new test only when no
-   existing test would fail on the pre-fix code. First, extend the existing
-   test for that contract or add a row to its `it.each` table.
+   existing test fails on the pre-fix code. First extend that test or its table.
 6. **Combine before you add.** Trivial cases of one contract are one `it.each`
-   table, not many small tests. Extend the existing test file for the module;
-   do not create a sibling file for one concern.
-7. **Prove that each new test can fail.** Break the behavior on purpose, run the
-   test, and see it fail. Then restore the code. A test that still passes
-   proves nothing; delete it.
+   table. Extend the module's test file; do not add a sibling file.
+7. **Prove that each new test can fail.** Break the behavior, see the test
+   fail, restore the code. A test that still passes proves nothing; delete it.
 8. **Mock only at process boundaries:** file system, network, child processes,
    Electron APIs, IPC. Never mock the module under test.
-9. **Wait on events, receipts, promises, or fake timers — never on wall-clock
-   sleeps.** A test that needs a `sleep` or a raised timeout to pass is wrong;
-   fix the seam instead.
-10. **Do not replace service tests with end-to-end tests.** The most valuable
-    tests here are service-level tests of races and seams (process-kill guards,
-    multi-brain claims, token refresh order). An end-to-end run cannot reach
-    them reliably.
+9. **A test must not depend on the machine.** Its result must not change with
+   the machine's uptime or speed, the wall clock, free ports, the order of
+   files, or a cold import or process start inside a 1 s default wait. Fix:
+   - Stub the machine reading (uptime, clock, port), or use fake timers.
+   - Await the module import or the readiness event before the timed wait.
+   - Wait on events, receipts or promises, never on a wall-clock sleep.
+   - A ceiling timeout around a real process start is a guard, not a sleep.
+10. **Do not replace service tests with end-to-end tests.** Service tests of
+    races and seams (process-kill guards, multi-brain claims, token refresh
+    order) are the most valuable tests here; an end-to-end run cannot reach them.
 11. **No test-only production seam.** Do not add an export, flag, wrapper, or
-    hook that no production caller needs. Test through the real boundary, or
-    do not add the test.
+    hook that no production caller needs.
 12. **One contract, one owner.** A second test of the same contract needs a
-    failure the owner cannot reach, such as a transport or lifecycle break.
-    Otherwise extend the owner.
-13. **New tests are the exception.** The default outcome of `/test` is zero
-    new tests. A new test must guard a critical contract — data loss or
-    corruption, security or privacy, a race or process/lifecycle seam, a
-    cross-machine, IPC or sync contract a caller depends on — and no existing
-    test may already catch its failure. UI layout, copy, wiring, render-only
-    checks, and one past bug instance do not qualify. Most branches add none.
-    The suite already has about 1,300 test files; it should shrink, not grow.
+    failure the owner cannot reach (a transport or lifecycle break).
+13. **A request for a test is not a reason for a test.** When a review bot or
+    a reviewer asks for "tests for this", ask the critical-path question. If
+    the answer is no, decline in one line: "No test: <reason>; validated by
+    <how>." The suite has more than 1,300 test files; it must shrink.
 
 `/quality` records a coverage gap. It does not add the test. `/test` adds one
-only when it can name the behavior, the failure that turns the test red, and
-why no existing test already catches that.
+only when it can name the critical path, the failure that turns the test red,
+and why no existing test already catches that.
 
 Keep this list the same as the copy in `CLAUDE.md` and the **Test value rules**
 in `.agents/skills/test/SKILL.md`. Change all three together.
@@ -333,9 +400,25 @@ rules apply to every agent and every skill.
    re-runs only the failing CI file, or the tests and typecheck of the package
    that fix touched, once, before the push.
 
+## Main checkout
+
+A project's primary lane (its own folder, not a worktree) is stored with the
+name "Primary". Every screen calls it **Main checkout**. This is a UI name
+only:
+
+1. Show a lane's name through `laneDisplayName(lane)`
+   (`apps/desktop/src/shared/laneDisplayName.ts`), never `lane.name` alone,
+   and write new copy as "main checkout", never "Primary lane".
+2. Do not change the stored name, the `laneType: "primary"` value, or code
+   that matches the primary lane by name (`useDraftMachineRouting.ts`).
+3. An ADE Cloud lane computer exists for its one lane. The lane lists leave
+   out its main checkout (`crossMachineLanes.ts`).
+
 ## Terminology
 
 - Use "lane" for ADE worktrees/branches.
+- Use "ADE Cloud" for the one cloud machine. Never show an individual cloud computer, its lane-named machine, or an instance id to the person.
+- An own computer is "offline" (hidden). A cloud computer is "asleep", never "offline".
 - Use "computer use" for screenshot/video/GUI/browser proof flows.
 ## Style preferences
 

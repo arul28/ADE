@@ -30,11 +30,18 @@ export const SETTINGS_TAB_IDS = [
   "general",
   "account",
   "stats",
+  // Lanes you shared with other accounts, lanes shared with you, and the
+  // rights a new share starts from.
+  "sharing",
   "chat",
   "agents",
   // GitHub, Linear, Jira and the MCP servers, on one page. It took in the
   // MCP servers tab; that id aliases here.
   "integrations",
+  // ADE Cloud: the account's plan, hours, disk, cloud lanes and the sign-ins
+  // they use. Its entries keep their `integrations.ade-cloud*` ids, so every
+  // link made while it was an Integrations page still lands.
+  "ade-cloud",
   "ade-mcp",
   "notifications",
   "appearance",
@@ -43,6 +50,9 @@ export const SETTINGS_TAB_IDS = [
   // The Android SDK belongs to one machine, so the page follows `?machine=`.
   "android",
   "keyboard",
+  // Passwords & Secrets: the account's logins, codes, passkeys and secrets
+  // (a project's secrets too), read on this computer.
+  "passwords",
   // Project → Lanes keeps the id `lanes-git` so every link ever shipped to it
   // still lands.
   "lanes-git",
@@ -51,7 +61,6 @@ export const SETTINGS_TAB_IDS = [
   // used to share the Lanes page. `?tab=storage` was Health's id; it lands here.
   "storage",
   "location",
-  "secrets",
   // Every machine on one page; a machine opens the sections that work for it.
   "machines",
   // The background service, the ade command, reports and reset.
@@ -133,10 +142,11 @@ export function isMachineSettingsTab(tab: SettingsTabId): boolean {
 }
 
 /**
- * The open project's pages. They always act on the machine that owns the
- * project (the tab's binding), never on a picked machine.
+ * The open project's pages. Each reads one copy of the project, picked on the
+ * page (the tab's copy by default), and names the computer it is on. They
+ * never follow the Settings machine picker.
  */
-export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "storage", "location", "secrets", "integrations"];
+export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "storage", "location", "integrations"];
 
 export function isProjectSettingsTab(tab: SettingsTabId): boolean {
   return PROJECT_SETTINGS_TAB_IDS.includes(tab);
@@ -147,7 +157,7 @@ export function isProjectSettingsTab(tab: SettingsTabId): boolean {
  * (Behaviour), its simulators (Apple devices), its service (Advanced) and its
  * overview (General). Another machine's own settings are on its Machines page.
  */
-export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "behaviour", "apple", "keyboard", "advanced"];
+export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "behaviour", "apple", "keyboard", "passwords", "advanced"];
 
 export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
   return THIS_COMPUTER_ONLY_TAB_IDS.includes(tab);
@@ -157,7 +167,7 @@ export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
  * You pages that follow no machine at all: the account's own data, read
  * through this desktop's brain. They show no "settings for <remote>" banner.
  */
-export const ACCOUNT_ONLY_TAB_IDS: readonly SettingsTabId[] = ["ade-mcp"];
+export const ACCOUNT_ONLY_TAB_IDS: readonly SettingsTabId[] = ["ade-mcp", "ade-cloud", "sharing"];
 
 export function isAccountOnlyTab(tab: SettingsTabId): boolean {
   return ACCOUNT_ONLY_TAB_IDS.includes(tab);
@@ -177,6 +187,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // No description: the page opens on your name and email.
   { id: "account", label: "Account", group: "account" },
   { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
+  { id: "sharing", label: "Sharing", description: "Lanes you share with other people, and lanes they share with you.", group: "account" },
 
   // ── App ─────────────────────────────────────────────────────────────────
   { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "app" },
@@ -187,6 +198,9 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // MCP servers (your account), as one grid of what ADE connects to. A tile
   // opens its own page.
   { id: "integrations", label: "Integrations", description: "GitHub, Linear, Jira and MCP servers: the services ADE and your agents use.", group: "app" },
+  // Shown only to an account ADE Cloud lets in: every entry on it is an ADE
+  // Cloud entry, and those exist only with access (`isSettingAvailable`).
+  { id: "ade-cloud", label: "ADE Cloud", description: "Your plan, hours, cloud computers and lanes, the sizes, and the sign-ins your cloud computers use.", group: "app" },
   // One MCP server for the account: one URL reaches every computer you
   // include. The id stays `ade-mcp`, so links from when it was a Computer page
   // still land here.
@@ -205,13 +219,15 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // Keys are read by the window you type into, and each computer has its own
   // keyboard and OS shortcuts, so the page is per computer.
   { id: "keyboard", label: "Keyboard", description: "Shortcuts and Quick slots on this computer.", group: "app" },
+  // The account's vault, synced to every computer, read on this one (where
+  // "this computer only" secrets also show).
+  { id: "passwords", label: "Passwords & Secrets", description: "Logins, codes, passkeys and API keys, on every computer you sign in to. Agents use them but never see them.", group: "app" },
 
   // ── Project: the open project, on the machine that owns it ──────────────
   { id: "lanes-git", label: "Lanes", description: "How new lanes start, and every lane in this project.", group: "project" },
   { id: "project-agents", label: "Agents", description: "What agents keep about this project: PR chat transcripts.", group: "project" },
   { id: "storage", label: "Storage & cleanup", description: "The space this project takes, the archive, and what ADE cleans up.", group: "project" },
   { id: "location", label: "Location", description: "Where this project lives, and anything that needs fixing there.", group: "project" },
-  { id: "secrets", label: "Secrets", description: "This project, on every computer.", group: "project" },
 
   // ── System ──────────────────────────────────────────────────────────────
   // No description: the page is the machines themselves.
@@ -329,6 +345,40 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "account",
     web: "account",
     group: "Account",
+  },
+
+  // ── Sharing ──────────────────────────────────────────────────────────────
+  // Desktop only: the owner's share actions are user-only runtime actions the
+  // web client has no channel for.
+  {
+    id: "sharing.by-me",
+    label: "Lanes you shared",
+    keywords: ["share", "sharing", "guest", "invite", "revoke", "remove access", "stop sharing", "collaborate", "access", "people with access", "shared by me"],
+    tab: "sharing",
+    anchor: "sharing-by-me",
+    scope: "account",
+    web: "hidden",
+    group: "Sharing",
+  },
+  {
+    id: "sharing.with-me",
+    label: "Lanes shared with you",
+    keywords: ["share", "sharing", "guest", "leave", "invited", "accept", "decline", "shared with me"],
+    tab: "sharing",
+    anchor: "sharing-with-me",
+    scope: "account",
+    web: "hidden",
+    group: "Sharing",
+  },
+  {
+    id: "sharing.defaults",
+    label: "Default access",
+    keywords: ["share", "sharing", "rights", "default rights", "preset", "default", "watch", "comment", "suggest", "collaborate"],
+    tab: "sharing",
+    anchor: "sharing-defaults",
+    scope: "account",
+    web: "hidden",
+    group: "Sharing",
   },
 
   // ── MCP servers ──────────────────────────────────────────────────────────
@@ -774,8 +824,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["suggest", "suggestion", "next prompt", "autocomplete", "tab", "follow up", "placeholder", "composer", "codex"],
     tab: "chat",
     anchor: "prompt-suggestions-codex",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    // Follows the account per repository (an `ai.chat.*` row).
+    scope: "account-repo",
     // The setting is the host's project configuration, which the hosted client cannot write.
     web: "hidden",
     group: "Composer",
@@ -818,8 +868,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["jev", "opencode", "turn end", "question", "classifier", "bonus"],
     tab: "chat",
     anchor: "smart-decisions",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    // Follows the account per repository (an `ai.chat.*` row).
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -829,8 +879,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["jev", "needs you", "question", "waiting", "cli", "status line", "turn end"],
     tab: "chat",
     anchor: "smart-chat-status",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    // Follows the account per repository (an `ai.chat.*` row).
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -840,8 +890,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["jev", "terminal", "shell", "waiting", "prompt", "privacy"],
     tab: "chat",
     anchor: "smart-plain-terminals",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    // Follows the account per repository (an `ai.chat.*` row).
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -851,8 +901,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["jev", "settle", "done", "finished", "idle"],
     tab: "chat",
     anchor: "smart-settle-nudge",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    // Follows the account per repository (an `ai.chat.*` row).
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -862,8 +912,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["jev", "model hint", "effort", "suggest", "model", "opencode", "composer"],
     tab: "chat",
     anchor: "model-hint",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    // Follows the account per repository (an `ai.chat.*` row).
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -873,8 +923,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["jev", "command palette", "cmd k", "suggested", "commands"],
     tab: "chat",
     anchor: "smart-palette",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    // Follows the account per repository (an `ai.chat.*` row).
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -884,8 +934,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["jev", "emoji", "lane", "icon"],
     tab: "chat",
     anchor: "smart-lane-emoji",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    // Follows the account per repository (an `ai.chat.*` row).
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -895,7 +945,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["jev", "opencode", "zen", "sign in", "credit", "balance"],
     tab: "chat",
     anchor: "jev-zen-credit",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
+    // Stays on this computer: it spends this computer's own Zen sign-in.
     scope: "machine-repo",
     web: "hidden",
     group: "Agent behavior",
@@ -906,8 +956,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["mods", "plugins", "claude code", "band", "status line", "pane", "toast"],
     tab: "chat",
     anchor: "claude-mods",
-    // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    // Follows the account per repository (an `ai.chat.*` row).
+    scope: "account-repo",
     // The setting is the host's project configuration, which the hosted client cannot write.
     web: "hidden",
     group: "Agent behavior",
@@ -1274,13 +1324,13 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // The id and anchor keep the old word: they are storage and deeplinks, and
     // renaming them would break every saved link. Only the label is copy.
     id: "agents.harnesses",
-    label: "Custom",
-    // "harness"/"harnesses" stay as keywords: the label is Custom now, but
-    // that is the word in the docs, the CLI flags and every older screenshot.
+    label: "Custom providers",
+    // "harness"/"harnesses"/"preset" stay as keywords: older docs and
+    // screenshots used them, and someone may still search for them.
     // "body"/"brain" were internal shorthand that leaked into the wizard copy
     // and have been removed from it; searching for them should not teach a
     // vocabulary the product no longer speaks.
-    keywords: ["custom", "harness", "harnesses", "preset", "model", "account", "profile", "combination", "subagent", "launch", "logo"],
+    keywords: ["custom", "custom provider", "harness", "harnesses", "preset", "model", "account", "profile", "combination", "subagent", "launch", "logo"],
     tab: "agents",
     anchor: "ai-harnesses",
     scope: "account",
@@ -1528,7 +1578,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["pull request", "transcript", "attach", "review"],
     tab: "project-agents",
     anchor: "pr-chat-transcripts",
-    scope: "machine-repo",
+    // Follows the account per repository (`projectConfigAccountLayer.ts`).
+    scope: "account-repo",
     web: "machine",
     group: "Pull requests",
   },
@@ -1582,55 +1633,78 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
       // The machines themselves live in Your computers; the page header opens it.
       "sleep", "wake", "resize", "back up", "backup", "delete box", "hours", "plan", "extra hours", "billing", "suspended",
     ],
-    tab: "integrations",
+    tab: "ade-cloud",
     anchor: "cloud-connection",
-    // The account's cloud machines.
+    // The account's cloud machines. On the web the page reads them through a connected computer
+    // and pays through the account server (`webclient/adapter/cloud.ts`).
     scope: "account",
-    web: "hidden",
+    web: "account",
     group: "ADE Cloud",
   },
   {
     id: "integrations.ade-cloud-sign-ins",
-    label: "Sign-ins for your cloud machines",
+    label: "Sign-ins on ADE Cloud",
     keywords: ["sign in", "sign-in", "login", "api key", "token", "claude", "codex", "cursor", "droid", "grok", "copilot", "devin", "muse", "openrouter", "new machine", "cloud machine"],
-    tab: "integrations",
+    tab: "ade-cloud",
     anchor: "cloud-sign-ins",
-    // The provider sign-ins every new cloud machine starts with, in the account vault.
+    // The provider sign-ins ADE Cloud uses: one line and one off switch (Settings › Providers › ADE Cloud has the rest).
     scope: "account",
-    web: "hidden",
-    group: "ADE Cloud",
-  },
-  {
-    id: "integrations.ade-cloud-ready",
-    label: "ADE Cloud ready machine",
-    keywords: ["ready machine", "keep a machine ready", "warm", "prepared", "seed", "setup", "docker", "fast start", "cloud chat"],
-    tab: "integrations",
-    anchor: "cloud-ready",
-    // Which projects keep a machine ready, in the account vault.
-    scope: "account",
-    web: "hidden",
+    web: "account",
     group: "ADE Cloud",
   },
   {
     id: "integrations.ade-cloud-spending",
-    label: "ADE Cloud computers and hours",
-    keywords: ["machines", "new machine", "hours", "plan", "extra hours", "saved", "sleep", "auto-sleep", "idle", "cost"],
-    tab: "integrations",
-    anchor: "cloud-machines",
-    // Every machine with this month's spend and what sleeping saved; read from the provider.
+    label: "ADE Cloud lanes and computers",
+    keywords: ["machines", "computers", "cloud lanes", "disk", "free up space", "clear caches", "delete lane", "change size", "sleep", "awake", "idle"],
+    tab: "ade-cloud",
+    anchor: "cloud-lanes",
+    // Every lane and every computer the account pays for, read from the server.
     scope: "account",
-    web: "hidden",
+    web: "account",
+    group: "ADE Cloud",
+  },
+  {
+    id: "ade-cloud.plans",
+    label: "ADE Cloud plans and billing",
+    keywords: ["plan", "plans", "upgrade", "plus", "pro", "max", "free", "price", "billing", "extra hours", "manage billing", "subscription", "invoice", "cancel"],
+    tab: "ade-cloud",
+    anchor: "cloud-plan",
+    // The plans side by side and extra hours; the account's Stripe subscription.
+    scope: "account",
+    web: "account",
+    group: "ADE Cloud",
+  },
+  {
+    id: "ade-cloud.invite",
+    label: "Invite friends to ADE Cloud",
+    keywords: ["invite", "invite friends", "referral", "refer", "free hours", "invite code", "earn hours"],
+    tab: "ade-cloud",
+    anchor: "cloud-invite",
+    // The account's invite link and code box; the Work sidebar's invite pill lands here.
+    scope: "account",
+    web: "account",
+    group: "ADE Cloud",
+  },
+  {
+    id: "ade-cloud.sizes",
+    label: "ADE Cloud sizes",
+    keywords: ["size", "sizes", "small", "medium", "large", "x-large", "cpu", "memory", "ram", "disk", "docker", "android", "default size", "tier"],
+    tab: "ade-cloud",
+    anchor: "cloud-sizes",
+    // The size new cloud lanes start on: an account setting.
+    scope: "account",
+    web: "account",
     group: "ADE Cloud",
   },
   {
     id: "integrations.ade-cloud-agent-limits",
     label: "What agents may spend on ADE Cloud",
     keywords: ["agent limits", "unattended", "full-auto", "automation", "machines a day", "largest size", "budget", "ask me", "balanced", "hands-off"],
-    tab: "integrations",
+    tab: "ade-cloud",
     anchor: "cloud-agent-limits",
     // What unattended agents may spend alone, and the optional cap, in the account vault.
     scope: "account",
-    web: "hidden",
+    web: "account",
     group: "ADE Cloud",
   },
   {
@@ -1790,16 +1864,51 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Machines",
   },
 
-  // ── Secrets ──────────────────────────────────────────────────────────────
+  // ── Passwords & Secrets ──────────────────────────────────────────────────
+  // The account's vault. Scope `account`: it is the same on every computer.
   {
-    id: "secrets.secrets",
-    label: "Secrets",
-    keywords: ["credential", "api key", "token", "keychain", "env", "password", "environment", "variable"],
-    tab: "secrets",
-    anchor: "secrets",
-    scope: "account-repo",
+    id: "passwords.logins",
+    label: "Saved logins",
+    keywords: ["password", "login", "sign in", "site", "username", "vault", "credential", "authenticator", "2fa"],
+    tab: "passwords",
+    anchor: "passwords-logins",
+    scope: "account",
     web: "hidden",
-    group: "Secrets",
+    group: "Passwords & Secrets",
+  },
+  {
+    id: "passwords.secrets",
+    label: "Saved secrets",
+    keywords: ["secret", "secrets", "api key", "token", "env", ".env", "environment", "variable", "project", "vault", "credential", "keychain"],
+    tab: "passwords",
+    anchor: "passwords-secrets",
+    scope: "account",
+    web: "hidden",
+    group: "Passwords & Secrets",
+  },
+  {
+    id: "passwords.activity",
+    label: "Password activity",
+    keywords: ["activity", "history", "used", "filled", "sign in", "audit"],
+    tab: "passwords",
+    anchor: "passwords-activity",
+    scope: "account",
+    web: "hidden",
+    group: "Passwords & Secrets",
+  },
+  // The web client opens no vault: its Passwords page only says where to see
+  // and change them (`WEB_PASSWORDS_SENTENCE`). This entry puts the page in
+  // the web nav; the desktop never offers it.
+  {
+    id: "passwords.web",
+    label: "Passwords & Secrets",
+    keywords: ["password", "passwords", "secret", "secrets", "login", "vault", "api key", "token"],
+    tab: "passwords",
+    anchor: "passwords-web",
+    scope: "account",
+    web: "account",
+    group: "Passwords & Secrets",
+    webOnly: true,
   },
 
   // ── Stats ────────────────────────────────────────────────────────────────
@@ -1872,7 +1981,9 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   "lane-templates": "lanes-git",
   "ade-usage": "stats",
   usage: "stats",
-  secret: "secrets",
+  // Project → Secrets became part of Passwords & Secrets.
+  secret: "passwords",
+  secrets: "passwords",
   // Overview became General (Settings opens there), and Computer → ADE
   // service split in two: its version and updates are on General, the
   // service, the ade command, reports and reset on System → Advanced. A
@@ -1935,6 +2046,9 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
  * the top of it: `?tab=archive` opens Project → Storage & cleanup at the archive.
  */
 export const LEGACY_TAB_ANCHORS: Readonly<Record<string, string>> = {
+  // Project → Secrets is now the Secrets view of Passwords & Secrets.
+  secret: "passwords-secrets",
+  secrets: "passwords-secrets",
   storage: "storage",
   disk: "storage",
   space: "storage",
@@ -1960,7 +2074,7 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   github: "integrations.github",
   linear: "integrations.linear",
   "ai-providers": "agents.providers",
-  secrets: "secrets.secrets",
+  secrets: "passwords.secrets",
   diagnostics: "storage.diagnostics",
   "agent-completion-sound": "notifications.completion-sound",
   "voice-input": "agents.dictation",
@@ -1977,6 +2091,8 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   // Moved out of Notifications when Activity got its own tab.
   "attention-sounds": "activity.sounds",
   "hide-previews": "activity.hide-details",
+  // Ready machines were removed (Cloud 5): a new lane gets its own computer. Their old link opens the lanes and computers.
+  "cloud-ready": "integrations.ade-cloud-spending",
 };
 
 /** ADE Cloud's settings: they do not exist for an account not on its access list. */
@@ -2171,11 +2287,15 @@ const FIND_SYNONYMS: Record<string, string> = {
   publish: "transcript",
   share: "transcript",
   sharing: "transcript",
+  // "ADE Cloud" is a product, not the stop word "ade" plus "cloud": alone,
+  // "cloud" is a fragment of Cloudflare and Cloudinary and finds them first.
+  "ade-cloud": "ade cloud",
 };
 
 function findWords(query: string): string[] {
   return query
     .toLowerCase()
+    .replace(/\bade[\s-]+cloud\b/g, "ade-cloud")
     .split(/[^a-z0-9.+-]+/)
     .map((word) => word.replace(/^[.+-]+|[.+-]+$/g, ""))
     .filter((word) => word.length > 1 && !FIND_STOP_WORDS.has(word))
@@ -2185,9 +2305,13 @@ function findWords(query: string): string[] {
 /** `providers` finds `provider`, `notifications` finds `notification`. */
 function wordHits(haystack: string, word: string): boolean {
   // "pr" and "ui" are words, not fragments: inside "provider" they mean nothing.
-  if (word.length <= 3) return ` ${haystack.replace(/[^a-z0-9]+/g, " ")} `.includes(` ${word} `);
+  if (word.length <= 3) return wholeWordHits(haystack, word);
   if (haystack.includes(word)) return true;
   return word.length > 3 && word.endsWith("s") && haystack.includes(word.slice(0, -1));
+}
+
+function wholeWordHits(haystack: string, word: string): boolean {
+  return ` ${haystack.replace(/[^a-z0-9]+/g, " ")} `.includes(` ${word.replace(/[^a-z0-9]+/g, " ")} `);
 }
 
 type FindRow = { entry: SettingEntry; label: string; tab: string; group: string; keywords: string };
@@ -2234,11 +2358,14 @@ export function findSettingsEntries(
       // A word that IS the page's name ("providers") names the page; then a
       // word in the card's own title, its page, its section, its search terms.
       const hit = row.tab === word || row.tab === `${word}s` ? 10
-        : wordHits(row.label, word) ? 8
-          : wordHits(row.tab, word) ? 5
-            : wordHits(row.group, word) ? 3
-              : wordHits(row.keywords, word) ? 2
-                : 0;
+        // The whole word in the title beats it inside another word: "cloud"
+        // is ADE Cloud's before it is Cloudflare's.
+        : wholeWordHits(row.label, word) ? 9
+          : wordHits(row.label, word) ? 8
+            : wordHits(row.tab, word) ? 5
+              : wordHits(row.group, word) ? 3
+                : wordHits(row.keywords, word) ? 2
+                  : 0;
       if (hit > 0) matched += 1;
       score += hit * (rarity.get(word) ?? 0);
     }

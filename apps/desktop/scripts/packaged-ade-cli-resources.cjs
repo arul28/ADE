@@ -4,6 +4,7 @@ const path = require("node:path");
 const defaultDesktopRoot = path.resolve(__dirname, "..");
 const REQUIRED_PACKAGED_ADE_CLI_PAYLOAD_PATHS = Object.freeze([
   "cli.cjs",
+  "watchdogCheck.cjs",
   "bootstrap.cjs",
   "ptyHostWorker.cjs",
   "cursorSdkWorker.cjs",

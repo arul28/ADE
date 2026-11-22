@@ -18,7 +18,7 @@ import type { AppleInstalledSimulator } from "../../../shared/types/iosSimulator
 export type AppleDeviceFamilyId = "iphone" | "ipad" | "watch" | "tv" | "vision" | "other";
 
 /** Section order in the picker. "Other" is last because it is the leftovers. */
-export const APPLE_DEVICE_FAMILY_ORDER = [
+const APPLE_DEVICE_FAMILY_ORDER = [
   "iphone",
   "ipad",
   "watch",
@@ -37,7 +37,7 @@ const FAMILY_LABEL: Record<AppleDeviceFamilyId, string> = {
 };
 
 /** The picker's section heading. Never "iOS Simulators". */
-export function appleDeviceFamilyLabel(family: AppleDeviceFamilyId): string {
+function appleDeviceFamilyLabel(family: AppleDeviceFamilyId): string {
   return FAMILY_LABEL[family];
 }
 

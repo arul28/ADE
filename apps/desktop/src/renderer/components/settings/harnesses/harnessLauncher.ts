@@ -13,7 +13,7 @@
  * only the machine that resolves the launch knows.
  */
 
-import type { HarnessPresetBody, HarnessPresetSource } from "../../../../shared/harnessPresets";
+import { clampEffortToLadder, type HarnessPresetBody, type HarnessPresetSource } from "../../../../shared/harnessPresets";
 import { rendererRuntimeTarget } from "../../../lib/platform";
 
 /** Harnesses the launcher knows how to start. */
@@ -66,6 +66,7 @@ export function buildTerminalLauncher(args: {
   /** The preset's source (kept for callers; the model now comes from the env). */
   source?: HarnessPresetSource;
   reasoningEffort?: string;
+  reasoningTiers?: readonly string[];
   platform?: string;
 }): string | null {
   if (!harnessHasTerminalLauncher(args.harness) || !args.presetId.trim() || !args.model.trim()) return null;
@@ -74,7 +75,12 @@ export function buildTerminalLauncher(args: {
   // The resolved model, in the spelling that harness's CLI takes (OpenCode's
   // `<provider>/<model>` included), comes from the exported environment.
   const modelWord = windows ? MODEL_FROM_ENV.pwsh : MODEL_FROM_ENV.posix;
-  const command = harnessCommand(args.harness, modelWord, args.reasoningEffort, quote);
+  const command = harnessCommand(
+    args.harness,
+    modelWord,
+    clampEffortToLadder(args.reasoningEffort, args.harness, args.reasoningTiers),
+    quote,
+  );
   if (!command) return null;
   const id = quote(args.presetId.trim());
   // Both forms start the harness only when `ade harness env` succeeded, so a

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentCliStateFromChunk,
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
@@ -210,7 +211,7 @@ describe("terminalSessionSignals", () => {
       targetKind: "thread",
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
-    })).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-99");
+    })).toBe("codex --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "codex",
@@ -310,7 +311,7 @@ describe("terminalSessionSignals", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium", fastMode: true },
     })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write --ask-for-approval on-request resume thread-99",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-99",
     );
   });
 
@@ -321,7 +322,7 @@ describe("terminalSessionSignals", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit", codexFastMode: true },
     })).toBe(
-      "codex --no-alt-screen -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write --ask-for-approval on-request resume thread-99",
+      "codex --no-alt-screen -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-99",
     );
   });
 
@@ -353,7 +354,7 @@ describe("terminalSessionSignals", () => {
         targetId: null,
         launch: { permissionMode: "default" },
       }),
-    ).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume");
+    ).toBe("codex --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume");
   });
 
   it("parses legacy codex approval_policy=untrusted sandbox_mode=read-only as plan", () => {
@@ -507,4 +508,26 @@ describe("terminalSessionSignals", () => {
       expect(parseTrackedCliResumeCommand(command, toolType)).toEqual({ provider, targetId });
     },
   );
+});
+
+describe("agentCliStateFromChunk", () => {
+  const report = (state: string) => `\x1b]7501;state=${state}:app=codex\x07`;
+
+  it("returns every state report in order, and reads one split across chunks", () => {
+    // A fast turn can fit in one chunk; reading only the last report would
+    // lose the turn that `working` started.
+    const whole = agentCliStateFromChunk("", `out ${report("working")} more ${report("done")} tail`);
+    expect(whole.states).toEqual(["working", "done"]);
+    expect(whole.state).toBe("done");
+    expect(whole.carry).toBe("");
+
+    // A report cut in two is carried and read once whole, not twice.
+    const cut = report("idle");
+    const first = agentCliStateFromChunk("", `text ${cut.slice(0, 12)}`);
+    expect(first.states).toEqual([]);
+    expect(first.carry).toBe(cut.slice(0, 12));
+    const second = agentCliStateFromChunk(first.carry, `${cut.slice(12)} after`);
+    expect(second.states).toEqual(["idle"]);
+    expect(second.carry).toBe("");
+  });
 });

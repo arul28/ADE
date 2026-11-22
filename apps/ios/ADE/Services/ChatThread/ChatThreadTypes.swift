@@ -94,6 +94,35 @@ struct ChatThreadLiveEvent: @unchecked Sendable {
   }
 }
 
+/// A host stand-in for a transcript row too large to page: a `system_notice`
+/// with `status: "history_row_omitted"` and no `sequence`.
+func chatThreadIsOmittedHistoryRowNotice(_ event: ChatThreadLiveEvent) -> Bool {
+  chatThreadOmittedHistoryRowBody(event) != nil
+}
+
+/// The stand-in's identity: the omitted row's byte offset (`omittedRow.offset`,
+/// from hosts that send it), else the page's row offset, else its timestamp.
+func chatThreadOmittedHistoryRowKey(_ event: ChatThreadLiveEvent) -> String {
+  if let offset = chatThreadOmittedHistoryRowOffset(event) { return "offset:\(offset)" }
+  return "id:\(event.envelope.id)"
+}
+
+/// The omitted row's byte offset: `omittedRow.offset`, else the page's offset.
+func chatThreadOmittedHistoryRowOffset(_ event: ChatThreadLiveEvent) -> Int? {
+  let omittedRow = chatThreadOmittedHistoryRowBody(event)?["omittedRow"] as? [String: Any]
+  return (omittedRow?["offset"] as? NSNumber)?.intValue ?? event.envelope.sourceOffset
+}
+
+private func chatThreadOmittedHistoryRowBody(_ event: ChatThreadLiveEvent) -> [String: Any]? {
+  guard event.envelope.sequence == nil,
+        event.envelope.event.typeName == "system_notice",
+        let object = try? JSONSerialization.jsonObject(with: event.raw) as? [String: Any],
+        let body = object["event"] as? [String: Any],
+        body["status"] as? String == "history_row_omitted"
+  else { return nil }
+  return body
+}
+
 /// A `chat_subscribe` ack, decoded off the main actor.
 struct ChatThreadSnapshotInput: @unchecked Sendable {
   var sessionId: String
@@ -316,6 +345,11 @@ struct ChatStreamTrace {
   var firstLiveEventAt: Date?
   var unsubscribes = 0
   var socketClosesWhileSubscribed = 0
+  /// Which scope the last subscribe named: `project` (none, the active
+  /// project), `foreign` (a `projectId`/`projectRootPath`), or `personal`.
+  var lastSubscribeScope = "none"
+  /// The code of the host's last `unavailable` answer, or `none`.
+  var unavailableCode = "none"
 
   mutating func noteSubscribe(sent: Bool, requestSnapshot: Bool, resume: String) {
     if sent { subscribesSent += 1 } else { subscribesFailedToSend += 1 }
@@ -354,6 +388,8 @@ struct ChatStreamTrace {
       "subscribesFailedToSend": String(subscribesFailedToSend),
       "lastSubscribeRequestedSnapshot": String(lastSubscribeRequestedSnapshot),
       "lastSubscribeResume": lastSubscribeResume,
+      "lastSubscribeScope": lastSubscribeScope,
+      "unavailableCode": unavailableCode,
       "lastSubscribeAgo": age(lastSubscribeAt),
       "snapshotsApplied": String(snapshotsApplied),
       "snapshotsDropped": String(snapshotsDropped),

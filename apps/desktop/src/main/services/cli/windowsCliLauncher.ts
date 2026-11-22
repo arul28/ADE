@@ -173,8 +173,9 @@ export type WindowsCliLauncherInstall =
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
- * Put the launcher in `dir` as `ade.exe` with its `ade.launch`, and return the
- * `ade.exe` path, or why it could not (the caller keeps `ade.cmd`).
+ * Put the launcher in `dir` as `ade.exe` (or `<name>.exe`) with its `.launch`
+ * file, and return the exe path, or why it could not (the caller keeps
+ * `ade.cmd`).
  *
  * The exe is copied only when its bytes differ: a running copy is locked on
  * Windows, and an agent mid-command must not break the next brain start. When
@@ -186,14 +187,21 @@ export function installWindowsCliLauncher(input: {
   launcherSource: string | null;
   dir: string;
   spec: WindowsCliLaunchSpec;
+  /**
+   * The command name: the copy is `<name>.exe` beside `<name>.launch` (the
+   * launcher reads the `.launch` named after itself). `ade` by default; the
+   * GitHub shim installs `gh` and its git credential helper the same way.
+   */
+  name?: string;
 }): WindowsCliLauncherInstall {
   if (!input.launcherSource) {
     return { exePath: null, reason: `${WINDOWS_CLI_LAUNCHER_BINARY} is not in this build's resources\\native` };
   }
   const body = renderWindowsCliLaunchFile(input.spec);
   if (!body) return { exePath: null, reason: "a path in the CLI command holds a line break, which ade.launch cannot carry" };
-  const exePath = path.join(input.dir, "ade.exe");
-  const launchPath = path.join(input.dir, "ade.launch");
+  const name = input.name && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(input.name) ? input.name : "ade";
+  const exePath = path.join(input.dir, `${name}.exe`);
+  const launchPath = path.join(input.dir, `${name}.launch`);
   try {
     fs.mkdirSync(input.dir, { recursive: true });
     if (!sameFileContents(input.launcherSource, exePath)) {

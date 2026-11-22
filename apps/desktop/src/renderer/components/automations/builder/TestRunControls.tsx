@@ -146,6 +146,7 @@ function TestEventPicker({
   useEffect(() => {
     let cancelled = false;
     const fail = (err: unknown) => { if (!cancelled) setLoadError(errorText(err)); };
+    if (!pin) return () => { cancelled = true; };
     if (source === "pr") {
       void window.ade.prs.listAll(pin)
         .then((rows) => { if (!cancelled) setPrs(rows.filter((pr) => pr.state === "open" || pr.state === "draft")); })
@@ -167,13 +168,16 @@ function TestEventPicker({
         .catch(fail);
     }
     return () => { cancelled = true; };
-  }, [hookId, needsLane, pin, source]);
+    // Keyed on the pin's key, not the object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hookId, needsLane, pin?.key, source]);
 
   const pickDelivery = (id: string) => {
     if (!id) {
       onChange({ ...event, webhookBody: undefined, label: null });
       return;
     }
+    if (!pin) return;
     void window.ade.automations.webhooks.getDelivery({ id }, pin)
       .then((delivery) => {
         if (!delivery) return;
@@ -437,7 +441,7 @@ export function TestRunDialog({
   // A preview shows the real run, so it asks for the live plan.
   const planMode: AutomationTestRunMode = kind === "safe" ? "safe" : "live";
   useEffect(() => {
-    if (!open) return;
+    if (!open || !pin) return;
     let cancelled = false;
     setLoading(true);
     setPlanError(null);
@@ -451,10 +455,16 @@ export function TestRunDialog({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [event, open, pin, planMode, ruleId]);
+    // Keyed on the pin's key, not the object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [event, open, pin?.key, planMode, ruleId]);
 
   const start = async () => {
     if (kind === "preview") return;
+    if (!pin) {
+      setStartError("No computer with this project is online.");
+      return;
+    }
     if (kind === "live") {
       const ok = await confirmDialog({
         title: `Run "${ruleName}" for real?`,

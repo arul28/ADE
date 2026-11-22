@@ -1,21 +1,9 @@
-import { rootAppStoreApi } from "../state/appStore";
-import { starPillCountsMessages } from "./starPill";
-import { isWebClientMode } from "./webClientMode";
+import type { NudgeShowing } from "./nudgePill";
 
 /**
- * Side effects of the desktop "Star ADE on GitHub" pill: the activity hook
- * that writes the root store (the pill's prefs are root-only; it does nothing
- * in the browser web client, which never shows the pill) and the pill's
- * analytics.
+ * The desktop "Star ADE on GitHub" pill's analytics. A sent message reaches
+ * the pill through `nudgePillActivity.ts`.
  */
-
-/** The user sent a chat message from this desktop app. */
-export function recordStarPillMessageSent(): void {
-  if (isWebClientMode()) return;
-  const state = rootAppStoreApi.getState();
-  if (!starPillCountsMessages(state.starPill)) return;
-  state.updateStarPill((prev) => ({ ...prev, messagesSent: prev.messagesSent + 1 }));
-}
 
 const DAY_MS = 24 * 60 * 60_000;
 
@@ -31,7 +19,12 @@ const DAY_MS = 24 * 60 * 60_000;
  */
 export type StarPromptAnalyticsFact = {
   action: "star_prompt_shown" | "star_prompt_clicked" | "star_prompt_dismissed" | "repo_starred";
-  outcome: "prompt_first" | "prompt_second";
+  /**
+   * Which showing (`starPillShowing`). The shared type has three; the star
+   * pill's schedule ends at its second dismissal, so only `prompt_first` and
+   * `prompt_second` are ever sent (the analytics allowlist takes all three).
+   */
+  outcome: NudgeShowing;
 };
 
 /** Emit one allowlisted star prompt fact without letting analytics affect UI. */

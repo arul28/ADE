@@ -13,6 +13,7 @@ import {
   json,
   parseLimit,
   parseSequenceCursor,
+  readBodyWithinLimit,
   readString,
   type RelayEnv,
   requireWebSocketUpgrade,
@@ -23,6 +24,7 @@ import {
 import { authenticateAccount, linearGraphqlUrl, readAuthorizationHeader, verifyLinearViewerOrganization } from "./auth";
 import { notifyLinearTopic, postLinearAgentAcknowledgement, runAfterResponse } from "./linearAgentCore";
 import { linearAgentMemberAccountMatches, routeLinearAgentSessionEvent, subscribeLinearTopic } from "./linearAgent";
+import { wakeCloudComputersForTopics } from "./cloudEventWakes";
 
 type LinearEventRow = {
   event_seq: number;
@@ -43,7 +45,7 @@ const MAX_LINEAR_REGISTRATION_BODY_BYTES = 16 * 1024;
 const MAX_LINEAR_WEBHOOK_SECRET_LENGTH = 512;
 const LINEAR_WEBHOOK_REPLAY_WINDOW_MS = 60_000;
 const linearWebhookAuthorityByTokenHash = new Map<string, { expiresAt: number }>();
-export async function signLinearWebhookBody(secret: string, body: string | ArrayBuffer): Promise<string> {
+export async function signLinearWebhookBody(secret: string, body: string | BufferSource): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     encoder.encode(secret),
@@ -55,7 +57,7 @@ export async function signLinearWebhookBody(secret: string, body: string | Array
   return toHex(await crypto.subtle.sign("HMAC", key, data));
 }
 
-async function verifyLinearSignature(secret: string, body: ArrayBuffer, signature: string): Promise<boolean> {
+async function verifyLinearSignature(secret: string, body: BufferSource, signature: string): Promise<boolean> {
   if (!secret.trim() || !/^[0-9a-f]{64}$/i.test(signature)) return false;
   const expected = await signLinearWebhookBody(secret, body);
   return constantTimeEqual(expected.toLowerCase(), signature.toLowerCase());
@@ -129,8 +131,8 @@ export async function handleLinearOrganizationRegister(request: Request, env: Re
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
 
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_LINEAR_REGISTRATION_BODY_BYTES) {
+  const body = await readBodyWithinLimit(request, MAX_LINEAR_REGISTRATION_BODY_BYTES);
+  if (!body) {
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
   let payload: Record<string, unknown>;
@@ -239,8 +241,8 @@ export async function handleLinearWebhook(request: Request, env: RelayEnv, ctx?:
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
 
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_LINEAR_WEBHOOK_BODY_BYTES) {
+  const body = await readBodyWithinLimit(request, MAX_LINEAR_WEBHOOK_BODY_BYTES);
+  if (!body) {
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
 
@@ -366,6 +368,11 @@ export async function handleLinearWebhook(request: Request, env: RelayEnv, ctx?:
     if (agentRoute?.routed) {
       tasks.push(notifyLinearTopic(env, `linear-account:${agentRoute.accountId}`, { t: "linear_delivery" }));
     }
+    // Resting cloud computers hold no socket: the account directory wakes the ones listening.
+    tasks.push(wakeCloudComputersForTopics(env, [
+      `linear-org:${organizationId}`,
+      ...(agentRoute?.routed ? [`linear-account:${agentRoute.accountId}`] : []),
+    ]));
     if (agentRoute?.acknowledgement) {
       tasks.push(postLinearAgentAcknowledgement(env, organizationId, agentRoute.acknowledgement));
     }

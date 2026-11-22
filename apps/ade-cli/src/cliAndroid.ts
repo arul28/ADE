@@ -357,6 +357,8 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
   ANDROID_SDK_PATH_INVALID: "hint: Pick the folder that holds platform-tools, emulator or system-images.",
   ANDROID_LOW_MEMORY:
     "hint: stop an emulator you do not need (`ade android stop` in its lane) or close apps, then try again. Never start one with the raw `emulator` binary instead. Ask the user before you run `ade android start --force`: it boots anyway, and the machine can swap.",
+  ANDROID_LOW_DISK:
+    "hint: the disk can't hold a new device's data. On ADE Cloud, ADE grows the disk itself: if the message says it is growing, the computer restarts and your chat continues; run `ade android start` again then. If it couldn't, grow it yourself with `ade cloud resize --free 8 --reason \"Android emulator first boot\"` (inside the plan no yes is needed; never ask the user to press Grow). Elsewhere, tell the user to free disk space. Never delete files to make room yourself.",
   // P1 agent suite.
   ANDROID_ELEMENT_NOT_FOUND:
     "hint: run `ade android snapshot --text` to see the screen's elements, then aim with --ref, --identifier, --label or --text.",
@@ -378,12 +380,13 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
   ANDROID_TESTS_RUNNING: "hint: this lane's instrumentation tests already run. Wait for that run to finish, then try again.",
 };
 
-/** a cloud box has no KVM: the agent moves the chat to a VM, within the owner's agent limits. */
+/** A cloud box has no KVM: the agent starts a lane on a full computer (agents never make a bare one). */
 const CLOUD_BOX_ANDROID_HINT =
-  "hint: tell the user the message above in plain words. To move: `ade cloud create --kind vm --shape <the size the message names> --name <name>` "
-  + "(ADE asks the user or refuses when the agent limits say so), then "
-  + "`ade chat handoff \"$ADE_CHAT_SESSION_ID\" --machine <name> --fork --include-changes --clone --when-turn-ends --note \"<the task, then offer to delete the box>\"`. "
-  + "The `ade-cloud` skill has the steps.";
+  "hint: tell the user the message above in plain words. Push this lane's branch, then start a lane on a full computer on it: "
+  + "`ade lanes create --machine cloud --size large --existing-branch <branch> --name <name>` "
+  + "(ADE asks the user, or the agent limits answer), then start a chat there: "
+  + "`ade chat create --machine <its computer> --lane <its lane id> --provider <p> --model <id> --prompt \"<the task>\"`. "
+  + "Never make a computer (`ade cloud create`): agents start lanes. The `ade-cloud` skill has the steps.";
 
 const ANDROID_ERROR_HINT_ENTRIES = Object.entries(ANDROID_ERROR_HINTS) as Array<[AndroidErrorCode, string]>;
 

@@ -55,7 +55,8 @@ export function usePrDescriptionTaskToggle(args: {
   }, [refresh]);
 
   const toggleTask = useCallback((slice: string, index: number, nextChecked: boolean) => {
-    if (!enabled) return;
+    // No machine online: the box stays as it is, nothing is sent.
+    if (!enabled || !pin) return;
     const base = pendingRef.current ?? bodyRef.current ?? "";
     const next = togglePrTaskInBody(base, slice, index, nextChecked);
     if (next === null) {

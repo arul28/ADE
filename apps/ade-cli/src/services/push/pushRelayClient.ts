@@ -53,6 +53,52 @@ export {
 const DEFAULT_RELAY_URL = "https://ade-push-relay.arulsharma1028.workers.dev";
 const REQUEST_TIMEOUT_MS = 15_000;
 /**
+ * How long an idle connection to the relay stays open. The presence report
+ * goes every 30 s and other relay loops every minute; Node's default (4 s)
+ * closed the connection between them, so each one paid a new TLS handshake.
+ */
+const RELAY_KEEP_ALIVE_MS = 60_000;
+let relayKeepAliveAgent: object | null = null;
+
+/**
+ * Node's own fetch dispatcher (the undici `Agent` bundled in Node, no package),
+ * when it is still the default one. The newest slot that is set decides: a
+ * proxy from `http.setGlobalProxyFromEnv` puts a different dispatcher there,
+ * and then requests keep using it.
+ */
+function defaultGlobalDispatcher(): object | null {
+  const slots = globalThis as unknown as Record<symbol, unknown>;
+  for (const name of ["undici.globalDispatcher.2", "undici.globalDispatcher.1"]) {
+    const dispatcher = slots[Symbol.for(name)];
+    if (dispatcher && typeof dispatcher === "object") {
+      return dispatcher.constructor?.name === "Agent" ? dispatcher : null;
+    }
+  }
+  return null;
+}
+
+/**
+ * One keep-alive pool for every relay request in this process, built from the
+ * same `Agent` class Node's fetch uses. Undefined (the default dispatcher)
+ * before Node's fetch has loaded, and whenever a proxy dispatcher is in place.
+ */
+function relayKeepAliveDispatcher(): object | undefined {
+  const dispatcher = defaultGlobalDispatcher();
+  if (!dispatcher) return undefined;
+  if (!relayKeepAliveAgent) {
+    try {
+      const AgentClass = dispatcher.constructor as new (options: Record<string, unknown>) => object;
+      relayKeepAliveAgent = new AgentClass({
+        keepAliveTimeout: RELAY_KEEP_ALIVE_MS,
+        keepAliveMaxTimeout: RELAY_KEEP_ALIVE_MS,
+      });
+    } catch {
+      return undefined;
+    }
+  }
+  return relayKeepAliveAgent;
+}
+/**
  * The whole of one relay request: the account token, the fetch, and the one
  * forced-refresh retry after a 401, together. The background default keeps the
  * old worst case (a 30s shared token refresh, then two 15s fetches) for the
@@ -68,6 +114,13 @@ const PUSH_RELAY_BACKGROUND_DEADLINE_MS = 60_000;
 export const PUSH_RELAY_FOREGROUND_DEADLINE_MS = 20_000;
 
 /** Per-call options `getAttentionSnapshot` accepts. */
+/** Passwords: one sealed item as the relay stores it. */
+export type PasswordRelayItem = { id: string; ciphertext: string | null; revision: string; deleted: boolean };
+export type PasswordRelayPage = { items: PasswordRelayItem[]; cursor: string | null; truncated: boolean; epoch: number | null };
+export type PasswordRelayWrite = { id: string; ciphertext?: string; ifRevision?: string; deleted?: boolean };
+export type PasswordRelayWriteResult = { id: string; status: "ok" | "stale" | "invalid" | "stale_key"; revision: string | null };
+export type PasswordMachineKind = "desktop" | "phone" | "cloud" | "web" | "cli";
+
 export type PushRelayCallOptions = {
   /** Aborts the request early; the client's own deadline still applies. */
   signal?: AbortSignal;
@@ -471,12 +524,15 @@ export function createPushRelayClient(args: {
         controller.abort();
       }, Math.max(1, Math.min(REQUEST_TIMEOUT_MS, remainingMs())));
       try {
+        const dispatcher = relayKeepAliveDispatcher();
         const response = await fetch(url.toString(), {
           method,
           headers,
           ...(options?.body !== undefined ? { body: bodyString } : {}),
           signal: controller.signal,
-        }).catch((error: unknown) => {
+          // Node's fetch takes undici's `dispatcher`; the DOM type does not list it.
+          ...(dispatcher ? { dispatcher } : {}),
+        } as RequestInit).catch((error: unknown) => {
           if (deadline.signal.aborted) throw deadlineError();
           if (attemptTimedOut) throw new PushRelayUnreachableError("timeout", { cause: error });
           // No HTTP answer at all. Name the network code now: the cause chain
@@ -1197,20 +1253,114 @@ export function createPushRelayClient(args: {
     },
 
     /**
+     * Passwords: one page of sealed items (opaque here, as on the relay).
+     * `null` means this machine could not ask (signed out, relay unavailable).
+     */
+    async getPasswordItems(options?: { since?: string | null }): Promise<PasswordRelayPage | null> {
+      const result = await accountRequest("getPasswordItems", "GET", "/attention/account/passwords/items", {
+        query: { since: options?.since },
+        couldNotAsk: [503],
+      });
+      if (!result.asked) return null;
+      const body = result.body;
+      const items: PasswordRelayItem[] = [];
+      for (const raw of Array.isArray(body.items) ? body.items : []) {
+        const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+        if (!row || typeof row.id !== "string" || typeof row.revision !== "string") continue;
+        items.push({
+          id: row.id,
+          ciphertext: typeof row.ciphertext === "string" ? row.ciphertext : null,
+          revision: row.revision,
+          deleted: row.deleted === true,
+        });
+      }
+      return {
+        items,
+        cursor: typeof body.cursor === "string" ? body.cursor : null,
+        truncated: body.truncated === true,
+        epoch: typeof body.epoch === "number" ? body.epoch : null,
+      };
+    },
+
+    /** Passwords: write sealed items; each answer is ok, stale (with the stored revision) or invalid. */
+    async putPasswordItems(
+      items: PasswordRelayWrite[],
+      deviceId: string | null,
+    ): Promise<PasswordRelayWriteResult[] | null> {
+      if (!items.length) return [];
+      const result = await accountRequest("putPasswordItems", "PUT", "/attention/account/passwords/items", {
+        body: { items, ...(deviceId ? { deviceId } : {}) },
+        couldNotAsk: [503],
+      });
+      if (!result.asked) return null;
+      const out: PasswordRelayWriteResult[] = [];
+      for (const raw of Array.isArray(result.body.results) ? result.body.results : []) {
+        const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+        if (!row || typeof row.id !== "string") continue;
+        const status = row.status === "ok" || row.status === "stale" || row.status === "stale_key" ? row.status : "invalid";
+        out.push({ id: row.id, status, revision: typeof row.revision === "string" ? row.revision : null });
+      }
+      return out;
+    },
+
+    /**
+     * Passwords: this account's vault key (made on first use), or a fresh one
+     * after a reset. The key never goes to a log; callers keep it in memory
+     * or in this machine's own encrypted store.
+     */
+    async requestPasswordKey(
+      args2: { deviceId: string; machineKind: PasswordMachineKind; reset?: boolean },
+    ): Promise<{ dek: string; epoch: number } | null> {
+      const result = await accountRequest(
+        args2.reset ? "resetPasswordKey" : "requestPasswordKey",
+        "POST",
+        args2.reset ? "/attention/account/passwords/reset" : "/attention/account/passwords/key",
+        {
+          body: { deviceId: args2.deviceId, machineKind: args2.machineKind, ...(args2.reset ? { confirm: "reset" } : {}) },
+          couldNotAsk: [503],
+        },
+      );
+      if (!result.asked) return null;
+      const dek = result.body.dek;
+      const epoch = result.body.epoch;
+      return typeof dek === "string" && typeof epoch === "number" ? { dek, epoch } : null;
+    },
+
+    /** Passwords: the last times this account's vault key was handed out. */
+    async getPasswordKeyReleases(): Promise<Array<{ deviceId: string; machineKind: string; at: string }> | null> {
+      const result = await accountRequest("getPasswordKeyReleases", "GET", "/attention/account/passwords/releases", {
+        couldNotAsk: [503],
+      });
+      if (!result.asked) return null;
+      return (Array.isArray(result.body.releases) ? result.body.releases : [])
+        .filter((row): row is { deviceId: string; machineKind: string; at: string } =>
+          Boolean(row) && typeof (row as Record<string, unknown>).deviceId === "string"
+          && typeof (row as Record<string, unknown>).at === "string")
+        .map((row) => ({ deviceId: row.deviceId, machineKind: String(row.machineKind), at: row.at }));
+    },
+
+    /**
      * Revoking has to work from any machine, including one you no longer have.
-     * With `writtenAt`, a relay that has a newer row answers `stale` with it.
+     * With `writtenAt`, a relay that has a newer row answers `stale` with it;
+     * with `ifRevision`, one whose row moved past that revision does.
      */
     async deleteAccountVaultItem(
       scope: string,
       kind: string,
       key: string,
-      options?: { writtenAt?: string | null; deviceId?: string | null },
+      options?: { writtenAt?: string | null; deviceId?: string | null; ifRevision?: string | null },
     ): Promise<boolean | AccountStaleDelete<AccountVaultItem> | null> {
+      const ifRevision = options?.ifRevision?.trim() || null;
+      const query = {
+        ...staleCheckQuery(options?.writtenAt, options?.deviceId),
+        // The relay lets this device's own last write through, so it needs the id.
+        ...(ifRevision ? { ifRevision, ...(options?.deviceId ? { deviceId: options.deviceId } : {}) } : {}),
+      };
       const result = await accountRequest(
         "deleteAccountVaultItem",
         "DELETE",
         `/attention/account/vault/${encodeURIComponent(scope)}/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`,
-        { couldNotAsk: [503], allowStatuses: [404, 409], query: staleCheckQuery(options?.writtenAt, options?.deviceId) },
+        { couldNotAsk: [503], allowStatuses: [404, 409], query: Object.keys(query).length ? query : undefined },
       );
       if (!result.asked) return null;
       if (result.status === 404) return false;

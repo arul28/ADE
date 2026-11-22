@@ -55,6 +55,8 @@ The Behind main group's **Catch up all** (`LaneSidebarBulkCatchUpDialog.tsx`) ap
 
 A repository with no commits has no branch to start from. When the start branch does not resolve and the repository has no refs at all, the resolver says "This repository has no commits yet. Make a first commit, then create a lane." instead of "wasn't found". A new project from ADE is still created with no commit (the first-run rule: never block on an initial commit).
 
+When git cannot list a repository's branches, the lane-start error says so and carries git's own first lines (or "Git took too long to answer"), because the branch may well exist. Only a machine with no git or a folder git does not trust is an expected user error; any other listing failure stays a reported issue. A repository with no commits keeps its own plain answer.
+
 Source files: `src/shared/laneStart.ts` defines start choices; `main/services/lanes/laneStartResolver.ts` resolves them; `newLaneSettingsStore.ts` stores defaults and templates; `laneCompareBase.ts` resolves the compare base; `renderer/components/settings/NewLaneSettingsSection.tsx` and `renderer/components/lanes/CreateLaneDialog.tsx` expose the choices.
 
 ## Where this runs
@@ -88,13 +90,136 @@ selected automatically. Creating a lane on another machine does not rebind the
 project tab. The new lane is owned by that machine, and later detail, git,
 rebase, and batch actions route to its binding.
 
-The Lanes tab presents one flat list across machines, with machine chips and
-machine filters when the project exists on multiple computers. Offline lanes
-remain visible with actions disabled. Selection and routing use both machine
-id and lane id because lane ids can be copied between machines. Mixed batch
-selections are split by owner before their actions run. The shared router lives
-in `renderer/state/laneMachineRouting.ts`; unknown and unroutable targets fail
-closed instead of falling back to the tab's current machine.
+The Lanes tab shows one flat list across machines, with one Computer filter
+when the project's lanes live on more than one place — another computer, ADE
+Cloud, or lanes whose computer is gone
+(`renderer/state/laneMachineRouting.ts`, `renderer/components/lanes/useLanesPageMachines.ts`).
+The filter is the funnel in the sidebar's search row, which opens a small panel
+(`renderer/components/lanes/sidebar/LaneFilterPanel.tsx`) shaped like Work's:
+
+- **One entry per computer the person owns**, plus **one "ADE Cloud" entry** for
+  every cloud computer, plus **All**. Two checkouts of one computer on one
+  machine are one entry (`machineIdOfSlot`). Every ADE Cloud computer is one
+  entry, because the person has no single cloud computers to pick from
+  (`workFilterMachineId` is the same rule in Work).
+- **Single-select.** All, or exactly one entry. The funnel fills and shows a
+  count while a filter is on, and one quiet line above the list says
+  `Showing <computer> · Show all`, so lanes never disappear unexplained.
+- **Remembered per project**, beside the Lanes text filter and grouping. An
+  entry that is no longer listed (that computer went offline, its lanes left
+  this project, or the lost lane was restored) reads as **All** — the stored
+  value returns with the entry. No state leaves the sidebar empty with nothing
+  to click.
+- **ADE Cloud is one machine.** Every ADE Cloud lane is filtered by one
+  "ADE Cloud" entry. The lane's own computer never gets an entry or a row.
+- **A lane whose ADE Cloud computer was deleted stays under ADE Cloud.** It
+  lists among the ADE Cloud lanes like an asleep one, with one "Computer
+  deleted" mark, and the ADE Cloud entry counts it. Its rows name the machine
+  id `ade-cloud-deleted`, so every lane action refuses them; its lane page
+  shows the deleted-computer banner (`CloudLaneComputerDeletedBanner.tsx`).
+  A lane that a listed computer shows again is that computer's row.
+- **Offline own computers are hidden.** Their lanes leave the list, so they get
+  no entry. When the tab's own computer is offline, the page shows one line
+  that names it.
+- **An asleep ADE Cloud computer is not offline.** Its lanes stay listed, from
+  the account's saved copy, under the ADE Cloud entry.
+- **The text filter is unchanged.** `is:dirty`, `is:clean`, `type:worktree` and
+  free text still narrow the list, and they combine with the Computer filter
+  (both must match). There is no `machine:` term.
+- **A hidden lane is not the open lane.** When the filter hides the lane in the
+  detail pane, the view moves to the first lane on the chosen entry (or to the
+  empty state while the lanes without a computer are shown).
+- **Selection and routing** use both the machine id and the lane id, because
+  lane ids can be copied between machines. Mixed batch selections are split
+  by owner before their actions run. The shared router is
+  `renderer/state/laneMachineRouting.ts`. Unknown and unroutable targets fail
+  closed. They never fall back to the tab's own machine.
+
+### An asleep ADE Cloud lane
+
+Opening a lane whose ADE Cloud computer is asleep never wakes it
+(`renderer/components/lanes/RestingCloudLaneDetail.tsx`):
+
+- The header says the computer is asleep and that the view is the lane as it
+  was last saved.
+- The Git line comes from the account's project overview
+  (`window.ade.adeCloud.projectOverview`): the branch, ahead and behind its
+  upstream (or "not pushed"), and when the computer last checked.
+- The changed files come from the lane pin's `diff.getChanges`. The preload
+  answers that read from the account while the computer rests
+  (`renderer/state/adeCloudRestingReads.ts`). The view lists up to 200 files.
+- The view reads once when the lane opens. It has no timer.
+- **Wake to run** is the only control that wakes the computer
+  (`useAdeCloudLaneWake`). The full lane detail opens when the computer is
+  connected. A refusal shows the server's sentence.
+
+### One lane per ADE Cloud computer
+
+People manage lanes, not computers, so each ADE Cloud computer holds one
+lane, counted across every project on the computer. An archived lane counts:
+it keeps its computer for a one-click restore. The primary lane of a project
+never counts. A normal computer is not affected.
+
+A lane can also start on ADE Cloud, where its launch makes one new computer for
+that lane (see [ADE Cloud lanes](../chat/README.md#ade-cloud-lanes)). Deleting
+the lane deletes its computer. Keeping the lane frees the computer instead, and
+the lane stays without one (`cloud_lanes_without_computer`, see
+[ADE Cloud](../ade-cloud/README.md#the-life-of-a-lanes-computer)).
+
+- **Where it is checked.** In `laneService.ts`, at every place a lane row
+  comes to exist: `create`, `importBranch`, and the adoption of a worktree
+  found on disk (`recoverManagedWorktreeRows`). `create` and `importBranch`
+  check once before any git work, and again right before the insert, under
+  the database's write lock. The adoption skips a worktree it may not adopt
+  and logs `laneService.cloud_computer_adoption_skipped`; the folder stays.
+- **Across projects.** `adeCloud/cloudComputerLaneHold.ts` reads the lanes of
+  every other project on the computer (the machine's `projects.json` and
+  every project that ever claimed a lane there), read-only, without starting
+  it. A database that exists but cannot be read counts as holding a lane.
+- **Two creates at once.** The check before the insert holds a lock file
+  (`cloud-computer-lanes.lock` in the machine's ADE folder) and writes a
+  claim (`cloud-computer-lanes.json`), so a second process (a one-shot
+  `ade --headless`) sees the lane before its row exists. The insert gives the
+  claim back when it ends; a claim a dead process left behind stops counting
+  after two minutes.
+- **The signal.** `cloudComputerLaneRuleApplies`: the `ADE_CLOUD_INSTANCE_ID`
+  variable, or on Linux the file only the machine template installs
+  (`/usr/local/bin/ade-entrypoint.sh`), so a process with a filtered
+  environment still meets the rule.
+- **The sentences** are in `adeCloud/cloudComputerRules.ts`, and the UI and
+  the CLI show them as is. The refusal is `CloudComputerLaneLimitError`, an
+  expected `user` error. For an active lane: "This ADE Cloud computer already
+  holds a lane, and each cloud computer holds one. Start a new lane on ADE
+  Cloud instead: it gets its own computer." For an archived lane: "This ADE
+  Cloud computer belongs to the archived lane "<name>". Restore that lane to
+  use this computer again, or start a new lane on ADE Cloud: it gets its own
+  computer."
+- **Early answers.** `chat.startLaunch` refuses before it makes a launch
+  record (`laneService.assertRoomForNewLane`), unless the launch's reserved
+  lane already exists (a retry). The destination check of a hand-off
+  (`preflightCrossMachineDestination`) lists the sentence as a blocking error
+  when the move would make a new lane, so the source sends nothing.
+- **Not refused:** the cloud launch's first lane (the computer is new), a
+  chat moved or copied to a new computer (its lanes arrive as files, not as
+  new rows), an unarchive (the archived lane already holds the computer), a
+  rename or a new parent, and a launch retried with the same launch id.
+  A restore of a deleted lane brings it back when the computer holds no
+  other lane: the restored lane's own row does not count.
+- **A computer from the older flow** that holds several lanes keeps them all
+  and works as before. It cannot get one more lane, from any project, a
+  restore of a deleted lane included.
+
+## Sharing a lane with another account
+
+**Share lane…** in the lane menu gives another ADE account limited access to
+this one lane on this machine. The owner picks the person's rights (a preset
+from Watch to Collaborate, or each switch), and the machine that holds the
+lane enforces them on every action of the guest. The guest opens the lane
+from the Work sidebar's "Shared with me" group or the `/shared` page, over
+ADE Relay, with a one-use ticket from the account directory. The owner or a
+Collaborate guest can also move a chat of the lane, with its unpushed work,
+to a computer of the other person, after that person accepts. See
+[lane-sharing.md](./lane-sharing.md).
 
 ## Default-branch auto-pull
 
@@ -151,7 +276,7 @@ Runtime services (`apps/ade-cli/src/services/lanes/` and friends):
 - `apps/desktop/src/main/services/lanes/deletedLaneSnapshots.ts` keeps what a
   lane delete or a discard would lose as git refs for 30 days, and restores it;
   see Saved work in [worktree-isolation.md](./worktree-isolation.md).
-- `apps/ade-cli/src/services/projects/projectRuntime.ts` exposes the
+- `apps/ade-cli/src/bootstrap.ts` exposes the
   `lane` action domain (CRUD, runtime isolation, branch switching,
   templates, diagnostics) over JSON-RPC; remote runtimes are reached
   over the SSH-tunneled equivalent.
@@ -160,7 +285,8 @@ Runtime services (`apps/ade-cli/src/services/lanes/` and friends):
   `lane.delete` action validates `laneId`, resolves the lane overlay
   context before teardown, injects lane environment cleanup when an
   env-init config applies, delegates to `laneService.delete`, and
-  releases any leased port range for the deleted lane.
+  releases any leased port range for the deleted lane when the delete
+  finishes, including a background delete whose caller has gone.
 
 Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 
@@ -181,7 +307,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 | `laneEnvironmentSetup.ts` | `runLaneEnvironmentSetup(deps, { laneId, templateId?, includeArchived? })` — the one way a lane's environment is set up after creation: with a lane template merged over the project's lane-environment config, or with the project config alone (a zero-step `completed` progress when neither applies). Shared by the `lane.initEnv` / `lane.applyTemplate` actions, the `ade.lanes.initEnv` / `ade.lanes.applyTemplate` IPC handlers, the sync host's `lanes.initEnv` / `lanes.applyTemplate` commands, and the chat-launch service, so they cannot drift. `includeArchived` defaults to true (the action domain's rule); IPC and sync pass false. Also owns `planNewLaneEnvironment`, which decides from project config alone — before the lane exists — whether a new lane gets any environment setup (a default lane template, a lane env-init config with work in it, or an enabled overlay policy carrying env init). |
 | `laneEnvInitMerge.ts` | Dependency-free merge kernel for lane env-init configs and overlay overrides (`mergeLaneEnvInitConfig`, `mergeLaneDockerConfig`, `cloneLaneEnvInitConfig`, `mergeLaneOverrides`). One implementation shared by `projectConfigService`, `laneEnvironmentService`, and `laneEnvironmentSetup` (through which IPC, the ADE action registry, and the ade-cli sync command service reach it); it deliberately imports no services so config parsing can use it without an import cycle. |
 | `laneOverlayContext.ts` | `resolveLaneOverlayContext(deps, laneId)` — resolves the lane, its matched overlay overrides (with the active port lease folded in via `applyLeaseToOverrides`), and the effective env-init config. Shared by env init and by the archive / delete / reclaim teardown paths so they cannot disagree about which compose project belongs to a lane. |
-| `setupScriptConfig.ts` | `resolveSetupScriptConfig` picks the platform's setup commands / script path (Windows vs Unix variants, falling back to the generic ones) or returns `null` when nothing is configured for this platform; `unsupportedWindowsScriptPathError` rejects a script file Windows cannot launch with an actionable message. |
+| `setupScriptConfig.ts` | `resolveSetupScriptConfig` picks the platform's setup commands / script path (this OS's own list first: Windows, macOS or Linux, then the macOS/Linux one, then the generic one) and sets `macosOnlyOnLinux` when Linux would run shared commands that call macOS-only tools (`shared/laneSetupPlatform.ts`, also read by the template editor; the setup step's label and the editor both warn) or returns `null` when nothing is configured for this platform; `unsupportedWindowsScriptPathError` rejects a script file Windows cannot launch with an actionable message. |
 | `laneTemplateService.ts` | Reusable lane init templates (Phase 5 W2) |
 | `laneDependencyStatus.ts` | `lane.getDependencyStatus` / `lane.acknowledgeDependencyStatus`: the lockfiles in the main checkout (found with `git ls-files`, so ignored folders and nested repos are never walked; at most 50), whether each is installed, and whether it changed after the last install. Read-only; ADE never installs. See [Main checkout packages](runtime.md#main-checkout-packages). |
 | `portAllocationService.ts` | Lease-based per-lane port ranges (Phase 5 W3) |
@@ -190,16 +316,19 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 | `runtimeDiagnosticsService.ts` | Aggregate lane health checks, fallback mode (Phase 5 W6) |
 | `laneLaunchContext.ts` | Pure helper: resolves launch cwd/env for terminals and tools. Returns `{ laneWorktreePath, cwd, execStrategy: "local" }`, validates that requested working directories stay inside the lane worktree unless the caller explicitly opts into an external absolute cwd, and surfaces clear errors for missing worktrees. |
 | `laneListSnapshotService.ts` | Assembles lane snapshots with presence, conflict status, and runtime session counts. |
+| `laneShareRightsStore.ts` | The host's own rights and guest message counters of each lane share, in two local-only tables that never sync. See [lane-sharing.md](./lane-sharing.md#host-records). |
 
 Renderer components:
 
 | File | Responsibility |
 |------|---------------|
-| `renderer/state/projectMachines.ts` and `laneMachineRouting.ts` | Shared project-machine inventory and fail-closed lane routing. `route(laneId, machineId)` resolves the owner when supplied, including duplicate lane ids, and refuses unknown or unroutable lanes instead of sending them to the active binding. |
+| `renderer/state/projectMachines.ts` and `laneMachineRouting.ts` | Shared project-machine inventory and fail-closed lane routing. `route(laneId, machineId)` resolves the owner when supplied, including duplicate lane ids, and refuses unknown or unroutable lanes instead of sending them to the active binding. Also the Lanes sidebar's Computer filter model: `buildLaneMachineFilterEntries` (one entry per computer, one for every ADE Cloud computer, then the lanes without a computer) and `effectiveLaneMachineFilter` (a stored entry that is no longer listed reads as `all`). |
 | `renderer/components/app/App.tsx` | Project tab host and route keep-alive shell. Keeps the Work surface mounted after first visit and now does the same for `/lanes`, parking the inactive Lanes surface with `inert` / `aria-hidden` instead of unmounting it. Parked route and project surfaces also set `data-ade-animation-state="paused"`, which lets the global renderer stylesheet stop hidden CSS animations until the surface is active again. Surfaces are keyed by runtime binding (`local:<root>` or the remote binding key) so local and remote views of the same root do not share lane/work state. During cold project switches it renders a transition veil over the old project surface until the target project hydrates. |
 | `renderer/components/app/toast/{toastStore.ts,ToastStack.tsx,ToastViewport.tsx,useLaneEventToasts.ts}` | Shared renderer toast primitive. `ToastViewport` is mounted once from `AppShell`; `ToastStack` renders each toast card there. `useLaneEventToasts` subscribes to `lanes.onLifecycleEvent` and `lanes.rebaseSubscribe`, turning lane-created/archive/delete and final automated rebase outcomes into compact global notices; created-lane toasts include a `View` action that routes to `/lanes?laneId=...&focus=single`. Lane-created and lane-deleted toasts are suppressed for a lane a new-lane chat launch owns (`isChatLaunchLane` in `state/chatLaunchStore.ts`), because the launch's own setup card shows that lane's birth and cancellation. |
 | `renderer/components/lanes/LanesPage.tsx` | Lanes page, lane selection, and dialogs. |
-| `renderer/components/lanes/LanePrBadgePopover.tsx`, `LanePrHoverCard.tsx` | Current-branch-only lane badge and its shared fixed-position portal. The primary chip chooses the newest open/draft PR before falling back to recent terminal activity; the complete current-branch list is clamped to the viewport and dismissed on viewport scroll/resize so row/card overflow cannot hide it, while its own list remains scrollable. |
+| `renderer/components/lanes/useLanesPageMachines.ts` | The page's view of every machine: one flat row list, the Computer filter's entries (ADE Cloud as one entry, the lanes without a computer at the end), offline own computers hidden, asleep ADE Cloud computers kept, and `resolveLaneTarget`, the one resolver every lane action goes through. |
+| `renderer/components/lanes/RestingCloudLaneDetail.tsx` | The opened lane of an asleep ADE Cloud computer: the saved Git line and changed files from the account, and **Wake to run**. See [An asleep ADE Cloud lane](#an-asleep-ade-cloud-lane). |
+| `renderer/components/lanes/LanePrBadgePopover.tsx` | Current-branch-only lane badge and its shared fixed-position portal. The primary chip chooses the newest open/draft PR before falling back to recent terminal activity; the complete current-branch list is clamped to the viewport and dismissed on viewport scroll/resize so row/card overflow cannot hide it, while its own list remains scrollable. |
 | `renderer/components/lanes/lanePageModel.ts` | Pure lane-page selectors and URL/deletion helpers used by `LanesPage` and unit tests. Owns `selectLanePrs` — strictly lane-owned, because callers pass the project-wide PR list, with only the branch half relaxed so a PR this lane owns and a chat linked stays visible after a branch move, and one gate in front of all of it: a primary lane parked on its base branch (live HEAD, drift-aware) returns no PRs at all, because it cannot be deleted and a chat-linked merged PR would otherwise stay pinned to `main` forever — and its chat-side counterpart `selectChatPrs`, which adds any pull request this chat linked even when another lane owns it or the lane surface dropped it (see [Pull requests](../pull-requests/README.md#lane-surfaces-and-chat-surfaces-need-two-different-selectors)). Also base-branch suppression for the primary lane, lane branch/PR role derivation (`active` vs `previous`) for history-aware callers, multi-PR ordering, same-repo GitHub PR guardrails for fork branch-name collisions, ADE-vs-GitHub PR tag precedence, terminal-state GitHub overrides for stale ADE PR rows, deep-link lane selection, action-deeplink query cleanup, create-lane request normalization, delete-start selection fallback, batch delete planning, and `runLaneDeleteBatchWithConcurrency` for limited parallel teardown inside each batch. |
 | `renderer/hooks/useLaneListInvalidation.ts` | Shared lane-list invalidation hook used by Lanes, Graph, and PRs. It subscribes to `window.ade.lanes.onLifecycleEvent`, clears renderer read coalescing immediately, debounces a decorated `refreshLanes` call, runs one delayed follow-up refresh to cover daemon/write-to-read races, and self-heals stale visible lists on focus/visibility without polling. Hidden lifecycle events are replayed when the surface becomes visible. |
 | `renderer/lib/laneReadCache.ts` | Renderer-side in-flight coalescing for lane list/snapshot/keybinding reads. Lane lifecycle invalidation clears lane list/snapshot requests and bumps a generation token so a newly requested read never reuses an older in-flight lane snapshot. |
@@ -212,7 +341,8 @@ Renderer components:
 | `renderer/components/lanes/LaneStartPicker.tsx`, `useLaneStartMenuData.ts` | Where a new lane starts: the branch menu (Default branch, Primary lane's branch, every branch with its PR) and the Remote / Local switch, one component shared by the New lane dialog and Settings › Lanes › New lanes; the hook reads that machine's lanes, branches, git user and open PRs with its `pin`. |
 | `renderer/components/lanes/LaneContextMenu.tsx`, `laneContextMenuItems.tsx` | Right-click menu on the lane list. `buildLaneMenuGroups` is the single action inventory shared with the Work sidebar's singleton-session **Lane** submenu; both render the same start-chat/pin, navigation, copy, **Open in**, split, appearance, and manage/batch groups. Copy, split, and appearance open as pointer-safe keyboard submenus; color swatches call `lanes.updateAppearance` directly. **Open in** is an `open-in` entry (`OpenInTarget`: worktree `rootPath` plus optional SSH `remote`) rendered by `OpenInSubmenu`; callers pass `openIn` from `resolveOpenInTarget({ worktreePath, binding })`. Paired remotes and empty worktree paths omit the group. Work callers may pass their own Work-sidebar pin toggle and pin ids, deliberately separate from the Lanes tab's pins. |
 | `renderer/components/lanes/LaneBranchDrift.tsx` | Branch-drift renderer surface. `useLaneBranchDrift(laneId)` reads `branchDrift` straight off the lane in the app store, so it costs nothing and stays exactly as fresh as the rest of the lane's git state. `LaneBranchDriftChip` is the compact always-visible chip that `WorkSurfaceHeader` renders next to the lane chip while a lane is drifted. `LaneBranchComposerChip` is the composer-strip chip: it asks (`Switch back` / `Keep`) once something is about to act on the branch, reading HEAD fresh at that point, and shows `Now on <branch> · Switch back` for ten minutes after ADE adopts a branch an agent switched to (it listens for `lane-branch-updated` with `adoptedByAgent`). A `renamed`/`missing` drift replaces those two buttons with a single `Update lane` (it is a calm `info` chip for `renamed`, a `warning` chip for `missing`), because switching back to a branch that no longer exists is impossible; `armLaneBranchDriftWarning(laneId)` is the imperative arming call, backed by a module-level armed-lane set plus a `useSyncExternalStore` subscription. Arm sites are `AgentChatPane.submit` and `ChatGitToolbar`'s PR button / `handlePr`; the strip itself renders above the composer in `AgentChatPane`, keyed to the composer's effective launch target rather than the pane's leftover lane. See [Branch drift](#branch-drift). |
-| `renderer/components/lanes/sidebar/LaneSidebarList.tsx`, `LaneSidebarRow.tsx`, `laneSidebarModel.ts` | Lane sidebar grouped by state, with Primary pinned at the top. |
+| `renderer/components/lanes/sidebar/LaneSidebarList.tsx`, `LaneSidebarRow.tsx`, `laneSidebarModel.ts` | Lane sidebar grouped by state, with Primary pinned at the top. The search row holds the text filter, the State/List toggle, the Computer filter's funnel and New lane. |
+| `renderer/components/lanes/sidebar/LaneFilterPanel.tsx` | The Computer filter panel the funnel opens, shaped like Work's: one entry per own computer, one for ADE Cloud, and the indented `Without a computer` entry (with its count and gold dot) under ADE Cloud. See [Creating and routing lanes across machines](#creating-and-routing-lanes-across-machines). |
 | `renderer/components/lanes/sidebar/LaneSidebarContextMenu.tsx`, `LaneSidebarBulkCatchUpDialog.tsx` | Group "…" menus with bulk actions, always confirmed and never including Primary: Done → Archive all, Behind main → Catch up all, Stale → Archive all / Delete all. |
 | `renderer/components/lanes/sidebar/LaneSidebarBulkContextMenu.tsx` | Right-click menu for a Cmd/Shift multi-selection, which can mix machines: Manage / Catch up / Archive / Delete act on each lane on its own machine, and lanes left out (Primary, an offline or unavailable machine, already deleting) are listed with their reason. |
 | `renderer/components/lanes/LaneCatchUpMenu.tsx`, `laneCatchUp.ts`, `renderer/lib/laneCatchUpPrompt.ts` | The Catch up menu, its safety rules and per-lane run state, and the agent prompt. See [Catch up](#catch-up). |
@@ -240,7 +370,8 @@ Renderer components:
 | `renderer/components/ui/PaneTilingLayout.tsx` | Persisted split-pane layout engine for lane panes. Validates saved pane trees against expected pane ids and falls back to the supplied tree when the saved layout is stale. |
 | `renderer/components/app/useLaneDependencyBanners.tsx` | The two notices about the open project's main checkout, on the tab's machine: "Packages in the main checkout are out of date" (docked; **Update** opens a terminal in the primary lane that runs `updateCommand`, then watches until the install lands) and "Set up a lane template" (floating prompt, shown when the project has lockfiles and no default template; snoozes two weeks, or **Don't show again**). |
 | `renderer/components/lanes/useLaneTemplateSetupChat.ts`, `renderer/lib/laneTemplateSetupPrompt.ts`, `renderer/lib/laneChatHandoff.ts` | "Set up with an agent": a new chat draft in the **primary lane of the machine whose templates are meant**, with the setup prompt in the composer (never sent). `useLaneChatHandoff(pin)` is the shared lane-chat handoff (PR actions use it too): a null pin is the tab's machine; another machine's draft carries its machine id like `useStartChatInLane`. The banner passes null; Settings passes `useSettingsMachineScope().pin` and reads that machine's primary lane with `lanes.list(…, pin)`. |
-| `renderer/components/settings/LaneTemplatesSection.tsx` | Settings → Lanes → New lanes manages start defaults and templates. |
+| `renderer/components/settings/LaneTemplatesSection.tsx` | Settings → Lanes → New lanes manages start defaults and templates. A template's setup script has a per-OS editor (macOS and Linux, macOS only, Linux only for ADE Cloud, Windows; fields from `LANE_SETUP_PLATFORM_FIELDS`), and warns when the commands Linux would run call macOS-only tools. |
+| `renderer/components/laneShare/` | Lane sharing, the owner's side: the share sheet and rights panel, the share mark on lane rows and headers, the chat composer line, the move card, Settings › Sharing, the default rights, and the per-machine share list (`laneShareStore.ts`). `laneShare/guest/` is the guest's side: the connection, the Work sidebar shelf, the `/shared` page and the shared lane view. See [lane-sharing.md](./lane-sharing.md). |
 
 Shared code:
 
@@ -251,7 +382,7 @@ Shared code:
 - `src/shared/laneLinearIssue.ts` — `parseLaneLinearIssueValue`, `parseLaneLinearIssueJson`, `finalizeLaneLinearIssue`, `laneLinearIssueMissingFields`, `isLinkableLaneLinearIssue`. Validates, normalizes, and checks completeness of `LaneLinearIssue` payloads. Used by `laneService` (create, link), `chatContextAttachments` (attachment hydration), and the CLI.
 - `src/shared/laneJiraIssue.ts` — parses, normalizes, and converts Jira issue snapshots used by lane and session links.
 - `src/shared/chatContextAttachments.ts` — builds and normalizes Linear, GitHub, and Jira chat context attachments using their shared issue parsers.
-- `src/shared/types.ts` — `LaneSummary`, `LaneStatus`, `CreateLaneArgs`, rebase args/results, `RebaseTargetCommit`, overlay types, port/proxy/OAuth/diagnostics types.
+- `src/shared/types/lanes.ts` — `LaneSummary`, `LaneStatus`, `CreateLaneArgs`, rebase args/results, `RebaseTargetCommit`, overlay types, port/proxy/OAuth/diagnostics types.
 - `src/main/services/config/laneOverlayMatcher.ts` — last-wins/deep-merge evaluator for per-lane overlay policies.
 
 Shared git engine (every lane service reaches git through these):
@@ -298,11 +429,11 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
 - `LaneCreateSheet.swift` and `LaneEnvInitProgressView.swift` — mobile lane creation and environment setup.
 - `AddLaneSheet.swift` — mobile add-lane entry point.
 - `LaneDetailScreen.swift`, `LaneDetailGitSection.swift`,
-  `LaneDetailGitActionsPane.swift`, `LaneDetailRebaseBanner.swift`,
-  `LaneDiffScreen.swift`, `LaneSyncDetailScreen.swift`,
+  `LaneDetailGitActionsPane.swift`,
+  `LaneDiffScreen.swift`,
   `LaneManageSheet.swift`,
-  `LaneBatchManageSheet.swift`, `LaneChatLaunchSheet.swift`,
-  `LaneDeeplinkHelpers.swift`, `LaneTreeView.swift`,
+  `LaneBatchManageSheet.swift`,
+  `LaneDeeplinkHelpers.swift`, `LaneTreeRow.swift`,
   `LaneFileTreeComponents.swift` — mobile detail, git, rebase, diff,
   stash, sync, manage, chat-launch, and file-tree parity surfaces.
   `LaneDetailGitActionsPane.swift` is the single git surface embedded
@@ -358,7 +489,10 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   `agentChatService.generateAutoLaneIdentity` on the host).
   Deterministic fallback (`apps/desktop/src/shared/laneNameFallback.ts`)
   intentionally remains a bounded shared heuristic: stopword/noise removal and
-  capped meaningful tokens drawn from words the prompt actually contains. It
+  capped meaningful tokens drawn from words the prompt actually contains, taken
+  whole clause by whole clause (once the name has two words, a clause that
+  would overflow the five-word cap is left out, so "Live test of ADE Cloud,
+  keep it short" names "Live Test ADE Cloud", not "… Cloud Keep"). It
   carries no keyword rules that substitute a canned phrase for the prompt — an
   earlier trap renamed any prompt mentioning a provider plus a login-ish phrase
   to `<provider>-auth-login`, inventing words the user never wrote. Broader
@@ -370,7 +504,8 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   state simply keeps the deterministic name. The host command is
   deliberately not queueable so an offline phone fails fast to the
   deterministic name instead of queueing a stale suggestion. Covers
-  both the Chat and CLI auto-create paths; the all-projects hub
+  both the Chat and CLI auto-create paths, and new lanes on ADE Cloud (the
+  brain on the lane's computer runs the same naming); the all-projects hub
   composer (`HubComposerDrawer.swift`) runs the same background naming
   with `targetProjectId`/`targetProjectRootPath` scope so it works for
   foreign-project launches.
@@ -380,6 +515,7 @@ Detail docs in this folder:
 - [`worktree-isolation.md`](./worktree-isolation.md) — git worktree mechanics and per-lane state directories.
 - [`runtime.md`](./runtime.md) — runtime diagnostics, proxy, preview, port allocation, env init, LaneRuntimeBar.
 - [`oauth-redirect.md`](./oauth-redirect.md) — OAuth redirect service (new on this branch) and `http.request` mocking strategy.
+- [`lane-sharing.md`](./lane-sharing.md) — sharing one lane with another ADE account: rights, the host's guest gates, the guest connection, message authors, and moving a chat to the other person.
 
 ## Lane types
 
@@ -905,6 +1041,20 @@ child, never in the brain. The Files tab's Delete (which waits up to 31 minutes
 for the removal on every transport) and Storage's worktree cleanup use the same
 removal.
 
+A delete of a lane on another machine answers once its safety checks pass
+(`DeleteLaneArgs.background`), and the machine finishes it even if the window
+disconnects. A repeated delete of the same lane joins the running one instead
+of failing as "already running", and a lane that is already gone answers
+`alreadyDeleted`. The window starts the delete, sends the start again if an
+answer was lost, and follows `lane.listDeleteProgress` on the same machine with
+short reads that retry on their own. A refusal from the checks (unsaved work,
+the primary lane, a lock) still fails at once, and a local lane keeps the old
+single call. Older ADE on either side keeps the old one-request behavior. When
+the delete also removes the remote branch and the caller does not require it
+(`requireRemoteBranchDelete`), that network step runs after the lane is gone: a
+failure is a warning and ADE tries again after 1 and 5 minutes, only while the
+remote still holds the commit the delete saved.
+
 Rails checked before `git worktree remove`, for every lane:
 
 - the path is never the project root, the primary checkout, or the
@@ -1292,6 +1442,15 @@ Runtime isolation (Phase 5):
 `lanes.applyTemplate` commands, and the chat-launch environment stage all
 call `runLaneEnvironmentSetup` (`laneEnvironmentSetup.ts`). Add environment
 setup behavior there, not in one entry point.
+
+Lane sharing has no Electron IPC channel on the owner's side.
+`window.ade.laneShare.*` (`list`, `create`, `updateRights`, `revoke`,
+`resendInvite`, `listReceived`, `leave`, `move`, `onEvent`) takes the lane's
+pin and calls the `lane_share` runtime action domain, which is user-only.
+The guest's account calls are IPC: `ade.laneShareGuest.listReceived`,
+`.open`, `.accept`, `.leave` and `.connect` go from the main process to the
+account directory with this computer's account token, with no pin. See
+[lane-sharing.md](./lane-sharing.md).
 
 ## Renderer wiring
 

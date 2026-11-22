@@ -3,13 +3,18 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readGitOriginUrlFromConfigOrGit } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
+import {
+  readGitOriginUrl as readGitConfigOriginForIdentity,
+  readGitOriginUrlFromConfigOrGit,
+} from "../../../../desktop/src/main/services/projects/recentProjectSummary";
 import {
   resolveMachineAdeLayout,
   type MachineAdeLayout,
 } from "./machineLayout";
+import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
 import { codedError } from "../../../../desktop/src/shared/codedError";
 import { markExpected } from "../../../../desktop/src/shared/expectedError";
+import { isFsAccessRefusal } from "../../../../desktop/src/shared/fsAccessRefusal";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { findMoveInProgress, readMovedMarker, type MovedMarker } from "./projectMove/moveJournal";
 import { statIdentity } from "./fileIdentity";
@@ -48,6 +53,19 @@ export const SYSTEM_PROJECT_REGISTRATION: ProjectRegistrationIntent = {
   registrationSource: "runtime-auto",
 };
 
+/**
+ * The source a registration leaves on a record. An automatic registration
+ * (an `ade` command run in the folder) keeps how a project the person opened
+ * got its place, as the visibility stays "recent": the account project sync
+ * reads it to tell an opened project from a found one. A test mark always
+ * wins.
+ */
+function keptRegistrationSource(existing: ProjectRecord | null, registration: ProjectRegistrationIntent): ProjectRegistrationSource {
+  if (registration.registrationSource === "test") return "test";
+  if (existing?.catalogVisibility === "recent" && registration.catalogVisibility !== "recent") return existing.registrationSource;
+  return registration.registrationSource;
+}
+
 export type ProjectRecord = {
   projectId: ProjectId;
   rootPath: string;
@@ -57,7 +75,54 @@ export type ProjectRecord = {
   gitOriginUrl: string | null;
   catalogVisibility: ProjectCatalogVisibility;
   registrationSource: ProjectRegistrationSource;
+  /**
+   * GitHub's numeric id of the repository at `gitOriginUrl`, once a machine
+   * credential (or GitHub's public API) could read it. Written by the account
+   * project sync (`accountProjectSync.ts`); absent until then. A cache: an
+   * older ADE that rewrites this file drops it, and the sync reads it again.
+   */
+  githubRepoId?: number;
+  /**
+   * The account project (`ap_…`) this folder is a copy of, and the account it
+   * belongs to. `projectId` stays the copy's own id. Shown only while that
+   * account is signed in here (`projects.list`).
+   */
+  accountProjectId?: string;
+  accountProjectUserId?: string;
 };
+
+/** What the account project sync writes on one record; null clears a field. */
+export type ProjectAccountLink = {
+  projectId: ProjectId;
+  githubRepoId?: number | null;
+  accountProjectId?: string | null;
+  accountProjectUserId?: string | null;
+};
+
+/** The account fields of a stored record, kept only when they have the right shape. */
+function accountLinkFields(record: {
+  githubRepoId?: unknown;
+  accountProjectId?: unknown;
+  accountProjectUserId?: unknown;
+}): Pick<ProjectRecord, "githubRepoId" | "accountProjectId" | "accountProjectUserId"> {
+  const fields: Pick<ProjectRecord, "githubRepoId" | "accountProjectId" | "accountProjectUserId"> = {};
+  if (typeof record.githubRepoId === "number" && Number.isSafeInteger(record.githubRepoId) && record.githubRepoId > 0) {
+    fields.githubRepoId = record.githubRepoId;
+  }
+  if (
+    typeof record.accountProjectId === "string" && /^ap_[0-9a-f]{32}$/.test(record.accountProjectId)
+    && typeof record.accountProjectUserId === "string" && record.accountProjectUserId.trim()
+  ) {
+    fields.accountProjectId = record.accountProjectId;
+    fields.accountProjectUserId = record.accountProjectUserId.trim();
+  }
+  return fields;
+}
+
+/** The account fields of `existing`, carried onto a record that is built again. */
+function carriedAccountLinks(existing: ProjectRecord | null | undefined): Pick<ProjectRecord, "githubRepoId" | "accountProjectId" | "accountProjectUserId"> {
+  return existing ? accountLinkFields(existing) : {};
+}
 
 /** A database file's device and inode, as decimal strings. A move keeps both. */
 export type ProjectDatabaseIdentity = { dev: string; ino: string };
@@ -104,15 +169,12 @@ function readGitOriginUrl(rootPath: string): string | null {
   return canonicalGitOriginUrl(readGitOriginUrlFromConfigOrGit(rootPath));
 }
 
-/** Errnos that mean this account may not write in the project folder. */
-const PROJECT_FOLDER_NOT_WRITABLE = new Set(["EACCES", "EPERM", "EROFS"]);
-
 function ensureProjectAdeDir(rootPath: string): void {
   try {
     fs.mkdirSync(path.join(rootPath, ".ade"), { recursive: true });
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException | null)?.code;
-    if (typeof code !== "string" || !PROJECT_FOLDER_NOT_WRITABLE.has(code)) throw error;
+    if (!isFsAccessRefusal(error)) throw error;
+    const code = (error as NodeJS.ErrnoException).code;
     // A folder this account cannot write (owned by another user, read-only
     // media): the machine's setup, not a defect, and the user can fix it.
     throw markExpected(
@@ -198,6 +260,7 @@ function coerceRecord(
         : null,
     catalogVisibility: registration.catalogVisibility,
     registrationSource: registration.registrationSource,
+    ...accountLinkFields(record),
   };
 }
 
@@ -207,7 +270,12 @@ function coerceRecord(
  * see, never inside the registry lock: the ssh lookup can take a moment.
  */
 function withCanonicalOrigin(record: ProjectRecord): ProjectRecord {
-  const gitOriginUrl = canonicalGitOriginUrl(record.gitOriginUrl);
+  // A project added before it had an origin (or while git could not answer)
+  // was saved with none. Every other machine learns the repository from this
+  // list, so read the config file again: no process, cached by its mtime.
+  const gitOriginUrl = record.gitOriginUrl
+    ? canonicalGitOriginUrl(record.gitOriginUrl)
+    : readGitConfigOriginForIdentity(record.rootPath);
   return gitOriginUrl === record.gitOriginUrl ? record : { ...record, gitOriginUrl };
 }
 
@@ -216,6 +284,8 @@ export class ProjectRegistry {
   private readonly legacyRecentProjectRoots: Set<string>;
   /** `raw` is the file's text, normalized again without another read while `identity` holds. */
   private readCache: { identity: string; at: number; raw: string | null; file: ProjectRegistryFile } | null = null;
+  /** Projects whose folder `list()` must not read (refused as too slow to open). */
+  private folderReadSkip: (projectId: ProjectId) => boolean = () => false;
 
   constructor(
     layout: MachineAdeLayout = resolveMachineAdeLayout(),
@@ -240,7 +310,19 @@ export class ProjectRegistry {
   }
 
   list(): ProjectRecord[] {
-    return this.read().projects.map(withCanonicalOrigin);
+    // A record saved without an origin reads it from the project's git config
+    // on every call; a refused project's folder is not read for it. A saved
+    // origin is still canonicalized (string work only).
+    return this.read().projects.map((record) =>
+      (!record.gitOriginUrl && this.folderReadSkip(record.projectId) ? record : withCanonicalOrigin(record)));
+  }
+
+  /**
+   * Name the projects whose folder `list()` must not read: the brain's open
+   * refusals (`projectOpenStrikes.ts`), since `list()` runs on its thread.
+   */
+  setFolderReadSkip(skip: (projectId: ProjectId) => boolean): void {
+    this.folderReadSkip = skip;
   }
 
   listRecent(): ProjectRecord[] {
@@ -264,10 +346,16 @@ export class ProjectRegistry {
    * into its project: a peer naming a root means that root.
    */
   findAtRootPath(rootPath: string): ProjectRecord | null {
+    const records = this.list();
+    // The registered root as given first: `realpath` reads the folder, which on
+    // a hung or slow mount blocks this thread.
+    const given = path.resolve(rootPath);
+    const exact = records.find((record) => pathsEqual(record.rootPath, given));
+    if (exact) return exact;
     // Registered roots are real paths (`normalizeRoot`); a peer's may go
     // through a symlink (`/tmp` → `/private/tmp`).
-    const resolved = realpathIfExists(path.resolve(rootPath));
-    return this.list().find((record) => pathsEqual(record.rootPath, resolved)) ?? null;
+    const resolved = realpathIfExists(given);
+    return records.find((record) => pathsEqual(record.rootPath, resolved)) ?? null;
   }
 
   add(
@@ -322,7 +410,8 @@ export class ProjectRegistry {
           registration.catalogVisibility === "recent"
             ? "recent"
             : "system",
-        registrationSource: registration.registrationSource,
+        registrationSource: keptRegistrationSource(existing, registration),
+        ...carriedAccountLinks(existing),
       };
       if (existingIndex >= 0) {
         file.projects[existingIndex] = next;
@@ -359,6 +448,47 @@ export class ProjectRegistry {
       return { file, result: next };
     });
     return updated ? withCanonicalOrigin(updated) : null;
+  }
+
+  /**
+   * Write the account project sync's findings on many records in one locked
+   * write. A record that is gone (removed or moved since the sync read the
+   * list) is skipped. Writes nothing when nothing changes. Returns how many
+   * records changed.
+   */
+  setAccountLinks(links: ProjectAccountLink[]): number {
+    if (links.length === 0) return 0;
+    const current = new Map(this.read().projects.map((record) => [record.projectId, record]));
+    const differs = (record: ProjectRecord | undefined, link: ProjectAccountLink) => record !== undefined && (
+      (link.githubRepoId !== undefined && (record.githubRepoId ?? null) !== link.githubRepoId)
+      || (link.accountProjectId !== undefined && (record.accountProjectId ?? null) !== link.accountProjectId)
+      || (link.accountProjectUserId !== undefined && (record.accountProjectUserId ?? null) !== link.accountProjectUserId)
+    );
+    if (!links.some((link) => differs(current.get(link.projectId), link))) return 0;
+    return this.mutate("set_account_links", { count: links.length }, (file) => {
+      let changed = 0;
+      for (const link of links) {
+        const index = file.projects.findIndex((record) => record.projectId === link.projectId);
+        const record = index >= 0 ? file.projects[index] : undefined;
+        if (!record || !differs(record, link)) continue;
+        const next: ProjectRecord = { ...record };
+        if (link.githubRepoId !== undefined) {
+          if (link.githubRepoId === null) delete next.githubRepoId;
+          else next.githubRepoId = link.githubRepoId;
+        }
+        if (link.accountProjectId !== undefined) {
+          if (link.accountProjectId === null) delete next.accountProjectId;
+          else next.accountProjectId = link.accountProjectId;
+        }
+        if (link.accountProjectUserId !== undefined) {
+          if (link.accountProjectUserId === null) delete next.accountProjectUserId;
+          else next.accountProjectUserId = link.accountProjectUserId;
+        }
+        file.projects[index] = { ...next, ...accountLinkFields(next) };
+        changed += 1;
+      }
+      return { file: changed > 0 ? file : null, result: changed };
+    });
   }
 
   remove(projectId: ProjectId): boolean {
@@ -461,6 +591,8 @@ export class ProjectRegistry {
         gitOriginUrl: existing?.gitOriginUrl ?? knownOrigin,
         catalogVisibility: existing?.catalogVisibility ?? "recent",
         registrationSource: existing?.registrationSource ?? "desktop",
+        // Same repository, same account project: only the copy id changes.
+        ...carriedAccountLinks(existing),
       };
       const projects = file.projects.filter(
         (record, i) => i !== index && record.projectId !== newId,
@@ -487,6 +619,31 @@ export class ProjectRegistry {
   /** The current id of a project that was moved, given an id it had before. */
   resolveMovedProjectId(projectId: ProjectId): ProjectId | null {
     return this.readAliases()[projectId] ?? null;
+  }
+
+  /**
+   * The one registered project whose origin is the repository `ref` names
+   * (`github.com/owner/repo`, the account's key for a project). A window that
+   * knows a project only from the account, such as a saved ADE Cloud chat,
+   * sends that key before it learns this machine's own id. Null when no
+   * project or more than one project matches: never a guess between two
+   * checkouts of one repository.
+   */
+  resolveRepositoryProjectId(ref: ProjectId): ProjectId | null {
+    const matches = this.repositoryCheckouts(ref);
+    return matches?.length === 1 ? matches[0]!.projectId : null;
+  }
+
+  /**
+   * The registered checkouts of the repository `ref` names, or null when
+   * `ref` is not a repository key (or is also a project id here).
+   */
+  repositoryCheckouts(ref: ProjectId): ProjectRecord[] | null {
+    const repoKey = accountRepoScopeKey(ref);
+    if (!repoKey) return null;
+    const records = this.list();
+    if (records.some((record) => record.projectId === ref)) return null;
+    return records.filter((record) => accountRepoScopeKey(record.gitOriginUrl) === repoKey);
   }
 
   /**
@@ -560,7 +717,13 @@ export class ProjectRegistry {
   /** Check before creating directories or opening SQLite on any local entry point. */
   assertProjectDataAvailable(record: ProjectRecord | null): void {
     if (!record || !this.isProjectDataMissing(record)) return;
-    throw codedError(this.projectDataMissingMessage(record, { commandHints: true }), "project_data_missing");
+    // The person's own folder or `.ade` went missing (deleted, moved, a drive
+    // unplugged): the message says how to restore it, and the open flow shows
+    // the restore screen. An answer, not an ADE fault, wherever it is logged.
+    throw markExpected(
+      codedError(this.projectDataMissingMessage(record, { commandHints: true }), "project_data_missing"),
+      "environment",
+    );
   }
 
   private read(): ProjectRegistryFile {

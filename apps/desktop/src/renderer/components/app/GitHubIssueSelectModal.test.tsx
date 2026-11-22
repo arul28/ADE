@@ -4,6 +4,10 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaneGitHubIssue } from "../../../shared/types";
 import { GitHubIssueSelectModal } from "./GitHubIssueSelectModal";
+import { useAppStore } from "../../state/appStore";
+
+/** The tab's copy: the picker reads the repository's issues through its machine. */
+const TAB_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
 
 const issueRow = (number: number) => ({
   number,
@@ -42,6 +46,7 @@ describe("GitHubIssueSelectModal", () => {
     // fails on the call count instead of spinning until the test times out.
     listRepoIssues = vi.fn((): Promise<unknown[]> =>
       listRepoIssues.mock.calls.length > 5 ? new Promise(() => {}) : Promise.resolve([issueRow(7)]));
+    useAppStore.setState({ project: { rootPath: "/repo", displayName: "repo" } as never, projectBinding: TAB_PIN });
     globalThis.window.ade = {
       github: {
         detectRepo: vi.fn(async () => ({ owner: "acme", name: "app" })),
@@ -52,6 +57,7 @@ describe("GitHubIssueSelectModal", () => {
 
   afterEach(() => {
     cleanup();
+    useAppStore.setState({ project: null, projectBinding: null });
     globalThis.window.ade = originalAde;
   });
 
@@ -74,6 +80,6 @@ describe("GitHubIssueSelectModal", () => {
     fireEvent.click(screen.getByRole("button", { name: "closed" }));
     await settle();
     expect(listRepoIssues).toHaveBeenCalledTimes(3);
-    expect(listRepoIssues).toHaveBeenLastCalledWith({ owner: "acme", name: "app", state: "closed" });
+    expect(listRepoIssues).toHaveBeenLastCalledWith({ owner: "acme", name: "app", state: "closed" }, TAB_PIN);
   });
 });

@@ -20,6 +20,10 @@
  *    poll, and storing them would churn the CRR clock. `poolLiveQuota` is the
  *    one place the pooling rule lives.
  *
+ * Chats, shells, commits and PRs travel as per-day counts per project
+ * database (`activity`), never as session ids. They merge by database, not by
+ * machine — see `mergeAccountActivity`.
+ *
  * GitHub metrics are deliberately absent from the rollup. They are repo-scoped,
  * not machine-scoped: three machines with the same repo cloned each report the
  * same pull requests, and summing them would triple the PR count for work that
@@ -28,11 +32,14 @@
  */
 
 import type {
+  AdeUsageActivityDatabase,
+  AdeUsageActivityDay,
   AdeUsageLiveEnvironment,
   AdeUsageMachineContribution,
   AdeUsageModelSummary,
   AdeUsageProviderSummary,
   AdeUsageRollup,
+  AdeUsageRollupActivity,
   AdeUsageRollupRow,
   AdeUsageStats,
   CostSnapshot,
@@ -548,6 +555,235 @@ function sortSummaries(stats: AdeUsageStats): void {
 }
 
 /**
+ * Remove the counts the account has no total for.
+ *
+ * Chat and terminal session counts on `localStats` come from one project's
+ * database on the machine that answers. When no machine's rollup carries its
+ * activity (every machine runs an ADE from before it), that number is one
+ * project's, and on ADE Web or a cloud lane computer it is often a fresh
+ * project's 0. An unknown count is left out (the UI then shows no session
+ * figure) instead of a wrong one.
+ */
+export function omitUnknownAccountCounts(stats: AdeUsageStats): void {
+  delete stats.summary.chatSessions;
+  delete stats.summary.terminalSessions;
+  delete stats.summary.sessionCountsPartial;
+}
+
+// ── Activity: chats, shells, commits and PRs per day ─────────────
+
+/** Bounds on what one machine's activity may hold, on both the producing and the receiving side. */
+export const MAX_ACTIVITY_DATABASES = 32;
+export const MAX_ACTIVITY_DAYS = 450;
+const MAX_ACTIVITY_COUNT = 1_000_000;
+const MAX_ACTIVITY_ID_LENGTH = 128;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function boundedActivityId(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_ACTIVITY_ID_LENGTH ? value : null;
+}
+
+function activityCount(value: unknown): number {
+  return Math.min(MAX_ACTIVITY_COUNT, toNonNegativeInt(value));
+}
+
+function latestDay(entry: AdeUsageActivityDatabase): string {
+  let latest = "";
+  for (const day of Object.keys(entry.days)) if (day > latest) latest = day;
+  return latest;
+}
+
+/**
+ * Validate and bound a machine's activity, from a peer's payload or the
+ * stored meta column.
+ *
+ * `undefined` means unknown (absent, malformed, or a version this build does
+ * not read), which the merge treats as "this machine's share is not known",
+ * never as zero. A valid entry with no databases is a real zero. The output
+ * is sorted, so equal activity always serializes to the same text and a
+ * republish of unchanged counts is not a CRR write.
+ */
+export function normalizeRollupActivity(raw: unknown): AdeUsageRollupActivity | undefined {
+  if (!isPlainRecord(raw) || raw.version !== 1 || !Array.isArray(raw.dbs)) return undefined;
+  const dbs: AdeUsageActivityDatabase[] = [];
+  for (const entry of raw.dbs) {
+    if (!isPlainRecord(entry) || !isPlainRecord(entry.days)) continue;
+    const id = boundedActivityId(entry.id);
+    if (!id) continue;
+    const scope = boundedActivityId(entry.scope) ?? "";
+    // Newest first, so a cap drops the far past rather than this week.
+    const dayKeys = Object.keys(entry.days)
+      .filter((day) => localDayKey(day) === day)
+      .sort((a, b) => b.localeCompare(a))
+      .slice(0, MAX_ACTIVITY_DAYS)
+      .sort();
+    const days: Record<string, AdeUsageActivityDay> = {};
+    for (const day of dayKeys) {
+      const counts = entry.days[day];
+      if (!Array.isArray(counts)) continue;
+      const tuple: AdeUsageActivityDay = [
+        activityCount(counts[0]),
+        activityCount(counts[1]),
+        activityCount(counts[2]),
+        activityCount(counts[3]),
+      ];
+      if (tuple.some((count) => count > 0)) days[day] = tuple;
+    }
+    dbs.push({ id, scope, days });
+  }
+  dbs.sort((a, b) => latestDay(b).localeCompare(latestDay(a)) || a.id.localeCompare(b.id) || a.scope.localeCompare(b.scope));
+  const kept = dbs.slice(0, MAX_ACTIVITY_DATABASES);
+  kept.sort((a, b) => a.id.localeCompare(b.id) || a.scope.localeCompare(b.scope));
+  return { version: 1, dbs: kept };
+}
+
+/** Deterministic text for the meta column. Callers pass normalized activity. */
+export function serializeRollupActivity(activity: AdeUsageRollupActivity): string {
+  return JSON.stringify(activity);
+}
+
+/**
+ * This machine's activity after a re-read of the databases attached now.
+ *
+ * A brain boots projects lazily, so the databases attached at a publish are
+ * often a subset of the ones the machine has. An entry from `previous` whose
+ * folder was not re-read this time is kept (its sessions still happened);
+ * one that was re-read is replaced by folder, not by id, so a database whose
+ * id moved (a replica that merged an older project row) cannot be counted
+ * once under each name. Days older than `oldestDay` drop off.
+ */
+export function mergeOwnActivity(
+  previous: AdeUsageRollupActivity | undefined | null,
+  fresh: readonly AdeUsageActivityDatabase[],
+  oldestDay: string | null,
+): AdeUsageRollupActivity {
+  const byScope = new Map<string, AdeUsageActivityDatabase>();
+  for (const entry of previous?.dbs ?? []) byScope.set(entry.scope || `id:${entry.id}`, entry);
+  for (const entry of fresh) byScope.set(entry.scope || `id:${entry.id}`, entry);
+  const dbs = [...byScope.values()].map((entry) => ({
+    ...entry,
+    days: Object.fromEntries(Object.entries(entry.days).filter(([day]) => !oldestDay || day >= oldestDay)),
+  })).filter((entry) => Object.keys(entry.days).length > 0);
+  return normalizeRollupActivity({ version: 1, dbs }) ?? { version: 1, dbs: [] };
+}
+
+type ActivityDayTotals = { sessions: number; commits: number; prs: number };
+type ActivityGroup = { days: Map<string, ActivityDayTotals>; chats: number; shells: number };
+
+function raiseDay(group: ActivityGroup, day: string, sessions: number, commits: number, prs: number): void {
+  const current = group.days.get(day);
+  if (!current) {
+    group.days.set(day, { sessions, commits, prs });
+    return;
+  }
+  current.sessions = Math.max(current.sessions, sessions);
+  current.commits = Math.max(current.commits, commits);
+  current.prs = Math.max(current.prs, prs);
+}
+
+/**
+ * Put the account's chats, shells, commits and PRs on `stats`.
+ *
+ * Counts are grouped by project database, not by machine. Two machines that
+ * hold copies of one synced database report the same sessions under the
+ * same database id, so each group takes the larger count per day (and per
+ * range total) rather than the sum; separate databases add up. The local
+ * machine's `stats` already carry fresh counts for the database the page was
+ * read from (`localDatabaseId`), which join that database's group the same
+ * way, so the page is never a ledger scan behind for the open project.
+ *
+ * With no machine reporting activity at all, the counts stay unknown, as
+ * `omitUnknownAccountCounts` leaves them. A machine that reports none but
+ * used a model in the range marks the totals as a floor
+ * (`sessionCountsPartial`). Returns the in-range days that had any count, for
+ * `activeDays`, and the labels of the machines left out.
+ */
+function mergeAccountActivity(
+  stats: AdeUsageStats,
+  contributions: readonly AccountUsageContribution[],
+  bounds: RangeBounds,
+  localDatabaseId: string | null,
+): { activeDates: string[]; missing: string[] } {
+  const withRollup = contributions.filter((entry) => entry.rollup);
+  const reporting = withRollup.filter((entry) => entry.rollup?.activity);
+  if (reporting.length === 0) {
+    omitUnknownAccountCounts(stats);
+    return { activeDates: [], missing: [] };
+  }
+  const groups = new Map<string, ActivityGroup>();
+  const groupFor = (id: string): ActivityGroup => {
+    let group = groups.get(id);
+    if (!group) {
+      group = { days: new Map(), chats: 0, shells: 0 };
+      groups.set(id, group);
+    }
+    return group;
+  };
+  for (const entry of reporting) {
+    for (const database of entry.rollup?.activity?.dbs ?? []) {
+      const group = groupFor(database.id);
+      let chats = 0;
+      let shells = 0;
+      for (const [day, counts] of Object.entries(database.days)) {
+        if (!dateInBounds(day, bounds)) continue;
+        chats += counts[0];
+        shells += counts[1];
+        raiseDay(group, day, counts[0] + counts[1], counts[2], counts[3]);
+      }
+      group.chats = Math.max(group.chats, chats);
+      group.shells = Math.max(group.shells, shells);
+    }
+  }
+  if (localDatabaseId) {
+    const group = groupFor(localDatabaseId);
+    for (const point of stats.daily) {
+      if (!dateInBounds(point.date, bounds)) continue;
+      raiseDay(group, point.date, toNonNegativeInt(point.sessions), toNonNegativeInt(point.commits), toNonNegativeInt(point.prs));
+    }
+    group.chats = Math.max(group.chats, toNonNegativeInt(stats.summary.chatSessions));
+    group.shells = Math.max(group.shells, toNonNegativeInt(stats.summary.terminalSessions));
+  }
+
+  const byDay = new Map<string, ActivityDayTotals>();
+  let chatSessions = 0;
+  let terminalSessions = 0;
+  for (const group of groups.values()) {
+    chatSessions += group.chats;
+    terminalSessions += group.shells;
+    for (const [day, totals] of group.days) {
+      const sum = byDay.get(day) ?? { sessions: 0, commits: 0, prs: 0 };
+      sum.sessions += totals.sessions;
+      sum.commits += totals.commits;
+      sum.prs += totals.prs;
+      byDay.set(day, sum);
+    }
+  }
+  for (const point of stats.daily) {
+    const totals = byDay.get(point.date);
+    point.sessions = totals?.sessions ?? 0;
+    point.commits = totals?.commits ?? 0;
+    point.prs = totals?.prs ?? 0;
+  }
+  stats.summary.chatSessions = chatSessions;
+  stats.summary.terminalSessions = terminalSessions;
+
+  const missing = withRollup
+    .filter((entry) => entry.rollup && !entry.rollup.activity
+      && summarizeRollupRange(entry.rollup.rows, bounds).totalTokens > 0)
+    .map((entry) => entry.label || entry.machineKey);
+  if (missing.length > 0) stats.summary.sessionCountsPartial = true;
+  else delete stats.summary.sessionCountsPartial;
+
+  const activeDates = [...byDay]
+    .filter(([, totals]) => totals.sessions > 0 || totals.commits > 0 || totals.prs > 0)
+    .map(([day]) => day);
+  return { activeDates, missing };
+}
+
+/**
  * Merge every machine's contribution into an account-scoped payload.
  *
  * `localStats` must already be the machine-scoped result for the same range —
@@ -559,16 +795,23 @@ export function mergeAccountUsageStats({
   localStats,
   contributions,
   nowMs,
+  localDatabaseId = null,
 }: {
   localStats: AdeUsageStats;
   contributions: readonly AccountUsageContribution[];
   nowMs: number;
+  /** The project database `localStats` read its chats from (`readActivityDatabaseId`). */
+  localDatabaseId?: string | null;
 }): AdeUsageStats {
   const bounds: RangeBounds = { since: localStats.range.since, until: localStats.range.until };
   const { accepted, machines } = resolveContributions(contributions, bounds, nowMs);
   const stats = foldRollupsIntoStats(localStats, accepted, nowMs);
   stats.scope = "account";
   stats.machines = machines;
+  // Every machine with a rollup, deduped ones too: transcript dedupe says
+  // two machines read the same model logs, not the same project database,
+  // and the activity merge dedupes by database on its own.
+  const activity = mergeAccountActivity(stats, contributions, bounds, localDatabaseId);
   // Active days are a stat about the user, so on the account scope they count
   // a day any machine used a model, not only days this project's database
   // saw. The database's own count can include days the daily series does not
@@ -586,6 +829,7 @@ export function mergeAccountUsageStats({
       if (row.totalTokens > 0 && dateInBounds(row.date, bounds)) activeDates.add(row.date);
     }
   }
+  for (const day of activity.activeDates) activeDates.add(day);
   stats.summary.activeDays = Math.max(stats.summary.activeDays ?? 0, activeDates.size);
 
   // Live quota pools across every machine that reported it, local first. Live
@@ -627,7 +871,10 @@ export function mergeAccountUsageStats({
     notes.add(`${deduped.length} computer${deduped.length === 1 ? "" : "s"} share transcripts with another and are counted once.`);
   }
   if (machines.length > 1) {
-    notes.add("Repository and pull request activity is from this computer only.");
+    notes.add("GitHub repository and pull request activity is from this computer only.");
+  }
+  if (activity.missing.length > 0) {
+    notes.add(`Chats, commits and PRs leave out ${activity.missing.length === 1 ? "1 computer that runs" : `${activity.missing.length} computers that run`} an older ADE: ${activity.missing.join(", ")}.`);
   }
   stats.sourceNotes = [...notes];
   return stats;

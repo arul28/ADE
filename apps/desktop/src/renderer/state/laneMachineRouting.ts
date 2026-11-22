@@ -8,10 +8,10 @@
  * reason and the trailing pin argument. Work keeps its own session-aware router
  * in `components/terminals/useWorkMachineRouter.ts`.
  *
- * Pin semantics are the preload's: `null` means "the machine this project tab
- * is bound to" (the unpinned path). A non-null pin is a binding for another
- * machine. `LaneMachine.pin` is already null for the tab's own machine, so
- * callers pass it as is. Lane ids are unique per machine, not globally (lane
+ * A pin addresses one copy on one machine. `LaneMachine.pin` is set for every
+ * routable machine, the tab's own included; it is null only when nothing can
+ * be sent there. "Is this the tab's machine" is `isActiveBinding`, never a null
+ * pin. Lane ids are unique per machine, not globally (lane
  * rows sync between machines), so whenever a caller knows which machine a lane
  * came from it must say so; resolving a bare id prefers the tab's machine.
  *
@@ -26,6 +26,7 @@
  * visible, never a new polling loop.
  */
 
+import { savedChatsMachineKey } from "../../shared/cloudSavedChats";
 import { useMemo, useState } from "react";
 import type {
   LaneSummary,
@@ -34,14 +35,27 @@ import type {
   RemoteRuntimeConnectionStatus,
   TerminalSessionSummary,
 } from "../../shared/types";
-import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
+import type { CloudLaneWithoutComputer } from "../../shared/cloudLaneLaunch";
+import { distinctMachineNames, machineIdOfSlot, THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { formatMachineVersions } from "../../shared/machineVersions";
+import type { MachineAddress } from "../../shared/repositoryTab";
+import { ADE_CLOUD_MACHINE_ID } from "../../shared/adeCloudMachine";
+import {
+  adeCloudLaneComputerForMachine,
+  adeCloudLaneComputersNow,
+  machineLabelForMachine,
+  useAdeCloudLaneComputers,
+  type AdeCloudComputerId,
+  type AdeCloudLaneComputer,
+} from "./adeCloudLaneIndex";
 import {
   useAppStore,
   useRootAppStore,
   type CrossMachineMachineLanes,
 } from "./appStore";
+import { listedLanesOfMachine } from "./cloudRestingRows";
 import { useCrossMachineLaneSync } from "./crossMachineLanes";
+import { LANES_MACHINE_FILTER_ALL } from "./laneMachineFilterIds";
 
 /** One version, or both when the machine's app and brain drift ("1.2.123 · brain 1.2.125"). */
 function connectionVersionLabel(
@@ -58,7 +72,7 @@ export type LaneMachine = {
   online: boolean;
   /** The physical Mac this app runs on. */
   isThisMachine: boolean;
-  /** The machine the project tab is bound to (unpinned calls reach it). */
+  /** The machine the project tab is bound to. Read this, not a null pin. */
   isActiveBinding: boolean;
   /**
    * The binding that addresses this machine's checkout of the repo. For the
@@ -66,8 +80,13 @@ export type LaneMachine = {
    * open). For another machine, null means it cannot be addressed yet.
    */
   binding: OpenProjectBinding | null;
-  /** The pin to pass to preload calls: null for the active machine. */
+  /**
+   * The pin to pass to preload calls: this machine's copy of the repo, the
+   * tab's own included. Null only when nothing can be sent there.
+   */
   pin: OpenProjectBinding | null;
+  /** The same address as `pin`, under the repository-tab name. */
+  address: MachineAddress | null;
   /** False for another machine that has no binding: nothing can be sent there. */
   routable: boolean;
   /** Whether this machine holds a checkout of the active repo. */
@@ -82,6 +101,18 @@ export type LaneMachine = {
   hostname: string | null;
   /** ADE runtime version the machine reported. Null for This computer. */
   version: string | null;
+  /**
+   * Whether another machine's brain answers its own settings with no project
+   * (`shared/machineScope.ts`): false for an older brain, unset until its
+   * connection reports capabilities, and for This computer.
+   */
+  machineScope?: boolean;
+  /**
+   * The domains that brain answers there (`MACHINE_SCOPE_DOMAINS`). Unset with
+   * `machineScope` true: a brain of the route's first version, which answers
+   * none of `MACHINE_SCOPE_LATER_DOMAINS`.
+   */
+  machineScopeDomains?: readonly string[];
 };
 
 /** One lane, tagged with the machine that owns it. */
@@ -116,12 +147,27 @@ export type AllMachineLanes = {
   prsByMachineId: ReadonlyMap<string, PrSummary[]>;
   /** Each other machine's session roster, keyed by machine id. */
   sessionsByMachineId: ReadonlyMap<string, TerminalSessionSummary[]>;
+  /** The ADE Cloud group, present only when the caller passes the `adeCloud` input. */
+  adeCloud?: AdeCloudLaneGroup;
 };
 
 /**
- * The machine-chip rule shared by every tab: when the project spans more than
- * one known machine, EVERY row shows a machine chip (this machine's included)
- * and the machine filter chips appear. With one machine, no chips.
+ * The project's ADE Cloud lanes, as one group: the lanes on its lane
+ * computers (which the union already lists as machines) and the lanes kept
+ * without a computer. Each lane computer holds one lane.
+ */
+export type AdeCloudLaneGroup = {
+  /** Machines of the union that are a lane's own ADE Cloud computer. */
+  machineIds: string[];
+  /** Lanes on those machines, as the union lists them. */
+  lanes: MachineLane[];
+  /** This project's ADE Cloud lanes that have no computer now. */
+  withoutComputer: CloudLaneWithoutComputer[];
+};
+
+/**
+ * When the project spans more than one known machine, the machine filter
+ * chips appear. A row's own chip follows `rowMachineChip`.
  */
 export function shouldShowMachineChips(machineCount: number): boolean {
   return machineCount > 1;
@@ -130,7 +176,7 @@ export function shouldShowMachineChips(machineCount: number): boolean {
 /** What a machine chip renders. */
 export type MachineChipModel = Pick<LaneMachine, "machineId" | "machineName" | "online" | "isThisMachine">;
 
-/** The chip for a machine. Callers gate it with `shouldShowMachineChips`. */
+/** The chip for a machine (a filter chip names every machine). */
 export function machineChipFor(machine: MachineChipModel): MachineChipModel {
   return {
     machineId: machine.machineId,
@@ -138,6 +184,112 @@ export function machineChipFor(machine: MachineChipModel): MachineChipModel {
     online: machine.online,
     isThisMachine: machine.isThisMachine,
   };
+}
+
+/**
+ * The chip of a row (a lane, a PR's lane, a rule, an event): a row names its
+ * computer only when that computer is not this one. The rule is the same in
+ * every tab, and it never depends on the machine the tab reads from.
+ */
+export function rowMachineChip(machine: MachineChipModel | null | undefined): MachineChipModel | null {
+  return machine && !machine.isThisMachine ? machineChipFor(machine) : null;
+}
+
+/* ---- The Lanes sidebar's Computer filter ---- */
+
+/**
+ * One entry in the Lanes sidebar's Computer filter, in menu order: `All`, each
+ * computer the person owns, then `ADE Cloud` (one entry for every cloud
+ * computer, and the cloud lanes whose computer was deleted).
+ */
+export type LaneMachineFilterEntry = {
+  /** `"all"`, a computer id, or `ADE_CLOUD_MACHINE_ID`. */
+  id: string;
+  name: string;
+  kind: "all" | "computer" | "cloud";
+  /** Lanes this entry reveals right now. */
+  laneCount: number;
+  /** The tab's own computer: it leads the list, right after All. */
+  isThisMachine: boolean;
+};
+
+/** A listed machine as the filter sees it: one per union slice (a computer may have two checkouts). */
+export type LaneMachineFilterMachine = {
+  /** `laneFilterEntryId(machine.machineId, isCloud)`; two slices of one computer share it. */
+  entryId: string;
+  name: string;
+  isCloud: boolean;
+  isThisMachine: boolean;
+  /** Lanes this slice contributes. */
+  laneCount: number;
+};
+
+/**
+ * The entry a machine belongs to. Every ADE Cloud computer is one entry: the
+ * person has no single cloud computers to pick from. Everything else is one
+ * entry per computer, so two checkouts of one computer do not get two entries.
+ */
+export function laneFilterEntryId(machineId: string, isCloudMachine: boolean): string {
+  return isCloudMachine ? ADE_CLOUD_MACHINE_ID : machineIdOfSlot(machineId);
+}
+
+/**
+ * Every entry of the Computer filter, from the machines the list is showing.
+ * Pure: names, counts and cloud-ness are decided by the caller, which holds the
+ * cloud index and the lane labels.
+ */
+export function buildLaneMachineFilterEntries(input: {
+  machines: readonly LaneMachineFilterMachine[];
+}): LaneMachineFilterEntry[] {
+  const byEntryId = new Map<string, LaneMachineFilterEntry>();
+  for (const machine of input.machines) {
+    // A computer with no lanes of this project reveals nothing: it is not a
+    // choice, and picking it would leave an empty list.
+    if (machine.laneCount <= 0) continue;
+    const known = byEntryId.get(machine.entryId);
+    if (known) {
+      known.laneCount += machine.laneCount;
+      known.isThisMachine ||= machine.isThisMachine;
+      continue;
+    }
+    byEntryId.set(machine.entryId, {
+      id: machine.entryId,
+      name: machine.name,
+      kind: machine.isCloud ? "cloud" : "computer",
+      laneCount: machine.laneCount,
+      isThisMachine: machine.isThisMachine,
+    });
+  }
+  const computers = [...byEntryId.values()]
+    .filter((entry) => entry.kind === "computer")
+    .sort((a, b) => Number(b.isThisMachine) - Number(a.isThisMachine) || a.name.localeCompare(b.name));
+  const cloud = byEntryId.get(ADE_CLOUD_MACHINE_ID) ?? null;
+  return [
+    {
+      id: LANES_MACHINE_FILTER_ALL,
+      name: "All",
+      kind: "all",
+      laneCount: computers.reduce((sum, entry) => sum + entry.laneCount, 0) + (cloud?.laneCount ?? 0),
+      isThisMachine: false,
+    },
+    ...computers,
+    ...(cloud ? [cloud] : []),
+  ];
+}
+
+/**
+ * The entry the chosen filter reads as: the stored one while its entry is
+ * listed, else `"all"`. A computer that went offline (its lanes left the list)
+ * or an entry this ADE no longer offers must not leave the sidebar looking empty
+ * with nothing to click to undo it.
+ */
+export function effectiveLaneMachineFilter(
+  stored: string,
+  entries: readonly Pick<LaneMachineFilterEntry, "id">[],
+): string {
+  return stored !== LANES_MACHINE_FILTER_ALL && entries.some((entry) => entry.id === stored)
+    ? stored
+    : LANES_MACHINE_FILTER_ALL;
 }
 
 /**
@@ -153,13 +305,6 @@ export function machineBlockedReason(
   return null;
 }
 
-/**
- * The trailing pin argument for a preload call: nothing for the tab's machine
- * (the unpinned call, arity included), `[pin]` for another machine.
- */
-export function pinArg(pin: OpenProjectBinding | null | undefined): [] | [OpenProjectBinding] {
-  return pin ? [pin] : [];
-}
 
 /**
  * `binding`, held by its key: the same object back until the key changes. The
@@ -216,9 +361,14 @@ export function buildForeignSessionLanes(
   return byMachineId;
 }
 
-/** The machines a call can be sent to (the tab's own, and every addressable other). */
+/**
+ * The machines a call can be sent to (the tab's own, and every addressable
+ * other). A cloud computer's saved chats (`cloud-saved:<key>`, listed while it
+ * isn't connected) are left out: they answer only for those chats, and
+ * anything more would have to wake the computer.
+ */
 export function routableMachines(machines: readonly LaneMachine[]): LaneMachine[] {
-  return machines.filter((machine) => machine.routable);
+  return machines.filter((machine) => machine.routable && savedChatsMachineKey(machine.machineId) == null);
 }
 
 function activeMachineFor(binding: OpenProjectBinding | null): { machineId: string; machineName: string } {
@@ -236,6 +386,18 @@ function connectionDeviceId(connection: RemoteRuntimeConnectionStatus | undefine
   return connection?.target.pairedMachine?.hostIdentity?.trim() || null;
 }
 
+/** `LaneMachine.machineScope` from a connection, once it reported capabilities. */
+function connectionMachineScope(connection: RemoteRuntimeConnectionStatus | undefined): Pick<LaneMachine, "machineScope" | "machineScopeDomains"> {
+  const capabilities = connection?.capabilities;
+  if (!capabilities) return {};
+  return {
+    machineScope: capabilities.machineScope === true,
+    ...(capabilities.machineScope === true && capabilities.machineScopeDomains
+      ? { machineScopeDomains: capabilities.machineScopeDomains }
+      : {}),
+  };
+}
+
 /**
  * Pure derivation of {@link AllMachineLanes}; it performs no I/O. The optional
  * `connections` and `thisMachineDeviceId` enrich the machines with identity and
@@ -248,8 +410,30 @@ export function buildAllMachineLanes(input: {
   machines: Readonly<Record<string, CrossMachineMachineLanes>>;
   connections?: readonly RemoteRuntimeConnectionStatus[];
   thisMachineDeviceId?: string | null;
+  /**
+   * The account's ADE Cloud lane computers (`useAdeCloudLaneComputers`), which
+   * name the cloud machines; a hook passes the ones it renders from, so its
+   * memo follows them. With the lanes without a computer
+   * (`useCloudLanesWithoutComputer`) and the repo's normalized origin too, the
+   * result also carries `adeCloud`.
+   */
+  adeCloud?: {
+    computers: readonly AdeCloudLaneComputer[];
+    /** Every ADE Cloud computer of the index (`useAdeCloudLaneComputers().cloudComputers`); else the ones last read. */
+    cloudComputers?: readonly AdeCloudComputerId[];
+    withoutComputer?: readonly CloudLaneWithoutComputer[];
+    repoOriginIdentity?: string | null;
+  };
 }): AllMachineLanes {
   const activeBinding = input.activeBinding ?? null;
+  // What a person sees: an ADE Cloud computer reads "ADE Cloud" (known from the
+  // lane computers passed, else, for a caller outside React, the ones last
+  // read); every other machine keeps its own name.
+  const laneComputers = input.adeCloud?.computers ?? adeCloudLaneComputersNow();
+  const labelFor = (hostname: string | null, machineId: string, name: string): string =>
+    machineLabelForMachine({ hostname, machineKey: machineId, name }, laneComputers);
+  const shownName = (binding: OpenProjectBinding | null, machineId: string, name: string): string =>
+    labelFor(binding?.kind === "remote" ? binding.hostname ?? null : null, machineId, name);
   const active = activeMachineFor(activeBinding);
   const activeSlice = input.machines[active.machineId];
   const connectionById = new Map((input.connections ?? []).map((connection) => [connection.target.id, connection]));
@@ -258,7 +442,7 @@ export function buildAllMachineLanes(input: {
 
   const activeMachine: LaneMachine = {
     machineId: active.machineId,
-    machineName: active.machineName,
+    machineName: shownName(activeBinding, active.machineId, active.machineName),
     // A local binding is reachable by definition. A remote one follows its
     // union slice; before the first read, the connection snapshot; before
     // that, reachable (the tab would not be bound to it otherwise).
@@ -268,7 +452,8 @@ export function buildAllMachineLanes(input: {
     isThisMachine: active.machineId === THIS_MACHINE_ID,
     isActiveBinding: true,
     binding: activeBinding,
-    pin: null,
+    pin: activeBinding,
+    address: activeBinding,
     routable: true,
     hasRepo: activeBinding != null,
     deviceId: activeBinding?.kind === "remote" ? connectionDeviceId(activeConnection) : thisDeviceId,
@@ -276,6 +461,8 @@ export function buildAllMachineLanes(input: {
       ? activeConnection?.target.hostname ?? activeBinding.hostname ?? null
       : null,
     version: connectionVersionLabel(activeConnection),
+    // The tab's remote reports its machine route like every other machine (none for a local tab).
+    ...connectionMachineScope(activeConnection),
   };
   const machines: LaneMachine[] = [activeMachine];
   const lanes: MachineLane[] = [];
@@ -295,33 +482,39 @@ export function buildAllMachineLanes(input: {
     // The active machine is represented by the tab's own lane list above; the
     // union may still hold a (stale) slice for it.
     if (entry.machineId === active.machineId) continue;
+    // A computer that is gone from the account holds no copy of the repository.
+    // The union keeps it only for its saved chats, so no lane surface lists it.
+    if (entry.computerGone === true) continue;
     const binding = entry.binding ?? null;
-    const connection = connectionById.get(entry.targetId ?? entry.machineId);
-    const isThisMachine = entry.machineId === THIS_MACHINE_ID;
-    // Defensive: a slice whose binding IS the tab's binding takes the unpinned
-    // path, exactly like the chat router resolves it.
-    const pin = binding && binding.key === activeBinding?.key ? null : binding;
+    // A second checkout on a computer has a slice id of its own; the computer is the part before it.
+    const ownMachineId = machineIdOfSlot(entry.machineId);
+    const connection = connectionById.get(entry.targetId ?? ownMachineId);
+    const isThisMachine = ownMachineId === THIS_MACHINE_ID;
+    const pin = binding;
     const machine: LaneMachine = {
       machineId: entry.machineId,
-      machineName: entry.machineName?.trim() || connection?.target.name?.trim() || entry.machineId,
+      machineName: shownName(binding, ownMachineId, entry.machineName?.trim() || connection?.target.name?.trim() || ownMachineId),
       online: entry.online,
       isThisMachine,
       isActiveBinding: false,
       binding,
       pin,
+      address: binding,
       routable: binding != null,
       // The union only carries machines matched on the repo's origin.
       hasRepo: true,
       deviceId: isThisMachine ? thisDeviceId : connectionDeviceId(connection),
       hostname: connection?.target.hostname ?? (binding?.kind === "remote" ? binding.hostname ?? null : null),
       version: connectionVersionLabel(connection),
+      ...connectionMachineScope(connection),
     };
     machines.push(machine);
     prsByMachineId.set(entry.machineId, entry.prs);
     sessionsByMachineId.set(entry.machineId, entry.sessions);
     const machineLanes: LaneSummary[] = [];
     const seen = new Set<string>();
-    for (const lane of entry.lanes) {
+    // An ADE Cloud lane computer adds no main checkout, awake or asleep.
+    for (const lane of listedLanesOfMachine(entry, laneComputers, input.adeCloud?.cloudComputers)) {
       if (seen.has(lane.id)) continue;
       seen.add(lane.id);
       machineLanes.push(lane);
@@ -333,11 +526,12 @@ export function buildAllMachineLanes(input: {
   const machinesWithoutRepo: LaneMachine[] = [];
   if (input.connections || input.thisMachineDeviceId !== undefined) {
     const listed = new Set(machines.map((machine) => machine.machineId));
-    const noRepo = (overrides: Pick<LaneMachine, "machineId" | "machineName" | "online" | "isThisMachine" | "deviceId" | "hostname" | "version">): LaneMachine => ({
+    const noRepo = (overrides: Pick<LaneMachine, "machineId" | "machineName" | "online" | "isThisMachine" | "deviceId" | "hostname" | "version" | "machineScope" | "machineScopeDomains">): LaneMachine => ({
       ...overrides,
       isActiveBinding: false,
       binding: null,
       pin: null,
+      address: null,
       routable: false,
       hasRepo: false,
     });
@@ -359,14 +553,43 @@ export function buildAllMachineLanes(input: {
     for (const connection of rest) {
       machinesWithoutRepo.push(noRepo({
         machineId: connection.target.id,
-        machineName: connection.target.name?.trim() || connection.target.hostname || connection.target.id,
+        machineName: labelFor(connection.target.hostname ?? null, connection.target.id, connection.target.name?.trim() || connection.target.hostname || connection.target.id),
         online: connectionOnline(connection),
         isThisMachine: false,
         deviceId: connectionDeviceId(connection),
         hostname: connection.target.hostname ?? null,
         version: connectionVersionLabel(connection),
+        ...connectionMachineScope(connection),
       }));
     }
+  }
+
+  // Two computers that share a name ("Arul's Mac Studio" twice) are told
+  // apart here, once, for every list and picker built from this.
+  // A computer with two checkouts is one computer here: its slices share its label.
+  const namedOnce = new Map<string, LaneMachine>();
+  for (const machine of [...machines, ...machinesWithoutRepo]) {
+    const ownId = machineIdOfSlot(machine.machineId);
+    if (!namedOnce.has(ownId)) namedOnce.set(ownId, machine);
+  }
+  const shown = distinctMachineNames([...namedOnce].map(([id, machine]) => ({
+    id,
+    name: machine.machineName,
+    isThisMachine: machine.isThisMachine,
+    hostname: machine.hostname,
+    deviceId: machine.deviceId,
+  })));
+  const distinctLabelOf = (machine: LaneMachine) => shown.get(machineIdOfSlot(machine.machineId));
+  const renamed = (machine: LaneMachine) => {
+    const name = distinctLabelOf(machine);
+    return name != null && name !== machine.machineName;
+  };
+  const relabel = <T extends LaneMachine>(machine: T): T =>
+    renamed(machine) ? { ...machine, machineName: distinctLabelOf(machine)! } : machine;
+  if (machines.some(renamed) || machinesWithoutRepo.some(renamed)) {
+    machines.splice(0, machines.length, ...machines.map(relabel));
+    machinesWithoutRepo.splice(0, machinesWithoutRepo.length, ...machinesWithoutRepo.map(relabel));
+    lanes.splice(0, lanes.length, ...lanes.map(relabel));
   }
 
   return {
@@ -378,6 +601,31 @@ export function buildAllMachineLanes(input: {
     lanesByMachineId,
     prsByMachineId,
     sessionsByMachineId,
+    ...(input.adeCloud?.withoutComputer
+      ? { adeCloud: buildAdeCloudLaneGroup(machines, lanes, { ...input.adeCloud, withoutComputer: input.adeCloud.withoutComputer }) }
+      : {}),
+  };
+}
+
+function buildAdeCloudLaneGroup(
+  machines: readonly LaneMachine[],
+  lanes: readonly MachineLane[],
+  input: NonNullable<Parameters<typeof buildAllMachineLanes>[0]["adeCloud"]> & { withoutComputer: readonly CloudLaneWithoutComputer[] },
+): AdeCloudLaneGroup {
+  const origin = input.repoOriginIdentity?.trim().toLowerCase() || null;
+  // A computer with no recorded origin is kept: the union only lists machines
+  // matched on this repo, so a lane computer it carries is this project's.
+  const computers = input.computers.filter((computer) => !origin || !computer.projectOrigin || computer.projectOrigin === origin);
+  const machineIds = machines
+    .filter((machine) => adeCloudLaneComputerForMachine({ hostname: machine.hostname, targetId: machine.machineId }, computers) != null)
+    .map((machine) => machine.machineId);
+  const cloudIds = new Set(machineIds);
+  return {
+    machineIds,
+    lanes: lanes.filter((row) => cloudIds.has(row.machineId)),
+    // A lane kept without a computer is matched on its origin only; with no
+    // origin to match, none is this project's.
+    withoutComputer: origin ? input.withoutComputer.filter((lane) => lane.projectOrigin === origin) : [],
   };
 }
 
@@ -395,17 +643,16 @@ export function useAllMachineLanes(active = true): AllMachineLanes {
   const activeBinding = useAppStore((state) => state.projectBinding);
   const activeLanes = useAppStore((state) => state.lanes);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  const { computers, cloudComputers } = useAdeCloudLaneComputers();
   return useMemo(
-    () => buildAllMachineLanes({ activeBinding: activeBinding ?? null, activeLanes, machines: machines ?? {} }),
-    [activeBinding, activeLanes, machines],
+    () => buildAllMachineLanes({ activeBinding: activeBinding ?? null, activeLanes, machines: machines ?? {}, adeCloud: { computers, cloudComputers } }),
+    [activeBinding, activeLanes, machines, computers, cloudComputers],
   );
 }
 
 /** Where a call about one lane has to go. */
 export type LaneRoute =
-  /** The tab's machine: pass `pin: null` (the unpinned path). */
-  | { kind: "bound"; pin: null; machine: LaneMachine }
-  /** Another machine: pass this pin. */
+  /** Pass this pin; `machine.isActiveBinding` says whether it is the tab's machine. */
   | { kind: "pinned"; pin: OpenProjectBinding; machine: LaneMachine }
   /** The machine is known but cannot be addressed (no binding): do not send. */
   | { kind: "unroutable"; pin: null; machine: LaneMachine }
@@ -435,9 +682,6 @@ export function createLaneMachineRouter(all: AllMachineLanes): LaneMachineRouter
     if (!laneIndex.has(row.lane.id)) laneIndex.set(row.lane.id, row);
   }
   const toRoute = (machine: LaneMachine): LaneRoute => {
-    if (machine.isActiveBinding || (machine.routable && machine.pin == null)) {
-      return { kind: "bound", pin: null, machine };
-    }
     if (!machine.routable || !machine.pin) return { kind: "unroutable", pin: null, machine };
     return { kind: "pinned", pin: machine.pin, machine };
   };

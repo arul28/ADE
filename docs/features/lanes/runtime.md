@@ -49,9 +49,8 @@ Renderer surfaces:
 
 | Component | Role |
 |-----------|------|
-| `renderer/components/settings/storage/StorageDiagnostics.tsx` | Diagnostics view, inside Project → Storage & cleanup → Space |
 | `renderer/components/settings/LaneTemplatesSection.tsx` | Template management |
-| `renderer/components/settings/NewLaneSettingsSection.tsx` | Start defaults and lane templates. Cleanup policy lives in `StorageSection.tsx`. |
+| `renderer/components/settings/NewLaneSettingsSection.tsx` | Start defaults and lane templates. Cleanup policy lives in `health/HealthCleanups.tsx`. |
 
 ## Environment initialization (W1)
 
@@ -123,7 +122,9 @@ Config types live in `src/shared/types/config.ts`:
   `LaneMountPointConfig`, `LaneCopyPathConfig`
 - `LaneSetupScriptConfig` — optional post-init script with
   platform-specific variants (`commands` / `unixCommands` /
-  `windowsCommands`, similar for `scriptPath`). Supports
+  `macosCommands` / `linuxCommands` / `windowsCommands`, and the same five
+  for `scriptPath`; the field list is `LANE_SETUP_PLATFORM_FIELDS` in
+  `src/shared/laneSetupPlatform.ts`). Supports
   `injectPrimaryPath` to expose `$PRIMARY_WORKTREE_PATH` to shell
   commands. Carried on `LaneEnvInitConfig` as `setupScript`, which is
   how it reaches the executor.
@@ -137,10 +138,13 @@ on **every** path that runs env init with a template: lane create,
 worktree. When both a project-level and a template/overlay setup script
 exist, the more specific one wins — a lane runs one setup script.
 
-- **Platform selection.** `resolveSetupScriptConfig` picks
-  `windowsCommands` / `windowsScriptPath` on Windows and
-  `unixCommands` / `unixScriptPath` elsewhere, each falling back to the
-  generic `commands` / `scriptPath`. If nothing resolves for the current
+- **Platform selection.** `resolveSetupScriptConfig` picks the most
+  specific list: on Windows `windowsCommands` / `windowsScriptPath`; on
+  macOS `macosCommands` / `macosScriptPath`, then `unixCommands` /
+  `unixScriptPath`; on Linux (an ADE Cloud computer) `linuxCommands` /
+  `linuxScriptPath`, then the unix pair; each falling back to the
+  generic `commands` / `scriptPath`. A list of its own, even an empty one,
+  is what that OS runs. If nothing resolves for the current
   platform, the step is not created at all. "Is there work for *this*
   platform" is a different question from "is a script configured at
   all", and only the second one may decide what persists:
@@ -150,6 +154,14 @@ exist, the more specific one wins — a lane runs one setup script.
   survives a save made on macOS. A config carrying only
   `injectPrimaryPath` fails both tests — it configures nothing to run,
   so it is not a setup script.
+- **macOS commands on Linux.** When Linux would run shared macOS/Linux
+  or any-OS commands that call macOS-only tools (`cp -c`, `xcrun`,
+  `ditto`, `pbcopy` and similar; `macosOnlyToolOnLinux` in
+  `laneSetupPlatform.ts`), the step still runs, logs
+  `lane_env_init.setup_script_macos_on_linux`, and its label says the
+  script is written for macOS and to add Linux commands to the template.
+  The template editor shows the same warning. Giving the template
+  `linuxCommands` clears it.
 - **Shell semantics (commands).** Configured `commands` are
   user-authored shell, not argv: they run through `/bin/sh -c` on
   macOS/Linux and through `cmd.exe /d /s /c` (via

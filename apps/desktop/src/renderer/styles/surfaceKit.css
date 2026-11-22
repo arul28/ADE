@@ -73,6 +73,8 @@ html[data-scene="image"][data-theme="light"] {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
 }
+/* A big figure that reads as a number, not code: the UI face, still tabular. */
+.kit-num[data-face="ui"] { font-family: inherit; letter-spacing: -0.01em; }
 
 /* A coloured page header: the Account banner and the Custom providers banner.
    A wash painted from four colour stops (`--hero-deep`, `--hero-mid`,
@@ -143,6 +145,19 @@ html[data-scene="image"][data-theme="light"] {
 }
 [data-theme="light"] .kit-card[data-float="true"] {
   background: color-mix(in srgb, var(--color-bg) 90%, transparent);
+}
+
+/* A card with a fake frost (`SceneFrost`, mounted only over a scene picture):
+   the same tint and blur as the live frost above, painted from the picture,
+   so the card adds no backdrop-filter to the page. */
+.kit-card:has(> .ade-scene-frost) {
+  isolation: isolate;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  --scene-frost-tint: var(--kit-card-bg);
+  --scene-frost-blur: 20px;
+  --scene-frost-saturate: 1.25;
 }
 
 /* Card header: icon · label · count ………… action. Always 40px. */
@@ -280,10 +295,17 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
   letter-spacing: 0.06em;
   background: color-mix(in srgb, var(--color-fg) 7%, transparent);
   color: var(--kit-text-2);
+  /* One short label at a fixed height: a wrapped line would spill out of it. */
+  white-space: nowrap;
 }
 .kit-tag[data-tone="ok"] { background: color-mix(in srgb, var(--kit-ok) 14%, transparent); color: var(--kit-ok); }
 .kit-tag[data-tone="warn"] { background: color-mix(in srgb, var(--kit-warn) 14%, transparent); color: var(--kit-warn); }
 .kit-tag[data-tone="crit"] { background: color-mix(in srgb, var(--kit-crit) 14%, transparent); color: var(--kit-crit); }
+/* The surface's own accent ("Your plan", "Default"). A surface with its own brand sets `--kit-tag-accent`. */
+.kit-tag[data-tone="accent"] {
+  background: color-mix(in srgb, var(--kit-tag-accent, var(--color-accent)) 18%, transparent);
+  color: var(--kit-tag-accent, var(--color-accent));
+}
 
 /* A key or chord as the OS prints it (⌘K, Ctrl+Shift+E). One chip per chord;
    a binding with two chords is two chips. `data-size="sm"` for a line of
@@ -422,6 +444,9 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
   font-size: 12.5px;
 }
 .kit-input::placeholder { color: var(--kit-text-3); }
+.kit-input[data-size="sm"] { height: 26px; padding: 0 8px; font-size: 12px; }
+/* A multi-line field: the same box, its height set by its rows. */
+textarea.kit-input { height: auto; padding-top: 6px; padding-bottom: 6px; line-height: 1.45; resize: none; }
 .kit-input:focus { border-color: color-mix(in srgb, var(--color-fg) 35%, transparent); }
 .kit-input:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-fg) 60%, transparent); outline-offset: 1px; }
 .kit-input[aria-invalid="true"] { border-color: color-mix(in srgb, var(--kit-crit) 60%, transparent); }

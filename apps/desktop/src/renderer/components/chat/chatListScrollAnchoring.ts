@@ -12,6 +12,11 @@ import { findSpawnCompletionLine } from "./spawnCompletionLines";
 
 /** Number of extra rows to render above/below the visible viewport. */
 export const CHAT_TRANSCRIPT_OVERSCAN = 10;
+/**
+ * Rows above the viewport in a list's first painted window (a chat open). The
+ * rest of the overscan mounts in the commit after that paint.
+ */
+export const CHAT_TRANSCRIPT_FIRST_PAINT_OVERSCAN = 2;
 export const STICK_THRESHOLD_PX = 160;
 export const STICK_RESUME_THRESHOLD_PX = 24;
 

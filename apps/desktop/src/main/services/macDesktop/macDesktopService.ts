@@ -136,6 +136,12 @@ import { createMacDesktopStreaming } from "./macDesktopStreaming";
 import { createMacDesktopWindows } from "./macDesktopWindows";
 import { createWindowsDesktopOperations } from "../windowsDesktop/windowsDesktopOperations";
 import {
+  isRemoteWorkLaneId,
+  onRemoteWorkCopyReleased,
+  registerRemoteWorkDeviceCheck,
+  withRemoteWorkLaneResolvers,
+} from "../remoteWork/remoteWorkCopyService";
+import {
   installLinuxDesktopPackages,
   linuxDesktopInstallCommand,
   LINUX_DESKTOP_ENCODER_MESSAGE,
@@ -147,9 +153,13 @@ import {
   reportLinuxScreenProblem,
   reportLinuxSetupOutcome,
 } from "../linuxDesktop/linuxScreenTelemetry";
+import { readLinuxLaneLaunchEnv, type LinuxLaneLaunchEnv } from "../linuxDesktop/linuxDesktopSeatProvider";
 
 /** KV key for the lane display size. Read on every `start`. */
 export const MAC_DESKTOP_RESOLUTION_SETTING_KEY = "macDesktop.resolution";
+
+/** A work copy's screen with apps still open stops after this long unused and unwatched. */
+const REMOTE_WORK_DISPLAY_IDLE_MS = 60 * 60_000;
 
 /** How often the idle sweep runs. Cheap: it reads maps, never the driver. */
 const IDLE_SWEEP_INTERVAL_MS = 30_000;
@@ -296,6 +306,12 @@ function asNullableDisplayId(raw: unknown): number | null {
  */
 export type MacDesktopRuntimeService = MacDesktopServiceApi & {
   /**
+   * Stops the screen helper while no lane screen, lease or call uses it. The
+   * brain calls it with no window and no other machine connected; the next
+   * call that needs the helper starts it again. Host-local.
+   */
+  releaseIdleDriver(): boolean;
+  /**
    * The lane whose display holds this process's windows, or null. App Control
    * asks before it attaches, so one lane cannot drive an app another lane
    * parked on its screen. Host-local, so it is not on the shared contract.
@@ -341,12 +357,32 @@ export type MacDesktopRuntimeService = MacDesktopServiceApi & {
    * events; the fan-out calls this on subscribe and while frames flow.
    */
   noteStreamActivity(laneId: string): void;
+  /**
+   * Linux only: the environment that puts a process's windows on the lane's
+   * screen, for an app ADE starts in a terminal (App Control). `start` brings
+   * the screen up first when it is not running; without it, a lane with no
+   * screen answers null. Null on every other seat. A screen that cannot start
+   * throws the screen's own error, which says what to install.
+   */
+  laneScreenLaunchEnv(args: { laneId: string; start: boolean }): Promise<LinuxLaneLaunchEnv | null>;
+  /**
+   * An app on the lane's screen was just driven some other way (App Control
+   * over CDP): the screen is in use, so the idle sweep keeps it.
+   */
+  noteLaneScreenUse?(laneId: string): void;
   readonly resolutionSettingKey: string;
   setResolution(preset: MacDesktopResolutionPreset): void;
   getResolution(): MacDesktopResolutionPreset;
 };
 
-export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktopRuntimeService {
+export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): MacDesktopRuntimeService {
+  // A chat on another machine stands in for a lane with its work copy here
+  // (`remote-work-…`, `ade screen … --machine`): the copy is the lane's
+  // folder, and it is named for that chat's machine.
+  const deps: MacDesktopServiceDeps = {
+    ...serviceDeps,
+    ...withRemoteWorkLaneResolvers(serviceDeps.projectRoot, serviceDeps),
+  };
   const platform = deps.platform ?? process.platform;
   const now = deps.now ?? (() => Date.now());
   /**
@@ -450,6 +486,12 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
    * in flight; a display that dies on its own still reaches clients.
    */
   const destroyingLanes = new Set<string>();
+  /**
+   * Linux: laneId → the environment that puts a process on the lane's screen,
+   * from the helper's `display.create` reply. Written by every create, so an
+   * entry is the live display's whenever `ownership` has one for the lane.
+   */
+  const linuxLaunchEnvs = new Map<string, LinuxLaneLaunchEnv>();
   let sweepTimer: ReturnType<typeof setInterval> | null = null;
   let lastSweepAtMs = now();
 
@@ -924,6 +966,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     leases.releaseLane(laneId);
     recording.forgetLane(laneId);
     ownership.removeDisplay(laneId);
+    linuxLaunchEnvs.delete(laneId);
     if (wasStreaming) {
       emit({ type: "stream-stopped", status: streaming.buildStreamStatus(laneId, { redacted: true }) });
     }
@@ -959,6 +1002,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     if (isLinuxSeat && lostLanes > 0) reportLinuxScreenProblem("helper_lost", { lanes: lostLanes });
     for (const laneId of ownership.laneIds()) forgetDisplay(laneId, "driver_lost");
     ownership.clear();
+    linuxLaunchEnvs.clear();
     recording.clear();
     streaming.clear();
     // A helper that exited on a signal handed its lanes' apps off on the way
@@ -1259,6 +1303,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       ...(seatMode ? { seatMode } : {}),
     };
     driverLifecycle.setDisplayMode(display.mode);
+    if (isLinuxSeat) {
+      const launchEnv = readLinuxLaneLaunchEnv(reply);
+      if (launchEnv) linuxLaunchEnvs.set(laneId, launchEnv);
+      else linuxLaunchEnvs.delete(laneId);
+    }
     const movedTo = pendingDisplayPlacements.get(laneId);
     pendingDisplayPlacements.delete(laneId);
     const stored = ownership.setDisplay(movedTo ? { ...display, ...movedTo } : display, laneName);
@@ -1342,6 +1391,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         }
       }
       ownership.removeDisplay(laneId);
+      linuxLaunchEnvs.delete(laneId);
       if (had) {
         emit({
           type: "display-destroyed",
@@ -1363,11 +1413,17 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   /** True when the lane's display has sat unwatched and unused past the idle window. */
   const isIdle = (laneId: string, atMs: number): boolean => {
     const display = ownership.getDisplay(laneId);
-    if (!display || display.windowCount > 0) return false;
+    if (!display) return false;
+    // A screen a chat on another machine opened (its work copy's lane) has no
+    // person here to close what it left open, so open windows only lengthen
+    // its idle window. Stopping it quits only the apps that chat opened.
+    const workCopy = isRemoteWorkLaneId(laneId);
+    if (display.windowCount > 0 && !workCopy) return false;
     if (streamServer.clientCount(laneId) > 0) return false;
     if (recordings.get(laneId)?.running) return false;
+    const idleMs = workCopy && display.windowCount > 0 ? REMOTE_WORK_DISPLAY_IDLE_MS : MAC_DESKTOP_IDLE_RELEASE_MS;
     const lastActivityMs = Date.parse(display.lastActivityAt);
-    return !(Number.isFinite(lastActivityMs) && atMs - lastActivityMs < MAC_DESKTOP_IDLE_RELEASE_MS);
+    return !(Number.isFinite(lastActivityMs) && atMs - lastActivityMs < idleMs);
   };
 
   const sweep = (): void => {
@@ -1813,7 +1869,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       return await recording.startRecording(args);
     },
 
-    async stopRecording(args: { laneId: string; chatSessionId?: string | null }): Promise<MacDesktopRecordingStatus> {
+    async stopRecording(args: { laneId: string; chatSessionId?: string | null; proof?: boolean | null }): Promise<MacDesktopRecordingStatus> {
       assertSupported();
       return await recording.stopRecording(args);
     },
@@ -1962,13 +2018,44 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       streaming.dispose();
       driverLifecycle.dispose();
       ownership.clear();
+      linuxLaunchEnvs.clear();
       lifecycleTails.clear();
       recording.clear();
+      offRemoteWorkLanes();
     },
   };
 
+  // A chat's work copy holding this screen (a display or the input lease) is
+  // in use, so the idle and low-disk cleanups keep it; a copy that goes
+  // (`ade shell clean --machine`, the sweep, its chat gone) takes its screen,
+  // its lease and its apps with it.
+  const offRemoteWorkDeviceCheck = registerRemoteWorkDeviceCheck(deps.projectRoot, (laneId) =>
+    isRemoteWorkLaneId(laneId) && seatSupported && (ownership.hasDisplay(laneId) || leases.get(laneId) != null));
+  const offRemoteWorkReleased = onRemoteWorkCopyReleased(deps.projectRoot, (laneId) => {
+    if (disposed) return;
+    void api.destroyForLane(laneId);
+  });
+  function offRemoteWorkLanes(): void {
+    offRemoteWorkDeviceCheck();
+    offRemoteWorkReleased();
+  }
 
   return Object.assign(api, {
+    /**
+     * Stops the screen helper while nothing uses it: no lane screen, no input
+     * lease, no screen start or stop queued, no long Windows operation, and no
+     * request waiting for the helper. The brain calls this once no window and no other
+     * machine is connected (`brainIdleMemory.ts`). Every call that needs the
+     * helper starts it again, `getStatus` included, so a phone or a remote
+     * caller that comes back gets a new one on its first read.
+     */
+    releaseIdleDriver(): boolean {
+      if (disposed || !seatSupported) return false;
+      if (ownership.laneIds().length > 0 || lifecycleTails.size > 0 || windowsLongOperationInFlight > 0) return false;
+      // A lease still held would be pushed to the helper when it ends.
+      if (leases.list().length > 0) return false;
+      return driverLifecycle.releaseIdleDriver();
+    },
     /** The sync half of `getDisplay`, for the prompt gate and the lane marker. */
     hasDisplaySync(laneId: string | null | undefined): boolean {
       const trimmed = laneId?.trim();
@@ -2021,6 +2108,27 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     },
     async releaseStreamSubscription(subscriptionId: string): Promise<void> {
       await streaming.releaseStreamSubscription(subscriptionId.trim());
+    },
+    async laneScreenLaunchEnv(args: { laneId: string; start: boolean }): Promise<LinuxLaneLaunchEnv | null> {
+      const laneId = args.laneId?.trim();
+      if (!laneId || !isLinuxSeat || !seatSupported) return null;
+      if (!args.start && !ownership.hasDisplay(laneId)) return null;
+      // Through `start` even for a running screen: it queues behind a stop in
+      // flight, and it drops a screen the helper no longer has, then makes it.
+      await api.start({ laneId });
+      const launchEnv = ownership.hasDisplay(laneId) ? linuxLaunchEnvs.get(laneId) ?? null : null;
+      if (!launchEnv) {
+        // A helper built before `linux.env`: the machine's install, not a fault.
+        throw markExpected(
+          new Error("This machine's Linux Desktop helper is older than ADE and cannot say how to open an app on the lane screen. Update ADE on this machine."),
+          "environment",
+        );
+      }
+      return launchEnv;
+    },
+    noteLaneScreenUse(laneId: string): void {
+      const trimmed = laneId?.trim();
+      if (trimmed) ownership.touchDisplay(trimmed);
     },
     /**
      * The lane whose display holds this process's windows, or null. App

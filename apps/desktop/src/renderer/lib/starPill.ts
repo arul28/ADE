@@ -1,5 +1,9 @@
+import { createNudgeSchedule, type NudgeCounts, type NudgeShowing } from "./nudgePill";
+
 /**
- * State and rules for the desktop "Star ADE on GitHub" sidebar pill.
+ * State and rules for the desktop "Star ADE on GitHub" sidebar pill. The
+ * show / snooze / final-dismissal schedule is the one every sidebar nudge
+ * shares (`nudgePill.ts`); a known star hides it for good.
  *
  * The prefs live in the account-synced user-preferences blob, so a snooze or a
  * known star follows the user to every machine. Every field only moves one way
@@ -19,22 +23,19 @@ export const STAR_PILL_MAX_DISMISSALS = 2;
 /** The GitHub star check runs at most this often. */
 export const STAR_PILL_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
-export type StarPillPrefs = {
-  /**
-   * Chat messages sent from desktop. Only counted while the count can still
-   * change what the pill does (see `starPillCountsMessages`), so it is not a
-   * usage total.
-   */
-  messagesSent: number;
-  /** How many times the pill was dismissed; at `STAR_PILL_MAX_DISMISSALS` it never returns. */
-  dismissCount: number;
-  /**
-   * Showings already reported as `star_prompt_shown` (0, 1 or 2), so each
-   * showing is reported once per account rather than on every mount.
-   */
-  shownReported: number;
-  /** Hidden until `messagesSent` reaches this; null when never dismissed. */
-  snoozedUntilMessageCount: number | null;
+/** The star pill's schedule: first after one sent message, back 20 messages after the first dismissal, gone after the second. */
+export const STAR_PILL_SCHEDULE = createNudgeSchedule({
+  snoozeMessages: STAR_PILL_SNOOZE_MESSAGES,
+  maxDismissals: STAR_PILL_MAX_DISMISSALS,
+  firstAfterMessages: 1,
+});
+
+/**
+ * The shared counters (`NudgeCounts`: messages sent while they can matter, so
+ * not a usage total; dismissals; showings reported as `star_prompt_shown`,
+ * once per account rather than per mount; the snooze), plus the star.
+ */
+export type StarPillPrefs = NudgeCounts & {
   /** The user is known to have starred the repo. The pill never returns. */
   starred: boolean;
   /** Epoch ms of the last GitHub star check; null before the first. */
@@ -102,8 +103,7 @@ export function mergeStarPillPrefs(local: StarPillPrefs, remote: unknown): StarP
 }
 
 export function isStarPillVisible(prefs: StarPillPrefs): boolean {
-  if (prefs.starred || prefs.messagesSent < 1 || prefs.dismissCount >= STAR_PILL_MAX_DISMISSALS) return false;
-  return prefs.snoozedUntilMessageCount == null || prefs.messagesSent >= prefs.snoozedUntilMessageCount;
+  return !prefs.starred && STAR_PILL_SCHEDULE.visible(prefs);
 }
 
 /**
@@ -112,14 +112,12 @@ export function isStarPillVisible(prefs: StarPillPrefs): boolean {
  * account-synced prefs on every send.
  */
 export function starPillCountsMessages(prefs: StarPillPrefs): boolean {
-  if (prefs.starred || prefs.dismissCount >= STAR_PILL_MAX_DISMISSALS) return false;
-  if (prefs.snoozedUntilMessageCount == null) return prefs.messagesSent < 1;
-  return prefs.messagesSent < prefs.snoozedUntilMessageCount;
+  return !prefs.starred && STAR_PILL_SCHEDULE.countsMessages(prefs);
 }
 
 /** Which showing of the pill this is, for analytics. */
-export function starPillShowing(prefs: StarPillPrefs): "prompt_first" | "prompt_second" {
-  return prefs.dismissCount === 0 ? "prompt_first" : "prompt_second";
+export function starPillShowing(prefs: StarPillPrefs): NudgeShowing {
+  return STAR_PILL_SCHEDULE.showing(prefs);
 }
 
 export function isStarCheckDue(prefs: StarPillPrefs, now: number): boolean {

@@ -151,7 +151,7 @@ struct HubStateSummary: View {
         HStack(spacing: 2) {
           Image(systemName: entry.column.systemImage)
             .font(.system(size: 9, weight: .semibold))
-          Text("\(entry.count)")
+          Text(verbatim: String(entry.count))
             .font(.system(.caption2, design: .rounded).weight(.semibold).monospacedDigit())
         }
         .foregroundStyle(activityToneColor(entry.column.tone))

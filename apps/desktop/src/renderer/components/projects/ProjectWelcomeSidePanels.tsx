@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
+import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { ArrowRight, type Icon } from "@phosphor-icons/react";
 import {
   attentionDestinationDeepLink,
@@ -19,6 +21,7 @@ import {
   useActivityStore,
 } from "../../state/activityStore";
 import { activitySections } from "../activity/activityPriority";
+import { useActivityIncomplete } from "../activity/useActivitySync";
 import { activityBoardColumn } from "../../../shared/attention/activityBoardColumn";
 import {
   ACTIVITY_COLUMN_PRESENTATION,
@@ -110,9 +113,16 @@ export async function openAttentionItem(item: AttentionItem): Promise<string | n
   return null;
 }
 
+/** Where a row's chat lives: its project and lane. A row never names a computer. */
+function runningItemPlace(item: AttentionItem): string {
+  const lane = item.laneName?.trim();
+  return lane ? `${item.project.name} · ${lane}` : item.project.name;
+}
+
 /** Running chats; rows that do not fit the card hide behind "N more", which opens Activity. */
 export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?: () => void }) {
   const availability = useActivityStore((state) => state.availability);
+  const activityIncomplete = useActivityIncomplete();
   const [error, setError] = useState<string | null>(null);
 
   const openItem = useCallback(async (item: AttentionItem) => {
@@ -125,9 +135,11 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
       // Centred and muted, like every other empty card.
       <div className="ade-home-empty">
         <span>
-          {availability?.state === "signed_out"
-            ? "Nothing running here · sign in to see other machines"
-            : "Nothing running right now"}
+          {activityIncomplete
+            ? "Activity isn't loading, so running chats can't show here"
+            : availability?.state === "signed_out"
+              ? "Nothing running here · sign in to see other machines"
+              : "Nothing running right now"}
         </span>
       </div>
     );
@@ -149,7 +161,7 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
             role="listitem"
             className="kit-row ade-welcome-item"
             onClick={() => void openItem(item)}
-            title={`${item.title} — ${item.project.name} · ${item.machine.name}`}
+            title={`${item.title} — ${runningItemPlace(item)}`}
           >
             <span className={`ade-welcome-item-glyph activity-tone-${tone}`} aria-label={label}>
               <ActivityColumnMark column={column} failed={failed} size={12} />
@@ -157,7 +169,7 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
             <span className="ade-welcome-item-text">
               <span className="ade-welcome-item-title">{item.title}</span>
               <span className="ade-welcome-item-sub">
-                {item.project.name} · {item.machine.name}
+                {runningItemPlace(item)}
               </span>
             </span>
             <span className={`ade-welcome-item-state activity-tone-${tone}`}>
@@ -368,9 +380,25 @@ function sortMachines(rows: MachineRow[]): MachineRow[] {
     || a.name.localeCompare(b.name));
 }
 
-export function desktopMachineRows(snapshot: RemoteRuntimeConnectionSnapshot | null): MachineRow[] {
-  const connections = snapshot?.connections ?? [];
-  if (connections.length === 0) return [];
+/** ADE Cloud as one machine on the welcome card: every account has it, also with no lanes yet. */
+const ADE_CLOUD_ROW: MachineRow = { key: ADE_CLOUD_MACHINE_ID, name: ADE_CLOUD_NAME, dot: "available", detail: "Wakes when you start work" };
+
+type CloudIndex = Parameters<typeof isAdeCloudComputer>[1];
+
+/**
+ * The welcome card's machines on the desktop: this machine, the person's own
+ * computers that are connected (an offline one is hidden, as in every tab),
+ * then ADE Cloud as one row. No ADE Cloud computer shows by its own name.
+ */
+export function desktopMachineRows(
+  snapshot: RemoteRuntimeConnectionSnapshot | null,
+  cloud: { shown: boolean; index?: CloudIndex } = { shown: false },
+): MachineRow[] {
+  const connections = (snapshot?.connections ?? []).filter((connection) => connection.state !== "idle"
+    && connection.state !== "error"
+    && !isAdeCloudComputer({ hostname: connection.target.hostname, machineKey: connection.target.pairedMachine?.machineKey ?? null }, cloud.index));
+  const cloudRow = cloud.shown ? [ADE_CLOUD_ROW] : [];
+  if (connections.length === 0) return cloudRow.length ? [{ key: "this-machine", name: "This machine", dot: "online", detail: "Running ADE" }, ...cloudRow] : [];
   // Free disk only when the connection snapshot already carries it.
   const freeById = new Map(
     deriveLaneMachineOptions({ connections, boundTargetId: null })
@@ -392,12 +420,16 @@ export function desktopMachineRows(snapshot: RemoteRuntimeConnectionSnapshot | n
   return [
     { key: "this-machine", name: "This machine", dot: "online", detail: "Running ADE" },
     ...sortMachines(remotes),
+    ...cloudRow,
   ];
 }
 
-export function webMachineRows(machines: readonly WebMachineEntry[]): MachineRow[] {
-  return sortMachines(machines
-    .filter((machine) => !machine.rememberedOnly)
+/** The welcome card's machines on the web: the person's own computers that are reachable, then ADE Cloud. */
+export function webMachineRows(machines: readonly WebMachineEntry[], cloud: { shown: boolean; index?: CloudIndex } = { shown: false }): MachineRow[] {
+  return [...sortMachines(machines
+    .filter((machine) => !machine.rememberedOnly
+      && machine.status !== "offline"
+      && !isAdeCloudComputer({ machineKey: machine.accountMachine?.machineKey ?? machine.key }, cloud.index))
     .map((machine): MachineRow => {
       const dot: MachineRow["dot"] = machine.status === "live"
         ? "online"
@@ -415,7 +447,7 @@ export function webMachineRows(machines: readonly WebMachineEntry[]): MachineRow
           ? `${machine.statusLabel} · ${projectCount} project${projectCount === 1 ? "" : "s"}`
           : machine.statusLabel,
       };
-    }));
+    })), ...(cloud.shown ? [ADE_CLOUD_ROW] : [])];
 }
 
 export function openMachines(webMode: boolean): void {

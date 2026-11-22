@@ -161,19 +161,38 @@ fn find_desktop(target: &str) -> Option<DesktopEntry> {
     by_name
 }
 
-fn alias(target: &str) -> Option<Vec<&'static str>> {
+/// The programs a common name stands for, in order of preference, and the
+/// sentence a person reads when the machine has none of them.
+fn alias(target: &str) -> Option<(Vec<&'static str>, &'static str)> {
     let t = target.to_ascii_lowercase();
     Some(match t.as_str() {
-        "chrome" | "google chrome" | "browser" | "web browser" => BROWSERS.to_vec(),
-        "chromium" => vec!["chromium", "chromium-browser"],
-        "edge" | "microsoft edge" => vec!["microsoft-edge", "microsoft-edge-stable"],
-        "firefox" => vec!["firefox"],
-        "terminal" | "xterm" => vec!["x-terminal-emulator", "xfce4-terminal", "gnome-terminal", "konsole", "xterm"],
-        "files" | "file manager" => vec!["nautilus", "thunar", "pcmanfm", "dolphin"],
-        "text editor" | "editor" | "gedit" => vec!["gnome-text-editor", "gedit", "mousepad", "xed", "kate"],
-        "code" | "vs code" | "vscode" | "visual studio code" => vec!["code", "codium"],
+        "chrome" | "google chrome" | "browser" | "web browser" => (BROWSERS.to_vec(), "No web browser is installed on this Linux machine."),
+        "chromium" => (vec!["chromium", "chromium-browser"], "Chromium is not installed on this Linux machine."),
+        "edge" | "microsoft edge" => (vec!["microsoft-edge", "microsoft-edge-stable"], "Microsoft Edge is not installed on this Linux machine."),
+        "firefox" => (vec!["firefox"], "Firefox is not installed on this Linux machine."),
+        "terminal" | "xterm" => (
+            vec!["x-terminal-emulator", "xfce4-terminal", "gnome-terminal", "konsole", "xterm"],
+            "No terminal app is installed on this Linux machine.",
+        ),
+        "files" | "file manager" | "file-manager" => (
+            vec!["nautilus", "thunar", "pcmanfm", "dolphin", "nemo", "caja"],
+            "No file manager is installed on this Linux machine.",
+        ),
+        "text editor" | "editor" | "gedit" => (
+            vec!["gnome-text-editor", "gedit", "mousepad", "xed", "kate"],
+            "No text editor is installed on this Linux machine.",
+        ),
+        "code" | "vs code" | "vscode" | "visual studio code" => (vec!["code", "codium"], "VS Code is not installed on this Linux machine."),
         _ => return None,
     })
+}
+
+/// xterm (or a wrapper that runs it: uxterm, lxterm, the Debian
+/// `x-terminal-emulator` link to one of them).
+fn is_xterm(program: &Path) -> bool {
+    let real = std::fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
+    let name = real.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    matches!(name, "xterm" | "uxterm" | "lxterm")
 }
 
 fn find_browser() -> Option<PathBuf> {
@@ -185,6 +204,7 @@ pub fn plan(target: &str, extra: &[String], lane_dir: &Path, width: u16, height:
     if target.is_empty() {
         return Err(DriverError::new(code::INVALID_ARGUMENT, "Name an app, a path or a URL to open."));
     }
+    let aliased = alias(target);
     let (program, mut args, app_name, bundle_id) = if is_url(target) {
         let browser = find_browser().ok_or_else(|| {
             DriverError::new(
@@ -211,7 +231,7 @@ pub fn plan(target: &str, extra: &[String], lane_dir: &Path, width: u16, height:
             let args = if opener.ends_with("gio") { vec!["open".to_string(), target.to_string()] } else { vec![target.to_string()] };
             (opener, args, "xdg-open".into(), "xdg-open".into())
         }
-    } else if let Some(found) = alias(target).and_then(|names| names.iter().find_map(|n| which(n))) {
+    } else if let Some(found) = aliased.as_ref().and_then(|(names, _)| names.iter().find_map(|n| which(n))) {
         let name = found.file_name().unwrap().to_string_lossy().to_string();
         (found, Vec::new(), name.clone(), name)
     } else if let Some(found) = which(target).or_else(|| which(&target.to_ascii_lowercase().replace(' ', "-"))) {
@@ -220,10 +240,12 @@ pub fn plan(target: &str, extra: &[String], lane_dir: &Path, width: u16, height:
     } else if let Some(d) = find_desktop(target) {
         let program = which(&d.exec[0]).unwrap_or_else(|| PathBuf::from(&d.exec[0]));
         (program, d.exec[1..].to_vec(), d.name, d.id)
+    } else if let Some((_, missing)) = aliased {
+        return Err(DriverError::new(code::INVALID_ARGUMENT, missing));
     } else {
         return Err(DriverError::new(
             code::INVALID_ARGUMENT,
-            format!("\"{target}\" is not an installed app on this Linux machine (not on PATH and no .desktop entry)."),
+            format!("\"{target}\" is not installed on this Linux machine: no program or app entry has that name."),
         ));
     };
 
@@ -284,6 +306,12 @@ pub fn plan(target: &str, extra: &[String], lane_dir: &Path, width: u16, height:
         prefix.extend(["--new-instance".into(), "--profile".into(), dir.display().to_string()]);
         profile_dir = Some(dir);
         env.push(("GNOME_ACCESSIBILITY".into(), "1".into()));
+    } else if is_xterm(&program) && !args.iter().chain(extra.iter()).any(|a| a == "-fa" || a == "-fn" || a == "-font") {
+        // A lane screen has no core X fonts (Xvfb's are a recommended package
+        // ADE does not install), so xterm's default is the server's tiny
+        // built-in bitmap font. Ask for the fontconfig monospace instead
+        // (DejaVu Sans Mono on Debian), readable over a remote view.
+        prefix.extend(["-fa".into(), "Monospace".into(), "-fs".into(), "11".into()]);
     }
     prefix.append(&mut args);
     prefix.extend(extra.iter().cloned());

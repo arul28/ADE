@@ -159,6 +159,9 @@ struct WorkChatMessageFold {
       previousEnvelopeWasAssistantText = false
       // ADE's hand-off to a rebuilt thread was never typed by the user.
       if envelope.userMessageIsRecoveryHandOff { return }
+      // Nor the message that continues a chat after a restart: the restart
+      // notice says so (desktop `isRestartResumeScheduleId`).
+      if envelope.userMessageIsRestartResume { return }
       // Queued steers render as inline cards above the composer, not in the message stream.
       if deliveryState == "queued", steerId != nil {
         return
@@ -180,6 +183,7 @@ struct WorkChatMessageFold {
           processed: processed
         )
         if envelope.userMessageFromSideChat { messages[lastIndex].fromSideChat = true }
+        if let guest = envelope.userMessageGuestAuthorName { messages[lastIndex].guestAuthorName = guest }
       } else if let duplicateIndex = duplicateUserMessageVariantIndex(
         in: messages,
         text: text,
@@ -194,6 +198,7 @@ struct WorkChatMessageFold {
           processed: processed
         )
         if envelope.userMessageFromSideChat { messages[duplicateIndex].fromSideChat = true }
+        if let guest = envelope.userMessageGuestAuthorName { messages[duplicateIndex].guestAuthorName = guest }
       } else {
         metadataTurnKeys.append([])
         messages.append(WorkChatMessage(
@@ -208,6 +213,9 @@ struct WorkChatMessageFold {
           processed: processed,
           writtenByAde: envelope.userMessageWrittenByAde,
           fromSideChat: envelope.userMessageFromSideChat,
+          adeReason: envelope.userMessageAdeReason,
+          adeReasonLabel: envelope.userMessageAdeReasonLabel,
+          guestAuthorName: envelope.userMessageGuestAuthorName,
           attachments: attachments
         ))
       }
@@ -1110,7 +1118,13 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   )
   envelope.userMessageWrittenByAde = entry.userMessageWrittenByAde
   envelope.userMessageFromSideChat = entry.userMessageFromSideChat
+  envelope.userMessageAdeReason = entry.userMessageAdeReason
+  envelope.userMessageAdeReasonLabel = entry.userMessageAdeReasonLabel
+  envelope.userMessageGuestAuthorName = entry.userMessageGuestAuthorName
   envelope.userMessageIsRecoveryHandOff = entry.userMessageIsRecoveryHandOff
+  envelope.userMessageIsRestartResume = entry.userMessageIsRestartResume
+  envelope.userMessageClientSendId = entry.userMessageClientSendId
+  envelope.omittedRowOffset = entry.omittedRowOffset
   if case .systemNotice(_, _, let detail, _, _) = entry.event {
     envelope.continuityNotice = workContinuityNotice(from: detail)
   }
@@ -1909,11 +1923,16 @@ func pendingWorkPlanApprovalFromApproval(
     return description
   }()
   let title = optionalString(request["title"]) ?? "Plan Ready for Review"
+  // The host names which approvals can start a chat of their own; a brain that
+  // predates the option, a personal chat and a share guest all say nothing.
+  let providerMetadata = request["providerMetadata"] as? [String: Any]
+  let canImplementInNewChat = workBoolValue(providerMetadata?["planHandoffSupported"]) == true
   return WorkPendingPlanApprovalModel(
     id: itemId,
     source: source,
     planText: planText,
-    title: title
+    title: title,
+    canImplementInNewChat: canImplementInNewChat
   )
 }
 
@@ -2437,6 +2456,9 @@ func sortedWorkChatEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvel
 func workChatEnvelopeMergeKey(_ envelope: WorkChatEnvelope) -> String {
   if let stableKey = workChatEnvelopeStableUpdateKey(envelope) {
     return stableKey
+  }
+  if let omittedRowOffset = envelope.omittedRowOffset {
+    return "\(envelope.sessionId)|omitted-row|\(omittedRowOffset)"
   }
   return "\(envelope.sessionId)|\(envelope.timestamp)|\(workChatEventMergeKey(envelope.event))"
 }

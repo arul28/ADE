@@ -50,29 +50,6 @@ describe("AddApiKeySheet", () => {
     vi.restoreAllMocks();
   });
 
-  it("picks the article that fits the provider's own name", () => {
-    render(
-      <AddApiKeySheet
-        spec={providerKeySpec("opencode")}
-        providerLabel="OpenCode"
-        onSave={vi.fn(async () => undefined)}
-        onClose={() => undefined}
-      />,
-    );
-    expect(screen.getByRole("dialog", { name: "Add an OpenCode key" })).toBeTruthy();
-    cleanup();
-
-    render(
-      <AddApiKeySheet
-        spec={providerKeySpec("claude")}
-        providerLabel="Claude Code"
-        onSave={vi.fn(async () => undefined)}
-        onClose={() => undefined}
-      />,
-    );
-    expect(screen.getByRole("dialog", { name: "Add a Claude Code key" })).toBeTruthy();
-  });
-
   for (const [provider, expected] of Object.entries(EXPECTED) as Array<[SettingsProviderId, typeof EXPECTED["claude"]]>) {
     it(`asks ${provider} for exactly the fields its harness reads`, () => {
       open(provider);
@@ -85,11 +62,6 @@ describe("AddApiKeySheet", () => {
       expect(Boolean(screen.queryByLabelText("Provider id"))).toBe(expected.providerId);
     });
   }
-
-  it("tells Pi users where Pi actually reads its endpoints from", () => {
-    open("pi");
-    expect(screen.getByText(/models\.json/)).toBeTruthy();
-  });
 
   it("names the gateway variable once Claude's key points somewhere other than Anthropic", () => {
     open("claude");

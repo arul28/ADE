@@ -49,6 +49,11 @@ actor ChatThreadEngine {
   var sequenced: [LogEntry] = []
   var unsequenced: [LogEntry] = []
   var unsequencedKeys: Set<String> = []
+  /// Host stand-ins for rows too large to page (`chatThreadIsOmittedHistoryRowNotice`),
+  /// from older pages. Display-only: never persisted, never a cursor, never
+  /// keyed by sequence; they sort between their neighbours by timestamp.
+  var omittedRowNotices: [LogEntry] = []
+  var omittedRowNoticeKeys: Set<String> = []
 
   var generation: Int?
   var hostSnapshotReceived = false
@@ -464,7 +469,7 @@ actor ChatThreadEngine {
 
   func rebuildTranscript() {
     subagentFilter.reset()
-    let entries = sequenced.map(\.envelope) + unsequenced.map(\.envelope)
+    let entries = sequenced.map(\.envelope) + omittedRowNotices.map(\.envelope) + unsequenced.map(\.envelope)
     let admitted = subagentFilter.admit(entries) ?? []
     let mapped = admitted.map(makeWorkChatEnvelope(from:)).sorted(by: workChatEnvelopeOrderedBefore)
     transcript = pruneResolvedQueuedSteerEnvelopes(mergeWorkChatTranscripts(base: [], live: mapped))

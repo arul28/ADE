@@ -1,5 +1,5 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "ade-github-webhook-relay",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-30",
@@ -35,6 +35,17 @@
       "tag": "v1",
       "new_sqlite_classes": ["RepoEventsDurableObject"]
     }
+  ],
+  // Forwards to the account directories go over these bindings: a fetch of
+  // another workers.dev Worker in the same account is refused (error 1042).
+  // A binding ignores the URL's host, so customHooks.ts picks one by the
+  // forward URL's origin: production desktops register on the production
+  // directory, development builds on the default one.
+  // Event wakes (cloudEventWakes.ts) use both bindings. They need the secret
+  // CLOUD_EVENT_WAKE_SECRET, with the same value on both account directories.
+  "services": [
+    { "binding": "ACCOUNT_DIRECTORY", "service": "ade-account-directory" },
+    { "binding": "ACCOUNT_DIRECTORY_PRODUCTION", "service": "ade-account-directory-production" }
   ],
   "d1_databases": [
     {

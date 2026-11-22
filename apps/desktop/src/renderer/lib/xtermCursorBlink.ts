@@ -1,4 +1,5 @@
 import type { IDisposable, Terminal } from "@xterm/xterm";
+import { isCaretResting, onCaretRestChange } from "./caretRest";
 
 const CLOCK_CLASS = "ade-xterm-blink-clock";
 const OFF_CLASS = "ade-xterm-blink-off";
@@ -13,6 +14,8 @@ const HALF_PERIOD_MS = 500;
  * 500 ms schedule. It restarts at "on" whenever xterm re-renders the cursor row
  * or the terminal takes focus, the moments the CSS animation restarted, so the
  * blink looks the same. The colours still come from xterm's own keyframes.
+ * After 10 s with no input (`caretRest.ts`) the cursor holds "on" with no
+ * timer, like every other caret in the app, and blinks again on input.
  */
 export function attachCursorBlinkClock(term: Terminal, host: HTMLElement): IDisposable {
   host.classList.add(CLOCK_CLASS);
@@ -27,6 +30,7 @@ export function attachCursorBlinkClock(term: Terminal, host: HTMLElement): IDisp
   };
   const restart = () => {
     stop();
+    if (isCaretResting()) return;
     timer = window.setInterval(() => host.classList.toggle(OFF_CLASS), HALF_PERIOD_MS);
   };
   const onFocusIn = () => {
@@ -36,6 +40,10 @@ export function attachCursorBlinkClock(term: Terminal, host: HTMLElement): IDisp
 
   host.addEventListener("focusin", onFocusIn);
   host.addEventListener("focusout", onFocusOut);
+  const unsubscribeRest = onCaretRestChange((resting) => {
+    if (resting) stop();
+    else onFocusIn();
+  });
   const renderSub = term.onRender(({ start, end }) => {
     if (timer == null) return;
     const buffer = term.buffer.active;
@@ -47,6 +55,7 @@ export function attachCursorBlinkClock(term: Terminal, host: HTMLElement): IDisp
   return {
     dispose: () => {
       stop();
+      unsubscribeRest();
       renderSub.dispose();
       host.removeEventListener("focusin", onFocusIn);
       host.removeEventListener("focusout", onFocusOut);

@@ -32,11 +32,16 @@ import {
   writeTestTranscriptEnvelopes,
   zlib,
   dedicatedTranscriptPath,
+  settleSteppingTimeouts,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { crossMachineMoveLock } from "../../../shared/crossMachineMoveLock";
 import { landHandoffGitBundle } from "./handoffGitBundle";
+import { openFreshKvDb } from "../../../test/freshKvDb";
+import { listDrafts } from "./draftService";
+import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
+import { sessionPermissionLevel } from "../../../shared/permissionLadder";
 
 const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
 
@@ -1165,11 +1170,11 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(result.session.id).transcriptReplayOrigin)
         .toMatchObject({ sourceSessionId: source.id, keptTurnCount: 4, turnCount: 4 });
 
-      await service.runSessionTurn({ sessionId: result.session.id, text: "first message" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: result.session.id, text: "first message" }));
       expect(readPersistedChatState(result.session.id).pendingTranscriptReplay).toBeNull();
 
       const streamCallsBefore = stream.mock.calls.length;
-      await service.runSessionTurn({ sessionId: result.session.id, text: "second message" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: result.session.id, text: "second message" }));
 
       await vi.waitFor(() => {
         expect(send.mock.calls
@@ -1274,7 +1279,7 @@ describe("createAgentChatService", () => {
       })) as AgentChatEventEnvelope[]);
       expect(readPersistedChatState(stuck.id).transcriptReplayOrigin).toBeUndefined();
 
-      await service.runSessionTurn({ sessionId: stuck.id, text: "stuck message" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: stuck.id, text: "stuck message" }));
 
       await vi.waitFor(() => {
         expect(send.mock.calls
@@ -1353,7 +1358,7 @@ describe("createAgentChatService", () => {
         provenance: { providerOrigin: "handoff_fork", sourceSessionId: source.id },
       }] as AgentChatEventEnvelope[]);
 
-      await service.runSessionTurn({ sessionId: forked.id, text: "native message" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: forked.id, text: "native message" }));
 
       // The normal overflow handling runs instead: no rebuild, no reset.
       await vi.waitFor(() => {
@@ -1536,11 +1541,11 @@ describe("createAgentChatService", () => {
         "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489",
         "hex",
       ));
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: result.session.id,
         text: "look at this",
         attachments: [{ path: imagePath, type: "image" }],
-      });
+      }));
 
       await vi.waitFor(() => {
         expect(send.mock.calls
@@ -3102,6 +3107,61 @@ describe("createAgentChatService", () => {
         )).toString("utf8")).toBe(providerTranscript);
         expect(prepared.capsule.transcriptEnvelopes).toBeDefined();
         expect(prepared.capsule.brief).toBe("Fork handoff — full conversation history transported.");
+      });
+
+      it("packages an ADE Cloud rest capsule of a lane with uncommitted work: history only, no Git check, no bundle", async () => {
+        // The lane is dirty: a move refuses it, but at rest the lane backup carries the code.
+        installCleanCrossMachineGitFixture("feature/primary", " M src/dirty.ts\n");
+        process.env.CLAUDE_CONFIG_DIR = path.join(tmpHomeRoot, "claude-rest-capsule");
+        installClaudeResponseFixture({ sdkSessionId: "claude-rest-source", responseText: "ready" });
+        const { service } = createService();
+        const source = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "claude-sonnet-5",
+          modelId: "anthropic/claude-sonnet-5",
+        });
+        await startClaudeThread(service, source.id);
+        await vi.waitFor(() => expect(readPersistedChatState(source.id).sdkSessionId).toBeTruthy());
+        const sdkSessionId = String(readPersistedChatState(source.id).sdkSessionId);
+        const providerTranscript = `${JSON.stringify({ type: "user", sessionId: sdkSessionId, cwd: tmpRoot, message: { role: "user", content: "Keep my history" } })}\n`;
+        const providerDir = path.join(process.env.CLAUDE_CONFIG_DIR, "projects", tmpRoot.replace(/[^A-Za-z0-9]/g, "-"));
+        fs.mkdirSync(providerDir, { recursive: true });
+        fs.writeFileSync(path.join(providerDir, `${sdkSessionId}.jsonl`), providerTranscript, "utf8");
+        vi.mocked(runGit).mockClear();
+
+        const prepared = await service.prepareCloudRestCapsule({
+          sourceSessionId: source.id,
+          handoffId: "cloud-rest-dirty-1",
+          targetModelId: "anthropic/claude-sonnet-5",
+        });
+
+        expect(prepared.capsule.forkTransport).toMatchObject({ provider: "claude", kind: "claude-jsonl", nativeSessionId: sdkSessionId });
+        expect(zlib.gunzipSync(Buffer.from(prepared.capsule.forkTransport!.mainFile.contentBase64Gzip, "base64")).toString("utf8")).toBe(providerTranscript);
+        expect(prepared.capsule.gitBundle).toBeUndefined();
+        expect(prepared.capsule.source.headSha).toBe("");
+        // Nothing asked origin or packed the lane's work.
+        expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "ls-remote" || args[0] === "bundle")).toBe(false);
+
+        // The restore takes it with no Git facts: the history lands where Claude looks for the lane.
+        const restored = await service.restoreSavedCloudChat({
+          sessionId: "restored-rest-1",
+          laneId: "lane-1",
+          modelId: "anthropic/claude-sonnet-5",
+          title: null,
+          envelopes: [],
+          capsule: prepared.capsule,
+        });
+        expect(restored.restoredWith).toBe("capsule");
+        const placedId = String(readPersistedChatState("restored-rest-1").sdkSessionId);
+        expect(placedId).not.toBe(sdkSessionId);
+        // Under the project folder named for the lane's real path, as Claude names it.
+        const projectsDir = path.join(process.env.CLAUDE_CONFIG_DIR, "projects");
+        const placed = fs.readdirSync(projectsDir)
+          .map((dir) => path.join(projectsDir, dir, `${placedId}.jsonl`))
+          .filter((file) => fs.existsSync(file));
+        expect(placed).toEqual([path.join(projectsDir, fs.realpathSync(tmpRoot).replace(/[^A-Za-z0-9]/g, "-"), `${placedId}.jsonl`)]);
+        expect(fs.readFileSync(placed[0]!, "utf8")).toContain("Keep my history");
       });
 
       it("packages only the transcript suffix after the original arrival boundary", async () => {
@@ -4688,5 +4748,71 @@ describe("createAgentChatService", () => {
         capsuleFingerprint: "0".repeat(64),
       })).rejects.toThrow("changed in transit");
     });
+  });
+});
+
+describe("lane share move: the moved chat on the receiving machine", () => {
+  const MOVE_SHA = "abcdef0123456789abcdef0123456789abcdef01";
+  const ORIGIN = "git@github.com:example/ade.git";
+
+  /** Git at the process boundary: the branch is free and origin has the commit. */
+  function installMoveGitFixture(): void {
+    vi.mocked(runGit).mockImplementation(async (args) => {
+      const command = args.join(" ");
+      if (command === "remote get-url origin") return { stdout: `${ORIGIN}\n`, stderr: "", exitCode: 0 };
+      if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
+      if (command === "config --get core.hooksPath") return { stdout: "", stderr: "", exitCode: 1 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+  }
+
+  // Each provider group the receiver may run the chat on: the chat is read
+  // only (plan) in that provider's own fields, and no turn starts. The brief
+  // waits in Drafts with the other person as its author.
+  it.each<[string, string, Record<string, unknown>]>([
+    ["claude", "anthropic/claude-opus-5-5", { interactionMode: "plan" }],
+    ["codex", "openai/gpt-6.1-sol", { codexSandbox: "read-only", codexApprovalPolicy: "untrusted" }],
+    ["droid", "droid/custom:claude-sonnet-5-thinking-32000", { interactionMode: "plan", droidPermissionMode: "read-only" }],
+    ["copilot", "github-copilot/auto", { copilotPermissionMode: "plan" }],
+    ["muse", "muse/muse-spark-1.3", { interactionMode: "plan" }],
+    ["grok", "xai/grok-4-6", { opencodePermissionMode: "plan" }],
+    ["kimi", "moonshot/k3", { opencodePermissionMode: "plan" }],
+    ["qwen", "qwen/qwen3-coder-plus", { opencodePermissionMode: "plan" }],
+  ])("lands a %s chat read only, with no turn and the brief in Drafts", async (provider, modelHint, nativeFields) => {
+    installMoveGitFixture();
+    const root = fs.mkdtempSync(path.join(tmpRoot, "move-db-"));
+    const db = await openFreshKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as never);
+    try {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({ db, onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      mockState.codexRequestPayloads = [];
+      const moveId = `lsm_${"7".repeat(32)}`;
+      const landed = await service.acceptLaneShareMove({
+        payload: {
+          version: 1, moveId, title: "Fix login", laneName: "login", branchName: "fix/login", headSha: MOVE_SHA,
+          repoKey: accountRepoScopeKey(ORIGIN), modelHint, brief: "Fix the login bug.", continuationPrompt: "Run the tests next.",
+          artifacts: { fileChanges: [], commands: [], errors: [] }, linearIssues: [], bundle: null,
+        },
+        bundle: null,
+        fromName: "Owner",
+        fromUserId: "user_owner",
+      });
+      expect(landed.sessionId).toBeTruthy();
+      const summary = await service.getSessionSummary(landed.sessionId!);
+      expect(summary).toMatchObject({ provider, permissionMode: "plan", ...nativeFields });
+      expect(sessionPermissionLevel(summary!, "full-auto")).toBe("plan");
+      // No turn: no message, no started status, nothing sent to a provider.
+      const own = events.filter((event) => event.sessionId === landed.sessionId);
+      expect(own.some((event) => event.event.type === "user_message")).toBe(false);
+      expect(own.some((event) => event.event.type === "status" && event.event.turnStatus === "started")).toBe(false);
+      expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("turn/start");
+      expect(own.some((event) => event.event.type === "system_notice" && /plan mode \(read only\)/.test(event.event.message))).toBe(true);
+      expect(listDrafts(db)).toEqual([
+        expect.objectContaining({ originSessionId: landed.sessionId, author: expect.objectContaining({ kind: "guest", name: "Owner" }) }),
+      ]);
+      expect(listDrafts(db)[0]?.text).toContain("Fix the login bug.");
+    } finally {
+      db.close();
+    }
   });
 });

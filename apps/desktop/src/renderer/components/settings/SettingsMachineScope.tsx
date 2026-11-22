@@ -48,6 +48,13 @@ export type SettingsMachineScope = {
   /** The machine the project tab is bound to. */
   isActiveBinding: boolean;
   online: boolean;
+  /**
+   * How the project's own settings on this machine are reached (its copy of
+   * this repository), when `target` is the machine route rather than that
+   * copy. Unset when `target` is itself the copy; null when the machine has
+   * no copy (`useSettingsProjectPin`).
+   */
+  projectTarget?: SettingsMachineTarget | null;
 };
 
 /** A scope whose `pin` always agrees with its `target`. */
@@ -84,4 +91,44 @@ export function SettingsMachineScopeProvider({
 
 export function useSettingsMachineScope(): SettingsMachineScope {
   return useContext(SettingsMachineScopeContext) ?? FALLBACK_SCOPE;
+}
+
+/** `?machine=` for the ADE Cloud place of Settings › Providers. Not a machine id. */
+export const ADE_CLOUD_PLACE_ID = "ade-cloud";
+
+/**
+ * The search part (with its "?") of Settings › Providers › ADE Cloud.
+ * `base` keeps the page's own params (the tab); without it the route opens
+ * the Providers tab. `provider` opens one provider's page, `renew` the renew
+ * sheet for one Claude pass.
+ */
+export function adeCloudSettingsSearch({ base, provider, renew }: { base?: URLSearchParams; provider?: string; renew?: string } = {}): string {
+  const params = new URLSearchParams(base ?? { tab: "agents" });
+  params.set("machine", ADE_CLOUD_PLACE_ID);
+  if (provider) params.set("provider", provider);
+  if (renew) params.set("renew", renew);
+  params.delete("harnesses");
+  return `?${params.toString()}`;
+}
+
+/**
+ * Where Settings › Providers is: one machine (the scope above says which), or
+ * ADE Cloud, which is not a machine. On ADE Cloud the machine scope stays
+ * This computer's, so the account-wide calls of the page go through it.
+ */
+export type ProvidersPlace = { kind: "machine" } | { kind: "ade-cloud" };
+
+const MACHINE_PLACE: ProvidersPlace = { kind: "machine" };
+export const ADE_CLOUD_PLACE: ProvidersPlace = { kind: "ade-cloud" };
+
+const ProvidersPlaceContext = createContext<ProvidersPlace>(MACHINE_PLACE);
+
+export function ProvidersPlaceProvider({ adeCloud, children }: { adeCloud: boolean; children: React.ReactNode }) {
+  return (
+    <ProvidersPlaceContext.Provider value={adeCloud ? ADE_CLOUD_PLACE : MACHINE_PLACE}>{children}</ProvidersPlaceContext.Provider>
+  );
+}
+
+export function useProvidersPlace(): ProvidersPlace {
+  return useContext(ProvidersPlaceContext);
 }

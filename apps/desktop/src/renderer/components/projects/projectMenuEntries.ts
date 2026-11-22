@@ -60,7 +60,7 @@ export function projectMenuSections(
     ? resolveOpenInTarget({ worktreePath: project.rootPath, binding: project.binding })
     : null;
   const open: ContextMenuEntry[] = openIn
-    ? [{ kind: "open-in", key: "open-in", rootPath: openIn.rootPath, remote: openIn.remote ?? null }]
+    ? [{ kind: "open-in", key: "open-in", rootPath: openIn.rootPath, remote: openIn.remote ?? null, pin: project.binding ?? null }]
     : [];
 
   const projectRows: ContextMenuEntry[] = [];
@@ -85,7 +85,7 @@ export function projectMenuSections(
     projectRows.push({
       kind: "item",
       key: "clone",
-      label: "Clone to this machine…",
+      label: "Add a copy on this computer…",
       icon: DownloadSimple,
       onSelect: () => actions.onClone(cloneTarget),
     });

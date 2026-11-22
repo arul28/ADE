@@ -15,22 +15,24 @@ import {
   GitBranch,
   Wrench,
   HardDrives,
-  Key,
   Keyboard,
   MagnifyingGlass,
   MapPin,
   Palette,
+  Password,
   PuzzlePiece,
   Robot,
   ShareNetwork,
+  Cloud,
+  UsersThree,
   SlidersHorizontal,
   UserCircle,
 } from "@phosphor-icons/react";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
-import { SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
+import { ADE_CLOUD_PLACE_ID, ProvidersPlaceProvider, SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
 import { SettingsSearchAnchorsContext } from "../settings/settingsSearchContext";
 import { useSettingsMachinePage } from "../settings/SettingsMachinesNav";
-import { SettingsMachinesContext, type SettingsMachinesValue } from "../settings/machines/settingsMachinesContext";
+import { SettingsMachinesContext, settingsMachineNames, type SettingsMachinesValue } from "../settings/machines/settingsMachinesContext";
 import { MachinePicker, reachableMachines } from "../settings/ProvidersMachinePicker";
 import { useProjectMachines, type ProjectMachine } from "../../state/projectMachines";
 import { Banner } from "../ui/notice";
@@ -72,6 +74,7 @@ import {
   decodeSettingsHash,
   integrationPageForAnchor,
   openIntegrationFromUrl,
+  settingsTabPickerKind,
 } from "../settings/settingsTabContent";
 import { isIntegrationId } from "../settings/integrations/integrationBrand";
 
@@ -97,7 +100,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   "project-agents": Robot,
   storage: HardDrives,
   location: MapPin,
-  secrets: Key,
+  passwords: Password,
   integrations: PuzzlePiece,
   agents: Brain,
   apple: DeviceMobile,
@@ -105,7 +108,46 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   appearance: Palette,
   behaviour: SlidersHorizontal,
   "ade-mcp": ShareNetwork,
+  "ade-cloud": Cloud,
+  sharing: UsersThree,
 };
+
+/**
+ * Each page's icon sits on its own colour, so a page is found by colour as
+ * much as by name. White glyphs, so each tint is dark enough to carry one.
+ */
+const TAB_ICON_TINTS: Record<SettingsTabId, string> = {
+  general: "#7d7d85",
+  account: "#2f7cf6",
+  "ade-cloud": "#2a9fd8",
+  sharing: "#1f9fb0",
+  chat: "#2fa24f",
+  notifications: "#e5483d",
+  appearance: "#a855f7",
+  behaviour: "#5b63e6",
+  keyboard: "#6b6b73",
+  apple: "#8a8a92",
+  android: "#2e9e62",
+  agents: "#d9467a",
+  integrations: "#e8890c",
+  "ade-mcp": "#6457e8",
+  passwords: "#c98a06",
+  stats: "#ec6a35",
+  "lanes-git": "#e0532f",
+  "project-agents": "#9b4fd8",
+  storage: "#2f8fd0",
+  location: "#e23d62",
+  machines: "#5a6577",
+  advanced: "#6f6f77",
+};
+
+/** Shown in the top row, right under General, whatever their group. */
+const UNDER_GENERAL_TAB_IDS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(["ade-cloud"]);
+
+/** The group a tab is listed in: its own, or General's for a tab shown under General. */
+function shownGroup(tab: { id: SettingsTabId; group: string }): string {
+  return UNDER_GENERAL_TAB_IDS.has(tab.id) ? "overview" : tab.group;
+}
 
 /** Tabs whose content sits in the centred `SettingsColumn`. */
 const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
@@ -119,9 +161,11 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "android",
   "notifications",
   "stats",
-  "secrets",
+  "sharing",
+  "passwords",
   "behaviour",
   "ade-mcp",
+  "ade-cloud",
   "agents",
   "lanes-git",
   "project-agents",
@@ -229,7 +273,8 @@ export function SettingsPage({
   // keeps the single bound-machine view it always had.
   const machineParam = searchParams.get("machine");
   const machinesEnabled = !isWebClientMode();
-  const { machines, thisMachineDeviceName } = useProjectMachines(active && machinesEnabled);
+  // Machine-level settings are for the person's own computers; ADE Cloud has its own place.
+  const { machines, thisMachineDeviceName } = useProjectMachines(active && machinesEnabled, { ownOnly: true });
   // With no `?machine=`, a link to a setting about the tab's own machine
   // (GitHub, Linear, link opening) lands on that machine; anything else lands
   // on This computer. For a tab open on this computer the two agree.
@@ -277,16 +322,19 @@ export function SettingsPage({
   // Tabs the web client cannot serve still resolve — a deeplink or palette
   // entry naming one should land somewhere real rather than on an empty page,
   // so it falls through to the first tab this renderer does serve.
+  // ADE Cloud's settings exist only with access (`isSettingAvailable`), so a
+  // tab of only those is in the list once the yes arrives, never before.
+  const cloudEnabled = useAdeCloudEnabled();
   const tabs = useMemo(
     () => {
       const all = availableSettingsTabs();
       // With no project open there is no Project group at all.
       return standalone ? all.filter((tab) => STANDALONE_TAB_IDS.has(tab.id) && tab.group !== "project") : all;
     },
-    // `machineBound` is read by the manifest's web resolver, not here: the
-    // list has to be recomputed when it changes.
+    // `machineBound` and `cloudEnabled` are read by the manifest's resolvers,
+    // not here: the list has to be recomputed when they change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [machineBound, standalone],
+    [machineBound, standalone, cloudEnabled],
   );
   // Explicit, so reordering the sidebar cannot move where Settings opens.
   const defaultTab = tabs.some((tab) => tab.id === DEFAULT_SETTINGS_TAB)
@@ -322,6 +370,7 @@ export function SettingsPage({
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const openProvider = searchParams.get("provider")?.trim() || null;
 
   // Follow ?tab= when it changes underneath us (deeplinks, palette, tours).
   useEffect(() => {
@@ -354,6 +403,16 @@ export function SettingsPage({
       { replace: true },
     );
   }, [active, location.hash, location.pathname, navigate, resolvedTab, searchParams, tabParam]);
+
+  // ADE Cloud was an Integrations page (`?integration=cloud`); it is its own tab now. Kept for old links from outside the app.
+  useEffect(() => {
+    if (!active) return;
+    if (searchParams.get("integration")?.trim().toLowerCase() !== "cloud") return;
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set("tab", "ade-cloud");
+    nextParams.delete("integration");
+    navigate({ pathname: location.pathname, search: `?${nextParams.toString()}`, hash: location.hash }, { replace: true });
+  }, [active, location.hash, location.pathname, navigate, searchParams]);
 
   // `?integration=github|linear|jira|cli` with no tab predates the manifest.
   // GitHub, Linear and Jira are the Integrations tab's own sub-pages now, so
@@ -402,7 +461,9 @@ export function SettingsPage({
       : null;
     // On Machines, This computer's own page needs its id; elsewhere it is the
     // default and stays out of the URL.
-    if (targetMachine && (next === "machines" || targetMachine !== THIS_MACHINE_ID)) nextParams.set("machine", targetMachine);
+    // ADE Cloud is a place of Providers only, not a machine of any other page.
+    if (targetMachine === ADE_CLOUD_PLACE_ID && next !== "agents") nextParams.delete("machine");
+    else if (targetMachine && (next === "machines" || targetMachine !== THIS_MACHINE_ID)) nextParams.set("machine", targetMachine);
     else nextParams.delete("machine");
     navigate(
       { pathname: location.pathname, search: `?${nextParams.toString()}`, hash: hash ? `#${hash}` : "" },
@@ -416,6 +477,9 @@ export function SettingsPage({
     if (!active || !location.hash) return;
     const entry = resolveSettingsHash(decodeSettingsHash(location.hash));
     if (!entry || entry.tab !== section) return;
+    // A provider's page is the whole view: it opens at the top (the effect
+    // below), not scrolled to its own anchor under the title.
+    if (openProvider && entry.anchor === `ai-provider-${openProvider}`) return;
     let flashTimer: ReturnType<typeof setTimeout> | null = null;
     let observer: MutationObserver | null = null;
     let giveUpTimer: ReturnType<typeof setTimeout> | null = null;
@@ -458,15 +522,15 @@ export function SettingsPage({
       stopWaiting();
       if (flashTimer) clearTimeout(flashTimer);
     };
-  }, [active, section, location.hash]);
+  }, [active, section, location.hash, openProvider]);
 
-  // A new tab should open at the top, not wherever the last one was scrolled.
+  // A new tab, or a provider's page (on any machine or on ADE Cloud), opens at
+  // the top, not wherever the last view was scrolled.
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });
-  }, [section]);
+  }, [section, openProvider]);
 
   const trimmedQuery = deferredQuery.trim();
-  const cloudEnabled = useAdeCloudEnabled();
   const { matchesThisTab, matchesOtherTabs } = useMemo(() => {
     if (!trimmedQuery) {
       return { matchesThisTab: null as SettingEntry[] | null, matchesOtherTabs: [] as SettingEntry[] };
@@ -591,7 +655,22 @@ export function SettingsPage({
           transition: "background 120ms ease, color 120ms ease",
         }}
       >
-        <Icon size={14} weight="regular" style={{ flexShrink: 0 }} />
+        <span
+          aria-hidden
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 20,
+            height: 20,
+            flexShrink: 0,
+            borderRadius: 5,
+            background: TAB_ICON_TINTS[tab.id],
+            boxShadow: "inset 0 0 0 0.5px rgba(255,255,255,0.18)",
+          }}
+        >
+          <Icon size={12.5} weight="bold" color="#fff" />
+        </span>
         <span>{tab.label}</span>
       </button>
     );
@@ -634,12 +713,18 @@ export function SettingsPage({
     navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: "" }, { replace: true });
   };
   // Providers and Android devices name their machine in the title.
+  // Providers also offers ADE Cloud (`?machine=ade-cloud`), even beside one machine.
+  const offersAdeCloud = section === "agents" && machinesEnabled && cloudEnabled;
+  const adeCloudPlace = offersAdeCloud && machineParam === ADE_CLOUD_PLACE_ID;
+  // How the tab reaches a machine (`settingsTabPickerKind`).
+  const titlePickerKind = settingsTabPickerKind(section);
   const titlePicker = (section === "agents" || section === "android") && machinesEnabled && !standalone
-    && reachableMachines(machines).length > 1;
+    && (reachableMachines(machines, titlePickerKind).length > 1 || offersAdeCloud);
   // General and Machines list the machines this page already reads.
   const machinesValue = useMemo<SettingsMachinesValue>(() => ({
     machines,
     thisMachineName: thisMachineDeviceName,
+    machineNames: settingsMachineNames(machines, thisMachineDeviceName),
     openMachine: (machineId, tab = "machines") => navigateToTab(tab, undefined, machineId),
     openTab: (tab, anchor) => {
       const resolved = resolveSettingsTab(tab);
@@ -658,7 +743,9 @@ export function SettingsPage({
   const sectionList = (
     <>
       {SETTINGS_GROUPS.map((group) => {
-        const groupTabs = tabs.filter((tab) => tab.group === group.id);
+        // ADE Cloud sits right under General (owner, B14-7); its scope stays
+        // the App group's (the account). General comes first in `tabs`.
+        const groupTabs = tabs.filter((tab) => shownGroup(tab) === group.id);
         // A group with nothing reachable in it is not rendered (the hosted web
         // client drops whole pages whose writes have nowhere to land).
         if (!groupTabs.length) return null;
@@ -764,6 +851,9 @@ export function SettingsPage({
               alignItems: "center",
               justifyContent: "space-between",
               gap: 16,
+              // Too narrow for both: the search goes under the title, never over it.
+              flexWrap: "wrap",
+              rowGap: 8,
               minHeight: 32,
             }}
           >
@@ -810,16 +900,18 @@ export function SettingsPage({
                 <span style={{ marginLeft: 8 }} data-ph-mask="">
                   <MachinePicker
                     variant="title"
+                    kind={titlePickerKind}
                     machines={machines}
                     selectedId={pageMachine?.machineId ?? THIS_MACHINE_ID}
                     thisMachineName={thisMachineDeviceName}
                     onPick={(machineId) => navigateToTab(section, undefined, machineId)}
+                    adeCloud={offersAdeCloud ? { selected: adeCloudPlace, onPick: () => navigateToTab(section, undefined, ADE_CLOUD_PLACE_ID) } : null}
                   />
                 </span>
               ) : null}
             </div>
 
-            <label className="ade-settings-search">
+            <label className="ade-settings-search" style={{ marginLeft: "auto" }}>
               <MagnifyingGlass size={14} style={{ color: COLORS.textDim, flexShrink: 0 }} />
               <input
                 type="search"
@@ -883,9 +975,11 @@ export function SettingsPage({
             // Keyed by machine so nothing one machine loaded can linger into,
             // or be saved onto, the next machine's page.
             <SettingsMachineScopeProvider key={pageScope.machineId} scope={pageScope}>
-              <SettingsSearchAnchorsContext.Provider value={searchAnchors}>
-                <TabContent tab={section} machine={pageScope} standalone={standalone} />
-              </SettingsSearchAnchorsContext.Provider>
+              <ProvidersPlaceProvider adeCloud={adeCloudPlace}>
+                <SettingsSearchAnchorsContext.Provider value={searchAnchors}>
+                  <TabContent tab={section} machine={pageScope} standalone={standalone} />
+                </SettingsSearchAnchorsContext.Provider>
+              </ProvidersPlaceProvider>
             </SettingsMachineScopeProvider>
           ) : (
             <SettingsSearchAnchorsContext.Provider value={searchAnchors}>

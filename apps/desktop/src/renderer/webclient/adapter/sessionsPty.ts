@@ -25,10 +25,15 @@ import {
 } from "./sessionLifecycleOverlay";
 import { SessionLifecycleUnavailableError } from "./sessionLifecycleSupport";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
+import { previewRowsFromTranscript } from "../../components/terminals/terminalPreviewRows";
 
 // Full snapshots replace xterm state, so they must be at least as complete as
 // TerminalView's initial hydration. The host caps this at the same 2 MB.
 const LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES = 2_000_000;
+/** How long a preview waits for a one-shot subscribe snapshot before it pages history. */
+const ONE_SHOT_TERMINAL_SNAPSHOT_TIMEOUT_MS = 5_000;
+/** The most rows an ended session's preview shows, newest last. */
+const PREVIEW_MAX_ROWS = 400;
 
 /**
  * How many distinct `work.listSessions` argument shapes keep a mirrored copy of
@@ -228,13 +233,68 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
   async function captureSnapshot(sessionId: string, maxBytes?: number | null): Promise<SyncTerminalSnapshotPayload | null> {
     if (!sessionId) return null;
-    const history = await client.requestTerminalHistory({
-      sessionId,
-      beforeOffset: Number.MAX_SAFE_INTEGER,
-      maxBytes: maxBytes ?? 128 * 1024,
+    const byteLimit = maxBytes ?? 128 * 1024;
+    // The machine pages history only to a peer subscribed to the session, so
+    // an ended CLI session (nothing streams it) read back empty: a blank pane
+    // with only the row's last line. Its subscribe snapshot carries the tail,
+    // and the subscription stays until the history read below has its answer.
+    const temporary = terminalSubscriptions.has(sessionId) ? null : subscribeForSnapshot(sessionId, byteLimit);
+    try {
+      const snapshot = temporary ? await temporary.snapshot : null;
+      if (snapshot) return snapshot;
+      const history = await client.requestTerminalHistory({
+        sessionId,
+        beforeOffset: Number.MAX_SAFE_INTEGER,
+        maxBytes: byteLimit,
+      });
+      terminalRegistry.register(history.sessionId, terminalRegistry.ptyForSession(history.sessionId));
+      return historyToSnapshot(history);
+    } finally {
+      temporary?.release();
+    }
+  }
+
+  /**
+   * Subscribe for the replacing snapshot; `release` lets go. A live view that
+   * subscribes meanwhile takes the stream over: its handlers replace these,
+   * the wait ends on the timeout, and release leaves the stream running.
+   */
+  function subscribeForSnapshot(
+    sessionId: string,
+    maxBytes: number,
+  ): { snapshot: Promise<SyncTerminalSnapshotPayload | null>; release: () => void } {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let released = false;
+    const snapshot = new Promise<SyncTerminalSnapshotPayload | null>((resolve) => {
+      const finish = (payload: SyncTerminalSnapshotPayload | null) => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        resolve(payload);
+      };
+      timer = setTimeout(() => finish(null), ONE_SHOT_TERMINAL_SNAPSHOT_TIMEOUT_MS);
+      try {
+        client.subscribeTerminal(sessionId, { maxBytes }, {
+          snapshot: (payload) => {
+            if (payload.delta === true) return;
+            if (payload.error) return finish(null);
+            finish(payload.transcript || !payload.screen?.serialized
+              ? payload
+              : { ...payload, transcript: payload.screen.serialized });
+          },
+          error: () => finish(null),
+        });
+      } catch {
+        finish(null);
+      }
     });
-    terminalRegistry.register(history.sessionId, terminalRegistry.ptyForSession(history.sessionId));
-    return historyToSnapshot(history);
+    const release = () => {
+      if (released) return;
+      released = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (!terminalSubscriptions.has(sessionId)) client.unsubscribeTerminal(sessionId);
+    };
+    return { snapshot, release };
   }
 
   function notifySessionsChanged(sessionIds: readonly string[]): void {
@@ -356,15 +416,23 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       assertWebRuntimePinRoutable("sessions.unsettle", pin, infra);
       await lifecycleCall("session.unsettleSession", { sessionId }, sessionId, UNSETTLE_PATCH);
     },
-    settleMany: async (sessionIds: string[]) =>
-      (await lifecycleCall<string[]>(
+    // The Work list sends one batch per machine, each with that machine's pin
+    // (`SessionListPane` groups the rows). The federated surface hands a
+    // pinned batch to the adapter of the machine it names; this guard refuses
+    // one that reached the wrong adapter instead of settling another
+    // machine's ids against this host.
+    settleMany: async (sessionIds: string[], pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.settleMany", pin, infra);
+      return (await lifecycleCall<string[]>(
         "session.settleSessions",
         { sessionIds },
         sessionIds,
         settlePatch(),
         appliedToId,
-      )) ?? [],
-    unsettleMany: async (sessionIds: string[]) => {
+      )) ?? [];
+    },
+    unsettleMany: async (sessionIds: string[], pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.unsettleMany", pin, infra);
       await lifecycleCall("session.unsettleSessions", { sessionIds }, sessionIds, UNSETTLE_PATCH);
     },
     snoozeSession: async (sessionId: string, untilIso: string, pin?: RuntimePinArg) => {
@@ -525,22 +593,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       }
       const result = await commands.call<Record<string, unknown> | null>(
         "work.startCliSession",
-        {
-          laneId: record.laneId,
-          provider: providerFromToolType(record.toolType),
-          title: record.title,
-          initialInput: record.initialInput ?? record.startupCommand ?? record.command ?? null,
-          cols: record.cols,
-          rows: record.rows,
-          model: record.model,
-          modelId: record.modelId,
-          reasoningEffort: record.reasoningEffort,
-          permissionMode: record.permissionMode,
-          // `work.startCliSession` resolves the account on the host that owns
-          // the lane, so only the id crosses — never a config path from this
-          // client's filesystem.
-          instanceId: launchInstanceId(record),
-        },
+        startCliSessionArgs(record),
         mutation
       );
       const sessionId = stringField(result ?? {}, "sessionId") || stringField(record, "sessionId");
@@ -672,13 +725,37 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       const snapshot = await captureSnapshot(sessionId, numberField(record, "maxBytes"));
       const ptyId = terminalRegistry.ptyForSession(sessionId);
       const session = chatTerminalFromSummary(sessionId, terminalRegistry.summaryForSession(sessionId), ptyId);
+      const capturedAt = snapshot?.capturedAt ?? new Date().toISOString();
+      // Raw transcript text of a full-screen CLI is cursor moves with the
+      // spaces left out. The rows are what the terminal showed.
+      const cols = snapshot?.screen?.cols ?? 0;
+      const visibleRows = snapshot?.transcript && cols > 0
+        ? await previewRowsFromTranscript(snapshot.transcript, { cols, rows: snapshot.screen?.rows }, PREVIEW_MAX_ROWS)
+        : null;
       return {
         terminalId: sessionId,
         session,
-        source: snapshot?.transcript ? "transcript" : "empty",
-        snapshot: null,
+        source: visibleRows ? "snapshot" : snapshot?.transcript ? "transcript" : "empty",
+        snapshot: visibleRows
+          ? {
+              version: 1,
+              terminalId: sessionId,
+              cols,
+              rows: visibleRows.length,
+              capturedAt,
+              status: session.status,
+              runtimeState: session.runtimeState,
+              bufferType: "normal",
+              cursorX: 0,
+              cursorY: 0,
+              baseY: 0,
+              viewportY: 0,
+              serialized: "",
+              visibleRows,
+            }
+          : null,
         transcript: snapshot?.transcript ?? null,
-        capturedAt: snapshot?.capturedAt ?? new Date().toISOString(),
+        capturedAt,
       };
     },
     write: async (args: unknown, pin?: RuntimePinArg) => {
@@ -787,6 +864,52 @@ function numberField(record: Record<string, unknown>, key: string): number | nul
  */
 function launchInstanceId(record: Record<string, unknown>): string | null {
   return stringField(asRecord(record.runtimeCliLaunch), "instanceId").trim() || null;
+}
+
+function optionalLaunchString(launch: Record<string, unknown>, key: string): string | undefined {
+  return stringField(launch, key).trim() || undefined;
+}
+
+/**
+ * `pty.create` as `work.startCliSession` takes it. A desktop CLI launch puts
+ * the provider intent in `runtimeCliLaunch` (provider, model, prompt, account,
+ * preset, key), which the host that owns the lane materializes — the same
+ * split `pty.create` makes on the desktop. Only ids cross: the account, preset
+ * and key resolve on that host, never against this client's filesystem.
+ */
+function startCliSessionArgs(record: Record<string, unknown>): Record<string, unknown> {
+  const launch = asRecord(record.runtimeCliLaunch);
+  const runtimeProvider = optionalLaunchString(launch, "provider");
+  // Fields of a runtime launch win; a plain launch keeps its top-level ones.
+  const fromLaunch = (key: string) => (runtimeProvider ? optionalLaunchString(launch, key) : undefined);
+  const presetId = optionalLaunchString(launch, "presetId");
+  const credentialId = optionalLaunchString(launch, "credentialId");
+  const droidPermissionMode = fromLaunch("droidPermissionMode");
+  const startupDelayMs = numberField(record, "startupDelayMs");
+  const initialInputDelayMs = numberField(record, "initialInputDelayMs");
+  return {
+    laneId: record.laneId,
+    provider: runtimeProvider ?? providerFromToolType(record.toolType),
+    title: record.title,
+    initialInput: runtimeProvider
+      ? launch.initialPrompt ?? record.initialInput ?? null
+      : record.initialInput ?? record.startupCommand ?? record.command ?? null,
+    cols: record.cols,
+    rows: record.rows,
+    model: fromLaunch("model") ?? record.model,
+    modelId: record.modelId,
+    reasoningEffort: fromLaunch("reasoningEffort") ?? record.reasoningEffort,
+    permissionMode: fromLaunch("permissionMode") ?? record.permissionMode,
+    instanceId: launchInstanceId(record),
+    ...(droidPermissionMode ? { droidPermissionMode } : {}),
+    ...(typeof launch.fastMode === "boolean" ? { fastMode: launch.fastMode } : {}),
+    ...(launch.fastTier === "ultrafast" ? { fastTier: "ultrafast" } : {}),
+    ...(presetId ? { presetId } : {}),
+    ...(credentialId ? { credentialId } : {}),
+    ...(Array.isArray(record.linearIssues) && record.linearIssues.length ? { linearIssues: record.linearIssues } : {}),
+    ...(startupDelayMs != null ? { startupDelayMs } : {}),
+    ...(initialInputDelayMs != null ? { initialInputDelayMs } : {}),
+  };
 }
 
 function providerFromToolType(toolType: unknown): string {

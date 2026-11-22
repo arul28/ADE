@@ -7,9 +7,9 @@
  * the pin, so every place that starts one (chat runtimes, auth probes, model
  * discovery, one-shot tasks, terminals) applies the same switches from here.
  *
- * Keyed by tools-cache name (`claude-code`, `codex`, ...). Devin, Antigravity
- * and Muse have no switch: none was found, and their updaters do not touch
- * ADE's layout. Codex has no environment switch; its config flag is
+ * Keyed by tools-cache name (`claude-code`, `codex`, ...). Devin and Muse
+ * have no switch: none was found, and their updaters do not touch ADE's
+ * layout. Codex has no environment switch; its config flag is
  * {@link CODEX_NO_UPDATE_CHECK_ARGS}. Grok also takes {@link GROK_NO_AUTO_UPDATE_ARG}.
  *
  * Pure data, no Node imports: the renderer-side launch builders read it too.
@@ -29,6 +29,9 @@ const SELF_UPDATE_ENV: Readonly<Record<string, Readonly<Record<string, string>>>
   // sets `general.enableAutoUpdate: false` (qwenSkillDefaults.ts).
   qwen: { QWEN_CODE_SKIP_UPDATE_CHECK_ONCE: "true" },
   pi: { PI_SKIP_VERSION_CHECK: "1" },
+  // The agy CLI's background updater reads this before it asks the release
+  // server; it covers `agy acp` chats and the terminal TUI.
+  antigravity: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" },
 };
 
 export type PinnedProviderToolSpec = {
@@ -58,8 +61,28 @@ export const PINNED_PROVIDER_TOOLS: Readonly<Record<string, PinnedProviderToolSp
   grok: { tool: "grok", label: "Grok", terminal: { label: "Grok", binaries: ["grok"], tools: [{ tool: "grok", label: "Grok" }], selfUpdateTool: "grok", selfUpdateArgs: ["--no-auto-update"] } },
   devin: { tool: "devin", label: "Devin", terminal: { label: "Devin", binaries: ["devin"], tools: [{ tool: "devin", label: "Devin" }], selfUpdateTool: "devin" } },
   muse: { tool: "muse", label: "Muse", terminal: { label: "Muse Code", binaries: ["muse"], tools: [{ tool: "muse", label: "Muse Code" }], selfUpdateTool: "muse" } },
-  antigravity: { tool: "antigravity", label: "Antigravity" },
+  antigravity: { tool: "antigravity", label: "Antigravity", terminal: { label: "Antigravity", binaries: ["agy"], tools: [{ tool: "antigravity", label: "Antigravity" }], selfUpdateTool: "antigravity" } },
 };
+
+/**
+ * Codex CLI flags for the sandbox ADE picks. Commands reach the network in
+ * workspace-write (Default, Edit) as in Full auto (owner's decision,
+ * 2026-11-16): Codex's own default keeps them offline, so `gh`,
+ * `npm install` and `git push` only worked in Full auto.
+ *
+ * read-only (Plan in a terminal) stays Codex's own `--sandbox read-only`,
+ * offline. Its only network switch is a custom permission profile, and an
+ * organization's managed Codex policy (requirements.toml, MDM, a ChatGPT
+ * workspace) that doesn't list that profile makes Codex fall back to the
+ * policy's default, which can be writable. ADE can't see every such policy,
+ * so Plan keeps the sandbox that is read-only under any of them. A Plan chat
+ * gets the network per turn (`codexTurnSandboxPolicy`), which no profile
+ * decides.
+ */
+export function codexSandboxCliArgs(sandbox: "read-only" | "workspace-write" | "danger-full-access"): string[] {
+  if (sandbox === "workspace-write") return ["--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
+  return ["--sandbox", sandbox];
+}
 
 /** `codex` global flags that turn its startup update check off. */
 export const CODEX_NO_UPDATE_CHECK_ARGS: readonly string[] = ["-c", "check_for_update_on_startup=false"];
@@ -75,6 +98,20 @@ export const CODEX_APP_SERVER_STARTUP_ARGS: readonly string[] = [
   "-c",
   "features.plugin_discovery_prefetch=false",
 ];
+
+/**
+ * `-c allow_login_shell=false` for a Codex that runs commands on Linux, else
+ * nothing. Codex runs each command as `bash -lc`, and a login shell whose
+ * /etc/profile sets PATH from scratch (Debian) drops what ADE put on PATH:
+ * the `ade` and `gh` shims, ~/.local/bin, npm's global bin. ADE starts Codex
+ * with the person's login and interactive shell PATH already resolved
+ * (`augmentProcessPathWithShellAndKnownCliDirs`), so a plain `bash -c` keeps
+ * all of it. macOS keeps login shells (path_helper keeps existing entries);
+ * Windows runs PowerShell.
+ */
+export function codexLinuxShellArgs(platform: string): string[] {
+  return platform === "linux" ? ["-c", "allow_login_shell=false"] : [];
+}
 
 /** Grok's flag for the same, passed before its subcommand. */
 export const GROK_NO_AUTO_UPDATE_ARG = "--no-auto-update";

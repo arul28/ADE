@@ -156,7 +156,7 @@ export function registerAdeProtocolHandler(options: {
     if (!url) return;
     if (!ready) {
       pendingUrls.push(url);
-      log("deeplink.buffered", { url, source });
+      log("deeplink.buffered", { url: deeplinkForLog(url), source });
       return;
     }
     handleDeeplinkUrl(url, source, dispatch, log);
@@ -201,6 +201,14 @@ export function registerAdeProtocolHandler(options: {
 }
 
 /**
+ * A deeplink as the log may keep it. An ADE Cloud invite's code is left out
+ * (`ade://invite/<redacted>`), as everywhere else ADE logs an invite.
+ */
+function deeplinkForLog(rawUrl: string): string {
+  return rawUrl.replace(/^(\s*ade:\/*invite\/)[^?#]*/i, "$1<redacted>");
+}
+
+/**
  * Parse + dispatch a single URL. Exposed so callers (e.g., `ade open` CLI
  * subcommand routing through RPC) can reuse the exact mapping.
  */
@@ -211,9 +219,10 @@ export function handleDeeplinkUrl(
   log: (event: string, fields: Record<string, unknown>) => void = () => {},
 ): void {
   const parsed = parseDeeplink(rawUrl);
+  const url = deeplinkForLog(rawUrl);
   if (!parsed.ok) {
     log("deeplink.parse_failed", {
-      url: rawUrl,
+      url,
       source,
       error: parsed.error,
     });
@@ -222,11 +231,11 @@ export function handleDeeplinkUrl(
   if (parsed.target.kind === "open") {
     // An `open` link runs only when a person clicks it in a chat. From outside
     // (a web page, another app, `ade open`) it does nothing.
-    log("deeplink.refused", { url: rawUrl, source, kind: parsed.target.kind });
+    log("deeplink.refused", { url, source, kind: parsed.target.kind });
     return;
   }
   const navigationTarget = deeplinkToNavigationTarget(parsed.target);
-  log("deeplink.dispatch", { url: rawUrl, source, kind: navigationTarget.kind });
+  log("deeplink.dispatch", { url, source, kind: navigationTarget.kind });
   void Promise.resolve(
     dispatch({
       target: navigationTarget,
@@ -234,7 +243,7 @@ export function handleDeeplinkUrl(
     }),
   ).catch((err: unknown) => {
     log("deeplink.dispatch_failed", {
-      url: rawUrl,
+      url,
       source,
       error: err instanceof Error ? err.message : String(err),
     });

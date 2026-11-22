@@ -21,6 +21,7 @@ vi.mock("./claudeCodeExecutable", () => ({
 
 vi.mock("../../../../../ade-cli/src/services/tools/onDemand", () => ({
   pinnedToolDownload: (tool: string) => mockState.pinnedToolDownload(tool),
+  pinnedToolFetchInFlight: () => false,
 }));
 
 vi.mock("./providerRuntimeHealth", () => ({
@@ -184,13 +185,13 @@ describe("claudeRuntimeProbe", () => {
   // First run on a cold tools cache: nothing resolved because the pinned
   // runtime is still downloading. Passing the SDK's raw "not found" through
   // there reads as a broken install, which it is not.
-  it("starts the pinned download without spawning when the copy is missing", async () => {
+  it("neither downloads nor spawns when the copy is missing (a probe is a status read)", async () => {
     mockState.claudeExecutable = { path: "", source: "fallback-command" };
     mockState.pinnedToolDownload.mockReturnValue(Promise.resolve(null));
 
     await probeClaudeRuntimeHealth({ projectRoot: "/tmp/project", force: true });
 
-    expect(mockState.pinnedToolDownload).toHaveBeenCalledWith("claude-code");
+    expect(mockState.pinnedToolDownload).not.toHaveBeenCalled();
     expect(mockState.query).not.toHaveBeenCalled();
     expect(mockState.reportProviderRuntimeFailure).not.toHaveBeenCalled();
   });

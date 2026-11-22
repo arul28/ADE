@@ -1,3 +1,4 @@
+import { laneDisplayName } from "../../../../shared/laneDisplayName";
 import React from "react";
 import {
   ArrowDown,
@@ -27,6 +28,7 @@ import { providerDisplayName } from "./laneHistoryModel";
 import { laneStatusItems, type LaneStatusItem, type LaneStatusTone } from "./laneOverviewModel";
 import { cssZoomOf } from "../../../lib/webZoom";
 import { LaneEmojiGlyph } from "../LaneEmojiGlyph";
+import { LaneShareMark } from "../../laneShare/LaneShareMark";
 
 function Sep() {
   return <span aria-hidden className="text-muted-fg/35">·</span>;
@@ -77,7 +79,7 @@ function CatchUpAction({
 }: {
   lane: LaneSummary;
   line: LaneRebaseLine;
-  pin: OpenProjectBinding | null;
+  pin: OpenProjectBinding;
   machineId: string | null;
   hasPr: boolean;
 }) {
@@ -107,7 +109,7 @@ export function LaneIdentity({
   upstream,
   createdBy,
   active,
-  pin = null,
+  pin,
   machineId = null,
   canReveal,
   revealUnavailableReason = null,
@@ -130,8 +132,8 @@ export function LaneIdentity({
   /** The chat that started with the lane, when known. */
   createdBy: { provider: string | null; title: string | null } | null;
   active: boolean;
-  /** The lane's machine when it is not the tab's; the branch picker acts there. */
-  pin?: OpenProjectBinding | null;
+  /** The lane's machine; the branch picker and Catch up act there. */
+  pin: OpenProjectBinding;
   /** That machine's id, for refreshing its lane list. */
   machineId?: string | null;
   canReveal: boolean;
@@ -165,7 +167,14 @@ export function LaneIdentity({
   return (
     <div className="flex min-w-0 flex-col gap-3" data-testid="lane-identity">
       <div className="flex min-w-0 flex-col gap-1">
-        <div className="flex min-w-0 items-center gap-3">
+        <div
+          className="flex min-w-0 items-center gap-3"
+          // Right-click on the header opens the lane menu (share options included) at the cursor.
+          onContextMenu={(event) => {
+            event.preventDefault();
+            onOpenMenu(new DOMRect(event.clientX, event.clientY - 4, 0, 0));
+          }}
+        >
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <span className="flex shrink-0" style={{ color: toneText(accent) }}>
               <LaneEmojiGlyph
@@ -175,9 +184,10 @@ export function LaneIdentity({
                 fallback={<LaneIcon size={16} />}
               />
             </span>
-            <h1 className="m-0 truncate text-[16px] font-semibold leading-[24px] tracking-[-0.01em] text-fg" title={lane.name}>
-              {lane.name}
+            <h1 className="m-0 truncate text-[16px] font-semibold leading-[24px] tracking-[-0.01em] text-fg" title={laneDisplayName(lane)}>
+              {laneDisplayName(lane)}
             </h1>
+            <LaneShareMark laneId={lane.id} laneName={lane.name} pin={pin} size={14} />
           </div>
           <div className="-mr-1.5 flex shrink-0 items-center gap-0.5" data-testid="lane-identity-actions">
             {onStartChat ? (
@@ -234,7 +244,7 @@ export function LaneIdentity({
           </span>
           <Sep />
           {isPrimary ? (
-            <span className="shrink-0">Primary lane</span>
+            <span className="shrink-0">Project folder</span>
           ) : (
             <span className="shrink-0">from <span className="text-fg/80">{fromLabel}</span></span>
           )}

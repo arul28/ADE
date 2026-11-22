@@ -18,6 +18,8 @@ export type ChatScheduledWorkSnapshot = {
   prompt?: string;
   reason?: string;
   cron?: string;
+  /** IANA zone the cron is read in, when it is not the brain's local time. */
+  timeZone?: string;
   nextRunAt?: string;
   lastRunAt?: string;
   firedAt?: string;
@@ -34,6 +36,21 @@ export type ChatScheduledWorkSnapshot = {
 };
 
 type ScheduledWorkUpdateEvent = Extract<AgentChatEvent, { type: "scheduled_work_update" }>;
+
+/** Id prefix of the resume ADE arms after a restart (`updateResumeScheduleId`). */
+export const UPDATE_RESUME_ID_PREFIX = "update-resume:";
+
+/**
+ * The resume ADE arms after any restart (an update, a crash) uses the fixed
+ * id, so a transcript event names it by its schedule id, old transcripts too.
+ * It is not scheduled work the user set up, so no surface draws it: no wake
+ * line, wake divider or wake message in the transcript, and no Schedule row.
+ * The restart notice already says the agent continues
+ * (`isRestartInterruptedNotice`).
+ */
+export function isRestartResumeScheduleId(scheduleId: string | null | undefined): boolean {
+  return typeof scheduleId === "string" && scheduleId.startsWith(UPDATE_RESUME_ID_PREFIX);
+}
 
 /** Scheduled work that has not fired, stopped, or failed yet. */
 export const SCHEDULED_WORK_PENDING_STATUSES: ReadonlySet<AgentChatScheduledWorkStatus> = new Set([
@@ -121,6 +138,7 @@ export function deriveScheduledWorkSnapshots(events: AgentChatEventEnvelope[]): 
   for (const envelope of events) {
     const event = envelope.event;
     if (event.type !== "scheduled_work_update") continue;
+    if (isRestartResumeScheduleId(event.id)) continue;
     const existing = snapshots.get(event.id);
     const deliveredNotCancelled = cancelRecordsDelivery(existing, event, envelope.timestamp);
     snapshots.set(event.id, {
@@ -175,6 +193,7 @@ export function mergeManagedScheduledWorkSnapshots(
   );
 
   for (const item of managedWork ?? []) {
+    if (isRestartResumeScheduleId(item.id)) continue;
     snapshots.set(item.id, {
       id: item.id,
       kind: item.kind,
@@ -385,30 +404,116 @@ function parseCron(source: string): ParsedCron | null {
     : null;
 }
 
-function cronMatches(cron: ParsedCron, date: Date): boolean {
-  if (!cron.minute.values.has(date.getMinutes())) return false;
-  if (!cron.hour.values.has(date.getHours())) return false;
-  if (!cron.month.values.has(date.getMonth() + 1)) return false;
+/** A wall-clock reading: the date's own local fields, or a zone's read through UTC getters. */
+function cronMatches(cron: ParsedCron, date: Date, utcFields: boolean): boolean {
+  const minute = utcFields ? date.getUTCMinutes() : date.getMinutes();
+  const hour = utcFields ? date.getUTCHours() : date.getHours();
+  const month = (utcFields ? date.getUTCMonth() : date.getMonth()) + 1;
+  if (!cron.minute.values.has(minute)) return false;
+  if (!cron.hour.values.has(hour)) return false;
+  if (!cron.month.values.has(month)) return false;
 
-  const dayOfMonthMatches = cron.dayOfMonth.values.has(date.getDate());
-  const dayOfWeekMatches = cron.dayOfWeek.values.has(date.getDay());
+  const dayOfMonthMatches = cron.dayOfMonth.values.has(utcFields ? date.getUTCDate() : date.getDate());
+  const dayOfWeekMatches = cron.dayOfWeek.values.has(utcFields ? date.getUTCDay() : date.getDay());
   if (cron.dayOfMonth.unrestricted) return dayOfWeekMatches;
   if (cron.dayOfWeek.unrestricted) return dayOfMonthMatches;
   return dayOfMonthMatches || dayOfWeekMatches;
 }
 
-export function nextCronFireAt(cron: string, nowMs: number): number | null {
+const zoneFormatters = new Map<string, Intl.DateTimeFormat | null>();
+
+function zoneFormatter(timeZone: string): Intl.DateTimeFormat | null {
+  if (zoneFormatters.has(timeZone)) return zoneFormatters.get(timeZone) ?? null;
+  let formatter: Intl.DateTimeFormat | null = null;
+  try {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    });
+  } catch {
+    formatter = null;
+  }
+  zoneFormatters.set(timeZone, formatter);
+  return formatter;
+}
+
+/** True for an IANA time zone this runtime knows (`America/New_York`, `UTC`). */
+export function isKnownTimeZone(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 64 && zoneFormatter(value) != null;
+}
+
+/** How far `timeZone`'s wall clock is ahead of UTC at `ms`, in ms. */
+function zoneOffsetMs(formatter: Intl.DateTimeFormat, ms: number): number {
+  const parts: Record<string, number> = {};
+  for (const part of formatter.formatToParts(new Date(ms))) {
+    if (part.type !== "literal") parts[part.type] = Number(part.value);
+  }
+  const wall = Date.UTC(parts.year!, parts.month! - 1, parts.day!, parts.hour! % 24, parts.minute!, parts.second!);
+  return wall - (ms - (((ms % 1000) + 1000) % 1000));
+}
+
+/**
+ * The instant a zone's wall time (as UTC ms) names, the first one after
+ * `nowMs`, or null. The offsets half a day either side bracket any DST change
+ * near it: a repeated wall time has two instants (the first future one wins),
+ * and a skipped one has none, so it lands just after the jump (the later
+ * reading), never before it.
+ */
+function wallTimeToInstant(formatter: Intl.DateTimeFormat, wallMs: number, nowMs: number): number | null {
+  const halfDay = 12 * 60 * 60_000;
+  const candidates = [...new Set([
+    wallMs - zoneOffsetMs(formatter, wallMs - halfDay),
+    wallMs - zoneOffsetMs(formatter, wallMs + halfDay),
+  ])].sort((a, b) => a - b);
+  const exact = candidates.filter((at) => at + zoneOffsetMs(formatter, at) === wallMs);
+  const picks = exact.length ? exact : [candidates[candidates.length - 1]!];
+  return picks.find((at) => at > nowMs) ?? null;
+}
+
+/**
+ * The next time `cron` fires after `nowMs`. With `timeZone` (an IANA zone) the
+ * fields are read on that zone's wall clock, so "0 9 * * *" is 9am where the
+ * person is even when the brain runs on a UTC cloud computer. Without one, or
+ * with a zone this runtime does not know, they are read in the brain's local
+ * time, as before.
+ */
+export function nextCronFireAt(cron: string, nowMs: number, timeZone?: string | null): number | null {
   const parsed = parseCron(cron);
   if (!parsed || !Number.isFinite(nowMs)) return null;
-  const candidate = new Date(nowMs);
-  if (!Number.isFinite(candidate.getTime())) return null;
-  candidate.setSeconds(0, 0);
-  candidate.setMinutes(candidate.getMinutes() + 1);
-
+  const formatter = timeZone ? zoneFormatter(timeZone) : null;
   const maxMinutes = 60 * 24 * 366 * 5;
-  for (let minute = 0; minute < maxMinutes; minute += 1) {
-    if (cronMatches(parsed, candidate)) return candidate.getTime();
+
+  if (!formatter) {
+    const candidate = new Date(nowMs);
+    if (!Number.isFinite(candidate.getTime())) return null;
+    candidate.setSeconds(0, 0);
     candidate.setMinutes(candidate.getMinutes() + 1);
+    for (let minute = 0; minute < maxMinutes; minute += 1) {
+      if (cronMatches(parsed, candidate, false)) return candidate.getTime();
+      candidate.setMinutes(candidate.getMinutes() + 1);
+    }
+    return null;
+  }
+
+  // Walk the zone's wall clock (a Date read through its UTC getters), and turn
+  // a match back into an instant. A wall time skipped by a DST jump lands an
+  // hour later; one that repeats fires once.
+  const wall = new Date(nowMs + zoneOffsetMs(formatter, nowMs));
+  if (!Number.isFinite(wall.getTime())) return null;
+  wall.setUTCSeconds(0, 0);
+  wall.setUTCMinutes(wall.getUTCMinutes() + 1);
+  for (let minute = 0; minute < maxMinutes; minute += 1) {
+    if (cronMatches(parsed, wall, true)) {
+      const instant = wallTimeToInstant(formatter, wall.getTime(), nowMs);
+      if (instant != null) return instant;
+    }
+    wall.setUTCMinutes(wall.getUTCMinutes() + 1);
   }
   return null;
 }
@@ -428,6 +533,8 @@ export function resolveScheduledWorkTiming(
     recurring?: unknown;
   },
   nowMs: number,
+  /** IANA zone the cron is read in; absent means the brain machine's local time. */
+  timeZone?: string | null,
 ): ResolvedScheduledWorkTiming {
   if (input.recurring != null && typeof input.recurring !== "boolean") {
     throw new Error("Scheduled work recurring must be a boolean.");
@@ -453,9 +560,11 @@ export function resolveScheduledWorkTiming(
   }
 
   if (cron) {
-    const fireAt = nextCronFireAt(cron, nowMs);
+    const fireAt = nextCronFireAt(cron, nowMs, timeZone);
     if (fireAt == null) {
-      throw new Error("Scheduled work cron must be a valid 5-field cron expression in the ADE brain machine's local timezone.");
+      throw new Error(timeZone
+        ? `Scheduled work cron must be a valid 5-field cron expression, read in ${timeZone}.`
+        : "Scheduled work cron must be a valid 5-field cron expression in the ADE brain machine's local timezone.");
     }
     return {
       kind: input.recurring === false ? "wakeup" : "cron",
@@ -514,7 +623,7 @@ export function scheduledNextFireLabel(
   const nextFireAt = Number.isFinite(explicitNextRunAt)
     ? explicitNextRunAt
     : snapshot.kind === "cron" && snapshot.cron
-      ? nextCronFireAt(snapshot.cron, nowMs)
+      ? nextCronFireAt(snapshot.cron, nowMs, snapshot.timeZone)
       : null;
   if (nextFireAt == null || !Number.isFinite(nextFireAt)) return null;
 

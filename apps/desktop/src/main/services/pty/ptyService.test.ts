@@ -471,6 +471,7 @@ function createHarness(overrides: {
   diskPressureMonitor?: {
     canPerform: ReturnType<typeof vi.fn>;
   } | null;
+  launchRefusal?: () => string | null;
   getAdeCliAgentEnv?: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   runtimeSocketPath?: string | null;
   sessionActivityReportingEnabled?: boolean;
@@ -487,6 +488,7 @@ function createHarness(overrides: {
 
   const sessionStore = new Map<string, any>();
   const sessionService = {
+    requestAttention: vi.fn(() => true),
     agentShells: {
       start: vi.fn(),
       stop: vi.fn(),
@@ -643,6 +645,7 @@ function createHarness(overrides: {
     ...(overrides.processRegistry !== undefined ? { processRegistry: overrides.processRegistry as any } : {}),
     ...(overrides.aiIntegrationService ? { aiIntegrationService: overrides.aiIntegrationService as any } : {}),
     ...(overrides.diskPressureMonitor !== undefined ? { diskPressureMonitor: overrides.diskPressureMonitor as any } : {}),
+    ...(overrides.launchRefusal ? { launchRefusal: overrides.launchRefusal } : {}),
     ...(overrides.getAdeCliAgentEnv ? { getAdeCliAgentEnv: overrides.getAdeCliAgentEnv } : {}),
     ...(overrides.runtimeSocketPath !== undefined ? { runtimeSocketPath: overrides.runtimeSocketPath } : {}),
     ...(overrides.sessionActivityReportingEnabled !== undefined
@@ -1069,6 +1072,211 @@ describe("ptyService", () => {
       expect(opts?.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
     });
 
+    it("takes a Claude turn hook's report only with its own launch's token", async () => {
+      const cliPath = path.resolve("/opt/ade/bin/ade");
+      const { service, loadPty } = createHarness({
+        runtimeSocketPath: "/tmp/ade-test-runtime.sock",
+        getAdeCliAgentEnv: (env) => ({ ...env, ADE_CLI_PATH: cliPath }),
+      });
+      await service.create({
+        sessionId: "session-hooked",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        runtimeCliLaunch: { provider: "claude", permissionMode: "default" },
+      });
+      const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
+      const opts = spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      const token = opts?.env?.ADE_CLI_TURN_HOOK_TOKEN ?? "";
+      expect(token.length, "the hooked launch carries a token").toBeGreaterThan(0);
+      const started = { hook_event_name: "UserPromptSubmit", prompt_id: "p-1" };
+
+      // Another CLI under the same chat knows the session id but not the token.
+      expect(service.reportCliTurnHookEvent({ sessionId: "session-hooked", provider: "claude", payload: started })).toBe(false);
+      expect(service.reportCliTurnHookEvent({
+        sessionId: "session-hooked", provider: "claude", payload: started, token: "forged",
+      })).toBe(false);
+      expect(service.getTrackedCliTurn("session-hooked")?.phase).toBe("idle");
+
+      expect(service.reportCliTurnHookEvent({ sessionId: "session-hooked", provider: "claude", payload: started, token })).toBe(true);
+      expect(service.getTrackedCliTurn("session-hooked")).toMatchObject({ phase: "working", source: "claude-hooks" });
+    });
+
+    // Typed text ends with Enter. In a menu the CLI reported, that Enter picks
+    // the selected option (Claude's "1. Yes" on a permission prompt), so the
+    // person's text must wait. A CLI whose prompt ADE cannot read takes text at
+    // once: waiting for a prompt ADE never sees would hold it for good.
+    it("holds typed text while a CLI shows a menu, and types at once into a CLI whose prompt it cannot read", async () => {
+      const { service, loadPty, mockPty, sessionService } = createHarness({
+        runtimeSocketPath: "/tmp/ade-test-runtime.sock",
+        getAdeCliAgentEnv: (env) => ({ ...env, ADE_CLI_PATH: path.resolve("/opt/ade/bin/ade") }),
+      });
+      await service.create({
+        sessionId: "session-menu",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        runtimeCliLaunch: { provider: "claude", permissionMode: "default" },
+      });
+      const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
+      const token = (spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env?.ADE_CLI_TURN_HOOK_TOKEN ?? "";
+      expect(token.length, "the hooked launch carries a token").toBeGreaterThan(0);
+      const hook = (payload: Record<string, string>) =>
+        service.reportCliTurnHookEvent({ sessionId: "session-menu", provider: "claude", payload, token });
+      const box = "╭────────────╮\n│ >          │\n╰────────────╯\n";
+      mockPty._emitter.emit("data", box);
+      const settledAt = Date.now() + 700;
+      const settled = vi.spyOn(Date, "now").mockImplementation(() => settledAt);
+      try {
+        expect(service.canTakeTypedMessage("session-menu"), "a free prompt").toBe(true);
+        hook({ hook_event_name: "UserPromptSubmit", prompt_id: "p-1" });
+        hook({ hook_event_name: "PermissionRequest", tool_name: "Bash" });
+        expect(service.getTrackedCliTurn("session-menu")?.phase).toBe("needs-input");
+        // The menu sits inside the same input box: the screen alone says "free".
+        mockPty._emitter.emit("data", box);
+      } finally {
+        settled.mockRestore();
+      }
+      const quietMenu = vi.spyOn(Date, "now").mockImplementation(() => settledAt + 700);
+      try {
+        expect(service.canTakeTypedMessage("session-menu"), "a permission menu on a quiet screen").toBe(false);
+        hook({ hook_event_name: "Stop" });
+        mockPty._emitter.emit("data", box);
+      } finally {
+        quietMenu.mockRestore();
+      }
+      const afterStop = vi.spyOn(Date, "now").mockImplementation(() => settledAt + 1_400);
+      try {
+        expect(service.canTakeTypedMessage("session-menu"), "the menu closed and the turn ended").toBe(true);
+      } finally {
+        afterStop.mockRestore();
+      }
+
+      await service.create({
+        sessionId: "session-qwen",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Qwen CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "qwen",
+        command: "qwen",
+        args: [],
+        startupCommand: "qwen",
+      });
+      mockPty._emitter.emit("data", "Qwen is thinking...\n");
+      expect(service.canAcceptScheduledTurn("session-qwen"), "a relaunch still needs a readable prompt").toBe(false);
+      expect(service.canTakeTypedMessage("session-qwen"), "Qwen's prompt cannot be read").toBe(true);
+      // Typed as keys, the line break could submit half of it.
+      (mockPty.write as ReturnType<typeof vi.fn>).mockClear();
+      await service.sendToSession({ sessionId: "session-qwen", text: "first line\nsecond line" });
+      const written = (mockPty.write as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0])).join("");
+      expect(written, "one paste, then Enter").toContain("\x1b[200~first line\nsecond line\x1b[201~");
+
+      // A Devin terminal has no resume metadata, so ADE cannot name its provider; it takes text all the same.
+      await service.create({
+        sessionId: "session-devin",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Devin CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "devin",
+        command: "devin",
+        args: [],
+        startupCommand: "devin",
+      });
+      expect(sessionService.get("session-devin")?.resumeMetadata?.provider ?? null, "setup: no provider").toBeNull();
+      expect(service.canTakeTypedMessage("session-devin"), "Devin's prompt cannot be read").toBe(true);
+      (mockPty.write as ReturnType<typeof vi.fn>).mockClear();
+      await service.sendToSession({ sessionId: "session-devin", text: "fix the test" });
+      const typedToDevin = (mockPty.write as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0])).join("");
+      expect(typedToDevin).toContain("fix the test");
+    });
+
+    it("keeps a Claude CLI's background agents as background work until each reports its stop", async () => {
+      const { service, loadPty, mockPty, onSessionRuntimeSignal, sessionService } = createHarness({
+        runtimeSocketPath: "/tmp/ade-test-runtime.sock",
+        getAdeCliAgentEnv: (env) => ({ ...env, ADE_CLI_PATH: path.resolve("/opt/ade/bin/ade") }),
+      });
+      const created = await service.create({
+        sessionId: "session-agents",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        runtimeCliLaunch: { provider: "claude", permissionMode: "default" },
+      });
+      const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
+      const token = (spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env?.ADE_CLI_TURN_HOOK_TOKEN ?? "";
+      expect(token.length, "the hooked launch carries a token").toBeGreaterThan(0);
+      const hook = (payload: Record<string, string>) =>
+        service.reportCliTurnHookEvent({ sessionId: "session-agents", provider: "claude", payload, token });
+      const agentCount = () => service.getTrackedCliTurn("session-agents")?.backgroundAgentCount;
+      const row = () => service.enrichSessions(sessionService.list({}).filter((s: any) => s.id === "session-agents"))[0];
+      const lastSignalAgents = () => onSessionRuntimeSignal.mock.calls.at(-1)?.[0]?.backgroundAgentIds;
+
+      // Claude sends Stop as soon as it hands work to a background agent.
+      hook({ hook_event_name: "UserPromptSubmit", prompt_id: "p-1" });
+      hook({ hook_event_name: "SubagentStart", agent_id: "agent-1" });
+      hook({ hook_event_name: "Stop" });
+      expect(service.getTrackedCliTurn("session-agents")).toMatchObject({ phase: "idle", backgroundAgentCount: 1 });
+      expect(row()).toMatchObject({ activeBackgroundTaskCount: 1 });
+      expect(lastSignalAgents()).toEqual(["agent-1"]);
+
+      // The main turn is over while the agent runs. Its timer redraws the
+      // screen every second, so the screen never goes quiet, yet the prompt
+      // takes a typed message once the end has settled, not after the last
+      // agent stops. A relaunch still waits: it would end the agent.
+      const box = "╭────────────╮\n│ >          │\n╰────────────╯\n  agent-1 running (3s)\n";
+      mockPty._emitter.emit("data", box);
+      expect(service.canTakeTypedMessage("session-agents"), "just after Stop").toBe(false);
+      const settledAt = Date.now() + 700;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => settledAt);
+      try {
+        mockPty._emitter.emit("data", box);
+        expect(service.canTakeTypedMessage("session-agents")).toBe(true);
+        // A draft the person types at that prompt is theirs: a typed message
+        // would clear the line first, so the redraws hold it again.
+        service.write({ ptyId: created.ptyId, data: "half a draft" });
+        mockPty._emitter.emit("data", box);
+        expect(service.canTakeTypedMessage("session-agents"), "after a draft").toBe(false);
+      } finally {
+        clock.mockRestore();
+      }
+      expect(service.canAcceptScheduledTurn("session-agents")).toBe(false);
+      // A line typed since the turn ended starts the next turn: not free.
+      hook({ hook_event_name: "UserPromptSubmit", prompt_id: "p-2" });
+      expect(service.canTakeTypedMessage("session-agents")).toBe(false);
+      hook({ hook_event_name: "Stop" });
+      // The draft typed before this turn ended is still at the prompt.
+      const laterClock = vi.spyOn(Date, "now").mockImplementation(() => settledAt + 700);
+      try {
+        mockPty._emitter.emit("data", box);
+        expect(service.canTakeTypedMessage("session-agents"), "draft from before the end").toBe(false);
+      } finally {
+        laterClock.mockRestore();
+      }
+
+      // Each hook is its own process: a short agent's stop can arrive before its start.
+      hook({ hook_event_name: "SubagentStop", agent_id: "agent-2" });
+      hook({ hook_event_name: "SubagentStart", agent_id: "agent-2" });
+      expect(agentCount()).toBe(1);
+
+      hook({ hook_event_name: "SubagentStop", agent_id: "agent-1" });
+      expect(agentCount()).toBe(0);
+      expect(row()?.activeBackgroundTaskCount ?? 0).toBe(0);
+      expect(lastSignalAgents()).toEqual([]);
+    });
+
     it("resumes into the provider default when the stored account is gone", async () => {
       const { service, sessionService, loadPty } = createHarness();
       sessionService.create({
@@ -1453,9 +1661,23 @@ describe("ptyService", () => {
       }
     });
 
-    it("starts plain shell sessions as login shells with user startup files", async () => {
+    // macOS opens a login shell; Linux an interactive non-login one, because a
+    // login shell's /etc/profile resets PATH on Debian and drops ADE's shims.
+    // Either way the login shell's PATH reaches the terminal's environment.
+    it.each([
+      ["darwin", ["-l"]],
+      ["linux", []],
+    ] as const)("starts plain shell sessions with user startup files and the login PATH on %s", async (platform, expectedArgs) => {
       const previousShell = process.env.SHELL;
+      const previousPath = process.env.PATH;
       process.env.SHELL = "/bin/zsh";
+      process.env.PATH = "/usr/bin";
+      // Past the 30 s backoff earlier tests' failed probes of this shell left.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 60_000);
+      mocks.execFileSync.mockImplementation((_file, args) =>
+        Array.isArray(args) && args[0] === "-lc" ? "__ADE_PATH_START__/login/bin:/usr/bin__ADE_PATH_END__" : "");
+      setPlatform(platform);
       try {
         const { service, loadPty } = createHarness();
         await service.create({
@@ -1469,16 +1691,23 @@ describe("ptyService", () => {
         const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
         expect(ptyLib.spawn).toHaveBeenCalledWith(
           "/bin/zsh",
-          ["-l"],
+          [...expectedArgs],
           expect.objectContaining({
             env: expect.not.objectContaining({
               ZDOTDIR: "/var/empty",
             }),
           }),
         );
+        const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        expect(opts?.env?.PATH?.split(path.delimiter)).toContain("/login/bin");
       } finally {
+        setPlatform(originalPlatform);
         if (previousShell == null) delete process.env.SHELL;
         else process.env.SHELL = previousShell;
+        if (previousPath == null) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        vi.useRealTimers();
+        mocks.execFileSync.mockImplementation(() => "");
       }
     });
 
@@ -1901,6 +2130,20 @@ describe("ptyService", () => {
         })).rejects.toMatchObject({ code: "disk_full" });
       },
     );
+
+    // An ADE Cloud computer the server deletes next: a terminal opened now is lost with it.
+    it("refuses every new terminal while the host refuses launches, and a live one still attaches", async () => {
+      const sentence = "This ADE Cloud computer is being removed.";
+      let refusal: string | null = null;
+      const { service } = createHarness({ launchRefusal: () => refusal });
+      const existing = await service.create({ laneId: "lane-1", title: "Shell", cols: 80, rows: 24, toolType: "shell" });
+      refusal = sentence;
+
+      await expect(service.create({ laneId: "lane-1", title: "Shell", cols: 80, rows: 24, toolType: "shell" })).rejects.toThrow(sentence);
+      await expect(service.create({ laneId: "lane-1", title: "Codex CLI", cols: 80, rows: 24, toolType: "codex", command: "codex" })).rejects.toThrow(sentence);
+      await expect(service.create({ laneId: "lane-1", sessionId: existing.sessionId, title: "Shell", cols: 80, rows: 24, toolType: "shell" }))
+        .resolves.toMatchObject({ sessionId: existing.sessionId });
+    });
 
     it("does not leak an inherited ADE chat session into unlinked terminals", async () => {
       const previous = process.env.ADE_CHAT_SESSION_ID;
@@ -3786,39 +4029,6 @@ describe("ptyService", () => {
       expect(mockPty.write).toHaveBeenCalledWith(`${expectedCommand}\r`);
     });
 
-    it("registers the session via sessionService.create", async () => {
-      const { service, sessionService } = createHarness();
-      await service.create({
-        laneId: "lane-1",
-        title: "My session",
-        cols: 120,
-        rows: 40,
-      });
-      expect(sessionService.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          laneId: "lane-1",
-          title: "My session",
-          tracked: true,
-        }),
-      );
-    });
-
-    it("uses a default title when runtime payloads omit one", async () => {
-      const { service, sessionService } = createHarness();
-      await service.create({
-        laneId: "lane-1",
-        cols: 120,
-        rows: 40,
-      } as any);
-      expect(sessionService.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          laneId: "lane-1",
-          title: "Terminal",
-          tracked: true,
-        }),
-      );
-    });
-
     it("rejects terminal launches when the lane worktree does not exist", async () => {
       mocks.existsSyncResults.set("/tmp/test-worktree", false);
       const { service, loadPty } = createHarness();
@@ -3939,18 +4149,6 @@ describe("ptyService", () => {
         expect.any(Array),
         expect.objectContaining({ cols: 400, rows: 200 }),
       );
-    });
-
-    it("writes startup command to the PTY when provided", async () => {
-      const { service, mockPty } = createHarness();
-      await service.create({
-        laneId: "lane-1",
-        title: "With startup",
-        cols: 80,
-        rows: 24,
-        startupCommand: "echo hello",
-      });
-      expect(mockPty.write).toHaveBeenCalledWith("echo hello\r");
     });
 
     it("delays startup command writes when requested", async () => {
@@ -5249,7 +5447,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval on-request resume thread-stored continue`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-stored continue`],
         expect.any(Object),
       );
     });
@@ -5348,7 +5546,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-legacy \"continue legacy thread\"`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-legacy \"continue legacy thread\"`],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -5910,7 +6108,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-concurrent first`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-concurrent first`],
         expect.any(Object),
       );
       const writes = (mockPty.write as any).mock.calls.map((call: string[]) => call[0]);
@@ -6027,34 +6225,6 @@ describe("ptyService", () => {
         exitCode: 0,
         endedAt: "2026-04-09T12:30:00.000Z",
       }));
-    });
-
-    it("normalizes toolType to a known value", async () => {
-      const { service, sessionService } = createHarness();
-      await service.create({
-        laneId: "lane-1",
-        title: "Claude session",
-        cols: 80,
-        rows: 24,
-        toolType: "claude",
-      });
-      expect(sessionService.create).toHaveBeenCalledWith(
-        expect.objectContaining({ toolType: "claude" }),
-      );
-    });
-
-    it("preserves droid-chat as a known toolType", async () => {
-      const { service, sessionService } = createHarness();
-      await service.create({
-        laneId: "lane-1",
-        title: "Droid chat",
-        cols: 80,
-        rows: 24,
-        toolType: "droid-chat",
-      });
-      expect(sessionService.create).toHaveBeenCalledWith(
-        expect.objectContaining({ toolType: "droid-chat" }),
-      );
     });
 
     it("normalizes unknown toolType to 'other'", async () => {
@@ -6649,20 +6819,6 @@ describe("ptyService", () => {
     });
   });
 
-  describe("write", () => {
-    it("forwards data to the underlying PTY", async () => {
-      const { service, mockPty } = createHarness();
-      const { ptyId } = await service.create({ laneId: "lane-1", title: "w", cols: 80, rows: 24 });
-      service.write({ ptyId, data: "ls\r" });
-      expect(mockPty.write).toHaveBeenCalledWith("ls\r");
-    });
-
-    it("silently ignores writes to unknown pty ids", () => {
-      const { service } = createHarness();
-      expect(() => service.write({ ptyId: "non-existent", data: "test" })).not.toThrow();
-    });
-  });
-
   describe("resize", () => {
     it("resizes the PTY with clamped dimensions", async () => {
       const { service, mockPty } = createHarness();
@@ -6682,10 +6838,6 @@ describe("ptyService", () => {
       expect(mockPty.resize).toHaveBeenCalledWith(132, 43);
     });
 
-    it("silently ignores resize on unknown pty ids", () => {
-      const { service } = createHarness();
-      expect(() => service.resize({ ptyId: "non-existent", cols: 80, rows: 24 })).not.toThrow();
-    });
   });
 
   describe("getRuntimeState", () => {
@@ -6972,14 +7124,6 @@ describe("ptyService", () => {
       } finally {
         vi.useRealTimers();
       }
-    });
-
-    it("handles disposing an already-disposed PTY gracefully", async () => {
-      const { service } = createHarness();
-      const { ptyId } = await service.create({ laneId: "lane-1", title: "d", cols: 80, rows: 24 });
-      service.dispose({ ptyId });
-      // Second dispose should not throw
-      expect(() => service.dispose({ ptyId })).not.toThrow();
     });
 
     it("does not create per-session ADE tool config artifacts for tool sessions", async () => {
@@ -7339,20 +7483,44 @@ describe("ptyService", () => {
         }),
       );
     });
-
-    it("silently ignores dispose for completely unknown pty/session", () => {
-      const { service } = createHarness();
-      expect(() => service.dispose({ ptyId: "non-existent" })).not.toThrow();
-    });
   });
 
   describe("disposeAll", () => {
-    it("disposes all active PTYs", async () => {
-      const { service, broadcastExit } = createHarness();
-      await service.create({ laneId: "lane-1", title: "a", cols: 80, rows: 24 });
-      await service.create({ laneId: "lane-1", title: "b", cols: 80, rows: 24 });
-      service.disposeAll();
-      expect(broadcastExit).toHaveBeenCalledTimes(2);
+    it.each([
+      // Claude sends Stop as soon as it hands work to a background agent, and the stop kills that agent.
+      ["sent Stop while a background agent it started still runs", true, true],
+      ["sent Stop with no background agent", false, false],
+    ])("a planned stop records a Claude CLI that %s as mid-turn: %s", async (_label, startAgent, midTurn) => {
+      mocks.writeFileSync.mockClear();
+      const { service, loadPty } = createHarness({
+        runtimeSocketPath: "/tmp/ade-test-runtime.sock",
+        getAdeCliAgentEnv: (env) => ({ ...env, ADE_CLI_PATH: path.resolve("/opt/ade/bin/ade") }),
+      });
+      await service.create({
+        sessionId: "cli-planned",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        tracked: true,
+        toolType: "claude",
+        runtimeCliLaunch: { provider: "claude", permissionMode: "default" },
+      });
+      const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
+      const token = (spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env?.ADE_CLI_TURN_HOOK_TOKEN ?? "";
+      const hook = (payload: Record<string, string>) =>
+        service.reportCliTurnHookEvent({ sessionId: "cli-planned", provider: "claude", payload, token });
+
+      hook({ hook_event_name: "UserPromptSubmit", prompt_id: "p-1" });
+      if (startAgent) hook({ hook_event_name: "SubagentStart", agent_id: "agent-1" });
+      hook({ hook_event_name: "Stop" });
+      service.disposeAll({ reopenAfterRestart: true });
+
+      const written = [...mocks.writeFileSync.mock.calls].reverse()
+        .find((args: unknown[]) => String(args[0]).includes("reopen-cli-after-restart"));
+      expect(written, "the planned stop writes the reopen list").toBeDefined();
+      expect(JSON.parse(String(written![1])).sessions).toEqual([{ sessionId: "cli-planned", midTurn }]);
     });
   });
 
@@ -8394,12 +8562,6 @@ describe("ptyService", () => {
 
       expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
       expect(mockPty.resize).toHaveBeenLastCalledWith(200, 40);
-    });
-
-    it("returns null from readScreenSnapshot for an unknown session", async () => {
-      const { service } = createHarness();
-      expect(service.readScreenSnapshot("missing")).toBeNull();
-      expect(service.readScreenSnapshot("")).toBeNull();
     });
 
     it("hydrates stored screens from scrollback-0 CSI instead of the full snapshot serialize", async () => {
@@ -10071,6 +10233,37 @@ describe("ptyService", () => {
         expect(result).toEqual({ ok: true });
         expect(freshSpawn).toHaveBeenCalled();
         expect(freshMockPty.write).toHaveBeenCalledWith("hello\n");
+      });
+
+      it("refuses a write to an SDK chat id: no shell is launched and the chat row keeps its status", async () => {
+        const { service, loadPty, sessionStore } = createChatHarness();
+        const created = await service.create({
+          sessionId: "sdk-chat",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Claude Chat",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "sdk-chat",
+          tracked: true,
+          toolType: "claude-chat",
+          startupCommand: "true",
+        });
+        // An SDK chat has the `chat:<provider>:<id>` marker and no CLI metadata.
+        const record = sessionStore.get("sdk-chat");
+        if (!record) throw new Error("setup precondition: the chat row exists");
+        record.resumeCommand = "chat:claude:sdk-chat";
+        record.resumeMetadata = null;
+        service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+        record.status = "running";
+        const statusBefore = sessionStore.get("sdk-chat")?.status;
+
+        const freshSpawn = vi.fn(() => createMockPty());
+        loadPty.mockImplementation(() => ({ spawn: freshSpawn as any }));
+
+        await expect(service.writeTerminal({ chatSessionId: "sdk-chat", data: "\x03" })).rejects.toThrow();
+        expect(freshSpawn).not.toHaveBeenCalled();
+        expect(sessionStore.get("sdk-chat")?.status).toBe(statusBefore);
       });
 
       it("still throws when called with a stale explicit ptyId", async () => {

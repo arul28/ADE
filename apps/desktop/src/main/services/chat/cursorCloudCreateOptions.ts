@@ -199,6 +199,7 @@ export function openCursorCloudCredentialStore(projectRoot: string): SyncCredent
     machineKeyPath: path.join(layout.secretsDir, ".cursor-cloud-key"),
     lockPath: `${credentialsPath}.lock`,
     credentialChangePollIntervalMs: null,
+    projectRoot,
   });
 }
 

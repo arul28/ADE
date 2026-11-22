@@ -130,6 +130,8 @@ struct SettingsAiStatus: Decodable, Equatable {
     var runtimeAvailable: Bool?
     var blocker: String?
     var accountEmail: String?
+    /// The host's sign-in word (`signed-in`, `signed-out`, `unknown`); an older host sends none.
+    var signInState: String?
   }
 
   struct PiInstallation: Decodable, Equatable {

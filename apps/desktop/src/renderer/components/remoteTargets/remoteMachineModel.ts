@@ -11,6 +11,7 @@ import type {
   RemoteRuntimeTargetInput,
   RemoteRuntimeTargetRoute,
   RemoteRuntimeTargetRouteSource,
+  RemoteRuntimeUpdateBlock,
 } from "../../../shared/types";
 import { isTailnetHostname } from "../../../shared/tailnet";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
@@ -472,6 +473,10 @@ export function formatMachineEndpoint(
   return detail ? `${endpoint.kind} · ${detail}` : endpoint.kind;
 }
 
+/** A saved machine whose link another ADE app on this computer holds: its state, and the press that takes it back. */
+export const HELD_ELSEWHERE_STATE_LABEL = "In use by another ADE app";
+export const HELD_ELSEWHERE_ACTION_LABEL = "Use it here";
+
 export function connectionStateLabel(
   connection: RemoteRuntimeConnectionStatus | null,
   connectedFallback: boolean,
@@ -481,7 +486,7 @@ export function connectionStateLabel(
   if (connection?.state === "connecting") return "Connecting";
   if (connection?.state === "error") {
     if (connection.recovery === "reconnecting") return "Reconnecting";
-    if (connection.recovery === "held_elsewhere") return "In use by another ADE app";
+    if (connection.recovery === "held_elsewhere") return HELD_ELSEWHERE_STATE_LABEL;
     return "Connection failed";
   }
   return "Not connected";
@@ -493,15 +498,26 @@ export function connectionStateLabel(
  * (a first Connect turns auto-connect on, so there is nothing to explain yet).
  * A manual disconnect is the stronger reason and wins over the preference.
  */
+/** "at 7:51 PM" today, "yesterday", else "on Nov 12". */
+function disconnectedWhen(at: number, now = Date.now()): string {
+  const when = new Date(at);
+  const today = new Date(now);
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (sameDay(when, today)) {
+    return `at ${when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+  }
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (sameDay(when, yesterday)) return "yesterday";
+  return `on ${when.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+}
+
 export function autoConnectOffReason(
   target: Pick<RemoteRuntimeTarget, "autoConnect" | "lastConnectedAt" | "manuallyDisconnectedAt">,
 ): string | null {
   if (target.manuallyDisconnectedAt != null) {
-    const day = new Date(target.manuallyDisconnectedAt).toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-    });
-    return `you disconnected it on ${day}`;
+    return `You disconnected it ${disconnectedWhen(target.manuallyDisconnectedAt)}`;
   }
   if (target.autoConnect === false && target.lastConnectedAt != null) {
     return "Reconnect automatically is off";
@@ -702,132 +718,12 @@ export function isMachineVersionCurrent(
 }
 
 /**
- * What "Update & restart" left behind for one machine. The host's reply is not
- * the outcome: an update that is still in flight (`pendingVersion`) is only
- * done when the machine comes back reporting that version.
- */
-export type MachineUpdateAttempt = {
-  ok: boolean;
-  message: string;
-  /** The version the machine should come back on; null when nothing is in flight. */
-  pendingVersion: string | null;
-  /** True while the far app is still downloading, which takes longer to land. */
-  downloading: boolean;
-  startedAtMs: number;
-  updateInstallMode?: RemoteRuntimeConnectionStatus["updateInstallMode"];
-  downloadUrl?: string | null;
-};
-
-/** Long enough for an app swap plus the brain restart behind it. */
-export const MACHINE_UPDATE_INSTALL_GRACE_MS = 5 * 60_000;
-/** A download first, then the same install. */
-export const MACHINE_UPDATE_DOWNLOAD_GRACE_MS = 35 * 60_000;
-
-export function machineUpdateGraceMs(attempt: MachineUpdateAttempt): number {
-  return attempt.downloading ? MACHINE_UPDATE_DOWNLOAD_GRACE_MS : MACHINE_UPDATE_INSTALL_GRACE_MS;
-}
-
-/** Turn the host's reply into an attempt the card can check against the machine. */
-export function machineUpdateAttemptFromResult(
-  result: {
-    ok: boolean;
-    message?: string | null;
-    updateApplied?: boolean;
-    targetVersion?: string | null;
-    route?: string;
-    pendingVersion?: string | null;
-    updateInstallMode?: RemoteRuntimeConnectionStatus["updateInstallMode"];
-    downloadUrl?: string | null;
-  },
-  fallbackMessage: string,
-  nowMs: number,
-): MachineUpdateAttempt {
-  // Hosts from before `pendingVersion` only had the standalone route, where an
-  // applied update means the target is what should come back.
-  const pendingVersion = !result.ok
-    ? null
-    : result.pendingVersion !== undefined
-      ? result.pendingVersion?.trim() || null
-      : result.updateApplied
-        ? result.targetVersion?.trim() || null
-        : null;
-  return {
-    ok: result.ok,
-    message: result.message?.trim() || fallbackMessage,
-    pendingVersion,
-    // The terminal route has staged the runtime but still downloads the app
-    // installer, so it gets the download grace too.
-    downloading: result.ok
-      && (result.route === "desktop_app" || result.route === "terminal")
-      && result.updateApplied === false
-      && pendingVersion != null,
-    startedAtMs: nowMs,
-    updateInstallMode: result.updateInstallMode,
-    downloadUrl: result.downloadUrl,
-  };
-}
-
-export type MachineUpdateStatus = {
-  ok: boolean;
-  message: string;
-  /** Still waiting on the machine; the card keeps "Update & restart" busy. */
-  inFlight: boolean;
-};
-
-/**
- * Check an attempt against the machine as it is now. Landed: the machine
- * reports the version (or newer). Not landed in time: say so plainly, with
- * the version it is actually on, instead of leaving "reconnecting…" up.
- */
-export function describeMachineUpdateAttempt(
-  attempt: MachineUpdateAttempt,
-  machine: { connected: boolean; version: string | null },
-  nowMs: number,
-): MachineUpdateStatus {
-  const pending = attempt.pendingVersion;
-  if (!pending) return { ok: attempt.ok, message: attempt.message, inFlight: false };
-  if (machine.connected && machine.version && !isMachineVersionOutdated(machine.version, pending)) {
-    return { ok: true, message: `Updated to ${machine.version}.`, inFlight: false };
-  }
-  if (nowMs - attempt.startedAtMs < machineUpdateGraceMs(attempt)) {
-    return { ok: true, message: attempt.message, inFlight: true };
-  }
-  if (machine.connected) {
-    return {
-      ok: false,
-      message: `Still on ${machine.version ?? "an older version"} — the update to ${pending} didn't install on that machine. Press Update to try again.`,
-      inFlight: false,
-    };
-  }
-  return {
-    ok: false,
-    message: `Not back yet after the update to ${pending}. Check that ADE is running on that machine.`,
-    inFlight: false,
-  };
-}
-
-/**
  * The key a machine's color is picked from. The account's machine key when the
  * machine has one, so every device that can see it lands on the same color;
  * the saved target's id otherwise.
  */
 export function machineColorKey(target: Pick<RemoteRuntimeTarget, "id" | "pairedMachine">): string {
   return target.pairedMachine?.machineKey?.trim() || target.id;
-}
-
-/**
- * Where an update to one machine is, for the row: being asked about, being
- * sent, or waiting on the machine to come back on the new version.
- */
-export function machineUpdatePhase(args: {
-  checking: boolean;
-  sending: boolean;
-  status: MachineUpdateStatus | null;
-}): "checking" | "sending" | "restarting" | null {
-  if (args.sending) return "sending";
-  if (args.status?.inFlight) return "restarting";
-  if (args.checking) return "checking";
-  return null;
 }
 
 /** A connected machine and the ADE version it runs, as an update needs it. */
@@ -848,6 +744,12 @@ export type ConnectedMachine = {
   arch?: string | null;
   updateInstallMode?: RemoteRuntimeConnectionStatus["updateInstallMode"];
   downloadUrl?: string | null;
+  /** See `RemoteRuntimeConnectionStatus.hostStartedAt`. */
+  hostStartedAt?: number | null;
+  /** See `RemoteRuntimeConnectionStatus.hostUpdateBlock`. */
+  hostUpdateBlock?: RemoteRuntimeUpdateBlock | null;
+  /** False when this client cannot ask it to update (`RemoteRuntimeCapabilities.remoteUpdate`). */
+  canUpdate?: boolean;
 };
 
 /** The machines a connection snapshot says are connected right now. */
@@ -868,6 +770,9 @@ export function connectedMachinesFromSnapshot(
         arch: connection.arch ?? connection.target.lastSeenArch ?? null,
         updateInstallMode: connection.updateInstallMode,
         downloadUrl: connection.downloadUrl,
+        hostStartedAt: connection.hostStartedAt ?? null,
+        hostUpdateBlock: connection.hostUpdateBlock ?? null,
+        canUpdate: connection.capabilities?.remoteUpdate !== false,
       };
     });
 }
@@ -916,17 +821,28 @@ export function newestKnownVersionOnTrack(known: readonly string[], track: Updat
 }
 
 /**
- * The version to offer `machine`: the newest this computer knows on the
- * machine's own track, when the machine is behind it. Null when it is level,
- * when its version cannot be read, or when this computer knows no build on
- * that track; it is then not called behind, since nothing here can say so.
+ * The newest build this computer knows on the machine's own track, when the
+ * machine is behind it. Null when it is level, when its version cannot be
+ * read, or when this computer knows no build on that track; it is then not
+ * called behind, since nothing here can say so.
  */
-export function machineUpdateTargetVersion(
+export function machineBehindVersion(
   machine: Pick<ConnectedMachine, "version" | "track">,
   known: readonly string[],
 ): string | null {
   const target = newestKnownVersionOnTrack(known, machineUpdateTrack(machine));
   return target && isMachineVersionOutdated(machine.version, target) ? target : null;
+}
+
+/**
+ * The version to offer `machine`: `machineBehindVersion`, unless its ADE
+ * cannot be updated from here (`canUpdate` false; it is updated on itself).
+ */
+export function machineUpdateTargetVersion(
+  machine: Pick<ConnectedMachine, "version" | "track" | "canUpdate">,
+  known: readonly string[],
+): string | null {
+  return machine.canUpdate === false ? null : machineBehindVersion(machine, known);
 }
 
 /** A machine to update, and the version on its own track it is sent. */
@@ -1003,22 +919,45 @@ function intersects(a: Set<string>, b: Set<string>): boolean {
   return false;
 }
 
-/** True when an account machine is the same host as a saved target. */
-export function accountMachineMatchesTarget(
+/** True when an account machine is the one a saved target was paired with. */
+function accountMachineIsPairedTarget(
   machine: AdeAccountMachine,
   target: RemoteRuntimeTarget,
 ): boolean {
   const pairedHostIdentity = target.pairedMachine?.hostIdentity?.trim();
   const pairedMachineKey = target.pairedMachine?.machineKey?.trim();
-  if (
+  return Boolean(
     (pairedHostIdentity && machine.deviceId?.trim() === pairedHostIdentity)
-    || (pairedMachineKey && machine.machineKey.trim() === pairedMachineKey)
-  ) {
-    return true;
-  }
+    || (pairedMachineKey && machine.machineKey.trim() === pairedMachineKey),
+  );
+}
+
+/** True when an account machine is the same host as a saved target. */
+export function accountMachineMatchesTarget(
+  machine: AdeAccountMachine,
+  target: RemoteRuntimeTarget,
+): boolean {
+  if (accountMachineIsPairedTarget(machine, target)) return true;
   const machineIds = accountMachineRouteIdentities(machine);
   if (machineIds.size === 0) return false;
   return intersects(machineIds, targetRouteIdentities(target));
+}
+
+/**
+ * The directory entry for a saved target. The machine it was paired with wins
+ * over an entry that only shares a route with it: two ADE homes on one
+ * computer publish the same addresses, so a route match can name the other
+ * home and show its presence. A target that names its machine key is matched
+ * by that key only; a shared route is the fallback for a target that names none.
+ */
+export function accountMachineForTarget(
+  machines: readonly AdeAccountMachine[],
+  target: RemoteRuntimeTarget,
+): AdeAccountMachine | null {
+  const paired = machines.find((machine) => accountMachineIsPairedTarget(machine, target));
+  if (paired) return paired;
+  if (target.pairedMachine?.machineKey?.trim()) return null;
+  return machines.find((machine) => accountMachineMatchesTarget(machine, target)) ?? null;
 }
 
 /** True when an account machine is the same host as a locally-discovered machine. */
@@ -1053,6 +992,8 @@ export function assignMachineSections(args: {
   accountMachines?: AdeAccountMachine[];
   /** Keep discovery useful for saved/account dedupe without rendering raw peers. */
   includeDiscoveredRows?: boolean;
+  /** The relays this client trusts besides ADE's own (ADE Web's configured relay): an account machine there can be dialed. */
+  relayBaseUrls?: readonly string[];
 }): MachineSections {
   const {
     targets,
@@ -1151,7 +1092,7 @@ export function assignMachineSections(args: {
   // AVAILABLE, offline greyed in UNAVAILABLE.
   for (const machine of accountMachines) {
     const matchedTarget = targets.find((target) =>
-      accountMachineMatchesTarget(machine, target),
+      accountMachineForTarget(accountMachines, target) === machine,
     );
     if (matchedTarget) {
       // A saved target already owns this host; only annotate offline account
@@ -1172,7 +1113,7 @@ export function assignMachineSections(args: {
       machine,
       matchedTargetId: null,
     };
-    if (accountMachineConnectionState(machine) === "available") {
+    if (accountMachineConnectionState(machine, args.relayBaseUrls ?? []) === "available") {
       sections.available.push(row);
     } else {
       sections.unavailable.push(row);

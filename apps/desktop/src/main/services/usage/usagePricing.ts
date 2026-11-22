@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { getModelListPrice, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { forEachModelsDevEntry, MODELS_DEV_API_URL, pickModelsDevEntries, type ModelsDevCost, type ModelsDevEntry } from "../ai/modelsDevCatalog";
+import { runAfterLaunchQuiet } from "../shared/launchQuiet";
 import { getErrorMessage, isRecord } from "../shared/utils";
 import { customTokenPrice } from "./usagePriceOverrides";
 import type { UsageSpeed } from "../../../shared/types/usage";
@@ -112,8 +113,8 @@ const BUILTIN_PRICING_ALIASES: Record<string, string> = {
   "fable-5-1": "claude-fable-5-1",
   "fable-5": "claude-fable-5-1",
   "fable-5.0": "claude-fable-5-1",
-  astra: "gpt-6-astra",
-  sol: "gpt-6-sol",
+  astra: "gpt-6.2-astra",
+  sol: "gpt-6.2-sol",
   terra: "gpt-6.1-terra",
   luna: "gpt-6-luna",
   "anthropic--claude-4.6-opus": "claude-opus-4-6",
@@ -208,6 +209,12 @@ let dynamicTokenPricingTimestamp = 0;
 let dynamicTokenPricing = new Map<string, TokenPrice>();
 let sortedDynamicPricingKeys: string[] | null = null;
 let refreshInFlight: Promise<number> | null = null;
+/** The async read of the on-disk cache, while it runs. */
+let diskLoadInFlight: Promise<void> | null = null;
+/** A background load waits for the launch to end; one wait is enough. */
+let backgroundDiskLoadQueued = false;
+/** Moves on each test reset, so an async read from before it installs nothing. */
+let dynamicTokenPricingGeneration = 0;
 let disableDiskCacheForTest = false;
 
 /**
@@ -437,9 +444,10 @@ function parseCachedPricingMap(data: unknown): Map<string, TokenPrice> | null {
   return pricing.size > 0 ? pricing : null;
 }
 
-function readPricingCacheFile(cachePath: string): { timestamp: number; pricing: Map<string, TokenPrice> } | null {
+type PricingCacheFile = { timestamp: number; pricing: Map<string, TokenPrice> };
+
+function parsePricingCacheFile(raw: string): PricingCacheFile | null {
   try {
-    const raw = fs.readFileSync(cachePath, "utf8");
     const parsed = JSON.parse(raw) as unknown;
     if (!isRecord(parsed) || parsed.version !== PRICING_CACHE_FORMAT_VERSION) return null;
     const timestamp = typeof parsed.timestamp === "number" && Number.isFinite(parsed.timestamp) ? parsed.timestamp : 0;
@@ -451,12 +459,56 @@ function readPricingCacheFile(cachePath: string): { timestamp: number; pricing: 
   }
 }
 
+function readPricingCacheFile(cachePath: string): PricingCacheFile | null {
+  try {
+    return parsePricingCacheFile(fs.readFileSync(cachePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function readPricingCacheFileAsync(cachePath: string): Promise<PricingCacheFile | null> {
+  try {
+    return parsePricingCacheFile(await fs.promises.readFile(cachePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One object for each distinct price. models.dev lists a model under every
+ * provider that resells it, nearly always at the vendor's rate: about 12,000
+ * rows hold about 3,300 distinct prices, and a separate object per row was
+ * half of the table's heap in the brain. Lookups return the same values;
+ * nothing writes to a returned price (an alias hit already shares one).
+ */
+function shareEqualPrices(pricing: Map<string, TokenPrice>): Map<string, TokenPrice> {
+  const byValue = new Map<string, TokenPrice>();
+  for (const [key, price] of pricing) {
+    const value = JSON.stringify(price);
+    const shared = byValue.get(value);
+    if (shared) pricing.set(key, shared);
+    else byValue.set(value, price);
+  }
+  return pricing;
+}
+
 function installDynamicTokenPricing(pricing: Map<string, TokenPrice>, timestamp: number): number {
-  dynamicTokenPricing = pricing;
+  dynamicTokenPricing = shareEqualPrices(pricing);
   dynamicTokenPricingTimestamp = timestamp;
   dynamicTokenPricingLoaded = true;
   sortedDynamicPricingKeys = null;
   return dynamicTokenPricing.size;
+}
+
+function installDiskPricingCache(cache: PricingCacheFile | null): number {
+  // See PRICING_CACHE_MAX_AGE_MS: a long-abandoned cache is dropped rather
+  // than pricing this year's usage at last year's rates.
+  if (!cache || cache.timestamp < Date.now() - PRICING_CACHE_MAX_AGE_MS) {
+    dynamicTokenPricingLoaded = true;
+    return 0;
+  }
+  return installDynamicTokenPricing(cache.pricing, cache.timestamp);
 }
 
 function loadDynamicTokenPricingFromDisk(): number {
@@ -464,20 +516,32 @@ function loadDynamicTokenPricingFromDisk(): number {
     dynamicTokenPricingLoaded = true;
     return 0;
   }
+  return installDiskPricingCache(readPricingCacheFile(ADE_PRICING_CACHE_PATH));
+}
 
-  const oldestUsableTimestamp = Date.now() - PRICING_CACHE_MAX_AGE_MS;
-  const caches = [readPricingCacheFile(ADE_PRICING_CACHE_PATH)]
-    .filter((cache): cache is { timestamp: number; pricing: Map<string, TokenPrice> } => !!cache)
-    // See PRICING_CACHE_MAX_AGE_MS: a long-abandoned cache is dropped rather
-    // than pricing this year's usage at last year's rates.
-    .filter((cache) => cache.timestamp >= oldestUsableTimestamp);
-
-  if (caches.length === 0) {
+/**
+ * The same load as {@link loadDynamicTokenPricingFromDisk}, without blocking
+ * the process on a 1.5 MB read. A price lookup that runs before it finishes
+ * still reads the file at once, so no figure is priced without the list; this
+ * read then installs nothing.
+ */
+function loadDynamicTokenPricingFromDiskAsync(): Promise<void> {
+  if (dynamicTokenPricingLoaded) return Promise.resolve();
+  if (disableDiskCacheForTest) {
     dynamicTokenPricingLoaded = true;
-    return 0;
+    return Promise.resolve();
   }
-
-  return installDynamicTokenPricing(caches[0]!.pricing, caches[0]!.timestamp);
+  if (diskLoadInFlight) return diskLoadInFlight;
+  const generation = dynamicTokenPricingGeneration;
+  const load = (async () => {
+    const cache = await readPricingCacheFileAsync(ADE_PRICING_CACHE_PATH);
+    if (dynamicTokenPricingLoaded || generation !== dynamicTokenPricingGeneration) return;
+    installDiskPricingCache(cache);
+  })().finally(() => {
+    if (diskLoadInFlight === load) diskLoadInFlight = null;
+  });
+  diskLoadInFlight = load;
+  return load;
 }
 
 function ensureDynamicTokenPricingLoaded(): void {
@@ -521,6 +585,7 @@ async function writeAdePricingCache(pricing: Map<string, TokenPrice>, timestamp:
 }
 
 export async function refreshDynamicTokenPricing(logger?: PricingLogger): Promise<number> {
+  await loadDynamicTokenPricingFromDiskAsync();
   ensureDynamicTokenPricingLoaded();
   if (dynamicTokenPricing.size > 0 && Date.now() - dynamicTokenPricingTimestamp < PRICING_CACHE_TTL_MS) {
     return dynamicTokenPricing.size;
@@ -615,8 +680,24 @@ export function tokenPriceSource(model: string): TokenPriceSource {
   return source === "custom" ? "list" : source;
 }
 
-/** When the loaded copy of the rate list was fetched. Null = none loaded. */
+/**
+ * When the loaded copy of the rate list was fetched. Null = none loaded.
+ *
+ * Only a label reads this (the rates footnote), and the welcome screen's first
+ * usage read reaches it at launch. Before the list is loaded it answers null
+ * and loads the list in the background once the launch is over, instead of a
+ * synchronous 1.5 MB read for a date. A price lookup still loads it at once.
+ */
 export function dynamicTokenPricingUpdatedAt(): number | null {
+  if (!dynamicTokenPricingLoaded) {
+    if (!backgroundDiskLoadQueued) {
+      backgroundDiskLoadQueued = true;
+      void runAfterLaunchQuiet(() => loadDynamicTokenPricingFromDiskAsync())
+        .catch(() => {})
+        .finally(() => { backgroundDiskLoadQueued = false; });
+    }
+    return null;
+  }
   ensureDynamicTokenPricingLoaded();
   return dynamicTokenPricing.size > 0 && dynamicTokenPricingTimestamp > 0
     ? dynamicTokenPricingTimestamp
@@ -831,6 +912,9 @@ export function resetDynamicTokenPricingForTest(options?: { disableDiskCache?: b
   dynamicTokenPricing = new Map();
   sortedDynamicPricingKeys = null;
   refreshInFlight = null;
+  diskLoadInFlight = null;
+  backgroundDiskLoadQueued = false;
+  dynamicTokenPricingGeneration += 1;
   disableDiskCacheForTest = options?.disableDiskCache ?? false;
 }
 

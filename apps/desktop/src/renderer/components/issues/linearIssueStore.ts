@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import type {
   CtoGetLinearIssuePickerDataResult,
   CtoLinearIssueComment,
   NormalizedLinearIssue,
+  OpenProjectBinding,
 } from "../../../shared/types";
 import { useActiveProjectRoot } from "../../state/appStore";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
+import { cacheScopePin } from "../../lib/tabBindingKey";
 import { applyIssueEdit, type LinearIssueEdit } from "../app/linearIssueBrowserModel";
 import { createIssueEntryCache, type IssueEntry, type IssueEntryStatus } from "./issueEntryCache";
 
@@ -19,7 +22,19 @@ import { createIssueEntryCache, type IssueEntry, type IssueEntryStatus } from ".
  *
  * Nothing here polls. An entry is read when a view asks for it, re-read when it
  * is older than `STALE_MS` and a view asks again, and re-read on Refresh.
+ *
+ * Every read goes to the repository reader (`useActiveRepositoryReader`), the
+ * machine whose Linear connection serves this project. A null pin means no
+ * machine is online, and nothing is asked.
  */
+
+type LinearPin = OpenProjectBinding | null;
+const NO_MACHINE_MESSAGE = "No computer that has this project is online.";
+
+/** The machine that reads Linear for the open project. */
+export function useLinearIssuePin(): LinearPin {
+  return useActiveRepositoryReader();
+}
 
 const STALE_MS = 60_000;
 const CATALOG_STALE_MS = 90_000;
@@ -52,12 +67,16 @@ function entryKey(projectRoot: string | null | undefined, identifier: string): s
 export function loadLinearIssue(
   projectRoot: string | null | undefined,
   identifier: string,
-  options: { force?: boolean } = {},
+  /** `pin` null: no machine is online, so only the cache answers. */
+  options: { force?: boolean; pin: LinearPin },
 ): Promise<NormalizedLinearIssue | null> {
+  const key = entryKey(projectRoot, identifier);
+  if (options.pin === null) return Promise.resolve(issues.peek(key));
+  const pin = options.pin;
   const read = window.ade?.cto?.getLinearIssue;
   return issues.load(
-    entryKey(projectRoot, identifier),
-    read ? async () => (await read({ issueId: identifier.trim() })) ?? null : null,
+    key,
+    read ? async () => (await read({ issueId: identifier.trim() }, pin)) ?? null : null,
     { unavailable: "Linear is not available here.", failed: "Linear request failed." },
     options,
   );
@@ -78,9 +97,11 @@ export async function editLinearIssue(
   issue: NormalizedLinearIssue,
   edit: LinearIssueEdit,
   catalog: CtoGetLinearIssuePickerDataResult,
+  pin: LinearPin,
 ): Promise<void> {
   const update = window.ade?.cto?.updateLinearIssue;
   if (!update) throw new Error("Editing Linear issues is not available here.");
+  if (!pin) throw new Error(NO_MACHINE_MESSAGE);
   const keys = [entryKey(projectRoot, issue.identifier), entryKey(projectRoot, issue.id)];
   const snapshot = issues.peek(keys[0]!) ?? issue;
   const optimistic = applyIssueEdit(snapshot, edit, catalog);
@@ -88,7 +109,7 @@ export async function editLinearIssue(
     keys,
     snapshot,
     optimistic,
-    async () => (await update({ issueId: issue.id, ...edit })) ?? null,
+    async () => (await update({ issueId: issue.id, ...edit }, pin)) ?? null,
     "Linear rejected the change.",
   );
 }
@@ -96,8 +117,14 @@ export async function editLinearIssue(
 export function useLinearIssue(identifier: string | null): LinearIssueEntry & {
   refresh: () => void;
   projectRoot: string | null;
+  /** The machine the issue was read through; edits go there too. */
+  pin: LinearPin;
 } {
   const projectRoot = useActiveProjectRoot();
+  const pin = useLinearIssuePin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const key = identifier ? entryKey(projectRoot, identifier) : null;
   const entry = useSyncExternalStore(
     subscribe,
@@ -105,13 +132,13 @@ export function useLinearIssue(identifier: string | null): LinearIssueEntry & {
     () => issues.empty,
   );
   useEffect(() => {
-    if (!identifier) return;
-    void loadLinearIssue(projectRoot, identifier);
-  }, [identifier, projectRoot]);
+    if (!identifier || !pinRef.current) return;
+    void loadLinearIssue(projectRoot, identifier, { pin: pinRef.current });
+  }, [identifier, pinKey, projectRoot]);
   const refresh = useCallback(() => {
-    if (identifier) void loadLinearIssue(projectRoot, identifier, { force: true });
-  }, [identifier, projectRoot]);
-  return { ...entry, refresh, projectRoot };
+    if (identifier && pinRef.current) void loadLinearIssue(projectRoot, identifier, { force: true, pin: pinRef.current });
+  }, [identifier, pinKey, projectRoot]);
+  return { ...entry, refresh, projectRoot, pin };
 }
 
 /**
@@ -142,14 +169,19 @@ type CatalogEntry = {
 const catalogs = new Map<string, CatalogEntry>();
 const EMPTY_CATALOG_ENTRY: CatalogEntry = { data: null, fetchedAt: 0, promise: null };
 
-function loadCatalog(projectRoot: string | null): Promise<CtoGetLinearIssuePickerDataResult | null> {
-  const key = projectRoot ?? "";
+/** The catalog is the machine's Linear connection; the tab's own machine shares the unpinned entry. */
+function catalogKey(projectRoot: string | null, pin: LinearPin): string {
+  return `${cacheScopePin(pin)?.key ?? ""}|${projectRoot ?? ""}`;
+}
+
+function loadCatalog(projectRoot: string | null, pin: OpenProjectBinding): Promise<CtoGetLinearIssuePickerDataResult | null> {
+  const key = catalogKey(projectRoot, pin);
   const current = catalogs.get(key);
   if (current?.promise) return current.promise;
   if (current?.data && Date.now() - current.fetchedAt < CATALOG_STALE_MS) return Promise.resolve(current.data);
   const read = window.ade?.cto?.getLinearIssuePickerData;
   if (!read) return Promise.resolve(null);
-  const promise = read()
+  const promise = read(pin)
     .then((data) => {
       catalogs.set(key, { data, fetchedAt: Date.now(), promise: null });
       if (projectRoot) storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(data), checkedAt: Date.now() });
@@ -167,23 +199,28 @@ function loadCatalog(projectRoot: string | null): Promise<CtoGetLinearIssuePicke
 
 export function useLinearPickerCatalog(): CtoGetLinearIssuePickerDataResult | null {
   const projectRoot = useActiveProjectRoot();
+  const pin = useLinearIssuePin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
+  const key = catalogKey(projectRoot, pin);
   const entry = useSyncExternalStore(
     subscribe,
-    () => catalogs.get(projectRoot ?? "") ?? EMPTY_CATALOG_ENTRY,
+    () => catalogs.get(key) ?? EMPTY_CATALOG_ENTRY,
     () => EMPTY_CATALOG_ENTRY,
   );
   useEffect(() => {
-    void loadCatalog(projectRoot);
-  }, [projectRoot]);
+    if (pinRef.current) void loadCatalog(projectRoot, pinRef.current);
+  }, [pinKey, projectRoot]);
   return entry.data;
 }
 
 /* ── Comments ───────────────────────────────────────────────────────────── */
 
-export async function loadLinearIssueComments(issueId: string): Promise<CtoLinearIssueComment[]> {
+export async function loadLinearIssueComments(issueId: string, pin: LinearPin): Promise<CtoLinearIssueComment[]> {
   const read = window.ade?.cto?.getLinearIssueComments;
-  if (!read) return [];
-  return (await read({ issueId })) ?? [];
+  if (!read || !pin) return [];
+  return (await read({ issueId }, pin)) ?? [];
 }
 
 /* ── Workspace team keys (for `ADE-123` in prose) ──────────────────────── */
@@ -231,12 +268,12 @@ function teamKeysFromCatalog(catalog: CtoGetLinearIssuePickerDataResult): string
   return [...new Set(catalog.states.map((state) => state.teamKey?.trim().toUpperCase()).filter((key): key is string => Boolean(key)))].sort();
 }
 
-function refreshTeamKeys(projectRoot: string): void {
+function refreshTeamKeys(projectRoot: string, pin: OpenProjectBinding): void {
   if (teamKeyReads.has(projectRoot)) return;
   const read = window.ade?.cto?.getLinearIssuePickerData;
   if (!read) return;
   const current = teamKeys.get(projectRoot);
-  const promise = read()
+  const promise = read(pin)
     .then((catalog) => storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(catalog), checkedAt: Date.now() }))
     .catch(() => storeTeamKeys(projectRoot, { keys: current?.keys ?? [], checkedAt: Date.now() }))
     .finally(() => teamKeyReads.delete(projectRoot));
@@ -245,6 +282,10 @@ function refreshTeamKeys(projectRoot: string): void {
 
 export function useLinearWorkspaceTeamKeys(): string[] {
   const projectRoot = useActiveProjectRoot();
+  const pin = useLinearIssuePin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const entry = useSyncExternalStore(
     subscribe,
     () => (projectRoot ? teamKeys.get(projectRoot) ?? null : null),
@@ -260,8 +301,9 @@ export function useLinearWorkspaceTeamKeys(): string[] {
         notify();
       }
     }
-    if (!known || Date.now() - known.checkedAt > TEAM_KEYS_REFRESH_MS) refreshTeamKeys(projectRoot);
-  }, [projectRoot]);
+    const readPin = pinRef.current;
+    if (readPin && (!known || Date.now() - known.checkedAt > TEAM_KEYS_REFRESH_MS)) refreshTeamKeys(projectRoot, readPin);
+  }, [pinKey, projectRoot]);
   return entry?.keys ?? EMPTY_TEAM_KEYS;
 }
 

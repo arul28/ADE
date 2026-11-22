@@ -1,0 +1,850 @@
+import { captureCloudAction } from "./analytics";
+import {
+  CLOUD_PLAN_SENTENCE_NAMES,
+  cloudComputersPhrase,
+  planCleanupDoneSentence,
+  planCleanupSentence,
+  type CloudPlanCleanup,
+  type CloudPlanCleanupComputer,
+  type CloudPlanCleanupDone,
+  type CloudPlanCleanupPick,
+  type CloudPlanId,
+} from "./contract";
+import { CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_COMPUTER_COMMANDS, type CloudSaveForRestReport } from "./contract";
+import { backupNotSavedReason } from "./laneBackups";
+import { sendCloudEmail } from "./email";
+import { isCloudBlocked, notBlockedSql } from "./blocks";
+import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
+import { CLOUD_PLANS, cloudSizeFor, isMeteredStatus, tierOf } from "./plans";
+import { CloudProviderError, type CloudProvider } from "./provider";
+import {
+  boughtPlanIdOf,
+  countedDiskGb,
+  deleteComputer,
+  groupByUser,
+  isPendingId,
+  isProduction,
+  listComputers,
+  logCloud,
+  powerLogStatement,
+  reportCloudFailure,
+  statusChangeStatements,
+  type AccountRow,
+  type CloudEnv,
+  type ComputerRow,
+} from "./store";
+
+/**
+ * A cheaper plan's limits, by the owner's rules of 2026-11-13 (they replace
+ * Cloud 5's grace period), counted in computers since Pricing v2: ADE never
+ * removes a computer on its own, and there is no grace period. A move from
+ * Pro to Plus, a cancel, or a plan that ends after failed payments is still
+ * never refused.
+ *
+ * - In ADE, a downgrade that would leave more computers than the new plan
+ *   allows (`computerLimit`) asks first. Disk no longer counts: each size has
+ *   its own disk maximum. The person cleans up themselves (the downgrade is
+ *   not made), or picks the computers ADE frees and whether each lane's work
+ *   must be saved first (`CloudPlanCleanupPick.push`). The server checks the
+ *   pick names only the account's computers and makes the account fit
+ *   (`checkPlanCleanupPick`), changes the plan, and records the pick
+ *   (`recordPlanCleanupPick`); the minute cron frees exactly those computers
+ *   at once (`runPlanCleanupPicks`), a few a tick.
+ * - Made outside ADE (the billing portal, a plan that ended), nobody can be
+ *   asked. Nothing is deleted. Once the cheaper plan is in force and the
+ *   account is still over it, new computers are refused (`over_plan_limits`)
+ *   and the person is told once (`runPlanLimitChecks`), until they clean up
+ *   or pick in ADE (`POST /cloud/billing/plan-cleanup`, the same check and
+ *   the same freeing).
+ *
+ * Freeing a computer is "keep the lane, free its computer". With `push` on
+ * ("Save each lane's work first"), it goes only when each lane's work is
+ * saved as a lane backup (`saveBeforeDelete`): a resting computer is never
+ * woken for it, nothing is committed or pushed, and a computer whose lanes
+ * are not all saved stays, and the person is told. With `push` off, ADE
+ * saves what it can without waking the computer and deletes it. Either way the lane stays as a lane without a
+ * computer (reason `plan_limit`), with its chats; the next message to it makes
+ * a new computer from its branch, under the plan's limits like any other.
+ * A `past_due` account is never cleaned: Stripe is still trying the card.
+ */
+
+const DAY_MS = 24 * 60 * 60_000;
+/** Most computers one tick frees, across accounts; they run in parallel. */
+const CLEANUPS_PER_TICK = 4;
+/** A claim older than this was lost mid-run (the Worker died): another tick may take the computer. */
+const CLAIM_STALE_MS = 20 * 60_000;
+/** How long a pick waits for its plan change to be saved before it counts as no longer wanted. */
+const PICK_SETTLE_MS = 15 * 60_000;
+/** Interrupt and save first (40 s, as the 0-hours stop), then the save for rest. */
+const PREPARE_TIMEOUT_MS = 90_000;
+const DONE_SHOWN_MS = 14 * DAY_MS;
+/** Most computers one pick names. */
+const MAX_PICKED = 50;
+
+/** `$ADE_HOME/bin` holds the newer ADE; ADE on the computer answers a few seconds after a start. Shared by every server-run command on a computer. */
+export const commandWith = (...lines: string[]) => [
+  'export PATH="$ADE_HOME/bin:$PATH"',
+  'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
+  ...lines,
+].join("\n");
+const PREPARE_COMMAND = commandWith("ade cloud prepare-stop --timeout 40 --json");
+/** The prepare before a delete: the computer also freezes new work until the delete (`cloudDeleteFreeze.ts` in ade-cli). */
+const PREPARE_FOR_DELETE_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.prepareForDelete);
+const UNFREEZE_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.unfreeze);
+const UNFREEZE_TIMEOUT_MS = 45_000;
+/** Capsules, CLI and shell copies, Git summaries and lane backups, so the lane reads and continues with no computer (CONTRACTS 4). */
+const SAVE_FOR_REST_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.saveForRest);
+/** Capsules upload up to 20 MB each and a lane backup up to 50 MB: bounded all the same. */
+const SAVE_FOR_REST_TIMEOUT_MS = 4 * 60_000;
+
+type CleanupComputerRow = ComputerRow & { plan_cleanup_claimed_at?: number | null; plan_cleanup_failed_at?: number | null };
+
+/** The person's pick while ADE frees it (`plan_cleanup_choice_json`). `at` names it: a new pick is a new `at`. */
+export type PlanCleanupChoice = CloudPlanCleanupPick & { planId: CloudPlanId; at: number };
+
+/* ---- Which plan, and what goes over it ---- */
+
+/**
+ * The plan whose limits hold the account now: what it pays for. Null while
+ * `past_due` (Stripe still tries the card, and its computers keep working).
+ */
+export function cleanupPlanOf(account: Pick<AccountRow, "plan" | "paid_plan" | "stripe_status">): CloudPlanId | null {
+  if (account.plan === "paid" && account.stripe_status === "past_due") return null;
+  return boughtPlanIdOf(account);
+}
+
+/** The cheaper plan a downgrade or a cancel waits for at the period end, or null. */
+export function waitingPlanOf(account: Pick<AccountRow, "plan" | "stripe_status" | "cancel_at_period_end" | "paid_plan_next">): CloudPlanId | null {
+  if (account.plan !== "paid" || account.stripe_status === "past_due") return null;
+  if (account.cancel_at_period_end === 1) return "free";
+  return account.paid_plan_next ?? null;
+}
+
+type PlanRoom = { planId: CloudPlanId; computerLimit: number };
+
+/** What a cleanup reads of the account: its plan. */
+type CleanupAccount = Pick<AccountRow, "plan" | "paid_plan" | "stripe_status">;
+
+/**
+ * What `planId` lets an account hold: its computer limit, asleep or not. The
+ * limit is the same for any set of computers, so a pick is checked against
+ * what is left, not against the overage before it.
+ */
+function roomOf(planId: CloudPlanId): PlanRoom {
+  return { planId, computerLimit: CLOUD_PLANS[planId].computerLimit };
+}
+
+/**
+ * The computers a cheaper plan counts: every one made, asleep or not, a move's
+ * source and its new computer once. A reservation not made yet has nothing to
+ * free; the create's own check counts it (`accountComputerCountSql`).
+ */
+function cleanupCount(computers: ComputerRow[]): number {
+  const moving = new Set(computers.map((computer) => computer.moving_from).filter((id) => id != null));
+  return computers.filter((computer) => !isPendingId(computer.instance_id) && !moving.has(computer.instance_id)).length;
+}
+
+const fitsRoom = (room: PlanRoom, computers: ComputerRow[]): boolean => cleanupCount(computers) <= room.computerLimit;
+
+/** The facts every cleanup carries: the count and the limit, and for older builds (which compared disk) the disk with a limit the same number. */
+function cleanupFacts(room: PlanRoom, computers: ComputerRow[]) {
+  const usedGb = countedDiskGb(computers);
+  return { planId: room.planId, computerCount: cleanupCount(computers), computerLimit: room.computerLimit, usedGb, limitGb: usedGb };
+}
+
+/** The computers a pick may name: made (not a reservation), not in a move. Oldest first. */
+function pickable(computers: ComputerRow[]): ComputerRow[] {
+  // A move's source and its new computer are one lane mid-move; a reservation has no computer yet.
+  const moving = new Set(computers.map((computer) => computer.moving_from).filter((id) => id != null));
+  return computers
+    .filter((computer) => !isPendingId(computer.instance_id) && computer.moving_from == null && !moving.has(computer.instance_id))
+    .sort((a, b) => a.created_at - b.created_at || a.instance_id.localeCompare(b.instance_id));
+}
+
+const pickOf = (computer: ComputerRow): CloudPlanCleanupComputer => ({
+  instanceId: computer.instance_id,
+  name: computer.name,
+  laneName: computer.lane_name ?? null,
+  branch: computer.lane_branch ?? null,
+  diskGb: computer.disk_gb,
+  createdAt: computer.created_at,
+});
+
+/**
+ * What goes over `planId` with `computers`, or null when they fit: the facts,
+ * the sentence, every computer a pick may name, and the oldest that make it
+ * fit (what a pick starts with).
+ */
+export function planCleanupFor(
+  env: CloudEnv,
+  account: CleanupAccount,
+  computers: ComputerRow[],
+  planId: CloudPlanId,
+): Omit<CloudPlanCleanup, "startsAt" | "freeing"> | null {
+  const room = roomOf(planId);
+  if (fitsRoom(room, computers)) return null;
+  const choices = pickable(computers);
+  const left = new Set(computers.map((computer) => computer.instance_id));
+  const suggested: CloudPlanCleanupComputer[] = [];
+  for (const computer of choices) {
+    const rest = computers.filter((entry) => left.has(entry.instance_id));
+    if (fitsRoom(room, rest)) break;
+    suggested.push(pickOf(computer));
+    left.delete(computer.instance_id);
+  }
+  const facts = cleanupFacts(room, computers);
+  return { ...facts, computers: suggested, choices: choices.map(pickOf), sentence: planCleanupSentence(facts) };
+}
+
+/** The computers the account's running pick will free (none when no pick runs). */
+export function readPlanCleanupChoiceIds(account: Pick<AccountRow, "plan_cleanup_choice_json">): string[] {
+  return choiceOf(account)?.instanceIds ?? [];
+}
+
+/** The account's pick while ADE frees it, or null (none, or unreadable). */
+export function choiceOf(account: Pick<AccountRow, "plan_cleanup_choice_json">): PlanCleanupChoice | null {
+  if (!account.plan_cleanup_choice_json) return null;
+  try {
+    const raw = JSON.parse(account.plan_cleanup_choice_json) as Record<string, unknown>;
+    const planId = raw.planId;
+    if (planId !== "free" && planId !== "plus" && planId !== "pro" && planId !== "max") return null;
+    if (typeof raw.push !== "boolean" || typeof raw.at !== "number" || !Array.isArray(raw.instanceIds)) return null;
+    return { planId, push: raw.push, at: raw.at, instanceIds: raw.instanceIds.filter((id): id is string => typeof id === "string") };
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a pick still stands: its plan is still the one in force, or the one a downgrade or cancel waits for. */
+function choiceApplies(account: AccountRow, choice: PlanCleanupChoice): boolean {
+  return cleanupPlanOf(account) === choice.planId || waitingPlanOf(account) === choice.planId;
+}
+
+/**
+ * The plan a pick is for now: the plan in force when the account is over it,
+ * else the cheaper plan a downgrade or a cancel waits for when the account is
+ * over that one. Null when the account fits both.
+ */
+export function planCleanupTargetOf(env: CloudEnv, account: AccountRow, computers: ComputerRow[]): CloudPlanId | null {
+  const inForce = cleanupPlanOf(account);
+  if (inForce && planCleanupFor(env, account, computers, inForce)) return inForce;
+  const waiting = waitingPlanOf(account);
+  return waiting && planCleanupFor(env, account, computers, waiting) ? waiting : null;
+}
+
+/**
+ * The plan in force when the account is over it (new computers are refused),
+ * or null. The one check `POST /cloud/instances` and a copy make.
+ */
+export function overPlanInForce(env: CloudEnv, account: AccountRow, computers: ComputerRow[]): Omit<CloudPlanCleanup, "startsAt" | "freeing"> | null {
+  const inForce = cleanupPlanOf(account);
+  return inForce ? planCleanupFor(env, account, computers, inForce) : null;
+}
+
+/**
+ * For `GET /cloud/account`: what goes over the plan in force (or the cheaper
+ * plan a downgrade or cancel waits for), what goes over each cheaper plan if
+ * the person moved to it now, and the last pick's outcome.
+ */
+export function planCleanupState(env: CloudEnv, account: AccountRow, computers: ComputerRow[], now: number): {
+  planCleanup: CloudPlanCleanup | null;
+  downgradePreviews: { pro?: CloudPlanCleanup; plus?: CloudPlanCleanup; free?: CloudPlanCleanup };
+  planCleanupDone: CloudPlanCleanupDone | null;
+} {
+  const inForce = cleanupPlanOf(account);
+  const waiting = waitingPlanOf(account);
+  const choice = choiceOf(account);
+  const freeingFor = (planId: CloudPlanId) => (choice && choice.planId === planId
+    ? { push: choice.push, instanceIds: choice.instanceIds, at: choice.at }
+    : null);
+  let planCleanup: CloudPlanCleanup | null = null;
+  if (inForce) {
+    const current = planCleanupFor(env, account, computers, inForce);
+    if (current) planCleanup = { ...current, startsAt: null, freeing: freeingFor(inForce) };
+  }
+  if (!planCleanup && waiting) {
+    const next = planCleanupFor(env, account, computers, waiting);
+    if (next) planCleanup = { ...next, startsAt: account.period_end, freeing: freeingFor(waiting) };
+  }
+  // A pick still running after the account already fits (it named more than it had to): say it runs.
+  if (!planCleanup && choice && choiceApplies(account, choice)) {
+    planCleanup = {
+      ...cleanupFacts(roomOf(choice.planId), computers),
+      computers: [],
+      choices: [],
+      startsAt: choice.planId === inForce ? null : account.period_end,
+      freeing: freeingFor(choice.planId),
+      sentence: "",
+    };
+  }
+  // Each cheaper plan the person could move to now; each starts at the period end.
+  const downgradePreviews: { pro?: CloudPlanCleanup; plus?: CloudPlanCleanup; free?: CloudPlanCleanup } = {};
+  const cheaper: Array<"pro" | "plus" | "free"> = inForce === "max" ? ["pro", "plus", "free"] : inForce === "pro" ? ["plus", "free"] : inForce === "plus" ? ["free"] : [];
+  for (const planId of cheaper) {
+    const preview = planCleanupFor(env, account, computers, planId);
+    if (preview) downgradePreviews[planId] = { ...preview, startsAt: account.period_end, freeing: null };
+  }
+  return { planCleanup, downgradePreviews, planCleanupDone: readDone(account, now) };
+}
+
+type StoredDone = CloudPlanCleanupDone & { choiceAt?: number };
+
+function parseDone(json: string | null): StoredDone | null {
+  if (!json) return null;
+  try {
+    return JSON.parse(json) as StoredDone;
+  } catch {
+    return null;
+  }
+}
+
+function readDone(account: AccountRow, now: number): CloudPlanCleanupDone | null {
+  if (account.plan_cleanup_result_at == null || now - account.plan_cleanup_result_at > DONE_SHOWN_MS) return null;
+  const done = parseDone(account.plan_cleanup_result_json);
+  if (!done || (done.freed.length === 0 && done.kept.length === 0)) return null;
+  const { choiceAt: _choiceAt, ...shown } = done;
+  return shown;
+}
+
+/* ---- The person's pick ---- */
+
+export type PickCheck =
+  | { ok: true; instanceIds: string[] }
+  | { ok: false; code: "cleanup_does_not_fit" | "cleanup_changed" | "cleanup_running" | "nothing_to_free" | "bad_request"; message: string };
+
+/** The `cleanup` of a request (`CloudPlanCleanupPick`), or null when it isn't one. */
+export function readPlanCleanupPick(value: unknown): CloudPlanCleanupPick | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.push !== "boolean" || !Array.isArray(raw.instanceIds)) return null;
+  if (raw.instanceIds.length > MAX_PICKED || raw.instanceIds.some((id) => typeof id !== "string" || !id || id.length > 100)) return null;
+  return { push: raw.push, instanceIds: [...new Set(raw.instanceIds as string[])] };
+}
+
+/**
+ * Whether `pick` frees what `planId` needs: no other pick is still running,
+ * the account is over the plan, the pick names only computers the account has
+ * now (made, not mid-move), and without them the rest fits. Nothing changes
+ * here; the caller records the pick once the rest of its work is done.
+ */
+export function checkPlanCleanupPick(env: CloudEnv, account: AccountRow, computers: ComputerRow[], planId: CloudPlanId, pick: CloudPlanCleanupPick): PickCheck {
+  const planName = CLOUD_PLAN_SENTENCE_NAMES[planId];
+  if (choiceOf(account)) {
+    return { ok: false, code: "cleanup_running", message: "ADE is still freeing the computers you picked. Try again when it's done." };
+  }
+  if (!planCleanupFor(env, account, computers, planId)) {
+    return pick.instanceIds.length
+      ? { ok: false, code: "cleanup_changed", message: `Your computers already fit ${planName}, so nothing needs to go. Look again.` }
+      : { ok: false, code: "nothing_to_free", message: `Your computers already fit ${planName}.` };
+  }
+  const allowed = new Set(pickable(computers).map((computer) => computer.instance_id));
+  if (pick.instanceIds.some((id) => !allowed.has(id))) {
+    return { ok: false, code: "cleanup_changed", message: "Your computers changed since ADE showed them. Look at the list again." };
+  }
+  const picked = new Set(pick.instanceIds);
+  const rest = computers.filter((computer) => !picked.has(computer.instance_id));
+  const room = roomOf(planId);
+  if (!fitsRoom(room, rest)) {
+    const still = planCleanupSentence(cleanupFacts(room, rest));
+    return { ok: false, code: "cleanup_does_not_fit", message: `Without those, ${still.charAt(0).toLowerCase()}${still.slice(1)} Pick more computers.` };
+  }
+  return { ok: true, instanceIds: pick.instanceIds };
+}
+
+/**
+ * Records a checked pick, so the minute cron frees exactly those computers.
+ * Guarded on no pick running, so two requests can't both start one. The last
+ * pick's notice is cleared: this pick writes its own.
+ */
+export async function recordPlanCleanupPick(env: CloudEnv, userId: string, planId: CloudPlanId, pick: CloudPlanCleanupPick, now: number): Promise<boolean> {
+  const choice: PlanCleanupChoice = { planId, push: pick.push, instanceIds: pick.instanceIds, at: now };
+  const written = await env.DB.prepare(`
+    update cloud_accounts set plan_cleanup_choice_json = ?, plan_cleanup_result_json = null, plan_cleanup_result_at = null
+    where user_id = ? and plan_cleanup_choice_json is null
+  `).bind(JSON.stringify(choice), userId).run();
+  const recorded = (written.meta?.changes ?? 0) === 1;
+  logCloud(recorded ? "cloud.plan_cleanup_picked" : "cloud.plan_cleanup_pick_not_recorded", { userId, plan: planId, computers: pick.instanceIds.length, push: pick.push });
+  return recorded;
+}
+
+/* ---- What the person is told ---- */
+
+/** "Dec 4": the day in UTC, the zone the server's periods end in. */
+const utcDate = (ms: number): string => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+
+/** Where in ADE the person picks, and what ADE does with a pick: every email says it the same. */
+const WAYS_OUT = "ADE deletes nothing on its own. In ADE, delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees. It pushes their work to GitHub first, and their lanes and chats stay.";
+
+/**
+ * The email when a downgrade or cancel is made outside ADE's question (the
+ * billing portal) and the cheaper plan's limits would be passed (from the
+ * Stripe webhook's `announceChange`). A pick made in ADE for it says nothing.
+ */
+export async function warnPlanCleanupAhead(env: CloudEnv, account: AccountRow, computers: ComputerRow[], toPlan: CloudPlanId): Promise<void> {
+  if (choiceOf(account)?.planId === toPlan) return;
+  const cleanup = planCleanupFor(env, account, computers, toPlan);
+  if (!cleanup) return;
+  const starts = utcDate(account.period_end);
+  const planName = CLOUD_PLAN_SENTENCE_NAMES[toPlan];
+  logCloud("cloud.plan_cleanup_warned_ahead", { userId: account.user_id, to: toPlan, computers: cleanup.computerCount, limit: cleanup.computerLimit });
+  await sendCloudEmail(env, {
+    userId: account.user_id,
+    subject: `You have more ADE Cloud computers than ${planName} allows from ${starts}`,
+    text: [
+      `You move to ${planName} on ${starts}.`,
+      cleanup.sentence,
+      `From then, ADE can't make a new computer until you have no more than ${cloudComputersPhrase(cleanup.computerLimit ?? 0)}.`,
+      WAYS_OUT,
+    ].join("\n"),
+  });
+}
+
+/**
+ * The email after a pick is done: `planCleanupDoneSentence` (what ADE shows
+ * too, which already names each freed computer and its branch), then why each
+ * kept computer was kept, which the sentence doesn't say.
+ */
+async function tellPlanCleanupDone(env: CloudEnv, userId: string, done: CloudPlanCleanupDone): Promise<void> {
+  const lines = [planCleanupDoneSentence(done)];
+  for (const entry of done.kept) lines.push(`${entry.name}: ${entry.reason}`);
+  await sendCloudEmail(env, {
+    userId,
+    subject: done.freed.length
+      ? `ADE Cloud freed ${done.freed.length === 1 ? "a computer" : `${done.freed.length} computers`} to fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}`
+      : "ADE Cloud couldn't push a computer's work",
+    text: lines.join("\n"),
+  });
+}
+
+/* ---- Over the plan in force: told once, nothing freed ---- */
+
+/**
+ * From the ten-minute owner check: each account ADE Cloud lets in that is over
+ * the plan in force (new computers refused) is told once, with no pick
+ * running; one that fits again is cleared. Nothing is freed here.
+ */
+export async function runPlanLimitChecks(env: CloudEnv, computers: ComputerRow[], now: number): Promise<void> {
+  const byUser = groupByUser(computers);
+  // An account told before that has no computer now fits.
+  await env.DB.prepare("update cloud_accounts set plan_over_told_at = null where plan_over_told_at is not null and user_id not in (select value from json_each(?))")
+    .bind(JSON.stringify([...byUser.keys()])).run();
+  if (byUser.size === 0) return;
+  // An account the owner blocked is left as it is.
+  const accounts = await env.DB.prepare(`select * from cloud_accounts where deleted_at is null and user_id in (select value from json_each(?)) and ${notBlockedSql("cloud_accounts.user_id")}`)
+    .bind(JSON.stringify([...byUser.keys()])).all<AccountRow>();
+  for (const account of accounts.results ?? []) {
+    try {
+      const over = overPlanInForce(env, account, byUser.get(account.user_id) ?? []);
+      if (!over) {
+        if (account.plan_over_told_at != null) {
+          await env.DB.prepare("update cloud_accounts set plan_over_told_at = null where user_id = ?").bind(account.user_id).run();
+          logCloud("cloud.plan_over_cleared", { userId: account.user_id });
+        }
+        continue;
+      }
+      if (account.plan_over_told_at != null || choiceOf(account)) continue;
+      await tellOver(env, account, over, now);
+    } catch (error) {
+      reportCloudFailure("cloud.plan_limit_check_failed", { userId: account.user_id, message: error instanceof Error ? error.message : "unknown" });
+    }
+  }
+}
+
+/** Claimed first (so overlapping checks tell once), then the email, given back when it didn't go out. */
+async function tellOver(env: CloudEnv, account: AccountRow, over: Omit<CloudPlanCleanup, "startsAt" | "freeing">, now: number): Promise<void> {
+  const claim = await env.DB.prepare("update cloud_accounts set plan_over_told_at = ? where user_id = ? and plan_over_told_at is null")
+    .bind(now, account.user_id).run();
+  if ((claim.meta?.changes ?? 0) !== 1) return;
+  const sent = await sendCloudEmail(env, {
+    userId: account.user_id,
+    subject: `You have more ADE Cloud computers than ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} allows`,
+    text: [
+      `Your account is on ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} now and you have more cloud computers than it allows.`,
+      over.sentence,
+      "ADE can't make a new computer until you have fewer. Your computers and their work stay as they are.",
+      WAYS_OUT,
+    ].join("\n"),
+  });
+  if (sent === "sent" || (sent === "skipped" && !isProduction(env))) {
+    logCloud("cloud.plan_over_told", { userId: account.user_id, plan: over.planId, email: sent });
+    return;
+  }
+  await env.DB.prepare("update cloud_accounts set plan_over_told_at = null where user_id = ? and plan_over_told_at = ?").bind(account.user_id, now).run();
+  reportCloudFailure("cloud.plan_over_not_told", { userId: account.user_id, email: sent });
+}
+
+/* ---- Freeing a pick ---- */
+
+/**
+ * From the minute cron: for each account with a pick, frees its picked
+ * computers that are still waiting, at most `CLEANUPS_PER_TICK` a tick across
+ * accounts, each claimed in one write so overlapping ticks free it once. A
+ * pick whose plan no longer applies (the person stayed on Pro, undid a
+ * cancel) is dropped without freeing anything more. A pick with nothing left
+ * waiting is finished: cleared, and the person gets the email. With no pick,
+ * one indexed read.
+ */
+export async function runPlanCleanupPicks(env: CloudEnv, provider: CloudProvider, now = Date.now()): Promise<void> {
+  // An account the owner blocked is left as it is (freeing would wake its computers).
+  const accounts = (await env.DB.prepare(`select * from cloud_accounts where plan_cleanup_choice_json is not null and deleted_at is null and ${notBlockedSql("cloud_accounts.user_id")}`)
+    .all<AccountRow>()).results ?? [];
+  let budget = CLEANUPS_PER_TICK;
+  const runs: Promise<void>[] = [];
+  for (const account of accounts) {
+    try {
+      const choice = choiceOf(account);
+      if (!choice) {
+        await clearChoice(env, account);
+        continue;
+      }
+      if (!choiceApplies(account, choice)) {
+        // A pick made with a downgrade can land before the plan change is saved
+        // (a failed save waits for Stripe's webhook): give it time to catch up.
+        if (now - choice.at < PICK_SETTLE_MS) continue;
+        if (await clearChoice(env, account)) logCloud("cloud.plan_cleanup_pick_dropped", { userId: account.user_id, plan: choice.planId });
+        continue;
+      }
+      const waiting = await waitingPicks(env, account.user_id, choice, now);
+      if (waiting.length === 0) {
+        if (!(await pickClaimed(env, account.user_id, choice, now))) await finishChoice(env, account, choice);
+        continue;
+      }
+      if (budget <= 0) continue;
+      // A move or an update in flight is waited out: it changes which computers exist.
+      const owned = await listComputers(env, account.user_id);
+      if (owned.some((computer) => computer.moving_from != null || isPendingId(computer.instance_id) || computer.update_state === "updating")) continue;
+      const take = waiting.slice(0, budget);
+      budget -= take.length;
+      for (const computer of take) runs.push(freePicked(env, provider, account.user_id, choice, computer, now));
+    } catch (error) {
+      reportCloudFailure("cloud.plan_cleanup_account_failed", { userId: account.user_id, message: error instanceof Error ? error.message : "unknown" });
+    }
+  }
+  await Promise.all(runs);
+}
+
+/** The picked computers still to free: on the account, not kept by this pick, and not claimed by a run still going. */
+async function waitingPicks(env: CloudEnv, userId: string, choice: PlanCleanupChoice, now: number): Promise<CleanupComputerRow[]> {
+  const rows = (await env.DB.prepare(`
+    select * from cloud_computers
+    where user_id = ? and deleted_at is null and instance_id in (select value from json_each(?))
+      and (plan_cleanup_failed_at is null or plan_cleanup_failed_at < ?)
+      and (plan_cleanup_claimed_at is null or plan_cleanup_claimed_at < ?)
+  `).bind(userId, JSON.stringify(choice.instanceIds), choice.at, now - CLAIM_STALE_MS).all<CleanupComputerRow>()).results ?? [];
+  const order = new Map(choice.instanceIds.map((id, index) => [id, index]));
+  return rows.sort((a, b) => (order.get(a.instance_id) ?? 0) - (order.get(b.instance_id) ?? 0));
+}
+
+/**
+ * Whether a run still holds one of the pick's computers: its claim stays,
+ * deleted or kept, until its outcome is on the notice (`freePicked`), so the
+ * pick never finishes with an outcome still missing. A claim a lost run left
+ * stops counting once stale.
+ */
+async function pickClaimed(env: CloudEnv, userId: string, choice: PlanCleanupChoice, now: number): Promise<boolean> {
+  const row = await env.DB.prepare(`
+    select 1 as busy from cloud_computers
+    where user_id = ? and instance_id in (select value from json_each(?)) and plan_cleanup_claimed_at >= ?
+    limit 1
+  `).bind(userId, JSON.stringify(choice.instanceIds), now - CLAIM_STALE_MS).first<{ busy: number }>();
+  return row != null;
+}
+
+/** Clears the pick as it was read: true when this run cleared it. */
+async function clearChoice(env: CloudEnv, account: AccountRow): Promise<boolean> {
+  const cleared = await env.DB.prepare("update cloud_accounts set plan_cleanup_choice_json = null where user_id = ? and plan_cleanup_choice_json = ?")
+    .bind(account.user_id, account.plan_cleanup_choice_json).run();
+  return (cleared.meta?.changes ?? 0) === 1;
+}
+
+/** Ends a pick with nothing left to free: the run that clears it sends the one email. */
+async function finishChoice(env: CloudEnv, account: AccountRow, choice: PlanCleanupChoice): Promise<void> {
+  if (!(await clearChoice(env, account))) return;
+  const row = await env.DB.prepare("select plan_cleanup_result_json from cloud_accounts where user_id = ?").bind(account.user_id)
+    .first<{ plan_cleanup_result_json: string | null }>();
+  const done = parseDone(row?.plan_cleanup_result_json ?? null);
+  logCloud("cloud.plan_cleanup_pick_done", { userId: account.user_id, plan: choice.planId, freed: done?.freed.length ?? 0, kept: done?.kept.length ?? 0 });
+  if (done && done.choiceAt === choice.at && (done.freed.length || done.kept.length)) {
+    const { choiceAt: _choiceAt, ...shown } = done;
+    await tellPlanCleanupDone(env, account.user_id, shown);
+  }
+}
+
+type Outcome = { kind: "freed"; name: string; branch: string | null; laneKept: boolean } | { kind: "kept"; name: string; reason: string } | { kind: "skipped" };
+
+/**
+ * Adds one computer's outcome to the pick's notice. Read, then written only
+ * if unchanged, so computers freed side by side each land.
+ */
+async function recordOutcome(env: CloudEnv, userId: string, choice: PlanCleanupChoice, outcome: Exclude<Outcome, { kind: "skipped" }>, now: number): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const row = await env.DB.prepare("select plan_cleanup_result_json from cloud_accounts where user_id = ?").bind(userId)
+      .first<{ plan_cleanup_result_json: string | null }>();
+    const before = row?.plan_cleanup_result_json ?? null;
+    const current = parseDone(before);
+    const done: StoredDone = current && current.choiceAt === choice.at
+      ? current
+      : { at: now, planId: choice.planId, freed: [], kept: [], choiceAt: choice.at };
+    if (outcome.kind === "freed") done.freed.push({ name: outcome.name, branch: outcome.branch, laneKept: outcome.laneKept, pushed: choice.push });
+    else done.kept.push({ name: outcome.name, reason: outcome.reason });
+    done.at = now;
+    const written = await env.DB.prepare("update cloud_accounts set plan_cleanup_result_json = ?, plan_cleanup_result_at = ? where user_id = ? and plan_cleanup_result_json is ?")
+      .bind(JSON.stringify(done), now, userId, before).run();
+    if ((written.meta?.changes ?? 0) === 1) return;
+  }
+  reportCloudFailure("cloud.plan_cleanup_outcome_unsaved", { userId });
+}
+
+const nameOf = (computer: ComputerRow): string => computer.lane_name ?? computer.name ?? computer.instance_id;
+
+/**
+ * Whether `instanceId` is still to be freed, read fresh: the account isn't
+ * blocked, the same pick still stands and names it, and its plan still
+ * applies. The run's snapshot can be minutes old by the delete: the person
+ * may have stayed on Pro meanwhile.
+ */
+async function stillPicked(env: CloudEnv, userId: string, instanceId: string, choice: PlanCleanupChoice): Promise<boolean> {
+  if (await isCloudBlocked(env, userId)) return false;
+  const account = await env.DB.prepare("select * from cloud_accounts where user_id = ? and deleted_at is null").bind(userId).first<AccountRow>();
+  const current = account ? choiceOf(account) : null;
+  if (!(account != null && current != null && current.at === choice.at && current.instanceIds.includes(instanceId) && choiceApplies(account, current))) return false;
+  // A move that began after the run's snapshot carries this computer's files: deleting it would cut the move short.
+  const moving = await env.DB.prepare(
+    "select 1 as busy from cloud_computers where deleted_at is null and (moving_from = ? or (instance_id = ? and moving_from is not null)) limit 1",
+  ).bind(instanceId, instanceId).first();
+  if (moving) logCloud("cloud.plan_cleanup_skip_moving", { userId, instanceId });
+  return moving == null;
+}
+
+/** Codes for a lane whose work isn't saved: the person's own state, not ADE's to fix. */
+/** A resting computer that never reported a save: kept, with no email (nothing failed). */
+export const BACKUP_NEVER_SAVED_CODE = "backup_never_saved";
+export const BACKUP_STATE_CODES = new Set(["backup_not_current", BACKUP_NEVER_SAVED_CODE]);
+
+/** One picked computer, freed, kept or skipped, and its outcome on the pick's notice. */
+async function freePicked(env: CloudEnv, provider: CloudProvider, userId: string, choice: PlanCleanupChoice, computer: CleanupComputerRow, now: number): Promise<void> {
+  try {
+    const outcome = await freeComputer(env, provider, choice, computer, now);
+    if (outcome.kind === "skipped") return;
+    if (outcome.kind === "freed") {
+      const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
+      captureCloudAction(env, undefined, userId, { action: "delete", plan: choice.planId, origin: "system", tier: tierOf(size) }, computer.instance_id, now);
+    }
+    await recordOutcome(env, userId, choice, outcome, now);
+  } catch (error) {
+    reportCloudFailure("cloud.plan_cleanup_run_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+  }
+  // The outcome is in (or lost): the claim goes, and the pick may finish.
+  await env.DB.prepare("update cloud_computers set plan_cleanup_claimed_at = null where instance_id = ? and plan_cleanup_claimed_at = ?")
+    .bind(computer.instance_id, now).run();
+}
+
+/**
+ * Frees one picked computer, keeping its lane. With `push` on ("Save each
+ * lane's work first"), it goes only when every lane is saved
+ * (`saveBeforeDelete`: no wake, nothing pushed); else it stays and the
+ * person is told why. With `push` off, it is deleted after a best-effort save
+ * on a computer that is awake (one that rests is not woken).
+ */
+async function freeComputer(env: CloudEnv, provider: CloudProvider, choice: PlanCleanupChoice, computer: CleanupComputerRow, now: number): Promise<Outcome> {
+  const claimed = await env.DB.prepare(`
+    update cloud_computers set plan_cleanup_claimed_at = ?
+    where instance_id = ? and deleted_at is null and (plan_cleanup_claimed_at is null or plan_cleanup_claimed_at < ?)
+  `).bind(now, computer.instance_id, now - CLAIM_STALE_MS).run();
+  if ((claimed.meta?.changes ?? 0) !== 1) return { kind: "skipped" };
+  const release = async (): Promise<Outcome> => {
+    await env.DB.prepare("update cloud_computers set plan_cleanup_claimed_at = null where instance_id = ?").bind(computer.instance_id).run();
+    logCloud("cloud.plan_cleanup_no_longer_picked", { instanceId: computer.instance_id });
+    return { kind: "skipped" };
+  };
+  const keep = async (reason: string, code: string): Promise<Outcome> => {
+    if (BACKUP_STATE_CODES.has(code)) logCloud("cloud.plan_cleanup_kept", { instanceId: computer.instance_id, code });
+    else reportCloudFailure("cloud.plan_cleanup_kept", { instanceId: computer.instance_id, code });
+    // The claim stays until the outcome is recorded (`freePicked`).
+    await env.DB.prepare("update cloud_computers set plan_cleanup_failed_at = ? where instance_id = ?")
+      .bind(now, computer.instance_id).run();
+    return { kind: "kept", name: nameOf(computer), reason };
+  };
+  try {
+    if (!(await stillPicked(env, computer.user_id, computer.instance_id, choice))) return await release();
+    let metadata: Record<string, string> = {};
+    let resting = false;
+    if (choice.push) {
+      const work = await saveBeforeDelete(env, provider, computer, "plan_cleanup");
+      if (!work.ok) return await keep(work.reason, work.code);
+      metadata = work.metadata;
+      resting = work.resting;
+    } else {
+      metadata = await saveWithoutPush(provider, computer);
+    }
+    // The save took minutes: the person may have stayed on Pro since, or started it.
+    // An awake computer was frozen for the delete (`saveBeforeDelete`): it takes work again at once.
+    if (!(await stillPicked(env, computer.user_id, computer.instance_id, choice))) {
+      if (!resting) await unfreezeComputer(provider, computer.instance_id);
+      return await release();
+    }
+    if (resting && !(await stillRestsWithBackups(env, computer.instance_id))) return await release();
+
+    const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf(metadata));
+    const laneKept = namesLane(lane);
+    if (laneKept) await markKeepLaneStatement(env, computer, lane, "plan_limit").run();
+    try {
+      await deleteComputer(env, provider, computer, { who: "system", reason: "plan_limit" }, Date.now());
+    } catch (error) {
+      if (laneKept) await unmarkKeepLaneStatement(env, computer.instance_id).run();
+      throw error;
+    }
+    logCloud("cloud.plan_cleanup_freed", { instanceId: computer.instance_id, keptLane: laneKept, saved: choice.push, resting });
+    return { kind: "freed", name: nameOf(computer), branch: lane.branch, laneKept };
+  } catch (error) {
+    const code = error instanceof CloudProviderError ? error.code : "unknown";
+    return keep(choice.push ? "ADE Cloud couldn't reach the computer to save its work." : "ADE Cloud couldn't reach the computer to delete it.", code);
+  }
+}
+
+/**
+ * Push off: the computer's metadata (for its lane), and on a computer that is
+ * awake, its own ADE stops its agents and saves its chats. Best effort, and a
+ * resting computer is not woken: the person said to just delete it.
+ */
+async function saveWithoutPush(provider: CloudProvider, computer: ComputerRow): Promise<Record<string, string>> {
+  try {
+    const instance = await provider.getInstance(computer.instance_id);
+    if (isMeteredStatus(instance.status)) {
+      // The delete follows whatever the prepare says, so the computer stays frozen until it.
+      await provider.exec(computer.instance_id, PREPARE_FOR_DELETE_COMMAND, PREPARE_TIMEOUT_MS).catch(() => null);
+    }
+    return instance.metadata;
+  } catch {
+    return {};
+  }
+}
+
+/** All of a computer's lanes saved, so it can go (its metadata), or why it stays, with a code for the log. */
+export type SaveBeforeDeleteOutcome =
+  | { ok: true; metadata: Record<string, string>; resting: boolean }
+  | { ok: false; reason: string; code: string };
+
+/**
+ * The one save before a delete, and it never starts a computer (every wake
+ * is use). A computer that rests may go only when it rested right after a
+ * backup report that saved every lane (`backup_rest_at`, `laneBackups.ts`);
+ * else it stays with `CLOUD_BACKUP_NOT_SAVED_SENTENCE` and the lanes' own
+ * reasons. A computer that is awake is metered already: its own ADE stops its
+ * agents, saves its chats (`prepare-stop`), then saves fork capsules, copies
+ * and every lane's backup (`save-for-rest --capsules`), and goes only when
+ * that save's report is current. Nothing is committed or pushed. Provider
+ * errors are thrown.
+ */
+export async function saveBeforeDelete(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, reason: string): Promise<SaveBeforeDeleteOutcome> {
+  const instance = await provider.getInstance(computer.instance_id);
+  if (!isMeteredStatus(instance.status)) {
+    const saved = await restingBackupState(env, computer.instance_id);
+    if (saved.ok) return { ok: true, metadata: instance.metadata, resting: true };
+    logCloud("cloud.save_before_delete_not_current", { instanceId: computer.instance_id, reason, reported: saved.code !== BACKUP_NEVER_SAVED_CODE });
+    return saved;
+  }
+  // Agents stopped and chats saved first: anything still writing could land after the backup.
+  // Every delete but the idle cleanup also freezes new work on the computer until the delete:
+  // the idle cleanup has its own rule, where a person's use calls the delete off (`/use`).
+  const freezes = reason !== "idle_cleanup";
+  /** The computer stays (a throw is read as "couldn't reach it"): it takes work again. */
+  const unfreezeOnThrow = async (error: unknown): Promise<never> => {
+    if (freezes) await unfreezeComputer(provider, computer.instance_id);
+    throw error;
+  };
+  const prepared = await provider.exec(computer.instance_id, freezes ? PREPARE_FOR_DELETE_COMMAND : PREPARE_COMMAND, PREPARE_TIMEOUT_MS)
+    .catch(unfreezeOnThrow);
+  if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) {
+    // A readable answer that is not confirmed: the computer ended its own freeze. Any other answer may hide one.
+    if (freezes && (prepared.exitCode !== 0 || readResult(prepared.stdout) == null)) await unfreezeComputer(provider, computer.instance_id);
+    return { ok: false, reason: "ADE on the computer couldn't stop its agents and save its chats.", code: "prepare_stop_failed" };
+  }
+  const kept = async (outcome: SaveBeforeDeleteOutcome): Promise<SaveBeforeDeleteOutcome> => {
+    if (freezes) await unfreezeComputer(provider, computer.instance_id);
+    return outcome;
+  };
+  const saved = await provider.exec(computer.instance_id, SAVE_FOR_REST_COMMAND, SAVE_FOR_REST_TIMEOUT_MS).catch(unfreezeOnThrow);
+  const report = saved.exitCode === 0 ? readResult(saved.stdout) as Partial<CloudSaveForRestReport> | null : null;
+  const reportId = report?.backups && typeof report.backups === "object" ? report.backups.reportId ?? null : null;
+  logCloud("cloud.save_for_rest", {
+    instanceId: computer.instance_id,
+    reason,
+    ok: report?.ok === true,
+    capsules: Number(report?.capsules) || 0,
+    sessions: Number(report?.sessions) || 0,
+    git: Number(report?.git) || 0,
+    backups: report?.backups?.state ?? "none",
+  });
+  if (!reportId) return await kept({ ok: false, reason: "This computer's ADE is too old to save its lanes' work. It saves them after it updates, the next time it rests.", code: "backup_unsupported" });
+  const row = await backupRestRow(env, computer.instance_id);
+  if (row?.backup_report_id === reportId && row.backup_report_state === "current") return { ok: true, metadata: instance.metadata, resting: false };
+  return await kept({ ok: false, reason: backupNotSavedReason(row ?? {}), code: "backup_not_current" });
+}
+
+/**
+ * Ends the freeze of a computer `saveBeforeDelete` prepared for a delete that
+ * now does not happen, so it takes work again at once, not when the freeze
+ * runs out (10 minutes). Best effort, and only on a computer that is awake:
+ * exec wakes a sleeping computer, and a sleeping one does no work.
+ */
+export async function unfreezeComputer(provider: CloudProvider, instanceId: string): Promise<void> {
+  try {
+    const instance = await provider.getInstance(instanceId);
+    if (!isMeteredStatus(instance.status)) return;
+    const result = await provider.exec(instanceId, UNFREEZE_COMMAND, UNFREEZE_TIMEOUT_MS);
+    logCloud("cloud.delete_freeze_ended", { instanceId, exitCode: result.exitCode });
+  } catch (error) {
+    // The freeze ends on its own.
+    logCloud("cloud.delete_freeze_end_failed", { instanceId, code: error instanceof CloudProviderError ? error.code : "unknown" });
+  }
+}
+
+async function backupRestRow(env: CloudEnv, instanceId: string): Promise<Pick<ComputerRow, "backup_rest_at" | "backup_report_id" | "backup_report_state" | "backup_problems_json"> | null> {
+  return await env.DB.prepare("select backup_rest_at, backup_report_id, backup_report_state, backup_problems_json from cloud_computers where instance_id = ?")
+    .bind(instanceId).first();
+}
+
+/**
+ * Whether a resting computer rested right after a save that holds every
+ * lane's work (`backup_rest_at`), read with no wake; else why not. A
+ * computer that never reported a save rested before its ADE saved lane work:
+ * nothing failed, and its next rest saves it.
+ */
+export async function restingBackupState(env: CloudEnv, instanceId: string): Promise<{ ok: true } | { ok: false; reason: string; code: string }> {
+  const row = await backupRestRow(env, instanceId);
+  if (row?.backup_rest_at != null) return { ok: true };
+  if (row?.backup_report_id == null) return { ok: false, reason: CLOUD_BACKUP_NEVER_SAVED_SENTENCE, code: BACKUP_NEVER_SAVED_CODE };
+  return { ok: false, reason: backupNotSavedReason(row), code: "backup_not_current" };
+}
+
+/**
+ * Just before the provider delete of a computer `saveBeforeDelete` found
+ * resting: it still rests with its backups (a start since clears them).
+ */
+export async function stillRestsWithBackups(env: CloudEnv, instanceId: string): Promise<boolean> {
+  return (await backupRestRow(env, instanceId))?.backup_rest_at != null;
+}
+
+/** The JSON a `--json` command printed: its `result`, or the object itself. Null when unreadable. */
+export function readResult(stdout: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(stdout.trim()) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    return (record.result && typeof record.result === "object" && !Array.isArray(record.result) ? record.result : record) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `ade cloud prepare-stop --json` confirmed the computer is quiet: it ran,
+ * no chat turn is still running, every saved chat was written, and it didn't
+ * run out of time. Anything else (an older ADE, a timeout) keeps the computer.
+ */
+function prepareConfirmed(exitCode: number, stdout: string): boolean {
+  if (exitCode !== 0) return false;
+  const result = readResult(stdout);
+  return result != null && result.stillRunning === 0 && result.chatsNotUploaded === 0 && result.timedOut === false;
+}

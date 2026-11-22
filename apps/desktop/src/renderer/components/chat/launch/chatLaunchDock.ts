@@ -94,6 +94,90 @@ export const USER_MESSAGE_CARD_SELECTOR = "[data-chat-user-message-card]";
 
 const pendingDocks = new Map<string, { handoff: ComposerHandoff; stashedAtMs: number }>();
 
+/**
+ * Draft chrome copies that a chat pane plays now, each with the chat it opened
+ * and the call that takes it away.
+ */
+const departuresOnScreen = new Map<HTMLElement, { sessionId: string; end: () => void }>();
+/**
+ * Other send animations (the Work area's dissolve) that end with the
+ * departures. Each gets the time the chat took over from its draft, on the
+ * document timeline, or null when that time is unknown.
+ */
+const sendHandoffSettleListeners = new Set<(tookOverAtMs: number | null) => void>();
+/**
+ * Chats that took over from the draft that sent them, with the time they did
+ * (`performance.now()`, the document timeline's clock). The Work area's
+ * dissolve into such a chat can outlive its draft copy, or play without one
+ * (the copy skips under resource pressure).
+ */
+const handoffsAwaitingReply = new Map<string, number>();
+/**
+ * How long after a chat takes over its first reply words still end the send
+ * animations: longer than the dissolve (`WorkViewArea`, 300 ms) and the draft
+ * copy, so a later reply finds nothing to end.
+ */
+const SEND_HANDOFF_SETTLE_WINDOW_MS = 1_000;
+/**
+ * How long after the take-over the dissolve can start: it starts on a frame
+ * after the commit that swapped the draft for the chat. An animation that
+ * starts later belongs to another transition (a grid, another chat).
+ */
+const SEND_HANDOFF_ANIMATION_START_MS = 250;
+
+function pruneSendHandoffs(): void {
+  for (const host of departuresOnScreen.keys()) {
+    if (!host.isConnected) departuresOnScreen.delete(host);
+  }
+  const oldestMs = performance.now() - SEND_HANDOFF_SETTLE_WINDOW_MS;
+  for (const [sessionId, tookOverAtMs] of handoffsAwaitingReply) {
+    if (tookOverAtMs < oldestMs) handoffsAwaitingReply.delete(sessionId);
+  }
+}
+
+/**
+ * Runs `listener` each time a send's animations must end at once. Returns the
+ * call that removes it.
+ */
+export function onSendHandoffSettle(listener: (tookOverAtMs: number | null) => void): () => void {
+  sendHandoffSettleListeners.add(listener);
+  return () => {
+    sendHandoffSettleListeners.delete(listener);
+  };
+}
+
+/**
+ * Whether `animation` started with the take-over at `tookOverAtMs` (see
+ * `onSendHandoffSettle`), so a settle may end it. With no take-over time, any
+ * running animation counts.
+ */
+export function startedWithSendHandoff(animation: Animation, tookOverAtMs: number | null): boolean {
+  if (tookOverAtMs === null) return true;
+  // A pending animation has no start time yet: it starts now.
+  const startedAtMs = animation.startTime === null ? performance.now() : Number(animation.startTime);
+  return startedAtMs <= tookOverAtMs + SEND_HANDOFF_ANIMATION_START_MS;
+}
+
+/**
+ * Ends the send animations of the chat `sessionId`: its draft chrome copies
+ * and the Work area's dissolve. The chat pane calls it when that chat's reply
+ * shows its first words, because the reply must not sit under a fading draft
+ * or a blur. It acts only while that chat's draft copy is on screen or soon
+ * after the chat took over from its draft (`SEND_HANDOFF_SETTLE_WINDOW_MS`),
+ * and only on animations that started with that take-over, so a reply that
+ * comes after the animations ended, another chat's reply, a later transition,
+ * or a chat opened another way changes nothing.
+ */
+export function settleSendHandoff(sessionId: string): void {
+  pruneSendHandoffs();
+  const ends = Array.from(departuresOnScreen.values()).filter((departure) => departure.sessionId === sessionId);
+  const tookOverAtMs = handoffsAwaitingReply.get(sessionId) ?? null;
+  handoffsAwaitingReply.delete(sessionId);
+  if (!ends.length && tookOverAtMs === null) return;
+  for (const departure of ends) departure.end();
+  for (const listener of Array.from(sendHandoffSettleListeners)) listener(tookOverAtMs);
+}
+
 function discardDeparting(handoff: ComposerHandoff | null | undefined): void {
   const departing = handoff?.departing;
   if (departing && !departing.played) departing.host.remove();
@@ -745,8 +829,13 @@ function headerLayer(header: HTMLElement, rect: DOMRect): HTMLElement {
  */
 export function playDepartingDraftChrome(
   departing: DepartingDraftChrome | null | undefined,
+  /** The chat that opened; its first reply words end this (`settleSendHandoff`). */
+  sessionId: string,
   header?: HTMLElement | null,
 ): void {
+  // The chat took over from its draft, with or without a copy to play.
+  pruneSendHandoffs();
+  handoffsAwaitingReply.set(sessionId, performance.now());
   if (!departing || departing.played) return;
   departing.played = true;
   const { host, items } = departing;
@@ -761,9 +850,11 @@ export function playDepartingDraftChrome(
   const finish = () => {
     if (done) return;
     done = true;
+    departuresOnScreen.delete(host);
     if (morphInto) morphInto.style.visibility = previousHeaderVisibility;
     host.remove();
   };
+  departuresOnScreen.set(host, { sessionId, end: finish });
   if (!shouldPlaySendHandoff()) {
     finish();
     return;

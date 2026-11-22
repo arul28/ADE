@@ -130,6 +130,16 @@ fi
 
 base_path=$PATH
 delay=2
+# A server launch (docs/plans/cloud-6/c6-c8-launcher-spec.md, C6) sets
+# ADE_LAUNCH_ID and its ADE_LAUNCH_JOIN code in this machine's env. They
+# reach the brain from here unchanged: it signs the machine in with the code
+# (30 minutes; a brain restarted mid-sign-in may join again with it while the
+# launch is still joining), drops both from its own env so nothing it starts
+# inherits them, and keeps where the launch stands in
+# $ADE_HOME/cloud/boot-launch.json, so a restart after the sign-in goes on.
+if [ -n "${ADE_LAUNCH_ID:-}" ]; then
+  echo "$(date -u +%FT%TZ) server launch $ADE_LAUNCH_ID" >> "$log"
+fi
 while true; do
   # A move to another machine holds the brain while its files are copied, so
   # every database is copied whole (cloudMachineCopy.ts). A move ends within

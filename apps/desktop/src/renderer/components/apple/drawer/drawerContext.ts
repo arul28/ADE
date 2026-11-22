@@ -11,7 +11,7 @@ import type { AppleDrawerActions, AppleDrawerScope } from "./useAppleDrawerActio
 export type AppleDrawerContext = {
   scope: AppleDrawerScope;
   device: AppleLaneDevice;
-  pinRef: MutableRefObject<OpenProjectBinding | null>;
+  pinRef: MutableRefObject<OpenProjectBinding>;
   visible: boolean;
   actions: AppleDrawerActions;
   /** The bundle id the device is showing, as far as ADE knows. Null = `—`. */

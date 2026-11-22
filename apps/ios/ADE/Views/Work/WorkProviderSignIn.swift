@@ -145,6 +145,13 @@ func workProviderSignedOutBeforeSend(_ status: Any, provider: String) -> Bool {
     && connection["runtimeAvailable"] as? Bool == false
 }
 
+/// A failed sign-in command in words. A connection that is not ready says
+/// so (never its "ready" line as an error); anything else is the machine's
+/// own message.
+func workSignInFailureMessage(_ error: Error) -> String {
+  isSyncHostUnavailableError(error) ? SyncUserFacingError.message(for: error) : error.localizedDescription
+}
+
 /// A sign-in page link the card may open: http(s) only, whatever a CLI printed.
 func workSignInPageURL(_ url: String?) -> URL? {
   guard let url, let link = URL(string: url), let scheme = link.scheme?.lowercased(),
@@ -180,6 +187,17 @@ final class WorkProviderSignInController: ObservableObject {
     self.instanceId = instanceId
   }
 
+  #if DEBUG
+  /// Fixture screens: a sign-in frozen at one phase, with nothing to reach.
+  convenience init(fixtureProvider provider: String, phase: Phase, url: String?, deviceCode: String?, awaitingCode: Bool = false) {
+    self.init(provider: provider, host: nil, instanceId: nil)
+    self.phase = phase
+    self.url = url
+    self.deviceCode = deviceCode
+    self.awaitingCode = awaitingCode
+  }
+  #endif
+
   var signingIn: Bool { phase == .starting || phase == .waiting || phase == .verifying }
   /// The phone has a connection to the chat's machine to sign in on.
   var canReachMachine: Bool { host != nil }
@@ -195,40 +213,76 @@ final class WorkProviderSignInController: ObservableObject {
     deviceCode = nil
     awaitingCode = false
     do {
-      switch kind {
-      case .account(let accountProvider):
-        let client = ProviderAccountsClient(host: host)
-        let accounts = try await client.list(accountProvider)
-        let account = accounts.first(where: { $0.id == instanceId })
-          ?? accounts.first(where: \.isDefault)
-        let target: ProviderAccount
-        if let account {
-          target = account
-        } else {
-          target = try await client.create(accountProvider)
-        }
-        let login = try await client.startLogin(id: target.id, provider: accountProvider)
-        guard current == attempt else { return }
-        apply(state: login.state, loginId: login.loginId, url: login.url, deviceCode: login.deviceCode, awaitingCode: login.awaitingCode, message: login.message)
-      case .cli:
-        var args: [String: Any] = ["provider": provider]
-        if provider == "kimi" { args["kimiRegion"] = kimiRegion }
-        let raw = try await host.runProviderAccountsCommand("ai.cliLoginStart", args: args)
-        guard current == attempt else { return }
-        applyCli(raw)
-      case .antigravity:
-        let raw = try await host.runProviderAccountsCommand("ai.antigravitySignInStart", args: ["method": "oauth-personal"])
-        guard current == attempt else { return }
-        applyAntigravity(raw)
-      case .settings:
-        phase = .idle
-        return
+      let started = try await retryingWhileHostWakes(attempt: current) {
+        try await self.begin(on: host, kimiRegion: kimiRegion, attempt: current)
       }
-      schedulePoll(attempt: current)
+      if started { schedulePoll(attempt: current) }
     } catch {
       guard current == attempt else { return }
       phase = .failed
-      message = error.localizedDescription
+      message = workSignInFailureMessage(error)
+    }
+  }
+
+  /// The account this controller made on the machine, for a retry.
+  private var createdAccountId: String?
+
+  /// Starts the provider's sign-in on the machine. False when there is
+  /// nothing to wait for (a newer attempt took over, or no flow here).
+  private func begin(on host: ProviderAccountsHost, kimiRegion: String, attempt current: Int) async throws -> Bool {
+    switch kind {
+    case .account(let accountProvider):
+      let client = ProviderAccountsClient(host: host)
+      let accounts = try await client.list(accountProvider)
+      // A retry after a create that went through uses that account, never a second one.
+      let account = accounts.first(where: { $0.id == instanceId })
+        ?? accounts.first(where: { $0.id == createdAccountId })
+        ?? accounts.first(where: \.isDefault)
+      let target: ProviderAccount
+      if let account {
+        target = account
+      } else {
+        target = try await client.create(accountProvider)
+        createdAccountId = target.id
+      }
+      let login = try await client.startLogin(id: target.id, provider: accountProvider)
+      guard current == attempt else { return false }
+      apply(state: login.state, loginId: login.loginId, url: login.url, deviceCode: login.deviceCode, awaitingCode: login.awaitingCode, message: login.message)
+    case .cli:
+      var args: [String: Any] = ["provider": provider]
+      if provider == "kimi" { args["kimiRegion"] = kimiRegion }
+      let raw = try await host.runProviderAccountsCommand("ai.cliLoginStart", args: args)
+      guard current == attempt else { return false }
+      applyCli(raw)
+    case .antigravity:
+      let raw = try await host.runProviderAccountsCommand("ai.antigravitySignInStart", args: ["method": "oauth-personal"])
+      guard current == attempt else { return false }
+      applyAntigravity(raw)
+    case .settings:
+      phase = .idle
+      return false
+    }
+    return true
+  }
+
+  /// Waits between tries when the machine answers `host_unavailable`: its
+  /// project connection is restarting, as while a cloud computer wakes. That
+  /// state passes by itself (`isSyncHostUnavailableError`), so a press that
+  /// lands in it tries again before the card shows a failure.
+  static let hostWakeRetrySeconds: [UInt64] = [2, 3, 5]
+
+  /// Runs `body`, again after each wait while the machine is not ready. The
+  /// machine refused the command, so it never ran and a retry is safe.
+  private func retryingWhileHostWakes<T>(attempt current: Int, _ body: () async throws -> T) async throws -> T {
+    var waits = Self.hostWakeRetrySeconds[...]
+    while true {
+      do {
+        return try await body()
+      } catch let error where isSyncHostUnavailableError(error) && !waits.isEmpty && current == attempt {
+        let wait = waits.removeFirst()
+        try await Task.sleep(nanoseconds: wait * 1_000_000_000)
+        guard current == attempt else { throw error }
+      }
     }
   }
 
@@ -237,20 +291,23 @@ final class WorkProviderSignInController: ObservableObject {
     guard let host, let loginId, !trimmed.isEmpty, !submitting else { return }
     submitting = true
     defer { submitting = false }
+    let kind = self.kind
     do {
-      switch kind {
-      case .account:
-        let login = try await ProviderAccountsClient(host: host).submitLoginCode(loginId: loginId, code: trimmed)
-        apply(state: login.state, loginId: login.loginId, url: login.url, deviceCode: login.deviceCode, awaitingCode: login.awaitingCode, message: login.message)
-      case .cli:
-        applyCli(try await host.runProviderAccountsCommand("ai.cliLoginSubmitCode", args: ["loginId": loginId, "code": trimmed]))
-      case .antigravity:
-        applyAntigravity(try await host.runProviderAccountsCommand("ai.antigravitySignInComplete", args: ["flowId": loginId, "callbackUrl": trimmed]))
-      case .settings:
-        return
+      try await retryingWhileHostWakes(attempt: attempt) {
+        switch kind {
+        case .account:
+          let login = try await ProviderAccountsClient(host: host).submitLoginCode(loginId: loginId, code: trimmed)
+          self.apply(state: login.state, loginId: login.loginId, url: login.url, deviceCode: login.deviceCode, awaitingCode: login.awaitingCode, message: login.message)
+        case .cli:
+          self.applyCli(try await host.runProviderAccountsCommand("ai.cliLoginSubmitCode", args: ["loginId": loginId, "code": trimmed]))
+        case .antigravity:
+          self.applyAntigravity(try await host.runProviderAccountsCommand("ai.antigravitySignInComplete", args: ["flowId": loginId, "callbackUrl": trimmed]))
+        case .settings:
+          return
+        }
       }
     } catch {
-      message = error.localizedDescription
+      message = workSignInFailureMessage(error)
     }
   }
 
@@ -314,6 +371,8 @@ final class WorkProviderSignInController: ObservableObject {
     pollTask?.cancel()
     guard signingIn else { return }
     pollTask = Task { [weak self] in
+      // Status reads the machine refused while its connection restarts.
+      var hostWaits = 0
       while !Task.isCancelled {
         try? await Task.sleep(nanoseconds: 1_000_000_000)
         guard let self, !Task.isCancelled, current == self.attempt, self.signingIn, let host = self.host else { return }
@@ -336,10 +395,16 @@ final class WorkProviderSignInController: ObservableObject {
           case .settings:
             return
           }
+          hostWaits = 0
         } catch {
           guard current == self.attempt else { return }
+          // A restarting connection is not a failed sign-in: read again next tick.
+          if isSyncHostUnavailableError(error) && hostWaits < 10 {
+            hostWaits += 1
+            continue
+          }
           self.phase = .failed
-          self.message = error.localizedDescription
+          self.message = workSignInFailureMessage(error)
           return
         }
       }
@@ -353,6 +418,8 @@ final class WorkProviderSignInController: ObservableObject {
     self.awaitingCode = awaitingCode
     switch state {
     case "succeeded":
+      // The machine has a sign-in now: its free-models answer is out of date.
+      if let host { WorkFreeModelsStatusStore.shared.invalidate(for: host) }
       phase = .done
       self.message = nil
     case "verifying":
@@ -418,6 +485,9 @@ struct WorkProviderSignInCard: View {
   let reason: WorkProviderSignInReason
   let onSignedIn: () -> Void
   let onDismiss: () -> Void
+  /// A brand-new person on a machine with free models: switch the chat to the
+  /// machine's free default instead of signing in. Nil hides the offer.
+  let onUseFreeModel: (() -> Void)?
   @StateObject private var controller: WorkProviderSignInController
   @State private var code = ""
   @State private var copied = false
@@ -430,13 +500,15 @@ struct WorkProviderSignInCard: View {
     instanceId: String?,
     reason: WorkProviderSignInReason = .failedTurn,
     onSignedIn: @escaping () -> Void,
-    onDismiss: @escaping () -> Void
+    onDismiss: @escaping () -> Void,
+    onUseFreeModel: (() -> Void)? = nil
   ) {
     self.provider = provider
     self.machineName = machineName
     self.reason = reason
     self.onSignedIn = onSignedIn
     self.onDismiss = onDismiss
+    self.onUseFreeModel = onUseFreeModel
     _controller = StateObject(wrappedValue: WorkProviderSignInController(provider: provider, host: host, instanceId: instanceId))
   }
 
@@ -489,6 +561,10 @@ struct WorkProviderSignInCard: View {
         }
       }
 
+      if let onUseFreeModel, !controller.signingIn, controller.phase != .done {
+        freeModelOffer(onUseFreeModel)
+      }
+
       if let message = controller.message, !message.isEmpty {
         Text(message)
           .font(.caption)
@@ -508,61 +584,16 @@ struct WorkProviderSignInCard: View {
 
   @ViewBuilder
   private var actionRow: some View {
-    if controller.phase == .waiting && controller.awaitingCode {
-      VStack(alignment: .leading, spacing: 8) {
-        if let link = workSignInPageURL(controller.url) {
-          Link(destination: link) {
-            Label(linkHost.map { "Open \($0)" } ?? "Open the sign-in page", systemImage: "arrow.up.right.square")
-              .font(.footnote.weight(.semibold))
-          }
-        }
-        HStack(spacing: 8) {
-          TextField(controller.kind == .antigravity ? "Paste the address it ends on" : "Paste the code it shows", text: $code)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .font(.footnote.monospaced())
-            .padding(.horizontal, 10)
-            .frame(height: 36)
-            .background(ADEColor.textPrimary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          Button("Finish") {
-            Task { await controller.submit(code: code) }
-          }
-          .buttonStyle(.borderedProminent)
-          .tint(tint)
-          .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controller.submitting)
-        }
+    if controller.phase == .waiting || controller.phase == .verifying {
+      // The same parts as the Settings sheet: the account note, then the steps
+      // with the code, its QR and Open sign-in page.
+      VStack(alignment: .leading, spacing: 10) {
+        Text(providerSignInAccountNote(provider: provider, expected: nil))
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+        ProviderSignInStepList(controller: controller, code: $code, compact: true)
         cancelButton
-      }
-    } else if controller.phase == .waiting, let deviceCode = controller.deviceCode {
-      VStack(alignment: .leading, spacing: 8) {
-        Button {
-          UIPasteboard.general.string = deviceCode
-          copied = true
-        } label: {
-          HStack(spacing: 8) {
-            Text(deviceCode)
-              .font(.system(.title3, design: .monospaced).weight(.semibold))
-              .tracking(2)
-            Image(systemName: copied ? "checkmark" : "doc.on.doc")
-              .font(.caption)
-          }
-          .foregroundStyle(ADEColor.textPrimary)
-          .padding(.horizontal, 12)
-          .frame(height: 40)
-          .background(ADEColor.textPrimary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(tint.opacity(0.5), lineWidth: 1))
-        }
-        .accessibilityLabel("Copy the code \(deviceCode)")
-        HStack(spacing: 12) {
-          if let link = workSignInPageURL(controller.url) {
-            Link(destination: link) {
-              Label(linkHost.map { "Enter it on \($0)" } ?? "Open the sign-in page", systemImage: "arrow.up.right.square")
-                .font(.footnote.weight(.semibold))
-            }
-          }
-          ProgressView().controlSize(.small)
-          cancelButton
-        }
       }
     } else {
       if provider.lowercased() == "kimi" && !controller.signingIn {
@@ -597,6 +628,24 @@ struct WorkProviderSignInCard: View {
     }
   }
 
+  /// The other way in for a new person: chat now on a free model.
+  private func freeModelOffer(_ action: @escaping () -> Void) -> some View {
+    HStack(spacing: 8) {
+      Text("No account yet?")
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+      Button(action: action) {
+        Label("Use a free model", systemImage: "gift")
+          .font(.footnote.weight(.semibold))
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(ADEColor.success)
+      .accessibilityIdentifier("Work.SignIn.UseFreeModel")
+      .accessibilityHint("Switches this chat to a free model. No account or key needed.")
+      Spacer(minLength: 0)
+    }
+  }
+
   private var primaryTitle: String {
     switch controller.phase {
     case .starting: return "Starting…"
@@ -615,5 +664,197 @@ struct WorkProviderSignInCard: View {
     }
     .font(.footnote)
     .foregroundStyle(ADEColor.textMuted)
+  }
+}
+
+// MARK: - Claude on ADE Cloud
+
+/// The account's answer on Claude for a chat on an ADE Cloud computer. A
+/// cloud computer takes Claude from the account's Claude pass, never from a
+/// sign-in on that one computer, so this is read from the account
+/// (`providerLogins.status`, the same from every machine of the account),
+/// like desktop's `useAdeCloudSignInNeed`. Only a definite answer is kept.
+enum WorkAdeCloudClaudeRead: Equatable {
+  /// A pass works for ADE Cloud.
+  case passWorks
+  /// ADE Cloud has no Claude pass that works.
+  case needsPass(ProviderCloudClaudePassNeed)
+  /// Sign-ins are off for ADE Cloud: the person signs in on each cloud
+  /// computer, so the computer's own sign-in card applies.
+  case signInsOff
+}
+
+/// One definite account answer, for the chat it was read for.
+struct WorkAdeCloudClaudeReadState: Equatable {
+  let key: String
+  let read: WorkAdeCloudClaudeRead
+  let status: ProviderLoginsPhoneStatus
+}
+
+/// `pass-<id>` → `claude-pass/<id>`: the pass a chat's account is; nil for
+/// any other account (desktop `claudePassKeyOfAccountId`).
+func workClaudePassKey(ofAccountId id: String?) -> String? {
+  guard let id = id?.trimmingCharacters(in: .whitespacesAndNewlines), id.hasPrefix("pass-") else { return nil }
+  let rest = id.dropFirst("pass-".count)
+  guard !rest.isEmpty, rest.allSatisfy({ $0.isLetter || $0.isNumber }) else { return nil }
+  return "claude-pass/\(rest)"
+}
+
+/// The account's status as a Claude answer for ADE Cloud, or nil when the
+/// machine could not read the account. `accountId` is the chat's own
+/// account: a chat on one pass stays on it, so another pass that works does
+/// not fix it.
+func workAdeCloudClaudeRead(_ status: ProviderLoginsPhoneStatus, accountId: String? = nil) -> WorkAdeCloudClaudeRead? {
+  guard status.readsAccount else { return nil }
+  if !status.cloud.enabled { return .signInsOff }
+  // The chat's own pass decides: another pass that works does not fix it.
+  // A pass the account no longer has is not this case: the host runs that
+  // chat on its default account, which takes the "New chats" pass, so the
+  // account-wide answer below applies.
+  if let passKey = workClaudePassKey(ofAccountId: accountId),
+     let pass = status.claudePasses?.first(where: { $0.key == passKey }) {
+    // A pass this brain can't read is not known either way.
+    if pass.unreadable == true { return nil }
+    if pass.state == "ended" { return .needsPass(.ended(at: pass.endedAt.map { Date(timeIntervalSince1970: $0 / 1000) })) }
+    if pass.on == false { return .needsPass(.off) }
+    return pass.state != nil ? .passWorks : nil
+  }
+  if let need = providerCloudClaudePassNeed(status) { return .needsPass(need) }
+  // Passes this brain can't read, or none it knows the state of: not known.
+  guard let passes = status.claudePasses,
+        passes.contains(where: { $0.unreadable != true && $0.state != nil && $0.state != "ended" && $0.on != false })
+  else { return nil }
+  return .passWorks
+}
+
+/// The card in the composer's place for Claude on an ADE Cloud computer: it
+/// points at the account's Claude pass, the one thing that fixes it. The
+/// pass is made and renewed in the ADE desktop app; the button opens
+/// Settings › Providers › ADE Cloud › Claude, which says where and how.
+struct WorkAdeCloudClaudePassCard: View {
+  /// What the account says is wrong; nil when the phone could not read it.
+  let need: ProviderCloudClaudePassNeed?
+  let reason: WorkProviderSignInReason
+  /// The chat runs on one named pass, so the card speaks of that pass.
+  var ownPass = false
+  /// The account now has a pass that works: a stopped turn can go again.
+  let passWorks: Bool
+  let onOpenPass: () -> Void
+  let onSendAgain: () -> Void
+  let onDismiss: () -> Void
+
+  private var tint: Color { providerTint("claude") }
+  private var ready: Bool { passWorks && reason == .failedTurn }
+
+  var title: String {
+    if ready { return "Your Claude pass works again" }
+    switch need {
+    case .ended: return "Claude ended your pass"
+    case .off: return ownPass ? "This chat's Claude pass is off" : "Claude is off"
+    case .noPass: return "Approve a Claude pass"
+    case nil: return "No Claude pass works"
+    }
+  }
+
+  var detail: String {
+    if ready { return "Send your message again to run it on ADE Cloud." }
+    let again = reason == .failedTurn ? " Then send your message again." : ""
+    switch need {
+    case .ended(let at):
+      return providerCloudPassEndedDetail(at) + again
+    case .off where ownPass:
+      return "This chat runs on a Claude pass that is off for ADE Cloud. Turn that pass on in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude." + again
+    case .off:
+      return "Every Claude pass is off for ADE Cloud. Turn one on in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude." + again
+    case .noPass:
+      return "ADE Cloud never uses Claude's own login. One approve in the ADE desktop app lets your cloud chats use your Claude plan for about a year." + again
+    case nil:
+      return "Cloud computers use your account's Claude pass, not a sign-in on the computer. Renew the pass in the ADE desktop app, in Settings › Providers › ADE Cloud › Claude." + again
+    }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 10) {
+        WorkProviderLogo(provider: "claude", tint: tint, size: 30)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+          Text("on ADE Cloud")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        Spacer(minLength: 0)
+        Button(action: onDismiss) {
+          Image(systemName: "xmark")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 28, height: 28)
+        }
+        .accessibilityLabel("Not now")
+      }
+
+      Text(detail)
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      Button(action: ready ? onSendAgain : onOpenPass) {
+        Text(ready ? "Send again" : "Open Claude pass")
+          .font(.subheadline.weight(.semibold))
+          .frame(maxWidth: .infinity)
+          .frame(height: 40)
+      }
+      .buttonStyle(.borderedProminent)
+      .tint(tint)
+      .accessibilityIdentifier(ready ? "Work.SignIn.CloudPass.SendAgain" : "Work.SignIn.CloudPass.Open")
+    }
+    .padding(14)
+    .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(tint.opacity(0.35), lineWidth: 1))
+    .accessibilityElement(children: .contain)
+  }
+}
+
+/// Settings › Providers › ADE Cloud › Claude in a sheet, opened from a
+/// chat's pass card. The account's sign-ins, read on the machine the phone
+/// drives (account-wide, so any of the person's machines answers the same).
+struct WorkAdeCloudClaudePassSheet: View {
+  @StateObject private var model: ProviderLoginsModel
+  @Environment(\.dismiss) private var dismiss
+  private let loads: Bool
+
+  init(syncService: SyncService) {
+    _model = StateObject(wrappedValue: ProviderLoginsModel(host: syncService))
+    loads = true
+  }
+
+  /// On the machine that answered the chat's read, starting from its answer.
+  init(readHost: ProviderAccountsHost, status: ProviderLoginsPhoneStatus?, changes: SyncService?) {
+    _model = StateObject(wrappedValue: ProviderLoginsModel(readHost: readHost, status: status, changes: changes))
+    loads = true
+  }
+
+  #if DEBUG
+  init(fixture: ProviderLoginsPhoneStatus) {
+    _model = StateObject(wrappedValue: ProviderLoginsModel(fixture: fixture))
+    loads = false
+  }
+  #endif
+
+  var body: some View {
+    NavigationStack {
+      ProviderCloudProviderPage(model: model, provider: "claude")
+        .toolbar {
+          ToolbarItem(placement: .topBarTrailing) {
+            Button("Done") { dismiss() }
+          }
+        }
+    }
+    .task {
+      if loads { await model.load() }
+    }
   }
 }

@@ -1,6 +1,7 @@
+import { laneDisplayName } from "../../../../shared/laneDisplayName";
 import React from "react";
-import { CircleDashed, CircleNotch, UsersThree } from "@phosphor-icons/react";
-import type { LaneListSnapshot, LaneSummary } from "../../../../shared/types";
+import { CircleDashed, CircleNotch, DesktopTower, UsersThree } from "@phosphor-icons/react";
+import type { LaneListSnapshot, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { relativeTimeCompact } from "../../../lib/format";
 import { ToolLogo } from "../../terminals/ToolLogos";
@@ -16,8 +17,9 @@ import { LaneCatchUpButton, LaneCatchUpMenu, type LaneCatchUpTarget } from "../L
 import { laneHasCurrentPr } from "../laneCatchUp";
 import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
 import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
-import { MachineChip } from "../../shared/MachineChip";
+import { SessionHoverCard, useSessionHoverCard } from "../../terminals/SessionHoverCard";
 import { LaneEmojiGlyph } from "../LaneEmojiGlyph";
+import { LaneShareMark } from "../../laneShare/LaneShareMark";
 import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import {
   laneAgentToolType,
@@ -56,10 +58,16 @@ export type LaneSidebarRowProps = {
   /** Why the lane needs the user (an agent waiting, a failing PR…), or null. */
   needsYouReason?: string | null;
   /**
-   * The machine chip, shown when the project has lanes on more than one
-   * machine. Null keeps the single-machine row unchanged.
+   * The lane's machine, set when the project has lanes on more than one
+   * machine. The hover card names it.
    */
-  machineChip?: MachineChipModel | null;
+  machine?: MachineChipModel | null;
+  /**
+   * The row also names `machine` after the lane's name, quietly. Set when a
+   * row on a different machine has the same name (two main checkouts), so
+   * the two rows do not look the same.
+   */
+  showMachine?: boolean;
   /**
    * Set when the lane's machine cannot be reached ("<Machine> is offline").
    * The row is dimmed, says why on hover, and offers no menu or drag.
@@ -71,6 +79,15 @@ export type LaneSidebarRowProps = {
    * page's own callbacks.
    */
   foreign?: boolean;
+  /**
+   * Where the lane's share mark reads: the lane's own id on its machine and
+   * that machine's pin. Omitted for a local row (its id, no pin). A foreign
+   * row without one shows no mark.
+   */
+  shareTarget?: { laneId: string; pin: OpenProjectBinding | null } | null;
+  /** A quiet mark on line two ("Computer deleted", "Deleting soon"), with `noteTitle` on hover. */
+  noteLabel?: string | null;
+  noteTitle?: string | null;
   onSelect: (laneId: string, event: React.MouseEvent) => void;
   onContextMenu: (laneId: string, event: React.MouseEvent) => void;
   onOpenPr: (pr: LaneTabPrTag) => void;
@@ -105,7 +122,7 @@ function AgentCluster({
       className="flex shrink-0 items-center gap-1"
       data-testid="lane-sidebar-agent-status"
       data-tone={attention ? "attention" : status.tone}
-      title={`${lane.name}: ${label}`}
+      title={`${laneDisplayName(lane)}: ${label}`}
     >
       {shown.length > 0 ? (
         <span className="flex items-center">
@@ -134,12 +151,13 @@ function AgentCluster({
       {/* Same status marks as the Work list: a filled amber dot when it is
           your move, the dashed "working" circle otherwise. The spin sits on an
           HTML wrapper, not the SVG: Chromium repaints an animated SVG every
-          frame on the main thread. 180 steps over 3 s is a 2° turn 60 times a
-          second, where a smooth spin ticks at the display's rate. */}
+          frame on the main thread. 60 steps over 3 s is a 6° turn 20 times a
+          second, on the work beat (lib/workBeat.ts), where a smooth spin ticks
+          at the display's rate. */}
       {attention ? (
         <span aria-hidden className="inline-block h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: COLORS.warning }} />
       ) : (
-        <span aria-hidden className="inline-flex shrink-0 motion-safe:animate-[spin_3s_steps(180)_infinite]">
+        <span aria-hidden className="inline-flex shrink-0 motion-safe:animate-[spin_3s_steps(60)_infinite]">
           <CircleDashed size={12} weight="bold" className="text-sky-400" />
         </span>
       )}
@@ -219,14 +237,19 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     onStopDelete = null,
     creating,
     needsYouReason = null,
-    machineChip = null,
+    machine = null,
+    showMachine = false,
     disabledReason = null,
     foreign = false,
+    shareTarget = null,
+    noteLabel = null,
+    noteTitle = null,
     onSelect,
     onContextMenu,
     onOpenPr,
     onOpenAgent,
   } = props;
+  const share = shareTarget ?? (foreign ? null : { laneId: lane.id, pin: null });
   const deleting = deleteStatusLabel != null;
   const unreachable = disabledReason != null;
   const branch = laneBranchLabel(lane.branchRef);
@@ -234,11 +257,15 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
   const showBranch = Boolean(branch) && branch !== lane.name;
   // Nothing left for line two: the row is one line rather than an empty band.
   const secondLineEmpty = !deleting && !creating && !showBranch && !rebaseLine
-    && !lane.linearIssue && (lane.devicesOpen ?? []).length === 0 && !machineChip;
+    && !lane.linearIssue && (lane.devicesOpen ?? []).length === 0 && !noteLabel;
   const lastActivityAt = laneLastActivityAt(lane, agents);
   const devicesOpen = lane.devicesOpen ?? [];
   // The lane color lives on the name only, as in the Work list.
   const accent = getLaneAccent(lane, fallbackColorIndex);
+  // The hover card names the machine. The row names it too only when another
+  // row of the same name is on a different machine (`showMachine`).
+  const machineOnRow = showMachine && machine ? machine : null;
+  const hoverCard = useSessionHoverCard({ disabled: !machine, rowId: `lane-row:${lane.id}` });
 
   return (
     <div
@@ -246,7 +273,8 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
       aria-selected={selected}
       aria-disabled={deleting || unreachable || undefined}
       data-lane-id={lane.id}
-      data-machine-id={machineChip?.machineId}
+      data-machine-id={machine?.machineId}
+      {...hoverCard.triggerProps}
       title={disabledReason ?? undefined}
       data-testid="lane-sidebar-row"
       data-tour={selected && lane.laneType !== "primary" && !deleting ? "lanes.laneTab" : undefined}
@@ -264,7 +292,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
           return;
         }
         const url = `ade://lane/${encodeURIComponent(lane.id)}`;
-        const title = (lane.name || "ADE lane")
+        const title = (laneDisplayName(lane) || "ADE lane")
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;")
@@ -295,6 +323,8 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
       onContextMenu={(event) => {
         event.preventDefault();
         if (deleting || unreachable) return;
+        // One floating panel next to the row at a time.
+        hoverCard.close();
         onContextMenu(lane.id, event);
       }}
     >
@@ -304,7 +334,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
         <span
           className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold leading-4"
           style={{ color: toneText(accent) }}
-          title={lane.name}
+          title={laneDisplayName(lane)}
         >
           <LaneEmojiGlyph
             emoji={lane.emoji}
@@ -312,8 +342,24 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
             className="shrink-0 text-[11px] leading-none"
             fallback={<LaneIcon size={12} />}
           />
-          <span className="min-w-0 truncate">{lane.name}</span>
+          <span className="min-w-0 truncate">{laneDisplayName(lane)}</span>
+          {/* Read out with the row's name, so a screen reader tells lanes of
+              the same name apart. On screen the machine shows only when a
+              row of the same name is on another machine. */}
+          {machine && !machineOnRow ? <span className="sr-only">, on {machine.machineName}</span> : null}
+          {machineOnRow ? (
+            <span
+              className="flex min-w-0 shrink items-center gap-1 text-[11px] font-normal"
+              style={{ color: "var(--kit-text-3)" }}
+              data-testid="lane-sidebar-row-machine"
+            >
+              <DesktopTower size={11} weight="duotone" aria-hidden className="shrink-0" />
+              <span className="sr-only">, on </span>
+              <span className="min-w-0 truncate">{machineOnRow.machineName}</span>
+            </span>
+          ) : null}
         </span>
+        {share && !deleting ? <LaneShareMark laneId={share.laneId} laneName={laneDisplayName(lane)} pin={share.pin} /> : null}
         {deleting || creating ? (
           <CircleNotch size={12} className="shrink-0 animate-spin" style={{ color: deleting ? COLORS.textMuted : COLORS.accent }} />
         ) : (
@@ -370,6 +416,11 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
                 resolveCatchUpTarget={resolveCatchUpTarget}
               />
             ) : null}
+            {noteLabel ? (
+              <span className="shrink-0 text-[10px] font-medium text-muted-fg/55" title={noteTitle ?? undefined} data-testid="lane-sidebar-note">
+                {noteLabel}
+              </span>
+            ) : null}
             {lane.linearIssue ? <LaneLinearChip issue={lane.linearIssue} /> : null}
             {devicesOpen.length > 0 ? (
               <span
@@ -380,11 +431,23 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
                 {devicesOpen.length > 1 ? devicesOpen.length : null}
               </span>
             ) : null}
-            {machineChip ? <MachineChip machine={machineChip} subject="This lane" /> : null}
           </>
         )}
       </div>
       )}
+      {hoverCard.anchor && machine ? (
+        <SessionHoverCard
+          anchor={hoverCard.anchor}
+          title={laneDisplayName(lane)}
+          rows={[{
+            id: "machine",
+            icon: <DesktopTower size={13} weight="duotone" className="text-amber-400/85" />,
+            value: machine.online ? machine.machineName : `${machine.machineName}, offline`,
+            testId: "lane-hover-machine",
+          }]}
+          cardProps={hoverCard.cardProps}
+        />
+      ) : null}
     </div>
   );
 });

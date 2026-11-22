@@ -2,7 +2,8 @@ import React, { useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { shallow } from "zustand/shallow";
-import { reuseStructurallyEqualArray } from "../lib/stableIdentity";
+import { reconcileRowsById, reconcileRowsByKey, reuseStructurallyEqualArray } from "../lib/stableIdentity";
+import { setTabBindingKey } from "../lib/tabBindingKey";
 import type { StateCreator } from "zustand";
 import {
   DEFAULT_CODEX_VOICE_PREFERENCES,
@@ -12,7 +13,9 @@ import {
 import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, PrSummary, ProjectInfo, ProjectPathInspection, ProviderMode, RecentProjectSummary, TerminalSessionSummary } from "../../shared/types";
 import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
+import { LANES_MACHINE_FILTER_ALL, normalizeLanesMachineFilter } from "./laneMachineFilterIds";
 import { originUrlForBinding } from "../components/lanes/laneMachines";
+import { normalizeGitRemoteIdentity } from "../../shared/crossMachineHandoff";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import {
   normalizeHarnessPresetList,
@@ -30,7 +33,7 @@ import {
   normalizeAndroidDevicePreferences,
   type AndroidDevicePreferences,
 } from "../../shared/androidDevicePresentation";
-import { GIT_UNTRUSTED_FOLDER_CODE, parseCodedErrorMessage } from "../lib/codedError";
+import { GIT_UNTRUSTED_FOLDER_CODE, parseCodedErrorMessage, PROJECT_FOLDER_TOO_SLOW_CODE } from "../lib/codedError";
 import { RECOVERY_COPY, toAdeRecoveryErrorCode, type AdeRecoveryErrorCode, type ProjectDataProblem } from "../../shared/types/recovery";
 import { defaultLaneId, pickRestoredLaneId } from "../lib/laneSelection";
 import { isWebClientMode } from "../lib/webClientMode";
@@ -72,6 +75,7 @@ import {
   type ScheduledLook,
 } from "../theme/appearanceSchedule";
 import { captureError } from "../../shared/sentry/capture";
+import { isCloudTierId, type CloudTierId } from "../../shared/cloudTiers";
 import {
   AppearanceStoreContext,
   USER_PREFERENCES_STORAGE_KEY,
@@ -100,9 +104,9 @@ export {
 } from "./appearanceStore";
 export type { InterfaceMonoFont, InterfacePreferences, InterfaceSansFont, ThemeId } from "./appearanceStore";
 import { captureHomeTabOpened } from "../components/home/homeAnalytics";
+import { adeCloudBinding, isAdeCloudBinding, isAdeCloudTargetId, type AdeCloudBindingProject } from "../../shared/adeCloud/binding";
 import { applyInterfacePreferences } from "../theme/applyInterface";
 
-export const THEME_IDS: ThemeId[] = ["dark", "light"];
 export const DEFAULT_TERMINAL_FONT_FAMILY = [
   "ui-monospace",
   "SFMono-Regular",
@@ -261,6 +265,16 @@ export type WorkGridSet = {
   layoutId: string;
   sessionIds: string[];
 };
+/**
+ * The Work draft's Run on pick when it is a cloud, not a computer: ADE Cloud
+ * (with its lane, null for a new one, and the size picked for this draft, null
+ * for the saved default), Cursor Cloud or Devin Cloud.
+ */
+export type WorkDraftCloudTarget =
+  | { provider: "ade"; laneId: string | null; sizeId: CloudTierId | null }
+  | { provider: "cursor" }
+  | { provider: "devin" };
+
 export type WorkProjectViewState = {
   openItemIds: string[];
   activeItemId: string | null;
@@ -273,6 +287,8 @@ export type WorkProjectViewState = {
   draftLaneId: string | null;
   /** Machine that owns `draftLaneId`; null means the project tab's bound machine. */
   draftMachineId: string | null;
+  /** A cloud picked in the draft's Run on menu, kept like `draftMachineId`; null for a computer. */
+  draftCloudTarget: WorkDraftCloudTarget | null;
   laneFilter: string;
   search: string;
   /** Session list grouping mode. */
@@ -363,6 +379,14 @@ export type WorkProjectViewState = {
    * tab switch by construction — it has to live here to be preserved at all.
    */
   lanesFilter: string;
+  /**
+   * Which computer's lanes the Lanes sidebar lists (`laneMachineFilterIds`):
+   * `"all"`, a computer id (`machineIdOfSlot`, so two checkouts of one computer
+   * share it), or `ADE_CLOUD_MACHINE_ID` for every ADE Cloud computer (and
+   * the cloud lanes whose computer was deleted). A value whose entry is no longer listed reads as `"all"` where the
+   * list is built; the stored value stays, so it returns with that computer.
+   */
+  lanesMachineFilter: string;
   /** How the Lanes sidebar list is grouped: by what each lane needs, or as the stack tree. */
   lanesGroupBy: LanesSidebarGroupBy;
   /** State groups collapsed in the Lanes sidebar (e.g. "lanes-state:done"). */
@@ -404,6 +428,54 @@ const EMPTY_CTO_ATTENTION: CtoAttentionState = {
 };
 
 const WORK_VIEW_STORAGE_KEY = "ade.workViewState.v1";
+
+/**
+ * Before ADE Cloud was a machine, a repository tab with no copy online was a
+ * separate "no-machine" tab, kept in session storage under this key. Such a
+ * tab is now a normal tab bound to ADE Cloud. `takeLegacyNoMachineTabs` reads
+ * the old key once, deletes it, and hands the tabs to the top bar, which
+ * opens each one bound to ADE Cloud.
+ */
+const LEGACY_NO_MACHINE_TABS_STORAGE_KEY = "ade.repositoryTabs.noMachine.v1";
+
+/** A tab from the old session-storage key: the account project id and its name. */
+export type LegacyNoMachineTab = { id: string; displayName: string };
+
+/**
+ * The project of a tab bound to ADE Cloud, from the open tab with that
+ * project. A caller that opens a new one passes its project itself.
+ */
+function adeCloudProjectForTab(tabs: readonly OpenProjectBinding[], projectId: string): AdeCloudBindingProject {
+  const open = tabs.find((entry) => isAdeCloudBinding(entry) && entry.projectId === projectId);
+  return open
+    ? { accountProjectId: projectId, displayName: open.displayName, gitOriginUrl: open.gitOriginUrl ?? null, iconDataUrl: open.kind === "remote" ? open.iconDataUrl ?? null : null }
+    : { accountProjectId: projectId, displayName: projectId };
+}
+
+let legacyNoMachineTabsTaken = false;
+
+/** The old no-machine tabs of this window, once. Later calls return none. */
+export function takeLegacyNoMachineTabs(): LegacyNoMachineTab[] {
+  if (legacyNoMachineTabsTaken) return [];
+  legacyNoMachineTabsTaken = true;
+  try {
+    const raw = window.sessionStorage.getItem(LEGACY_NO_MACHINE_TABS_STORAGE_KEY);
+    if (raw == null) return [];
+    window.sessionStorage.removeItem(LEGACY_NO_MACHINE_TABS_STORAGE_KEY);
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry): LegacyNoMachineTab[] => {
+      if (!entry || typeof entry !== "object") return [];
+      const row = entry as Record<string, unknown>;
+      // A tab keyed by a copy's folder names its repository apart.
+      const id = typeof row.repositoryId === "string" && row.repositoryId ? row.repositoryId : row.id;
+      if (typeof id !== "string" || !id || typeof row.displayName !== "string") return [];
+      return [{ id, displayName: row.displayName }];
+    });
+  } catch {
+    return [];
+  }
+}
 const TERMINAL_PREFERENCES_STORAGE_KEY = "ade.terminalPreferences.v1";
 const LANE_CACHE_STORAGE_PREFIX = "ade.laneCache.v1:";
 const LANE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -422,6 +494,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     draftKind: "chat",
     draftLaneId: null,
     draftMachineId: null,
+    draftCloudTarget: null,
     laneFilter: "all",
     search: "",
     sessionListOrganization: "by-lane",
@@ -452,6 +525,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workFocusGrid: false,
     workSeenAtBySessionId: {},
     lanesFilter: "",
+    lanesMachineFilter: LANES_MACHINE_FILTER_ALL,
     lanesGroupBy: "state",
     lanesCollapsedGroupIds: [],
     lanesCollapsedSectionIds: [],
@@ -524,6 +598,19 @@ function normalizeWorkSidebarWidthPct(value: unknown): number {
   return Math.max(26, Math.min(55, n));
 }
 
+function normalizeWorkDraftCloudTarget(value: unknown): WorkDraftCloudTarget | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { provider?: unknown; laneId?: unknown; sizeId?: unknown };
+  if (candidate.provider === "cursor" || candidate.provider === "devin") return { provider: candidate.provider };
+  if (candidate.provider !== "ade") return null;
+  return {
+    provider: "ade",
+    laneId: normalizeOptionalString(candidate.laneId),
+    // A size this build doesn't know reads as the saved default.
+    sizeId: isCloudTierId(candidate.sizeId) ? candidate.sizeId : null,
+  };
+}
+
 function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
   const candidate = value && typeof value === "object"
     ? value as Partial<WorkProjectViewState>
@@ -540,6 +627,8 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     draftKind: candidate.draftKind === "cli" ? "cli" : "chat",
     draftLaneId: normalizeOptionalString(candidate.draftLaneId),
     draftMachineId: normalizeOptionalString(candidate.draftMachineId),
+    // Additive like `workViewMode`: an older blob has none and reads as a computer.
+    draftCloudTarget: normalizeWorkDraftCloudTarget(candidate.draftCloudTarget),
     laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
     search: typeof candidate.search === "string" ? candidate.search : "",
     sessionListOrganization:
@@ -578,6 +667,9 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workFocusGrid: candidate.workFocusGrid === true,
     workSeenAtBySessionId: normalizeWorkSeenAt(candidate.workSeenAtBySessionId),
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
+    // Additive like the other lanes keys: an older blob has no computer filter
+    // and lands on "all".
+    lanesMachineFilter: normalizeLanesMachineFilter(candidate.lanesMachineFilter),
     // Additive like the other lanes keys: an older blob has no grouping and
     // lands on the State default.
     lanesGroupBy: candidate.lanesGroupBy === "list" ? "list" : "state",
@@ -1060,6 +1152,46 @@ function readPersistedLaneCache(projectRoot: string | null | undefined): WarmLan
   }
 }
 
+const laneSnapshotKey = (snapshot: LaneListSnapshot): string => snapshot.lane.id;
+
+/** A re-read list with each unchanged row's previous object kept (see `reconcileRowsById`). */
+function reconcileIncomingRows<T extends { id: string }>(incoming: T[] | undefined, current: T[] | undefined): T[] | undefined {
+  return incoming && current ? reconcileRowsById(current, incoming) : incoming;
+}
+
+function sameTerminalAttention(a: TerminalAttentionSnapshot, b: TerminalAttentionSnapshot): boolean {
+  return a === b || (
+    a.runningCount === b.runningCount
+    && a.activeCount === b.activeCount
+    && a.needsAttentionCount === b.needsAttentionCount
+    && a.indicator === b.indicator
+  );
+}
+
+function sameCtoAttention(a: CtoAttentionState, b: CtoAttentionState): boolean {
+  return a === b || (a.status === b.status && a.awaitingInput === b.awaitingInput && a.since === b.since);
+}
+
+/** The list each project's lane cache last saved, and when. */
+const persistedLaneCacheByProject = new Map<string, { lanes: LaneSummary[]; savedAt: number }>();
+/** Re-save an unchanged list this often, so its `savedAt` never ages out of the TTL while ADE runs. */
+const LANE_CACHE_RESAVE_MS = 60 * 60 * 1000;
+
+/**
+ * `persistLaneCache`, skipped when this exact list was saved in the last hour.
+ * A lane refresh runs on many events; most return the same lanes, and each
+ * save serializes every lane into localStorage on the main thread.
+ */
+function persistLaneCacheIfChanged(projectRoot: string | null | undefined, lanes: LaneSummary[]): void {
+  const projectKey = normalizeProjectKey(projectRoot);
+  if (!projectKey) return;
+  const last = persistedLaneCacheByProject.get(projectKey);
+  const now = Date.now();
+  if (last?.lanes === lanes && now - last.savedAt < LANE_CACHE_RESAVE_MS) return;
+  persistedLaneCacheByProject.set(projectKey, { lanes, savedAt: now });
+  persistLaneCache(projectKey, lanes);
+}
+
 function persistLaneCache(projectRoot: string | null | undefined, lanes: LaneSummary[]): void {
   const projectKey = normalizeProjectKey(projectRoot);
   if (!projectKey || lanes.length === 0) return;
@@ -1073,9 +1205,76 @@ function persistLaneCache(projectRoot: string | null | undefined, lanes: LaneSum
   }
 }
 
+/*
+ * The last project info this computer saw for each local folder: what a
+ * launch needs to show the Work view of the tab that was in front before the
+ * brain has opened its project (`switchProjectToPath` with `showCachedView`).
+ * The project the open reports reads the same, so the hand-over renders
+ * nothing new. Written only when a folder's info changes.
+ */
+const KNOWN_PROJECT_INFO_STORAGE_KEY = "ade.knownProjectInfo.v1";
+const KNOWN_PROJECT_INFO_LIMIT = 32;
+type KnownProjectInfoEntry = { displayName: string; baseRef: string };
+let knownProjectInfoMemo: Map<string, KnownProjectInfoEntry> | null = null;
+
+function knownProjectInfoMap(): Map<string, KnownProjectInfoEntry> {
+  if (knownProjectInfoMemo) return knownProjectInfoMemo;
+  const map = new Map<string, KnownProjectInfoEntry>();
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(KNOWN_PROJECT_INFO_STORAGE_KEY) ?? "null");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [rootPath, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!rootPath.trim() || !value || typeof value !== "object") continue;
+        const entry = value as Partial<KnownProjectInfoEntry>;
+        if (typeof entry.displayName !== "string" || !entry.displayName.trim()) continue;
+        if (typeof entry.baseRef !== "string" || !entry.baseRef.trim()) continue;
+        map.set(rootPath, { displayName: entry.displayName, baseRef: entry.baseRef });
+      }
+    }
+  } catch {
+    // Unreadable or missing storage: no folder is known, and launches take the normal path.
+  }
+  knownProjectInfoMemo = map;
+  return map;
+}
+
+/** The saved project info for a local folder, or null when this computer has none. */
+export function readKnownProjectInfo(rootPath: string | null | undefined): ProjectInfo | null {
+  const key = typeof rootPath === "string" ? rootPath.trim() : "";
+  if (!key) return null;
+  const entry = knownProjectInfoMap().get(key);
+  return entry ? { rootPath: key, displayName: entry.displayName, baseRef: entry.baseRef } : null;
+}
+
+/** Whether any local folder's project info is saved: a launch may open on a Work view. */
+export function hasKnownProjectInfo(): boolean {
+  return knownProjectInfoMap().size > 0;
+}
+
+function rememberKnownProjectInfo(project: ProjectInfo): void {
+  const key = project.rootPath.trim();
+  if (!key || !project.displayName?.trim() || !project.baseRef?.trim()) return;
+  const map = knownProjectInfoMap();
+  const known = map.get(key);
+  if (known && known.displayName === project.displayName && known.baseRef === project.baseRef) return;
+  map.delete(key);
+  map.set(key, { displayName: project.displayName, baseRef: project.baseRef });
+  while (map.size > KNOWN_PROJECT_INFO_LIMIT) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+  try {
+    window.localStorage.setItem(KNOWN_PROJECT_INFO_STORAGE_KEY, JSON.stringify(Object.fromEntries(map)));
+  } catch {
+    // Storage full or unavailable: the next launch opens the normal way.
+  }
+}
+
 function removePersistedLaneCache(projectRoot: string | null | undefined): void {
   const projectKey = normalizeProjectKey(projectRoot);
   if (!projectKey) return;
+  persistedLaneCacheByProject.delete(projectKey);
   try {
     window.localStorage.removeItem(laneCacheStorageKey(projectKey));
   } catch {
@@ -1108,6 +1307,12 @@ type PersistedUserPreferences = {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  /**
+   * The size a new ADE Cloud lane starts with (the composer's size button).
+   * Small until the person changes it. An account preference: it follows
+   * the person to every computer they sign in on.
+   */
+  cloudDefaultTier: CloudTierId;
   /**
    * Saved harness presets — a body (the harness) plus a brain (the model
    * source), named and given a logo. They live in the preferences blob rather
@@ -1159,6 +1364,13 @@ export type ActiveDictationTarget = {
   focus: () => void;
 };
 
+/** A new ADE Cloud lane starts Small until the person picks another default. */
+const DEFAULT_CLOUD_TIER: CloudTierId = "small";
+
+function normalizeCloudDefaultTier(value: unknown): CloudTierId {
+  return isCloudTierId(value) ? value : DEFAULT_CLOUD_TIER;
+}
+
 function readUnifiedUserPreferences(): PersistedUserPreferences | null {
   try {
     const raw = window.localStorage.getItem(USER_PREFERENCES_STORAGE_KEY);
@@ -1184,6 +1396,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatTranscriptDensity: normalizeChatTranscriptDensity(parsed.chatTranscriptDensity),
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
+      cloudDefaultTier: normalizeCloudDefaultTier(parsed.cloudDefaultTier),
       harnessPresets: readHarnessPresetList(parsed.harnessPresets),
       appleDevice: normalizeAppleDevicePreferences(
         (parsed as { apple?: unknown; appleDevice?: unknown }).apple
@@ -1240,6 +1453,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatTranscriptDensity: "comfortable",
     chatChromeTint: "colored",
     chatShellGeometry: "default",
+    cloudDefaultTier: DEFAULT_CLOUD_TIER,
     harnessPresets: [],
     appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
     androidDevice: { ...DEFAULT_ANDROID_DEVICE_PREFERENCES },
@@ -1283,6 +1497,7 @@ function persistUserPreferencesFrom(state: {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  cloudDefaultTier: CloudTierId;
   harnessPresets: HarnessPreset[];
   appleDevice: AppleDevicePreferences;
   androidDevice: AndroidDevicePreferences;
@@ -1310,6 +1525,7 @@ function persistUserPreferencesFrom(state: {
     chatTranscriptDensity: state.chatTranscriptDensity,
     chatChromeTint: state.chatChromeTint,
     chatShellGeometry: state.chatShellGeometry,
+    cloudDefaultTier: state.cloudDefaultTier,
     // Stored with the rows this build cannot read; the loader normalizes and
     // sets those aside again, so only storage ever holds them.
     // `PersistedUserPreferences` types the list as read back (normalized), so
@@ -1475,6 +1691,18 @@ export type ProjectTransitionError = {
    * the full-screen recovery flow.
    */
   retryRootPath?: string;
+  /**
+   * The brain refused the project because opening it froze ADE twice
+   * (`project_folder_too_slow`). Its Try again first asks that brain to
+   * forget the refusal; otherwise it would only be refused again.
+   */
+  retryClearsOpenRefusal?: true;
+  /**
+   * Set when the refusal came from the project already open in this window
+   * (its lane read failed), not from an open: the project's state key, so its
+   * next successful read takes the banner down.
+   */
+  refusedProjectKey?: string;
 };
 
 /**
@@ -1515,6 +1743,11 @@ export type CrossMachineMachineLanes = {
   /** Complete call-routing target for this checkout, even without a project tab. */
   binding?: OpenProjectBinding | null;
   online: boolean;
+  /**
+   * An ADE Cloud computer that was deleted, while its connection target is
+   * still kept: the saved-chats read sets it. Its rows look deleted, not asleep.
+   */
+  computerGone?: boolean;
   lanes: LaneSummary[];
   sessions: TerminalSessionSummary[];
   /**
@@ -1551,6 +1784,12 @@ export type AppState = {
   project: ProjectInfo | null;
   projectBinding: OpenProjectBinding | null;
   projectHydrated: boolean;
+  /**
+   * The local folder whose Work view shows from saved state while its launch
+   * open is still on its way (`switchProjectToPath` with `showCachedView`).
+   * Null once the open settles.
+   */
+  cachedProjectViewRoot: string | null;
   openRemoteProjectTabs: Extract<OpenProjectBinding, { kind: "remote" }>[];
   openProjectTabRoots: string[];
   projectInfoByRoot: Record<string, ProjectInfo>;
@@ -1649,6 +1888,7 @@ export type AppState = {
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   draftsButtonEnabled: boolean;
+  cloudDefaultTier: CloudTierId;
   voiceInputEnabled: boolean;
   codexVoice: CodexVoicePreferences;
   // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
@@ -1709,8 +1949,21 @@ export type AppState = {
    * own subscription or fetch.
    */
   crossMachineLanesByMachineId: Record<string, CrossMachineMachineLanes>;
+  /**
+   * Chats whose send is waking their sleeping cloud computer: session id →
+   * when the wake started (ISO). Display only. The chat pane shows its working
+   * indicator and the Work row reads "Waking" until the turn shows live or the
+   * send settles. Only the
+   * root store holds entries (`markCloudWakeForSend` in `cloudSavedChatsSync.ts`).
+   */
+  cloudWakingSinceBySessionId: Readonly<Record<string, string>>;
 
-  setProject: (project: ProjectInfo | null) => void;
+  /**
+   * `replaceBinding`: the project is this computer's folder, opened on
+   * purpose, so a remote binding with the same root path does not carry over
+   * (the same path can exist on two machines).
+   */
+  setProject: (project: ProjectInfo | null, opts?: { replaceBinding?: boolean }) => void;
   setOpenRemoteProjectTabs: (
     next:
       | Extract<OpenProjectBinding, { kind: "remote" }>[]
@@ -1728,6 +1981,12 @@ export type AppState = {
   setProjectHydrated: (hydrated: boolean) => void;
   setShowWelcome: (show: boolean) => void;
   clearProjectTransitionError: () => void;
+  /**
+   * The banner's Try again: reopen the project the failed transition was
+   * heading to, first asking the brain to forget a too-slow refusal when that
+   * is what failed.
+   */
+  retryProjectTransition: () => Promise<void>;
   /** Shows the full-screen recovery flow for a project whose ADE data went missing or was replaced. No-op while another transition error is up. */
   reportProjectDataProblem: (rootPath: string, status: ProjectDataProblem) => void;
   setLanes: (lanes: LaneSummary[]) => void;
@@ -1758,6 +2017,7 @@ export type AppState = {
     projectId?: string | null;
     binding?: OpenProjectBinding | null;
     online?: boolean;
+    computerGone?: boolean;
     lanes?: LaneSummary[];
     sessions?: TerminalSessionSummary[];
     prs?: PrSummary[];
@@ -1774,6 +2034,8 @@ export type AppState = {
    * unreachable long enough that its last-known work is no longer worth showing.
    */
   dropCrossMachineLanes: (machineIds: readonly string[]) => void;
+  /** `since` starts the chat's waking mark; null ends it. */
+  setCloudSessionWaking: (sessionId: string, since: string | null) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   clearLaneInspectorTab: (laneId: string) => void;
   focusSession: (sessionId: string | null) => void;
@@ -1816,6 +2078,8 @@ export type AppState = {
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
   setCtoAttention: (snapshot: CtoAttentionState) => void;
   setSmartTooltipsEnabled: (enabled: boolean) => void;
+  /** Sync calls this too; a person's pick is counted in `lib/cloudDefaultTier.ts`. */
+  setCloudDefaultTier: (tier: CloudTierId) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setDraftsButtonEnabled: (enabled: boolean) => void;
@@ -1864,6 +2128,12 @@ export type AppState = {
 
   openNewTab: () => void;
   cancelNewTab: () => void;
+  /**
+   * Opens a repository tab bound to ADE Cloud: the tab for a project with no
+   * own computer online. Unless `activate` is false, it comes to the front.
+   * The open needs no network: ADE Cloud answers from the account.
+   */
+  openAdeCloudProject: (project: AdeCloudBindingProject, options?: { activate?: boolean }) => Promise<void>;
   setStandaloneSettingsOpen: (open: boolean) => void;
   setPersonalChatsTabOpen: (open: boolean) => void;
   closePersonalChatsTab: () => void;
@@ -1886,16 +2156,49 @@ export type AppState = {
    */
   requestLaneStatusRead: (options?: { maxAgeMs?: number }) => void;
   openRepo: () => Promise<ProjectInfo | null>;
+  /**
+   * Opens a folder of this computer in front. `carryWorkView`: the same tab
+   * moves here from another copy of its repository (its computer went away or
+   * its copy was removed), so the open chat, tabs and grid come along. A
+   * switch to another tab never passes it: each tab keeps its own view.
+   */
   switchProjectToPath: (
     rootPath: string,
-    opts?: { skipWorktreeGate?: boolean },
+    opts?: {
+      skipWorktreeGate?: boolean;
+      carryWorkView?: boolean;
+      /**
+       * A launch restoring the tab that was in front: with no project shown
+       * yet and saved project info for the folder, the Work view shows at
+       * once from that info and the lane cache while the brain opens the
+       * project. Calls the view makes carry the folder's pin and wait in main
+       * for the open.
+       */
+      showCachedView?: boolean;
+    },
   ) => Promise<void>;
   dismissWorktreeOpenPrompt: () => void;
   /** The user said Trust: add this folder to git's safe.directory and open it. */
   trustGitFolderAndOpen: () => Promise<ProjectInfo | null>;
   /** The user said Cancel: nothing is trusted, the folder stays closed. */
   dismissGitFolderTrustPrompt: () => void;
-  switchRemoteProject: (targetId: string, projectId: string) => Promise<OpenProjectBinding>;
+  /**
+   * Opens a remote copy in front. `carryWorkView`: as for `switchProjectToPath`.
+   * `adeCloudProject`: the project of a tab bound to ADE Cloud
+   * (`ADE_CLOUD_MACHINE_ID`); without it the store finds the project in the
+   * open tabs or the account's project list.
+   */
+  switchRemoteProject: (
+    targetId: string,
+    projectId: string,
+    options?: { carryWorkView?: boolean; adeCloudProject?: AdeCloudBindingProject },
+  ) => Promise<OpenProjectBinding>;
+  /**
+   * True once for the binding of a remote open that Home superseded: the
+   * open still reports its project, which then opens under Home instead of
+   * replacing it.
+   */
+  takeRemoteOpenSupersededByHome: (binding: { targetId: string; projectId: string }) => boolean;
   /// `preserveRemoteViewState` keeps open remote tabs' `workViewByProject` /
   /// `laneWorkViewByScope` while still dropping their stale data caches. Pass it
   /// when closing because a remote *disconnected*, not because the user closed
@@ -1988,6 +2291,7 @@ const RECOVERY_MESSAGE_BY_CODE: Partial<Record<AdeRecoveryErrorCode, string>> = 
   socket_owned_by_other: "Another copy of ADE is open. Quit it, then try again.",
   project_data_missing: "ADE's data for this project is missing. Open the project to restore it or start fresh.",
   db_path_changed: "ADE's data for this project was swapped out. Open the project to choose what to use.",
+  project_not_git_repository: "This project's folder is no longer a Git repository. Put its .git folder back, or clone the repository again.",
 };
 
 const GENERIC_RECOVERY_MESSAGE = "ADE ran into a problem with this project.";
@@ -2019,6 +2323,9 @@ function formatProjectTransitionError(
         "Closing the current project took longer than 30 seconds. ADE is still finishing in the background.",
     };
   }
+  // Not a recovery-screen code: the brain's message says what to do, and the
+  // banner's Try again clears the refusal first.
+  const clearsOpenRefusal = parsed.code === PROJECT_FOLDER_TOO_SLOW_CODE;
   const code = toAdeRecoveryErrorCode(parsed.code);
   const recoveryMessage = code
     ? RECOVERY_MESSAGE_BY_CODE[code] ?? (raw ? null : GENERIC_RECOVERY_MESSAGE)
@@ -2032,6 +2339,7 @@ function formatProjectTransitionError(
     // the path in the main process, so the renderer never saw it) lets the
     // recovery screen offer Repair instead of the generic banner.
     ...(parsed.rootPath ? { rootPath: parsed.rootPath } : {}),
+    ...(clearsOpenRefusal ? { retryClearsOpenRefusal: true as const } : {}),
   };
 }
 
@@ -2060,7 +2368,13 @@ function transitionFailureState(
       gitFolderTrustPrompt: { rootPath, message: parsed.message },
     };
   }
-  return { projectTransitionError: formatProjectTransitionError(kind, error) };
+  const projectTransitionError = formatProjectTransitionError(kind, error);
+  // A refused project offers Try again wherever it was opened from.
+  return {
+    projectTransitionError: projectTransitionError.retryClearsOpenRefusal && rootPath
+      ? { ...projectTransitionError, retryRootPath: rootPath }
+      : projectTransitionError,
+  };
 }
 
 /** How stale a cross-machine slice's sync stamps may get before a read with no other news republishes it. */
@@ -2072,6 +2386,25 @@ const createAppState: StateCreator<AppState> = (set, get) => {
    *  Slower responses whose token doesn't match the latest value are discarded. */
   let laneRefreshVersion = 0;
   let remoteProjectSwitchGeneration = 0;
+  /** The remote project open still on its way, if any, with its transition. */
+  let pendingRemoteSwitch: { transition: AppState["projectTransition"]; targetId: string; projectId: string } | null = null;
+  /** The remote open that Home superseded, until its project report arrives or another open starts. */
+  let remoteOpenSupersededByHome: { targetId: string; projectId: string } | null = null;
+  /**
+   * Home opened in front wins over a remote project open
+   * still on its way: that open must not finish over it, and its "switching"
+   * state ends here, since the open's own end skips a superseded switch. The
+   * open still reports its project when it lands (`app.onProjectChanged`, the
+   * web adapter's swap); for Home that report opens it under Home.
+   */
+  const supersedeRemoteProjectSwitch = (prev: AppState, by: "home"): Partial<AppState> => {
+    if (!pendingRemoteSwitch) return {};
+    ++remoteProjectSwitchGeneration;
+    const ownsTransition = prev.projectTransition === pendingRemoteSwitch.transition;
+    if (by === "home") remoteOpenSupersededByHome = { targetId: pendingRemoteSwitch.targetId, projectId: pendingRemoteSwitch.projectId };
+    pendingRemoteSwitch = null;
+    return ownsTransition ? { projectTransition: null } : {};
+  };
   let laneRefreshInFlight: Promise<void> | null = null;
   let activeLaneRefreshProjectKey: string | null = null;
   let activeLaneRefreshToken = 0;
@@ -2159,7 +2492,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       set({ projectTransition: null, lanesLoading: false });
       return null;
     }
-    get().setProject(project);
+    get().setProject(project, { replaceBinding: true });
     set((prev) => {
       const restoredSelection =
         prev.laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
@@ -2203,10 +2536,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     extras: { trustGitOwnership?: boolean },
   ): Promise<ProjectInfo | null> => {
     ++laneRefreshVersion;
+    // The binding stays on the open project until the new one replaces it
+    // (see openPickedRepo): a failed open leaves the window where it was, and
+    // a project on another machine never reads as this computer's meanwhile.
     set({
       projectTransition: { kind: "opening", rootPath, startedAtMs: Date.now() },
       projectTransitionError: null,
-      projectBinding: null,
     });
     try {
       return await openPickedRepo(rootPath, extras);
@@ -2224,6 +2559,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   project: null,
   projectBinding: null,
   projectHydrated: false,
+  cachedProjectViewRoot: null,
   openProjectTabRoots: [],
   projectInfoByRoot: {},
   showWelcome: true,
@@ -2279,6 +2615,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
   draftsButtonEnabled: initialUserPreferences.draftsButtonEnabled,
+  cloudDefaultTier: initialUserPreferences.cloudDefaultTier,
   voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
   codexVoice: initialUserPreferences.codexVoice,
   dictationPhase: "idle",
@@ -2298,8 +2635,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   crossMachineLaneScopeKey: null,
   crossMachineLaneIntendedMachineIds: null,
   crossMachineLanesByMachineId: {},
+  cloudWakingSinceBySessionId: {},
 
-  setProject: (incomingProject) =>
+  setProject: (incomingProject, opts) =>
     set((prev) => {
       // A warm switch sets the cached project and then the one the host
       // reports, which is a new object that reads the same. The stored object
@@ -2312,10 +2650,14 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const nextProjectRoot = project?.rootPath ?? null;
       const matchingRemoteBinding =
         project &&
+        !opts?.replaceBinding &&
         prev.projectBinding?.kind === "remote" &&
         prev.projectBinding.rootPath === project.rootPath
           ? prev.projectBinding
           : null;
+      // A local folder's info, for the next launch's Work view (desktop only:
+      // the hosted client has no folders of its own to reopen).
+      if (project && !matchingRemoteBinding && !isWebClientMode()) rememberKnownProjectInfo(project);
       const projectChanged = previousProjectRoot !== nextProjectRoot;
       // Lane caches and lane selection are keyed by the *binding* key
       // (`remote:<targetId>:<projectId>` for remote projects), which is what
@@ -2375,6 +2717,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           : null,
         projectRevision:
           projectChanged ? prev.projectRevision + 1 : prev.projectRevision,
+        // The window left a saved Work view whose open is still on its way.
+        ...(prev.cachedProjectViewRoot != null && nextProjectRoot !== prev.cachedProjectViewRoot
+          ? { cachedProjectViewRoot: null }
+          : {}),
         laneDeleteProgressByLaneId:
           projectChanged ? {} : prev.laneDeleteProgressByLaneId,
         // Per-lane UI context only resets when the project itself changes.
@@ -2524,6 +2870,30 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
+
+  retryProjectTransition: async () => {
+    const failed = get().projectTransitionError;
+    const rootPath = failed?.retryRootPath;
+    if (!failed || !rootPath) return;
+    if (failed.retryClearsOpenRefusal) {
+      // Reopening a refusal the brain did not forget is refused again, so the
+      // banner stays until the clear succeeds.
+      const cleared = await window.ade.project.retryOpen(rootPath).catch(() => false);
+      if (!cleared) return;
+      // Every project transition clears this error when it starts, and so
+      // does a dismiss: a different value means the person moved on while the
+      // clear ran, and this reopen must not take the window back.
+      if (get().projectTransitionError !== failed) return;
+    }
+    set({ projectTransitionError: null });
+    // The project already open in this window is not opened again; reading
+    // its lanes opens it in the brain, and a refusal brings the banner back.
+    if (failed.refusedProjectKey) {
+      await get().refreshLanes().catch(() => {});
+      return;
+    }
+    await get().switchProjectToPath(rootPath).catch(() => {});
+  },
   reportProjectDataProblem: (rootPath, status) => {
     // A recovery screen already up wins. A plain error with no recovery code
     // (a slow switch, say) gives way, so missing data always gets its screen.
@@ -2556,10 +2926,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   },
   setLanes: (lanes) => set({ lanes, lanesLoading: false }),
   setLaneDeleteProgressByLaneId: (next) =>
-    set((prev) => ({
-      laneDeleteProgressByLaneId:
-        typeof next === "function" ? next(prev.laneDeleteProgressByLaneId) : next,
-    })),
+    set((prev) => {
+      const laneDeleteProgressByLaneId = typeof next === "function" ? next(prev.laneDeleteProgressByLaneId) : next;
+      return laneDeleteProgressByLaneId === prev.laneDeleteProgressByLaneId ? prev : { laneDeleteProgressByLaneId };
+    }),
   selectLane: (laneId) =>
     set((prev) => {
       const projectKey = selectActiveProjectStateKey(prev);
@@ -2584,11 +2954,18 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           : Array.from(new Set(
               intendedMachineIds.map((machineId) => machineId.trim()).filter(Boolean),
             )).sort();
+      // Preserve the membership needle across the wholesale clear. A later
+      // sync pass replaces it once the new scope's machine set is known. A tab
+      // moving to another copy passes through more than one scope in a row; the
+      // second change finds the slices already cleared, and an empty needle
+      // would read as "no machine belongs here" and drop every retained slice
+      // (and with them every open chat of another machine).
+      const unionMachineIds = Object.keys(prev.crossMachineLanesByMachineId);
       const nextIntendedMachineIds = normalizedIntendedMachineIds === undefined
         ? scopeChanged
-          // Preserve the membership needle across the wholesale clear. A later
-          // sync pass replaces it once the new scope's machine set is known.
-          ? Object.keys(prev.crossMachineLanesByMachineId).sort()
+          ? unionMachineIds.length > 0
+            ? unionMachineIds.sort()
+            : prev.crossMachineLaneIntendedMachineIds
           : prev.crossMachineLaneIntendedMachineIds
         : normalizedIntendedMachineIds;
       const stableIntendedMachineIds = reuseStructurallyEqualArray(
@@ -2597,7 +2974,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       ) ?? null;
       const intendedChanged = stableIntendedMachineIds !== prev.crossMachineLaneIntendedMachineIds;
 
-      if (!scopeChanged && !intendedChanged) return {};
+      if (!scopeChanged && !intendedChanged) return prev;
       // Identity matters: consumers select this record straight out of the
       // store, so a fresh `{}` on every call would re-render the whole sidebar.
       const alreadyEmpty = Object.keys(prev.crossMachineLanesByMachineId).length === 0;
@@ -2611,15 +2988,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   mergeCrossMachineLanes: (entry) =>
     set((prev) => {
       const machineId = entry.machineId.trim();
-      if (!machineId) return {};
+      if (!machineId) return prev;
       const nextIntendedMachineIds = prev.crossMachineLaneIntendedMachineIds?.includes(machineId)
         ? prev.crossMachineLaneIntendedMachineIds
         : [...(prev.crossMachineLaneIntendedMachineIds ?? []), machineId].sort();
       const intendedChanged = nextIntendedMachineIds !== prev.crossMachineLaneIntendedMachineIds;
       const previous = prev.crossMachineLanesByMachineId[machineId] ?? null;
-      const lanes = reuseStructurallyEqualArray(entry.lanes, previous?.lanes);
-      const sessions = reuseStructurallyEqualArray(entry.sessions, previous?.sessions);
-      const prs = reuseStructurallyEqualArray(entry.prs, previous?.prs);
+      // Per row, not per list: a running chat on that machine changes its row
+      // on every read, and the other rows keep their objects.
+      const lanes = reconcileIncomingRows(entry.lanes, previous?.lanes);
+      const sessions = reconcileIncomingRows(entry.sessions, previous?.sessions);
+      const prs = reconcileIncomingRows(entry.prs, previous?.prs);
       const incomingBinding =
         entry.binding !== undefined ? entry.binding : previous?.binding ?? null;
       const binding = reuseStructurallyEqualValue(incomingBinding, previous?.binding ?? null);
@@ -2629,6 +3008,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const reconnected = previous?.online === false && online;
       const priorError = reconnected ? null : previous?.error ?? null;
       const priorFailedReads = reconnected ? 0 : previous?.failedReads ?? 0;
+      const computerGone = entry.computerGone !== undefined ? entry.computerGone : previous?.computerGone === true;
       const next: CrossMachineMachineLanes = {
         machineId,
         machineName: entry.machineName.trim() || previous?.machineName || machineId,
@@ -2636,6 +3016,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         projectId: entry.projectId !== undefined ? entry.projectId : previous?.projectId ?? null,
         binding,
         online,
+        ...(computerGone ? { computerGone: true } : {}),
         // Retention, stated explicitly rather than left to accident: a read that
         // returned nothing must not erase what the machine last reported.
         lanes: lanes ?? previous?.lanes ?? [],
@@ -2666,6 +3047,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.projectId === next.projectId
         && previous.binding === next.binding
         && previous.online === next.online
+        && (previous.computerGone === true) === (next.computerGone === true)
         && previous.lanes === next.lanes
         && previous.sessions === next.sessions
         && previous.prs === next.prs
@@ -2674,7 +3056,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.error === next.error
         && (previous.failedReads ?? 0) === next.failedReads
       );
-      if (sliceUnchanged && !intendedChanged) return {};
+      if (sliceUnchanged && !intendedChanged) return prev;
       return {
         ...(sliceUnchanged
           ? {}
@@ -2709,7 +3091,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           : { ...entry, online: false };
         changed = true;
       }
-      return changed ? { crossMachineLanesByMachineId: nextRecord } : {};
+      return changed ? { crossMachineLanesByMachineId: nextRecord } : prev;
     }),
 
   dropCrossMachineLanes: (machineIds) =>
@@ -2736,7 +3118,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               ? { crossMachineLaneIntendedMachineIds: nextIntendedMachineIds }
               : {}),
           }
-        : {};
+        : prev;
+    }),
+
+  setCloudSessionWaking: (sessionId, since) =>
+    set((prev) => {
+      const current = prev.cloudWakingSinceBySessionId[sessionId];
+      if (since ? current === since : current === undefined) return prev;
+      const next = { ...prev.cloudWakingSinceBySessionId };
+      if (since) next[sessionId] = since;
+      else delete next[sessionId];
+      return { cloudWakingSinceBySessionId: next };
     }),
 
   setLaneInspectorTab: (laneId, tab) =>
@@ -2927,8 +3319,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, terminalPreferences: updated });
       return { terminalPreferences: updated };
     }),
-  setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
-  setCtoAttention: (ctoAttention) => set({ ctoAttention }),
+  // Both are re-read on session and chat events. An equal read keeps the
+  // current object, so the badges that select it do not render again.
+  setTerminalAttention: (terminalAttention) =>
+    set((prev) => (sameTerminalAttention(prev.terminalAttention, terminalAttention) ? prev : { terminalAttention })),
+  setCtoAttention: (ctoAttention) =>
+    set((prev) => (sameCtoAttention(prev.ctoAttention, ctoAttention) ? prev : { ctoAttention })),
   setSmartTooltipsEnabled: (enabled) =>
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, smartTooltipsEnabled: enabled });
@@ -2949,6 +3345,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, draftsButtonEnabled: enabled });
       return { draftsButtonEnabled: enabled };
     }),
+  // The person's pick is counted where it's made (`lib/cloudDefaultTier.ts`), not here: sync calls this too.
+  setCloudDefaultTier: (tier) => {
+    const next = normalizeCloudDefaultTier(tier);
+    if (get().cloudDefaultTier === next) return;
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, cloudDefaultTier: next });
+      return { cloudDefaultTier: next };
+    });
+  },
   setVoiceInputEnabled: (enabled) =>
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, voiceInputEnabled: enabled });
@@ -2985,10 +3390,25 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         : prev,
     ),
   // A new tab is the new-project screen, so it also ends Settings-without-a-project.
-  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true, standaloneSettingsOpen: false }),
+  openNewTab: () => set((prev) => ({
+    isNewTabOpen: true,
+    showWelcome: true,
+    standaloneSettingsOpen: false,
+    ...supersedeRemoteProjectSwitch(prev, "home"),
+  })),
   cancelNewTab: () => {
     const hasProject = get().project != null;
     set({ isNewTabOpen: false, showWelcome: !hasProject });
+  },
+  openAdeCloudProject: async (project, options) => {
+    const binding = adeCloudBinding(project);
+    if (options?.activate === false) {
+      set((prev) => (prev.openRemoteProjectTabs.some((entry) => entry.key === binding.key)
+        ? {}
+        : { openRemoteProjectTabs: [...prev.openRemoteProjectTabs, binding] }));
+      return;
+    }
+    await get().switchRemoteProject(binding.targetId, binding.projectId, { adeCloudProject: project });
   },
   setStandaloneSettingsOpen: (standaloneSettingsOpen) => set({ standaloneSettingsOpen }),
   setPersonalChatsTabOpen: (personalChatsTabOpen) =>
@@ -3107,6 +3527,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     const request = normalizeLaneRefreshRequest(options);
     const runRefresh = async (currentRequest: LaneRefreshRequest) => {
       const requestedProjectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
+      // The tab's lane list is the list of the copy the tab shows: the read
+      // names that copy, the one the refresh was requested for.
+      const requestedPin = get().projectBinding ?? null;
       activeLaneRefreshProjectKey = requestedProjectKey;
       const token = ++laneRefreshVersion;
       activeLaneRefreshToken = token;
@@ -3118,7 +3541,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         includeConflictStatus: currentRequest.includeConflictStatus,
       };
       const rawLaneSnapshots = currentRequest.includeSnapshots
-        ? await listLaneSnapshotsCoalesced(snapshotArgs, { projectRoot: requestedProjectKey })
+        ? await listLaneSnapshotsCoalesced(snapshotArgs, { projectRoot: requestedProjectKey, pin: requestedPin })
         : null;
       const laneSnapshots = rawLaneSnapshots?.map((snapshot) => {
         if (currentRequest.includeStatus) return snapshot;
@@ -3130,7 +3553,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         : await listLanesCoalesced({
             includeArchived: false,
             includeStatus: currentRequest.includeStatus,
-          }, { projectRoot: requestedProjectKey });
+          }, { projectRoot: requestedProjectKey, pin: requestedPin });
       const lanes = laneSnapshots != null || currentRequest.includeStatus
         ? rawLanes
         : rawLanes.map((lane) => withPreservedLaneStatus(lane, previousLanesById, previousSnapshotsById));
@@ -3145,6 +3568,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const projectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
       if (projectKey !== requestedProjectKey) {
         return;
+      }
+      // The project opens again: its refusal banner, if it had one, goes.
+      if (get().projectTransitionError?.refusedProjectKey === projectKey) {
+        set({ projectTransitionError: null });
       }
       const selected = get().selectedLaneId;
       const nextSelected = selected && lanes.some((l) => l.id === selected) ? selected : lanes[0]?.id ?? null;
@@ -3180,43 +3607,76 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             }
           }
         }
-        const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-        const nextSnapshots: LaneListSnapshot[] =
-          laneSnapshots ??
-          prev.laneSnapshots
-            .filter((snapshot) => allowed.has(snapshot.lane.id))
-            .map((snapshot) => {
-              const nextLane = lanesById.get(snapshot.lane.id);
-              return nextLane ? { ...snapshot, lane: nextLane } : snapshot;
-            });
+        // Every read builds new objects. Keep the previous object of each lane
+        // and snapshot whose contents did not change, and the previous list
+        // when nothing changed, so readers of `lanes` (and per-lane selectors)
+        // do not render again for an equal list.
+        const nextLanes = reconcileRowsById(prev.lanes, lanes);
+        const lanesById = new Map(nextLanes.map((lane) => [lane.id, lane] as const));
+        const reconciledSnapshots = reconcileRowsByKey(
+          prev.laneSnapshots,
+          laneSnapshots ?? prev.laneSnapshots.filter((snapshot) => allowed.has(snapshot.lane.id)),
+          laneSnapshotKey,
+        );
+        // Each snapshot carries the same lane object as `lanes`.
+        let snapshotLaneMoved = false;
+        const snapshotsWithLanes = reconciledSnapshots.map((snapshot) => {
+          const nextLane = lanesById.get(snapshot.lane.id);
+          if (!nextLane || nextLane === snapshot.lane) return snapshot;
+          snapshotLaneMoved = true;
+          return { ...snapshot, lane: nextLane };
+        });
+        const nextSnapshots: LaneListSnapshot[] = snapshotLaneMoved ? snapshotsWithLanes : reconciledSnapshots;
         if (removedLaneScopeKeys.length > 0) {
           persistWorkViewState({ deleteLaneScopeKeys: removedLaneScopeKeys });
         }
+        // Both are subsets of the previous record: an equal size means equal.
+        const keptTabs = Object.keys(nextTabs).length === Object.keys(prev.laneInspectorTabs).length
+          ? prev.laneInspectorTabs
+          : nextTabs;
+        const keptLaneWorkViews = removedLaneScopeKeys.length === 0 ? prev.laneWorkViewByScope : nextLaneWorkViews;
         // Cache the lane list per project root so the next switch back to this
         // project can apply lanes immediately (no flicker, no chat unmount).
         const activeProjectKey = selectActiveProjectStateKey(get());
+        const cachedEntry = activeProjectKey ? prev.laneCacheByProject[activeProjectKey] : undefined;
         const nextLaneCache = activeProjectKey
+          && !(cachedEntry?.lanes === nextLanes && cachedEntry.laneSnapshots === nextSnapshots)
           ? {
               ...prev.laneCacheByProject,
-              [activeProjectKey]: { lanes, laneSnapshots: nextSnapshots },
+              [activeProjectKey]: { lanes: nextLanes, laneSnapshots: nextSnapshots },
             }
           : prev.laneCacheByProject;
-        persistLaneCache(activeProjectKey, lanes);
+        persistLaneCacheIfChanged(activeProjectKey, nextLanes);
+        const nextLaneStatusStale = currentRequest.includeStatus
+          ? false
+          : prev.laneStatusStale || statusUnknownForSomeLane || laneStatusAgeMs(requestedProjectKey) >= LANE_STATUS_MAX_AGE_MS;
+        // Nothing changed: skip the write, so no subscriber runs at all.
+        if (
+          nextLanes === prev.lanes
+          && nextSnapshots === prev.laneSnapshots
+          && !prev.lanesLoading
+          && prev.lanesLoadError === null
+          && nextLaneStatusStale === prev.laneStatusStale
+          && nextSelected === prev.selectedLaneId
+          && keptTabs === prev.laneInspectorTabs
+          && keptLaneWorkViews === prev.laneWorkViewByScope
+          && nextLaneCache === prev.laneCacheByProject
+        ) {
+          return prev;
+        }
         return {
           laneSnapshots: nextSnapshots,
-          lanes,
+          lanes: nextLanes,
           lanesLoading: false,
           lanesLoadError: null,
           // A measured read replaces the numbers and their flag together. A
           // status-less one only carries numbers forward: they stay as fresh
           // as they were, unless they have aged out or a lane arrived with
           // only the brain's 0/0 placeholder.
-          laneStatusStale: currentRequest.includeStatus
-            ? false
-            : prev.laneStatusStale || statusUnknownForSomeLane || laneStatusAgeMs(requestedProjectKey) >= LANE_STATUS_MAX_AGE_MS,
+          laneStatusStale: nextLaneStatusStale,
           selectedLaneId: nextSelected,
-          laneInspectorTabs: nextTabs,
-          laneWorkViewByScope: nextLaneWorkViews,
+          laneInspectorTabs: keptTabs,
+          laneWorkViewByScope: keptLaneWorkViews,
           laneCacheByProject: nextLaneCache,
         };
       });
@@ -3233,8 +3693,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // already have cached lanes (stale-while-revalidate after a project
     // switch), keep `lanesLoading: false` so the chat pane + lane list stay
     // visually stable while we refresh silently in the background.
+    // A retry after a failed first read keeps the reason on screen. A spinner
+    // there would hide it for as long as each attempt takes, and a machine
+    // that never answers would look like a load that never ends.
     if (get().lanes.length === 0) {
-      set({ lanesLoading: true });
+      const failed = get().lanesLoadError;
+      const retryOfFailedRead = failed != null
+        && failed.projectKey === normalizeProjectKey(selectActiveProjectStateKey(get()));
+      // Also clears a flag that a reopen of the same project set.
+      set({ lanesLoading: !retryOfFailedRead });
     }
 
     if (laneRefreshInFlight) {
@@ -3267,7 +3734,28 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           // Shown where the empty list would read "No lanes yet". Only this
           // project's newest read may say so: the same rule as a success.
           const projectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
-          if (activeLaneRefreshToken === laneRefreshVersion && projectKey === activeLaneRefreshProjectKey && get().lanes.length === 0) {
+          const newestForThisProject = activeLaneRefreshToken === laneRefreshVersion && projectKey === activeLaneRefreshProjectKey;
+          // The project open in this window was refused after it opened (the
+          // brain froze on its folder and restarted): the lane read is the one
+          // project call every reconnect makes, so it raises the same banner an
+          // open would, once, without replacing another notice.
+          if (newestForThisProject && projectKey && parseCodedErrorMessage(error).code === PROJECT_FOLDER_TOO_SLOW_CODE) {
+            const state = get();
+            if (!state.projectTransition && !state.projectTransitionError) {
+              const localRoot = state.projectBinding?.kind === "remote" ? null : state.project?.rootPath ?? null;
+              set({
+                projectTransitionError: {
+                  ...formatProjectTransitionError("opening", error),
+                  refusedProjectKey: projectKey,
+                  // Try again clears the refusal through this computer's
+                  // brain, so it is offered only for a project on this
+                  // computer; a project on another machine shows the message.
+                  ...(localRoot ? { retryRootPath: localRoot } : {}),
+                },
+              });
+            }
+          }
+          if (newestForThisProject && get().lanes.length === 0) {
             set({
               lanesLoadError: {
                 projectKey,
@@ -3296,10 +3784,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   refreshProviderMode: async () => {
     const projectRoot = selectActiveProjectRoot(get());
+    // The provider mode of the copy the tab shows. A tab on ADE Cloud has no
+    // computer to ask: its machine reads would only be refused.
+    const pin = get().projectBinding ?? null;
+    if (isAdeCloudBinding(pin)) return;
     const [snapshot, aiStatus] = await Promise.all([
       // With no project open there is no project config to read: the mode
-      // then follows the configured providers alone.
-      projectRoot ? getProjectConfigCached({ projectRoot }) : Promise.resolve(null),
+      // then follows the configured providers alone. A copy that can't
+      // answer reads as no config, like the AI status beside it.
+      projectRoot && pin ? getProjectConfigCached({ projectRoot, pin }).catch(() => null) : Promise.resolve(null),
       getAiStatusCached({ projectRoot }).catch(() => null),
     ]);
     const configMode = snapshot?.effective.providerMode ?? "guest";
@@ -3314,7 +3807,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // saved in a project's database before shortcuts moved here.
     set({ keybindings: readKeybindingsSnapshot() });
     const projectRoot = selectActiveProjectRoot(get());
-    await migrateProjectKeybindingsOnce(() => getKeybindingsCoalesced({ projectRoot }));
+    // The old overrides live in the database of the copy the tab shows (none on ADE Cloud).
+    const pin = get().projectBinding ?? null;
+    if (pin && !isAdeCloudBinding(pin)) await migrateProjectKeybindingsOnce(() => getKeybindingsCoalesced({ projectRoot, pin }));
     set({ keybindings: readKeybindingsSnapshot() });
   },
 
@@ -3345,7 +3840,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         startedAtMs: Date.now(),
       },
       projectTransitionError: null,
-      projectBinding: null,
+      // The binding stays on the open project: a cancelled pick, the worktree
+      // prompt or a failed open leave it as it was, and openPickedRepo
+      // replaces it together with the project.
     });
     let picked: string | null = null;
     try {
@@ -3395,7 +3892,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   switchProjectToPath: async (
     rootPath: string,
-    opts?: { skipWorktreeGate?: boolean },
+    opts?: { skipWorktreeGate?: boolean; carryWorkView?: boolean; showCachedView?: boolean },
   ) => {
     // Worktree gate: when opening a path that is NOT already a warm tab, inspect
     // it first. If it's an external linked worktree whose owning repo resolves,
@@ -3419,6 +3916,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // Invalidate in-flight lane refreshes before the async switch so stale
     // responses from the previous project are discarded immediately.
     ++laneRefreshVersion;
+    // The copy the tab leaves: a move to this computer's copy of the same
+    // repository (a Disconnect of the tab's computer) keeps the open chat,
+    // tabs and grid, as a move to a remote copy does.
+    const outgoingBinding = get().projectBinding;
     // Stash the OUTGOING project's lane/session selection so switching back
     // restores it instead of falling through to "first lane".
     const outgoingProjectKey = selectActiveProjectStateKey(get());
@@ -3430,7 +3931,24 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     const isWarmTabSwitch =
       cachedProject != null && get().openProjectTabRoots.includes(rootPath);
     if (isWarmTabSwitch && cachedProject) {
-      get().setProject(cachedProject);
+      get().setProject(cachedProject, { replaceBinding: true });
+      if (opts?.carryWorkView) carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, cachedProject));
+    }
+    // A launch restoring its front tab, with nothing on screen yet: the
+    // folder's Work view shows now, from its saved info and lane cache, and
+    // the open below replaces it with what the brain reports. The open is
+    // started in this same task, before any effect of the view can run, so
+    // main has the folder authorized for this window (as an open in flight)
+    // before the view's first pinned call reaches it; those calls wait in the
+    // runtime pool for the brain. With no saved info this is a normal cold
+    // switch.
+    const cachedViewProject =
+      opts?.showCachedView && !isWarmTabSwitch && !get().project && !get().projectTransition
+        ? readKnownProjectInfo(rootPath)
+        : null;
+    const showsCachedView = cachedViewProject != null;
+    if (cachedViewProject) {
+      get().setProject(cachedViewProject, { replaceBinding: true });
     }
     const cachedWarmLanes =
       cachedProject != null ? get().laneCacheByProject[cachedProject.rootPath] : undefined;
@@ -3439,7 +3957,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ? get().laneSelectionByProject[cachedProject.rootPath] ?? { laneId: null, sessionId: null }
         : { laneId: null, sessionId: null };
     set({
-      projectTransition: isWarmTabSwitch
+      projectTransition: isWarmTabSwitch || showsCachedView
         ? null
         : {
             kind: "switching",
@@ -3447,9 +3965,20 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             startedAtMs: Date.now(),
           },
       projectTransitionError: null,
-      projectBinding: isWarmTabSwitch && cachedProject
-        ? createLocalProjectBinding(cachedProject)
-        : null,
+      // `setProject` above already restored the lanes and their selection.
+      ...(cachedViewProject
+        ? {
+            cachedProjectViewRoot: cachedViewProject.rootPath,
+            projectHydrated: true,
+            showWelcome: false,
+            isNewTabOpen: false,
+            standaloneSettingsOpen: false,
+            keybindings: readKeybindingsSnapshot(),
+          }
+        : {}),
+      // A cold switch keeps the open project's binding until the new project
+      // replaces both together: nulling it here left the old project (perhaps
+      // one on another machine) reading as local, and a failure kept it so.
       ...(isWarmTabSwitch
         ? {
             projectHydrated: true,
@@ -3484,7 +4013,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     });
     try {
       const project = await window.ade.project.switchToPath(rootPath);
-      get().setProject(project);
+      if (showsCachedView && get().project?.rootPath !== rootPath) {
+        // The user moved to another project (or a remote copy) while the saved
+        // view's open ran. That move owns the window now; the open only
+        // refreshes what this computer knows about the folder.
+        get().rememberProjectInfo(project);
+        return;
+      }
+      get().setProject(project, { replaceBinding: true });
+      if (opts?.carryWorkView) carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, project));
       const restoredSelection =
         get().laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
       // Stale-while-revalidate: if we have cached lanes for the destination
@@ -3495,7 +4032,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const cachedLanes = get().laneCacheByProject[project.rootPath];
       // Banner-dismiss pruning happens in the second `set` call below, after recents are fetched,
       // so we can retain dismissals for the active project + all recent projects in one pass.
-      set(isWarmTabSwitch
+      // The cached view hands over in place: its lanes, selection and draft
+      // stay, the lane read below replaces the lanes, and a Home or another
+      // switch the user started during the open keeps its own state.
+      set(showsCachedView
+        ? {
+            projectHydrated: true,
+            ...(get().cachedProjectViewRoot === rootPath ? { cachedProjectViewRoot: null } : {}),
+          }
+        : isWarmTabSwitch
         ? {
             projectTransition: null,
             projectTransitionError: null,
@@ -3612,8 +4157,19 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     } catch (error) {
       const failure = transitionFailureState("switching", error, rootPath);
       const projectTransitionError = failure.projectTransitionError;
+      if (showsCachedView) {
+        // The folder did not open, so its saved view goes: the window is where
+        // a cold switch that failed leaves it, on Home with the error. A
+        // project the user moved to during the open stays.
+        if (get().cachedProjectViewRoot === rootPath) set({ cachedProjectViewRoot: null });
+        if (get().project?.rootPath === rootPath) {
+          get().setProject(null);
+          set({ showWelcome: true });
+        }
+      }
       set({
-        projectTransition: null,
+        // A cached view started no transition; one in flight now is a later switch's.
+        ...(showsCachedView ? {} : { projectTransition: null }),
         lanesLoading: false,
         ...failure,
         projectTransitionError: !projectTransitionError
@@ -3626,20 +4182,24 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }
   },
 
-  switchRemoteProject: async (targetId: string, projectId: string) => {
+  switchRemoteProject: async (targetId: string, projectId: string, options) => {
     const switchGeneration = ++remoteProjectSwitchGeneration;
+    const outgoingBinding = get().projectBinding;
     ++laneRefreshVersion;
     const outgoingProjectKey = selectActiveProjectStateKey(get());
     const outgoingSelection = {
       laneId: get().selectedLaneId,
       sessionId: get().focusedSessionId,
     };
+    const transition: AppState["projectTransition"] = {
+      kind: "switching",
+      rootPath: null,
+      startedAtMs: Date.now(),
+    };
+    pendingRemoteSwitch = { transition, targetId, projectId };
+    remoteOpenSupersededByHome = null;
     set((prev) => ({
-      projectTransition: {
-        kind: "switching",
-        rootPath: null,
-        startedAtMs: Date.now(),
-      },
+      projectTransition: transition,
       projectTransitionError: null,
       ...(outgoingProjectKey
         ? {
@@ -3651,13 +4211,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         : {}),
     }));
     try {
-      const binding = await window.ade.remoteRuntime.openProject(targetId, projectId);
+      // A tab bound to ADE Cloud opens with no computer: the runtime layer
+      // takes its binding as it is (web adapter, preload).
+      const adeCloud = isAdeCloudTargetId(targetId)
+        ? adeCloudBinding(options?.adeCloudProject ?? adeCloudProjectForTab(get().openRemoteProjectTabs, projectId))
+        : null;
+      const binding = adeCloud
+        ? await window.ade.remoteRuntime.openProject(targetId, projectId, adeCloud)
+        : await window.ade.remoteRuntime.openProject(targetId, projectId);
       if (switchGeneration !== remoteProjectSwitchGeneration) {
         return binding;
       }
+      pendingRemoteSwitch = null;
       if (binding.kind !== "remote") {
         throw new Error("Remote project open returned a local project binding.");
       }
+      if (options?.carryWorkView) carryWorkViewToCopy(outgoingBinding, binding);
       set((prev) => {
         const projectKey = normalizeProjectKey(binding.key);
         const cachedLanes =
@@ -3727,6 +4296,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       return binding;
     } catch (error) {
       if (switchGeneration === remoteProjectSwitchGeneration) {
+        pendingRemoteSwitch = null;
         set({
           projectTransition: null,
           lanesLoading: false,
@@ -3735,6 +4305,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       }
       throw error;
     }
+  },
+
+  takeRemoteOpenSupersededByHome: (binding) => {
+    const superseded = remoteOpenSupersededByHome;
+    if (!superseded || superseded.targetId !== binding.targetId || superseded.projectId !== binding.projectId) return false;
+    remoteOpenSupersededByHome = null;
+    return true;
   },
 
   closeProject: async (options) => {
@@ -3998,6 +4575,51 @@ export function unregisterProjectSurfaceStore(projectKey: string, store: AppStor
   if (_projectSurfaceStores.get(key) === store) _projectSurfaceStores.delete(key);
 }
 
+/** This computer's binding for a project just opened by path, for `carryWorkViewToCopy`. */
+function localBindingForCarry(current: OpenProjectBinding | null, project: ProjectInfo): OpenProjectBinding {
+  if (current?.kind === "local" && current.rootPath === project.rootPath) return current;
+  return { kind: "local", key: project.rootPath, rootPath: project.rootPath, displayName: project.displayName };
+}
+
+/**
+ * A tab that moves to another copy of the same repository keeps what it had
+ * open: the chat in front, its open tabs and grid. Only a caller that moves
+ * the same tab asks for it (`carryWorkView`); two folders of one repository
+ * on this computer are separate tabs with separate views. Each copy keeps its own
+ * view under its own key, so without this the open chat closed whenever the
+ * tab's computer went away and the tab moved to a copy on another computer.
+ */
+function carryWorkViewToCopy(
+  from: OpenProjectBinding | null,
+  to: OpenProjectBinding,
+): void {
+  if (!from) return;
+  const fromKey = projectStateKeyForBinding(from);
+  const toKey = projectStateKeyForBinding(to);
+  if (!fromKey || !toKey || fromKey === toKey) return;
+  const fromOrigin = normalizeGitRemoteIdentity(originUrlForBinding(from));
+  if (!fromOrigin || fromOrigin !== normalizeGitRemoteIdentity(originUrlForBinding(to))) return;
+  const fromView = (_projectSurfaceStores.get(fromKey) ?? rootAppStore).getState().workViewByProject[fromKey]
+    ?? readPersistedWorkViewForProject(fromKey).view;
+  if (!fromView?.activeItemId) return;
+  const toStore = _projectSurfaceStores.get(toKey) ?? null;
+  const toView = toStore?.getState().workViewByProject[toKey]
+    ?? readPersistedWorkViewForProject(toKey).view
+    ?? rootAppStore.getState().workViewByProject[toKey]
+    ?? null;
+  const carried: WorkProjectViewState = {
+    ...(toView ?? fromView),
+    openItemIds: fromView.openItemIds,
+    activeItemId: fromView.activeItemId,
+    selectedItemId: fromView.selectedItemId,
+    gridSets: fromView.gridSets,
+    activeGridSetId: fromView.activeGridSetId,
+  };
+  persistWorkViewState({ upsertProjects: { [toKey]: carried } });
+  rootAppStore.setState((prev) => ({ workViewByProject: { ...prev.workViewByProject, [toKey]: carried } }));
+  toStore?.setState((prev) => ({ workViewByProject: { ...prev.workViewByProject, [toKey]: carried } }));
+}
+
 /** The store that owns per-project view state for `projectRootOrKey`. */
 export function workViewStoreForProject(
   projectRootOrKey: string | null | undefined,
@@ -4120,6 +4742,11 @@ export const useAppStore = Object.assign(
  * which project-scoped store the composer's own `useAppStore` resolves to.
  */
 export const rootAppStoreApi: AppStoreApi = rootAppStore;
+
+// Renderer caches key a pin that names the tab's own copy as no pin (see
+// `lib/tabBindingKey`). Only the key is compared, so this costs a read per update.
+setTabBindingKey(rootAppStore.getState().projectBinding?.key ?? null);
+rootAppStore.subscribe((state) => setTabBindingKey(state.projectBinding?.key ?? null));
 
 /**
  * Reactively read from the ROOT store, bypassing any `AppStoreProvider` context.

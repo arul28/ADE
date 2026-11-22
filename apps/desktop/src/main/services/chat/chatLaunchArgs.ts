@@ -10,10 +10,21 @@ import type {
   ChatLaunchLaneConfig,
   ChatLaunchQueueMessageArgs,
 } from "../../../shared/types";
+import { chatLaunchKindOf, normalizeChatLaunchPriorStages } from "../../../shared/chatLaunch";
 import { normalizeHarnessPreset } from "../../../shared/harnessPresets";
+import { parseLaneGitHubIssueValue } from "../../../shared/laneGitHubIssue";
+import { parseLaneJiraIssueValue } from "../../../shared/laneJiraIssue";
 import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
 import { normalizeLaneStart } from "../../../shared/laneStart";
+import { parseGuestCommentSelections, parseThreadCommentClientIds, type ChatThreadCommentSelection } from "../../../shared/threadComments";
 import { isRecord } from "../shared/utils";
+import { normalizeClientSendId } from "./chatClientSendLedger";
+
+/** `{ clientSendId }` when the value is a usable id (`normalizeClientSendId`), else nothing. */
+function clientSendIdField(value: unknown): { clientSendId?: string } {
+  const clientSendId = normalizeClientSendId(value);
+  return clientSendId ? { clientSendId } : {};
+}
 
 /**
  * The one parser for untrusted chat-launch input. Both entry points — the
@@ -118,6 +129,10 @@ export function parseAgentChatCreateFields(value: Record<string, unknown>): Omit
   // Fast's tier: "ultrafast" or plain Fast. Anything else is not a tier.
   if (value.fastTier === "ultrafast") parsed.fastTier = "ultrafast";
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatCreateArgs["opencodePermissionMode"];
+  // The provider account a launch runs on (Claude and Codex only). The id
+  // travels; the machine that owns the lane resolves it against its own store.
+  const instanceId = asTrimmedString(value.instanceId);
+  if (instanceId) parsed.instanceId = instanceId;
   if ("piProfileId" in value) parsed.piProfileId = value.piProfileId == null ? null : asTrimmedString(value.piProfileId) ?? null;
   if ("piProviderId" in value) parsed.piProviderId = value.piProviderId == null ? null : asTrimmedString(value.piProviderId) ?? null;
   if ("piModelId" in value) parsed.piModelId = value.piModelId == null ? null : asTrimmedString(value.piModelId) ?? null;
@@ -147,7 +162,23 @@ function parseAgentChatMessageFields(value: Record<string, unknown>): Omit<Agent
     ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
     ...(asTrimmedString(value.executionMode) ? { executionMode: asTrimmedString(value.executionMode)! as AgentChatSendArgs["executionMode"] } : {}),
     ...(asTrimmedString(value.interactionMode) ? { interactionMode: asTrimmedString(value.interactionMode)! as AgentChatSendArgs["interactionMode"] } : {}),
+    // Send timing only (`chatSendTiming.ts`): when the person pressed Enter.
+    ...(typeof value.clientSubmittedAtMs === "number" && Number.isFinite(value.clientSubmittedAtMs)
+      ? { clientSubmittedAtMs: value.clientSubmittedAtMs }
+      : {}),
   };
+}
+
+/** The guest comments the owner named for this send; only with the chat's own comments. */
+export function guestCommentsField(includeThreadComments: boolean, value: unknown): { includeGuestComments?: ChatThreadCommentSelection[] } {
+  const selections = includeThreadComments ? parseGuestCommentSelections(value) : undefined;
+  return selections ? { includeGuestComments: selections } : {};
+}
+
+/** The comments a send must leave pending (`excludeThreadCommentClientIds`); only with the chat's own comments. */
+export function excludedThreadCommentsField(includeThreadComments: boolean, value: unknown): { excludeThreadCommentClientIds?: string[] } {
+  const clientIds = includeThreadComments ? parseThreadCommentClientIds(value) : undefined;
+  return clientIds ? { excludeThreadCommentClientIds: clientIds } : {};
 }
 
 export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
@@ -165,6 +196,10 @@ export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentCha
     ...messageFields,
     ...(typeof value.compactFirst === "boolean" ? { compactFirst: value.compactFirst } : {}),
     ...(includeThreadComments ? { includeThreadComments: true } : {}),
+    ...guestCommentsField(includeThreadComments, value.includeGuestComments),
+    ...excludedThreadCommentsField(includeThreadComments, value.excludeThreadCommentClientIds),
+    // A phone's offline queue or a web retry resends with the same id.
+    ...clientSendIdField(value.clientSendId),
   };
 }
 
@@ -189,7 +224,6 @@ function parseChatLaunchChat(value: unknown): ChatLaunchChatArgs {
   const create: ChatLaunchChatArgs["create"] = {
     ...parseAgentChatCreateFields(rawCreate),
     ...(asTrimmedString(rawCreate.credentialId) ? { credentialId: asTrimmedString(rawCreate.credentialId)! } : {}),
-    ...(asTrimmedString(rawCreate.instanceId) ? { instanceId: asTrimmedString(rawCreate.instanceId)! } : {}),
   };
   const runtime = rawMessage.runtime === "local" || rawMessage.runtime === "cloud" ? rawMessage.runtime : null;
   const remoteMcp = parseRemoteMcpTurnLabel(rawMessage.metadata);
@@ -244,6 +278,10 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
   // The canonical strict parser, so a malformed issue degrades to null instead
   // of reaching the lane service and throwing on a missing field.
   const linearIssue = parseLaneLinearIssueValue(value.linearIssue);
+  const githubIssue = mode === "new" ? parseLaneGitHubIssueValue(value.githubIssue) : null;
+  const jiraIssue = mode === "new" ? parseLaneJiraIssueValue(value.jiraIssue) : null;
+  // Only a pull request page (`…/owner/repo/pull/N`): the link step looks the PR up by it.
+  const pullRequestUrl = mode === "existing" ? asTrimmedString(value.pullRequestUrl) : null;
   return {
     mode,
     ...(start ? { start } : {}),
@@ -252,6 +290,9 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
     ...(templateId ? { templateId } : {}),
     ...(color ? { color } : {}),
     ...(linearIssue ? { linearIssue } : {}),
+    ...(githubIssue ? { githubIssue } : {}),
+    ...(jiraIssue ? { jiraIssue } : {}),
+    ...(pullRequestUrl && /^https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/\d+\/?$/i.test(pullRequestUrl) ? { pullRequestUrl } : {}),
     ...(mode === "new" && value.autoName === true ? { autoName: true } : {}),
   };
 }
@@ -264,10 +305,14 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
 export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
   const record = requireRecord(value, "chat.startLaunch");
   const launchId = requireString(record.launchId, "chat.startLaunch requires launchId.");
-  const kind = record.kind === "cli" ? "cli" : "chat";
+  const kind = chatLaunchKindOf(record.kind);
   const attachments = parseAgentChatFileRefs(record.attachments);
   const chat = kind === "chat" ? parseChatLaunchChat(record.chat) : undefined;
   const laneConfig = parseChatLaunchLaneConfig(record.laneConfig);
+  // An ADE Cloud launch's desktop stages, for any kind. A `cloud` target is
+  // the desktop's to act on, so a brain never parses one.
+  const priorStages = normalizeChatLaunchPriorStages(record.priorStages);
+  const setupStartedAt = asTrimmedString(record.setupStartedAt);
   return {
     kind,
     mode: record.mode === "background" ? "background" : "foreground",
@@ -283,6 +328,8 @@ export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
     ...(asTrimmedString(record.title) ? { title: asTrimmedString(record.title) } : {}),
     ...(asTrimmedString(record.originClientId) ? { originClientId: asTrimmedString(record.originClientId) } : {}),
     ...(chat ? { chat } : {}),
+    ...(priorStages.length ? { priorStages } : {}),
+    ...(setupStartedAt && Number.isFinite(Date.parse(setupStartedAt)) ? { setupStartedAt } : {}),
   };
 }
 
@@ -300,6 +347,7 @@ export function parseChatLaunchQueueMessageArgs(value: unknown): ChatLaunchQueue
     text: typeof record.text === "string" ? record.text : "",
     ...(asTrimmedString(record.displayText) ? { displayText: asTrimmedString(record.displayText)! } : {}),
     ...(attachments?.length ? { attachments } : {}),
+    ...clientSendIdField(record.clientSendId),
   };
 }
 

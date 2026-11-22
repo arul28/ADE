@@ -1,3 +1,4 @@
+import { isRestartResumeScheduleId } from "../../../shared/chatAutoResume";
 import {
   collapseActivityPhaseRows,
   mergeReasoningFragment,
@@ -709,6 +710,17 @@ export type ChatTranscriptGroupedEnvelope = {
    * Render-side only, like `repeatCount`.
    */
   endedAtUsageLimit?: boolean;
+  /**
+   * On a failed turn's `done` row: the turn's failure line already says what
+   * went wrong, so the turn-end line does not say "failed" again. Set only by
+   * `foldTurnFailureRows`. Render-side only.
+   */
+  failureShown?: boolean;
+  /**
+   * On a failure line: what the turn's later errors said, folded into this
+   * one line's Details. Set only by `foldTurnFailureRows`. Render-side only.
+   */
+  failureNotes?: string[];
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `timestampSynthetic`. */
   timestampSynthetic?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */
@@ -1147,6 +1159,11 @@ function systemNoticeSignature(
   const kind = event.noticeKind ?? null;
   const message = event.message.trim();
   const detail = event.detail ?? null;
+  // Two stand-ins for different oversized rows can read the same; the row's
+  // offset tells them apart.
+  if (event.omittedRow) {
+    return `o${JSON.stringify([turnId, kind, message, detail, event.omittedRow.offset])}`;
+  }
   // The common notice has text fields only: join them with a separator none of
   // them holds ("s" form). Anything else is JSON ("j" form). The two forms
   // never collide, and each is exact within itself.
@@ -3119,6 +3136,9 @@ export function appendCollapsedChatTranscriptEvent(
   // `api_retry` is a live provider-health signal, not durable transcript
   // content. Its compact replacement is emitted on the activity stream.
   if (event.type === "api_retry") return;
+  // A restart resume's "Woke at" line: the restart notice already says the
+  // agent continues.
+  if (event.type === "scheduled_work_update" && isRestartResumeScheduleId(event.id)) return;
 
   if (event.type === "user_message") {
     const steerId = event.steerId?.trim();
@@ -3167,6 +3187,7 @@ export function appendCollapsedChatTranscriptEvent(
     if (
       wake
       && typeof wake.scheduleId === "string"
+      && !isRestartResumeScheduleId(wake.scheduleId)
       && (wake.kind === "wakeup" || wake.kind === "cron" || wake.kind === "loop")
       && typeof wake.firedAt === "string"
     ) {
@@ -3354,6 +3375,7 @@ export function appendCollapsedChatTranscriptEvent(
       lastProgressAt: event.lastProgressAt,
       automaticRecoveryAttempted: event.automaticRecoveryAttempted,
       sourceSessionId: event.sourceSessionId,
+      provider: event.provider,
     };
     appendCollapsedChatTranscriptEvent(
       rows,
@@ -3533,6 +3555,7 @@ export function appendCollapsedChatTranscriptEvent(
         && previous.event.message.trim() === event.message.trim()
         && JSON.stringify(previous.event.detail ?? null) === JSON.stringify(event.detail ?? null)
         && (previous.event.turnId ?? null) === (event.turnId ?? null)
+        && (previous.event.omittedRow?.offset ?? null) === (event.omittedRow?.offset ?? null)
       ) {
         return;
       }

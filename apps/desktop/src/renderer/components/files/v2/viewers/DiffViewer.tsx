@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { DiffMode, FileDiff, FilePatch, GitCommitSummary } from "../../../../../shared/types";
+import type { OpenProjectBinding } from "../../../../../shared/types/core";
 import { hostSupportsBranchDiff } from "../../../../lib/branchDiffSupport";
 import { extractError } from "../../../../lib/format";
 import { COLORS, MONO_FONT } from "../../../lanes/laneDesignTokens";
@@ -28,11 +29,18 @@ export function DiffViewer({
   laneId,
   path,
   theme,
+  pin,
 }: {
   laneId: string;
   path: string;
   theme: "light" | "dark";
+  /** The copy the lane lives on. Every diff and commit read goes there. */
+  pin: OpenProjectBinding;
 }) {
+  // Effects key on the pin's key: a pin rebuilt with the same key must not re-read.
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin.key;
   const [mode, setMode] = useState<DiffMode>("unstaged");
   const [branchSupported, setBranchSupported] = useState(false);
   // A mode the user picked sticks across files; until then each file opens on
@@ -45,8 +53,8 @@ export function DiffViewer({
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
-      hostSupportsBranchDiff(laneId),
-      window.ade.diff.getChanges({ laneId }).catch((error) => {
+      hostSupportsBranchDiff(laneId, pinRef.current),
+      window.ade.diff.getChanges({ laneId }, pinRef.current).catch((error) => {
         console.warn("files.diff_viewer.changes_read_failed", error);
         return null;
       }),
@@ -64,7 +72,7 @@ export function DiffViewer({
     return () => {
       cancelled = true;
     };
-  }, [laneId, path]);
+  }, [laneId, path, pinKey]);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [patch, setPatch] = useState<FilePatch | null>(null);
   const [commits, setCommits] = useState<GitCommitSummary[]>([]);
@@ -74,7 +82,7 @@ export function DiffViewer({
   useEffect(() => {
     let cancelled = false;
     window.ade.git
-      .listRecentCommits({ laneId, limit: 30 })
+      .listRecentCommits({ laneId, limit: 30 }, pinRef.current)
       .then((rows) => {
         if (cancelled) return;
         setCommits(rows);
@@ -89,7 +97,7 @@ export function DiffViewer({
     return () => {
       cancelled = true;
     };
-  }, [laneId]);
+  }, [laneId, pinKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -101,7 +109,10 @@ export function DiffViewer({
         return;
       }
       const args = { laneId, path, mode, compareRef: mode === "commit" ? compareRef : undefined } as const;
-      const [d, p] = await Promise.allSettled([window.ade.diff.getFile(args), window.ade.diff.getFilePatch(args)]);
+      const [d, p] = await Promise.allSettled([
+        window.ade.diff.getFile(args, pinRef.current),
+        window.ade.diff.getFilePatch(args, pinRef.current),
+      ]);
       if (cancelled) return;
       const nextDiff = d.status === "fulfilled" ? d.value : null;
       const nextPatch = p.status === "fulfilled" && patchHasChanges(p.value) ? p.value : null;
@@ -122,7 +133,7 @@ export function DiffViewer({
     return () => {
       cancelled = true;
     };
-  }, [laneId, path, mode, compareRef]);
+  }, [laneId, path, mode, compareRef, pinKey]);
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">

@@ -54,6 +54,7 @@ import { useStorageBytes } from "../storage/useStorageBytes";
 import type { HealthData } from "./useHealthData";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { decodeSettingsHash } from "../settingsHash";
+import { requirePin } from "../../../state/repositoryScope";
 
 /** One storage result at a time: a new outcome replaces the last in place. */
 const STORAGE_TOAST_ID = "settings-storage-result";
@@ -62,12 +63,12 @@ type CleanupRequest = { title: string; intro: string; targets: StorageCleanupTar
 
 const EMPTY_TARGETS: StorageCleanupTarget[] = [];
 
-function getRunMaintenanceNow(): ((pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>) | undefined {
+function getRunMaintenanceNow(): ((pin: OpenProjectBinding) => Promise<MaintenanceRunReport>) | undefined {
   const fn = window.ade?.storage?.runMaintenanceNow;
   return isAdeAvailable(fn) ? fn : undefined;
 }
 
-function getCompressNow(): ((pin?: OpenProjectBinding | null) => Promise<{ filesCompressed: number; savedBytes: number }>) | undefined {
+function getCompressNow(): ((pin: OpenProjectBinding) => Promise<{ filesCompressed: number; savedBytes: number }>) | undefined {
   const fn = window.ade?.storage?.compressNow;
   return isAdeAvailable(fn) ? fn : undefined;
 }
@@ -97,7 +98,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
 
   const runMaintenanceBridge = React.useMemo(() => getRunMaintenanceNow(), []);
   const runMaintenanceNow = React.useMemo<(() => Promise<MaintenanceRunReport>) | undefined>(
-    () => (runMaintenanceBridge ? () => runMaintenanceBridge(pin) : undefined),
+    () => (runMaintenanceBridge && pin ? () => runMaintenanceBridge(pin) : undefined),
     [pin, runMaintenanceBridge],
   );
   const compressNow = React.useMemo(() => getCompressNow(), []);
@@ -138,7 +139,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
   const canCleanUp = Boolean(plan && (plan.fsTargets.length > 0 || runMaintenanceNow));
 
   const runCompress = React.useCallback(async () => {
-    if (!compressNow) return;
+    if (!compressNow || !pin) return;
     setCompressing(true);
     try {
       const result = await compressNow(pin);
@@ -157,7 +158,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
 
   const restoreLane = React.useCallback(async (laneId: string) => {
     try {
-      const result = await window.ade.lanes.unarchive({ laneId }, pin);
+      const result = await window.ade.lanes.unarchive({ laneId }, requirePin(pin));
       const filesFailed = result.restoredFiles?.restored === false;
       notify(
         result.setupWarning
@@ -422,9 +423,8 @@ export function HealthSpace({ data }: { data: HealthData }) {
                 onRequestCleanup={setCleanup}
               />
               <DatabaseDetails category={database} snapshot={snapshot} />
-              {/* Reads through unpinned simulator/file calls, so only for the tab's machine. */}
-              {pin ? null : <AppleRecordingsWarning projectRoot={snapshot.projectRoot} />}
-              {/* One pinned runtime read, so it is right for whichever machine this page shows. */}
+              {/* Pinned reads, so both are right for whichever machine this page shows. */}
+              <AppleRecordingsWarning projectRoot={snapshot.projectRoot} pin={pin} />
               <AndroidRecordingsWarning pin={pin} />
             </div>
           ) : null}

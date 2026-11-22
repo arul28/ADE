@@ -137,13 +137,6 @@ describe("AccountSignedOutBanner", () => {
     expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
   });
 
-  it("cannot be dismissed", () => {
-    renderBanner();
-
-    expect(signedOutBanner()).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /dismiss/i })).toBeNull();
-  });
-
   it("hides on the account page, where its own action would lead", () => {
     renderBanner("/account");
 

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from "react";
 import type { LaneDeleteProgress, LaneSummary } from "../../../shared/types";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { useAppStore } from "../../state/appStore";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { showToast } from "../app/toast/toastStore";
 
 function isTerminalDeleteProgress(progress: LaneDeleteProgress): boolean {
@@ -27,6 +28,11 @@ export function useWorkLaneDeleteProgress({
   refreshSessions: () => Promise<unknown>;
 }): void {
   const refreshLanes = useAppStore((state) => state.refreshLanes);
+  // The tab's lanes are deleted on the tab's copy; their progress is read there.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
+  const tabCopyPinKey = tabCopyPin?.key ?? null;
   const deleteProgressByLaneId = useAppStore((state) => state.laneDeleteProgressByLaneId);
   const setDeleteProgressByLaneId = useAppStore((state) => state.setLaneDeleteProgressByLaneId);
   const lanesByIdRef = useRef(new Map<string, LaneSummary>());
@@ -134,7 +140,8 @@ export function useWorkLaneDeleteProgress({
   }, [refreshAfterDelete]);
 
   useEffect(() => {
-    if (!active) return;
+    const pin = tabCopyPinRef.current;
+    if (!active || !pin) return;
 
     const applyProgress = (progress: LaneDeleteProgress) => {
       if (progress.overallStatus === "failed" || progress.overallStatus === "cancelled") {
@@ -157,7 +164,7 @@ export function useWorkLaneDeleteProgress({
 
     const unsubscribe = window.ade.lanes.onDeleteEvent((event) => {
       applyProgress(event.progress);
-    });
+    }, pin);
     const unsubscribeLifecycle = window.ade.lanes.onLifecycleEvent((event) => {
       if (event.type === "lane-deleted") {
         const current = deleteProgressByLaneIdRef.current[event.laneId];
@@ -174,10 +181,10 @@ export function useWorkLaneDeleteProgress({
         return;
       }
       void refreshLanes({ includeStatus: false }).catch(() => {});
-    });
+    }, pin);
 
     let cancelled = false;
-    void window.ade.lanes.listDeleteProgress()
+    void window.ade.lanes.listDeleteProgress(pin)
       .then((progresses) => {
         if (cancelled) return;
         for (const progress of progresses) {
@@ -195,5 +202,5 @@ export function useWorkLaneDeleteProgress({
       unsubscribe();
       unsubscribeLifecycle();
     };
-  }, [active, clearProgress, refreshAfterDelete, refreshLanes, setDeleteProgressByLaneId]);
+  }, [active, clearProgress, refreshAfterDelete, refreshLanes, setDeleteProgressByLaneId, tabCopyPinKey]);
 }

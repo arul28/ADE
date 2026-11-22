@@ -118,12 +118,21 @@ export function ThreadMediaActions({
   if (!onComment && !attachment) return null;
 
   const zoom = cssZoomOf();
-  const style: React.CSSProperties = {
-    // Inside the media's top-right corner, so it never covers a video's controls.
-    left: Math.min(hovered.rect.right / zoom, window.innerWidth / zoom) - 8,
-    top: Math.max(8, hovered.rect.top / zoom + 8),
-    transform: "translateX(-100%)",
-  };
+  // A notice or a placeholder in place of the picture (offline, failed,
+  // loading) has its own buttons at its right end: the bar sits just above it,
+  // flush so the pointer can reach the bar, never over the notice's Retry.
+  const showsMedia = hovered.box.matches("img, video") || hovered.box.querySelector("img, video") != null;
+  const right = Math.min(hovered.rect.right / zoom, window.innerWidth / zoom);
+  const style: React.CSSProperties = showsMedia
+    ? {
+      // Inside the media's top-right corner, so it never covers a video's controls.
+      left: right - 8,
+      top: Math.max(8, hovered.rect.top / zoom + 8),
+      transform: "translateX(-100%)",
+    }
+    : hovered.rect.top / zoom > 40
+      ? { left: right, top: hovered.rect.top / zoom + 1, transform: "translate(-100%, -100%)" }
+      : { left: right, top: hovered.rect.bottom / zoom - 1, transform: "translateX(-100%)" };
   const attached = attachedElement === hovered.element;
   const noun = media.kind === "video" ? "video" : "image";
 

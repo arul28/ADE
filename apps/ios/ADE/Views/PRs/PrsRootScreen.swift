@@ -9,6 +9,11 @@ struct PRsTabView: View, Equatable {
   let machineFleet: MachineFleet
   /// PR ↔ lane links and lanes of the other machines holding this repository.
   @StateObject private var remotePrs = PrRemoteMachinesModel()
+  /// Open PRs read straight from GitHub while the computer is not reachable.
+  @StateObject private var directPrs = PrDirectPullsModel()
+  @State private var directOpened: GitHubDirectPull?
+  /// The repository read from GitHub the last time the tab showed.
+  @State private var lastActiveDirectRepo: String?
   let isActive: Bool
   let inputs: PrsRootInputs
 
@@ -69,6 +74,12 @@ struct PRsTabView: View, Equatable {
 
   private var isLive: Bool {
     prsStatus.phase == .ready && syncService.connectionState == .connected && syncService.projectHostIsLive
+  }
+
+  /// The repository read straight from GitHub: the computer is not
+  /// reachable, so the machine's list cannot update (spec 3.10).
+  private var directRepo: GitHubDirectRepoRef? {
+    GitHubDirectRepoRef(owner: inputs.directRepoOwner, name: inputs.directRepoName)
   }
 
   /// Skeletons only stand in for rows the phone has never had: cached rows
@@ -336,7 +347,22 @@ struct PRsTabView: View, Equatable {
       githubHistoryPageLimit = 2
       laneContextLaneId = nil
       duoSelectedPrId = nil
+      directOpened = nil
       path = NavigationPath()
+    }
+    // A computer came online (or the repository changed): the PR read from
+    // GitHub gives way to the machine's list.
+    // A hidden tab's inputs drop the repository, so the check runs when the
+    // tab shows again: the same repository keeps the open PR, and a computer
+    // that came online meanwhile closes it.
+    .onChange(of: "\(isActive)|\(directRepo?.fullName ?? "")", initial: true) { _, _ in
+      let repo = directRepo?.fullName
+      guard isActive, repo != lastActiveDirectRepo else { return }
+      lastActiveDirectRepo = repo
+      directOpened = nil
+      // The machine's PR beside the list cannot update any more, and it
+      // would hide a PR picked from the GitHub list.
+      if repo != nil { duoSelectedPrId = nil }
     }
     .onChange(of: remotePrs.machines) { _, _ in recomputeGitHubDerived() }
     .onChange(of: githubCategoryRawValue) { _, _ in
@@ -437,13 +463,32 @@ struct PRsTabView: View, Equatable {
   var duoPrsSplitBody: some View {
     DuoSplitScaffold(
       adaptive: true,
-      selection: duoSelectedPrId,
-      wantsWholeDisplay: duoSelectedPrId != nil
+      selection: duoSelectedPrId ?? directOpened.map { "github-direct-\($0.number)" },
+      wantsWholeDisplay: duoSelectedPrId != nil || duoDirectPull != nil
     ) { _ in
       duoPrsListColumn
     } detail: {
       duoPrDetailColumn
     }
+  }
+
+  /// A PR read from GitHub (no computer online), shown in the detail column
+  /// on the inner display.
+  private var duoDirectPull: GitHubDirectPull? {
+    directRepo == nil ? nil : directOpened
+  }
+
+  /// The phone pushes a PR read from GitHub; the inner display shows it
+  /// beside the list instead. Unfolding pops the push without dropping the
+  /// PR, so the detail column picks it up, and folding pushes it again.
+  private var directOpenedPush: Binding<GitHubDirectPull?> {
+    Binding(
+      get: { duoLayout.isWide ? nil : directOpened },
+      set: { pull in
+        guard pull != nil || !duoLayout.isWide else { return }
+        directOpened = pull
+      }
+    )
   }
 
   private func duoRowIsSelected(_ item: GitHubPrListItem) -> Bool {
@@ -468,21 +513,57 @@ struct PRsTabView: View, Equatable {
   /// keeps the edge bar's inset where the closed display has one.
   private func prsListColumnContent(diagnosticsKey: String) -> some View {
     List {
-      noticeRows
-      if isLoadingSkeleton {
-        Section {
-          ForEach(0..<4, id: \.self) { _ in
-            PrRowCardSkeleton().adeFlatRow()
-          }
+      if let directRepo {
+        PrDirectPullRows(
+          repo: directRepo,
+          computerName: inputs.directComputerName,
+          model: directPrs,
+          searchText: searchText,
+          selectedNumber: duoLayout.isWide ? directOpened?.number : nil
+        ) { pull in
+          // The detail column shows a machine PR first; a PR picked here
+          // replaces it.
+          duoSelectedPrId = nil
+          directOpened = pull
         }
       } else {
-        githubSurfaceRows
+        noticeRows
+        if isLoadingSkeleton {
+          Section {
+            ForEach(0..<4, id: \.self) { _ in
+              PrRowCardSkeleton().adeFlatRow()
+            }
+          }
+        } else {
+          githubSurfaceRows
+        }
       }
     }
     .adeFlatList()
     .contentMargins(.bottom, 24, for: .scrollContent)
     .adeScrollDiagnosticsSurface(.prList, key: diagnosticsKey)
-    .refreshable { await refreshFromPullGesture() }
+    .refreshable {
+      if let directRepo {
+        await directPrs.load(directRepo, background: false)
+      } else {
+        await refreshFromPullGesture()
+      }
+    }
+    // The direct reads run only while the tab shows them.
+    .background {
+      if let directRepo, isActive {
+        Color.clear.prDirectPolling(directRepo, model: directPrs)
+      }
+    }
+    .navigationDestination(item: directOpenedPush) { pull in
+      if let directRepo {
+        PrDirectDetailScreen(
+          repo: directRepo,
+          pull: pull,
+          computerName: inputs.directComputerName
+        )
+      }
+    }
     .safeAreaInset(edge: .top, spacing: 0) { duoPrsHeaderRows }
     .modifier(PrListColumnEdgeModifier(isLeadingColumn: duoLayout.isWide))
     // A PR's detail hides the bar held landscape on a phone; the list asks
@@ -514,6 +595,11 @@ struct PRsTabView: View, Equatable {
       Section {
         Button {
           Task {
+            // With the computer offline the list comes from GitHub.
+            if let directRepo {
+              await directPrs.load(directRepo, background: false)
+              return
+            }
             async let remote: Void = refreshRemotePrs()
             await reload(refreshRemote: true)
             await remote
@@ -521,7 +607,7 @@ struct PRsTabView: View, Equatable {
         } label: {
           Label("Refresh", systemImage: "arrow.clockwise")
         }
-        .disabled(prsStatus.phase == .hydrating)
+        .disabled(directRepo == nil && prsStatus.phase == .hydrating)
       }
     } label: {
       PrListTitleLabel(title: "PRs")
@@ -535,7 +621,7 @@ struct PRsTabView: View, Equatable {
     PrListHeaderBar(
       searchText: $searchText,
       prompt: "Search PRs",
-      filterActive: hasActiveFilters,
+      filterActive: directRepo == nil && hasActiveFilters,
       canCreate: canCreatePr,
       onCreate: {
         createInitialLaneId = nil
@@ -544,6 +630,7 @@ struct PRsTabView: View, Equatable {
       onOpenActivity: { syncService.attentionDrawerPresented = true },
       onOpenSettings: { syncService.settingsPresented = true }
     ) {
+      if directRepo == nil {
         Picker("Show", selection: selectedGitHubScopeFilter) {
           ForEach(PrGitHubScopeFilter.allCases) { scope in
             Text(scope.title).tag(scope)
@@ -556,9 +643,14 @@ struct PRsTabView: View, Equatable {
           }
         }
         .pickerStyle(.inline)
-
+      } else {
+        // The list read from GitHub has open PRs only, newest first.
+        Text("Show and Sort work when the computer is online.")
+      }
     } category: {
-      githubCategoryPicker
+      if directRepo == nil {
+        githubCategoryPicker
+      }
     }
   }
 
@@ -575,6 +667,16 @@ struct PRsTabView: View, Equatable {
           .toolbar { DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar) }
       }
       .id(prId)
+    } else if let pull = duoDirectPull, let directRepo {
+      NavigationStack {
+        PrDirectDetailScreen(
+          repo: directRepo,
+          pull: pull,
+          computerName: inputs.directComputerName
+        )
+        .toolbar { DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar) }
+      }
+      .id(pull.number)
     } else {
       DuoSplitPlaceholder(
         symbol: "arrow.triangle.pull",

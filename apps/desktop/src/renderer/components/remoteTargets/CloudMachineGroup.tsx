@@ -1,16 +1,24 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { ArrowClockwise, CircleNotch, GitBranch, Sun, UserMinus } from "@phosphor-icons/react";
+import { ArrowClockwise, CircleNotch, GitBranch, Sun, UserCirclePlus, UserMinus } from "@phosphor-icons/react";
 import {
   cloudAccountBanner,
+  cloudHoursLeftMilli,
+  formatCloudHours,
+  type CloudAccountState,
+  cloudMachineSelfUpdating,
   cloudOutOfHours,
   describeCloudMachineSize,
   describeCloudSleepPolicy,
   formatCloudHoursRate,
+  type CloudCatalog,
   type CloudMachine,
   type CloudMachinesResult,
 } from "../../../shared/adeCloud";
 import { Banner } from "../ui/notice";
-import { PushAllWorkButton } from "./PushAllWorkButton";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
+import { CloudLaneSavedWork } from "../cloudLane/CloudLaneSavedWork";
+import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
 import {
@@ -20,15 +28,9 @@ import {
   describeCloudRate,
   type CloudBoxWork,
 } from "./cloudMachineModel";
-import { MachineActionsMenu, type MachineAction } from "./MachineActionsMenu";
+import { CloudUpdateLine } from "./CloudUpdateLine";
 import { cloudPendingLabel, type CloudBoxActionError, type CloudBoxPending } from "./useCloudBoxActions";
 import { connectButtonStyle, machineRowStyle, nameStyle, subTextStyle } from "./remoteTargetListStyles";
-
-/** The tag on a ready machine that is not yet anyone's (a claimed one is an ordinary machine). */
-const READY_STATE_LABELS = {
-  preparing: "Being prepared",
-  failed: "Prepare failed",
-} as const;
 
 
 /** The group's head: the mark, how many computers, and how fast they use hours now. */
@@ -44,11 +46,10 @@ export function CloudGroupHead({
     <div className="ade-cx-section-head ade-cx-cloud-head">
       <CloudMark size={12} bold />
       {ADE_CLOUD_NAME}
-      <span className="ade-cx-count">{boxes.length}</span>
       {loading ? <CircleNotch size={11} className="animate-spin" aria-label="Checking ADE Cloud" /> : null}
       {totals.hoursRate > 0 ? (
-        <span className="ade-cx-cloud-head-facts kit-num" title="How fast the computers awake now use your hours, as multiples of a Small computer.">
-          {formatCloudHoursRate(totals.hoursRate)} now
+        <span className="ade-cx-cloud-head-facts kit-num" title="How fast the computers awake now use your hours. One hour is one hour on a Medium; Small computers use none.">
+          Now: {formatCloudHoursRate(totals.hoursRate)}
         </span>
       ) : null}
     </div>
@@ -90,13 +91,17 @@ export function CloudGroupBanners({
   if (accountBanner) {
     if (cloudOutOfHours(result?.account) && result?.machines.length) {
       banners.push(
-        <div key="push-work" className="ade-ig-mini-rows">
-          {result.machines.map((box) => (
-            <div key={box.instanceId} className="ade-ig-mini-row">
-              <span className="ade-ig-mini-title">{box.name ?? box.instanceId}</span>
-              <PushAllWorkButton instanceId={box.instanceId} />
-            </div>
-          ))}
+        <div key="saved-work" className="ade-ig-mini-rows">
+          {result.machines.flatMap((box) => {
+            // At 0 hours no computer wakes; each lane's saved work reads with no wake.
+            const lane = (box as CloudLaneMachine).lane;
+            return lane?.laneId ? [
+              <div key={box.instanceId} className="ade-ig-mini-row">
+                <span className="ade-ig-mini-title">{lane.laneName ?? "Lane"}</span>
+                <CloudLaneSavedWork laneId={lane.laneId} laneName={lane.laneName} />
+              </div>,
+            ] : [];
+          })}
         </div>,
       );
     }
@@ -118,7 +123,10 @@ export function CloudGroupBanners({
 
 /** What a failed action blocks on, as the buttons that clear it. */
 function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) | null): NoticeAction[] | undefined {
-  return error.blocker === "out_of_hours" && onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined;
+  // At the computer limit: the card with its three ways out (free up, delete, move up).
+  if (error.blocker === "computer_limit") return [{ label: "See your options", onClick: () => openCloudComputerLimitCard(error.computerLimit ?? null) }];
+  const needsPlan = error.blocker === "out_of_hours" || error.blocker === "over_plan_limits";
+  return needsPlan && onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined;
 }
 
 /**
@@ -128,20 +136,29 @@ function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) 
  */
 export function CloudBoxStrip({
   box,
+  catalog,
   work,
   pending,
+  approvalUrl,
   error,
   onDismissError,
   onWake,
+  onRetryUpdate,
   onOpenSettings,
 }: {
   box: CloudMachine;
+  /** The account's sizes, so the box's size reads as the pickers name it. */
+  catalog: CloudCatalog;
   work: CloudBoxWork;
   pending: CloudBoxPending | null;
+  /** A copy's or move's sign-in link while its new computer waits for the person. */
+  approvalUrl?: string | null;
   error: CloudBoxActionError | null;
   onDismissError: () => void;
   /** Wake on the card itself; rows that put Wake in place of Connect pass null. */
   onWake?: (() => void) | null;
+  /** The person's own update, offered when the last one failed. */
+  onRetryUpdate?: (() => void) | null;
   onOpenSettings?: (() => void) | null;
 }) {
   const tone = cloudStateTone(box);
@@ -163,16 +180,7 @@ export function CloudBoxStrip({
           <span className="kit-tag" data-tone={tone ?? undefined} title={`ADE Cloud status: ${box.status}`}>
             {stateLabel}
           </span>
-          {box.ready && box.ready.state !== "claimed" ? (
-            <span
-              className="kit-tag"
-              data-tone={box.ready.state === "failed" ? "crit" : undefined}
-              title={`ADE keeps this machine ready for ${box.ready.projectName}: the next chat there starts on it. Settings › Integrations › ADE Cloud.`}
-            >
-              {box.ready.state === "ready" ? `Ready for ${box.ready.projectName}` : READY_STATE_LABELS[box.ready.state]}
-            </span>
-          ) : null}
-          <span className="ade-cx-cloud-fact">{describeCloudMachineSize(box)}</span>
+          <span className="ade-cx-cloud-fact">{describeCloudMachineSize(box, catalog)}</span>
           {rate ? <span className="ade-cx-cloud-fact kit-num">{rate}</span> : null}
           {box.sleep.state !== "auto" ? (
             <span
@@ -188,6 +196,8 @@ export function CloudBoxStrip({
               <span>{laneNames.length === 1 ? laneNames[0] : `${laneNames.length} lanes`}</span>
             </span>
           ) : null}
+          {/* It updates itself: the line takes the place of an Update button. A failure gets its own row below. */}
+          {cloudMachineSelfUpdating(box) && box.update?.state !== "failed" ? <CloudUpdateLine update={box.update} /> : null}
           {work.runningChats > 0 && !atRest ? (
             <span className="ade-cx-cloud-fact">{work.runningChats === 1 ? "1 chat running" : `${work.runningChats} chats running`}</span>
           ) : null}
@@ -203,12 +213,36 @@ export function CloudBoxStrip({
         <div role="status" className="ade-cx-cloud-pending">
           <CircleNotch size={12} className="animate-spin" />
           {cloudPendingLabel(pending)}
+          {approvalUrl ? (
+            // The approval is the account's: this computer's ADE browser (or this browser), where the person is signed in.
+            <button type="button" className="ade-cx-cloud-wake" onClick={() => openUrlInAdeBrowser(approvalUrl)}>
+              <UserCirclePlus size={12} weight="bold" />
+              Approve
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {cloudMachineSelfUpdating(box) && box.update?.state === "failed" ? (
+        <div>
+          <CloudUpdateLine update={box.update} onRetry={box.pastDue ? null : onRetryUpdate} retrying={pending === "update"} />
         </div>
       ) : null}
       {box.failure ? (
         <div className="ade-cx-cloud-note">{ADE_CLOUD_NAME} couldn't run it: {box.failure}</div>
       ) : null}
-      {box.diskFull ? <Banner layout="inline" model={{ id: `cloud-disk-full-${box.instanceId}`, tone: "warning", title: box.diskFull, report: false }} /> : null}
+      {box.diskFull ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: `cloud-disk-full-${box.instanceId}`,
+            tone: "warning",
+            title: box.diskFull,
+            // A bigger size and the plans live in Settings.
+            actions: onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined,
+            report: false,
+          }}
+        />
+      ) : null}
       {error ? (
         <div ref={errorRef}>
           <Banner
@@ -229,46 +263,54 @@ export function CloudBoxStrip({
 }
 
 /**
- * A box with no ADE row: one that is still joining, was removed from ADE, or
- * never signed in. It still uses hours when awake, so it stays in the list with its rate and
- * Delete computer.
+ * ADE Cloud as one machine in the machine list: how many lanes it has, how
+ * many are awake, and the hours left. Each lane's computer is ADE's
+ * business; Settings › ADE Cloud lists the lanes by name, with their sizes and
+ * actions. Never a computer's own name or id.
  */
-export function CloudBoxOnlyRow({
-  box,
-  accountKnown,
-  actions,
-  strip,
+export function AdeCloudMachineRow({
+  boxes,
+  account,
+  known,
+  onOpenSettings,
 }: {
-  box: CloudMachine;
-  /** Whether the account's machine list was read; otherwise "not in ADE" is unknown. */
-  accountKnown: boolean;
-  actions: MachineAction[];
-  strip: ReactNode;
+  boxes: readonly CloudMachine[];
+  account: CloudAccountState | null;
+  /** The account's computers were read; before that the row claims nothing. */
+  known: boolean;
+  onOpenSettings?: (() => void) | null;
 }) {
-  const name = box.name?.trim() || box.instanceId;
-  // A box that carries its machine key has joined (the key is written at
-  // join), so it is out of ADE, not still setting up, however new it is.
-  const joining = !box.machineKey && box.createdAtMs != null && Date.now() - box.createdAtMs < 10 * 60_000;
-  const line = !accountKnown
-    ? `On ${ADE_CLOUD_NAME}`
-    : joining
-      ? "Setting up and signing in to your account…"
-      : box.machineKey
-        ? `Not in ADE. Reconnect it from ⋯, or delete it.`
-        : `Not in ADE. Delete it if you don't need it.`;
+  const lanes = boxes.filter((box) => (box as CloudLaneMachine).lane).length;
+  const awake = cloudGroupTotals(boxes).running;
+  const hoursLeft = account ? formatCloudHours(cloudHoursLeftMilli(account)) : null;
+  // Parts of one line, each its own phrase: a sentence never gets the hours
+  // joined onto it with a comma ("…start one., 0 h left").
+  const line = !known
+    ? "Your account's cloud machine"
+    : lanes === 0
+      ? "No lanes yet: pick ADE Cloud in Run on to start one"
+      : `${lanes} ${lanes === 1 ? "lane" : "lanes"}, ${awake === 0 ? "all asleep" : `${awake} awake`}`;
   return (
-    <div style={machineRowStyle} data-cloud-box-only={box.instanceId}>
-      <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 12, alignItems: "center" }}>
+    <div style={machineRowStyle} data-ade-cloud-machine="">
+      <div className="ade-cx-row-grid">
         <span className="ade-cx-cloud-avatar" aria-hidden>
           <CloudMark size={18} bold />
         </span>
         <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
-          <span style={nameStyle}>{name}</span>
-          <span style={subTextStyle}>{line}</span>
+          <span style={nameStyle}>{ADE_CLOUD_NAME}</span>
+          <span style={subTextStyle}>
+            {line}
+            {hoursLeft != null ? <span className="kit-num">{` · ${hoursLeft} h left`}</span> : null}
+          </span>
         </div>
-        <MachineActionsMenu label={`Actions for ${name}`} actions={actions} />
+        {onOpenSettings ? (
+          <div className="ade-cx-row-actions">
+            <button type="button" onClick={onOpenSettings} style={{ ...connectButtonStyle, marginRight: 4 }}>
+              Open
+            </button>
+          </div>
+        ) : <span />}
       </div>
-      {strip}
     </div>
   );
 }

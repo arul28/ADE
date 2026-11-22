@@ -15,6 +15,7 @@ import {
   waitForFakeTimers,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
+import { createHash } from "node:crypto";
 import { describe, expect, it, test, vi } from "vitest";
 import { turnHasOpenWork } from "../../../shared/turnInFlight";
 
@@ -1364,6 +1365,93 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    // A guest's message (the host stamps the guest author) is a plain prompt:
+    // no mention expansion, no shell line, no slash command. It names the
+    // turn it may go into, checked right before delivery.
+    it.each<[string, string, string | undefined, string | null]>([
+      ["keeps mention chips as written", "apply the fix from @chat:other-session-id", undefined, null],
+      ["refuses a shell line", "!cat ~/.ssh/id_ed25519", undefined, "lane_share_plain_text_only"],
+      ["refuses a slash command behind a zero-width space", "\u200b/shell ls", undefined, "lane_share_plain_text_only"],
+      ["steers the turn it names", "go on", "turn-1", null],
+      ["refuses a turn that is not the running one", "go on", "turn-other", "lane_share_not_your_turn"],
+    ])("a guest steer %s", async (_label, text, expectedTurnId, code) => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await service.sendMessage({ sessionId: session.id, text: "Start working" }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } => event.event.type === "status" && event.event.turnStatus === "started" && event.event.turnId === "turn-1",
+      );
+      mockState.codexRequestPayloads = [];
+      const steer = service.steerUserMessage(
+        { sessionId: session.id, text, ...(expectedTurnId !== undefined ? { expectedTurnId } : {}) },
+        { author: { kind: "guest", userId: "user_guest", name: "Guest" } },
+      );
+      if (code) {
+        await expect(steer).rejects.toMatchObject({ code });
+        expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("turn/steer");
+        expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("thread/shellCommand");
+        return;
+      }
+      await steer;
+      const steerPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/steer");
+      expect(steerPayload, "steer must reach the provider").toBeTruthy();
+      const providerText = JSON.stringify(steerPayload!.params);
+      expect(providerText).not.toContain("<ade-mention");
+      expect(providerText).toContain(JSON.stringify(text).slice(1, -1));
+    });
+
+    // A moved chat's first send is the other person's brief from Drafts: a
+    // plain prompt whether the receiver edits it or not. Unchanged, it keeps
+    // the other person as its author; edited, it is the receiver's own words.
+    // The mark is read back from the chat's saved state, as after a restart.
+    it.each<[string, string | null, string | null, "guest" | "none"]>([
+      ["sends the unchanged brief with the other person as its author", null, null, "guest"],
+      ["refuses an edited brief that starts with a shell line", "!cat ~/.ssh/id_ed25519", "lane_share_plain_text_only", "none"],
+      ["refuses an edited brief with a slash command behind a zero-width space", "\u200b/shell ls", "lane_share_plain_text_only", "none"],
+      ["keeps mention chips as written in an edited brief, with no author", "apply the fix from @chat:other-session-id", null, "none"],
+    ])("a moved chat's first send %s", async (_label, edited, code, author) => {
+      const brief = "Moved from Owner's machine. Fix the login bug, then run the tests.";
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        laneShareMoveFirstSend: {
+          author: { kind: "guest", userId: "user_owner", name: "Owner" },
+          textSha256: createHash("sha256").update(brief).digest("hex"),
+        },
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const restarted = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) }).service;
+      mockState.codexRequestPayloads = [];
+      const text = edited ?? brief;
+      const send = restarted.sendMessage({ sessionId: session.id, text }, { awaitDispatch: true });
+      if (code) {
+        await expect(send).rejects.toMatchObject({ code });
+        expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("turn/start");
+        expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("thread/shellCommand");
+        return;
+      }
+      await send;
+      const started = await vi.waitFor(() => {
+        const found = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+        expect(found).toBeTruthy();
+        return found!;
+      });
+      expect(codexTurnStartText(started)).not.toContain("<ade-mention");
+      const message = events.find((event) => event.event.type === "user_message" && event.event.text === text);
+      const metadata = (message?.event as { metadata?: { author?: { kind?: string } } } | undefined)?.metadata;
+      if (author === "guest") expect(metadata?.author).toMatchObject({ kind: "guest", name: "Owner" });
+      else expect(metadata?.author?.kind).not.toBe("guest");
+      // The mark goes with the first send.
+      expect(readPersistedChatState(session.id).laneShareMoveFirstSend ?? null).toBeNull();
+    });
+
     it("adopts Codex active turn mismatches and retries delivered steers", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -1535,6 +1623,42 @@ describe("createAgentChatService", () => {
         "turn-1",
         "turn-real",
       ]);
+    });
+
+    it("settles a steered Codex chat whose dead app-server cannot be replaced", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      try {
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "Start working" }, { awaitDispatch: true });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "status" && event.event.turnStatus === "started" && event.event.turnId === "turn-1",
+        );
+        expect((await service.getSessionSummary(session.id))?.status).toBe("active");
+
+        // The app-server exits mid-turn, and the next one fails to start.
+        const spawnIndexes = codexAppServerSpawnIndexes();
+        const deadProcess = vi.mocked(spawn).mock.results[spawnIndexes[spawnIndexes.length - 1]!]!.value as {
+          stdin: { writable: boolean };
+        };
+        deadProcess.stdin.writable = false;
+        mockState.codexResponseOverrides.set("initialize", { error: { code: -32000, message: "app-server failed to start" } });
+
+        await expect(service.steer({ sessionId: session.id, text: "Keep going." })).rejects.toThrow();
+
+        // No runtime and no turn: the chat is not left active.
+        expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
+      } finally {
+        service.forceDisposeAll();
+      }
     });
 
     it("starts a normal Codex turn when steering stale active UI state", async () => {
@@ -1748,6 +1872,62 @@ describe("createAgentChatService", () => {
         "turn-1",
         "turn-real",
       ]);
+    });
+
+    it("drops a retry whose clientSendId already wrote its message, and runs one that failed before writing", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+        const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.6-sol" });
+        const userMessages = (text: string) => events.filter((envelope) =>
+          envelope.event.type === "user_message" && envelope.event.text === text).length;
+        // The written message carries its send's id, so a client finds it by id.
+        const sendIdOf = (text: string) => events.flatMap((envelope) =>
+          envelope.event.type === "user_message" && envelope.event.text === text ? [envelope.event.clientSendId] : []);
+        const turnStarts = (text: string) => mockState.codexRequestPayloads.filter((payload) =>
+          payload.method === "turn/start" && codexTurnStartText(payload).includes(text)).length;
+
+        // The message is written, then Codex takes longer than the request
+        // timeout to answer turn/start: the caller sees a failure.
+        mockState.delayedCodexMethods.add("turn/start");
+        const first = service.sendMessage(
+          { sessionId: session.id, text: "Build the page.", clientSendId: "send-1" },
+          { awaitDispatch: true },
+        );
+        const firstOutcome = first.then(() => null, (error: unknown) => error);
+        await waitForFakeTimers(() => expect(turnStarts("Build the page.")).toBe(1));
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(await firstOutcome).toBeInstanceOf(Error);
+        expect(userMessages("Build the page.")).toBe(1);
+        expect(sendIdOf("Build the page.")).toEqual(["send-1"]);
+
+        // Its retry carries the same id: nothing is sent or written again.
+        await service.sendMessage(
+          { sessionId: session.id, text: "Build the page.", clientSendId: "send-1" },
+          { awaitDispatch: false, routeActiveToSteer: true },
+        );
+        expect(turnStarts("Build the page.")).toBe(1);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
+        expect(userMessages("Build the page.")).toBe(1);
+
+        // A send refused before anything was written is not remembered, so
+        // its retry goes through.
+        mockState.delayedCodexMethods.delete("turn/start");
+        await expect(service.sendMessage(
+          { sessionId: session.id, text: "Then the footer.", clientSendId: "send-2", expectedTurnId: "turn-gone" },
+        )).rejects.toThrow();
+        expect(userMessages("Then the footer.")).toBe(0);
+        await service.sendMessage(
+          { sessionId: session.id, text: "Then the footer.", clientSendId: "send-2" },
+          { awaitDispatch: true },
+        );
+        expect(turnStarts("Then the footer.")).toBe(1);
+        expect(userMessages("Then the footer.")).toBe(1);
+        expect(sendIdOf("Then the footer.")).toEqual(["send-2"]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

@@ -37,6 +37,9 @@ export function createChatLaunchNamespace(infra: AdapterInfra): AdeNamespace<"ch
   return {
     start: async (args: ChatLaunchArgs, pin?: RuntimePinArg) => {
       guardPin("start", pin);
+      // A new ADE Cloud computer is made by the desktop app (or a brain's `cloud.lane_launch` for an agent);
+      // `chat.startLaunch` ignores `cloud` and would make the lane on the connected machine instead.
+      if (args.cloud) throw new Error("Start lanes on ADE Cloud from the ADE desktop app.");
       // A write: never served from the read cache, and an older host that
       // lacks the action rejects (the composer then falls back to its own
       // create-lane chain) instead of resolving a fallback.

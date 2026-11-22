@@ -297,8 +297,9 @@ export async function runPiTask(args: ProviderTaskRunnerArgs): Promise<ProviderT
 }
 
 /**
- * Antigravity has no print mode: a short ACP session on ADE's pinned
- * `agy_acp_server`, the chat's model, one prompt, then the process is killed.
+ * Antigravity one-shots are a short ACP session on ADE's pinned `agy acp`
+ * (the same path as chats), the chat's model, one prompt, then the process
+ * is killed.
  * With no sign-in on this machine it fails before starting the agent.
  */
 export async function runAntigravityTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {

@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, OpenProjectBinding } from "../../../../shared/types";
 import {
   DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
+  markNewDraftRequests,
+  noteNewDraftRequested,
   type DraftLaunchKind,
   type DraftLaunchMode,
   type DraftLaunchSnapshot,
@@ -121,6 +123,7 @@ function rendererLaunchDeps(
     snapshot: launchSnapshot,
     launchBinding,
     requestKey: "request",
+    newDraftMarkAtSend: markNewDraftRequests("project-a"),
     autoCreate: false,
     paneLaneId: "lane-1",
     jobId: "job-1",
@@ -463,7 +466,7 @@ describe("departing draft chrome", () => {
     expect(usageCopy!.querySelector("[data-draft-depart]")).toBeNull();
 
     const handoff = takeComposerDockOrigin("session-2");
-    playDepartingDraftChrome(handoff?.departing);
+    playDepartingDraftChrome(handoff?.departing, "session-2");
     await vi.waitFor(() => expect(animations).toHaveLength(2));
     const [rise, fade] = animations;
     expect(rise!.target).toBe(switcherCopy);
@@ -485,7 +488,7 @@ describe("departing draft chrome", () => {
     header.textContent = "New chat";
     document.body.appendChild(header);
 
-    playDepartingDraftChrome(takeComposerDockOrigin("session-5")?.departing, header);
+    playDepartingDraftChrome(takeComposerDockOrigin("session-5")?.departing, "session-5", header);
 
     // Hidden before the chat's first paint: never header and switcher at once.
     expect(header.style.visibility).toBe("hidden");
@@ -540,7 +543,7 @@ describe("departing draft chrome", () => {
     const header = document.createElement("div");
     header.setAttribute("data-chat-shell-header", "");
     document.body.appendChild(header);
-    playDepartingDraftChrome(expired, header);
+    playDepartingDraftChrome(expired, "session-6", header);
     expect(header.style.visibility).toBe("");
     expect(document.querySelector("[data-chat-draft-departing]")).toBeNull();
 
@@ -663,5 +666,43 @@ describe("renderer-owned launch handoff", () => {
     await runRendererOwnedLaunch(rendererLaunchDeps("cli", "foreground", cliCalls));
     expect(backgroundCalls).toEqual(["clear", "start"]);
     expect(cliCalls).toEqual(["clear", "start", "open"]);
+  });
+
+  // While the chat starts, the person may ask for a new draft (⌘⇧N) or send
+  // again; the late start must not take the screen back, and must not leave a
+  // ready job that the next draft pane opens over itself.
+  it.each([
+    { name: "nothing happened meanwhile", during: "none", paneMounted: true, opens: true, autoOpen: true },
+    { name: "the pane remounted", during: "none", paneMounted: false, opens: false, autoOpen: true },
+    { name: "a new draft was asked for", during: "new-draft", paneMounted: true, opens: false, autoOpen: false },
+    { name: "a new draft was asked for in another project", during: "other-project-draft", paneMounted: true, opens: true, autoOpen: true },
+    { name: "a newer send started", during: "newer-send", paneMounted: true, opens: false, autoOpen: false },
+  ] as const)("opens the started chat only when it still may: $name", async ({ during, paneMounted, opens, autoOpen }) => {
+    const calls: string[] = [];
+    const base = rendererLaunchDeps("chat", "foreground", calls);
+    const patchDraftLaunchJob = vi.fn();
+    const launchDeps: RendererOwnedLaunchDeps = {
+      ...base,
+      paneMountedRef: { current: paneMounted },
+      patchDraftLaunchJob,
+      startChat: async () => {
+        calls.push("start");
+        if (during === "new-draft") noteNewDraftRequested("project-a");
+        if (during === "other-project-draft") noteNewDraftRequested("project-b");
+        if (during === "newer-send") launchDeps.latestForegroundJobIdRef.current = "job-2";
+        return { sessionId: "session-1", draftKind: "chat" };
+      },
+    };
+
+    await runRendererOwnedLaunch(launchDeps);
+
+    expect(launchDeps.openLaunchedDraftSession).toHaveBeenCalledTimes(opens ? 1 : 0);
+    expect(patchDraftLaunchJob).toHaveBeenCalledWith(
+      "job-1",
+      expect.objectContaining({ status: "ready", sessionId: "session-1", autoOpen }),
+    );
+    // The sent prompt leaves the new-chat box in every case.
+    expect(calls).toContain("clear");
+    takeRendererLaunchHandoff("job-1");
   });
 });

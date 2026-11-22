@@ -239,6 +239,16 @@ enum WorkComposerDraftStore {
     WorkComposerDraftAttachmentCache.purgeOrphans(liveKeys: Array(loadAll().keys))
   }
 
+  /// An account left this phone: every unsent prompt (text typed into that
+  /// account's chats) and its cached attachment files go.
+  static func removeAll() {
+    for defaults in [ADESharedContainer.defaults, UserDefaults.standard] {
+      defaults.removeObject(forKey: storageKey)
+      defaults.removeObject(forKey: legacyStorageKey)
+    }
+    WorkComposerDraftAttachmentCache.purgeOrphans(liveKeys: [])
+  }
+
   /// Eviction has to purge the byte cache too, or a dropped entry leaves its
   /// files on disk with nothing left that names them.
   private static func persistEvicting(_ map: [String: Entry]) {
@@ -383,6 +393,14 @@ enum WorkQuestionDraftStore {
   static func load(_ requestId: String) -> Snapshot? {
     guard !requestId.isEmpty else { return nil }
     return loadAll()[requestId]?.snapshot
+  }
+
+  /// An account left this phone: every unsent answer to its chats' questions goes.
+  static func removeAll() {
+    for defaults in [ADESharedContainer.defaults, UserDefaults.standard] {
+      defaults.removeObject(forKey: storageKey)
+      defaults.removeObject(forKey: legacyStorageKey)
+    }
   }
 
   /// Clamps every free-text field (and host-supplied option value) so a single

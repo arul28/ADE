@@ -1,3 +1,4 @@
+import { unknownModelHint } from "../../../shared/launchModelRule";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Logger } from "../logging/logger";
@@ -8,10 +9,12 @@ import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentE
 import type {
   AiApiKeyVerificationResult,
   AiClaudeAvailability,
+  AiFreeModelsStatus,
   AiHarnessPresetSummary,
   AiProviderAccountSummary,
   AiCustomProviderConfig,
   AiLocalProviderConfigs,
+  AiProviderConnectionStatus,
   AiProviderConnections,
   AiRuntimeConnections,
   AiRuntimeConnectionStatus,
@@ -60,11 +63,13 @@ import {
 import type { ProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../shared/cursorCloudArtifactLimits";
-import { probeAllAcpProviderAuth } from "./acpAuthProbe";
+import { providerLoginGeneration } from "./providerLoginChanged";
+import { createProviderSignInCheck } from "./providerSignInCheck";
 import { loadQwenUserSettings } from "./qwenUserSettings";
 import {
   detectAllAuth,
   getCachedCliAuthStatuses,
+  readCopilotRecordedLogins,
   resetLocalProviderDetectionCache,
   verifyProviderApiKey,
   type DetectedAuth,
@@ -86,7 +91,9 @@ import {
   initialize as initModelsDevService,
   getLastFetchedAt as getModelsDevLastFetchedAt,
 } from "./modelsDevService";
-import { isRecord, toOptionalString } from "../shared/utils";
+import { getErrorMessage, isRecord, toOptionalString } from "../shared/utils";
+import { withDeadline } from "../shared/withTimeout";
+import { classifyProviderAccountRefusal } from "../../../shared/providerAccountRefusal";
 import { parseStructuredOutput } from "./utils";
 import {
   deleteApiKey as deleteStoredApiKey,
@@ -107,23 +114,44 @@ import { verifyExplicitCursorModelSelection } from "../chat/cursorModelSelection
 import { discoverDroidCliModelDescriptors, markDroidModelCachesStale } from "../chat/droidModelsDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { buildProviderConnections, type CopilotSdkAuthProbe } from "./providerConnectionStatus";
-import { piModelDescriptorsFromInventory, probePiProfileInventory, resolvePiInstallation } from "./piInstallation";
+import {
+  piModelDescriptorsFromInventory,
+  probePiProfileInventory,
+  readPiProfileInventory,
+  resolvePiInstallation,
+  type PiInstallation,
+  type PiProfileInventory,
+} from "./piInstallation";
 import {
   getProviderRuntimeHealth,
   getProviderRuntimeHealthVersion,
   resetProviderRuntimeHealth,
 } from "./providerRuntimeHealth";
 import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
-import { buildClaudeAvailabilityFromConnection, resolveBundledClaudeBinary, withReportedClaudeVersion } from "./claudeAvailability";
+import {
+  buildClaudeAvailabilityFromConnection,
+  connectionListable,
+  resolveBundledClaudeBinary,
+  withReportedClaudeVersion,
+} from "./claudeAvailability";
+import { ensureClaudeAccountSkillsSynced } from "./claudeAccountSkillSync";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
+import {
+  CursorCloudApiError,
+  getCursorApiCloudAgent,
+  isCursorCloudAgentId,
+  listCursorApiCloudAgents,
+  listCursorApiRepositories,
+} from "./cursorCloudApi";
 import { resolveCopilotSdkRuntime } from "./acpExecutables";
 import { ACP_PROVIDER_IDS } from "../../../shared/acpProviderMetadata";
 import { copilotConfigHome } from "../shared/providerConfigHomes";
 import { acquireCopilotSdkConnection, releaseCopilotSdkConnection } from "../chat/copilotSdkPool";
 import { COPILOT_MODELS_TTL_MS, readCopilotModelCatalogCache, refreshCopilotModelCatalog, type CopilotModelCatalogCache } from "../chat/copilotModelsDiscovery";
 import { resolveAdeCacheFile } from "../shared/adeCacheFile";
+import { buildFreeModelsStatus } from "./freeModelsStatus";
 import { writeTextAtomic } from "../shared/utils";
 import {
   cursorUsageCostUsd,
@@ -131,9 +159,9 @@ import {
   selectCursorAgentTurnUsage,
 } from "../usage/cursorUsageMapping";
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
-import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
-import { startDemandedAgentToolFetches } from "../tools/agentToolDemand";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { pinnedToolInstallGeneration, retryPinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
+import { isSecureStorageCheckPending } from "../shared/secureStorage";
 import {
   openCursorCloudCredentialStore,
   readCursorCloudLaneSecretNames,
@@ -231,6 +259,8 @@ export type AiIntegrationStatus = {
   opencodeProviders?: OpenCodeProviderSummary[];
   /** True when opencodeProviders came from the persisted disk cache rather than a live/warm probe. */
   opencodeProvidersStale?: boolean;
+  /** Free models on this machine (`freeModelsStatus.ts`). */
+  freeModels?: AiFreeModelsStatus;
   /** Epoch ms of the last successful models.dev fetch (or cache mtime on fallback); null if never fetched. */
   modelsDevLastFetchedAt?: number | null;
   /** Effective ai.customProviders — surfaced so the settings UI can do authoritative full-list writes. */
@@ -245,6 +275,7 @@ export type AiIntegrationStatus = {
     macosKeychainError?: string | null;
     legacyPlaintextDetected: boolean;
     decryptionFailed: boolean;
+    secureStorageChecking?: boolean;
     encryptedStorePath?: string | null;
     legacyPlaintextPath?: string | null;
   };
@@ -593,8 +624,6 @@ function redactDetectedAuth(
   auth: DetectedAuth[],
   cliStatuses: CliAuthStatus[],
   runtimeReadyAcpProviders?: ReadonlySet<string>,
-  /** The SDK answered the live sign-in check, so its verdict in `auth` stands. */
-  copilotSdkVerified = false,
 ): NonNullable<AiIntegrationStatus["detectedAuth"]> {
   const redacted = auth.map((entry) => {
     if (entry.type === "cli-subscription") {
@@ -632,19 +661,19 @@ function redactDetectedAuth(
 
   for (const cliStatus of cliStatuses) {
     if (!cliStatus.installed) continue;
-    // The SDK's live verdict already sits in `auth`; the disk heuristic must
-    // not overwrite it (it misses keychain and `gh` logins).
-    if (cliStatus.cli === "copilot" && copilotSdkVerified) continue;
     const runtimeReady = runtimeReadyAcpProviders?.has(cliStatus.cli) === true;
     const existingIndex = redacted.findIndex(
       (entry) => entry.type === "cli-subscription" && entry.cli === cliStatus.cli,
     );
+    // Copilot's recorded login name stays with its row.
+    const login = existingIndex >= 0 ? (redacted[existingIndex] as { login?: string }).login : undefined;
     const normalizedEntry = {
       type: "cli-subscription" as const,
       cli: cliStatus.cli,
       path: cliStatus.path ?? cliStatus.cli,
       authenticated: runtimeReady || cliStatus.authenticated,
       verified: runtimeReady || cliStatus.verified,
+      ...(login ? { login } : {}),
     };
     if (existingIndex >= 0) {
       redacted[existingIndex] = normalizedEntry;
@@ -965,6 +994,8 @@ let copilotModelsRequest: Promise<ModelDescriptor[]> | null = null;
 /** When the last model refresh failed. A signed-out or outdated Copilot would otherwise start a runtime on every status poll. */
 let copilotModelsFailedAt = 0;
 const COPILOT_MODELS_FAILURE_BACKOFF_MS = 15 * 60_000;
+/** The Copilot login generation the model list was read under; a sign-in since then makes it old. */
+let copilotModelsLoginGeneration = 0;
 
 type AiStatusPhaseTiming = {
   name: string;
@@ -1114,15 +1145,43 @@ export function createAiIntegrationService(args: {
   };
 
   let lastCopilotProbeFailure: string | null = null;
-  const getCopilotSdkAuthStatus = async (auth: DetectedAuth[]): Promise<CopilotSdkAuthProbe> => {
+  /**
+   * Asks the Copilot SDK who is signed in. With `limitMs`, the worker this
+   * starts is released at the limit even if the runtime never answers, so it
+   * does not outlive the check (the release disposes it, and the dispose
+   * kills it after its grace).
+   */
+  const getCopilotSdkAuthStatus = async (auth: DetectedAuth[], options?: { limitMs?: number }): Promise<CopilotSdkAuthProbe> => {
     const runtime = resolveCopilotSdkRuntime({ auth, env: process.env });
     // Nothing to start: no pinned download, bundled copy or `copilot` CLI.
     if (runtime.source === "fallback-command") return { runtime, auth: null };
     const baseEnv = { ...process.env };
+    const limitMs = options?.limitMs;
+    const deadline = limitMs != null ? Date.now() + limitMs : null;
     try {
-      const connection = await acquireCopilotSdkConnection({ cliPath: runtime.path, baseDirectory: copilotConfigHome({ env: baseEnv }), baseEnv, logger });
+      const connection = await acquireCopilotSdkConnection({
+        cliPath: runtime.path,
+        baseDirectory: copilotConfigHome({ env: baseEnv }),
+        baseEnv,
+        logger,
+        ...(limitMs != null ? { initLimitMs: limitMs } : {}),
+      });
       try {
-        const value = await connection.pooled.request<unknown>("auth");
+        const request = connection.pooled.request<unknown>("auth");
+        let limitTimer: ReturnType<typeof setTimeout> | null = null;
+        const value = deadline == null
+          ? await request
+          : await Promise.race([
+            request,
+            new Promise<never>((_, reject) => {
+              limitTimer = setTimeout(
+                () => reject(new Error(`Copilot did not answer in ${Math.round((limitMs ?? 0) / 1000)} seconds.`)),
+                Math.max(1, deadline - Date.now()),
+              );
+            }),
+          ]).finally(() => {
+            if (limitTimer) clearTimeout(limitTimer);
+          });
         if (!value || typeof value !== "object") return { runtime, auth: null };
         const row = value as Record<string, unknown>;
         lastCopilotProbeFailure = null;
@@ -1169,6 +1228,13 @@ export function createAiIntegrationService(args: {
 
     let available = getAvailableModels(auth);
     const copilotExecutable = resolveCopilotSdkRuntime({ auth, env: process.env });
+    // A Copilot sign-in since the last list may be another account (or the
+    // first one): read the list again now, past any failure backoff.
+    if (copilotModelsLoginGeneration !== providerLoginGeneration("copilot")) {
+      copilotModelsLoginGeneration = providerLoginGeneration("copilot");
+      copilotModelsFailedAt = 0;
+      if (copilotModelsCache) copilotModelsCache = { ...copilotModelsCache, savedAt: 0 };
+    }
     if (copilotExecutable.source !== "fallback-command") {
       const cached = copilotModelsCache;
       if (!cached || Date.now() - cached.savedAt >= COPILOT_MODELS_TTL_MS) {
@@ -1231,7 +1297,8 @@ export function createAiIntegrationService(args: {
       // The provider's own list (persisted from the last chat or probe) is the
       // picker; curated rows are only the fallback before one exists. Refresh
       // it in the background when it is missing or old, so this read never
-      // blocks on a subprocess.
+      // blocks on a subprocess. A signed-in provider still waiting for its
+      // first-use download lists curated rows (the warm skips it).
       warmAcpModelCatalog(provider, { logger });
       available.push(...listAcpModelDescriptorsForProvider(provider, {
         ...(provider === "qwen" && qwenSettings.models.length
@@ -1316,7 +1383,7 @@ export function createAiIntegrationService(args: {
       const providerName = apiEntry.type === "openrouter" ? "openrouter" : apiEntry.provider;
       const verification = await verifyProviderApiKey(providerName, apiEntry.key);
       if (providerName === "cursor" && verification.ok) {
-        invalidateProviderReadinessCaches();
+        invalidateProviderReadinessCaches({ modelsMayHaveChanged: false });
         invalidateInFinally = false;
         try {
           const discovery = await probeCursorSdkModelDiscovery(apiEntry.key, { timeoutMs: 3_000 });
@@ -1341,7 +1408,7 @@ export function createAiIntegrationService(args: {
       };
     } finally {
       if (invalidateInFinally) {
-        invalidateProviderReadinessCaches();
+        invalidateProviderReadinessCaches({ modelsMayHaveChanged: false });
       }
     }
   };
@@ -1359,21 +1426,50 @@ export function createAiIntegrationService(args: {
   // shared while in flight, and a success is kept for a few minutes. A failure
   // is not kept, and `refresh` (the composer's Retry) skips the cache.
   const CURSOR_REPOS_CACHE_MS = 5 * 60_000;
+  // A refusal that asking again cannot change soon: a plan without Cloud
+  // Agents, or Cursor's own rate limit. Kept for a minute, so composers that
+  // ask on every open do not spend the five requests a minute on the same
+  // answer and then hit the limit (ADE-DESKTOP-AG, ADE-DESKTOP-BG). Retry
+  // (`refresh`) still asks.
+  const CURSOR_REPOS_REFUSAL_CACHE_MS = 60_000;
+  const CURSOR_REPOS_RATE_LIMIT = /\bexceeded the rate limit\b/i;
   let cursorReposCache: { apiKey: string; at: number; repos: CursorCloudRepository[] } | null = null;
+  let cursorReposRefusal: { apiKey: string; at: number; error: Error } | null = null;
   let cursorReposInFlight: { apiKey: string; request: Promise<CursorCloudRepository[]> } | null = null;
   const listCursorCloudRepositories = async (args?: { refresh?: boolean }): Promise<CursorCloudRepository[]> => {
     const apiKey = await requireCursorCloudApiKey();
     if (!args?.refresh && cursorReposCache?.apiKey === apiKey && Date.now() - cursorReposCache.at < CURSOR_REPOS_CACHE_MS) {
       return cursorReposCache.repos;
     }
+    if (!args?.refresh && cursorReposRefusal?.apiKey === apiKey && Date.now() - cursorReposRefusal.at < CURSOR_REPOS_REFUSAL_CACHE_MS) {
+      throw cursorReposRefusal.error;
+    }
     if (cursorReposInFlight?.apiKey === apiKey) return cursorReposInFlight.request;
     const request = (async () => {
-      const { Cursor } = await loadCursorSdk();
-      const repos = (await Cursor.repositories.list({ apiKey }))
-        .map((repo) => ({ url: String(repo.url ?? "").trim() }))
-        .filter((repo) => repo.url.length > 0);
-      cursorReposCache = { apiKey, at: Date.now(), repos };
-      return repos;
+      try {
+        // REST, not the SDK: the Work prompt box asks for this at rest.
+        const repos = (await listCursorApiRepositories(apiKey))
+          .map((repo) => ({ url: String(repo.url ?? "").trim() }))
+          .filter((repo) => repo.url.length > 0);
+        cursorReposCache = { apiKey, at: Date.now(), repos };
+        cursorReposRefusal = null;
+        return repos;
+      } catch (error) {
+        const message = getErrorMessage(error);
+        const planRefusal = classifyProviderAccountRefusal(message) === "plan";
+        const rateLimited = CURSOR_REPOS_RATE_LIMIT.test(message);
+        // A key Cursor refuses (401) is refused again on every read until the
+        // person replaces it, which changes `apiKey` and skips this cache.
+        const keyRefused = error instanceof CursorCloudApiError && error.status === 401;
+        if (planRefusal || rateLimited || keyRefused) {
+          // The account's plan, its key, or Cursor's limit: an answer, not a defect.
+          const refusal = error instanceof Error ? error : new Error(message);
+          markExpected(refusal, planRefusal || keyRefused ? "user" : "network");
+          cursorReposRefusal = { apiKey, at: Date.now(), error: refusal };
+          throw refusal;
+        }
+        throw error;
+      }
     })().finally(() => {
       if (cursorReposInFlight?.request === request) cursorReposInFlight = null;
     });
@@ -1387,13 +1483,11 @@ export function createAiIntegrationService(args: {
     cursor?: string | null;
   }): Promise<CursorCloudListAgentsResult> => {
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await loadCursorSdk();
     const requestedLimit = typeof args?.limit === "number" && Number.isFinite(args.limit)
       ? Math.floor(args.limit)
       : 100;
-    const result = await Agent.list({
-      runtime: "cloud",
-      apiKey,
+    // REST, not the SDK: the same GET and the same summaries as `Agent.list`.
+    const result = await listCursorApiCloudAgents(apiKey, {
       includeArchived: args?.includeArchived,
       // Cursor rejects values over 100 even though older SDK typings do not
       // advertise the server-side cap.
@@ -1541,9 +1635,11 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await loadCursorSdk();
     try {
-      const raw = await Agent.get(id, { apiKey });
+      // A cloud id is one REST GET; any other id is the SDK's local store.
+      const raw = isCursorCloudAgentId(id)
+        ? await getCursorApiCloudAgent(apiKey, id)
+        : await (await loadCursorSdk()).Agent.get(id, { apiKey });
       return normalizeCursorCloudAgent(raw);
     } catch {
       return null;
@@ -1779,7 +1875,7 @@ export function createAiIntegrationService(args: {
       if (exact) return exact.id;
       const resolved = resolveModelAlias(requestedModelHint);
       if (resolved) return resolved.id;
-      throw new Error(`Unknown model '${requestedModelHint}'.`);
+      throw new Error(`Unknown model '${requestedModelHint}'. ${unknownModelHint()}`);
     }
 
     if (SESSION_INTELLIGENCE_TASK_TYPES.has(taskType)) {
@@ -1828,7 +1924,7 @@ export function createAiIntegrationService(args: {
     if (!modelId) throw new Error("model is required for provider task execution");
     const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
     if (!descriptor) {
-      throw new Error(`Unknown model '${modelId}'.`);
+      throw new Error(`Unknown model '${modelId}'. ${unknownModelHint()}`);
     }
 
     const accountEnv = resolveTaskAccountEnv(descriptor, args.providerAccount);
@@ -1914,7 +2010,7 @@ export function createAiIntegrationService(args: {
       ? (getModelById(requestedModel) ?? resolveModelAlias(requestedModel))
       : null;
     if (requestedModel && !explicitDescriptor) {
-      throw new Error(`Unknown model '${requestedModel}'.`);
+      throw new Error(`Unknown model '${requestedModel}'. ${unknownModelHint()}`);
     }
 
     const resolvedModelId = explicitDescriptor?.id
@@ -2060,13 +2156,108 @@ export function createAiIntegrationService(args: {
 
   const STATUS_CACHE_TTL_MS = 30_000; // 30 seconds
   // `toolInstallGeneration`: an on-demand tool download changes what is detected, so it voids the cache.
-  let statusCache: { result: AiIntegrationStatus; cachedAt: number; runtimeHealthVersion: number; toolInstallGeneration: number } | null = null;
+  // `loginGeneration`: a sign-in on this machine (any path) voids the cache too.
+  let statusCache: {
+    result: AiIntegrationStatus;
+    cachedAt: number;
+    runtimeHealthVersion: number;
+    toolInstallGeneration: number;
+    loginGeneration: number;
+  } | null = null;
   const statusRequestsInFlight = new Map<string, Promise<AiIntegrationStatus>>();
+  /** The step a status read is in now, for a caller whose wait ran out (`getStatusWithinBudget`). */
+  let statusReadPhase: string | null = null;
+  /**
+   * The last status a current read answered, served when a later plain read
+   * runs past its budget. A key or sign-in change clears it: it describes the
+   * old credentials.
+   */
+  let lastGoodStatus: AiIntegrationStatus | null = null;
   let providerReadinessCacheGeneration = 0;
+  let seenLoginGeneration = providerLoginGeneration();
 
-  const invalidateProviderReadinessCaches = (): void => {
+  /**
+   * What a forced status read drops: the status payload and the caches of the
+   * saved logins under it, so the next read looks at the disk again. Runtime
+   * health stays: it is what a real chat or sign-in check proved, and only a
+   * sign-in to that provider (or its Re-check) replaces it. Model catalogs
+   * stay too; refreshing them is not a status read's job.
+   */
+  const dropStatusCaches = (): void => {
     providerReadinessCacheGeneration += 1;
     statusCache = null;
+    statusRequestsInFlight.clear();
+    modelListCache.clear();
+    resetClaudeRuntimeProbeCache();
+    resetLocalProviderDetectionCache();
+    clearOpenCodeBinaryCache();
+  };
+
+  /** A sign-in elsewhere (another service, the CLI runner) since the last read: drop the payload. */
+  const dropCachesAfterLoginChange = (): void => {
+    const current = providerLoginGeneration();
+    if (current === seenLoginGeneration) return;
+    seenLoginGeneration = current;
+    lastGoodStatus = null;
+    dropStatusCaches();
+  };
+
+  // Pi's live inventory (its models and which providers it can use) comes
+  // from a Pi worker process. A status read serves the last one it got and
+  // never waits for a worker; a stale or missing one refreshes in the
+  // background, like the other model catalogs.
+  let piInventoryCache: { agentDir: string; inventory: PiProfileInventory; savedAt: number; loginGeneration: number } | null = null;
+  let piInventoryRefresh: Promise<PiProfileInventory> | null = null;
+  let piInventoryFailedAt = 0;
+  const PI_INVENTORY_TTL_MS = 10 * 60_000;
+  const PI_INVENTORY_FAILURE_BACKOFF_MS = 5 * 60_000;
+
+  const refreshPiInventory = (installation: PiInstallation): Promise<PiProfileInventory> => {
+    if (piInventoryRefresh) return piInventoryRefresh;
+    const loginGeneration = providerLoginGeneration("pi");
+    piInventoryRefresh = probePiProfileInventory(installation)
+      .then((inventory) => {
+        piInventoryCache = { agentDir: installation.agentDir, inventory, savedAt: Date.now(), loginGeneration };
+        replaceDynamicPiModelDescriptors(piModelDescriptorsFromInventory(inventory));
+        // The next read shows the new list instead of a 30 s old payload.
+        statusCache = null;
+        return inventory;
+      })
+      .catch((error: unknown) => {
+        piInventoryFailedAt = Date.now();
+        throw error;
+      })
+      .finally(() => { piInventoryRefresh = null; });
+    return piInventoryRefresh;
+  };
+
+  const readPiInventoryForStatus = (installation: PiInstallation): PiProfileInventory => {
+    const cached = piInventoryCache?.agentDir === installation.agentDir ? piInventoryCache : null;
+    const current = cached != null && cached.loginGeneration === providerLoginGeneration("pi");
+    if (
+      installation.sdkAvailable
+      && (!current || Date.now() - cached.savedAt >= PI_INVENTORY_TTL_MS)
+      && !piInventoryRefresh
+      && Date.now() - piInventoryFailedAt >= PI_INVENTORY_FAILURE_BACKOFF_MS
+    ) {
+      void refreshPiInventory(installation).catch((error: unknown) => {
+        logger.warn("ai.pi_inventory_refresh_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
+    }
+    // After a Pi sign-in the saved files are the honest answer until the
+    // worker reports again.
+    return current ? cached.inventory : readPiProfileInventory(installation);
+  };
+
+  /**
+   * `modelsMayHaveChanged: false`: a key check that changed no key. OpenCode's
+   * inventory is still read again, but the chat model catalog goes stale only
+   * if that read finds other models (`clearOpenCodeInventoryCache`).
+   */
+  const invalidateProviderReadinessCaches = (options?: { modelsMayHaveChanged?: boolean }): void => {
+    providerReadinessCacheGeneration += 1;
+    statusCache = null;
+    lastGoodStatus = null;
     statusRequestsInFlight.clear();
     modelListCache.clear();
     resetProviderRuntimeHealth();
@@ -2081,7 +2272,7 @@ export function createAiIntegrationService(args: {
     markCursorModelCachesStale();
     markDroidModelCachesStale();
     clearOpenCodeBinaryCache();
-    clearOpenCodeInventoryCache();
+    clearOpenCodeInventoryCache({ modelsMayHaveChanged: options?.modelsMayHaveChanged !== false });
     replaceDynamicOpenCodeModelDescriptors([]);
     replaceDynamicPiModelDescriptors([]);
   };
@@ -2118,26 +2309,47 @@ export function createAiIntegrationService(args: {
     });
   };
 
-  return {
+  const { verifyProviderSignIn } = createProviderSignInCheck({
+    projectRoot,
+    logger,
+    detectAuth: () => detectAuth(),
+    copilotAuthStatus: (auth, options) => getCopilotSdkAuthStatus(auth, options),
+    lastCopilotProbeFailure: () => lastCopilotProbeFailure,
+    refreshPiInventoryNow: (installation) => {
+      // A person's press: past the failure backoff.
+      piInventoryFailedAt = 0;
+      return refreshPiInventory(installation);
+    },
+    readOpenCodeProviders: () => service.getStatus({ refreshOpenCodeInventory: true }),
+    dropStatusCaches,
+  });
+
+  const service = {
     getMode,
 
+    /**
+     * The status every surface reads. It reads saved logins from disk and
+     * never starts an agent, a provider CLI, an SDK process or a login, forced
+     * or not. `force` drops the caches and reads the disk again.
+     * `refreshOpenCodeInventory` is the one exception, for OpenCode's own
+     * Refresh: it asks OpenCode's server for its provider list.
+     */
     getStatus: async (options?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiIntegrationStatus> => {
+      dropCachesAfterLoginChange();
       const now = Date.now();
-      let runtimeHealthVersion = getProviderRuntimeHealthVersion();
+      const runtimeHealthVersion = getProviderRuntimeHealthVersion();
       if (
         !options?.force
         && options?.refreshOpenCodeInventory !== true
         && statusCache
         && statusCache.runtimeHealthVersion === runtimeHealthVersion
         && statusCache.toolInstallGeneration === pinnedToolInstallGeneration()
+        && statusCache.loginGeneration === providerLoginGeneration()
         && now - statusCache.cachedAt < STATUS_CACHE_TTL_MS
       ) {
         return statusCache.result;
       }
-      if (options?.force) {
-        invalidateProviderReadinessCaches();
-        runtimeHealthVersion = getProviderRuntimeHealthVersion();
-      }
+      if (options?.force) dropStatusCaches();
       const requestGeneration = providerReadinessCacheGeneration;
       const requestKey = [
         options?.force === true ? "force" : "default",
@@ -2153,14 +2365,16 @@ export function createAiIntegrationService(args: {
       const request = (async (): Promise<AiIntegrationStatus> => {
         const requestId = randomUUID();
         const totalStartedAt = Date.now();
+        // Read before any key read: an answer that arrives during this read
+        // must not let the pre-answer key view become the cache.
+        const secureStoragePendingAtStart = isSecureStorageCheckPending();
         const toolInstallGeneration = pinnedToolInstallGeneration();
+        const loginGeneration = providerLoginGeneration();
         const phases: AiStatusPhaseTiming[] = [];
-        const shouldProbeCliModels = options?.force === true || options?.refreshOpenCodeInventory === true;
         const phaseContext = {
           requestId,
           force: options?.force === true,
           refreshOpenCodeInventory: options?.refreshOpenCodeInventory === true,
-          probeCliModels: shouldProbeCliModels,
         };
         const recordPhase = (name: string, startedAt: number) => {
           const durationMs = Date.now() - startedAt;
@@ -2175,6 +2389,7 @@ export function createAiIntegrationService(args: {
         };
         const timePhase = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
           const startedAt = Date.now();
+          statusReadPhase = name;
           try {
             return await fn();
           } finally {
@@ -2183,6 +2398,7 @@ export function createAiIntegrationService(args: {
         };
         const timeSyncPhase = <T>(name: string, fn: () => T): T => {
           const startedAt = Date.now();
+          statusReadPhase = name;
           try {
             return fn();
           } finally {
@@ -2196,65 +2412,34 @@ export function createAiIntegrationService(args: {
         try {
           let auth = await timePhase("detect_auth", () => detectAuth({
             force: options?.force,
-            shallowCliAuth: !shouldProbeCliModels,
+            shallowCliAuth: true,
           }));
-          // A provider signed in since launch whose pinned tool was never
-          // downloaded starts downloading now, before the probes below, so its
-          // status reads "downloading"; the refresh after it lands sees the tool.
-          const startedToolFetches = startDemandedAgentToolFetches({
-            enabled: (provider) => !isProviderDisabled(projectConfigService.get().effective.ai, provider),
-            opencodeBacked: auth.some((entry) => entry.type === "api-key" || entry.type === "openrouter" || entry.type === "local"),
-          });
-          if (startedToolFetches.length) logger.info("ai.pinned_tool_fetch_started", { tools: startedToolFetches.join(",") });
-          const copilotProbe = await timePhase("probe_copilot_sdk_auth", () => getCopilotSdkAuthStatus(auth));
-          const sdkAuth = copilotProbe.auth;
-          if (sdkAuth) {
-            // A live answer, so it is verified either way: a signed-out
-            // verdict must read as signed out, not as unknown.
-            const copilotEntry: DetectedAuth = {
-              type: "cli-subscription",
-              cli: "copilot",
-              path: copilotProbe.runtime.path,
-              authenticated: sdkAuth.isAuthenticated,
-              verified: true,
-              ...(sdkAuth.login ? { login: sdkAuth.login } : {}),
-            };
-            const copilotIndex = auth.findIndex((entry) => entry.type === "cli-subscription" && entry.cli === "copilot");
-            if (copilotIndex >= 0) {
-              auth = auth.map((entry, index) => index === copilotIndex ? copilotEntry : entry);
-            } else {
-              auth = [...auth, copilotEntry];
-            }
+          // A status read never downloads an agent: a signed-in provider whose
+          // pinned tool is not here yet reads "downloads on first use" and
+          // still lists its models (`detectAllAuth`), and its first turn
+          // downloads it. Downloading here fetched every signed-in agent on a
+          // computer whose sign-ins were all copied over (ADE Cloud).
+          // No live sign-in check here: Copilot's comes from its own config
+          // file, and the SDK's answer only from the one-provider check
+          // (`verifyProviderSignIn`), through runtime health.
+          const copilotProbe: CopilotSdkAuthProbe = { runtime: resolveCopilotSdkRuntime({ auth, env: process.env }), auth: null };
+          const copilotLogins = await timePhase("read_copilot_logins", () => readCopilotRecordedLogins());
+          // One recorded login names the account; with several, which one is
+          // current is not recorded, so none is named.
+          if (copilotLogins.length === 1 && copilotLogins[0]) {
+            const login = copilotLogins[0];
+            auth = auth.map((entry) => entry.type === "cli-subscription" && entry.cli === "copilot" ? { ...entry, login } : entry);
           }
           // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
           // populated the cache, so this reads instantly from cache:
           const cliStatuses = timeSyncPhase("read_cli_auth_cache", () => getCachedCliAuthStatuses());
-          // The handshake runs ADE's pinned copy, so only providers whose
-          // copy is on this machine are probed; the rest read "downloading".
-          const installedAcp = ACP_PROVIDER_IDS
-            .filter((provider) => cliStatuses.some((status) => status.cli === provider && status.installed));
-          // The disk heuristic proves only that a provider left credentials on
-          // disk. A forced Settings refresh must wait for the ACP handshake so
-          // the first payload says what the user can actually run. The old
-          // fire-and-forget call returned stale cards (notably Copilot, whose
-          // keychain login is not represented in config.json) and never
-          // refreshed the renderer with its verdict.
-          const acpProbeResults = options?.force === true && installedAcp.length
-            ? await timePhase("probe_acp_auth", () => probeAllAcpProviderAuth({
-                providers: installedAcp,
-                cwd: projectRoot,
-                logger,
-              }))
-            : {};
+          // An ACP provider counts as proven only by a real session or a
+          // sign-in check, which report through runtime health. The status
+          // read itself never starts the agent.
           const runtimeReadyAcpProviders = new Set<(typeof ACP_PROVIDER_IDS)[number]>();
           for (const provider of ACP_PROVIDER_IDS) {
-            const probe = acpProbeResults[provider];
-            const health = getProviderRuntimeHealth(provider);
-            if (probe?.state === "ready" || health?.state === "ready") {
-              runtimeReadyAcpProviders.add(provider);
-            }
+            if (getProviderRuntimeHealth(provider)?.state === "ready") runtimeReadyAcpProviders.add(provider);
           }
-          runtimeHealthVersion = getProviderRuntimeHealthVersion();
           const authForModels: DetectedAuth[] = [...auth];
           for (const provider of runtimeReadyAcpProviders) {
             if (authForModels.some((entry) => entry.type === "cli-subscription" && entry.cli === provider)) continue;
@@ -2267,17 +2452,27 @@ export function createAiIntegrationService(args: {
               verified: true,
             });
           }
+          // Last-known model lists; a cold one refreshes in the background.
           const available = await timePhase("resolve_available_models", () =>
-            getResolvedAvailableModels(authForModels, { discoverCliModels: shouldProbeCliModels })
+            getResolvedAvailableModels(authForModels)
           );
           const piInstallation = timeSyncPhase("resolve_pi_installation", () => resolvePiInstallation());
-          const piProfileInventory = await timePhase("pi_inventory", () => probePiProfileInventory(piInstallation));
+          const piProfileInventory = timeSyncPhase("pi_inventory", () => readPiInventoryForStatus(piInstallation));
           replaceDynamicPiModelDescriptors(piModelDescriptorsFromInventory(piProfileInventory));
           // Keep AI status refresh non-interactive. Starting a throwaway Claude
           // Agent SDK runtime here can trigger Claude's OAuth/API-key bootstrap
           // in the browser, even though the user only asked to refresh status.
           // Real Claude chat sessions report runtime health when they start.
+          const signedInAccountProviders = timeSyncPhase("read_signed_in_accounts", () => {
+            try {
+              return new Set(getMachineProviderInstanceStore().list().filter((entry) => entry.signedIn).map((entry) => entry.provider as string));
+            } catch {
+              return null;
+            }
+          });
           const providerConnections = await timePhase("build_provider_connections", () => buildProviderConnections(cliStatuses, {
+            signedInAccountProviders,
+            projectRoot,
             piInstallation,
             piInventory: piProfileInventory,
             copilot: copilotProbe,
@@ -2297,32 +2492,41 @@ export function createAiIntegrationService(args: {
           // connection status, so the switch stays findable.
           const disabledProviders = disabledProviderSet(projectConfigService.get().effective.ai);
           const enabled = (provider: string): boolean => !disabledProviders.has(provider);
+          // Signed in with ADE's copy still to download lists its models like
+          // a ready one, so the first turn can start (and download it).
+          const listable = (provider: string, connection: AiProviderConnectionStatus | null | undefined): boolean =>
+            enabled(provider) && connectionListable(connection);
           const availability: AiIntegrationStatus["availableProviders"] = {
             claude: buildClaudeAvailabilityFromConnection(
               providerConnections.claude,
               { disabled: !enabled("claude") },
             ),
-            codex: enabled("codex") && providerConnections.codex.runtimeAvailable,
-            cursor: enabled("cursor") && providerConnections.cursor.runtimeAvailable,
-            droid: enabled("droid") && providerConnections.droid.runtimeAvailable,
-            muse: enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable),
-            qwen: enabled("qwen") && Boolean(providerConnections.qwen?.runtimeAvailable),
-            kimi: enabled("kimi") && Boolean(providerConnections.kimi?.runtimeAvailable),
-            grok: enabled("grok") && Boolean(providerConnections.grok?.runtimeAvailable),
-            copilot: enabled("copilot") && Boolean(providerConnections.copilot?.runtimeAvailable),
-            devin: enabled("devin") && Boolean(providerConnections.devin?.runtimeAvailable),
-            antigravity: enabled("antigravity") && Boolean(providerConnections.antigravity?.runtimeAvailable),
+            codex: listable("codex", providerConnections.codex),
+            cursor: listable("cursor", providerConnections.cursor),
+            droid: listable("droid", providerConnections.droid),
+            muse: listable("muse", providerConnections.muse),
+            qwen: listable("qwen", providerConnections.qwen),
+            kimi: listable("kimi", providerConnections.kimi),
+            grok: listable("grok", providerConnections.grok),
+            copilot: listable("copilot", providerConnections.copilot),
+            devin: listable("devin", providerConnections.devin),
+            antigravity: listable("antigravity", providerConnections.antigravity),
           };
+          // A claude.ai account's skills download once per home; do it before
+          // the first chat so every chat lists the same skills.
+          if (availability.claude.auth.ready && availability.claude.auth.mode === "oauth") {
+            ensureClaudeAccountSkillsSynced({ logger });
+          }
           const runtimeFilteredAvailable = timeSyncPhase("filter_available_models", () => available.filter((descriptor) => {
             // API/local rows are not owned by any one provider tile (they reach
             // ADE through OpenCode, Pi, or a local runtime), so the tile toggle
             // does not speak for them. The catalog gate handles those groups.
             if (!descriptor.isCliWrapped) return true;
             if (descriptor.family === "anthropic") return availability.claude.auth.ready;
-            if (descriptor.family === "openai") return enabled("codex") && providerConnections.codex.runtimeAvailable;
-            if (descriptor.family === "cursor") return enabled("cursor") && providerConnections.cursor.runtimeAvailable;
-            if (descriptor.family === "factory") return enabled("droid") && providerConnections.droid.runtimeAvailable;
-            if (descriptor.family === "muse") return enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable);
+            if (descriptor.family === "openai") return availability.codex;
+            if (descriptor.family === "cursor") return availability.cursor;
+            if (descriptor.family === "factory") return availability.droid;
+            if (descriptor.family === "muse") return availability.muse === true;
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.qwen) return availability.qwen === true;
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.kimi) return availability.kimi === true;
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.grok) return availability.grok === true;
@@ -2413,7 +2617,7 @@ export function createAiIntegrationService(args: {
             availableProviders: availability,
             models,
             detectedAuth: timeSyncPhase("redact_auth", () => [
-              ...redactDetectedAuth(auth, cliStatuses, runtimeReadyAcpProviders, copilotProbe.auth != null),
+              ...redactDetectedAuth(auth, cliStatuses, runtimeReadyAcpProviders),
               ...redactPiDetectedAuth(piProfileInventory),
             ]),
             providerConnections,
@@ -2430,9 +2634,34 @@ export function createAiIntegrationService(args: {
             piInstallation: piProfileInventory,
             apiKeyStore: timeSyncPhase("api_key_store_status", () => getApiKeyStoreStatus()),
             ...timeSyncPhase("harness_brains", () => readHarnessBrains()),
+            freeModels: timeSyncPhase("free_models", () => buildFreeModelsStatus({
+              claude: availability.claude,
+              providerConnections,
+              auth,
+              piProviders: piProfileInventory.providers,
+              opencodeProviders: opencodeInventory.providers,
+              localModelCount: discoveredLocalModels.length,
+              customProviderCount: effectiveConfig?.ai?.customProviders?.length ?? 0,
+            })),
           };
-          if (requestGeneration === providerReadinessCacheGeneration) {
-            statusCache = { result, cachedAt: Date.now(), runtimeHealthVersion, toolInstallGeneration };
+          // An older read that a key or sign-in change outran must not become
+          // the cache, nor the fallback a later slow read answers with. A read
+          // made while the OS credential store has not answered is not cached:
+          // the next read shows the keys once it answers.
+          if (
+            requestGeneration === providerReadinessCacheGeneration
+            && loginGeneration === providerLoginGeneration()
+            && !secureStoragePendingAtStart
+            && !result.apiKeyStore?.secureStorageChecking
+          ) {
+            statusCache = {
+              result,
+              cachedAt: Date.now(),
+              runtimeHealthVersion,
+              toolInstallGeneration,
+              loginGeneration,
+            };
+            lastGoodStatus = result;
           }
           logger.info("ai.status.summary", {
             ...phaseContext,
@@ -2463,7 +2692,32 @@ export function createAiIntegrationService(args: {
         if (statusRequestsInFlight.get(requestKey) === request) {
           statusRequestsInFlight.delete(requestKey);
         }
+        if (statusRequestsInFlight.size === 0) statusReadPhase = null;
       }
+    },
+
+    /**
+     * A plain status read with a time budget, so a window is not held until
+     * its IPC timeout. Past the budget it answers with the last status a read
+     * returned (or null) and the step still running; the read keeps going and
+     * fills the cache for the next call. A failed read still throws.
+     */
+    getStatusWithinBudget: async (options: {
+      budgetMs: number;
+      refreshOpenCodeInventory?: boolean;
+    }): Promise<
+      | { status: AiIntegrationStatus; slow: null }
+      | { status: AiIntegrationStatus | null; slow: { phase: string | null; elapsedMs: number } }
+    > => {
+      const startedAt = Date.now();
+      const read = service.getStatus({ refreshOpenCodeInventory: options.refreshOpenCodeInventory === true });
+      const overBudget = new Error("ai.getStatus read budget");
+      const status = await withDeadline(read, options.budgetMs, () => overBudget).catch((error: unknown) => {
+        if (error === overBudget) return null;
+        throw error;
+      });
+      if (status) return { status, slow: null };
+      return { status: lastGoodStatus, slow: { phase: statusReadPhase, elapsedMs: Date.now() - startedAt } };
     },
 
     executeTask,
@@ -2487,6 +2741,10 @@ export function createAiIntegrationService(args: {
     storeApiKey(provider: string, key: string): void {
       storeStoredApiKey(provider, key);
       if (provider.trim().toLowerCase() === "cursor") clearCursorCliModelsCache();
+      // A saved key's models run on OpenCode, and its model list needs
+      // OpenCode on this machine. Saving one is the person setting that up,
+      // so this (not a status read) is where OpenCode starts downloading.
+      else if (!isProviderDisabled(projectConfigService.get().effective.ai, "opencode")) void retryPinnedToolDownload("opencode");
       invalidateProviderReadinessCaches();
     },
     deleteApiKey(provider: string): void {
@@ -2521,6 +2779,7 @@ export function createAiIntegrationService(args: {
     resolveModelForTask,
     getConfiguredFeatureModel,
     invalidateProviderReadinessCaches,
+    verifyProviderSignIn,
 
     // Backward-compatible convenience methods used by migrated services.
     async generateNarrative(args: {
@@ -2615,4 +2874,5 @@ export function createAiIntegrationService(args: {
       });
     }
   };
+  return service;
 }

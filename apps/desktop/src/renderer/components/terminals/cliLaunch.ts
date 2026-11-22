@@ -8,6 +8,7 @@ import type {
 import type { LaneLinearIssue } from "../../../shared/types";
 import type { PtyCreateResult } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import type { NewDraftRequestMark } from "../../lib/draftLaunchJobs";
 
 export * from "../../../shared/cliLaunch";
 
@@ -29,6 +30,12 @@ export type WorkPtyLaunchArgs = {
   tracked?: boolean;
   disposition?: WorkPtyLaunchDisposition;
   pin?: OpenProjectBinding | null;
+  /**
+   * The new-chat box's mark at Send. A foreground launch focuses its session
+   * only if the person asked for no new draft since (`launchMayOpenItsSession`).
+   * Stays in the renderer; it is not a `pty.create` field.
+   */
+  newDraftMarkAtSend?: NewDraftRequestMark;
   /**
    * Linear issues to attach to the launched terminal session before spawn, so
    * the CLI agent inherits `ADE_LINEAR_*` env and can drive its issue via
@@ -79,11 +86,13 @@ export function recoverImportedContinuationLaunch(
   provider: TerminalResumeProvider | null,
   importedProvider: TerminalResumeProvider | null,
   targetId: string,
+  pin: OpenProjectBinding,
 ): Promise<TerminalResumeLaunchConfig | null> | null {
   // Codex rollouts persist a turn_context record with the launch state. Other
   // providers currently do not expose an equivalent bounded exact lookup.
   if (provider !== "codex" || importedProvider !== provider || !targetId) return null;
-  const key = `${provider}:${targetId}`;
+  // The rollout lives on the session's machine, so each machine has its own entry.
+  const key = `${pin.key}:${provider}:${targetId}`;
   const now = Date.now();
   const existing = continuationLaunchLookups.get(key);
   if (existing && existing.expiresAt > now) {
@@ -98,7 +107,7 @@ export function recoverImportedContinuationLaunch(
     scope: "all",
     sessionId: targetId,
     limit: 1,
-  }).then((sessions) => sessions.find((candidate) => candidate.id === targetId)?.launch ?? null)
+  }, pin).then((sessions) => sessions.find((candidate) => candidate.id === targetId)?.launch ?? null)
     .catch((error) => {
       if (continuationLaunchLookups.get(key)?.promise === request) {
         continuationLaunchLookups.delete(key);

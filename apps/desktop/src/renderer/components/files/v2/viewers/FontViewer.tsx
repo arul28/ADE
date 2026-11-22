@@ -14,6 +14,7 @@ import {
   type FontInfo,
 } from "./fontInfo";
 import type { ViewerProps } from "./types";
+import { runPathActionHere } from "../../pathOnThisComputer";
 
 const MAX_FONT_BYTES = 10 * 1024 * 1024;
 const WATERFALL_SIZES = [12, 16, 20, 24, 32, 48, 64, 96];
@@ -102,6 +103,7 @@ function FontHeader({
   family,
   fallbackName,
   rootPath,
+  pathPin,
   relativePath,
 }: {
   info: FontInfo;
@@ -109,12 +111,15 @@ function FontHeader({
   family: string;
   fallbackName: string;
   rootPath: string;
+  pathPin: ViewerProps["pathPin"];
   relativePath: string;
 }) {
   const openExternally = () => {
-    void window.ade.app.openPathInEditor?.({ rootPath, relativePath, target: "default" }).catch((error: unknown) => {
-      console.warn("[FontViewer] open externally failed", error);
-    });
+    runPathActionHere(
+      pathPin,
+      () => window.ade.app.openPathInEditor({ rootPath, relativePath, target: "default" }, pathPin),
+      { failTitle: `Could not open "${fallbackName}"` },
+    );
   };
   const title = familyLabel(info, fallbackName);
   const fontStyle: React.CSSProperties = { fontFamily: `"${family}", sans-serif` };
@@ -498,7 +503,7 @@ function FontInfoSection({ info }: { info: FontInfo }) {
 }
 
 /** Streams a font through the owning machine's Files API and previews it locally. */
-export function FontViewer({ files, workspaceId, rootPath, tab, content }: ViewerProps) {
+export function FontViewer({ files, workspaceId, rootPath, pathPin, tab, content }: ViewerProps) {
   const reactId = useId();
   const family = useMemo(
     () => `ADEFont_${tab.id.replace(/[^a-zA-Z0-9]/g, "")}_${reactId.replace(/[^a-zA-Z0-9]/g, "")}`,
@@ -601,6 +606,7 @@ export function FontViewer({ files, workspaceId, rootPath, tab, content }: Viewe
     return (
       <DocumentSurface
         rootPath={rootPath}
+        pathPin={pathPin}
         relativePath={tab.path}
         title="ADE couldn't load this font"
         mimeType={content.mimeType ?? null}
@@ -620,6 +626,7 @@ export function FontViewer({ files, workspaceId, rootPath, tab, content }: Viewe
             family={family}
             fallbackName={fileStem(tab.path)}
             rootPath={rootPath}
+            pathPin={pathPin}
             relativePath={tab.path}
           />
           <SampleCard

@@ -4,15 +4,15 @@
  * on demand after the page is idle, never in the first chunk.
  *
  * The pages are public, so their text is recorded. Form values are masked,
- * the live demo frame and media are not recorded, and the /open and /pair
- * pages (which show what their link carries: paths, branch and repository
- * names, pairing data) have all of their text masked. Page addresses keep
+ * the live demo frame and media are not recorded, and the /open, /pair and
+ * /invite pages (which show what their link carries: paths, branch and
+ * repository names, pairing data, an inviter's name) have all of their text masked. Page addresses keep
  * only origin, path and `utm_*`, as the site's own events do. It sends
  * recordings only (`$snapshot`); the site's events keep their own transport.
  */
 import type { PostHog, PostHogConfig } from "posthog-js/dist/module.slim.no-external";
 
-import { marketingCurrentUrl } from "./marketingAnalytics";
+import { marketingCurrentUrl, withoutInviteCode } from "./marketingAnalytics";
 import { marketingReplayConfig } from "./marketingAnalyticsBrowser";
 
 /** Set on <html> while a page that shows link-carried data is open. */
@@ -39,7 +39,8 @@ export function markMarketingReplayRoute(pathname: string): void {
   if (typeof document === "undefined") return;
   // The router matches routes case-insensitively, so `/Open` is `/open`.
   const normalized = pathname.replace(/\/+$/, "").toLowerCase() || "/";
-  if (MASK_ALL_TEXT_ROUTES.has(normalized)) {
+  // An invite page shows the inviter's first name and the code: all text masked.
+  if (MASK_ALL_TEXT_ROUTES.has(normalized) || withoutInviteCode(normalized) === "/invite") {
     document.documentElement.setAttribute(MASK_ALL_TEXT_ATTRIBUTE, "");
   } else {
     document.documentElement.removeAttribute(MASK_ALL_TEXT_ATTRIBUTE);

@@ -16,6 +16,10 @@ import type {
   SyncMobileProjectSummary,
   SyncProjectCatalogPayload,
   SyncProjectSwitchResultPayload,
+  SyncProjectActionResultPayload,
+  SyncProjectCloneRequestEnvelope,
+  SyncProjectDefaultParentDirPayload,
+  SyncProjectDefaultParentDirRequestEnvelope,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandAction,
   SyncTerminalDataPayload,
@@ -28,6 +32,7 @@ import { hostStallFromHello, hostStorageWaitFromHealth } from "../../../shared/c
 import { announceHostStall, announceHostStorageWait } from "../../lib/hostStallToast";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { ChatLaunchEvent } from "../../../shared/types/chatLaunch";
+import type { CloneProjectInput } from "../../../shared/types";
 import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../../../main/services/git/gitTimeouts";
 import {
   ARCHIVE_DELETE_TIMEOUT_MS,
@@ -65,6 +70,7 @@ import {
   type WebClientStorage,
 } from "./envStore";
 import { randomHex, uuid } from "./ids";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { decodeChatLaunchEventPayload } from "./chatLaunchEvents";
 import {
   applyProjectHostHello,
@@ -100,6 +106,8 @@ export type WebAccountSessionLease = Readonly<{
 export type SendCommandOptions = {
   projectId?: string | null;
   timeoutMs?: number;
+  /** Called once when the machine accepts the command (its `command_ack`). */
+  onAccepted?: () => void;
 };
 
 export type FileRequestOptions = {
@@ -134,6 +142,7 @@ type PendingRequest<T> = {
 type PendingCommand = PendingRequest<unknown> & {
   commandId: string;
   acked: boolean;
+  onAccepted?: () => void;
 };
 
 type ChatSubscription = {
@@ -176,6 +185,8 @@ type ClientEvents = {
   appControlStreamFrame: SyncAppControlStreamFramePayload;
   appControlStreamEnded: SyncAppControlStreamEndedPayload;
   chatLaunchEvent: ChatLaunchEvent;
+  providerLoginsChanged: null;
+  accountProjectsChanged: null;
   projectCatalog: SyncProjectCatalogPayload;
   activeProjectChanged: AdeSyncActiveProjectChange;
 };
@@ -223,6 +234,12 @@ const DEFAULT_TERMINAL_INPUT_MAX_ATTEMPTS = 4;
 const DEFAULT_TERMINAL_INPUT_RETRY_WINDOW_MS = 30_000;
 const MAX_QUEUED_TERMINAL_INPUTS = 128;
 const MAX_QUEUED_TERMINAL_INPUT_BYTES = 512 * 1024;
+/**
+ * The most keystrokes that ride one terminal_input frame. Input waits for each
+ * frame's ACK, so without joining, every key typed while one frame is in
+ * flight waits a full round trip of its own and typing falls behind.
+ */
+const MAX_COALESCED_TERMINAL_INPUT_BYTES = 16 * 1024;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -260,6 +277,9 @@ function terminalPayloadRange(
   return { startOffset: inferredStart, endOffset: endOffset as number };
 }
 
+/** The shortest gap between two of this client's requests to host its own project again. */
+const OWN_PROJECT_REASSERT_MIN_MS = 15_000;
+
 function openProjectFromCatalog(projects: SyncMobileProjectSummary[] | undefined): string | null {
   return projects?.find((project) => project.isOpen)?.id ?? projects?.[0]?.id ?? null;
 }
@@ -286,6 +306,19 @@ export class AdeSyncClient {
   private readonly connection: SyncConnection;
   private selectedEnvId: string | null = null;
   private activeProjectId: string | null = null;
+  /** When this client last asked the brain to host its own project again (`ensureHostOnOwnProject`). */
+  private ownProjectReassertedAtMs = 0;
+  /** A request that came inside the 15 s gap, run when the gap ends with the catalog of that time. */
+  private ownProjectReassertTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * This connection's catalog showed this browser's project open after a
+   * reassert. A move away on the same live connection is then another client
+   * that wants the brain on its project, not a restart (a restart closes the
+   * connection first and clears this).
+   */
+  private ownProjectHeldAfterReassert = false;
+  /** The reassert in flight, if any: a person's switch waits for it (`switchProject`). */
+  private ownProjectReassert: Promise<void> | null = null;
   private currentCatalog: SyncProjectCatalogPayload | null = null;
   private latestHello: SyncHelloOkPayload | null = null;
   private readiness: AdeSyncClientStatus["readiness"] = "disconnected";
@@ -320,6 +353,8 @@ export class AdeSyncClient {
     appControlStreamFrame: new Set(),
     appControlStreamEnded: new Set(),
     chatLaunchEvent: new Set(),
+    providerLoginsChanged: new Set(),
+    accountProjectsChanged: new Set(),
     projectCatalog: new Set(),
     activeProjectChanged: new Set(),
   };
@@ -392,6 +427,7 @@ export class AdeSyncClient {
       void this.removeEnvironment(envId);
     });
     this.connection.on("close", ({ code, reason }) => {
+      this.ownProjectHeldAfterReassert = false;
       this.invalidateGeneration(new AdeSyncError(
         "Connection lost — outcome unknown. Check the current state before retrying.",
         "connection_lost_outcome_unknown",
@@ -416,7 +452,31 @@ export class AdeSyncClient {
       this.resolveProjectCatalog(payload, this.clientGeneration);
       this.emit("projectCatalog", payload);
       const openProject = payload.projects.find((project) => project.isOpen) ?? null;
-      if (openProject && openProject.id !== this.activeProjectId) {
+      if (openProject && openProject.id === this.activeProjectId && this.ownProjectReassertedAtMs > 0) {
+        this.ownProjectHeldAfterReassert = true;
+      }
+      // Moved away again after this browser asked for its project back, on the
+      // same connection: another client wants this brain on its project. This
+      // browser follows the brain, so the two do not keep moving it.
+      const contested = openProject != null
+        && this.activeProjectId != null
+        && openProject.id !== this.activeProjectId
+        && this.ownProjectHeldAfterReassert;
+      if (contested) {
+        this.ownProjectHeldAfterReassert = false;
+        this.ownProjectReassertedAtMs = 0;
+        if (this.ownProjectReassertTimer != null) {
+          clearTimeout(this.ownProjectReassertTimer);
+          this.ownProjectReassertTimer = null;
+        }
+        forwardSignalToSentry("web.sync_own_project_yielded", {}, "own_project_yielded", "info");
+      }
+      // Another client moved this brain to another project, or the brain
+      // restarted on its default one. This browser keeps the project it shows
+      // and asks the brain for it again.
+      if (openProject && this.activeProjectId != null && openProject.id !== this.activeProjectId && !contested) {
+        this.ensureHostOnOwnProject(payload);
+      } else if (openProject && openProject.id !== this.activeProjectId) {
         const previousProjectId = this.activeProjectId;
         this.activeProjectId = openProject.id;
         if (this.readiness === "restoring") {
@@ -598,8 +658,10 @@ export class AdeSyncClient {
       this.disconnect();
       throw accountSessionChangedError();
     }
-    paired.environment.activeProjectId = openProjectFromCatalog(paired.helloOk.projects)
-      ?? paired.environment.activeProjectId
+    // A computer paired again keeps the project this browser had there; only
+    // a first pairing takes the brain's open project.
+    paired.environment.activeProjectId = paired.environment.activeProjectId
+      ?? openProjectFromCatalog(paired.helloOk.projects)
       ?? null;
     if (!accountSessionIsCurrent()) {
       this.disconnect();
@@ -620,6 +682,7 @@ export class AdeSyncClient {
     this.selectedEnvId = paired.environment.envId;
     this.activeProjectId = paired.environment.activeProjectId ?? null;
     await this.awaitCurrentRestoration();
+    if (this.currentCatalog) this.ensureHostOnOwnProject(this.currentCatalog);
     this.emitStatus();
     return paired.environment;
   }
@@ -694,20 +757,34 @@ export class AdeSyncClient {
     return removedIds;
   }
 
+  /**
+   * `firstEndpoint` is a route to dial before the others, for this dial only:
+   * the one a connection that was just closed on purpose was using. The usual
+   * order tries a direct route before ADE Relay, which is right for a new
+   * connection and costs up to 20 seconds per dead route on a re-dial.
+   */
   async connect(
     envId: string,
     relayAccess: WebRelayAccess = SIGNED_OUT_RELAY_ACCESS,
+    firstEndpoint: string | null = null,
+    options: { preserveTerminalInputs?: boolean } = {},
   ): Promise<void> {
     const environment = await this.envStore.getEnvironment(envId);
     if (!environment) throw new AdeSyncError(`Unknown ADE web-client environment: ${envId}`, "unknown_environment");
     const originalEndpoints = deriveBrowserSyncEndpoints({ environment });
-    const endpoints = filterEnvironmentEndpoints(environment, originalEndpoints, relayAccess);
-    requireDialableAuthorizedEndpoint(originalEndpoints, endpoints);
+    const authorizedEndpoints = filterEnvironmentEndpoints(environment, originalEndpoints, relayAccess);
+    requireDialableAuthorizedEndpoint(originalEndpoints, authorizedEndpoints);
+    const endpoints = firstEndpoint
+      ? [
+          ...authorizedEndpoints.filter((candidate) => candidate.url === firstEndpoint),
+          ...authorizedEndpoints.filter((candidate) => candidate.url !== firstEndpoint),
+        ]
+      : authorizedEndpoints;
     this.relayAccess = relayAccess;
     this.selectedEnvId = envId;
     this.activeProjectId = environment.activeProjectId ?? null;
     this.currentCatalog = null;
-    this.invalidateGeneration(new AdeSyncError("Connection replaced.", "disconnected"));
+    this.invalidateGeneration(new AdeSyncError("Connection replaced.", "disconnected"), options);
     await this.envStore.setSelectedEnvId(envId);
     await this.connection.connect(
       environment,
@@ -770,6 +847,15 @@ export class AdeSyncClient {
     };
   }
 
+  /**
+   * True while the transport reads "error" only because one dial round failed
+   * on every route, and it will dial again on its own. A refusal (a host or
+   * relay that turned this browser down) stops the dialing, so it reads false.
+   */
+  isRetryingDial(): boolean {
+    return this.connection.getStatus().state === "error" && this.connection.willReconnect();
+  }
+
   subscribe(listener: (status: AdeSyncClientStatus) => void): () => void {
     return this.on("status", listener);
   }
@@ -786,6 +872,7 @@ export class AdeSyncClient {
       const pending: PendingCommand = {
         commandId,
         acked: false,
+        onAccepted: opts.onAccepted,
         resolve,
         reject,
         generation,
@@ -1012,12 +1099,71 @@ export class AdeSyncClient {
     return await promise;
   }
 
+  private readonly pendingProjectClones = new Map<string, PendingRequest<SyncProjectActionResultPayload>>();
+  private readonly pendingDefaultParentDirs = new Map<string, PendingRequest<SyncProjectDefaultParentDirPayload>>();
+
+  /** Clones a repository on this machine (`project_clone_request`, as the phone sends it). Waits up to 10 minutes. */
+  async requestProjectClone(input: CloneProjectInput): Promise<SyncProjectActionResultPayload> {
+    return await this.sendProjectAction(this.pendingProjectClones, { type: "project_clone_request", payload: input }, 10 * 60_000);
+  }
+
+  /** The folder this machine clones into by default (`project_default_parent_dir_request`). */
+  async requestDefaultParentDir(): Promise<SyncProjectDefaultParentDirPayload> {
+    return await this.sendProjectAction(this.pendingDefaultParentDirs, { type: "project_default_parent_dir_request", payload: {} }, DEFAULT_REQUEST_TIMEOUT_MS);
+  }
+
+  private async sendProjectAction<T>(
+    requests: Map<string, PendingRequest<T>>,
+    envelope: Pick<SyncProjectCloneRequestEnvelope, "type" | "payload"> | Pick<SyncProjectDefaultParentDirRequestEnvelope, "type" | "payload">,
+    timeoutMs: number,
+  ): Promise<T> {
+    const generation = this.requireReadyGeneration();
+    const requestId = uuid();
+    const promise = new Promise<T>((resolve, reject) => {
+      const pending: PendingRequest<T> = {
+        resolve,
+        reject,
+        generation,
+        timer: setTimeout(() => timeout(pending, requests, requestId), timeoutMs),
+      };
+      requests.set(requestId, pending);
+    });
+    try {
+      this.connection.send({ ...envelope, requestId });
+    } catch (error) {
+      this.rejectPending(requests, requestId, this.connectionError(error));
+    }
+    return await promise;
+  }
+
+  private resolveProjectAction<T>(requests: Map<string, PendingRequest<T>>, requestId: string | null, payload: T): void {
+    if (!requestId) return;
+    // Machine-wide, not the open project's: a project change keeps it, and a
+    // lost connection rejects it (its request id is never answered twice).
+    const pending = requests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    requests.delete(requestId);
+    pending.resolve(payload);
+  }
+
   /**
    * `rootPath` is optional and additive: the host resolver already accepts
    * either identity, and an Activity item carries the owning machine's local
    * project uuid, which the host's registry cannot match by id alone.
    */
   async switchProject(
+    projectId: string,
+    rootPath: string | null = null,
+  ): Promise<SyncProjectSwitchResultPayload> {
+    // A reassert in flight ends with a re-dial that rejects every pending
+    // request, this one too. The person's choice waits for it, then wins.
+    const reassert = this.ownProjectReassert;
+    if (reassert) await reassert;
+    return await this.sendProjectSwitch(projectId, rootPath);
+  }
+
+  private async sendProjectSwitch(
     projectId: string,
     rootPath: string | null = null,
   ): Promise<SyncProjectSwitchResultPayload> {
@@ -1044,6 +1190,10 @@ export class AdeSyncClient {
     const result = await promise;
     if (result.ok) {
       const envId = this.selectedEnvId;
+      const previousProjectId = this.activeProjectId;
+      // The route this connection is on works right now: the re-dial below
+      // starts with it instead of walking the direct routes again.
+      const liveEndpoint = this.connection.getStatus().endpoint ?? null;
       this.streamSubscriptionsPaused = true;
       try {
         this.activeProjectId = result.project?.id ?? projectId;
@@ -1051,8 +1201,16 @@ export class AdeSyncClient {
           this.connection.disconnect({ reconnect: false, code: 1000, reason: "Project switch" });
           this.currentCatalog = null;
         }
-        this.invalidateGeneration(new AdeSyncError("Project connection changed.", "disconnected"));
-        this.retireActiveProjectStreams();
+        // The project in front did not change (the brain was asked to host
+        // this browser's project again): its chat and terminal streams stay,
+        // and the next hello subscribes them again. Typed terminal input waits
+        // for that reconnect too, instead of failing.
+        const sameProject = this.activeProjectId === previousProjectId;
+        this.invalidateGeneration(
+          new AdeSyncError("Project connection changed.", "disconnected"),
+          { preserveTerminalInputs: sameProject && envId != null },
+        );
+        if (!sameProject) this.retireActiveProjectStreams();
         await this.persistCurrentEnvironment((environment) => ({
           ...environment,
           port: result.connection?.port ?? environment.port,
@@ -1061,13 +1219,18 @@ export class AdeSyncClient {
           activeProjectId: this.activeProjectId,
         }));
         if (envId) {
-          await this.connect(envId, this.relayAccess);
+          await this.connect(envId, this.relayAccess, liveEndpoint, { preserveTerminalInputs: sameProject });
         }
       } finally {
         this.streamSubscriptionsPaused = false;
       }
     }
     return result;
+  }
+
+  /** The ADE version the connected machine's brain reported in its hello; null before one. */
+  getBrainAppVersion(): string | null {
+    return this.latestHello?.brain.appVersion?.trim() || null;
   }
 
   getCommandDescriptors(): SyncRemoteCommandDescriptor[] {
@@ -1138,6 +1301,16 @@ export class AdeSyncClient {
     return this.on("chatLaunchEvent", listener);
   }
 
+  /** The host's provider sign-ins changed (`provider_logins_changed`): read `providerLogins.status` again. */
+  onProviderLoginsChanged(listener: () => void): () => void {
+    return this.on("providerLoginsChanged", () => listener());
+  }
+
+  /** The host read a changed account project list (`account_projects_changed`): read the list again. */
+  onAccountProjectsChanged(listener: () => void): () => void {
+    return this.on("accountProjectsChanged", () => listener());
+  }
+
   onProjectCatalog(listener: (payload: SyncProjectCatalogPayload) => void): () => void {
     return this.on("projectCatalog", listener);
   }
@@ -1148,6 +1321,8 @@ export class AdeSyncClient {
 
   dispose(): void {
     this.disconnect();
+    if (this.ownProjectReassertTimer != null) clearTimeout(this.ownProjectReassertTimer);
+    this.ownProjectReassertTimer = null;
     this.connection.dispose();
     // A disposed client must not keep answering for the recovery store — but
     // only if it is the one bound. Disposing a background session must leave
@@ -1171,10 +1346,14 @@ export class AdeSyncClient {
         "terminal_input_ack_unavailable",
       ));
     }
-    const restoredProject = payload.projects?.find((project) => project.isOpen)
-      ?? payload.projects?.[0]
-      ?? null;
     const previousProjectId = this.activeProjectId;
+    // A reconnect never moves this browser to another project: a restarted
+    // brain hosts its own default (ADE_PROJECT_ROOT, or its newest project),
+    // and a brain whose project host is not up yet has no open project at
+    // all. Only a client with no project of its own takes a default.
+    const restoredProject = previousProjectId != null
+      ? payload.projects?.find((project) => project.id === previousProjectId) ?? null
+      : payload.projects?.find((project) => project.isOpen) ?? payload.projects?.[0] ?? null;
     const crossedProjectBoundary = Boolean(
       restoredProject && restoredProject.id !== previousProjectId,
     );
@@ -1220,6 +1399,7 @@ export class AdeSyncClient {
       this.readinessError = null;
       this.pumpTerminalInputQueue();
       this.emitStatus();
+      if (this.currentCatalog) this.ensureHostOnOwnProject(this.currentCatalog);
     })();
     this.restorationPromise = restoration;
     void restoration.catch((error) => {
@@ -1232,11 +1412,56 @@ export class AdeSyncClient {
   }
 
   private async awaitCurrentRestoration(): Promise<void> {
-    const restoration = this.restorationPromise;
+    const restoration = this.restorationPromise ?? (await this.nextRestoration())?.restoration;
     if (!restoration) {
       throw new AdeSyncError("The computer connected without restoring the workspace.", "restoration_missing");
     }
     await restoration;
+  }
+
+  /**
+   * The restoration of the next hello, when the link dropped after its hello
+   * and is dialing again on its own. A first pairing saves the new computer
+   * between its hello and this wait; a socket that closed in that gap (a new
+   * computer hands it to its project host as soon as that host is up) used
+   * to fail a connect that was seconds from working ("connected without
+   * restoring the workspace", then fine on a second try). Null when nothing
+   * is dialing, the dial gives up, or no hello comes in time.
+   *
+   * The restoration comes back boxed: a promise resolved with a promise
+   * takes on that promise's result, and the caller needs the promise itself.
+   */
+  private nextRestoration(): Promise<{ restoration: Promise<void> } | null> {
+    const state = this.connection.getStatus().state;
+    if (state !== "connecting" && state !== "reconnecting") return Promise.resolve(null);
+    // A drop between two dials passes through "disconnected"; these end the wait.
+    const gaveUp = (next: string) => next === "idle" || next === "auth_failed" || next === "error";
+    return new Promise((resolve) => {
+      let done = false;
+      let off: (() => void) | null = null;
+      const finish = (restoration: Promise<void> | null) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        off?.();
+        resolve(restoration ? { restoration } : null);
+      };
+      const timer = setTimeout(() => finish(this.restorationPromise), this.restorationTimeoutMs);
+      off = this.on("status", () => {
+        if (this.restorationPromise) {
+          finish(this.restorationPromise);
+          return;
+        }
+        if (!gaveUp(this.connection.getStatus().state)) return;
+        // A failed dial reports "error" and then, in the same turn, schedules
+        // the next one; give up only when nothing was scheduled.
+        queueMicrotask(() => {
+          if (this.restorationPromise) finish(this.restorationPromise);
+          else if (gaveUp(this.connection.getStatus().state)) finish(null);
+        });
+      });
+      if (done) off();
+    });
   }
 
   private handleEnvelope(envelope: SyncEnvelope): void {
@@ -1288,12 +1513,26 @@ export class AdeSyncClient {
       case "project_switch_result":
         this.handleProjectSwitchResult(envelope.requestId ?? null, envelope.payload as SyncProjectSwitchResultPayload);
         break;
+      case "project_clone_result":
+        this.resolveProjectAction(this.pendingProjectClones, envelope.requestId ?? null, envelope.payload as SyncProjectActionResultPayload);
+        break;
+      case "project_default_parent_dir":
+        this.resolveProjectAction(this.pendingDefaultParentDirs, envelope.requestId ?? null, envelope.payload as SyncProjectDefaultParentDirPayload);
+        break;
       case "chat_launch_event": {
         // Typed, but still wire data from a host of any version: validate before fanning out.
         const event = decodeChatLaunchEventPayload(envelope.payload);
         if (event) this.emit("chatLaunchEvent", event);
         break;
       }
+      case "provider_logins_changed":
+        // Only a signal: the payload is never read.
+        this.emit("providerLoginsChanged", null);
+        break;
+      case "account_projects_changed":
+        // Only a signal: the payload is never read.
+        this.emit("accountProjectsChanged", null);
+        break;
       default:
         break;
     }
@@ -1309,6 +1548,7 @@ export class AdeSyncClient {
       return;
     }
     pending.acked = true;
+    pending.onAccepted?.();
   }
 
   private handleCommandResult(payload: SyncCommandResultPayload): void {
@@ -1624,6 +1864,7 @@ export class AdeSyncClient {
       return;
     }
 
+    if (operation.firstSentAtMs == null) this.coalesceUnsentTerminalInput(operation);
     operation.attempts += 1;
     if (operation.firstSentAtMs == null) {
       operation.firstSentAtMs = Date.now();
@@ -1663,6 +1904,41 @@ export class AdeSyncClient {
       // A concurrent close will pause the queue. If the socket has not emitted
       // close yet, the bounded ACK timer below retries with the same dedupe id.
     }
+  }
+
+  /**
+   * Join the keys queued behind a frame that has never been sent into that
+   * frame: same session, in order, none of them sent either. A sent frame is
+   * never changed, because a retry must resend its id with the same bytes.
+   * Every caller's promise settles with the joined frame's ACK.
+   */
+  private coalesceUnsentTerminalInput(head: TerminalInputOperation): void {
+    let merged = 0;
+    for (let index = 1; index < this.terminalInputQueue.length; index += 1) {
+      const next = this.terminalInputQueue[index]!;
+      if (
+        next.sessionId !== head.sessionId
+        || next.firstSentAtMs != null
+        || head.byteLength + next.byteLength > MAX_COALESCED_TERMINAL_INPUT_BYTES
+      ) {
+        break;
+      }
+      head.data += next.data;
+      head.byteLength += next.byteLength;
+      const resolveHead = head.resolve;
+      const rejectHead = head.reject;
+      head.resolve = () => {
+        resolveHead();
+        next.resolve();
+      };
+      head.reject = (error) => {
+        rejectHead(error);
+        next.reject(error);
+      };
+      merged += 1;
+    }
+    // The joined keys' bytes stay counted, now on the head.
+    if (merged > 0) this.terminalInputQueue.splice(1, merged);
   }
 
   private pauseTerminalInputQueue(): void {
@@ -1745,6 +2021,47 @@ export class AdeSyncClient {
     );
   }
 
+  /**
+   * The brain hosts one project for every client, and this browser's project
+   * is not it (a restart, or another client's switch): ask the brain to host
+   * this browser's project again. The project in front never changes here.
+   * At most once per `OWN_PROJECT_REASSERT_MIN_MS`. Two clients that show
+   * different projects of one brain do not keep moving it: once the brain
+   * moves away again after a reassert, this browser follows it (see the
+   * `projectCatalog` handler).
+   */
+  private ensureHostOnOwnProject(catalog: SyncProjectCatalogPayload): void {
+    const own = this.activeProjectId;
+    if (!own || this.readiness !== "ready" || this.pendingProjectSwitches.size > 0) return;
+    const open = catalog.projects.find((project) => project.isOpen) ?? null;
+    if (open?.id === own) return;
+    if (!catalog.projects.some((project) => project.id === own)) return;
+    const now = Date.now();
+    const waitMs = OWN_PROJECT_REASSERT_MIN_MS - (now - this.ownProjectReassertedAtMs);
+    if (waitMs > 0) {
+      // Not dropped: a quick second restart still needs the request. It runs
+      // once the gap ends, against the latest catalog, and only if still due.
+      forwardSignalToSentry("web.sync_own_project_reassert_skipped", {}, "own_project_reassert_skipped", "info");
+      if (this.ownProjectReassertTimer == null) {
+        this.ownProjectReassertTimer = setTimeout(() => {
+          this.ownProjectReassertTimer = null;
+          if (this.currentCatalog) this.ensureHostOnOwnProject(this.currentCatalog);
+        }, waitMs);
+      }
+      return;
+    }
+    this.ownProjectReassertedAtMs = now;
+    const reassert: Promise<void> = this.sendProjectSwitch(own).then(
+      (result) => {
+        if (!result.ok) forwardSignalToSentry("web.sync_own_project_reassert_failed", { reason: "refused" }, "own_project_reassert_failed:refused", "warn");
+      },
+      () => forwardSignalToSentry("web.sync_own_project_reassert_failed", { reason: "error" }, "own_project_reassert_failed:error", "warn"),
+    ).finally(() => {
+      if (this.ownProjectReassert === reassert) this.ownProjectReassert = null;
+    });
+    this.ownProjectReassert = reassert;
+  }
+
   private publishActiveProjectBoundary(
     previousProjectId: string | null,
     project: SyncMobileProjectSummary,
@@ -1791,12 +2108,18 @@ export class AdeSyncClient {
       this.pendingTerminalHistory.delete(requestId);
       pending.reject(error);
     }
-    for (const [requestId, pending] of this.pendingProjectSwitches) {
+    this.rejectAllIn(this.pendingProjectSwitches, error);
+    this.rejectAllIn(this.pendingProjectClones, error);
+    this.rejectAllIn(this.pendingDefaultParentDirs, error);
+    this.rejectPendingProjectCatalog(error);
+  }
+
+  private rejectAllIn<T>(requests: Map<string, PendingRequest<T>>, error: Error): void {
+    for (const [requestId, pending] of requests) {
       clearTimeout(pending.timer);
-      this.pendingProjectSwitches.delete(requestId);
+      requests.delete(requestId);
       pending.reject(error);
     }
-    this.rejectPendingProjectCatalog(error);
   }
 
   private rejectPendingCommands(error: Error): void {

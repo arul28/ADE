@@ -75,6 +75,11 @@ function DeliveryDetail({
 
   useEffect(() => {
     let cancelled = false;
+    if (!runtimePin) {
+      setLoading(false);
+      setError("No computer with this project is online.");
+      return () => { cancelled = true; };
+    }
     setLoading(true);
     setError(null);
     void window.ade.automations.webhooks
@@ -91,9 +96,12 @@ function DeliveryDetail({
     return () => {
       cancelled = true;
     };
-  }, [id, runtimePin]);
+    // Keyed on the pin's key, not the object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, runtimePin?.key]);
 
   const replay = async () => {
+    if (!runtimePin) return;
     setReplaying(true);
     try {
       const result = await window.ade.automations.webhooks.replayDelivery({ id }, runtimePin);

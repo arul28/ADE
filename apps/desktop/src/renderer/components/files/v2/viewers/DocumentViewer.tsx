@@ -25,10 +25,11 @@ function legacyNoticeFor(relativePath: string): string | null {
   return LEGACY_OFFICE_EXTENSIONS[lower.slice(dot)] ?? null;
 }
 
-export function DocumentViewer({ rootPath, tab, content }: ViewerProps) {
+export function DocumentViewer({ rootPath, pathPin, tab, content }: ViewerProps) {
   return (
     <DocumentSurface
       rootPath={rootPath}
+      pathPin={pathPin}
       relativePath={tab.path}
       title={tab.title}
       mimeType={content.mimeType ?? null}

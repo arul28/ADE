@@ -1663,7 +1663,10 @@ struct WorkEventCardView: View, Equatable {
   }
 
   private var ribbonBody: some View {
-    HStack(alignment: .center, spacing: 8) {
+    // The restart line names its clock time, as on the desktop, and has room
+    // for its whole sentence.
+    let restart = card.kind == "notice" && workIsRestartInterruptedNotice(card.title)
+    return HStack(alignment: restart ? .firstTextBaseline : .center, spacing: 8) {
       Image(systemName: card.icon)
         .font(.caption.weight(.semibold))
         .foregroundStyle(card.tint.color)
@@ -1671,11 +1674,14 @@ struct WorkEventCardView: View, Equatable {
       Text(ribbonText)
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(2)
+        .lineLimit(restart ? nil : 2)
+        .fixedSize(horizontal: false, vertical: restart)
       Spacer(minLength: 8)
-      Text(relativeTimestamp(card.timestamp))
+      Text(restart ? (workParsedDate(card.timestamp).map(workUsageLimitClockLabel) ?? relativeTimestamp(card.timestamp)) : relativeTimestamp(card.timestamp))
         .font(.caption2)
+        .monospacedDigit()
         .foregroundStyle(ADEColor.textMuted)
+        .fixedSize()
     }
     // No surface, so no leading inset: the glyph starts on the thread's own
     // text edge (it sat ~10pt+ in from the messages around it).
@@ -1834,7 +1840,7 @@ struct WorkCodexRecoveryCardView: View {
   private var availableOptions: [String] {
     var seen = Set<String>()
     return card.recoveryOptions
-      .filter { workCodexRecoveryActionLabel(for: $0) != nil && seen.insert($0).inserted }
+      .filter { workQuietTurnActionLabel(for: $0) != nil && seen.insert($0).inserted }
       .prefix(4)
       .map { $0 }
   }
@@ -1886,7 +1892,9 @@ struct WorkCodexRecoveryCardView: View {
           .font(.caption2.monospaced().weight(.bold))
           .tracking(1.2)
           .foregroundStyle(ADEColor.warning.opacity(0.8))
-        Text("\(recoveryProviderName) stopped responding")
+        Text(card.recoveryContext?.reason == "no_output"
+          ? "\(recoveryProviderName) is slow to answer"
+          : "\(recoveryProviderName) has gone quiet")
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
@@ -1905,6 +1913,7 @@ struct WorkCodexRecoveryCardView: View {
           .foregroundStyle(ADEColor.textMuted)
       }
 
+      // Only on cards from older hosts, which restarted once on their own.
       if card.recoveryContext?.automaticRecoveryAttempted == true {
         Label("Automatic restart was already attempted once.", systemImage: "arrow.clockwise")
           .font(.caption2)
@@ -1926,7 +1935,7 @@ struct WorkCodexRecoveryCardView: View {
       if !moreOptions.isEmpty {
         Menu {
           ForEach(moreOptions, id: \.self) { option in
-            Button(workCodexRecoveryActionLabel(for: option) ?? option) {
+            Button(workQuietTurnActionLabel(for: option, providerName: recoveryProviderName) ?? option) {
               Task { await recover(option) }
             }
             .disabled(!canRecover || pendingAction != nil)
@@ -1971,7 +1980,7 @@ struct WorkCodexRecoveryCardView: View {
 
   @ViewBuilder
   private func recoveryButton(for option: String) -> some View {
-    let label = workCodexRecoveryActionLabel(for: option) ?? option
+    let label = workQuietTurnActionLabel(for: option, providerName: recoveryProviderName) ?? option
     let isPrimary = option == "restart_resume_thread"
     Button {
       Task { await recover(option) }
@@ -1996,7 +2005,7 @@ struct WorkCodexRecoveryCardView: View {
     .accessibilityLabel("\(label) \(recoveryProviderName) recovery")
     .accessibilityHint(
       isPrimary
-        ? "Restarts the \(recoveryProviderName) runtime once, resumes this thread, and keeps its context."
+        ? "Restarts \(recoveryProviderName), keeps the conversation, and picks up your last request."
         : "Keeps the current \(recoveryProviderName) runtime running while you wait for more output."
     )
   }
@@ -2020,12 +2029,14 @@ struct WorkCodexRecoveryCardView: View {
   }
 }
 
-func workCodexRecoveryActionLabel(for action: String) -> String? {
+/// The quiet card's button labels. One card for every provider: Restart names
+/// the chat's provider (a legacy Codex-only card passes none).
+func workQuietTurnActionLabel(for action: String, providerName: String = "Codex") -> String? {
   switch action {
   case "wait": return "Keep waiting"
   case "steer": return "Send nudge"
   case "interrupt_retry_same_thread": return "Retry same server"
-  case "restart_resume_thread": return "Restart & resume"
+  case "restart_resume_thread": return "Restart \(providerName)"
   default: return nil
   }
 }
@@ -3497,7 +3508,7 @@ struct WorkChatInfoDetailsSheet: View {
   }
 
   private func sectionHint(active: Int, earlier: Int, hidden: Int, running: Int, failed: Int) -> String {
-    // Every row the section lists (live plus the "Completed (n)" group): a
+    // Every row the section lists (live plus the "Done (n)" group): a
     // bare active count read "0" above two completed subagents.
     running > 0 && failed > 0 ? "\(running) running · \(failed) failed" : "\(active + earlier)"
   }
@@ -3781,7 +3792,7 @@ struct WorkChatInfoDetailsSheet: View {
     visible: (visible: [Item], hiddenCount: Int),
     @ViewBuilder row: @escaping (Item, _ isEarlier: Bool) -> Row
   ) -> some View {
-    // A folded section's header is its toggle: no second "Completed (n)" line.
+    // A folded section's header is its toggle: no second "Done (n)" line.
     let onlyEarlier = workChatInfoFoldedCount(partition) != nil
     VStack(alignment: .leading, spacing: spacing) {
       if partition.active.isEmpty && partition.earlier.isEmpty && partition.clearedCount > 0 { allClearRow(title) }
@@ -3961,7 +3972,7 @@ struct WorkChatInfoDetailsSheet: View {
       } label: {
         HStack(spacing: 5) {
           chevron(open: expanded)
-          Text("Completed (\(count))\(clearedCount > 0 ? " · \(clearedCount) hidden" : "")")
+          Text("Done (\(count))\(clearedCount > 0 ? " · \(clearedCount) hidden" : "")")
           Spacer(minLength: 0)
         }
         .contentShape(.rect)
@@ -4113,11 +4124,6 @@ private struct WorkChatInfoSubagentRow: View {
                   .padding(.vertical, 1.5)
                   .background(ADEColor.seriesTokenCache.opacity(0.12), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
                   .accessibilityLabel("background")
-              }
-              if snapshot.spawnKind == .peer {
-                Text("peer")
-                  .font(.caption2.weight(.medium))
-                  .foregroundStyle(ADEColor.textMuted)
               }
               WorkChatInfoStatusMark(status: snapshot.status, needsInput: snapshot.needsInput)
             }
@@ -4662,7 +4668,8 @@ private struct WorkSubagentTimelineGridTile: View {
   private var snapshot: WorkSubagentSnapshot { row.snapshot }
 
   private var metadata: String {
-    let relationship = snapshot.spawnKind == .peer ? "Peer" : "Subagent"
+    // A chat this one started that does not report back is not a subagent.
+    let relationship = snapshot.spawnKind == .peer ? "Started by this chat" : "Subagent"
     let provider = workTrimmedSubagentProvider(snapshot.provider).map(workChatSurfaceProviderName)
     let type = workHumanizedAgentType(snapshot.agentType)
     let background = snapshot.background ? "Background" : nil

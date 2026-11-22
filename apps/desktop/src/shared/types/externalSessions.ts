@@ -11,7 +11,8 @@ export type ExternalSessionProvider =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "antigravity";
 
 /** Every provider the importer knows, in display order. */
 export const EXTERNAL_SESSION_PROVIDERS: readonly ExternalSessionProvider[] = [
@@ -26,7 +27,15 @@ export const EXTERNAL_SESSION_PROVIDERS: readonly ExternalSessionProvider[] = [
   "kimi",
   "grok",
   "copilot",
+  "antigravity",
 ];
+
+/**
+ * Providers that keep a second, ADE-managed store beside the user's own. The
+ * import dialog reads both for these; every other provider has one store.
+ */
+export const EXTERNAL_SESSION_PROVIDERS_WITH_MANAGED_STORE: ReadonlySet<ExternalSessionProvider> =
+  new Set(["opencode"]);
 
 export const EXTERNAL_SESSION_PROVIDER_LABELS: Record<ExternalSessionProvider, string> = {
   claude: "Claude",
@@ -40,6 +49,7 @@ export const EXTERNAL_SESSION_PROVIDER_LABELS: Record<ExternalSessionProvider, s
   kimi: "Kimi",
   grok: "Grok",
   copilot: "Copilot",
+  antigravity: "Antigravity",
 };
 
 export function isExternalSessionProvider(value: unknown): value is ExternalSessionProvider {
@@ -160,6 +170,15 @@ export const EXTERNAL_SESSION_PROVIDER_CAPABILITIES: Record<ExternalSessionProvi
     forkIntoDifferentCwd: false,
     importToChat: true,
   },
+  // `agy --conversation <id>` reopens a conversation in its own folder; agy
+  // has no fork.
+  antigravity: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: false,
+    forkIntoDifferentCwd: false,
+    importToChat: false,
+  },
 };
 
 /** One human/assistant turn sampled from a provider transcript for preview purposes. */
@@ -204,6 +223,13 @@ export interface ExternalSessionSummary {
   home?: ExternalSessionHome | null;
   /** Size of the provider's session store entry on disk, when one stat call finds it. */
   sizeBytes?: number | null;
+  /**
+   * The provider account ("instance") whose config home holds the transcript,
+   * for the two providers that have per-account homes (Claude, Codex). Optional:
+   * older hosts do not send it, and a session in the provider's default home
+   * has none. The Import dialog preselects it in the account picker.
+   */
+  accountId?: string | null;
 }
 
 export interface ExternalSessionListArgs {
@@ -226,6 +252,14 @@ export interface ExternalSessionImportArgs {
   reasoningEffort?: string;
   fastMode?: boolean;
   permissionMode?: string;
+  /**
+   * Provider account to run the import under, for the two providers with
+   * per-account config homes (Claude, Codex). Omitted means "the account that
+   * owns the transcript", which is the session's own home and needs no copy.
+   * Any other account gets the transcript copied into its home first, so the
+   * CLI can find the id it is told to resume.
+   */
+  accountId?: string | null;
 }
 
 export type ExternalSessionImportResult =

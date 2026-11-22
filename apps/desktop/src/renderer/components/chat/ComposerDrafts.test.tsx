@@ -84,6 +84,9 @@ function installBridge(overrides?: {
   return drafts;
 }
 
+/** The chat's machine: drafts live there. */
+const CHAT_BINDING: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
 beforeEach(() => {
   Object.defineProperty(document, "visibilityState", {
     configurable: true,
@@ -174,6 +177,7 @@ describe("ComposerDrafts", () => {
     const bridge = installBridge();
     render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         draft=""
         active
         buttonVisible
@@ -191,6 +195,7 @@ describe("ComposerDrafts", () => {
     const bridge = installBridge({ list: vi.fn().mockResolvedValue([savedEntry]) });
     render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         draft=""
         active
         buttonVisible={false}
@@ -209,6 +214,7 @@ describe("ComposerDrafts", () => {
     const onDraftChange = vi.fn();
     render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         draft="Fix the parser"
         provider="codex"
         modelId="openai/gpt-5.4"
@@ -225,7 +231,7 @@ describe("ComposerDrafts", () => {
       text: "Fix the parser",
       provider: "codex",
       modelId: "openai/gpt-5.4",
-    }, null));
+    }, CHAT_BINDING));
     expect(onDraftChange).toHaveBeenCalledWith("");
     expect(bridge.list).toHaveBeenCalledTimes(1);
   });
@@ -237,6 +243,7 @@ describe("ComposerDrafts", () => {
     const onDraftChange = vi.fn();
     render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         draft="Do not lose this"
         active
         buttonVisible
@@ -263,6 +270,7 @@ describe("ComposerDrafts", () => {
     const onDraftChange = vi.fn();
     render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         draft=""
         active
         buttonVisible
@@ -275,7 +283,7 @@ describe("ComposerDrafts", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Fix the parser/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Attach to composer" }));
 
-    await waitFor(() => expect(claim).toHaveBeenCalledWith({ id: "stash-1" }, null));
+    await waitFor(() => expect(claim).toHaveBeenCalledWith({ id: "stash-1" }, CHAT_BINDING));
     expect(onDraftChange).toHaveBeenCalledWith("Fix the parser");
     expect(screen.queryByText("Drafts")).toBeNull();
   });
@@ -288,6 +296,7 @@ describe("ComposerDrafts", () => {
     const onDraftChange = vi.fn();
     render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         draft=""
         active
         buttonVisible
@@ -714,6 +723,7 @@ describe("ComposerDrafts", () => {
     installBridge({ create, getImageDataUrl, saveTempAttachment });
     render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         draft="Too many references"
         attachments={Array.from({ length: 11 }, (_, index) => ({
           path: `/Users/me/Desktop/image-${index}.png`,
@@ -751,6 +761,7 @@ describe("ComposerDrafts", () => {
     const onAddAttachment = vi.fn();
     render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         draft=""
         active
         buttonVisible
@@ -783,6 +794,7 @@ describe("ComposerDrafts", () => {
     render(
       <div data-testid="clipping-parent" style={{ overflow: "hidden" }}>
         <ComposerDrafts
+          composerMachineBinding={CHAT_BINDING}
           draft=""
           active
           buttonVisible
@@ -833,6 +845,7 @@ describe("ComposerDrafts", () => {
       installBridge({ list: vi.fn().mockResolvedValue([savedEntry]) });
       const view = render(
         <ComposerDrafts
+          composerMachineBinding={CHAT_BINDING}
           draft=""
           active
           buttonVisible
@@ -900,6 +913,7 @@ describe("ComposerDrafts", () => {
     const onDraftChange = vi.fn();
     const view = render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         draft=""
         active
         buttonVisible
@@ -913,6 +927,7 @@ describe("ComposerDrafts", () => {
 
     view.rerender(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         draft="A new prompt"
         active
         buttonVisible
@@ -933,6 +948,7 @@ describe("ComposerDrafts", () => {
     const ref = createRef<ComposerDraftsHandle>();
     render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         ref={ref}
         draft="Hidden button prompt"
         active
@@ -948,7 +964,7 @@ describe("ComposerDrafts", () => {
       text: "Hidden button prompt",
       provider: undefined,
       modelId: undefined,
-    }, null));
+    }, CHAT_BINDING));
     expect(onDraftChange).toHaveBeenCalledWith("");
     expect(screen.queryByRole("button", { name: "Save draft" })).toBeNull();
   });
@@ -963,6 +979,7 @@ describe("ComposerDrafts", () => {
     const ref = createRef<ComposerDraftsHandle>();
     render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         ref={ref}
         draft="Save exactly once"
         active
@@ -990,6 +1007,7 @@ describe("ComposerDrafts", () => {
     const ref = createRef<ComposerDraftsHandle>();
     const view = render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         ref={ref}
         draft="Save this version"
         active
@@ -1002,6 +1020,7 @@ describe("ComposerDrafts", () => {
     ref.current?.activate();
     view.rerender(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         ref={ref}
         draft="Newer typing"
         active
@@ -1016,7 +1035,7 @@ describe("ComposerDrafts", () => {
     await waitFor(() => expect(view.container.querySelector(".animate-spin")).toBeNull());
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({ text: "Save this version" }),
-      null,
+      CHAT_BINDING,
     );
     expect(onDraftChange).not.toHaveBeenCalled();
   });
@@ -1038,6 +1057,7 @@ describe("ComposerDrafts", () => {
     const ref = createRef<ComposerDraftsHandle>();
     const view = render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         ref={ref}
         draft="Keep the newer composer intact"
         attachments={[originalImage]}
@@ -1053,6 +1073,7 @@ describe("ComposerDrafts", () => {
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     view.rerender(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         ref={ref}
         draft="Keep the newer composer intact"
         attachments={[originalImage, newerImage]}
@@ -1086,6 +1107,7 @@ describe("ComposerDrafts", () => {
     const onDraftChange = vi.fn();
     render(
       <ComposerDrafts
+        composerMachineBinding={CHAT_BINDING}
         draft=""
         active
         buttonVisible

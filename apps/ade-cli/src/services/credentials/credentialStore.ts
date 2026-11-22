@@ -4,7 +4,8 @@ import path from "node:path";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import {
   CREDENTIAL_FILE_LOCK_TIMEOUT_MS,
-  CredentialFileStatWatcher,
+  subscribeCredentialFileChanges,
+  type CredentialFileChangeSubscription,
   defaultLockPath,
   ensureDirMode700,
   ensureMode600,
@@ -14,6 +15,7 @@ import {
   isSameCredentialFileStat,
   isSamePath,
   readCredentialFileStatSnapshot,
+  readCredentialFileStatSnapshotAsync,
   readJsonObject,
   readJsonObjectAsync,
   unlinkIfExists,
@@ -752,6 +754,51 @@ export function inspectCredentialStoreHealth(args: {
     };
 }
 
+/** What one expiry re-check observes; see {@link probeCredentialStoreShared}. */
+type CredentialStoreProbe = {
+  /** When the probe started, before any of its reads. */
+  takenAt: number;
+  quarantined: boolean;
+  keyStat: CredentialFileStatSnapshot | undefined;
+  stat: CredentialFileStatSnapshot | undefined;
+};
+
+const sharedCredentialStoreProbes = new Map<string, Promise<CredentialStoreProbe>>();
+const sharedCredentialStoreProbeTimes = new Map<string, number>();
+
+/**
+ * The expiry re-check's three cheap reads (the quarantine record, the machine
+ * key stat, the credential file stat), shared by every store instance on the
+ * same files in this process. Each instance used to make its own every 5 s.
+ *
+ * An instance takes another instance's probe only while it is younger than
+ * `QUARANTINE_PROBE_INTERVAL_MS`, and its entry then expires one interval
+ * after that probe STARTED. So a quarantine is still found within one
+ * interval: an entry is never served past the interval after the last probe
+ * that started before the quarantine was written.
+ */
+function probeCredentialStoreShared(credentialsPath: string, machineKeyPath: string): Promise<CredentialStoreProbe> {
+  const key = `${path.resolve(credentialsPath)}\0${path.resolve(machineKeyPath)}`;
+  const takenAt = Date.now();
+  const previousAt = sharedCredentialStoreProbeTimes.get(key);
+  const previous = sharedCredentialStoreProbes.get(key);
+  if (previous && previousAt !== undefined && takenAt - previousAt < QUARANTINE_PROBE_INTERVAL_MS) return previous;
+  const probe = (async (): Promise<CredentialStoreProbe> => ({
+    takenAt,
+    quarantined: Boolean(await readCredentialStoreQuarantineAsync(credentialsPath)),
+    keyStat: await readCredentialFileStatSnapshotAsync(machineKeyPath),
+    stat: await readCredentialFileStatSnapshotAsync(credentialsPath),
+  }))();
+  sharedCredentialStoreProbes.set(key, probe);
+  sharedCredentialStoreProbeTimes.set(key, takenAt);
+  probe.catch(() => {
+    if (sharedCredentialStoreProbes.get(key) !== probe) return;
+    sharedCredentialStoreProbes.delete(key);
+    sharedCredentialStoreProbeTimes.delete(key);
+  });
+  return probe;
+}
+
 /** A credential read that owes no write, reusable while the file is unchanged. */
 type SettledCredentialRead = {
   /** `null` when the credential file did not exist at read time. */
@@ -759,7 +806,47 @@ type SettledCredentialRead = {
   state: CredentialStoreReadState;
   values: Record<string, string>;
   expiresAt: number;
+  /**
+   * The machine key file's stat when these values were proven to open with
+   * it; `undefined` when it was not taken. With the credential file's stat it
+   * lets the expiry re-check skip the decode while neither file changed.
+   */
+  keyStat?: CredentialFileStatSnapshot;
 };
+
+/**
+ * The credential file's stat, taken once per event-loop turn and path.
+ *
+ * One account status read reaches `getSync` several times (the session, the
+ * lease, the relay check), and a status build calls it again for each field,
+ * all in the same turn. A peer process's write cannot be seen by this process
+ * any sooner than at the start of the next turn, so those calls share one
+ * `stat`: a read is at most one turn behind a peer's write, as if the turn had
+ * run a moment earlier. The stats are dropped when the turn ends
+ * (`setImmediate`), and a path's stat is dropped as soon as any store in this
+ * process writes that file, so in-process writes are seen at once.
+ */
+const credentialFileTurnStats = new Map<string, CredentialFileStatSnapshot | undefined>();
+let credentialFileTurnStatsDrop: ReturnType<typeof setImmediate> | null = null;
+
+function credentialFileStatThisTurn(filePath: string): CredentialFileStatSnapshot | undefined {
+  const key = path.resolve(filePath);
+  if (credentialFileTurnStats.has(key)) return credentialFileTurnStats.get(key);
+  const stat = readCredentialFileStatSnapshot(filePath);
+  credentialFileTurnStats.set(key, stat);
+  if (!credentialFileTurnStatsDrop) {
+    credentialFileTurnStatsDrop = setImmediate(() => {
+      credentialFileTurnStats.clear();
+      credentialFileTurnStatsDrop = null;
+    });
+    credentialFileTurnStatsDrop.unref?.();
+  }
+  return stat;
+}
+
+function forgetCredentialFileTurnStat(filePath: string): void {
+  credentialFileTurnStats.delete(path.resolve(filePath));
+}
 
 export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly credentialsPath: string;
@@ -768,7 +855,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly readKeyMaterial: () => Buffer | null;
   private readonly readKeyMaterialAsync: () => Promise<Buffer | null>;
   private readonly credentialChangePollIntervalMs: number | null;
-  private readonly credentialFileWatchers = new Set<CredentialFileStatWatcher>();
+  private readonly credentialFileWatchers = new Set<CredentialFileChangeSubscription>();
   private readonly invalidateKeyMaterial: (() => void) | null;
   private readonly peerMayHoldOsMaterial: boolean;
   private lastReadState: CredentialStoreReadState = "missing";
@@ -781,11 +868,23 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private lastReadSettled = false;
   /** See {@link readSettledCache}. */
   private settledRead: SettledCredentialRead | null = null;
+  /** Whether a settled read is kept for reuse; see the constructor option. */
+  private readonly cacheSettledReads: boolean;
   /** See {@link recheckExpiredInBackground}. */
   private expiryRecheck: Promise<void> | null = null;
+  /** See the constructor option. */
+  private readonly projectRoot: string | null;
 
   constructor(args: {
     secretsDir?: string;
+    /**
+     * The project folder that owns this store, for a store under a project's
+     * `.ade/secrets`. ADE never creates that folder: while it is missing, a
+     * read finds nothing and a write fails. Without this, the first read of a
+     * deleted project's store made the folder again, with only
+     * `.ade/secrets/.machine-key` in it.
+     */
+    projectRoot?: string | null;
     credentialsPath?: string;
     machineKeyPath?: string;
     lockPath?: string;
@@ -793,7 +892,16 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     keyMaterial?: CredentialKeyMaterialSource;
     /** Set to null when tests drive checkForChangesNow() explicitly. */
     credentialChangePollIntervalMs?: number | null;
+    /**
+     * Keep the decrypted values of the last settled read for reuse (default
+     * true). Turn it off for a store that is read once and parsed by its
+     * caller, such as the account vault cache: there the copy is never read
+     * again and only keeps a second decrypted copy of the payload in memory.
+     */
+    cacheSettledReads?: boolean;
   } = {}) {
+    this.cacheSettledReads = args.cacheSettledReads !== false;
+    this.projectRoot = args.projectRoot ? path.resolve(args.projectRoot) : null;
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
@@ -858,6 +966,12 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     key: string,
   ): Promise<{ value: string | null; state: CredentialStoreReadState }> {
     const normalized = normalizeCredentialKey(key);
+    // A settled read answers as it does for `getSync` (see `readSettledCache`):
+    // one `stat` proves it current. The full read decrypts the store and, on
+    // macOS, starts a `security` process for the key material each time.
+    // Settled means nothing is owed: no re-seal, no key material to heal.
+    const settled = this.readSettledCache();
+    if (settled) return { value: settled[normalized] ?? null, state: this.lastReadState };
     const { values, state } = await this.readAllAsync();
     return { value: values[normalized] ?? null, state };
   }
@@ -866,6 +980,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     const normalized = normalizeCredentialKey(key);
     const nextValue = value.trim();
     if (!nextValue.length) return this.delete(normalized);
+    this.assertProjectFolderPresent();
     await this.withLockAsync(() => {
       const values = this.readAll({ forWrite: true });
       values[normalized] = nextValue;
@@ -875,6 +990,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   async delete(key: string): Promise<void> {
     const normalized = normalizeCredentialKey(key);
+    if (this.storeFolderMissing()) return;
     await this.withLockAsync(() => {
       const values = this.readAll({ forWrite: true });
       if (!(normalized in values)) return;
@@ -887,6 +1003,13 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     const normalized = normalizeCredentialKey(key);
     const settled = this.readSettledCache() ?? this.readSettledUnlocked();
     if (settled) return settled[normalized] ?? null;
+    // No folder, no store. The locked read below makes the folder (for its
+    // lock file) and a machine key, so it must not run here.
+    if (this.storeFolderMissing()) {
+      this.lastReadState = "missing";
+      this.lastReadFailureReason = null;
+      return null;
+    }
     // Locked because the read may re-seal an `os`-bound store to the machine
     // key (and merge a recovered quarantine back in), and those writes have to
     // exclude concurrent writers.
@@ -910,7 +1033,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
    * store, the store was already sealed to the machine key (no rebind owed),
    * and no quarantined store was merged in. Any write by any process replaces
    * the file by rename, which changes its `ino`/`mtime`/`size` — the same
-   * signal {@link CredentialFileStatWatcher} relies on — so one `stat` proves
+   * signal the shared credential file watcher relies on — so one `stat` proves
    * the values current. That `stat` stays synchronous on purpose: this file
    * holds rotating tokens several processes coordinate through (the account
    * session and its rotation journal, the GitHub App refresh ledger), and a
@@ -926,7 +1049,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readSettledCache(): Record<string, string> | null {
     const entry = this.settledRead;
     if (!entry) return null;
-    const stat = readCredentialFileStatSnapshot(this.credentialsPath);
+    const stat = credentialFileStatThisTurn(this.credentialsPath);
     if (stat === undefined || !isSameCredentialFileStat(stat, entry.stat)) {
       this.settledRead = null;
       return null;
@@ -951,7 +1074,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       const stillSettled = await this.isStillSettledAsync(entry);
       if (this.settledRead !== entry) return;
       this.settledRead = stillSettled
-        ? { ...entry, expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS }
+        ? { ...entry, expiresAt: stillSettled.checkedAt + QUARANTINE_PROBE_INTERVAL_MS, keyStat: stillSettled.keyStat }
         : null;
     })()
       .catch(() => undefined)
@@ -960,16 +1083,47 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       });
   }
 
-  private async isStillSettledAsync(entry: SettledCredentialRead): Promise<boolean> {
-    if (await readCredentialStoreQuarantineAsync(this.credentialsPath)) return false;
-    // A missing store owes no write and has nothing to decrypt.
-    if (entry.stat === null) return true;
+  /**
+   * Whether the entry still stands, and the machine key stat that proves it.
+   *
+   * The quarantine record is read on every re-check, so a quarantine is found
+   * as fast as before. The decode is the expensive part (the whole store is
+   * read and decrypted). Its answer depends only on the bytes of the
+   * credential file and of the machine key, so while neither file's
+   * `ino`/`mtime`/`size` moved since the entry was proven, the answer is the
+   * one it gave then: the same signal `readSettledCache` trusts for the values.
+   * A replaced or removed machine key moves its stat and takes the full check.
+   */
+  private async isStillSettledAsync(
+    entry: SettledCredentialRead,
+  ): Promise<{ keyStat: CredentialFileStatSnapshot | undefined; checkedAt: number } | null> {
+    // Another store instance on the same files may have made these reads in
+    // the last interval. A probe that proves the entry is enough; anything
+    // else takes the check below with fresh reads.
+    const probe = await probeCredentialStoreShared(this.credentialsPath, this.machineKeyPath);
+    if (probe.quarantined) return null;
+    if (entry.stat === null) return { keyStat: entry.keyStat, checkedAt: probe.takenAt };
+    if (
+      probe.keyStat !== undefined && probe.keyStat !== null
+      && entry.keyStat !== undefined && isSameCredentialFileStat(probe.keyStat, entry.keyStat)
+      && probe.stat !== undefined && isSameCredentialFileStat(probe.stat, entry.stat)
+    ) {
+      return { keyStat: probe.keyStat, checkedAt: probe.takenAt };
+    }
+    const checkedAt = Date.now();
+    if (await readCredentialStoreQuarantineAsync(this.credentialsPath)) return null;
+    const keyStat = await readCredentialFileStatSnapshotAsync(this.machineKeyPath);
+    if (keyStat === null) return null;
+    if (keyStat !== undefined && entry.keyStat !== undefined && isSameCredentialFileStat(keyStat, entry.keyStat)) {
+      const stat = await readCredentialFileStatSnapshotAsync(this.credentialsPath);
+      if (stat !== undefined && isSameCredentialFileStat(stat, entry.stat)) return { keyStat, checkedAt };
+    }
     const machineKey = await readMachineKeyIfExistsAsync(this.machineKeyPath);
-    if (!machineKey) return false;
+    if (!machineKey) return null;
     const { value: raw } = await readJsonObjectAsync(this.credentialsPath);
-    if (raw == null || Object.keys(raw).length === 0) return false;
+    if (raw == null || Object.keys(raw).length === 0) return null;
     const attempt = decodeMachineSealedStore(raw, machineKey);
-    return attempt?.ok === true && attempt.sealedBinding === "machine";
+    return attempt?.ok === true && attempt.sealedBinding === "machine" ? { keyStat, checkedAt } : null;
   }
 
   /**
@@ -990,6 +1144,9 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     try {
       const before = readCredentialFileStatSnapshot(this.credentialsPath);
       if (!before) return null;
+      // Taken before the key is read: a key replaced in between leaves an
+      // older stat here, which only sends the expiry re-check to a full decode.
+      const keyStatAtRead = readCredentialFileStatSnapshot(this.machineKeyPath) ?? undefined;
       const machineKey = readMachineKeyIfExists(this.machineKeyPath);
       if (!machineKey) return null;
       const raw = readJsonObject(this.credentialsPath);
@@ -1002,11 +1159,13 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       this.lastReadState = "available";
       this.lastReadFailureReason = null;
       this.lastReadSettled = true;
+      if (!this.cacheSettledReads) return attempt.values;
       this.settledRead = {
         stat: after,
         state: "available",
         values: attempt.values,
         expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS,
+        keyStat: keyStatAtRead,
       };
       return attempt.values;
     } catch {
@@ -1016,7 +1175,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   private rememberSettledRead(values: Record<string, string>): void {
     this.settledRead = null;
-    if (!this.lastReadSettled) return;
+    if (!this.lastReadSettled || !this.cacheSettledReads) return;
     if (this.lastReadState !== "available" && this.lastReadState !== "missing") return;
     // A missing file is cached too: a signed-out store is read several times a
     // second, and without this every one of those reads took the write lock
@@ -1048,6 +1207,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       this.deleteSync(normalized);
       return;
     }
+    this.assertProjectFolderPresent();
     this.withLock(() => {
       const values = this.readAll({ forWrite: true });
       values[normalized] = nextValue;
@@ -1057,6 +1217,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   deleteSync(key: string): void {
     const normalized = normalizeCredentialKey(key);
+    if (this.storeFolderMissing()) return;
     this.withLock(() => {
       const values = this.readAll({ forWrite: true });
       if (!(normalized in values)) return;
@@ -1066,14 +1227,15 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   onDidChange(listener: () => void): () => void {
-    ensureDirMode700(path.dirname(this.credentialsPath));
-    const watcher = new CredentialFileStatWatcher(
+    // A watch is not a write: a project whose folder is missing is watched by
+    // stat alone, and its folder is not made again.
+    if (this.projectFolderPresent()) ensureDirMode700(path.dirname(this.credentialsPath));
+    const watcher = subscribeCredentialFileChanges(
       this.credentialsPath,
-      listener,
       this.credentialChangePollIntervalMs,
+      listener,
     );
     this.credentialFileWatchers.add(watcher);
-    watcher.start();
     return () => {
       watcher.dispose();
       this.credentialFileWatchers.delete(watcher);
@@ -1088,6 +1250,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   updateSync(updater: (values: Record<string, string>) => boolean | void): void {
+    this.assertProjectFolderPresent();
     this.withLock(() => {
       const values = this.readAll({ forWrite: true });
       const shouldWrite = updater(values);
@@ -1445,10 +1608,14 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     values: Record<string, string>;
     state: CredentialStoreReadState;
   }> {
+    // Taken before the file and the key are read, as in `readSettledUnlocked`.
+    const statBeforeRead = await readCredentialFileStatSnapshotAsync(this.credentialsPath);
+    const keyStatAtRead = (await readCredentialFileStatSnapshotAsync(this.machineKeyPath)) ?? undefined;
     const { value: raw, exists: credentialsExist } = await readJsonObjectAsync(this.credentialsPath);
     if (!credentialsExist) {
       this.lastReadState = "missing";
       this.lastReadFailureReason = null;
+      await this.rememberSettledAsyncRead({}, "missing", statBeforeRead, undefined);
       return { values: {}, state: "missing" };
     }
     if (!raw || Object.keys(raw).length === 0) {
@@ -1484,7 +1651,42 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     this.lastReadState = "available";
     this.lastReadFailureReason = null;
     if (attempt.sealedBinding !== "machine") this.scheduleRebindToMachineKey(material);
+    else await this.rememberSettledAsyncRead(attempt.values, "available", statBeforeRead, keyStatAtRead);
     return { values: attempt.values, state: "available" };
+  }
+
+  /**
+   * Keeps an asynchronous read for reuse when it had nothing left to do, as
+   * `readSettledUnlocked` does for `getSync`: the file was missing or already
+   * sealed to the machine key, no quarantine record waits to be merged, and
+   * the file did not change while it was read. Without this, a store that is
+   * only read through `get()` (the GitHub token reads, for example) read and
+   * decrypted the file and the machine key on every call. The next read
+   * proves the entry with one `stat` (`readSettledCache`), so a write by any
+   * process is seen as before.
+   */
+  private async rememberSettledAsyncRead(
+    values: Record<string, string>,
+    state: "available" | "missing",
+    statBeforeRead: CredentialFileStatSnapshot | undefined,
+    keyStat: CredentialFileStatSnapshot | undefined,
+  ): Promise<void> {
+    if (!this.cacheSettledReads || statBeforeRead === undefined) return;
+    if ((state === "missing") !== (statBeforeRead === null)) return;
+    try {
+      if (await readCredentialStoreQuarantineAsync(this.credentialsPath)) return;
+      const statAfterRead = await readCredentialFileStatSnapshotAsync(this.credentialsPath);
+      if (statAfterRead === undefined || !isSameCredentialFileStat(statBeforeRead, statAfterRead)) return;
+      this.settledRead = {
+        stat: statAfterRead,
+        state,
+        values,
+        expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS,
+        keyStat,
+      };
+    } catch {
+      // Not kept: the next read reads the file again.
+    }
   }
 
   /**
@@ -1495,10 +1697,14 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private writeAll(values: Record<string, string>): void {
     this.settledRead = null;
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
-    writeFileAtomic(
-      this.credentialsPath,
-      `${JSON.stringify(serializeStore(values, machineKey, "machine"), null, 2)}\n`,
-    );
+    try {
+      writeFileAtomic(
+        this.credentialsPath,
+        `${JSON.stringify(serializeStore(values, machineKey, "machine"), null, 2)}\n`,
+      );
+    } finally {
+      forgetCredentialFileTurnStat(this.credentialsPath);
+    }
   }
 
   /**
@@ -1569,6 +1775,25 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   private withLock<T>(fn: () => T, options: { timeoutMs?: number } = {}): T {
     return withCredentialFileLock(this.lockPath, fn, options);
+  }
+
+  private storeFolderMissing(): boolean {
+    return !fs.existsSync(path.dirname(this.credentialsPath));
+  }
+
+  /** True for a machine store; for a project store, whether the project folder is there. */
+  private projectFolderPresent(): boolean {
+    return !this.projectRoot || fs.existsSync(this.projectRoot);
+  }
+
+  /** A write must never make a missing project folder again. */
+  private assertProjectFolderPresent(): void {
+    if (this.projectFolderPresent()) return;
+    const error = new Error(
+      `The project folder ${this.projectRoot} isn't there. ADE did not save this credential and has not created a replacement.`,
+    ) as Error & { code?: string };
+    error.code = "project_data_missing";
+    throw error;
   }
 
   private withLockAsync<T>(fn: () => T | Promise<T>): Promise<T> {

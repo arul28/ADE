@@ -15,11 +15,8 @@ import type { DiagnosticMachineHardware, DiagnosticMachineHealth } from "./machi
  * every surface writes the report with the same owner-only permissions.
  */
 
-/** Where a maintainer files the issue this report is attached to. */
+/** ADE's public repository (the triage playbook is read from it). */
 export const DIAGNOSTIC_ISSUE_REPO = "arul28/ADE";
-
-/** GitHub rejects very long URLs (~8 KB); the body in the URL stays a stub. */
-export const ISSUE_URL_MAX_LENGTH = 6_000;
 
 /** Per-log-file tail caps. Newest lines are kept, oldest dropped. */
 export const LOG_TAIL_MAX_LINES = 120;
@@ -893,76 +890,6 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
   });
 }
 
-// ---------------------------------------------------------------------------
-// GitHub issue URL
-// ---------------------------------------------------------------------------
-
-export type DiagnosticIssueUrlInput = {
-  surface: string;
-  headline?: string | null;
-  code?: string | null;
-  appVersion?: string | null;
-  platform?: string | null;
-  arch?: string | null;
-  installId?: string | null;
-  repo?: string;
-  /**
-   * Same context the report body is redacted with. The headline is caller
-   * supplied (an update failure message, a runtime error) and routinely
-   * carries absolute paths, so the title and stub body get the same treatment
-   * as the report before they are put in a URL.
-   */
-  redaction?: DiagnosticRedactionContext;
-};
-
-export function diagnosticIssueTitle(input: DiagnosticIssueUrlInput): string {
-  const headline = input.headline?.trim();
-  const base = headline || `Problem on the ${input.surface.replace(/_/g, " ")} screen`;
-  const suffix = input.code?.trim() ? ` (${input.code.trim()})` : "";
-  const title = `[report] ${base}${suffix}`;
-  return (input.redaction ? redactDiagnosticText(title, input.redaction) : title).slice(0, 180);
-}
-
-/**
- * The URL carries only a stub: the full report is on the clipboard, because a
- * GitHub issue URL stops working somewhere north of 8 KB.
- */
-export function diagnosticIssueBody(input: DiagnosticIssueUrlInput): string {
-  const body = [
-    "<!-- Paste the report from your clipboard below. -->",
-    "",
-    "**What I was doing:**",
-    "",
-    "",
-    "---",
-    "",
-    bullet("Surface", input.surface),
-    ...(input.code ? [bullet("Recovery code", input.code)] : []),
-    bullet("ADE version", input.appVersion),
-    bullet("Platform", [input.platform, input.arch].filter(Boolean).join(" ") || null),
-    bullet("Install id", input.installId),
-    "",
-    "Paste the full diagnostic report from your clipboard here:",
-    "",
-  ].join("\n");
-  return input.redaction ? redactDiagnosticText(body, input.redaction) : body;
-}
-
-export function buildDiagnosticIssueUrl(input: DiagnosticIssueUrlInput): string {
-  const repo = input.repo?.trim() || DIAGNOSTIC_ISSUE_REPO;
-  const url = new URL(`https://github.com/${repo}/issues/new`);
-  url.searchParams.set("title", diagnosticIssueTitle(input));
-  url.searchParams.set("labels", "bug");
-  const body = diagnosticIssueBody(input);
-  url.searchParams.set("body", body);
-  if (url.toString().length <= ISSUE_URL_MAX_LENGTH) return url.toString();
-  // Degrade to a title-only link rather than handing the browser a URL the
-  // GitHub frontend will reject outright.
-  const short = new URL(`https://github.com/${repo}/issues/new`);
-  short.searchParams.set("title", diagnosticIssueTitle(input));
-  return short.toString();
-}
-
 /** `2026-08-16T09-30-00-000Z-project_recovery.md`, safe on every filesystem. */
 export function diagnosticReportFileName(surface: string, at: Date): string {
   const stamp = at.toISOString().replace(/[:.]/g, "-");
@@ -977,8 +904,7 @@ export function diagnosticReportFilePath(dir: string, surface: string, at: Date)
 
 /**
  * Writes the report with an owner-only directory and file. Best effort: a
- * read-only or full disk must not turn "report a bug" into a second bug, and
- * the issue URL is still usable on its own.
+ * read-only or full disk must not turn "report a bug" into a second bug.
  *
  * Shared by every surface (desktop button, `ade report-issue`) so the
  * 0o700/0o600 modes are stated in exactly one place.

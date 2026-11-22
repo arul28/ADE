@@ -65,6 +65,25 @@ export function publicKeyFromX963Base64(publicKey: string): KeyObject | null {
   }
 }
 
+/**
+ * The RFC 7638 JWK thumbprint (SHA-256, base64url) of a base64 X9.63 P-256
+ * public key, or null for anything that is not one. Lane sharing binds a
+ * connection ticket to this value.
+ */
+export function syncDpopKeyThumbprint(publicKeyX963Base64: string): string | null {
+  let raw: Buffer;
+  try {
+    raw = Buffer.from(publicKeyX963Base64.trim(), "base64");
+  } catch {
+    return null;
+  }
+  if (raw.length !== X963_UNCOMPRESSED_LENGTH || raw[0] !== 0x04) return null;
+  if (!publicKeyFromX963Base64(publicKeyX963Base64.trim())) return null;
+  // Required members only, in lexicographic order, no whitespace (RFC 7638 §3).
+  const canonical = `{"crv":"P-256","kty":"EC","x":"${raw.subarray(1, 33).toString("base64url")}","y":"${raw.subarray(33, 65).toString("base64url")}"}`;
+  return createHash("sha256").update(canonical, "utf8").digest("base64url");
+}
+
 export type SyncDpopVerification =
   | { ok: true }
   | {

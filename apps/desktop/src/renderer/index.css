@@ -25,6 +25,27 @@
   animation-delay: -750ms !important;
 }
 
+/* lib/caretRest.ts: after 10 s with no input, carets stay drawn but stop
+   blinking. A blinking caret repaints every 500 ms and keeps the display link
+   awake, so an idle focused prompt box woke the app about 60 times a second.
+   xterm's hidden input never shows its caret, so it never blinks. */
+.caret-rest-target {
+  caret-animation: manual;
+}
+.xterm .xterm-helper-textarea {
+  caret-animation: manual;
+}
+
+/* The same quiet spell rests a looping signal that only asks for attention
+   (a pending update, a usage warning). It stays drawn, solid, at full
+   opacity, and loops again on the first input. One small looping pulse keeps
+   the compositor drawing frames: a 16 px duty-cycled pulse cost about 1.3 %
+   of a core in Chromium at rest, more than the rest of an idle window. Not
+   for signs of work that runs (spinners of a turn, a working row). */
+html.caret-resting .ade-rests-when-idle {
+  animation: none !important;
+}
+
 /* The app's text selection color. Chromium inherits ::selection from the
    parent's ::selection, so one rule on the app root colors every descendant,
    and a nested `selection:` class still wins for its own subtree. Tailwind's
@@ -115,8 +136,10 @@ h6 {
   padding-right: var(--shell-header-inset-end, var(--shell-header-padding-end));
   color: var(--shell-header-fg);
   background: var(--shell-header-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  /* No backdrop-filter: behind the bar is only the shell's solid --color-bg,
+     so a blur showed nothing. It was still a blur pass on every frame, and
+     on macOS a backdrop-filter that is on screen makes Chromium draw the
+     whole window again for each change anywhere (a streaming chat, a caret). */
   /* No bottom hairline: the top bar sits on its part of the window gradient
      (see TopBar), and a line would cut it off from the new chat pane below. */
 }
@@ -631,6 +654,31 @@ h6 {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--shell-sidebar-item-active-rail) 55%, transparent);
 }
 
+/* The computers chip: a Home row's and the project sidebar's (one style). */
+.ade-welcome-machines-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ade-welcome-machines-chip:hover,
+.ade-welcome-machines-chip[aria-expanded="true"] { color: var(--color-fg); border-color: color-mix(in srgb, var(--color-fg) 20%, transparent); }
+.ade-welcome-machines-chip .kit-dot { width: 5px; height: 5px; }
+.ade-project-sidebar-tabs .ade-welcome-machines-chip {
+  align-self: center;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
 /* Help and the settings cog sit together at the far end of the footer. */
 .ade-project-sidebar-footer-help,
 .ade-project-sidebar-footer-settings {
@@ -781,12 +829,52 @@ body.ade-project-sidebar-resizing {
   user-select: none;
 }
 
+/* ADE Web at phone width: the sidebar is a drawer over the page, so the page
+   keeps the whole width. It slides in from the left edge when the toggle
+   opens it; the scrim behind it closes it on a tap. */
+.ade-project-sidebar[data-drawer="true"] {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 40;
+  width: min(300px, calc(100% - 52px));
+  box-shadow: 1px 0 0 var(--shell-sidebar-border), 16px 0 40px color-mix(in srgb, black 32%, transparent);
+  animation: ade-project-sidebar-drawer-in 200ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.ade-project-sidebar-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 39;
+  border: 0;
+  padding: 0;
+  background: color-mix(in srgb, black 38%, transparent);
+  cursor: default;
+  animation: ade-project-sidebar-scrim-in 200ms ease-out;
+}
+
+@keyframes ade-project-sidebar-drawer-in {
+  from { transform: translateX(-24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+@keyframes ade-project-sidebar-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ade-project-sidebar-tab,
   .ade-project-sidebar-tab::after,
   .ade-project-sidebar-tab-label,
   .ade-project-sidebar-tab[data-active="true"] .ade-project-sidebar-tab-label {
     transition: none;
+  }
+
+  .ade-project-sidebar[data-drawer="true"],
+  .ade-project-sidebar-scrim {
+    animation: none;
   }
 }
 
@@ -2259,50 +2347,47 @@ button, [role="button"] {
    the time where cubic-bezier(0.42, 0, 0.58, 1), rounded to the nearest 0.02,
    changes value. The `step-end` timing in SessionStatusLabel is load-bearing: a
    smooth opacity animation makes the compositor draw every display frame. Each
-   stop then sits on the nearest 1/30 s of the 2.6 s loop (78 slots, k/78), the
-   grid the chat's thinking indicator steps on, so the two share their frames
-   instead of each drawing its own. To change the range, re-derive the stops
+   stop then sits on the nearest 50 ms of the 2.6 s loop (52 slots, k/52), the
+   work beat (lib/workBeat.ts) the chat's thinking indicator steps on, so the
+   two share their frames instead of each drawing its own. Two levels that
+   round to the same slot show the later one. To change the range, re-derive the stops
    from the same curve and round them to that grid. */
 @keyframes ade-session-working-breathe {
   0% { opacity: 1.00; }
-  5.1282% { opacity: 0.98; }
-  10.2564% { opacity: 0.96; }
-  12.8205% { opacity: 0.94; }
+  5.7692% { opacity: 0.98; }
+  9.6154% { opacity: 0.96; }
+  13.4615% { opacity: 0.94; }
   15.3846% { opacity: 0.92; }
-  16.6667% { opacity: 0.90; }
+  17.3077% { opacity: 0.90; }
   19.2308% { opacity: 0.88; }
-  20.5128% { opacity: 0.86; }
-  21.7949% { opacity: 0.84; }
+  21.1538% { opacity: 0.84; }
   23.0769% { opacity: 0.82; }
-  25.641% { opacity: 0.80; }
+  25% { opacity: 0.80; }
   26.9231% { opacity: 0.78; }
-  28.2051% { opacity: 0.76; }
-  29.4872% { opacity: 0.74; }
+  28.8462% { opacity: 0.74; }
   30.7692% { opacity: 0.72; }
-  33.3333% { opacity: 0.70; }
+  32.6923% { opacity: 0.70; }
   34.6154% { opacity: 0.68; }
-  37.1795% { opacity: 0.66; }
-  39.7436% { opacity: 0.64; }
-  44.8718% { opacity: 0.62; }
-  55.1282% { opacity: 0.64; }
-  60.2564% { opacity: 0.66; }
-  62.8205% { opacity: 0.68; }
+  36.5385% { opacity: 0.66; }
+  40.3846% { opacity: 0.64; }
+  44.2308% { opacity: 0.62; }
+  55.7692% { opacity: 0.64; }
+  59.6154% { opacity: 0.66; }
+  63.4615% { opacity: 0.68; }
   65.3846% { opacity: 0.70; }
-  66.6667% { opacity: 0.72; }
+  67.3077% { opacity: 0.72; }
   69.2308% { opacity: 0.74; }
-  70.5128% { opacity: 0.76; }
-  71.7949% { opacity: 0.78; }
+  71.1538% { opacity: 0.78; }
   73.0769% { opacity: 0.80; }
-  75.641% { opacity: 0.82; }
+  75% { opacity: 0.82; }
   76.9231% { opacity: 0.84; }
-  78.2051% { opacity: 0.86; }
-  79.4872% { opacity: 0.88; }
+  78.8462% { opacity: 0.88; }
   80.7692% { opacity: 0.90; }
-  83.3333% { opacity: 0.92; }
+  82.6923% { opacity: 0.92; }
   84.6154% { opacity: 0.94; }
-  87.1795% { opacity: 0.96; }
-  89.7436% { opacity: 0.98; }
-  94.8718% { opacity: 1.00; }
+  86.5385% { opacity: 0.96; }
+  90.3846% { opacity: 0.98; }
+  94.2308% { opacity: 1.00; }
 }
 
 
@@ -2312,12 +2397,12 @@ button, [role="button"] {
   0%,
   40% {
     opacity: 1;
-    animation-timing-function: steps(6);
+    animation-timing-function: steps(4);
   }
   50%,
   90% {
     opacity: 0.5;
-    animation-timing-function: steps(6);
+    animation-timing-function: steps(4);
   }
   100% {
     opacity: 1;
@@ -2564,14 +2649,6 @@ button, [role="button"] {
   opacity: 1;
 }
 
-/* The glyph, tinted at rest. `--color-accent` at full strength would make the
-   icon compete with the label, and `text-muted-fg` on a coloured gradient reads
-   as a disabled control — 62% of the accent mixed into the muted foreground
-   sits between the two, and hover takes it the rest of the way. */
-.ade-tool-card-icon {
-  color: color-mix(in srgb, var(--color-accent) 62%, var(--color-muted-fg));
-}
-
 /* Press: the lift collapses and the card takes a hair off its own size. */
 .ade-tool-card:not(:disabled):active {
   transform: translateY(-1px) scale(0.99);
@@ -2702,6 +2779,220 @@ button, [role="button"] {
   animation: ade-tool-skeleton-sweep 1.4s linear infinite;
 }
 
+/* Work tools tiles. Every tool is one equal tile in a grid whose rows share
+   the pane's height, and each tile is a SIZE container: the mark and the
+   name grow with the tile's height (`cqh`), so a tall tile is full rather
+   than airy, and a short one tightens and drops its quieter line instead of
+   the page scrolling. */
+.ade-tool-tile {
+  container: tool-tile / size;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ade-tool-tile-body {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(2px, 3cqh, 6px);
+  padding: clamp(8px, 9cqh, 14px) 14px;
+}
+
+.ade-tool-tile-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: clamp(8px, 7cqh, 12px);
+  margin-bottom: clamp(0px, 3cqh, 6px);
+}
+
+.ade-tool-tile-mark {
+  display: block;
+  flex: 0 0 auto;
+  width: clamp(20px, 24cqh, 34px);
+  height: clamp(20px, 24cqh, 34px);
+}
+
+.ade-tool-tile-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-family: var(--font-sans, inherit);
+  font-size: clamp(14px, 12cqh, 17px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-fg);
+  outline: none;
+  cursor: pointer;
+}
+
+/* The one control covers the whole tile. */
+.ade-tool-tile-name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.ade-tool-tile-name:focus-visible::after {
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 0 0 1.5px var(--color-accent);
+}
+
+.ade-tool-tile-name:disabled {
+  cursor: default;
+}
+
+.ade-tool-tile-machine {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 45%;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-muted-fg);
+}
+
+.ade-tool-tile-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.ade-tool-tile-line,
+.ade-tool-tile-detail {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-tool-tile-line {
+  font-size: clamp(12px, 9cqh, 13px);
+  line-height: 1.35;
+  color: color-mix(in srgb, var(--color-fg) 78%, var(--color-muted-fg));
+}
+
+.ade-tool-tile-detail {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--color-muted-fg);
+}
+
+.ade-tool-tile-line-agent {
+  font-weight: 500;
+  color: color-mix(in srgb, var(--tool-color) 55%, var(--color-fg));
+}
+
+/* Short: the quieter line steps out. */
+@container tool-tile (max-height: 84px) {
+  .ade-tool-tile-detail {
+    display: none;
+  }
+}
+
+/* Very short: the name alone, with its mark. */
+@container tool-tile (max-height: 56px) {
+  .ade-tool-tile-line,
+  .ade-tool-tile-machine {
+    display: none;
+  }
+  .ade-tool-tile-head {
+    margin-bottom: 0;
+  }
+}
+
+/* Narrow: the machine keeps its mark, its name goes. */
+@container tool-tile (max-width: 215px) {
+  .ade-tool-tile-machine > span {
+    display: none;
+  }
+}
+
+/* A tool this chat's machine cannot open steps back; it does not lift. */
+.ade-tool-tile-off .ade-tool-tile-mark,
+.ade-tool-tile-off .ade-tool-tile-name {
+  opacity: 0.55;
+}
+
+.ade-tool-card.ade-tool-tile-off:hover {
+  transform: none;
+}
+
+/* The agent is at work: the same glow, stronger. */
+.ade-tool-card.ade-tool-tile[data-live="true"][data-agent="true"] {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--tool-color) 18%, transparent),
+    0 12px 32px -12px color-mix(in srgb, var(--tool-color) 85%, transparent);
+}
+
+/* Live for this chat: a still ring and a soft glow in the tool's colour. */
+.ade-tool-card.ade-tool-tile[data-live="true"] {
+  border-color: color-mix(in srgb, var(--tool-color) 45%, var(--color-border));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--tool-color) 22%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--tool-color) 12%, transparent),
+    0 10px 26px -14px color-mix(in srgb, var(--tool-color) 75%, transparent);
+}
+
+/* The agent is driving it: the ring travels. One rotated layer (a
+   compositor transform), stepped at 26 steps a turn (one each 100 ms, on the
+   work beat), so an agent at work
+   costs a few composites a second rather than one per display refresh. */
+.ade-tool-tile-ring {
+  position: absolute;
+  inset: -1px;
+  z-index: 1;
+  overflow: hidden;
+  padding: 2px;
+  border-radius: inherit;
+  pointer-events: none;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+.ade-tool-tile-ring > span {
+  position: absolute;
+  inset: -150%;
+  background: conic-gradient(
+    from 0turn,
+    transparent 0turn,
+    color-mix(in srgb, var(--tool-color) 18%, transparent) 0.4turn,
+    color-mix(in srgb, var(--tool-color) 55%, transparent) 0.7turn,
+    var(--tool-color) 0.95turn,
+    transparent 1turn
+  );
+  animation: ade-tool-tile-spin 2.6s steps(26) infinite;
+}
+
+@keyframes ade-tool-tile-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tool-tile-ring > span {
+    animation: none;
+    background: var(--tool-color);
+  }
+}
+
 @keyframes ade-timeline-arc {
   0% {
     transform: rotate(0deg);
@@ -2771,10 +3062,14 @@ button, [role="button"] {
    Per-Tab Ambient Background System
    ═══════════════════════════════════════════════════════════ */
 
+/* No `will-change`: a window-sized layer under every page cost its own tiles,
+   and every box painted over it then became a layer of its own too (overlap),
+   about 28 MB of tile memory in the renderer and as much again in the GPU
+   process. The tab-switch fade still runs on the compositor: an opacity
+   animation gets its own layer while it runs. */
 .ade-tab-bg {
   opacity: 1;
   contain: strict;
-  will-change: opacity;
 }
 
 [data-theme="dark"] .ade-tab-bg,
@@ -3133,17 +3428,18 @@ button, [role="button"] {
   border: 1px solid var(--chat-glass-border);
   border-top: 0;
   border-radius: 0 0 var(--chat-radius-shell) var(--chat-radius-shell);
-  /* A drawer tucked under the composer: frosted like the composer so it reads
-     on a picture as well as on the gradient, a touch darker so it sits behind
-     it, and a soft shadow at its top edge where the composer overlaps it. */
+  /* A drawer tucked under the composer: the composer's tint, a touch darker so
+     it sits behind it, and a soft shadow at its top edge where the composer
+     overlaps it. Flattened over the canvas instead of frosted: the blur showed
+     only that solid colour, and it stays on the page while a new chat is being
+     written, where a backdrop-filter makes Chromium on macOS draw the whole
+     window again for every keystroke. */
   background:
     linear-gradient(
       to bottom,
-      color-mix(in srgb, var(--chat-panel-bg) 86%, transparent) 0%,
-      color-mix(in srgb, var(--chat-panel-bg) 72%, transparent) 100%
+      color-mix(in srgb, var(--chat-panel-bg) 86%, var(--chat-canvas-bg)) 0%,
+      color-mix(in srgb, var(--chat-panel-bg) 72%, var(--chat-canvas-bg)) 100%
     );
-  backdrop-filter: blur(18px) saturate(1.3);
-  -webkit-backdrop-filter: blur(18px) saturate(1.3);
   box-shadow:
     inset 0 14px 14px -14px rgb(0 0 0 / 55%),
     inset 0 -1px 0 color-mix(in srgb, var(--chat-glass-highlight, white) 60%, transparent),
@@ -3154,6 +3450,31 @@ button, [role="button"] {
   box-shadow:
     inset 0 14px 14px -14px rgb(0 0 0 / 14%),
     0 14px 30px -22px rgb(0 0 0 / 30%);
+}
+
+/* Over a scene picture the shelf is frosted again (`SceneFrost`): the tint
+   mixes toward the picture instead of the canvas, over a blurred slice of the
+   picture painted once, with no backdrop-filter. Its inset shadows move onto
+   the frost's tint layer, which would otherwise cover them. */
+.ade-chat-launch-shelf:has(> .ade-scene-frost) {
+  isolation: isolate;
+  background: none;
+  --scene-frost-blur: 18px;
+  --scene-frost-saturate: 1.3;
+  --scene-frost-tint: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--chat-panel-bg) 86%, transparent) 0%,
+    color-mix(in srgb, var(--chat-panel-bg) 72%, transparent) 100%
+  );
+  --scene-frost-inset:
+    inset 0 14px 14px -14px rgb(0 0 0 / 55%),
+    inset 0 -1px 0 color-mix(in srgb, var(--chat-glass-highlight, white) 60%, transparent);
+  box-shadow: 0 18px 36px -22px rgb(0 0 0 / 70%);
+}
+
+[data-theme="light"] .ade-chat-launch-shelf:has(> .ade-scene-frost) {
+  --scene-frost-inset: inset 0 14px 14px -14px rgb(0 0 0 / 14%);
+  box-shadow: 0 14px 30px -22px rgb(0 0 0 / 30%);
 }
 
 .ade-liquid-glass {
@@ -3187,6 +3508,16 @@ button, [role="button"] {
   z-index: 1;
 }
 
+/* Glass that sits on the flat chat canvas. A card there has a solid colour
+   behind it (`--chat-canvas-bg`), so its blur shows nothing, but a
+   backdrop-filter that stays on the page makes Chromium on macOS draw the
+   whole window again for every change (a streamed word, a caret). Keep the
+   gradient, border and shadow; only the blur goes. */
+.ade-liquid-glass-flat {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .ade-liquid-glass-strong {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--chat-panel-bg-strong) 92%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 94%, transparent) 100%);
@@ -3199,8 +3530,14 @@ button, [role="button"] {
 }
 
 /* Composer chrome: drop the bright liquid-glass border + outer ring so the
-   prompt box reads as a clean, calm surface (no white outline). */
+   prompt box reads as a clean, calm surface (no white outline). The card is
+   opaque: at 92–94 % the frost showed a smear of the text scrolling behind it
+   rather than the words, and a blur that stays on screen makes Chromium on
+   macOS draw the whole window again for every change. */
 [data-chat-composer-mode] {
+  background: linear-gradient(180deg, var(--chat-panel-bg-strong) 0%, var(--chat-panel-bg) 100%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border-color: rgba(255, 255, 255, 0.05);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
@@ -3246,6 +3583,10 @@ button, [role="button"] {
 [data-chat-empty-usage] [data-activity-module] {
   background-color: var(--color-bg);
   background-image: linear-gradient(var(--work-popover-bg), var(--work-popover-bg));
+  /* An opaque plate shows nothing through it, so a backdrop blur only makes
+     every change on the page a full-window redraw. */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 /*
@@ -3388,17 +3729,31 @@ button, [role="button"] {
     0 0 0 1px color-mix(in srgb, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 12%, transparent);
 }
 
+/* The attachment chips and the draft-mode switch. No live blur: the chips sit
+   on the composer's own surface, where it showed nothing, and on macOS a
+   backdrop-filter on the page makes Chromium draw the whole window again for
+   every change. The draft-mode switch sits on the page: over a scene picture
+   it mounts a fake frost (`SceneFrost`) with the old blur. */
 .ade-liquid-glass-pill {
+  --ade-liquid-glass-pill-bg: linear-gradient(180deg, color-mix(in srgb, var(--chat-glass-bg) 78%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 76%, transparent) 100%);
+  --ade-liquid-glass-pill-inset: inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 82%, transparent);
   position: relative;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--chat-glass-border) 110%, transparent);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--chat-glass-bg) 78%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 76%, transparent) 100%);
+  background: var(--ade-liquid-glass-pill-bg);
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 82%, transparent),
+    var(--ade-liquid-glass-pill-inset),
     0 8px 22px -18px rgba(0, 0, 0, 0.48);
-  backdrop-filter: blur(20px) saturate(145%);
-  -webkit-backdrop-filter: blur(20px) saturate(145%);
+}
+
+.ade-liquid-glass-pill:has(> .ade-scene-frost) {
+  isolation: isolate;
+  background: none;
+  --scene-frost-blur: 20px;
+  --scene-frost-saturate: 1.45;
+  --scene-frost-tint: var(--ade-liquid-glass-pill-bg);
+  --scene-frost-inset: var(--ade-liquid-glass-pill-inset);
+  box-shadow: 0 8px 22px -18px rgba(0, 0, 0, 0.48);
 }
 
 .ade-chat-timeline-pane {
@@ -3463,6 +3818,8 @@ button, [role="button"] {
     0 16px 32px -26px rgba(0, 0, 0, 0.5);
 }
 
+/* Work-log rows (tool calls, subagents). They sit on the flat chat canvas, so
+   the frost showed nothing and only cost a full-window redraw on macOS. */
 .ade-chat-work-card {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--chat-panel-bg-strong) 78%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 74%, transparent) 100%);
@@ -3470,8 +3827,6 @@ button, [role="button"] {
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 55%, transparent),
     0 10px 24px -22px rgba(0,0,0,0.58);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
 }
 
 .ade-chat-recessed {
@@ -4713,7 +5068,8 @@ button, [role="button"] {
    — thinking, subagents, task rows
    ═══════════════════════════════════════════════════════════ */
 
-/* Subagent card — idle glass, subtle border */
+/* Subagent card — idle tint, subtle border. It sits on the flat chat canvas, so
+   the frost showed nothing and only cost a full-window redraw on macOS. */
 .ade-chat-subagent-card {
   position: relative;
   border-radius: 14px;
@@ -4722,8 +5078,6 @@ button, [role="button"] {
     color-mix(in srgb, var(--chat-panel-bg-strong) 60%, transparent) 0%,
     color-mix(in srgb, var(--chat-panel-bg) 46%, transparent) 100%);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 50%, transparent);
-  backdrop-filter: blur(18px) saturate(145%);
-  -webkit-backdrop-filter: blur(18px) saturate(145%);
   transition: border-color 160ms ease, box-shadow 200ms ease;
 }
 
@@ -4767,8 +5121,9 @@ button, [role="button"] {
     color-mix(in srgb, var(--chat-panel-bg-strong) 65%, transparent) 0%,
     color-mix(in srgb, var(--chat-panel-bg) 48%, transparent) 100%);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 55%, transparent);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  /* No backdrop-filter: the pill sits on its card's solid surface, so a blur
+     showed nothing, and on macOS any backdrop-filter on the page makes
+     Chromium redraw the whole window for every change. */
 }
 
 /* Code block copy button — theme-aware hover */
@@ -4776,6 +5131,19 @@ button, [role="button"] {
   border-color: var(--chat-copy-button-hover-border) !important;
   background: var(--chat-copy-button-hover-bg) !important;
   color: var(--chat-copy-button-hover-fg) !important;
+}
+
+/* On a touch surface the block's buttons are always shown, and their plate is
+   nearly transparent: give them the block's own solid colour instead of a blur,
+   which would otherwise stay on the page for every code block in the chat (and
+   on macOS, make Chromium redraw the whole window for every streamed word).
+   A tap leaves `:hover` on in a touch browser, and its more specific rule would
+   put the near-transparent plate back. */
+@media (hover: none) {
+  .ade-chat-copy-button,
+  .ade-chat-copy-button:hover {
+    background: var(--chat-code-bg, var(--color-surface-recessed)) !important;
+  }
 }
 
 /* Animated timeline connector */
@@ -4973,16 +5341,18 @@ button, [role="button"] {
   box-shadow: 0 0 6px 1px rgba(239, 68, 68, 0.3);
 }
 
+/* Each ramp is 200 ms in 4 steps, starting on a 50 ms multiple of the loop,
+   so the dot changes on the work beat (lib/workBeat.ts). */
 @keyframes ade-thinking-pulse {
-  0%, 40% {
+  0%, 37.5% {
     opacity: 0.3;
     transform: scale(0.85);
-    animation-timing-function: steps(6);
+    animation-timing-function: steps(4);
   }
-  50%, 90% {
+  50%, 87.5% {
     opacity: 1;
     transform: scale(1.15);
-    animation-timing-function: steps(6);
+    animation-timing-function: steps(4);
   }
   100% { opacity: 0.3; transform: scale(0.85); }
 }
@@ -4992,14 +5362,18 @@ button, [role="button"] {
 
 /* ThinkingIndicator (components/ui/ThinkingIndicator.tsx): a sparkle that
    melts into a circle and back, a twinkle at the turn, a sheen across the
-   label. Every loop is stepped at 30 changes a second and moves only transform
-   or opacity, so the compositor runs it and the main thread paints nothing per
-   step. The indicator is `data-loop-clock="off"`: the stepped loop clock would
-   seek each loop from the main thread instead. A step count applies to each
-   keyframe segment, so each segment gets 30 x its seconds: 36 steps for a
-   1.2 s segment, 24 for 0.8 s.
-   - The shape morph is a strip of its 120 shapes (drawn once, in the
+   label. Every loop is stepped at 20 changes a second, on the work beat
+   (lib/workBeat.ts), and moves only transform or opacity, so the compositor
+   runs it, the main thread paints nothing per step, and all of them change in
+   one frame. The indicator is `data-loop-clock="off"`: the stepped loop clock
+   would seek each loop from the main thread instead. A step count applies to
+   each keyframe segment, so each segment gets 20 x its seconds: 24 steps for
+   a 1.2 s segment, 16 for 0.8 s.
+   - The shape morph is a strip of its 80 shapes (drawn once, in the
      component) behind a one-shape window; one step moves the strip one shape.
+     A worker that drew the glyph into an OffscreenCanvas sent frames of its
+     own, which the display drew apart from the sheen's: about 37 window
+     composites a second for one working chat instead of 21.
    - The sheen is the label's bright copy (the window's `::before`) seen through
      a soft gradient window. The window is 250% of the label wide and slides
      right while the copy slides left by the same distance, so the text holds
@@ -5007,22 +5381,22 @@ button, [role="button"] {
      `background-position` sweep it replaces.
    Measured with `loop-cost.mjs thinking` (docs/perf/macos-baseline.md). */
 /* In em, not %: a transform that depends on the box's size is not composited.
-   One shape is the glyph box, 1.3em (ThinkingIndicator.tsx); the strip is 120. */
+   One shape is the glyph box, 1.3em (ThinkingIndicator.tsx); the strip is 80. */
 @keyframes ade-thinking-glyph-strip {
   from { transform: translateX(0); }
-  to { transform: translateX(calc(-120 * 1.3em)); }
+  to { transform: translateX(calc(-80 * 1.3em)); }
 }
-@keyframes ade-thinking-glyph-turn {
-  0% { transform: rotate(0deg) scale(1); animation-timing-function: steps(36, jump-none); }
-  30% { transform: rotate(108deg) scale(0.9); animation-timing-function: steps(24, jump-none); }
-  50% { transform: rotate(180deg) scale(0.78); animation-timing-function: steps(24, jump-none); }
-  70% { transform: rotate(252deg) scale(0.9); animation-timing-function: steps(36, jump-none); }
-  100% { transform: rotate(360deg) scale(1); }
-}
+/* The twinkle shows from 1.2 s to 2.8 s of its 4 s loop, 16 steps up and 16
+   down, one every 50 ms (the work beat). Each hidden hold is one `step-end`
+   step, 1.2 s long: a whole number of beats. A hold timed `steps(16)` (75 ms
+   steps) or the default `ease` put the loop's step instants or frame requests
+   off the beat, where they cost frames of their own. */
 @keyframes ade-thinking-twinkle {
-  0%, 30% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: steps(24, jump-none); }
-  50% { opacity: 1; transform: rotate(90deg) scale(1); animation-timing-function: steps(24, jump-none); }
-  70%, 100% { opacity: 0; transform: rotate(0deg) scale(0.2); }
+  0% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: step-end; }
+  30% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: steps(16, jump-none); }
+  50% { opacity: 1; transform: rotate(90deg) scale(1); animation-timing-function: steps(16, jump-none); }
+  70% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: step-end; }
+  100% { opacity: 0; transform: rotate(0deg) scale(0.2); }
 }
 /* The window's -60% is the gradient's 100% `background-position` (its 250%
    width less the label's, 150% of the label); the copy's 150% undoes it. */
@@ -5038,13 +5412,11 @@ button, [role="button"] {
   from { opacity: 0; transform: translateY(70%); }
   to { opacity: 1; transform: translateY(0); }
 }
-.ade-thinking-glyph {
-  animation: ade-thinking-glyph-turn 4s infinite;
-}
 .ade-thinking-glyph-strip {
-  width: calc(120 * 1.3em);
-  /* steps(120, end) shows offsets 0 .. 119/120 of the strip: one shape per 1/30 s. */
-  animation: ade-thinking-glyph-strip 4s steps(120, end) infinite;
+  width: calc(80 * 1.3em);
+  /* steps(80, end) shows offsets 0 .. 79/80 of the strip: one shape per 50 ms,
+     the work beat (lib/workBeat.ts). */
+  animation: ade-thinking-glyph-strip 4s steps(80, end) infinite;
 }
 .ade-thinking-twinkle {
   transform-origin: 79% 21%;
@@ -5064,7 +5436,7 @@ button, [role="button"] {
   pointer-events: none;
   -webkit-mask-image: linear-gradient(90deg, transparent calc(50% - var(--ade-thinking-spread)), #000, transparent calc(50% + var(--ade-thinking-spread)));
   mask-image: linear-gradient(90deg, transparent calc(50% - var(--ade-thinking-spread)), #000, transparent calc(50% + var(--ade-thinking-spread)));
-  animation: ade-thinking-sheen-window 2s steps(60, jump-none) infinite;
+  animation: ade-thinking-sheen-window 2s steps(40, jump-none) infinite;
 }
 .ade-thinking-sheen-window::before {
   content: attr(data-label);
@@ -5077,12 +5449,11 @@ button, [role="button"] {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-fg);
-  animation: ade-thinking-sheen-text 2s steps(60, jump-none) infinite;
+  animation: ade-thinking-sheen-text 2s steps(40, jump-none) infinite;
 }
 /* ADE is not the focused app: no loops at all. Every part rests where its loop
    starts (the sheen at its 0% position, as the old sweep did). The label keeps
    its slide-in. */
-.ade-thinking-indicator[data-resting] .ade-thinking-glyph,
 .ade-thinking-indicator[data-resting] .ade-thinking-glyph-strip,
 .ade-thinking-indicator[data-resting] .ade-thinking-twinkle,
 .ade-thinking-indicator[data-resting] .ade-thinking-sheen-window,
@@ -5091,7 +5462,6 @@ button, [role="button"] {
 }
 .ade-thinking-indicator[data-resting] .ade-thinking-twinkle { opacity: 0; }
 @media (prefers-reduced-motion: reduce) {
-  .ade-thinking-glyph,
   .ade-thinking-glyph-strip,
   .ade-thinking-twinkle,
   .ade-thinking-label,
@@ -5137,7 +5507,7 @@ button, [role="button"] {
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
-  animation: ade-thinking-shimmer 5s steps(120) infinite;
+  animation: ade-thinking-shimmer 5s steps(100) infinite;
 }
 
 @keyframes ade-thinking-shimmer {
@@ -5197,7 +5567,7 @@ button, [role="button"] {
   width: 45%;
   background: var(--chat-streaming-shimmer);
   transform: translateX(-100%);
-  animation: ade-scene-drawing-sweep 2.4s steps(72) infinite;
+  animation: ade-scene-drawing-sweep 2.4s steps(48) infinite;
   pointer-events: none;
 }
 @keyframes ade-scene-drawing-sweep {
@@ -6726,13 +7096,6 @@ button, [role="button"] {
   white-space: nowrap;
 }
 
-/* Settings → Secrets: one row per secret. */
-.ade-secret-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
 .ade-settings-button[data-variant="ghost"] {
   border-color: transparent;
   background: transparent;
@@ -6779,4 +7142,30 @@ button, [role="button"] {
 .pr-md-root li:has(> p > .pr-md-task-checkbox) {
   list-style: none;
   margin-inline-start: -1.1em;
+}
+
+/* The agent is using the open tool: its dot breathes, in two steps a second
+   rather than a smooth fade, so it costs almost nothing while it runs. */
+@keyframes ade-tool-agent-dot {
+  0% {
+    opacity: 1;
+    animation-timing-function: steps(1);
+  }
+  50% {
+    opacity: 0.35;
+    animation-timing-function: steps(1);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.ade-tool-agent-dot {
+  animation: ade-tool-agent-dot 1.2s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tool-agent-dot {
+    animation: none;
+  }
 }

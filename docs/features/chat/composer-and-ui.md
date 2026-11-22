@@ -1,3807 +1,2474 @@
 # Composer and Chat UI
 
-The chat UI lives under `apps/desktop/src/renderer/components/chat/`.
-It is composed of a pane (`AgentChatPane`), a message list
-(`AgentChatMessageList`), a composer (`AgentChatComposer`), and a
-constellation of side panels (tasks, scheduled work, file changes,
-subagents, computer use). The pane derives all visible state from the
-`AgentChatEventEnvelope` stream plus session metadata.
+The chat UI lives in `apps/desktop/src/renderer/components/chat/`: a pane
+(`AgentChatPane`), a message list (`AgentChatMessageList`), a composer
+(`AgentChatComposer`) and side panels (tasks, scheduled work, file changes,
+subagents, computer use). The pane derives what it shows from the
+`AgentChatEventEnvelope` stream and session metadata.
 
 ## Source file map
 
+Unqualified files are in `apps/desktop/src/renderer/components/chat/`.
+
 | Path | Role |
 |---|---|
-| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. It persists a per-session `ade.chat.lastViewed.v1:<sessionId>` timestamp in renderer `localStorage`; scheduled turns that fired since that timestamp produce a small dismissible while-you-were-away card floating above the composer; it shows the wake count, reviews the first wake divider, and omits raw turn output from the notice. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration, and composer text is keyed by session id or lane draft key so switching draft lanes does not reuse another draft's text. Accepts an optional `draftContextTargetId` prop so the Work sidebar can target an unsaved draft composer for context insertions (attachments, iOS/App Control/browser selections, draft text) even before a chat session exists; window event handlers match on either `sessionId` or `draftTargetId`. When auto-creating a lane the draft resolves the primary lane for the `onLaneChange` callback so the sidebar lane context stays in sync. Composer draft state (text, model, reasoning, attachments, context items) is persisted to `localStorage` under the `ade.chat.composerDraft.v1` key family and restored on scope change through `ComposerDraftStorageSnapshot`. Pending-steer Edit uses `cancelSteer({ requireQueued: true })`, then merges the queued text, file attachments, and context attachments into the captured composer draft; if the message already left the queue, the cancel fails and the draft is left unchanged. Draft launches are tracked through **root**-store-backed `DraftLaunchJob` state machines with multi-step progress (`creating-lane` -> `starting-session` -> `sending-prompt` -> `ready` / `failed`; auto-create names the lane deterministically up front and renames to the AI name in the background, so there is no blocking `naming-lane` phase); jobs live in the root store (not the per-project store) so an in-flight launch survives a remote project switch that tears down the originating project surface. The detached launch chain captures the originating `OpenProjectBinding`, passes it as a `pin` to branch/lane/chat/orchestration/PTY calls so a mid-launch project switch keeps targeting the originating runtime instead of the now-active project, pins rollback to that binding, and caps each step at 90 s (`withDraftLaunchTimeout`). Brain-owned new-lane, background, and CLI launches clear the composer at job start; a foreground chat from an existing lane keeps the submitted prompt visible until open, then hands it to the new pane's optimistic first bubble. It captures the prompt's text origin before the IPC wait, retains the visual handoff with the launch, and transfers it to the new session when that chat opens. If the pane unmounts mid-launch, sent content is removed from the saved draft. New-lane and in-place first sends also capture their composer and prompt origins before the pane changes; [`chatLaunchDock`](#source-file-map) plays the composer dock, first-message flight, and departing draft chrome. The `DraftLaunchSnapshot` captures the full control state so the async launch uses frozen settings. It also owns the transcript-resilience rules described in [Transcript and turns](transcript-and-turns.md#history-snapshots-scroll-back-and-misses): `resolveChatHistoryMissAction` (a history miss never blanks a rendered transcript), `resolveSnapshotHistoryCursor` (`hasOlderHistory` is authoritative over `tailStartOffset`), the bounded silent retry ladder `OLDER_HISTORY_RETRY_DELAYS_MS = [800, 2400]`, the `syncPendingBySession` flag that surfaces as `data-chat-sync-pending` + a 2 px catch-up hairline under the header (a fading static rule, never a continuous animation; the fade is `motion-safe:`), and a minimal static cold-chat skeleton (`data-chat-cold-skeleton`) so a chat with no cached view reads as loading rather than empty. `resolveRenderedChatSessionId` picks the session to paint from the incoming props rather than the effect-synced `selectedSessionId`, which otherwise paints the outgoing chat's transcript for one frame after the pane is pointed elsewhere. The module-level view cache is bounded by bytes, 128 MB in total and 32 MB per session (the resident ceiling), and stores a reference to the array the pane already holds; a **detached** view — an older transcript prefix whose live tail was dropped to stay under the resident cap after paging back — is skipped rather than evicted, so a later restore can never render an old slice as if it were current. The active-turn recovery loop is a **stall detector**, not the transport: it re-reads the transcript on a jittered `ACTIVE_TURN_RECOVERY_INTERVAL_MS` (10 s) tick and skips entirely when the live subscription delivered anything inside that window. Subscription ownership is handed to `chatSessionRetention.ts` when the pane hides. Left/right floating-pane reserve is applied only while a selected session surface renders those panes; an empty draft never reserves a hidden PR or Chat Actions pane, so its hero composer remains centered. |
-| `useDraftMachineRouting.ts`, `draftAttachmentTransfer.ts` | Draft machine selection and machine-safe attachment movement. Routing reconciles the machine restored by the current project/tab before the composer becomes sendable, resolves its `OpenProjectBinding`, and keeps lane selection scoped to that machine: the lane list is exactly the picked machine's lanes plus the auto-create row, a machine switch re-resolves the selection by identity through `remapDraftLaneToMachine` / `findPrimaryDraftLane`, and a foreign machine whose lane catalog has not landed yet holds the selection unresolved behind a bounded `Loading lanes for <machine>…` state (`laneCatalogLoading`) rather than leaving another machine's lane on screen. It also pulls that machine's lane read forward through `requestCrossMachineLanesForMachine`. On a user-requested machine change within one composer scope, `useDraftAttachmentTransfer` preserves portable image URLs and stages every attachment it can move again on the target runtime. `draftAttachmentSources.ts` remembers, per staged path, the bytes the composer read (pastes, including a long paste staged as a text file) or the local path it staged by path, so those re-stage through `saveTempAttachment` / `stageFileAttachment` (path staging first checks the target's staging mode; a base64-only host gets "attach it again there"). Images with no kept source are read back from the owning runtime via pinned `getImageDataUrl`. Files with no kept source, and linked iOS/App Control/built-in-browser context, stay behind, and the pane says which as an amber `status` notice (not a failure, no Report). Pending transfer disables send. If moving fails, the source references remain visible and sending stays blocked until the user returns to the source machine or removes them. A project/tab scope change resets ownership only after machine selection has reconciled, so restoring a remote draft cannot be mistaken for an explicit local-to-remote switch. |
-| `apps/desktop/src/renderer/components/usage/ActivityModule.tsx`, `ActivityHeatmap.tsx`, `activityIntensity.ts` | Tabbed cross-client activity/tokens/code/clients module. `AgentChatPane` mounts the self-fetching `WorkActivityModule` (compact variant) beneath the empty Work draft composer when no app panel is open, capped to the launch-shelf width (`w-[calc(100%-6rem)]`, `data-chat-empty-usage`) with an opaque plate that uses the same `--work-popover-bg` darkness as the machine/lane submenu, flattened over `--color-bg`. The component persists the chosen tab and day/week/month/year range under `ade.activity.module.v1`. `ActivityHeatmap` owns the responsive seven-row grid, viewport fitting, and the intensity ramp, while `activityIntensity` provides the shared daily activity score, non-zero quartile buckets, and leading-inactive-day trimming used by the grid and summary counts. The score (`scoreActivityDays`) is series-relative: each of seven dimensions — tokens, sessions, interactions, commits, PRs, changed lines, changed files, with local and GitHub counterparts summed — is scaled against its own maximum across the visible series before the weighted sum, because the dimensions are not in the same units. A raw sum made every non-token term smaller than the rounding noise of daily token counts, so the "activity" heatmap was a token heatmap under another name. `isActiveDay` stays unweighted so one commit still colours a day. `describeActivityInsight` derives the single sentence rendered above the grid from the same scores — busiest-day record, week-over-week trend, or peak day, in that priority — so the callout and the grid can never disagree. Buckets are quartiles over the non-zero days only, GitHub-contribution-graph style: a linear value/max ramp is useless when one 35.9B-token day is normal, because that outlier flattens every other day into the same near-floor tone. The ramp itself is explicit light/dark pairs rather than one hue at five opacities — an opacity ramp of a single hue is only a lightness ramp, which inverts its ordering between a dark and a light card — so hue and saturation both climb with the level and the scale reads in either theme. It deliberately avoids `--color-accent`, which is violet in dark and green in light. Under `prefers-contrast: more` (`renderer/hooks/usePrefersMoreContrast.ts`) every tile also gains a hairline border so the steps stay separable on a forced-contrast display. A "Less → More" key renders alongside the grid so the ramp explains itself. |
-| `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Pure helper for Work draft-launch job DTOs, terminal/stale-state detection, and pruning. The list keeps active rows ahead of terminal rows, fills remaining retained slots with terminal rows, and keeps at least one terminal row alongside active jobs. Also owns the durability constants/helpers: `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout` (fails a step whose runtime call never settles; the underlying IPC is not cancellable, so it keeps running detached and the timeout only unwedges the renderer-side job) and `LAUNCH_PROJECT_CHANGED_MESSAGE` (the legacy/unpinned abort error used only when no originating project binding is available and the active project drifts mid-launch). |
-| `apps/desktop/src/renderer/state/chatLaunchStore.ts`, `state/useChatLaunchSync.ts` | Renderer mirror of brain-owned new-lane launches (`shared/types/chatLaunch.ts`). Entries are keyed by launch id and remember their project binding; snapshots only move forward (`mergeChatLaunchSnapshot`), and the host's first answer always replaces the optimistic snapshot. Also holds the per-window `originClientId` (sessionStorage) and a non-reactive local record per launch this window started (the `start` args, the composer snapshot for restore, the prepared CLI launch). `useChatLaunchSync`, mounted once in `AppShell`, is the only `chatLaunch.onEvent` subscription: the active binding plus any other binding with a launch in flight, hydrated with `chatLaunch.list` on subscribe and when the window becomes visible. Narrow selectors (`useChatLaunchRowSources`, `useChatLaunchForPane`, `useChatLaunchSelector`) keep the Work page, the pane and the shell from re-rendering on every stage tick. |
-| `components/chat/launch/` (`chatLaunchActions.ts`, `LaneSetupCard.tsx`, `LaunchProgressRail.tsx`, `launchClock.ts`, `chatLaunchSynthetic.ts`, `chatLaunchDock.ts`, `chatLaunchDraftRestore.ts`, `useChatLaunchPaneState.ts`, `newLaneLaunchArgs.ts`, `rendererOwnedLaunch.ts`) | The launch surfaces. `chatLaunchActions` is the one place Start/Retry/Start now/Cancel/Delete/queue go through (always pinned to the launch's binding). `LaneSetupCard` renders the setup card (thread and compact variants) and the transcript's `ade_card` `lane_setup` row. `chatLaunchSynthetic` builds the stand-ins a pending chat shows: the Work roster row under the reserved session id and the thread's prompt bubble, setup card and queued messages. `chatLaunchDock` owns the composer dock, first-message flight, and departing draft-chrome/header morph; it captures and transfers composer/text origins, skips motion for reduced-motion, hidden-window, or high resource-pressure states, and restores clipping ancestors after the dock glide. `chatLaunchDraftRestore` is the one hand-off channel from a closed launch back to Work (Work closes the launch's tab and shows the draft; the draft composer takes back the prompt). `useChatLaunchPaneState` is the pane's launch seam (which launch owns the shown chat, whether its session exists yet, whether sends queue) plus its lifecycle effects; `newLaneLaunchArgs` assembles the `chatLaunch.start` args. `rendererOwnedLaunch` is the renderer-owned chain (existing lane, Cursor Cloud, and the fallback for runtimes without `chat.startLaunch`), extracted from `AgentChatPane` with its dependencies passed in. |
-| `renderer/webclient/adapter/chatLaunch.ts`, `renderer/webclient/sync/chatLaunchEvents.ts` | Hosted-web `window.ade.chatLaunch`: the same namespace over the `chat.startLaunch` … `chat.completeLaunchClient` sync commands (writes never use the read cache; an older host that lacks the action rejects so the composer falls back to its own chain), with live updates decoded from the pushed `chat_launch_event` envelope (`decodeChatLaunchEventPayload` drops malformed or unknown event shapes). |
-| `components/app/ChatLaunchesSlideOut.tsx`, `components/terminals/useChatLaunchCliDriver.ts` | The bottom-right Launches slide-out (this window's background chats and CLI launches), and the Work-level driver that starts the PTY for this window's CLI launches once the brain reports `awaiting-client`. |
-| `apps/desktop/src/renderer/lib/handoffLaunchJobs.ts` | Pure helper for handoff placeholder DTOs, scope keys, stable placeholder ids, status labels, and search matching. `AgentChatPane` writes these jobs into the root store while `TerminalsPage` passes matching jobs into the Work session sidebar. The local handoff surface offers a brief summarized handoff or a fork whenever the source provider is fork-capable (`providerSupportsHandoffFork`: Claude, Codex, OpenCode, Droid, Cursor). Fork keeps the new chat on the same provider and lane while allowing the target model to change; Claude forks the SDK session pointer, Codex the app-server thread (`thread/fork`), OpenCode `session.fork`, and Droid `session.fork()`. Cursor has no fork surface, so ADE starts a new Cursor agent and replays the full source transcript into it; `providerForkReplaysTranscript` selects the matching panel copy. |
-| `apps/desktop/src/renderer/lib/chatHandoffIntent.ts` | Module-local one-shot bridge between a handoff entry point outside the pane (the session context menu's **Hand off…** submenu, in `components/terminals/SessionContextMenu.tsx`) and `AgentChatPane`, which owns both handoff dialogs and the cross-machine modal. The menu records a destination (`"local"` \| `"remote"`) with `openChatHandoff` and selects the row; only the active tile drains it, live when the session is already selected or from the single-slot queue when it mounts a render later, then opens the matching surface. A transient command, not store state. |
-| `apps/desktop/src/renderer/lib/aiDiscoveryCache.ts` | Runtime-binding-scoped AI integration-status and provider-model cache shared across renderer surfaces. Local and remote checkouts with the same project identity cannot share model/auth state. `getAiStatusCached` uses a 10-second freshness window and deduplicates concurrent `ade.ai.getStatus` requests; cache update/invalidation events let open ModelPickers react without polling or mounting their own background refresh loops. |
-| `CrossMachineHandoffModal.tsx`, `crossMachineHandoffPresentation.tsx` | Setup for **Continue on another machine**. It collects the destination machine, brief or fork, the destination chat's model, reasoning effort, fast mode and permission mode (the composer's own pills), a continuation note and the clone choice, then calls `startCrossMachineHandoff`; the chat's source brain runs every step from there (`crossMachineHandoffOrchestrator.ts`). What it shows comes from that brain: machines and source blockers from `getCrossMachineHandoffOptions`, the destination's answer from `previewCrossMachineHandoff` (read-only; nothing is prepared, packed or cloned), and progress, failure, `unknown` and approval from the durable record on the chat summary. It takes a `runtimePin` naming the machine the *source* chat runs on (`null` = this tab's bound machine) and pins every call it makes to it: options, preview, start, and `git.push` / `git.pull` behind **Publish branch** / **Update branch**, frozen once per operation. Source blockers render through `BlockedReasons` / `BlockedActionButton` instead of silently disabling Continue. No move binds acceptance to a route kind; the route notice is informational and fork-aware, and Send is the confirmation. The pure half (copy, tone and icon maps, `CheckRow`) lives in `crossMachineHandoffPresentation.tsx`. |
-| `ChatHandoffDialogs.tsx` | The **Local handoff** dialog on Radix Dialog (the local fork/brief form, or "Handoff is not available for this chat."). Cross-machine handoff opens `CrossMachineHandoffModal` for every chat, so there is no separate notice for a remote chat. Radix gives Escape, outside-click dismiss, and focus trapping. The dialog content is the `PortalContainerContext` value, so popovers inside it stay clickable; Escape closes an open lane list before it closes the dialog. |
-| `ProviderSignInCard.tsx` | The sign-in card that takes the composer's place (the composer's `replacementCard` prop, drawn after an agent's own question) while the chat's provider is signed out on the composer's machine: after a turn failed on it, or before a send from the machine's provider status. See [README › Inline agent download, and the sign-in card](README.md). |
-| `ChatRuntimeScope.tsx` | Which machine THIS chat is on, and what its lane looks like there — the single derivation every chat-scoped panel reads instead of a global store selector. `useChatRuntimeScope()` returns `{ pin, binding, laneId, lane, laneWorktreePath, rootPath, isRemote, machineName, online }` from context, `useChatRuntimeScopeForPin(pin, laneId, bindingOverride?)` derives the same from a pin passed as a prop (for surfaces mounted outside a chat pane), `useChatScopeDerivation({...})` answers it from a *session* for `AgentChatPane`, and `ChatRuntimeScopeProvider` carries the resolved scope down the panel/drawer subtree. `pin === null` means, and only means, "this chat lives on the tab's binding". ESLint bans `useAppStore` / `useRootAppStore` reads of `projectBinding` / `lanes`, `project.rootPath` reads, and `selectActiveProjectRoot` imports inside `components/chat/**` so no panel can quietly go back to reading the tab's machine. It also exports `chatRunsOnThisComputer(scope)` (`!isRemote && pin == null`), the predicate a foreign chat uses to hide affordances that would open or file onto this computer — the Scene frame's **Proof** button and the Codex generated-image **Open** button. Full contract in the chat [README](README.md#source-file-map). |
-| `AgentChatMessageList.tsx` | Virtualized message list. The virtualizer is **hand-rolled**, not `@tanstack/react-virtual`: a `measuredHeights` row-key → height `Map` feeds top/bottom spacer divs around the rendered window, and each rendered row is wrapped in `MeasuredEventRow`, whose `ResizeObserver` reports its real height through `handleMeasure` → `reconcileMeasuredScrollTop` so a height correction above the viewport does not shift what the reader is looking at. Renders transcript rows and turn dividers, including a `Woke on schedule` divider before every synthetic scheduled turn and inline `SubagentSpawnCard` / `SubagentResultCard` rows (from `SubagentActivityCards.tsx`) for real subagents and compact `BackgroundJobRunRow` rows for runs of backgrounded shell commands, and accepts stable row-key jump requests from the compact while-you-were-away card and the spawn/result jump affordances. A run of `codex_image_view` events in one turn folds into one `Viewed N images` strip — folded tool calls and narration between them do not break the run — and a local image view reads its thumbnail through the chat's machine via `readAttachmentImageDataUrl` with the runtime pin. An interim narration line (any assistant text row of a turn except its last) floats its hover actions below the row instead of reserving a strip; its row clips horizontally but leaves that footer visible, so a run of short progress lines reads as one passage. Keeps sticky-bottom sessions pinned across streamed row growth, late virtual-height measurements, and a shrinking transcript viewport (a growing composer must not unstick the thread). The content's `ResizeObserver` pins the view in the same frame as the growth (layout is current there, so the pin forces none); a pin commits `scrollTop` state only when it changes what the list draws (`commitPinnedScrollTop`, the same commit key `handleScroll` uses); and a pinned reader's last row that grew takes no measure tick, because it moves no row's start offset and the virtual sizer is a `minHeight`. Together these took the list from three renders and three extra frames per streamed update to none. A Claude `queue_recovery: available` row renders one eight-second Undo card; later `restored`/`expired` rows settle the same recovery id so history replay cannot show a stale action. Assistant text blocks expose a compact icon-only Copy action; the turn-end row exposes Copy turn, which joins only that turn's assistant text blocks with blank lines, excluding the user prompt and folded work. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. Codex goal lifecycle rows use user-facing text such as `Goal set`, `Goal paused`, and `Goal cleared`. A stalled Codex turn renders a clickable Wait / Nudge / Retry / Resume recovery card wired to `agentChat.recoverCodexTurn`; failed turns render one `TurnFailureLine` with a same-thread Retry link, and usage-limit failures render only their turn-end line. User messages marked `metadata.hideFullPrompt` render and copy only their `displayText`, keeping internal handoff briefs out of the visible transcript details, and a handoff-brief user row shows a small brief chip. A user message long enough to be a markdown document renders as formatted markdown (`userTextLooksLikeMarkdown`, `MarkdownBlock tone="bubble"`); the bubble shows only the text the reader typed, never the expanded provider prompt. When a fork seeds pre-fork history into the new chat, the envelopes carry the `handoff_fork` provider origin and the list draws a single `Forked from the previous chat — full history above` divider (`computeForkHistoryDividerRowKey` pins it to the first live row after the seeded history) instead of one marker per seeded row. `WorkingIndicator` is the in-flight turn's status line — `<activity> · working for <elapsed>`. The activity half comes from `resolveWorkingIndicatorLabel`: `ACTIVITY_LABELS` is keyed against the `activity` union in `shared/types/chat.ts` so a new runtime value is a compile error rather than a raw `web_searching` on screen, and an `editing_file` activity is named with its target (`Editing laneService.ts`) by walking back to the most recent unfinished write entry in the turn — `activity` events carry the tool name, not the file. A `tool_calling` / `running_command` wait is named from the newest still-running entry (`Running pnpm test`, `Search agentChatService`) instead of a bare "Calling tool". Its elapsed is written imperatively (`textContent` on a ref) rather than through state, so the once-per-second tick never commits a render on the message list. The line swaps a bare `<span>` for an expander `<button>` the instant the turn's first tool entry arrives, which remounts the timer node, so the ref is a **callback** ref: it repaints the counter in the same commit it attaches, and the ticker re-reads the ref every tick. An element captured once when the ticker started would be detached by that swap and the display would sit frozen at `0s` while the turn kept running. `ChatInfoHostContext` also lives here — a boolean context reporting whether the *owning host* listens for `ade:chat:open-info`. `AgentChatPane` provides `true` (it owns the chat actions pane); `PersonalChatsPage` mounts the same transcript without it, so the background-job `open` button is absent there rather than dispatching into nothing. It must stay a context rather than a module-level registry: `App` renders every `ProjectSurface` and only toggles `active`, so each `AgentChatPane` stays mounted while Personal Chats is open, and a global "is any host alive" flag would read true on exactly the surface that has no pane. |
-| `AgentChatComposer.tsx`, `ComposerDrafts.tsx`, `DraftSchedulePopover.tsx`, `ComposerSmartLinkMenu.tsx`, `smartLinkChipMark.ts` | Text input, attachments, model selector, compact title-only permission controls (per-provider `PermissionModePickerOption` tables fed into the shared `components/shared/PermissionModePicker`, which the composer owns the option data for but not the control), slash commands, the desktop drafts control and its scheduled-send form, smart-link chips (`smartLinkChipMark.ts` returns the inline `currentColor` SVG brand mark each chip renders), **chat-context chips** (select assistant output → Add to chat; the composer chip shows the first words of the quote (the full quote stays on it for the copy/remove menu), serializes an `<ade-chat-context>` block whose preamble tells the agent the user quoted the passage and that the text after the block is their reply, and the sent message reads back as a quote card; click/backspace copy or remove it like a smart-link chip), pending-input answering (including Codex MCP form/URL elicitations), voice-dictation target registration, and parallel model-slot controls. A running chat's toolbar also shows a read-only amber tower plus the owning machine name beside the model and thinking controls; it identifies where the chat executes and directs moves to a session-card right-click: **Hand off… → Another machine**. A draft omits that label because its launch shelf owns the machine choice. `ComposerDrafts` keeps its command surface mounted when the Appearance preference hides the bookmark, so Cmd/Ctrl+S remains available, but the visible bookmark stays out of the toolbar while both the composer and the drafts list are empty. Its menu is rendered in a viewport-clamped body portal with a bounded, scrolling list so composer overflow and short windows cannot crop it. A save first copies up to ten attached images into the owning project runtime, commits the text plus image references, then clears only the unchanged composer snapshot; attaching a draft claims it (the delete is the claim) before its text and images are reapplied, so a machine that loses the race never receives the text. The list renders an image thumbnail when the active runtime owns the bytes. On another synced runtime, the row retains its text and image count, labels the images as living on another machine, and refuses to attach them. Machine-bound context and non-image files are not carried in a draft. Completed URLs are non-editable inline chips whose `data-composer-chip-text` preserves the literal URL during serialization; clicking or keyboard-activating a chip opens the Copy link / Remove link menu, and character deletion removes the whole URL token. Every chip also carries a kind-naming `data-composer-chip` attribute, and a scoped `selectionchange` effect marks intersecting chips with `data-composer-chip-selected` so the native selection paints continuously across them (overlay styling lives in `apps/desktop/src/renderer/index.css`). During an active Claude turn, its split Send control selects without dispatching among inline, after-turn, and interrupt delivery; the primary button and Enter execute the selected mode. A separate Claude split Stop control selects among the four-mode matrix — **Turn only**, **Turn + queue** (the default), **Turn + background (N jobs)**, and **Turn + queue + background (N jobs)** — persists that choice per chat, and dismisses its custom popover immediately after selection. Default Stop stops the turn and clears the queue but leaves background jobs running; per-task square stops on Chat Info and spawn cards kill one job. Staged rows expose send-during-turn, interrupt, cancel, and Edit-back-to-composer actions. It forwards one-shot open requests to the shared ModelPicker so transcript recovery cards can open model selection without synthetic DOM events; the picker acknowledges each request so remounts do not reopen it. Launch-prompt clipboard reminder text is controlled by `launchPromptClipboardNoticeEnabled`, separate from the `launchPromptClipboardEnabled` copy behavior. It holds the last `@`/`/` popover dismissal in a ref (it gates the next open, never a render) and has **three** distinct close semantics: `closeCommandMenu()` closes and forgets the dismissal, for a trigger that is resolved (a selection was made, the trigger is gone, the composer locked or reset); `dismissCommandMenu(trigger)` closes and keeps it closed while the user extends this query, used for Escape (an explicit dismissal — typing the rest of the token must not bring the menu back), for Enter/Tab with no matching row, and for the menu's own dead-query report; and `closeCommandMenuKeepingDismissal()` is the third and the one that is easy to write by accident — this trigger cannot open a menu right now (it is already a confirmed token, or still covered by an earlier dismissal), but nothing is resolved and nothing new was dismissed, so clearing the dismissal here would reopen the menu the user just escaped and recording one would suppress the menu for a trigger the user never dismissed. |
-| `apps/desktop/src/main/services/chat/draftService.ts`, `draftDelivery.ts`, `draftScheduler.ts` | Runtime-backed drafts and scheduled sends. Exact prompt text, up to ten image references, their origin sync-site id, the captured provider/model/permission/thinking config, and — for an armed send — its fire time, target, and if-late policy are stored in the PK-only, CRR-compatible `prompt_stashes` table (the name is kept because cr-sqlite cannot rename a CRR wholesale and every paired machine holds it). Plain drafts are capped at 20 newest-first; armed sends are exempt from that prune and capped separately at 50, and are delivered by the machine that owns the target chat through an exactly-once `scheduled`→`sending` claim. Text and metadata converge across runtimes; HTTP(S) image references stay portable while local-image bytes stay on the originating runtime, so an off-origin reader receives the image count but no paths and cannot attach them. Origin-owned image files referenced by live drafts are protected from the normal seven-day temporary-attachment cleanup. |
-| `TurnFailureLine.tsx`, `turnFailureRows.ts` | A failed turn is one line with no box: warning glyph, title, `×N` for folded retries, and quiet **Retry** / **Details** links (provider text behind Details, with Copy). Usage-limit failures draw no line: `foldTurnFailureRows` drops their error row and marks the turn-end line, which reads `Usage limit`, and identical failed retries of the same prompt fold into one. |
-| `UsageLimitChip.tsx` | The usage-limit chip in the composer's status row: `Usage limit reached` plus one detail, a **Cancel** / **Resume in …** toggle for auto-resume (like compact-first), and **Continue on <account>** when the host publishes another account with room. Provider detail and the exact clock are in the tooltip. Actions go through the chat's runtime pin. |
-| `usageLimitResumePresentation.ts` | Pure viewer-zone copy and state presentation for the usage-limit pill/popover, including `parseUsageLimitResume` (the one strict reader for an untrusted payload), adaptive countdown cadence (`59 s`, `4 min 30 s`, `3 min`, `2 hr 5 min` — seconds round up, matching iOS), provider labels, `usageLimitResumeRowStatus`, the quiet `usageLimitTurnFooterLabel`, and the narrow `isUsageLimitFailureText` predicate the subagent grouping pass reads. Clock-injectable throughout: no formatter reads `Date.now()`, so the pill, the popover, the CLI, and their tests all read the same strings for the same instant. |
-| `chatTurnState.ts` | Pure turn-state helpers shared by live and hydration paths. Terminal transcript evidence beats a stale active session summary, and failed-turn retry resolves the associated non-steer user message even when the optimistic row has no provider turn id. |
-| `ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | The chat progress drawer (one scroll, no tab strip, no placeholder areas: progress, proof, Droid mission and sources each appear only once they have content) plus the Sources view. The source derivation deduplicates files, web queries/results, MCP apps/tools, and external resource URLs from transcript events; safe web rows open in ADE's browser. |
-| `VoiceDictationButton.tsx`, `microphonePermissionGuidance.ts`, `apps/desktop/src/renderer/services/globalVoiceRecorder.ts`, `apps/desktop/src/renderer/components/voice/*`, `apps/desktop/src/main/services/transcription/microphoneAccess.ts` | Desktop dictation UI, platform permission boundary, and recorder. The module-level recorder owns mic capture across navigation, writes live state to the root app store, transcribes via `window.ade.transcription`, inserts cleaned text into the registered composer, and always copies the cleaned transcript to the clipboard. Main asks Electron for the platform microphone status; Windows denied/restricted states return explicit Privacy & security > Microphone guidance, while unknown/not-determined states are left to Chromium's origin permission flow. The header indicator and composer pill render the same recording state. |
-| `apps/desktop/src/main/services/transcription/*` | Electron main-process transcription service. Writes captured 16 kHz mono PCM to WAV, runs the bundled transcribe.cpp `transcribe-cli` against the downloaded Parakeet Ultra model (which punctuates and capitalizes itself), reads the transcript file, and applies deterministic glossary cleanup. Threads are capped at about the physical core count, because transcribe.cpp slows sharply when oversubscribed. The model download is single-flight: any later `downloadModel` call joins the in-flight install, including the renderer installer rejoining after its own call failed while main kept going. After the model verifies, the install runs one silent half-second transcription (`stage: "warmup"` on the progress event, shown as "Finishing setup") so the first real dictation is not the cold one (about 28 s cold against under 2 s warm on an M3 Pro); a failed warm-up is logged and still leaves the model installed. |
-| `CodexVoice.tsx` (`useCodexVoice`, `CodexVoiceButton`, `CodexVoiceBar`), `VoiceSessionCard.tsx` (the card a finished call leaves in the chat), `apps/desktop/src/main/services/chat/codexVoiceSession.ts` (the call: transports, hand-off routing, turn adoption, captions, summary), `apps/desktop/src/main/services/chat/codexVoiceNarration.ts` (what the voice says and when: the turn stream, milestones, barge-in, the end-request matcher), `apps/desktop/src/main/services/chat/codexVoiceHost.ts`, `apps/desktop/src/shared/codexVoice.ts`, `components/settings/VoiceConversationSection.tsx` | Voice conversations: a spoken conversation with any chat, carried by the Codex app server's realtime API on the user's ChatGPT sign-in. See [Voice conversations](#voice-conversations). |
-| `apps/desktop/resources/voice/voice-glossary.json`, `apps/desktop/resources/whisper/README.md` | Shared dictation glossary and release notes for the materialized speech-to-text binary. `materialize-whisper-resources.mjs` builds `transcribe-cli` from a pinned transcribe.cpp commit; the binary is ignored by git and the model is downloaded at runtime. |
-| `apps/desktop/src/renderer/components/work/useSessionLifecycleSnapshot.ts` | `useSessionLifecycleSnapshot(sessionId)`, the lifecycle read behind `ChatLifecyclePill` (settled and snoozed, one chip above the composer). It reads the row from the local per-project session cache the Work tab already mirrors into the app store, then falls back to the root cross-machine lane snapshot for a foreign chat; a bounded render-only deadline timer repaints an open snoozed row when it expires, with no extra IPC or lifecycle write. The pill's Wake now calls `wakeSessionNow` from `renderer/components/terminals/sessionLifecycleActions.ts`. |
-| `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. Optional `canvasFill` overrides `--chat-canvas-bg`; the Work new-chat draft passes `transparent` so `WorkViewArea`'s mesh shows through. On the Work surface only, `.ade-chat-shell-header` uses `--ade-work-chrome-rail-h` (32 px title + 1 px hairline), the same token as `.ade-tool-header`. Other hosts keep their own header height. |
-| `ChatComposerShell.tsx` | Input container chrome reused by the composer. |
-| `chatComposerOverlayInset.tsx`, `ChatJumpToLatestPill.tsx` | The floating composer's contract with what sits behind it. `ChatSurfaceShell` (`overlayFooter`) publishes the composer stack's height and element through `ChatComposerOverlayContext`. The transcript, right panes and floating layers apply that height to their DOM styles directly (`useChatComposerOverlayInset`, `ChatComposerOverlayClear`), never through React state or an inherited CSS variable. `ChatJumpToLatestPill` docks in the chip row's `data-chat-composer-jump-slot` while the row shows a chip (`useChatComposerJumpSlot`) and floats above the composer otherwise. |
-| `ChatAttachmentTray.tsx`, `ChatAttachmentPreviewModal.tsx` | Inline file/image attachment tray, used both inside the composer and on sent user messages in the transcript. Image attachments render an inline thumbnail and expose a copy-to-clipboard button that ships the image bytes via `window.ade.app.writeClipboardImage`. Every other attachment renders as a chip: file-type icon from the Files tab's `getFileIcon`, middle-truncated filename (so the extension survives), human size when the caller knows it, and a remove ×. Chips are focusable — Delete/Backspace removes, Enter/Space opens, arrows move between attachments. Clicking any attachment opens `ChatAttachmentPreviewModal`, which renders the file with the **Files tab's own viewer platform**: `resolveViewerKind` picks the viewer and `ViewerHost` renders it, so PDFs, CSVs, media, office documents, markdown and code all preview read-only without forking a viewer. The modal is `React.lazy`-loaded because that platform pulls in Monaco and the document renderers, and the composer is on a hot render path. It locates the attachment with `resolveAttachmentWorkspaceTarget` (deepest containing Files workspace, Windows-separator aware) using the session's machine pin, so an attachment staged on a paired host is read from that host; an image outside every workspace falls back to the thumbnail bytes the chip already holds. Size is shown only for attachments this composer staged — a chip replayed from transcript history has only a path, and statting each one would be a round trip per chip. |
-| `apps/desktop/src/renderer/lib/attachmentImage.ts` | `readAttachmentImageDataUrl(path, pin)`, the one reader for an attachment image as a data URL. The tray thumbnail, inline chips, viewed images, the drafts-list thumbnail and restore, and draft transfer between machines all call it. A personal chat passes its own reader; otherwise it reads through the pin's runtime (no pin means the window's machine), and asks this computer's `app.getImageDataUrl` only when this computer owns the attachment and the runtime gave no final answer about the file. See "Attachment images" under Remote hosts. |
-| `AttachmentChipPeek.tsx` | The two things an inline attachment chip shares between the composer and the transcript: `useAttachmentThumbnail` and the hover peek card. The composer draws its chips as raw DOM inside a `contentEditable` and the transcript draws them with React, so the chip bodies differ — what must not differ is how an `[Image #k]` chip finds its picture and what hovering it shows. The thumbnail is the caller's already-loaded preview when it has one, the URL itself for an `image-url`, otherwise one read through the machine that owns the attachment via `readAttachmentImageDataUrl`, keyed on the pin's key so a re-created pin for the same machine does not read again. |
-| `apps/desktop/src/shared/attachmentLabels.ts` | The one grammar that ties prompt text to attachments, shared by desktop, the runtimes, and iOS. The k-th **image** attachment (1-based, in attachment-list order; an `image-url` counts as an image) is `[Image #k]`; the k-th non-image **file** is `[File #k: <basename>]`, with `[ ] CR LF` in the name replaced by `_`. Tokens resolve by ordinal only — the token stores no path or id, so a draft and a sent message stay plain text and the attachment list is the only thing a token resolves against; a token whose ordinal has no attachment stays plain text, never a broken chip. `formatAttachmentToken` writes the token, `labelAttachments` / `labelAttachmentsByRef` number a list, `parseAttachmentTokens` finds tokens, `resolveAttachmentToken` maps one back to its attachment, `renumberAttachmentTokens` rewrites a draft after a removal, and `formatAttachedImageLegend` renders the Cursor/Pi legend. Pure and synchronous, so main, renderer and the CLI all share it. |
-| `chatAttachmentStaging.ts` | How ONE file is staged, given what the destination machine supports. `readAttachmentStagingMode(pin)` asks the chat's machine once per batch (`agentChat.getAttachmentStagingMode`) and never throws — a machine that cannot answer gets `CONSERVATIVE_ATTACHMENT_STAGING_MODE`, the base64 contract every host has supported since attachments existed. `planAttachmentStaging` then decides per file: the machine-level answer is necessary but not sufficient, because three things force the bytes leg even on a capable host — no source path (a clipboard paste, and every file in the hosted web client, where `webUtils` does not exist), a renderer-side conversion (HEIC is decoded to JPEG here, so what gets staged is a buffer this process produced), or the host saying `base64` outright. Whenever the bytes leg is taken the ceiling drops to `LEGACY_MAX_CHAT_ATTACHMENT_BYTES`, because that is what `chat.saveTempAttachment` actually enforces on the other end; returning the larger number would only move the rejection later. `stageAttachmentBytesFromFile` is that leg (chunked base64 encode, HEIC conversion, `saveTempAttachment`), and `AttachmentConversionError` marks the one failure the composer offers no retry for. |
-| `apps/desktop/src/shared/chatAttachmentLimits.ts` | The three ceilings and the two rejection messages, shared by the renderer, the desktop main process, and the CLI sync host. `MAX_CHAT_ATTACHMENT_BYTES` (50 MB) governs attachments that move as *files* — a local disk-to-disk copy or a streamed HTTP upload, where the bytes never sit in a JS string. `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` (10 MB) governs attachments that move as base64 inside a command payload, which is buffered in memory on both ends and chunked into 720 KiB frames under a 25 MB payload cap over sync. `MAX_PROVIDER_INLINE_FILE_BYTES` (10 MB) and the image limits `MAX_PROVIDER_INLINE_IMAGE_BYTES` (3.5 MB) / `MAX_PROVIDER_INLINE_IMAGE_EDGE_PX` (2000 px) are independent of both, and the constant's comment states each provider's real limit — see `providerInlineImage.ts` in the chat [README](README.md#source-file-map). `formatAttachmentSize`, `legacyAttachmentCapMessage`, and `attachmentTooLargeMessage` render every ceiling from its constant, so raising one cannot leave a stale "10 MB" behind in a message. `maxBase64EncodedLength` is the one encoded-length check every base64 sink runs before it decodes, so an oversized payload is refused without a second, decoded copy in memory; `approxDecodedBytes` sizes the message for it. |
-| `apps/desktop/src/shared/chatAttachmentStagingFs.ts` | Node-only disk rule for writing into `<projectRoot>/.ade/attachments` — UUID basename, validated extension, containment re-check, stat-before-copy. Shared by desktop main, the ADE action registry, and the CLI sync host's upload route; full contract in the chat [README](README.md#source-file-map). Cursor local chats may Read those staged files (and Cursor's own `~/.cursor/projects/<slug>/assets` copies) through the SDK hook allowlist when worker init supplies the project root; writes stay denied. |
-| `attachmentViewerTarget.ts` | Locates a chat attachment inside a Files workspace so the Files viewers can open it. Attachments live at `<projectRoot>/.ade/attachments/<uuid><ext>`, already inside the primary workspace, so this is a containment question rather than a new capability — and resolving it on the client keeps the whole lookup pin-aware, so an attachment staged on a paired host is read from that host instead of silently matching a same-named path here. Splits on both separators (a Windows attachment path resolves too), compares segment-for-segment through the shared `normalizePathForComparison` so `/a/ADE-backup` cannot match `/a/ADE`, and the longest matching root wins — an attachment inside a lane worktree resolves to the lane's workspace, not the project containing it. |
-| `ChatCommandMenu.tsx` | Popover for slash commands, the `@` menu, and the `#` pull-request menu. A bare `@` browses recent rows **grouped by kind** under headers (Chats, Lanes, Terminals, Pull requests, Machines, MCP servers, Files), five per section. Typing a kind word — `@pr`, `@mac` (or `@machine`), `@mcp` (or `@server`), `@chat`, `@lane`, `@term` — narrows the menu to that one section and searches the text after it (`parseChatMentionKindFilter`; files are not searched then). Any other query is one mixed list (files, **folders**, chats, lanes, terminals, PRs, machines, MCP servers ranked together by match quality, each row showing a kind icon). MCP rows name servers from the chat machine's registry; selecting one inserts a named chip, send-time expansion adds a pointer block, and the transcript hover card reads through the chat's runtime pin and shows its cached tool count, first tool names, and last known provider error without probing on hover. The transcript-chip click and its **Open MCP settings** menu action open the account-scoped MCP Settings page on this computer, focused on and briefly highlighting that server; the mention picker still inserts a chip, and this Settings page does not select the chat's machine. PR rows show a state dot (open/draft), `#<n> title`, and a checks glyph (✓ passing, … pending, ✕ failing); machine rows show an online dot, the name, and "this machine · online / last seen · N projects". The `#` pull-request menu which lists the PRs this chat can reach (`ComposerPrSuggestion`, read from `prs.listAll` on the chat's runtime pin) and inserts a PR chip. Consumes a `ComposerTrigger` from `shared/composerTriggers.ts` (so the menu opens for a mid-draft trigger, not just a leading one). Files and mentions are two independently debounced (40 ms) `useDebouncedSuggestions` sources sharing one hook; `rankComposerAtMenuItems` then scores file paths (basename as subtitle) against entity titles with the same exact/prefix/substring/subsequence tiers. Each keeps a per-menu-session query cache (`QUERY_CACHE_MAX = 40`) so cached queries render same-frame while a background revalidation still runs, and both caches clear when the menu closes or the provider identity changes. A bare `@` is a browse of recency-ranked entities (file search returns nothing until there is a query). Multi-word `@` queries stay active through spaces and use the same cached/debounced search path. Flat keyboard-nav indices are precomputed in the sections memo (no render-time counters); all three row types share the `MenuRow` chrome. Selecting a mention inserts an opaque `@chat:<id>` / `@lane:<id>` / `@term:<id>` / `@pr:<id>` / `@mac:<id>` / `@mcp:<name>` pointer while the composer displays a compact title chip with a kind icon (a PR chip reads `#1319 title`, a machine chip its name) (see `shared/chatMentions.ts`). An `onNoMatches?(trigger)` callback fires once when a **non-empty** `@` query settles with zero rows, so the owner can close the menu instead of leaving it parked over the draft while the user types the rest of a sentence; an empty query is a browse, not a search — it can legitimately show nothing now and match once the user types — so it never reports. `useDebouncedSuggestions` carries the `query` its results belong to alongside the provider identity, and results from a previous provider *or a previous query* are discarded **and count as still-loading**: state updates from this render's effects are not visible to consumers until the next render, so `loading` alone would read "settled" for one frame after every keystroke and fire a false no-match. The `/` menu groups into Commands, Skills, and MCP prompts (one group per MCP server) and ranks with the shared tiers (`shared/slashCommandSections.ts`) so `/test` ranks `test` first. Both menus use an opaque background (`ade-chat-drawer-solid`) instead of the see-through `ade-chat-drawer-glass`, because the glass backdrop blur does not take effect in these portaled menus. |
-| `apps/desktop/src/shared/composerTriggers.ts` | Cursor-relative typed-trigger detection shared by the desktop chat composer (rich + textarea), and the `WorkViewArea` continue composer (iOS mirrors the same regexes in Swift). `detectComposerTrigger(text, cursorPos)` finds an in-progress `/command`, `@`, or `#` query ending at the cursor at any position, and when several match the one typed closest to the cursor wins, so the menu always answers the token still being typed. The `#` token is a number or a short whitespace-free query, which is what keeps a markdown heading (`# Title`) from triggering — the space after `#` ends the token immediately — and a `#` inside a word such as `owner/repo#12` is not a trigger either, because that text is already a chip. `@` queries may contain spaces for multi-word entity names but stop at a newline or another `@`; selecting a matching suggestion narrows the replacement span to its label so trailing prose is preserved; `replaceComposerTriggerSpan` splices exactly that span; `findConfirmedComposerTokens` locates confirmed chip tokens for overlay/prompt styling (`ComposerTokenKind` is `"file" | "command" | "mention"`; mention bodies are self-identifying via the `chat:`/`lane:`/`term:`/`pr:`/`mac:` prefix grammar, so callers pass a purely syntactic `isMention` predicate); `composerTriggerSpansWholeDraft` distinguishes a lone leading command from a mid-sentence one. It also owns popover dismissal: `ComposerTriggerDismissal` is `Pick<ComposerTrigger, "type" | "start" | "query">` and `isComposerTriggerDismissed(trigger, dismissal)` reports whether a trigger is still covered by an earlier one. Suggestion search only *narrows* as the query grows — once nothing matched `@cursor`, `@cursor agent` cannot match either — so any extension of a dismissed query stays dismissed, while backspacing out of it, editing it into a different query, or typing a new `@` elsewhere all produce a genuinely new search and reopen. |
-| `apps/desktop/src/shared/smartLinks.ts` | Cross-client URL catalog and deterministic fallback labels. Recognizes GitHub PR/issue/repo/commit/action-run links, Linear issues, `ade://` deeplinks, and generic HTTP(S) pages; trims sentence punctuation, caps each draft at 12 matches, and keeps the canonical URL separate from optional title/favicon metadata. Desktop and hosted web import this contract; iOS mirrors it in `WorkSmartLinkDetector`. Its `ade_deeplink` provider is a URL *shape*, not a target: `chips.ts` re-parses those URLs through the real `deeplinks.ts` parser, so `ade://pr/owner/repo/1237` becomes the same PR chip a github.com URL produces instead of a generic `ADE · <path>` label. |
-| `apps/desktop/src/main/services/chat/smartLinkPreviewService.ts` | Runtime-owned best-effort metadata resolver. GitHub and Linear titles use configured provider services; generic pages use bounded public-network HTML/favicon reads with DNS pinning and SSRF checks. Generic previews cache at most 256 public entries for 30 minutes (five minutes for metadata misses); credential-backed provider results are never stored in that process-global cache. Any error returns the deterministic local preview rather than blocking composition. |
-| `apps/desktop/src/shared/chips.ts` | The one chip model, shared by the desktop composer, the transcript, and — re-implemented in Swift against a shared fixture — iOS. A `Chip` is `{ kind, token, label, detail?, title?, iconDataUrl?, source }`, where `token` is the canonical plain text and `label` is display only. Exports `parseChips` / `splitTextIntoChipParts` (one pass over a string, returning chips and the prose between them), `chipFromPath` / `chipFromMention` / `chipFromDeeplinkTarget` / `chipFromSmartLink` (the four producers), `chipDisplayLabel`, and the `CHIP_GLYPH` table (emoji, for the GUIs). Parsing is pure and synchronous: a chip is a POINTER, and nothing here reads a file, a transcript, or a URL. |
-| `apps/desktop/src/shared/composerClipboard.ts` | The clipboard payload behind copy and cut. `text/plain` gets the canonical tokens, so a chip pasted into a terminal or a commit message is still a re-parseable string; `text/x-ade-composer` (`COMPOSER_CLIPBOARD_MIME`) carries the same text plus a label per token. The labels are the reason the custom type exists — `@chat:<uuid>` is a valid pointer anywhere, but only the chat that owns it knows its title, so carrying the label is what lets a chip paste into a **different** chat and still read as a chip. `parseComposerClipboard` is defensive (the clipboard is shared with every app on the machine) and returns `null` rather than throwing, at which point the caller falls back to `text/plain`. Bounded: 64 chips, 256 label chars, 100 000 text chars. |
-| `apps/desktop/src/shared/pastedTextAttachment.ts`, `apps/desktop/src/shared/composerPasteFolding.ts` | The paste-size rule, and the one place desktop and iOS agree on it. `pastedTextAttachment.ts` is the pure policy: `shouldPasteTextAsFile` returns true when a plain-text paste is over 3 000 UTF-16 code units or over 40 lines, counting lines the way a person reads them (CRLF and lone CR normalized to LF, one trailing newline dropped, empty is 0), exactly as iOS counts them. `sniffPastedTextExtension` picks the extension — `.diff` (a `diff --git ` line, or `--- `/`+++ `/`@@` together), then `.json` (starts `{`/`[` and parses to an object or array), then `.log` (at least 3 non-empty lines and at least 60% timestamped or levelled), else `.txt` — so a false extension is never chosen over an honest `.txt`. The staged file is `pasted-<epoch ms>.<ext>` and `pastedTextChipLabel` renders `Pasted · N lines`. `composerPasteFolding.ts` is the thin composer adapter: `shouldFoldPastedText` wraps the rule, `pastedTextAttachmentFile` builds the `File` and marks it in a `WeakSet` so `isPastedTextAttachmentFile` can tell a folded paste from a file the user dropped (which is what sets `intent: "user_prompt"`), and the file then rides the normal attachment staging and preview path, so a pasted log becomes a chip instead of flooding the draft. At send time ADE reads the staged text back into the user message, so a folded prompt has the same meaning as text typed into the composer; ordinary file-only sends keep the standard review request. Cursor Cloud keeps its own file-delivery check. Files, images, and small link pastes never reach the folding rule, so the native selection-replace/undo path and existing image/smart-link handling are unchanged. |
-| `apps/desktop/src/shared/sessionDraftIndicators.ts` | The draft/outbox marks a Work session row may carry. `deriveSessionRowIndicators({ hasDraft, queuedCount, queuedSending, queuedFailed })` returns zero, one, or two icon-free descriptors (a draft first, then the outbox count) with the short label and full sentence the row and its hover card render. Pure, so the row and the tests cannot disagree about when a mark appears or what it says. |
-| `apps/desktop/src/renderer/state/composerDraftPresenceStore.ts` | Which sessions hold an unsent composer draft, in memory. The draft itself lives in `localStorage` under `COMPOSER_DRAFT_STORAGE_KEY_PREFIX` (exported here, one definition shared with `AgentChatPane`); this store seeds once from those persisted keys (parsing segment 2 of `<prefix>:<projectRoot>:<sessionId>:<profile>:<kind>`) and `AgentChatPane` publishes a session's presence whenever its draft text or attachments change. `useComposerDraftPresence(sessionId)` reads a single boolean through `useSyncExternalStore`, so a row re-renders only when its own presence flips, never per keystroke across a long list. |
-| `composerChipDom.ts` | `serializeComposerDom(root)` — the single walker that turns the composer's `contentEditable` DOM back into draft text plus a token→label map. Send (`serializeRichEditor`) and copy both call it. They were two copies of one traversal, and the copy had already lost the chat-context placeholder handling, so copying a selection containing a chat-context chip produced different text than sending the same draft. |
-| `ChipText.tsx` | Renders sent message text with its tokens drawn as pills, via `splitTextIntoChipParts`. The raw text is never destroyed — it is still `event.text`, and copy still yields canonical tokens. `[Image #k]` / `[File #k: name]` attachment tokens resolve against the message's own `event.attachments` (`shared/attachmentLabels.ts`): an image draws a 14 px thumbnail, a file the file-type glyph, and a token whose ordinal has no attachment stays plain text rather than becoming an empty chip. A sent pill does the two things its composer twin already did: it enriches itself with the page title and favicon from `chipPreviewStore` (first paint is always synchronous from the raw label, so a message never waits on the network to appear), and it opens a hover card. |
-| `ChipHoverCard.tsx` | The hover card a pointer chip provokes — what is this, and is it still open — answered in place for PR, commit, lane, chat, and Linear chips. Commit cards read the subject, author, age, and lane through the chat's pinned Git reader, only after hover; a missing lane or commit gives no card. A `pointer-events-none` portal with `role="tooltip"`, deliberately not a Radix `Popover`, because a popover moves focus into its content by design and the caret must stay in the composer. Placement reuses `computeTooltipPosition`. It degrades to nothing: no lane, no session row, no PR record means no card and no error state. It reads app state for lanes, chats, and Linear issues, and goes through `listPrsCoalesced` (the same coalesced reader the `#` menu uses) only once the user has actually hovered. Everything it reads belongs to the **chat's** machine, resolved through `useChatRuntimeScope()` plus `useLanesForPin` / `useMachineEntryForBinding` — a lane id is unique per machine, not globally, so resolving one against the project tab's lane list can match a different lane and print its name and branch. |
-| `chipPreviewStore.ts` | The renderer-side cache that lets the transcript reuse the composer's `agentChat.resolveSmartLinkPreview` route without hammering it. Deliberately not a React context: a transcript renders hundreds of chips and a context would re-render all of them whenever any one preview resolved, so each chip subscribes itself through `useSyncExternalStore`. One request per URL (concurrent askers share the in-flight promise), never throws (a failed preview is cached as "nothing to add", which is what stops a retry loop), and keyed by URL **plus the active project's state key** — the runtime keeps authenticated provider titles out of its process-global cache because those titles were read with one project's credentials, and a URL-only cache here would reintroduce exactly that leak across a project switch. |
-| `apps/desktop/src/shared/permissionLadder.ts` | The four ordered autonomy levels and their mapping onto every provider's own vocabulary. See [Agent Routing](agent-routing.md#the-permission-ladder). |
-| `apps/desktop/src/shared/__fixtures__/chipCases.json` | The cross-surface chip parity fixture, asserted by both `shared/chips.test.ts` and the iOS suite (`WorkComposerTriggerDetectorTests.testMatchesSharedChipFixture`, which reads the file from disk relative to `#filePath`). iOS re-implements `chips.ts` and `deeplinks.ts` in Swift and cannot import the TypeScript; hand-written twin tests prove today's parity and nothing about tomorrow's. Adding a row here fails the iOS suite until Swift matches. `.github/workflows/ci.yml`'s `test-ios` gate includes this directory alongside `apps/ios/**`, so a desktop-only PR that adds a row cannot skip the Swift suite. |
-| `ChatTaskListCard.tsx` | The chat's one task list (`shared/chatTaskList.ts`). `ChatTaskListCard` is the thread card (collapsed to `label · done/total · current item`, click to expand, open state per chat in memory); `ChatTaskListView` is the full list the card expands to and the Chat Info Tasks section shows. See [One task list per chat](transcript-and-turns.md#one-task-list-per-chat). |
-| `apps/desktop/src/shared/chatScheduledWork.ts` | Pure scheduled-work derivation. Folds `scheduled_work_update` envelopes into Chat Info schedule rows for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work; defines the shared Background/Schedule Earlier predicates (including fired one-shot wakeups); and formats next-fire labels. A parent turn's terminal event does not stop a background row, and background snapshots whose `sourceTaskId` belongs to a real subagent are omitted so native Agents do not appear twice. Shared by desktop and mirrored by iOS. |
-| `ChatFileChangesPanel.tsx` | Turn-level file change summary for checkpoint-backed `turn_diff_summary` events, with lazy diff expansion. File rows render the lane-relative path (dimmed directory + filename) rather than a bare basename, so several `index.ts` in one turn stay distinguishable; the directory truncates first and the full path stays in the row tooltip. Diff reads come from `useChatRuntimeScope()`, so a foreign chat's file changes are fetched from the machine that has them. |
-| `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex forks the thread before the selected turn (`thread/fork` + `beforeTurnId`) on app-server >= 0.145.0, or falls back to `thread/rollback` (latest user message only) on pre-0.156 servers, and restores files through ADE's git plan. Diff reads take a `runtimePin`, so a foreign chat's rewind dialog reads its diffs and restores files on the machine the chat runs on. |
-| `PendingInputStack.tsx` | The list of open cards shown above the open card when a chat has more than one (the main agent's and its subagents'): one row per card naming who asks, three rows then "+N more", a click opens that card. See [Subagent cards](#subagent-cards). |
-| `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, the one Tasks section (the chat's task list), schedule, and subagent/background rosters. Every subagent row shows a sentence-case model chip (`subagentModelAttribution`): a reported envelope `model` is ground truth, and a missing model falls back to the parent session label marked **inherited**. Running subagent and background rows derive elapsed time from the wall clock and tick once per second; terminal rows keep their final compact duration. Large sections cap active rows and add Show all; terminal rows move into one Completed fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. Spawned-chat rows are identified by `childSessionId`, show the live child title supplied by `AgentChatPane` / `WorkViewArea`, keep the runtime as a small kind chip, and navigate to the child (on the parent's machine, via the chat's pin) rather than opening the provider-subagent drawer. The Work list no longer shows same-lane subagent chats, so this section is their home: every subagent the Work list files under this chat (`filedSubagentsOf`: same machine, same lane, grandchildren included) with no `chat:<id>` row in the transcript gets one from that machine's sessions (`chatSubagentRoster.ts`), and any child chat waiting on the user reads **needs you**. Running native subagent rows (and background rows that carry a `sourceTaskId`) expose a square stop whose aria-label is `Stop ${agentType}`; spawned ADE chats (`chat:` task ids) are not stoppable this way. The Schedule header keeps the per-chat pause/play action. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
-| `ChatComputerUsePanel.tsx` | Complete chat proof drawer with image lightbox, inline video, availability/error states, and irreversible artifact deletion. Preview reads stay runtime-routed through `useChatRuntimeScope()` — the chat's machine, not the tab's — and the surface has no review or Finder/reveal controls. Inline transcript proof is owned by `AgentChatMessageList` + `ChatProofFilmstrip`: a collapsed count on the producing turn expands in chronology instead of pinning the newest items to the thread tail, and the strip opens by default. |
-| `ChatAppControlPanel.tsx` | App Control panel for Electron apps. Two mount points: under the chat composer (chat-scoped, `sessionId` set) and inside the Work right-edge sidebar (lane-scoped, `sessionId={null}`). Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`, where the key is `chat:<sessionId>` for the chat mount and `lane:<laneId>:<projectRoot>` for the sidebar mount. Connect/launch calls forward `laneId` so the resulting `AppControlSession` records its launching lane. It takes a `runtimePin` and every status/target/input call routes through it, so the panel drives the machine the chat runs on rather than the one the tab is bound to; the pin also participates in the panel's `sessionStorage` key so two machines' panels cannot share state. See [App Control](../computer-use/app-control.md). |
-| `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer. Two mount points: under the chat composer and inside the Work right-edge sidebar. Tool-readiness checklist, device + target pickers, one live view encoded by the vendored Swift helper on the machine that owns the device (no Simulator.app window, no Screen Recording grant, and no backend choice), inspect as a toggle on that live stream rather than a mode that freezes it, the device-tools side column, and selection emission as `IosElementContextItem`. The live view's own state lives in `useAppleDeviceStream`; `AppleDeviceColumn` renders it and maps a pointer onto the device. Accepts an optional `laneId` prop, forwarded into `iosSimulator.launch` so the resulting `IosSimulatorSession` records its launching lane. Simulator controls are not blocked when another chat session owns the simulator — ownership only affects which session receives context insertions, not whether the user can interact with the device. It also takes a `runtimePin` and derives its scope with `useChatRuntimeScopeForPin`, so status, device listing, launch, and interaction all reach the chat's own machine — and its project root comes from that machine's lane worktree rather than the tab's project root. See [iOS Simulator feature](../apple-device/README.md). |
-| `ChatBuiltInBrowserPanel.tsx` | In-app browser panel mounted under the Work right-edge sidebar's `browser` tab. Renders the address bar, navigation/tab strip, inspect toolbar, screenshot capture, and an empty/error state derived from `BuiltInBrowserStatus`; the actual page content is painted by a main-process `WebContentsView` whose bounds the panel reports back to the broker via `ade.builtInBrowser.setBounds`. Inspect-mode hit-tests emit `BuiltInBrowserContextItem` payloads through `onAddContext`. Each packet carries the element's selector, role, attributes and screenshot crop, plus trimmed HTML, the computed CSS that decides its look, and `frameworkSource`: where the page's own dev build says the element was written (React `_debugSource` on the element's own fiber is exact and also fills `sourceFile`/`sourceLine`; an enclosing element's `_debugSource`, React 19 `_debugStack` and Svelte are approximate; Vue names the component file; production builds give none). The in-page collectors (`ELEMENT_CONTEXT_SNIPPET` in `builtInBrowserService.ts`) redact secret-looking attribute names, field values, hidden-input values, and textarea and script bodies before anything reaches the prompt; the sidebar then dispatches `ade:agent-chat:add-builtin-browser-context` to the active chat. The panel does not run inside `AgentChatPane` directly — instead, anywhere in the renderer that wants to open a URL calls `openUrlInAdeBrowser()` (in `apps/desktop/src/renderer/lib/openExternal.ts`), which fires `ADE_OPEN_BUILT_IN_BROWSER_EVENT` and asks the broker to open a new tab. It accepts a `runtimePin` (and derives its scope with `useChatRuntimeScopeForPin`) so status reads, navigation, and capture reach the machine the chat runs on. **Attach to chat:** right-clicking a tab in the strip (or ⋯ → **Attach tab to chat**, since the strip hides at one tab) hands the tab to the chat the pane targets through `onAttachTab` → `useWorkToolContextInsertion().attachBrowserTab`. A chat or draft target gets `ade:agent-chat:insert-browser-tab`, and the composer inserts a globe chip (`composerBrowserTabChip.ts`) at the caret the user last left there. The chip serializes the single-line `<ade-browser-tab id="…" title="…" url="…">…</ade-browser-tab>` block from `shared/browserTabMention.ts`, which gives the agent the tab id, title and URL plus how to take it over (`ade browser claim --tab <id> --text`, then `ade browser <command> --tab <id>`). `parseChips` reads the same block back as a `browser_tab` chip, so the sent message shows the pill, not the instruction. A CLI agent target gets the same facts as one bracketed-pasted line. The URL is the one the human sees, so a tunneled tab reports its remote origin. The action is hidden where the pane has no chat to insert into. |
-| `ChatTerminalDrawer.tsx` | Collapsible terminal drawer at the bottom of the chat. Takes a `runtimePin` and forwards it to the terminal surface it hosts, so a chat on another machine lists and attaches to that machine's PTYs. Takes `requestChatTerminalFocus` requests (`chatTerminalFocus.ts`) while open: the request carries the terminal itself, so it can show a terminal that already ended, which the chat's terminal list leaves out. |
-| `ChatCodeBlockRun.tsx`, `shellCodeBlockRun.ts`, `codeBlockActionButton.ts` | Run on a reply's shell code blocks: the rules for which blocks run and what (`planShellBlockRun`), the confirm, the run store, the status row with "Send output to the agent", and the shared look of a code block's small buttons. See transcript-and-turns.md, "Run on shell code blocks". |
-| `ChatGitToolbar.tsx` | Git status and quick-action toolbar above the composer. The changed-file count is the number of **distinct paths** across the staged and unstaged lists, not their lengths summed: `git status` reports a file with both a staged and an unstaged edit as `MM`, and the parser puts that one file in both lists. The PR badge renders only when the lane already has a pull request (open, merged, or closed). On the chat header it is a borderless status-colored pull-request mark plus the label, sitting in the same gap as the live browser globe, the attached-terminal mark, chat progress, and the tools toggle. Clicking the globe, terminal, or PR mark opens that Work tool; chat progress opens its own pane. Clicking the PR mark opens the lane's PR Work tool; creation lives in that tool, not in the header. Opening the tool performs a targeted, cooldown-bound refresh for that linked PR. The toolbar is a **status strip only** — the manual PR-sync (↻) button moved into the PR pane's title bar, so surfaces that render this toolbar without a PR pane have no manual sync affordance and heal through reconcile-on-focus plus `prs-updated` instead. It takes a `runtimePin` prop and derives its scope with `useChatRuntimeScopeForPin(runtimePin, laneId)` rather than from context, because the CLI session header renders it with its own pin and no `ChatRuntimeScopeProvider` above it; status and PR reads then follow the chat's machine. |
-| `ChatPrPane.tsx` | Lane pull-request surface. Work mounts it as the PR tools tab (`variant="tools"`): a caret switcher menu (`PrSwitcherMenu`) plus a `‹ 1/N ›` stepper (`PrSwitcherStepper`) when several PRs are linked to the chat, stacked PR detail, or the inline creator when none is open. A PR pill elsewhere (chat header, session card, lane divider) opens the pane's PR tool and hands the pane the PR to select through `chatPrPaneRequests.ts`, which holds a selection for the chat it names so a pane for another chat in the same lane cannot take it. The pane variant still owns a title bar (`Pull request` + ↻ refresh + ✕ close): ↻ calls `prs.syncLanePr` and then re-reads the pane's PR, and spins for either a manual sync or a backend reconcile-on-focus (`pr-reconcile`, debounced 300 ms on the hide so a fast reconcile does not flicker). ✕ is wired to the parent's `onClose` (the header PR pill still toggles it). Shows cached lane PR details immediately, then refreshes the linked PR row with the same targeted refresh path so pane toggles surface current merged/closed/check state without a broad PR sync. An unmapped lane PR (projection-derived, `pr.unmapped`) skips the refresh and checks/reviews enrichment — there is no DB row behind its synthetic `gh:` id. With no PR it embeds `ChatPrInlineCreator` and forwards the chat's `sessionTitle`; under a `runtimePin` it points at the owning machine instead, since creation is not pinned. When the selected PR belongs to a GitHub stack, the pane shows a stack-offer banner (`ChatPrStackOffer`) listing unclaimed siblings with **Link stack** / **Not now**; linking writes the hybrid PR↔chat edges for every unclaimed sibling, and **Not now** hides the banner for that chat+stack. Reads, the ↻ sync, and the event subscription all take the pin so a chat on another machine sees its lane's real PR. |
-| `ChatPrInlineCreator.tsx` | Inline create-PR form inside the PR pane. Laid out as a **flow** with no uppercase section captions: a flat, boxless source row (lane name + branch + lock glyph, immutable), a `↓` connector carrying `N ahead · N behind · clean`/`dirty` from `lane.status` (muted `comparing…` when the lane has no status yet), then the canonical `LaneCombobox` target dropdown (no free text), title, description, and Create. The title defaults to the chat session title whenever it is a real title (the placeholder `New chat` never wins), otherwise to the `<lane> -> <target>` derivation. Linear magic words and the deeplink footer are added server-side by `prService`. On success it hands the created `PrSummary` up through `onCreated` so the pane swaps to details without waiting for `prs-updated`. |
-| `ChatUserMinimap.tsx`, `chatUserMinimap.logic.ts` | Tick rail down the transcript's **left** gutter, one clean tick per user message with no guide hairline, gated on the `chatUserMinimapEnabled` appearance setting and mouse pointers only (`[@media(pointer:fine)]`). Ticks are positioned by percentage of the full message-list height, so they compress instead of overflowing and there is no marker cap or subsampling — the entry index stays 1:1 with the tick index, which is what pointer→index mapping depends on. Every tick uses the same normal message geometry; turn outcomes and queued Codex follow-ups retain their colors without changing the tick's width, height, or shape, and context-compaction events are omitted. The whole rail is a single `<button>` (one tab stop for the timeline) that derives the hovered tick from pointer Y (`resolveMinimapIndexFromPointer`). The hit strip is width-clamped to the measured side gutter (`resolveMinimapHitStripWidth`, capped at 40 px) so it can never overlay the centered content column or swallow message-text selection, and it goes `pointer-events-none` at zero gutter. Hovering opens a preview card with the user message plus a 3-line clamp of that turn's final assistant reply, anchored by a 3-way `translateY` (`resolveMinimapPreviewTranslateY`) so the first and last ticks cannot render it off-screen. The rail stays fixed when the floating PR pane opens; the PR card uses a higher stacking level and overlays it when their regions intersect. |
-| `chatPromptHistory.ts` | Shared prompt-history entry/key shape used by `AgentChatPane`, `AgentChatComposer`, and `AgentChatMessageList`. The pane derives chronological, visible user prompts from the selected transcript only; ArrowUp starts at the newest prompt, rapid same-direction arrow navigation stays in history for 3 seconds, interruptions cancel that sequence, multiline caret motion resumes after a pause until a line boundary, and ArrowDown past the newest entry restores the selected chat's unsent draft. Each selection emits a transcript jump so the minimap's active tick and brief preview follow. |
-| `chatSessionRetention.ts` | Keeps a chat's `agentChat.onEvent` subscription alive for `CHAT_SESSION_RETENTION_TTL_MS` (5 min) after its pane hides or unmounts, so returning to a tab shows a current transcript instead of one that is stale by a whole tab visit. It is a **renderer** module on purpose: preload's remote event pump only polls while `hasRemoteRuntimeEventSubscribers()` is true, and that predicate counts renderer-held `onEvent` callbacks — a retained renderer subscription keeps the pump alive for free, so moving this into preload would idle the pump for exactly the case it exists to fix. Ownership is a **handoff, not a shared subscription**: a visible pane owns the only subscription; on hide it calls `retainChatSession(sessionId)` and this module opens its own minimal handler; on return `adoptRetainedSession(sessionId)` flushes synchronously and tears the module handler down. The handler captures no pane state, setters, or refs — it talks only to the injected `ChatSessionRetentionHost` (`subscribe` + batched `appendEvents`), wired once from `AgentChatPane` module scope. Envelopes are buffered per session and appended in one batch on a 16 ms timer (`CHAT_SESSION_RETENTION_FLUSH_MS`, the same cadence as the visible pane's flush) because a per-event append re-walks the whole transcript to dedupe/trim/derive, which would make a *hidden* chat cost more per event than a visible one. `MAX_RETAINED_CHAT_SESSIONS = 2` caps fan-out so a grid of tiles hiding at once cannot open one subscription per session. On TTL expiry the subscription drops but the cached view is kept (warm, just no longer live). The module never computes `turnActive` policy — adoption still funnels through `chatTurnState.resolveTurnActive` at the pane's `applyCachedSessionView`, so terminal transcript evidence still outranks a stale cached `turnActive: true`. The same rule binds pending input: `appendRetainedChatSessionEvents` runs from a context with no session summary in hand, so it caches the **raw** `derivePendingInputRequests` output and leaves `resolvePendingInputs` to the pane's read-time memo. Folding the summary in here would cache a summary-tainted derivation and read it back stale. |
-| `chatCompanionUiState.ts` | Per-chat companion UI state — which side panes/drawers a chat had open (`chatActionsOpen`, `iosSimulatorOpen`, `appControlOpen`, `terminalDrawerOpen`, plus the Apple tools drawer's open card). Persisted in **`localStorage`** under the `ade.chat.companionUiState.<key>` family (not `sessionStorage`): reopening the app to the chat you left should look like the chat you left. Keys are scoped by companion key and two surfaces write disjoint key spaces — the ADE chat pane keys by chat session id (plus reserved draft keys), the CLI session pane keys by terminal session id — so nothing may assume one surface's keys are the only live ones. `patchChatCompanionUiState(key, patch)` does the read-merge-write so a partial patch cannot drop the other fields. Older blobs can still carry `prPaneOpen` (from the removed floating PR pane) and `chatActionsTab` (from the removed drawer tab strip); no reader uses them, and the PR open state is the lane's Work tool. Every read is defensive and degrades to `DEFAULT_CHAT_COMPANION_UI_STATE`; the legacy `proofDrawerOpen` field still maps forward to `chatActionsOpen`. Each write stamps `savedAtMs` and runs `pruneChatCompanionUiState` (cap 200 entries, oldest-first, records with no `savedAtMs` sort oldest) — self-pruning from inside the module, because the earlier caller-supplied `knownKeys` prune treated the second writer's live keys as garbage. |
-| `useChatPrPaneOpen.ts` | Removed. Chat and CLI headers open the lane-scoped PR Work tool (`workSidebarTool: "pr"`) instead of a floating pane. |
-| `ChatProposedPlanCard.tsx` | Composer-level plan approval card shown while input is locked. Renders the plan description or question text as rich markdown (`ChatMarkdown`) inside a scrollable container (capped at `min(34vh, 360px)`). Transcript plan events render through `AgentChatMessageList` / `CodexPlanCard`. |
-| `apps/ios/ADE/Views/Work/WorkPlanComposerViews.swift` | iOS composer-level plan approval strip. The live `plan_approval` gate renders as a compact full-width strip above the prompt box, opens a large markdown sheet for review, and sends Approve/Reject decisions through `chat.approve` with optional rejection feedback as `responseText`. It is one body of the consolidated pending-input strip (see [Cross-surface parity](#cross-surface-parity)) — the strip in `WorkChatSessionView+Timeline.swift` renders the current request (plan / approval / permission / question / model-selection), a "Request 1 of N" header, and an "Accept all" sweep when more than one gate is queued. |
-| `apps/ios/ADE/Views/Work/WorkChatComposerAndInputViews.swift` | iOS prompt box, icon-only staged-steer strip, and `WorkStructuredQuestionCard` — the mobile question card. The card pins only a provider row (plus the question tab strip when paged) above its internal scroll region and the freeform field plus Send/Decline footer below it; the question text, request body, meta rows, and option list all scroll. `WorkPendingInputHeightBoundedCard` in the same file is the generic wrapper that caps the non-question gates. Both budget against `maxCardHeight` (see [Cross-surface parity](#cross-surface-parity)) and enable `.scrollDismissesKeyboard(.interactively)` so a long typed answer can never trap the user away from the footer. |
-| `apps/ios/ADE/Views/Work/WorkDraftPersistence.swift` | iOS draft persistence. `WorkComposerDraftStore` keeps unsent composer text per chat (`chat:<sessionId>`) plus fixed keys for the Hub and New Chat composers; `WorkQuestionDraftStore` keeps in-progress question selections/freeform per request id. Both are versioned JSON dictionaries in App Group `UserDefaults` via `WorkDefaultsJSONMap`, LRU-evicted by `updatedAt` (60 composer entries, 30 question entries), with a 400 ms `workDraftAutosaveDebounce`. The `workPersistedDraft(_:key:)` view modifier packages the three legs a plain `String` binding needs: restore-if-empty on appear, debounced autosave, flush on disappear. |
-| `codex/CodexPlanCard.tsx` | Codex plan-mode proposal card rendered inline in the transcript for `plan` events that carry streamed markdown and no steps (every plan with steps feeds the task list instead). Shows plan state (Planning / Plan ready), step progress with status glyphs, and streaming plan text as rich markdown via `ChatMarkdown`. Completed plans with no discrete steps render the full markdown body inline; plans with steps offer a toggle to expand the raw markdown details (labelled "details" when complete, "live" while streaming). Handles missing `steps` arrays gracefully. |
-| `codex/CodexGoalCard.tsx`, `codex/CodexGoalBanner.tsx` | Codex goal surfaces. The card is the active desktop surface and routes edits, status changes, and clears through typed ADE APIs (`ade.agentChat.codex.*`) rather than prompt text. It shows objective, status, token count, and elapsed time, while hiding provider budgets because ADE keeps goals unlimited. The banner remains available for compact surfaces that need a horizontal goal strip. |
-| `ChatWorkLogBlock.tsx` | Work-log presentation. The transcript no longer renders `work_log_group` rows. Live turns still expand tools from the working indicator. After `done`, `ChatTurnWorkSummary` is one expandable `N tools · M files` line stacked **immediately above** the turn's existing time/usage cutout (`4:12 PM · ran 12s · tokens`), left-aligned with the Thought row. Expanding lists tools (`ChatToolActivityDetails`) then files (lane-relative paths that open in Files) **between** that summary and the time/usage row, which stays last. The files half is omitted when the turn already has a checkpoint-backed `turn_diff_summary`. `ChatTurnFilesChangedSummary` remains for that nested list. The whole `ChatWorkLogBlock` component survives for the Settings chat-appearance preview. |
-| `AskQuestionComposer.tsx` | The ask-question surface, anchored **in the composer**: while a question blocks, it replaces the textarea inside the same prompt-box frame (provider mark + verb header, ledger option rows, capped previews, note row, keyboard-first answering, A/B compare, minimize). The free-text answer is not a second text field — it is the composer's own rich editor, handed in through the `renderAnswerEditor` slot with `answerValue` / `onAnswerValueChange`, so mentions, the `#` PR menu, chips, paste-image, and drag-drop all work while a question is open; a plain textarea is the fallback when no slot is supplied. Secret answers stay a masked single-line input. See [The free-text answer is the composer](#the-free-text-answer-is-the-composer-not-a-second-text-box). Codex `isBlocking: false` steering uses the same card **above** the still-open composer with header `{Provider} has a question`. See [Pending input card](#pending-input-card). |
-| `QuestionReceipts.tsx` | The transcript record for a question: a one-line expandable receipt on the `chatCardPrimitives` / `AdeCard` convention once resolved (`AnsweredQuestionReceipt`), and an "awaiting you" row while the gate is open (`OpenQuestionReceipt`). |
-| `apps/desktop/src/shared/pendingInputAnswers.ts` | The shared answer contract — `answerState`, `sendLabel`, `buildAnswers`, `notePlaceholder`, `foldedSummary`, plus `sanitizeAnswersForTranscript` and `flattenAnswerForSingleStringProvider`. Imported directly by the desktop renderer, and the web client (same component); iOS mirrors it in Swift. It also owns `isQuestionKind(kind)` — "is the agent asking you something, or asking you to allow something" — which `isAskQuestionRequest` now delegates to, and which the push publisher imports so the split is decided once. Anything unrecognised, including a kind from a newer runtime and the absent kind of an older event, is an approval: the safer of the two words to be wrong with. It also owns what a model hears back. `QUESTION_DECLINED_MODEL_MESSAGE` is the decline text (the card's decline button or Escape) for Claude `AskUserQuestion`, ADE `ask_user`, Codex `requestUserInput` and Cursor: declining means stop and ask in plain text, never "choose for me". Pi sends `QUESTION_UNANSWERED_MODEL_MESSAGE`, because its null answer also covers a card that never reached a screen. `declineMessageForModel` picks `LIVE_QUESTION_DECLINED_MODEL_MESSAGE` ("keep working") for a live Codex question (`isBlocking: false`), since the turn never paused for it. A Codex async question (`delivery: "async"`) has no open request, so dismissing it sends Codex nothing; a cancelled Cursor planning question starts no follow-up turn. `answersForModel` / `withTypedReplyNote` mark a typed reply sent with no pick ("eli5 please") as the user talking back, so the model answers it instead of re-asking the same question in a simpler card; typed text that only names offered options ("A, B") counts as a choice. Claude, Codex, Cursor, Pi and ADE `ask_user` apply it. Droid (`cancelled: true`) and OpenCode's native question tool keep their own decline wording, which ADE does not write. |
-| `chatMarkdown.tsx` | The shared agent-markdown renderer (`ChatMarkdown`, `buildChatMarkdownComponents`, `SAFE_PREVIEW_SCHEMA`) used by plan cards, question-option previews, and other non-transcript surfaces. Links route through `ChatMarkdownAnchor`: a resolvable workspace path becomes a button that opens through the chat workspace-path context (the Work tools-pane Files panel when the file is in this chat's own lane on this machine, the Files tab otherwise), a real URL opens in the in-app browser, and anything that is neither (including a bare `file:` href) renders as inert text. A file path must never reach the browser opener — `normalizeBrowserUrlInput` turns `laneService.ts` into `https://laneService.ts` and navigates the built-in browser to a garbage host. `SAFE_PREVIEW_SCHEMA` allows the `file:` protocol and single-letter drive "schemes" (both cases) on `href` because `rehypeSanitize` runs before `urlTransform` and would otherwise strip a Windows `C:\repo\x.ts` before it could be linkified; `javascript:` / `data:` / `vbscript:` stay blocked. `chatMarkdownUrlTransform` decodes the percent-encoded link destination before the drive check, since the markdown pipeline delivers `C:%5Crepo%5Cx.ts`. |
-| `remarkBareLinkSuffix.ts` | A remark step that runs right after remark-gfm in `chatMarkdown.tsx` and `chatMarkdownBlock.tsx`. GFM leaves a trailing `_` or `~` out of a bare link (`https://x.com/name_` links to `.../name`); this puts the run back for bare `http(s)://` and `www.` links only, and only when the source text right after the link is exactly that run. Explicit Markdown links, `<url>`, mail addresses, emphasis and strikethrough are unchanged. |
-| `chatMarkdownBlock.tsx` | `MarkdownBlock` — the transcript's own markdown renderer (extracted from `AgentChatMessageList.tsx`, which now imports it). Owns the prose wrapper classes, the `react-markdown` component overrides (headings, lists, tables, blockquotes, workspace-path links, `HighlightedCode` fences) and an inner memoized `MarkdownBody`. Threads `remarkThreadEntities` through the plugin list (with the renderer's own `workspaceFilePathOf` so file chips and bare line follow-ups agree on what a file is) and renders matched spans with `ThreadEntityNode`; an `ade://` link becomes the same `TranscriptChip` the composer draws. Headings are sized from `--chat-font-size` (`h1`–`h4`) with their own spacing, and inline code wraps at the token (`[overflow-wrap:anywhere]`) instead of splitting identifiers. It accepts an optional `tailMarkdown` and a `tone`: when the paced reveal is running, the settled prefix and the growing tail are rendered as two bodies inside one prose flow, so the settled half is byte-identical between frames and the memo bails out while only the short tail re-parses; `tone="bubble"` is a user bubble's markdown brief and forces the neutral white palette. Rows that are not being paced pass no tail and render exactly one body, identical to the pre-pacing output. |
-| `threadEntities.tsx` | Renderer half of the thread-entity chips: `ThreadEntityProvider` builds the lookup from the CHAT's machine (`useLanesForPin` / `useSessionsForPin`) plus the chat's slash commands, keyed on the index's value so a lane status tick does not re-parse every message; `remarkThreadEntities` rewrites matched inline code and prose spans into `ade-entity` nodes; `ThreadEntityNode` draws a chip, a bare line follow-up (`file_line`), or a local-time timestamp. The pure rules live in `shared/threadEntities.ts`. Wired by `AgentChatPane` around `AgentChatMessageList`. |
-| `AssistantTextBody.tsx` | The assistant text row's markdown leaf, and the only component that re-renders at 60 Hz while a turn streams. Holds the reveal state (`useRevealedLength` / `useSplitRevealed`) so a frame costs one small subtree render instead of touching the transcript derivations, the row list, or sibling rows. `paced` is true for at most one row at a time. Writes `data-stream-text-len` (the **revealed** length, i.e. what the commit actually paints) only while a perf run is active — that is what `renderer/perf/streamSmoothness.ts` samples. |
-| `textReveal.ts` | Pure paced-reveal state machine — no rAF, no DOM, no React. Per commit, `step = min(backlog, max(1, ceil(backlog * elapsedMs / horizonMs)))`, i.e. exponential decay toward zero backlog with a one-character floor, so a burst drains within roughly `horizonMs` and a trickle still advances. Cuts are grapheme-safe (`clampToGraphemeBoundary`); without `Intl.Segmenter` pacing disables itself entirely. Also owns the horizon config (`DEFAULT_TEXT_REVEAL_HORIZON_MS = 0`, so text paints on arrival; `localStorage` key `ade.textRevealHorizonMs` with a positive value turns pacing on), the 250 ms elapsed clamp that stops a backgrounded tab from dumping its backlog in one frame, the 60 Hz commit floor, and the incremental block scanner (`advanceSplitScan` / `splitRevealed`) that places the settled/tail cut only on a blank line at fence depth zero (a `$$` math block counts as a fence). |
-| `useRevealedText.ts` | The rAF binding for `textReveal.ts`, and `useSplitRevealed`, which hands the streaming row its settled text both whole and as append-only pieces (`settledSegments`) cut where the scan's cut moved, so each settled block parses once. Runs a frame loop only while the row is paced, pacing is enabled, the document is visible, **and** the row intersects the viewport; any of those dropping reveals everything immediately and stops the loop, so background grid tiles, hidden windows, and scrolled-away rows keep paint-on-arrival. Visibility lives in refs (two independent axes, deliberately not folded into one boolean) so a tab switch or a scroll stops the loop without re-rendering. Retargeting happens during render, and a row whose first sight is already complete (history, virtualization remount, backfill) paints in full — only growth observed after mount is paced. |
-| `chatWorkspacePaths.tsx` | Workspace-path parsing/resolution plus the React context that carries the opener. See the chat [README](README.md#source-file-map) source map row for the full contract. |
-| `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping thinking lottie once the turn ends. |
-| `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. `pendingInput.ts` is the renderer's **only** pending-input derivation — a second, drifted copy once lived under `chat/hooks/` and was deleted; do not reintroduce one. It owns both halves of the contract: `derivePendingInputRequests` (transcript in, raw cards out) and `resolvePendingInputs` (raw cards plus session summary in, live cards out). `chatTranscriptRows.ts` also owns `countRowsAppendedSince` (the `N new` count on the jump-to-latest pill). |
-| `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context from attachments, iOS Simulator, App Control, and built-in browser selections. |
-| `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS`, parallel launch state types, the `AgentChatModelCatalog*` set, `AgentChatModelCatalogRefreshProvider` (`opencode` / `cursor` / `droid` / `lmstudio` / `ollama`), and `AgentChatModelCatalogArgs` (`mode`, `refreshProvider`). It also single-sources two pieces of user copy so emitter and renderer cannot drift: `spawnCompletedNoticeMessage(childTitle)` → `Chat "<title>" finished its turn`, and `waitingOnYouDescription(count?)` → `Waiting on your answer.` / `Waiting on your answers.` — the fallback line when a chat is blocked on the user and there is no question text to show. That second one is not local to the chat pane: it becomes the ADE Notch card's subtitle, the phone's push body, and the lock-screen preview, so the old per-provider `"<Provider> needs input before it can continue."` variants (a sentence about the agent where the user wanted a sentence about them) are gone from every runtime path. The `approval_request` event additionally carries an optional `requestKind: PendingInputKind` — see [Approval vs question](#approval-vs-question). |
-| `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx` (the segmented effort track with its signal-bar meter; stays open on selection), `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, `sharedCatalogFetch.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `useReasoningByFamily` / `useRuntimeCatalogForFamily` hooks. |
-| `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` | The permission-mode pill itself, shared by every surface that lets a user choose how a chat starts: the composer's per-provider controls, `SessionLaunchModelControls`, and the cross-machine handoff modal. Exports the generic `PermissionModePicker`, `PermissionModeGlyph`, the tone/icon enums the provider option tables map into, and `PERMISSION_TRIGGER_CLASS` — the one definition of the trigger chrome, previously hand-copied per surface. That class scales with `calc(var(--chat-font-size,14px)*9/14)`; the fallback is load-bearing, because `--chat-font-size` only exists on a chat appearance root and a bare token would leave the launch and handoff pills inheriting the ambient size. Anything offering permission modes renders this, not a lookalike. Tone colour is deliberately asymmetric between the collapsed trigger and the open popover: only the `red` tone (bypassed permissions — the one mode here that can do damage) keeps colour on the resting trigger, and as a border/text tint rather than a filled pill. Every safe tone renders neutral trigger chrome and lets its tone read from the glyph alone. A toolbar where each control is a saturated pill has no way left to say "this one is different"; the full palette still applies to the open menu. That menu is a vertical track of modes: a header naming the current mode in its tone, one highlight that slides by `transform` to the row under the pointer or keyboard focus and takes that mode's tone, a `detail` line describing whichever mode is highlighted, and a check on the selected one. Arrow keys, Home, and End move focus (wrapping), and focus lands on the current mode when the menu opens. `permissionModeToneRgb` exports a tone as RGB for the highlight fill; the compact `ModelChipSegmentMenu` reuses the same look. |
-| `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` | The blocked-action primitive: `BlockedActionReason` (id, title, detail, and the optional fix that clears it), `BlockedReasons` to render them inline, `describeBlockedReasons` for tooltip/a11y text, and `BlockedActionButton`, which takes the reasons themselves rather than a `disabled` boolean so a caller cannot disable a control without handing over the explanation. Exists because ADE keeps regrowing the same bug — a surface computes blockers, disables the primary button, and renders none of them. |
+| `AgentChatPane.tsx` | The top-level pane: IPC, session state, presentation profile, lane navigation, parallel launches, sub-panels and composer. Reads the last-viewed time (`ade.chat.lastViewed.v1:<sessionId>`) for the list's `unreadSince` divider. Owns draft state (`ade.chat.composerDraft.v1`, keyed per session or lane draft; `draftContextTargetId` lets the Work sidebar target an unsaved draft), pending-steer Edit (`cancelSteer({ requireQueued: true })`, unchanged draft when the message already left), and root-store `DraftLaunchJob`s (`creating-lane` → `starting-session` → `sending-prompt` → `ready` / `failed`) that survive a project switch: the launch chain pins every call to the originating binding and caps each step at 90 s. Brain-owned launches clear the composer at job start; a foreground chat from an existing lane keeps the prompt until the new pane's first bubble takes it. Also owns the transcript-resilience rules ([Transcript and turns](transcript-and-turns.md#history-snapshots-scroll-back-and-misses)): `resolveChatHistoryMissAction`, `resolveSnapshotHistoryCursor` (`hasOlderHistory` beats `tailStartOffset`), retries at 800 / 2400 ms, `syncPendingBySession` (`data-chat-sync-pending`, a fading 2 px hairline), the cold skeleton (`data-chat-cold-skeleton`), and `resolveRenderedChatSessionId` (paint from props, not the synced id). The view cache holds 128 MB total, 32 MB per session, and skips a **detached** view. Active-turn recovery is a stall detector (`ACTIVE_TURN_RECOVERY_INTERVAL_MS`, 10 s, skipped when the subscription delivered). Hidden panes hand their subscription to `chatSessionRetention.ts`. An empty draft reserves no side pane. |
+| `useDraftMachineRouting.ts`, `draftAttachmentTransfer.ts`, `draftAttachmentSources.ts` | Draft machine selection: reconcile the restored machine before send, list only that machine's lanes plus auto-create, re-resolve the lane on a switch (`remapDraftLaneToMachine` / `findPrimaryDraftLane`), and hold a foreign machine behind `Loading lanes for <machine>…` (`laneCatalogLoading`, `requestCrossMachineLanesForMachine`). On a user machine switch, `useDraftAttachmentTransfer` keeps image URLs and re-stages what it can (kept bytes or paths through `saveTempAttachment` / `stageFileAttachment`; images through pinned `getImageDataUrl`). Other files and machine-bound context stay behind with an amber notice. A pending or failed transfer blocks send. |
+| `components/usage/ActivityModule.tsx`, `ActivityHeatmap.tsx`, `activityIntensity.ts` | The activity module under an empty Work draft (`WorkActivityModule`, compact; `data-chat-empty-usage`; tab and range in `ade.activity.module.v1`). `scoreActivityDays` scales each of seven dimensions against its own maximum before the weighted sum; `isActiveDay` stays unweighted; `describeActivityInsight` writes the one sentence above the grid from the same scores. Buckets are quartiles over non-zero days. The ramp is explicit light/dark pairs (never `--color-accent`), with tile borders under `prefers-contrast: more` (`usePrefersMoreContrast.ts`) and a "Less → More" key. |
+| `renderer/lib/draftLaunchJobs.ts` | Draft-launch job DTOs, stale detection and pruning (active rows first, at least one terminal row kept); `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout` (unwedges the renderer; the IPC keeps running); `LAUNCH_PROJECT_CHANGED_MESSAGE` for unpinned launches; the new-draft request count that keeps a late launch from taking the screen back. |
+| `renderer/state/chatLaunchStore.ts`, `state/useChatLaunchSync.ts` | Renderer mirror of brain-owned launches (`shared/types/chatLaunch.ts`), keyed by launch id with their binding; snapshots only move forward (`mergeChatLaunchSnapshot`), and the host's first answer replaces the optimistic one. Holds the window's `originClientId` and a local record per launch it started. `useChatLaunchSync` (in `AppShell`) is the one `chatLaunch.onEvent` subscription, hydrated by `chatLaunch.list`. Narrow selectors: `useChatLaunchRowSources`, `useChatLaunchForPane`, `useChatLaunchSelector`. |
+| `launch/` (`chatLaunchActions.ts`, `LaneSetupCard.tsx`, `LaunchProgressRail.tsx`, `launchClock.ts`, `chatLaunchSynthetic.ts`, `chatLaunchDock.ts`, `chatLaunchDraftRestore.ts`, `useChatLaunchPaneState.ts`, `newLaneLaunchArgs.ts`, `rendererOwnedLaunch.ts`) | The launch surfaces: every Start/Retry/Start now/Cancel/Delete/queue (pinned to the launch's binding); the setup card and its `lane_setup` row; the stand-in roster row, prompt bubble and queued messages of a pending chat; the composer dock and first-message flight (skipped for reduced motion, hidden windows and high resource pressure); the one draft-restore channel back to Work; the pane's launch seam; `chatLaunch.start` args; and the renderer-owned chain (existing lane, Cursor Cloud, runtimes without `chat.startLaunch`). |
+| `renderer/webclient/adapter/chatLaunch.ts`, `renderer/webclient/sync/chatLaunchEvents.ts` | Hosted-web `window.ade.chatLaunch` over the `chat.startLaunch` … `chat.completeLaunchClient` commands (writes skip the read cache; an older host rejects so the composer falls back), with `chat_launch_event` decoded by `decodeChatLaunchEventPayload`. |
+| `components/app/ChatLaunchesSlideOut.tsx`, `components/terminals/useChatLaunchCliDriver.ts` | The Launches slide-out, and the driver that starts this window's CLI launches at `awaiting-client`. |
+| `renderer/lib/handoffLaunchJobs.ts` | Handoff placeholder DTOs, ids, labels and search, shown in the Work sidebar (`TerminalsPage`). Fork is offered when `providerSupportsHandoffFork` (Claude, Codex, OpenCode, Droid, Cursor); Cursor's fork replays the transcript (`providerForkReplaysTranscript`). |
+| `renderer/lib/chatHandoffIntent.ts` | One-shot bridge from the session menu's **Hand off…** (`SessionContextMenu.tsx`, `openChatHandoff`, `"local"` \| `"remote"`) to the pane; only the active tile drains it. |
+| `renderer/lib/aiDiscoveryCache.ts` | AI status and model cache per runtime binding (local and remote copies never share). `getAiStatusCached`: 10 s freshness, deduplicated `ade.ai.getStatus`, change events instead of polling. |
+| `CrossMachineHandoffModal.tsx`, `crossMachineHandoffPresentation.tsx` | **Continue on another machine**: destination, brief or fork, model, effort, Fast, permission, note and clone choice, then `startCrossMachineHandoff`; the source brain runs it (`crossMachineHandoffOrchestrator.ts`). Options (`getCrossMachineHandoffOptions`), a read-only preview (`previewCrossMachineHandoff`) and progress come from that brain. Every call, including **Publish branch** / **Update branch** (`git.push` / `git.pull`), is pinned to the source chat's `runtimePin`. Blockers render through `BlockedReasons` / `BlockedActionButton`; Send is the confirmation. |
+| `ChatHandoffDialogs.tsx` | The **Local handoff** Radix dialog (fork/brief form, or "Handoff is not available for this chat."). Popovers inside stay clickable through `PortalContainerContext`; Escape closes an open lane list first. |
+| `ProviderSignInCard.tsx`, `ProviderSignInSlot.tsx` | The sign-in card above the prompt box (`aboveComposerSlot`) while the provider is signed out on the composer's machine. See [README › Inline agent download, and the sign-in card](README.md). |
+| `ChatRuntimeScope.tsx` | Which machine THIS chat is on: `useChatRuntimeScope()` (`{ pin, binding, laneId, lane, laneWorktreePath, rootPath, isRemote, machineName, online }`), `useChatRuntimeScopeForPin`, `useChatScopeDerivation`, `ChatRuntimeScopeProvider`. `pin === null` means only "the tab's binding". ESLint bans tab-store reads of `projectBinding` / `lanes` / `project.rootPath` and `selectActiveProjectRoot` in `components/chat/**`. `chatRunsOnThisComputer(scope)` hides this-computer actions (Scene **Proof**, Codex image **Open**) on a foreign chat. Contract in the chat [README](README.md#source-file-map). |
+| `AgentChatMessageList.tsx` | The virtualized message list; see [Message list](#message-list). Also `WorkingIndicator` (`<activity> · working for <elapsed>`, labels from `resolveWorkingIndicatorLabel` / `ACTIVITY_LABELS`, a file-named `Editing …`, a `tool_calling` / `running_command` wait named from the newest running entry (`Running pnpm test`), a callback ref for the imperatively written timer) and `ChatInfoHostContext` (whether the host listens for `ade:chat:open-info`; a context, not a global, because every pane stays mounted). |
+| `AgentChatComposer.tsx`, `ComposerDrafts.tsx`, `DraftSchedulePopover.tsx`, `ComposerSmartLinkMenu.tsx`, `smartLinkChipMark.ts` | The composer: input, attachments, model and permission controls (`PermissionModePickerOption` tables for the shared `PermissionModePicker`), slash commands, drafts and scheduled sends, smart-link and chat-context chips (`<ade-chat-context>`), pending input, dictation target, parallel slots, send and stop menus. One-shot open requests reach the ModelPicker (acknowledged, so a remount does not reopen it) for transcript recovery cards. See [Composer](#composer). `launchPromptClipboardNoticeEnabled` controls the reminder text, separate from `launchPromptClipboardEnabled`. |
+| `main/services/chat/draftService.ts`, `draftDelivery.ts`, `draftScheduler.ts` | Runtime drafts and scheduled sends in the CRR `prompt_stashes` table (name kept; cr-sqlite cannot rename a CRR): text, up to ten image references, origin site, captured config, and an armed send's time, target and if-late policy. Plain drafts cap at 20; armed sends at 50, delivered by the target chat's machine through an exactly-once `scheduled` → `sending` claim. Local image bytes stay on the origin, protected from the seven-day attachment cleanup. |
+| `TurnFailureLine.tsx`, `turnFailureRows.ts` | A failed turn is one line: glyph, title, `×N` for folded retries, **Retry** / **Details**. `foldTurnFailureRows` drops usage-limit error rows (the turn-end reads `Usage limit`) and folds identical retries. |
+| `UsageLimitChip.tsx` | The status-row chip: `Usage limit reached`, a **Cancel** / **Resume in …** toggle, and **Continue on <account>** when another account has room; pinned actions. |
+| `usageLimitResumePresentation.ts` | Pure usage-limit copy: `parseUsageLimitResume` (strict reader), countdown cadence (seconds round up, as iOS), `usageLimitResumeRowStatus`, `usageLimitTurnFooterLabel`, `isUsageLimitFailureText`. Clock-injected; nothing reads `Date.now()`. |
+| `chatTurnState.ts` | Turn-state helpers for live and hydration paths: terminal transcript evidence beats a stale summary; failed-turn retry finds its non-steer user message without a provider turn id. |
+| `ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | The progress drawer (sections appear once they have content) and Sources (deduplicated files, web queries, MCP tools and URLs; safe web rows open in ADE's browser). |
+| `VoiceDictationButton.tsx`, `microphonePermissionGuidance.ts`, `renderer/services/globalVoiceRecorder.ts`, `components/voice/*`, `main/services/transcription/microphoneAccess.ts` | Dictation. The module-level recorder survives navigation, transcribes through `window.ade.transcription`, inserts into the registered composer and always copies the text. Windows denied/restricted mic states get Privacy & security guidance; unknown states go to Chromium's prompt. |
+| `main/services/transcription/*` | Transcription: 16 kHz mono WAV through the bundled `transcribe-cli` and the downloaded Parakeet Ultra model, then glossary cleanup. Threads cap near the physical core count. `downloadModel` is single-flight. After install, one silent warm-up (`stage: "warmup"`, "Finishing setup"); a failed warm-up still leaves the model installed. |
+| `CodexVoice.tsx`, `VoiceSessionCard.tsx`, `main/services/chat/codexVoiceSession.ts`, `codexVoiceNarration.ts`, `codexVoiceHost.ts`, `shared/codexVoice.ts`, `components/settings/VoiceConversationSection.tsx` | Voice conversations; see [Voice conversations](#voice-conversations). |
+| `resources/voice/voice-glossary.json`, `resources/whisper/README.md` | The dictation glossary and binary notes; `materialize-whisper-resources.mjs` builds `transcribe-cli` from a pinned commit (git-ignored; the model downloads at runtime). |
+| `components/work/useSessionLifecycleSnapshot.ts` | The read behind `ChatLifecyclePill` (settled, snoozed): the Work session cache, then the cross-machine lane snapshot; a render-only timer repaints an expired snooze. Wake now calls `wakeSessionNow` (`sessionLifecycleActions.ts`). |
+| `ChatSurfaceShell.tsx` | Floating header, body and footer: tinted, opaque chrome with no `backdrop-filter`, because one on the page makes Chromium on macOS redraw the whole window for every change. `canvasFill` overrides `--chat-canvas-bg` (the Work draft passes `transparent`). On Work, `.ade-chat-shell-header` uses `--ade-work-chrome-rail-h` like `.ade-tool-header`. |
+| `ChatComposerShell.tsx` | Composer input chrome. |
+| `chatComposerOverlayInset.tsx`, `ChatJumpToLatestPill.tsx` | The composer stack's height and element go through `ChatComposerOverlayContext`; consumers write it to DOM styles (`useChatComposerOverlayInset`, `ChatComposerOverlayClear`), never React state. The jump pill docks in `data-chat-composer-jump-slot` while the chip row shows a chip (`useChatComposerJumpSlot`). |
+| `ChatAttachmentTray.tsx`, `ChatAttachmentPreviewModal.tsx` | Attachment tray for the composer and sent messages; see [Attachment handling](#attachment-handling). |
+| `renderer/lib/attachmentImage.ts` | `readAttachmentImageDataUrl(path, pin)`, the one image reader (tray, chips, viewed images, drafts, draft transfer): a personal chat's own reader, else the pin's runtime; this computer's `app.getImageDataUrl` only when it owns the file and the runtime gave no final answer. |
+| `AttachmentChipPeek.tsx` | `useAttachmentThumbnail` and the hover peek shared by composer and transcript chips: the caller's preview, the URL of an `image-url`, else one pinned read keyed on `pin.key`. |
+| `shared/attachmentLabels.ts` | The prompt-attachment grammar for desktop, runtimes and iOS: the k-th image is `[Image #k]` (an `image-url` counts), the k-th file `[File #k: <basename>]` (`[ ] CR LF` become `_`). Tokens resolve by ordinal only; an unmatched token stays text. `formatAttachmentToken`, `labelAttachments` / `labelAttachmentsByRef`, `parseAttachmentTokens`, `resolveAttachmentToken`, `renumberAttachmentTokens`, `formatAttachedImageLegend`. |
+| `chatAttachmentStaging.ts` | Staging one file: `readAttachmentStagingMode(pin)` asks once per batch and never throws (`CONSERVATIVE_ATTACHMENT_STAGING_MODE` on no answer). `planAttachmentStaging` forces the bytes leg with no source path (paste, hosted web), a renderer conversion (HEIC → JPEG) or a `base64` host, and then caps at `LEGACY_MAX_CHAT_ATTACHMENT_BYTES`. `stageAttachmentBytesFromFile` is that leg; `AttachmentConversionError` gets no retry. |
+| `shared/chatAttachmentLimits.ts` | The ceilings and messages for renderer, main and the CLI sync host: `MAX_CHAT_ATTACHMENT_BYTES` (50 MB, files), `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` (10 MB, base64 in a payload; 720 KiB frames under 25 MB over sync), `MAX_PROVIDER_INLINE_FILE_BYTES` (10 MB), `MAX_PROVIDER_INLINE_IMAGE_BYTES` (3.5 MB), `MAX_PROVIDER_INLINE_IMAGE_EDGE_PX` (2000 px). Messages render from the constants (`formatAttachmentSize`, `legacyAttachmentCapMessage`, `attachmentTooLargeMessage`). `maxBase64EncodedLength` refuses an oversized payload before decoding (`approxDecodedBytes`). |
+| `shared/chatAttachmentStagingFs.ts` | The Node-only write rule for `<projectRoot>/.ade/attachments` (UUID name, checked extension, containment, stat before copy); contract in the chat [README](README.md#source-file-map). Local Cursor may Read these and its own `~/.cursor/projects/<slug>/assets` copies. |
+| `attachmentViewerTarget.ts` | Finds an attachment's Files workspace on the client, pin-aware: both separators, segment compare through `normalizePathForComparison` (`/a/ADE-backup` never matches `/a/ADE`), the longest root wins. |
+| `ChatCommandMenu.tsx` | The `/`, `@` and `#` menus; see [The command menus](#the-command-menus). |
+| `shared/composerTriggers.ts` | Cursor-relative trigger detection for the desktop composers (iOS mirrors it): `detectComposerTrigger(text, cursorPos)`, `replaceComposerTriggerSpan`, `findConfirmedComposerTokens`, `composerTriggerSpansWholeDraft`, and dismissal (`ComposerTriggerDismissal`, `isComposerTriggerDismissed`); see [The command menus](#the-command-menus). |
+| `shared/smartLinks.ts` | The URL catalog and fallback labels (GitHub PR/issue/repo/commit/run, Linear, `ade://`, HTTP(S)); trims punctuation and caps a draft at 12 matches. iOS mirrors it (`WorkSmartLinkDetector`). `ade_deeplink` URLs go through the real `deeplinks.ts` parser, so `ade://pr/…` becomes a PR chip. |
+| `main/services/chat/smartLinkPreviewService.ts` | Best-effort metadata: GitHub and Linear through their services; generic pages through bounded reads with DNS pinning and SSRF checks, cached (256 entries, 30 min; 5 min for misses). Credential-backed results are never cached. Errors return the local preview. |
+| `shared/chips.ts` | The one chip model (iOS re-implements it against a shared fixture). `Chip` is `{ kind, token, label, detail?, title?, iconDataUrl?, source }`: `token` is canonical text, `label` display only. `parseChips` / `splitTextIntoChipParts`, the producers `chipFromPath` / `chipFromMention` / `chipFromDeeplinkTarget` / `chipFromSmartLink`, `chipDisplayLabel`, `CHIP_GLYPH`. Pure: a chip is a pointer. |
+| `shared/composerClipboard.ts` | Copy and cut: `text/plain` gets canonical tokens; `text/x-ade-composer` (`COMPOSER_CLIPBOARD_MIME`) adds a label per token, so a chip pastes into another chat as a chip. `parseComposerClipboard` returns `null` on bad input. Bounds: 64 chips, 256 label chars, 100,000 text chars. |
+| `shared/pastedTextAttachment.ts`, `shared/composerPasteFolding.ts` | The paste rule desktop and iOS share: `shouldPasteTextAsFile` is true over 3,000 UTF-16 units or 40 lines (CRLF/CR as LF, one trailing newline dropped). `sniffPastedTextExtension`: `.diff`, then `.json`, then `.log` (3+ lines, 60% timestamped), else `.txt`. The file is `pasted-<epoch ms>.<ext>`, labelled `Pasted · N lines` (`pastedTextChipLabel`). `pastedTextAttachmentFile` marks the file in a `WeakSet` (`isPastedTextAttachmentFile`; a dropped file sets `intent: "user_prompt"`). At send, ADE reads the text back into the message. Files, images and small link pastes skip the rule. |
+| `shared/sessionDraftIndicators.ts` | `deriveSessionRowIndicators({ hasDraft, queuedCount, queuedSending, queuedFailed })`: up to two marks (draft, then outbox) with label and sentence. |
 
-Cross-machine Work drafts do not rebind the project tab. `AgentChatPane` freezes
-the selected `OpenProjectBinding` and uses it for model/auth discovery, slash
-commands, file search, attachments, parallel launch state, lane/chat creation,
-rollback, and recovery. A selected binding that is unresolved or disconnected
-falls back to the bound/This computer machine after the catalog resolves, so a
-disconnected Studio cannot block local sends or attachments. While the catalog
-is loading, the persisted selection is preserved; when it is unavailable after
-resolution, the picker remains visible even with one machine and offers an
-unavailable row plus **Use this computer**. Changing the selected
-machine within the same draft copies local image attachments to the new runtime
-and keeps portable image URLs. Non-image files and machine-owned tool context
-are removed because their paths cannot cross runtimes safely. Sending waits for
-the image copy to finish; a failed copy leaves the source images in place and
-requires the user to switch back or remove them. Restoring a draft after a
-project-tab switch first reconciles the tab's selected machine, so hydration
-does not remove or transfer attachments as though the user changed machines.
-Browser, App Control, and iOS panels also fail closed when their local-only
-service cannot safely operate on the chat's owning runtime.
+| `renderer/state/composerDraftPresenceStore.ts` | Which sessions hold an unsent draft, in memory. The draft lives in `localStorage` under `COMPOSER_DRAFT_STORAGE_KEY_PREFIX` (`<prefix>:<projectRoot>:<sessionId>:<profile>:<kind>`). `useComposerDraftPresence(sessionId)` reads one boolean through `useSyncExternalStore`, so a row re-renders only when its own mark flips. |
+| `composerChipDom.ts` | `serializeComposerDom(root)`, the one walker from the composer DOM to draft text plus a token→label map, used by send (`serializeRichEditor`) and copy. |
+| `ChipText.tsx` | Sent text with tokens as pills (`splitTextIntoChipParts`); `event.text` stays raw. `[Image #k]` / `[File #k: name]` resolve against `event.attachments` (a 14 px thumbnail or file glyph; an unmatched token stays text). Pills enrich from `chipPreviewStore` after a synchronous first paint and open a hover card. |
+| `ChipHoverCard.tsx` | The hover card for PR, commit, lane, chat and Linear chips: a `pointer-events-none` `role="tooltip"` portal (not a Radix Popover, which would take focus from the composer), placed by `computeTooltipPosition`. Commit cards read through the chat's pinned Git reader after hover; PRs through `listPrsCoalesced`. Everything resolves on the **chat's** machine (`useChatRuntimeScope()`, `useLanesForPin`, `useMachineEntryForBinding`), because lane ids are unique per machine. Missing data means no card. |
+| `chipPreviewStore.ts` | The transcript's cache for `agentChat.resolveSmartLinkPreview`, subscribed per chip through `useSyncExternalStore` (not a context). One request per URL, never throws (a failure caches as "nothing to add"), keyed by URL **plus the project's state key**, so credential-read titles never cross projects. |
+| `shared/permissionLadder.ts` | The four autonomy levels; see [Agent Routing](agent-routing.md#the-permission-ladder). |
+| `shared/__fixtures__/chipCases.json` | The chip parity fixture for `shared/chips.test.ts` and iOS (`WorkComposerTriggerDetectorTests.testMatchesSharedChipFixture`, read relative to `#filePath`). A new row fails the iOS suite until Swift matches; the `test-ios` gate in `.github/workflows/ci.yml` includes this folder. |
+| `ChatTaskListCard.tsx` | The task list (`shared/chatTaskList.ts`): `ChatTaskListCard` (collapsed to `label · done/total · current item`) and `ChatTaskListView`. See [One task list per chat](transcript-and-turns.md#one-task-list-per-chat). |
+| `shared/chatScheduledWork.ts` | Folds `scheduled_work_update` into Chat Info schedule rows (Claude wakeups, cron, `/loop`, remote triggers, background work), the Background/Schedule Earlier predicates and next-fire labels. A parent's terminal event does not stop a background row; snapshots whose `sourceTaskId` is a real subagent are left out. iOS mirrors it. |
+| `ChatFileChangesPanel.tsx` | Turn file changes from `turn_diff_summary`, with lazy diffs read on the chat's machine. Rows show the lane-relative path (directory truncates first; full path in the tooltip). |
+| `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | The rewind confirmation: a message-scoped file list from the provider dry run plus diff summaries, per-file diffs, then `rewindFiles`. Diffs and restores use the chat's `runtimePin`. See [Codex rewind](agent-routing.md#codex-rewind-and-0145-readiness). |
+| `PendingInputStack.tsx` | The list of open cards when a chat has more than one; see [Subagent cards](#subagent-cards). |
+| `ChatSubagentsPanel.tsx` | Chat Info; see [Chat Info and subagents panel](#chat-info-and-subagents-panel). |
+| `ChatComputerUsePanel.tsx` | The proof drawer (lightbox, video, states, irreversible delete), read on the chat's machine; no review or reveal controls. Inline proof is `ChatProofFilmstrip` in the message list: a count on the producing turn, open by default. |
+| `ChatAppControlPanel.tsx` | App Control for Electron apps, under the composer (`sessionId` set) or in the Work sidebar (`sessionId={null}`). **Control** (screencast, launch/connect, input, `terminal write` / `terminal signal`) and **Inspect** (commits `AppControlContextItem`s). State in `sessionStorage["ade.chat.appControlPanel.<key>"]` (`chat:<sessionId>` or `lane:<laneId>:<projectRoot>`, plus the pin). Connect/launch pass `laneId`; every call uses the `runtimePin`. See [App Control](../computer-use/app-control.md). |
+| `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer (composer and Work sidebar): readiness checklist, pickers, one live view encoded by the vendored Swift helper on the device's machine (no Simulator.app window, no Screen Recording grant), inspect as a toggle, `IosElementContextItem` output. `useAppleDeviceStream` holds the stream; `AppleDeviceColumn` renders it. `laneId` goes into `iosSimulator.launch`. Another chat owning the simulator only changes where context goes. Scope from `useChatRuntimeScopeForPin`, project root from that machine's worktree. See [iOS Simulator](../apple-device/README.md). |
+| `ChatBuiltInBrowserPanel.tsx` | The Work sidebar browser: address bar, tabs, inspect, capture, states from `BuiltInBrowserStatus`; a main-process `WebContentsView` paints the page (`ade.builtInBrowser.setBounds`). Inspect emits `BuiltInBrowserContextItem`s (selector, role, attributes, crop, trimmed HTML, deciding CSS, and `frameworkSource`: React `_debugSource` on the element is exact and fills `sourceFile` / `sourceLine`; other sources are approximate; production builds give none). `ELEMENT_CONTEXT_SNIPPET` (`builtInBrowserService.ts`) redacts secret-looking attributes, values and bodies. Other code opens URLs with `openUrlInAdeBrowser()` (`openExternal.ts`, `ADE_OPEN_BUILT_IN_BROWSER_EVENT`). Calls use the `runtimePin`. **Attach to chat** (tab right-click, or ⋯) goes through `onAttachTab` → `useWorkToolContextInsertion().attachBrowserTab`; a chat gets `ade:agent-chat:insert-browser-tab` and a globe chip (`composerBrowserTabChip.ts`) that serializes `<ade-browser-tab id="…" title="…" url="…">…</ade-browser-tab>` (`shared/browserTabMention.ts`) with the takeover commands (`ade browser claim --tab <id> --text`). `parseChips` reads it back as a `browser_tab` chip. A CLI target gets one pasted line. The URL is the human's, so a tunneled tab shows its remote origin. |
+| `ChatTerminalDrawer.tsx` | The chat's terminal drawer, pinned to the chat's machine. `requestChatTerminalFocus` (`chatTerminalFocus.ts`) carries the terminal, so it can show one that ended. |
+| `ChatCodeBlockRun.tsx`, `shellCodeBlockRun.ts`, `codeBlockActionButton.ts` | Run on shell code blocks (`planShellBlockRun`, confirm, run store, "Send output to the agent"); see transcript-and-turns.md, "Run on shell code blocks". |
+| `ChatGitToolbar.tsx` | The git status strip above the composer. The changed count is **distinct paths** (an `MM` file is in both lists). The PR mark shows only when the lane has a PR and opens the PR Work tool, which refreshes that PR. No manual sync here; it heals through reconcile-on-focus and `prs-updated`. Scope from `useChatRuntimeScopeForPin(runtimePin, laneId)`, because the CLI header renders it with no `ChatRuntimeScopeProvider`. |
+| `ChatPrPane.tsx` | The lane PR tool (`variant="tools"`): `PrSwitcherMenu` and the `‹ 1/N ›` `PrSwitcherStepper` for several PRs, stacked detail, or the inline creator. A PR pill elsewhere selects its PR through `chatPrPaneRequests.ts`, held for the named chat. Title bar: ↻ (`prs.syncLanePr`, spinning also for `pr-reconcile`, 300 ms debounce) and ✕ (`onClose`). Cached details first, then a targeted refresh; an unmapped PR (`pr.unmapped`, synthetic `gh:` id) skips it. With no PR it embeds `ChatPrInlineCreator` with the `sessionTitle`; under a `runtimePin` it points at the owning machine. A GitHub stack shows `ChatPrStackOffer` (**Link stack** / **Not now**, per chat and stack). All reads use the pin. |
+| `ChatPrInlineCreator.tsx` | The create-PR flow: an immutable source row, a `↓` connector with `N ahead · N behind · clean`/`dirty` (or `comparing…`) from `lane.status`, the `LaneCombobox` target, title, description, Create. The title is the chat title unless it is `New chat`, else `<lane> -> <target>`. `prService` adds Linear words and the deeplink footer. `onCreated` passes the `PrSummary` up at once. |
+| `ChatUserMinimap.tsx`, `chatUserMinimap.logic.ts` | The tick rail in the left gutter, one tick per user message, behind `chatUserMinimapEnabled` and `[@media(pointer:fine)]`. Ticks are placed by percentage, with no cap, so index maps 1:1 (`resolveMinimapIndexFromPointer`). One `<button>` for the rail. The hit strip is clamped to the gutter (`resolveMinimapHitStripWidth`, max 40 px) and off at zero gutter. The hover preview shows the message and three lines of the reply, kept on screen by `resolveMinimapPreviewTranslateY`. Compaction events have no tick. |
+| `chatPromptHistory.ts` | Prompt history from the selected transcript: ArrowUp starts at the newest; same-direction presses stay in history for 3 s; multiline caret motion resumes after a pause at a line boundary; ArrowDown past the newest restores the unsent draft. Each pick jumps the transcript. |
+| `chatSessionRetention.ts` | Keeps a hidden chat's `agentChat.onEvent` subscription for `CHAT_SESSION_RETENTION_TTL_MS` (5 min). See [Retained chat subscriptions](#retained-chat-subscriptions). |
+| `chatCompanionUiState.ts` | Which panes a chat had open (`chatActionsOpen`, `iosSimulatorOpen`, `appControlOpen`, `terminalDrawerOpen`, the Apple tools card), in `localStorage` (`ade.chat.companionUiState.<key>`). The chat pane keys by session id, the CLI pane by terminal id. `patchChatCompanionUiState(key, patch)` merges. Old `prPaneOpen` / `chatActionsTab` fields are ignored; `proofDrawerOpen` maps to `chatActionsOpen`. Reads fall back to `DEFAULT_CHAT_COMPANION_UI_STATE`. Each write stamps `savedAtMs` and self-prunes to 200 entries (`pruneChatCompanionUiState`). |
+| `ChatProposedPlanCard.tsx` | The plan approval card while input is locked: markdown in a scroll box capped at `min(34vh, 360px)`. Transcript plans use `CodexPlanCard`. |
+| `apps/ios/ADE/Views/Work/WorkPlanComposerViews.swift` | iOS plan approval strip above the prompt box, with a markdown sheet; Approve/Reject through `chat.approve` (feedback as `responseText`). One body of the iOS pending-input strip; see [Cross-surface parity](#cross-surface-parity). |
+| `apps/ios/ADE/Views/Work/WorkChatComposerAndInputViews.swift` | iOS prompt box, staged-steer strip and `WorkStructuredQuestionCard`: only the provider row (and tabs) is pinned above the scroll area, the field and Send/Decline below. `WorkPendingInputHeightBoundedCard` caps the other gates. Both use `maxCardHeight` and `.scrollDismissesKeyboard(.interactively)`. |
+| `apps/ios/ADE/Views/Work/WorkDraftPersistence.swift` | iOS drafts: `WorkComposerDraftStore` (per chat `chat:<sessionId>`, plus Hub and New Chat) and `WorkQuestionDraftStore` (per request), JSON in App Group `UserDefaults` (`WorkDefaultsJSONMap`), LRU by `updatedAt` (60 / 30), autosave after 400 ms (`workDraftAutosaveDebounce`). `workPersistedDraft(_:key:)` restores, autosaves and flushes. |
+| `codex/CodexPlanCard.tsx` | The Codex plan card for `plan` events with markdown and no steps (plans with steps feed the task list): Planning / Plan ready, step glyphs, streaming markdown; a details/live toggle when steps exist. |
+| `codex/CodexGoalCard.tsx`, `codex/CodexGoalBanner.tsx` | Codex goal card (edits, status and clears through `ade.agentChat.codex.*`; objective, status, tokens, elapsed; no budgets, since goals are unlimited) and a compact banner. |
+| `ChatWorkLogBlock.tsx` | Work-log presentation. The transcript renders no `work_log_group` rows. After `done`, `ChatTurnWorkSummary` is one `N tools · M files` line directly above the time/usage row (`4:12 PM · ran 12s · tokens`); expanding lists tools (`ChatToolActivityDetails`) then files between them. The files half is left out when a `turn_diff_summary` exists. `ChatWorkLogBlock` remains for the Settings preview. |
+| `AskQuestionComposer.tsx` | The question surface inside the composer; see [Pending input card](#pending-input-card). |
+| `QuestionReceipts.tsx` | A question's transcript record: `AnsweredQuestionReceipt` (one expandable line, `AdeCard` convention) and `OpenQuestionReceipt` ("awaiting you"). |
+| `shared/pendingInputAnswers.ts` | The answer contract for desktop and web (iOS mirrors it); see [Answer semantics](#answer-semantics). |
+| `chatMarkdown.tsx` | The shared agent-markdown renderer (`ChatMarkdown`, `buildChatMarkdownComponents`, `SAFE_PREVIEW_SCHEMA`) for plan cards, previews and other non-transcript surfaces. `ChatMarkdownAnchor`: a workspace path opens through the workspace-path context, a real URL opens in the in-app browser, anything else (a bare `file:`) is inert text. A path must never reach `normalizeBrowserUrlInput`, which would make `laneService.ts` a host. `SAFE_PREVIEW_SCHEMA` allows `file:` and drive letters on `href` because `rehypeSanitize` runs before `urlTransform`; `javascript:` / `data:` / `vbscript:` stay blocked. `chatMarkdownUrlTransform` decodes `C:%5Crepo%5Cx.ts` first. |
+| `remarkBareLinkSuffix.ts` | After remark-gfm: puts back a trailing `_` or `~` run that GFM left out of a bare `http(s)://` or `www.` link, only when the source has exactly that run. |
+| `chatMarkdownBlock.tsx` | `MarkdownBlock`, the transcript's markdown renderer: prose classes, `react-markdown` overrides, `HighlightedCode` fences, memoized `MarkdownBody`. Runs `remarkThreadEntities` (with `workspaceFilePathOf`) and draws `ThreadEntityNode`; an `ade://` link is a `TranscriptChip`. Headings size from `--chat-font-size`; inline code wraps with `[overflow-wrap:anywhere]`. With `tailMarkdown`, the settled prefix and the growing tail render as two bodies, so only the tail re-parses. `tone="bubble"` forces the neutral palette. |
+| `threadEntities.tsx` | Thread-entity chips: `ThreadEntityProvider` builds the lookup from the chat's machine (`useLanesForPin` / `useSessionsForPin`) and slash commands, keyed on value; `remarkThreadEntities` makes `ade-entity` nodes; `ThreadEntityNode` draws a chip, a `file_line` follow-up or a local timestamp. Rules in `shared/threadEntities.ts`. |
+| `AssistantTextBody.tsx` | The assistant row's markdown leaf, the only component that renders at 60 Hz while streaming (`useRevealedLength` / `useSplitRevealed`); `paced` is true for at most one row. Writes `data-stream-text-len` during perf runs (`renderer/perf/streamSmoothness.ts`). |
+| `textReveal.ts` | The pure paced-reveal machine. `step = min(backlog, max(1, ceil(backlog * elapsedMs / horizonMs)))`; grapheme-safe cuts (`clampToGraphemeBoundary`; no `Intl.Segmenter` disables pacing). `DEFAULT_TEXT_REVEAL_HORIZON_MS = 0` (paint on arrival; a positive `ade.textRevealHorizonMs` turns pacing on), a 250 ms elapsed clamp, a 60 Hz floor, and `advanceSplitScan` / `splitRevealed`, which cut only on a blank line outside fences (`$$` counts). |
+| `useRevealedText.ts` | The rAF binding. `useSplitRevealed` gives settled text whole and as append-only `settledSegments`. The loop runs only while paced, enabled, visible **and** on screen (visibility in refs); otherwise everything reveals at once. A row complete at first sight paints in full. |
+| `chatWorkspacePaths.tsx` | Workspace-path parsing and the opener context; see the chat [README](README.md#source-file-map). |
+| `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Visuals. `ChatStatusGlyph` takes `animate`, so inactive rows skip animation; `ActivityIndicator` turns static after the turn. |
+| `pendingInput.ts`, `chatExecutionSummary.ts`, `chatTranscriptRows.ts` | Pure derivations. `pendingInput.ts` is the **only** pending-input derivation (do not add another): `derivePendingInputRequests` (transcript → raw cards) and `resolvePendingInputs` (with the summary → live cards). `countRowsAppendedSince` gives the jump pill's `N new`. |
+| `renderer/lib/visualContextFormatting.ts` | Prompt text for attachment, iOS, App Control and browser context. |
+| `shared/types/chat.ts` | Composer and session DTOs: `PARALLEL_CHAT_MAX_ATTACHMENTS`, parallel launch types, `AgentChatModelCatalog*`, `AgentChatModelCatalogRefreshProvider`, `AgentChatModelCatalogArgs`. Single-sourced copy: `spawnCompletedNoticeMessage(childTitle)` and `waitingOnYouDescription(count?)` (`Waiting on your answer(s).`, also the Notch subtitle, push body and lock-screen text). `approval_request` can carry `requestKind`; see [Approval vs question](#approval-vs-question). |
+| `components/shared/ModelPicker/` | The ModelPicker; see [ModelPicker structure](#modelpicker-structure). `ReasoningEffortPicker.tsx` is the segmented effort track, open after a pick. |
+| `components/shared/PermissionModePicker.tsx` | The one permission pill for the composer, `SessionLaunchModelControls` and the handoff modal: `PermissionModePicker`, `PermissionModeGlyph`, tone and icon enums, `PERMISSION_TRIGGER_CLASS` (sized `calc(var(--chat-font-size,14px)*9/14)`; the fallback matters outside a chat root). Only the `red` (bypass) tone colours the resting trigger, as a tint; the open menu uses every tone. The menu is a vertical track with a sliding highlight, a `detail` line for the highlighted mode, a check on the current one, and wrapping arrow/Home/End keys. `permissionModeToneRgb` is shared with `ModelChipSegmentMenu`. |
+| `components/shared/BlockedAction.tsx` | `BlockedActionReason` (id, title, detail, optional fix), `BlockedReasons`, `describeBlockedReasons`, and `BlockedActionButton`, which takes the reasons instead of a `disabled` boolean, so no control is disabled without its explanation. |
 
-Quick slots — nine user-assigned actions on a leader chord plus a digit — are
-documented in [Quick slots](quick-slots.md). `QuickSlotsHost` is mounted once in
-`AppShell`; the active composer publishes the insert/model/thinking surface
-through `renderer/quickSlots/useQuickSlotComposerTarget.ts`, and slots reach
-only a composer that is on screen.
+**Cross-machine drafts** do not rebind the tab. `AgentChatPane` freezes the
+selected `OpenProjectBinding` for discovery, slash commands, file search,
+attachments, launches, rollback and recovery.
+
+- An unresolved or disconnected machine falls back to this computer once the
+  catalog resolves. While it loads, the saved choice stays; when unavailable,
+  the picker shows an unavailable row and **Use this computer**.
+- A machine switch inside one draft copies local images and keeps image URLs;
+  other files and machine-owned context are removed. Send waits for the copy;
+  a failed copy blocks send until the user switches back or removes them.
+- Restoring a draft after a tab switch reconciles the machine first, so it is
+  never taken for a user switch.
+- Browser, App Control and iOS panels fail closed when their local service
+  cannot act on the chat's machine.
+
+Quick slots (nine actions on a leader chord plus a digit) are in
+[Quick slots](quick-slots.md). `QuickSlotsHost` is in `AppShell`; the visible
+composer publishes its target through
+`renderer/quickSlots/useQuickSlotComposerTarget.ts`.
 
 ## Pane layout
 
 `AgentChatPane` is the mount point. It:
 
-1. Subscribes to `ade.agentChat.event` for the current session and
-   accumulates envelopes into local state.
-2. Derives:
-   - Message rows via `chatTranscriptRows.ts`.
-   - Active/idle turn state via `chatTurnState.ts`; terminal transcript
-     evidence takes precedence over an eventually consistent active summary.
-   - Pending inputs via `pendingInput.ts` — a raw
-     `derivePendingInputRequests` pass, then a read-time
-     `resolvePendingInputs` join against the session summary in the
-     `resolvedPendingInputsBySession` memo. Every reader goes through the
-     memo; nothing reads the raw derivation.
-   - The chat's one task list via `deriveChatTaskList()` in `shared/chatTaskList.ts`.
-   - Scheduled/background work via `deriveScheduledWorkSnapshots()`.
-   - Subagent snapshots via `deriveChatSubagentSnapshots()`.
-   - Turn diff summaries via `deriveTurnDiffSummaries()`.
-3. Resolves a `ChatSurfacePresentation` (standard, resolver, worker
-   thread, activity feed) to drive header title, accent color, chips.
-4. Mounts the header, message list, composer, and the appropriate
-   side panels based on the session's `executionMode` and
+1. Subscribes to `ade.agentChat.event` for the session and keeps the
+   envelopes.
+2. Derives message rows (`chatTranscriptRows.ts`), turn state
+   (`chatTurnState.ts`; terminal transcript evidence wins), pending inputs
+   (`derivePendingInputRequests`, then `resolvePendingInputs` against the
+   summary in the `resolvedPendingInputsBySession` memo, which every reader
+   uses), the task list (`deriveChatTaskList()`), scheduled work
+   (`deriveScheduledWorkSnapshots()`), subagents
+   (`deriveChatSubagentSnapshots()`) and diff summaries
+   (`deriveTurnDiffSummaries()`).
+3. Resolves a `ChatSurfacePresentation` (standard, resolver, worker thread,
+   activity feed) for the title, accent and chips.
+4. Mounts the header, list, composer and side panels by `executionMode` and
    capabilities.
 
-The `ChatSurfaceShell` wraps everything with a floating header (backdrop
-blur + subtle glass-morphism), a body region using `--chat-canvas-bg` (or
-`canvasFill` when the host supplies one), and a footer that contains the
-composer. The empty Work draft uses a transparent fill so the shared
-tools-picker mesh behind the pane is visible.
+`ChatSurfaceShell` gives a floating header (tinted and opaque, no backdrop blur), a body on `--chat-canvas-bg`
+(or `canvasFill`; the empty Work draft is transparent) and a composer footer.
 
-In an open Work chat (`AgentChatPane` passes `overlayFooter`) the footer floats
-over the bottom of the body, and the transcript scrolls behind the composer and
-its chip row. The footer's height reaches the body through
-`chatComposerOverlayInset.tsx` and is written straight onto the elements that
-must stay clear of it: the transcript's `padding-bottom` and
-`scroll-padding-bottom`, the right panes, the floating Chat Actions pane, the
-notice overlay, and the floating Jump to latest pill. A pinned reader stays
-pinned when the prompt grows. Status chips and docked banners get an opaque
-backing there. The gaps between controls stay click-through to the thread.
-With an app panel open the composer docks below the column instead.
+In an open Work chat (`overlayFooter`) the footer floats over the body and the
+transcript scrolls behind it. `chatComposerOverlayInset.tsx` writes the
+footer's height onto the transcript's `padding-bottom` and
+`scroll-padding-bottom`, the right panes, the Chat Actions pane, the notice
+overlay and the Jump to latest pill. A pinned reader stays pinned when the
+prompt grows. Chips and banners get an opaque backing; gaps stay
+click-through. With an app panel open the composer docks below the column.
 
-Floating PR and Chat Actions panes may reserve horizontal gutter when they
-would otherwise cover the centered chat column. That reservation belongs only
-to the selected-session branch that mounts those panes. The empty/draft branch
-uses a zero reserve even when the lane's persisted PR-pane preference is open,
-so a new-chat composer is centered rather than shifted for invisible chrome.
+Floating PR and Chat Actions panes reserve a gutter only in the
+selected-session branch; an empty draft reserves none, so its composer stays
+centered.
 
 ### Empty draft surface
 
-The draft (new-chat) branch is three elements at its core, not seven: the wordmark, the
-composer, and a **launch shelf** tucked under the composer, with the activity
-module below. There is no standing "Start a new conversation" caption — the
-wordmark already identifies the app, so the line was a band of vertical space
-spent restating what the user could see.
+The draft is the wordmark, the composer, a **launch shelf** under it, the
+activity module (`mt-11`, width-capped to the shelf) and the
+`ImportFloatingBadge` hint as the last row. Optical lift is wrapper padding
+(`pb-[100px]` with no app panel), not a negative margin.
 
-Optical lift is wrapper padding (`pb-[100px]` when no app panel is open),
-not a negative margin on the column. The usage card sits a step below the
-shelf (`mt-11` on `WorkActivityModule`) and is width-capped to the shelf.
+- Every row below the wordmark is `shrink-0`; the wordmark absorbs overflow by
+  letterboxing (`h-full w-full object-contain`, not `h-auto max-h-full`,
+  which crops). The badge renders nothing when dismissed or with no project.
+- **The shelf answers "where this runs":** `DraftMachinePicker`, a compact
+  `LaneCombobox` (28 px, like the composer pills), then Shell and Import
+  with text labels. Shell and Import act on the shelf's lane. The composer
+  sits above at `z-10`.
+- **Machine and lane are separate controls.** `DraftMachinePicker` renders
+  nothing below two machines; `AgentChatPane` passes `draftShelfLanes` (bare
+  lane ids for the machine). A draft's toolbar has no machine label; a
+  running chat's toolbar shows its machine read-only (move it with **Hand
+  off… → Another machine**).
+- **The lane list is only the picked machine's lanes** plus auto-create
+  (`selectorLanes` from `executionLanes`). Lane ids are unique per machine and
+  each machine has its own Primary.
+- `handleMachineChange` only clears the error and records the machine; it
+  keeps `draftLaunchTargetId`, so "Auto-create lane" stays.
 
-The column's row order is wordmark, composer,
-launch shelf, activity module, then the `ImportFloatingBadge` import hint as the
-last row. The hint used to sit between the composer and the shelf, where it
-wedged itself into the shelf's row and overlapped it in a narrow window; at the
-bottom it reads as a hint below
-everything it can act on rather than a band cutting the stack in two. Every row
-below the wordmark is `shrink-0` — the wordmark is the only row meant to absorb
-overflow in this height-capped flex column, and it does so by filling its
-aspect-ratio box and letterboxing inside it (`h-full w-full object-contain`).
-Sizing it `h-auto max-h-full` instead left the image at its natural height once
-the box shrank, so a short window cropped the wordmark against the enclosing
-`overflow-hidden` wrapper rather than scaling it down proportionally. The badge
-renders zero nodes when it is dismissed or has no project, so a retired hint
-spends none of the column's `gap-3`; both are pinned by tests.
+**Lane remap.** After a machine change the hook made itself (a user pick, or
+the fallback off a vanished machine; `pendingLaneRemapRef`), the lane is
+re-resolved by identity:
 
-The shelf holds everything that answers **where this runs**, as two adjacent
-dropdowns plus two labelled actions: `DraftMachinePicker`, then a `LaneCombobox`
-(mounted `compact`, so its 28px trigger matches the composer pills above it),
-then Shell and Import. The composer sits above it at `z-10`.
+- `remapDraftLaneToMachine`: the same id if it exists there, else the new
+  primary for an old primary, else the same name, else the new primary.
+  `findPrimaryDraftLane` prefers `laneType === "primary"` over the name.
+- The old lane is looked up in its own machine's list; only a never-read
+  machine lets the target answer for the raw id.
+- A machine handed in with its own lane (`initialDraftMachineId`: **New chat in
+  this lane**, **Start chat in lane**, a PR's chat action) is never remapped,
+  nor is an outside lane request naming the picked machine while it loads.
+  Switching back to the source machine drops the pending remap.
+- An unknown lane on an unchanged machine stays an error. A catalog with zero
+  lanes keeps the selection unresolved until the real list arrives.
 
-Machine and lane are **separate controls on purpose**. Folding them into one
-list made that list carry two orthogonal choices: every lane row had to name its
-machine, and the list grew by machine count rather than staying the length of one
-machine's lanes. Choosing the machine first keeps the lane list flat, short, and
-scoped — `DraftMachinePicker` renders nothing below two machines, and
-`AgentChatPane` passes `draftShelfLanes` (bare lane ids for the selected machine)
-rather than the machine-qualified option ids the combined selector needed. A
-draft therefore has no machine label in its toolbar: the shelf is the live
-machine control. Once a chat exists, the toolbar instead shows its owning
-machine as a read-only execution label; to move it, right-click the session
-card and choose **Hand off… → Another machine**.
+Over a scene picture, the shelf and the Chat / CLI switch are frosted with
+`SceneFrost` (`renderer/scene/SceneFrost.tsx`), not with a `backdrop-filter`:
+each mounts its slice of the window-sized picture under a plain `filter` blur,
+with its own tint on top (`styles/scene.css`). The blur is drawn once, so typing
+the first message redraws only what changed. Without a picture they keep a flat
+tint. The activity card under the shelf stays an opaque plate with no blur. The
+slice follows its box when the box moves: `SceneImageLayer` with
+`variant="frost"` also watches the boxes around it for a size change.
 
-The lane list is **strictly the picked machine's lanes**, plus the auto-create
-row: `useDraftMachineRouting.ts` builds `selectorLanes` from `executionLanes`
-alone and never carries a lane over from the machine the user just left. Lane
-ids are unique per machine, not globally, and every machine has its own Primary
-with its own id — preserving the previous machine's selection as a row put a
-second "Primary" in the list next to the real one and let a launch be attempted
-against a lane id the target machine has never heard of.
+**Loading hold.** A foreign machine with no lane read yet holds the selection
+and shows `Loading lanes for <machine>…` (one string for the placeholder and
+every launch path; send is blocked; the name from `machineNameForBinding`).
+Picking it calls `requestCrossMachineLanesForMachine`. The hold ends on a
+read failure, on an intended read set
+(`crossMachineLaneIntendedMachineIds`) that excludes the machine, or after
+`LANE_CATALOG_HOLD_MS` (12 s), and then "Selected lane is not available on
+the selected machine" returns. An empty intended set does not end it. The
+bound machine is not held.
 
-`handleMachineChange` therefore only clears the error and records the machine.
-It does not touch `draftLaunchTargetId`, so a draft sitting on "Auto-create
-lane" keeps that target and only its underlying machine moves — auto-create and
-primary are the two targets ADE guarantees on every machine running it.
+**`LaneCombobox`.**
 
-The lane itself is re-resolved by **identity**, but only after a machine change
-the hook makes itself: the user's pick in the machine picker, or the fallback off
-a machine that went away (`pendingLaneRemapRef` records the machine and lane it
-came from). A machine handed in through `initialDraftMachineId` — **New chat in
-this lane**, **Start chat in lane**, a PR's chat action — arrives with its own
-lane and is never remapped; the lane prop lands a render after the machine, so
-remapping there would read the previous lane and replace the requested one. The
-same holds for an outside lane request that names the already-picked machine
-while its catalog loads, and switching back to the source machine drops the
-pending remap. `remapDraftLaneToMachine` answers "what does the old
-selection mean here": the same lane if that id happens to exist on the new
-machine, else the new machine's own primary when the old lane was a primary,
-else a lane of the same name, else that machine's primary.
-`findPrimaryDraftLane` decides what "primary" means, and `laneType === "primary"`
-wins over a lane merely *named* Primary, matching the auto-create rule. The
-previous lane is looked up in the list of the machine it came from — flattening
-every machine would match a same-id lane somewhere else — and only when that
-machine was never read at all does the target machine get to answer for the raw
-id directly. A user machine change is the only trigger: an unknown lane id on a
-machine that did not change is a genuinely unavailable selection (a deleted
-lane, a deeplink into another checkout) and keeps failing loudly rather than
-silently retargeting the prompt. If the new machine's catalog decodes to zero
-lanes the selection stays unresolved so the remap runs again when the real list
-arrives.
+- A one-line trigger (dot, name, branch, caret) and a search field; the
+  branch truncates before the name.
+- `fullWidth` emits no `max-w-*` and nothing inside sets a min-content floor;
+  `computeLanePopoverPlacement` clamps both axes.
+- The popover portals to `document.body`, or to `PortalContainerContext`
+  (`components/ui/portalContainer.tsx`), which the handoff dialogs set so the
+  list stays clickable in a modal. It has no exit animation, so no portal
+  node outlives `open`.
 
-A machine whose lane catalog has not been read yet has no answer to "which
-lane" — which is not the same as "that lane is unavailable". Picking a foreign
-machine that the union has not read holds the selection unresolved and puts
-`Loading lanes for <machine>…` in the `LaneCombobox` placeholder;
-`AgentChatPane` derives that sentence once and every launch path throws the same
-string, so the composer and a rejected send can never word the state
-differently. Sending is blocked while it stands. The machine name comes from
-`machineNameForBinding` for the bound machine, so a remotely bound tab is never
-labelled "This computer". Picking the machine also calls
-`requestCrossMachineLanesForMachine`, pulling that machine's lane read forward
-instead of waiting out the union's slow foreign cadence.
+**Shelf chrome** is `.ade-chat-launch-shelf` in `renderer/index.css`: it cancels
+the stack gap and the composer margin, overlaps the composer by 1 px and has
+no top border, so the composer's bottom edge is the shared edge.
 
-The hold is **bounded**, because a hold that cannot end is a permanent refusal
-to launch on that machine — strictly worse than the message it replaced. It ends
-on a recorded read failure, on the union resolving an intended read set
-(`crossMachineLaneIntendedMachineIds`) that excludes the machine, and in any case
-after `LANE_CATALOG_HOLD_MS` (12 s); past that the actionable "Selected lane is
-not available on the selected machine" message returns. An *empty* intended set
-is the union's pre-resolution state at project open, not a verdict that the
-machine will never be read, so it does not end the hold — reading it as one made
-the composer flap to "unavailable" and back while the real read set resolved.
-The hold is scoped to foreign machines on purpose: the bound machine's lane list
-is handed to the hook directly, a draft can legitimately arrive before it
-hydrates, and that case keeps its existing tolerant launch path.
-
-Shell and Import keep text labels. As icon-only buttons they were unreadable —
-that was a symptom of solving the wrong problem (compressing controls to fit a
-shelf that was simply too tall).
-
-`LaneCombobox` itself was reworked for this: a single-line trigger (lane dot,
-name, branch, caret) instead of a 40px two-line block, lane colour reduced to
-the dot so the control sits in the same neutral ghost family as its neighbours,
-and a search field. Branch text truncates before the lane name via flex shrink
-factors — the branch is context, the name is the label. Two invariants are pinned
-by tests: `fullWidth` emits no `max-w-*` and nothing inside establishes a
-min-content floor (the measured narrow-pane overflow this component regressed
-before), and `computeLanePopoverPlacement` clamps on both axes including the
-case where neither side fits. The popover portals to `document.body`, or to
-the element in `PortalContainerContext` (`components/ui/portalContainer.tsx`)
-when one is set. A modal Radix dialog blocks pointer events and focus outside
-its content, so the handoff dialogs set their content as the container and
-the lane list stays clickable inside them. The popover has no exit animation on purpose — a
-portal node that outlives `open` by a frame leaks into whatever renders
-next, which is how its search field started colliding with unrelated
-`getByRole("textbox")` queries in the chat suites. Its machine-grouping support
-still exists for other callers; the shelf simply never triggers it.
-
-Its chrome is the `.ade-chat-launch-shelf` class in `renderer/index.css`. The
-shelf cancels both the parent stack's 12px gap and the composer's 12px wrapper
-margin, overlaps the painted composer by one pixel, and omits its top border.
-The composer's bottom edge is therefore the shared edge while the shelf
-supplies the continuing sides and lower corners; no background-colored seam
-sits between the two surfaces. The usage card below the shelf uses the same
-`--work-popover-bg` darkness as the machine/lane submenu, flattened over
-`--color-bg` so the plate stays opaque.
-
-**Keep the margin and padding in that CSS rule, not on the element.** They lived
-briefly as Tailwind arbitrary values carrying CSS variables
-(`-mt-[var(--chat-radius-shell)]`, `pt-[calc(var(--chat-radius-shell)+4px)]`) —
-exactly the kind of class that can fail to compile with no error. When the
-negative margin silently vanishes, the shelf detaches from the composer.
-Nothing in the type system or test suite catches that geometry.
-
-The nesting is also load-bearing: Shell and Import both act on whichever lane is
-selected in this shelf, so presenting them *inside* it encodes a dependency the
-earlier stacked layout inverted — lane selection used to sit below two buttons
-that could not work without it.
+- **Keep that margin and padding in the CSS rule.** As Tailwind arbitrary
+  values with CSS variables they can fail to compile silently, and the shelf
+  detaches. No test catches that geometry.
 
 ### Header
 
-- Session title from `chatSessionTitle()`; falls back to "New chat".
-- When the session is attached to a lane, a lane navigation button
-  renders the lane's label with a branch icon. Clicking navigates to
-  the lane in the Lanes tab via the app store.
-- CTO and resolver surfaces override the title and chips through
+- The title is `chatSessionTitle()`, else "New chat". A lane button (branch
+  icon) opens the lane in the Lanes tab.
+- CTO and resolver surfaces override title and chips through
   `ChatSurfacePresentation` (`assistantLabel`, `accentColor`, `chips`).
-- Lifecycle state stays out of the header. Settled and snoozed state is one chip (`ChatLifecyclePill`) in the
-  composer status strip, `StatusStrip` (`ui/notice/StatusChip.tsx`): a single row of 22px
-  chips on the composer's top edge that sit side by side and scroll sideways
-  instead of stacking over the thread. Settled reads only `Settled ·
-  Un-settle`; what sending does is in the tooltip. It is not duplicated in
-  the header. Wake now calls `wakeSessionNow`, and Un-settle uses the shared
-  lifecycle action path. Both read the same local per-project session cache,
-  with a root cross-machine snapshot fallback for a foreign chat, and the same
-  canonical helpers as the Work sidebar, so the visible state stays consistent.
-  The branch-drift chip shares that strip: `AgentChatPane` renders
-  `<LaneBranchComposerChip laneId={laneId} />` inside it and arms it
-  (`armLaneBranchDriftWarning`) on submit so a turn about to run against a
-  worktree whose HEAD wandered off the lane's branch warns first. See
-  [Terminals and sessions](../terminals-and-sessions/README.md) and
+- **Lifecycle stays out of the header.** Settled and snoozed state is one chip
+  (`ChatLifecyclePill`) in `StatusStrip` (`ui/notice/StatusChip.tsx`), a single
+  row of 22 px chips on the composer's top edge that scrolls sideways. Settled
+  reads `Settled · Un-settle` (what sending does is in the tooltip). Wake now
+  calls `wakeSessionNow`; both use the Work sidebar's lifecycle helpers and
+  cache.
+- The branch-drift chip shares the strip (`<LaneBranchComposerChip
+  laneId={laneId} />`, armed on submit by `armLaneBranchDriftWarning`). See
   [Lanes › Branch drift](../lanes/README.md#branch-drift).
+- **New since you left.** The pane reads `ade.chat.lastViewed.v1:<sessionId>`
+  once per open and passes it as `unreadSince`; the list draws one `New since
+  9:12 PM` divider above the first row that arrived since. Rows that stream in
+  while open never move it.
 
-- **New since you left.** `AgentChatPane` reads when this chat was last on
-  screen on this machine (`ade.chat.lastViewed.v1:<sessionId>` in local
-  storage) once per open and passes it to the message list as
-  `unreadSince`. The list draws one `New since 9:12 PM` divider above the
-  first row that arrived between that time and the open; rows that stream in
-  while the chat is open never move it. It replaced the floating
-  "While you were away" card, which counted only scheduled wake-ups.
+### Retained chat subscriptions
+
+`chatSessionRetention.ts` keeps a hidden chat's `agentChat.onEvent`
+subscription for `CHAT_SESSION_RETENTION_TTL_MS` (5 min), so a returning tab
+shows a current transcript.
+
+- **Renderer, on purpose.** Preload's remote event pump polls only while
+  `hasRemoteRuntimeEventSubscribers()` counts a renderer `onEvent` callback, so
+  a retained subscription keeps the pump alive.
+- **A handoff, not a shared subscription.** The visible pane owns the only
+  subscription. On hide it calls `retainChatSession(sessionId)`; on return
+  `adoptRetainedSession(sessionId)` flushes and tears the module handler down.
+  The handler holds no pane state; it talks only to `ChatSessionRetentionHost`
+  (`subscribe` + batched `appendEvents`).
+- Events batch on a 16 ms timer (`CHAT_SESSION_RETENTION_FLUSH_MS`), because a
+  per-event append re-walks the transcript.
+- `MAX_RETAINED_CHAT_SESSIONS = 2`. At TTL the subscription drops; the cached
+  view stays.
+- The module computes no `turnActive`: adoption goes through
+  `chatTurnState.resolveTurnActive` in `applyCachedSessionView`.
+  `appendRetainedChatSessionEvents` caches the **raw**
+  `derivePendingInputRequests` output and leaves `resolvePendingInputs` to the
+  pane.
 
 ### New-lane launches
 
-A new chat or CLI session on the "Auto-create lane" target opens
-immediately; the brain sets up its lane while the user watches it happen.
-The contract is `shared/types/chatLaunch.ts` (launch snapshot, stages,
-events) and `shared/chatLaunch.ts` (stage labels, status line, progress,
-duration formatting — every surface uses these, none re-words them).
+A new chat or CLI session on "Auto-create lane" opens at once while the brain
+sets up its lane. The contract is `shared/types/chatLaunch.ts` (snapshot,
+stages, events) and `shared/chatLaunch.ts` (stage labels, status line,
+progress, durations; every surface uses these words).
 
-**Stages.** The host decides which stages a launch has and the card renders
-`snapshot.stages` as given: fetch base branch (omitted when the project
-creates lanes from the local base), check out files (with a live
-percentage), apply lane template / set up environment (only when a default
-template or environment config applies, with its nested steps), and start
-agent / start CLI session. Before the host answers, the optimistic snapshot
-predicts fetch (from the last-read project config, no IPC), checkout and
-agent.
+**Stages.** The card renders `snapshot.stages` as the host gives them: fetch
+base branch (left out when lanes come from the local base), check out files
+(live percent), apply template / set up environment (only when one applies,
+with nested steps), and start agent / start CLI session. Before the host
+answers, the optimistic snapshot predicts fetch (from the last-read config),
+checkout and agent.
 
-**Foreground chat.** Send switches the Work view to the new chat in the
-same frame: its row appears in the sidebar (grouped under the lane's name,
-not as an orphan, even though the lane list does not have it yet), the
-composer glides from the draft's centered position into its docked place,
-and the thread shows the prompt bubble with the live setup card under it.
-Until the brain reports `sessionCreated`, the pane reads nothing from the
-session — no summary, history, delta or computer-use snapshot — and renders
-the launch instead; the model picker shows the launch's model. Sends while
-the lane is still being set up go to `chatLaunch.queueMessage` and show as
-queued bubbles; the brain sends them in order once the agent starts. A
-message typed before the brain has accepted the launch (the host would
-answer "Launch not found") waits in `chatLaunchActions` with its bubble
-already showing, and goes out right after `start` lands; every message of
-a launch goes through one chain, so they reach the brain in typing order.
-If the brain refuses one, its bubble goes and the text returns to the
-composer with the error. A queued message the brain could not deliver
-stays in the thread after the agent started, marked "Couldn't send —
-retrying" (the reason on hover), with any message queued behind it, until
-the brain delivers it; while one waits, new sends also go through
-`queueMessage` (`launchRoutesSends`), so they keep their order and act as
-the brain's cue to retry. When
-the chat exists, the same pane (same id) reads its summary and transcript,
-and each stand-in yields to its real row: the user bubble to the real
-`user_message`, the card to the transcript's `ade_card` `lane_setup`
-(`cardId` `lane-setup:<launchId>`).
+**Foreground chat.**
 
-**The setup card.** A header — a phase tile (lane glyph; violet while
-running, emerald when done, amber on failure), the title ("Setting up
-lane…", "Lane setup failed", "Lane set up in 4.2s"), chips for the lane
-name and the base ref, and the live elapsed time — then the shared
-segmented progress rail (`LaunchProgressRail`), then one row per stage
-separated by hairlines: a small tinted tile with the stage's icon
-(CloudArrowDown fetch, Files checkout, Stack / Wrench template or
-environment, Sparkle / TerminalWindow agent or CLI), the label, a muted
-detail ("origin/main at 807fb2c"), checkout's live percent in violet, the
-duration, and a status mark (check, spinning ring, hollow circle, amber
-warning, amber x, or a dash). Environment steps nest under their stage with
-per-kind glyphs (Key env files, ShippingContainer Docker, Package
-dependencies, HardDrives mounts, Copy paths, Scroll setup script). Colour
-carries status everywhere: running is ADE violet, done emerald, warning and
-failure amber — never red. Small icon + text actions sit under a hairline: Details (branch, base,
-worktree, template, error), Start now (while the environment stage runs —
-the agent starts and the remaining steps keep going), Cancel while running,
-and on failure Retry, Start anyway (only when the lane exists and the
-environment stage failed) and Delete. Cancel and Delete confirm first.
-Once a lane exists they delete it (worktree, local and remote branch) and
-the chat. Before a lane exists, Cancel only stops setup. Either way the
-tab closes, Work returns to the draft, and the prompt goes back into the
-composer immediately (merged with anything already typed), without waiting
-for an in-flight fetch to finish. The confirm
-re-reads the launch when the user confirms and never cancels one whose
-agent already started or that completed; if that happens while the dialog
-is up, the dialog closes with "Setup finished — nothing to cancel" (a
-toast when the finish also collapsed the card). A cancel the brain refuses
-shows its reason on the card. Failures are
-amber, never red. While the launch is live the transcript row renders from
-the store's snapshot; afterwards it collapses to "Lane set up in 4.2s ›"
-and expands to the stage list. A reload with no live launch renders the
-transcript payload's rows, identified by each row's `key` (its stage id —
-labels are never matched), with the card's own `title`, the template name
-from the card's `Template` metric, the CLI-vs-chat icon from the `agent`
-row, and a pass row in the warning tone shown as a warning. A failed launch
-this window never started — a chat opened from another device — asks the
-chat's own machine for the launch once (`chat.getLaunch` on the chat's
-binding; failed records do not expire), so the live card with the full error
-and Retry/Delete replaces the payload. Until that lands, the payload's failed
-row shows its error in full under the row instead of clipping it to one
-truncated line.
+- Send opens the new chat in the same frame: its sidebar row (under the
+  lane's name), the composer glide, the prompt bubble and the live setup
+  card. Until `sessionCreated`, the pane reads nothing from the session and
+  renders the launch; the picker shows the launch's model.
+- Sends during setup go to `chatLaunch.queueMessage` as queued bubbles, sent
+  in order once the agent starts. A message typed before the brain accepted
+  the launch waits in `chatLaunchActions` and goes after `start`; one chain
+  keeps typing order. A refused message returns to the composer with the
+  error.
+- A queued message the brain could not deliver stays marked "Couldn't send —
+  retrying" (reason on hover) until delivered; meanwhile new sends also queue
+  (`launchRoutesSends`).
+- When the chat exists, the same pane reads it, and each stand-in yields to
+  its real row: the bubble to `user_message`, the card to the `ade_card`
+  `lane_setup` row (`cardId` `lane-setup:<launchId>`).
 
-**Sidebar row.** While the launch is pending, the row's preview line shows
-the status line ("Checking out files · 62%", or "Fetch base branch failed" in amber)
-with a small spinner, and the status slot says "Setting up" / "Setup
-failed" with no settle/snooze actions. The row height does not change. A
-row born this moment slides in once. The roster lists a stand-in row only
-until the chat exists or while the launch still owns it
-(`isChatLaunchPending`), and only for the active binding and the same
-project on another machine (a binding among the retained cross-machine
-slices) — never another project's launches.
+**The setup card.**
 
-**Background chats and CLI launches.** A background chat clears the
-composer. A CLI launch keeps the prompt in the composer until the CLI
-session is actually starting, because until then the slide-out is the only
-place the launch is visible. The draft shows no banner. The Launches
-slide-out in the app shell's bottom-right stack lists this window's
-launches (`originClientId`) that are background chats or CLI launches of
-either mode — never a foreground chat, whose thread carries the card. It
-has a summary header ("Setting up 2 lanes…", "2 ready · 1 failed") with a
-dismiss X, and one row per launch: prompt kind tile (chat or CLI, with a
-status badge), the prompt title on up to two lines, the status line on its
-own line (a stale fetch says "Fetching latest main (last fetched 2 days
-ago)", not just "Fetching base branch"), the lane name under that, elapsed
-time, and the same `LaunchProgressRail` the thread card uses. A row expands
-to the compact card with its actions and Open once the chat or CLI session
-exists. In that compact card a stage's detail sits under its label, so the
-fetch explanation is not clipped beside it. The slide-out leaves by itself
-three seconds after everything it shows has started; a failed launch stays
-until it is handled or dismissed. Dismissing the slide-out while a CLI
-launch is still fetching cancels that launch (no lane exists yet). Cancel
-puts the prompt back into the composer immediately, without waiting for
-the in-flight fetch to finish, and the fetch itself is aborted.
+- A header: a phase tile (violet running, emerald done, amber failed), the
+  title ("Setting up lane…", "Lane setup failed", "Lane set up in 4.2s"), lane
+  and base chips, and elapsed time. Then `LaunchProgressRail` and one row per
+  stage (icon tile, label, muted detail such as "origin/main at 807fb2c",
+  checkout percent, duration, status mark). Environment steps nest under
+  their stage with per-kind glyphs. Warnings and failures are amber, never
+  red.
+- Actions: Details, Start now (during the environment stage; the agent starts
+  and the steps continue), Cancel while running, and on failure Retry, Start
+  anyway (lane exists and the environment stage failed) and Delete.
+- Cancel and Delete confirm. With a lane they delete it (worktree, local and
+  remote branch) and the chat; before a lane, Cancel only stops setup. The
+  tab closes, Work returns to the draft and the prompt goes back into the
+  composer at once (merged with typed text).
+- The confirm re-reads the launch and never cancels one whose agent started
+  or that completed ("Setup finished — nothing to cancel", or a toast). A
+  refused cancel shows its reason on the card.
+- After the launch, the row collapses to "Lane set up in 4.2s ›". A reload
+  with no live launch renders the payload's rows by each row's `key` (stage
+  id), with the card's `title`, the `Template` metric and the `agent` row's
+  icon. A failed launch this window never started asks the chat's machine
+  once (`chat.getLaunch`; failed records do not expire), and meanwhile shows
+  the failed row's error in full.
 
-**Render cost.** The brain emits up to ~8 snapshots a second during
-checkout, so every surface is built to take them cheaply.
-`useChatLaunchSync` coalesces events to one store write per frame (newest
-per launch; a 50 ms timeout backs `requestAnimationFrame` up so a hidden
-window still advances CLI launches). The store keeps unchanged stage
-objects — and the stage array — across snapshots
-(`shareChatLaunchStages`), so the memoized stage rows and the rail
-re-render only for the stage that moved, and slide-out rows are memoized
-per launch. Work sidebar rows read `useChatLaunchRowState` (pending /
-failed / startedAt only) and a tiny child reads the status line, so a
-checkout tick re-renders one text node rather than the whole `SessionCard`.
-Every live duration reads one module-level clock (`launchClock.ts`, 250 ms,
-running only while a live duration is mounted, paused while hidden) as a
-formatted string, so a node re-renders only when its text changes. The
-rail is compositor-only: fills are `transform: scaleX()` from the left and
-the running segment's sheen is a translated bar (`ade-launch-rail-sheen`);
-reduced motion drops the sheen.
+**Sidebar row.** While pending, the preview line shows the status line
+("Checking out files · 62%", or an amber failure) with a spinner, and the
+status slot says "Setting up" / "Setup failed" with no settle or snooze. The
+height does not change; a new row slides in once. A stand-in row is listed
+only until the chat exists or while the launch owns it
+(`isChatLaunchPending`), and only for the active binding and the same project
+on another machine.
 
-**CLI launches.** The brain stops at `awaiting-client` once the lane is
-ready. `useChatLaunchCliDriver`, mounted beside `useWorkSessions`, starts
-the PTY through the same `launchPtySession` path every Work CLI launch uses
-(disposition = the launch's mode) and reports it with `completeClient`, or
-reports the error. A window reloaded mid-launch no longer has the prepared
-launch and reports that instead of hanging. If the brain does not take the
-reported session (the launch was cancelled meanwhile, or is gone), the
-driver disposes the PTY it just started.
+**Background chats and CLI launches.**
 
-**Composer dock.** Before create/launch work begins, the draft pane captures
-its composer rect (`[data-chat-composer-wrapper]`, or the bottom-bar dock when
-the App Control/iOS panel is open). For a brain-owned new-lane launch, it
-stashes the rect right before the switch; for an existing-lane launch, it
-captures the submitted prompt before the lane/session IPC, retains the visual
-origin with the launch, then transfers it to the resulting session id (1.5 s
-playback TTL). The chat pane takes it in a layout effect, pins its docked composer at the draft position with an inline
-transform, and plays a WAAPI FLIP translate (420 ms,
-`cubic-bezier(0.4, 0, 0.2, 1)`) two frames later, aligning bottom edges and
-centers; it never scales the text field. The
-wait matters: the new pane's first commit can block the main thread for
-150-300 ms and then shift its layout, so an animation started in the layout
-effect was mostly over before its first frame. The docked composer sits in
-a footer with `overflow: hidden`; for the glide, every clipping ancestor
-that does not contain the start rect is set to `overflow: visible` and put
-back on finish. For that one switch `WorkViewArea` skips its blur dissolve
-and swaps the surfaces quickly so the glide is what the eye follows.
+- A background chat clears the composer. A CLI launch keeps the prompt until
+  its session is starting.
+- The Launches slide-out (app shell, bottom right) lists this window's
+  (`originClientId`) background chats and CLI launches, never a foreground
+  chat. Header: "Setting up 2 lanes…" / "2 ready · 1 failed" and X. Rows:
+  kind tile with status badge, prompt title (two lines), status line (a stale
+  fetch says "Fetching latest main (last fetched 2 days ago)"), lane name,
+  elapsed time and `LaunchProgressRail`. A row expands to the compact card
+  with Open once the session exists; there a stage's detail sits under its
+  label.
+- It leaves three seconds after everything started; a failure stays until
+  handled or dismissed. Dismissing it while a CLI launch fetches cancels that
+  launch, aborts the fetch and returns the prompt at once.
 
-**First-message flight.** The same handoff (`chatLaunchDock.ts`) also
-records where the prompt text sat (`[data-chat-composer-text]`, content-box
-origin). The chat pane parks a copy of its first user bubble
-(`[data-chat-user-message-card]`) on the prompt text, then, when the pane
-has settled, flies it to the bubble's settled position (480 ms, the glide's
-curve) with the real bubble hidden until it lands. The handoff captures the
-typed prompt itself (text, font, line height, color, wrap width) and the
-prompt's text box, and the prompt's text box becomes the bubble. Three
-layers: the bubble chrome (no content) starts as the whole text box,
-invisible, and contracts into the bubble while it fades in over the first
-45%; the typed text only rises (it never crosses the screen) and fades out
-over the first 40%; the bubble's own text rides inside the box and fades in
-from 25% to 70%. Every layer is laid out once at its end geometry and
-animates only `transform` and `opacity`, so the flight runs on the
-compositor and stays smooth while the main thread mounts the new chat. A
-headless benchmark under simulated main-thread load (a 150 ms block, then
-35 ms tasks every 50 ms) measured the earlier `left`/`top`/`width`/`height`
-version freezing 50-66 ms and jumping 150-171 px; the transform version
-never froze and moved at most 30 px per frame. The docked composer's
-text surface stays blank until the glide lands, so its placeholder never
-shows under the copy. Both layers drop `backdrop-filter`:
-a moving glass blur re-blurs every frame. The copy lives in a
-`document.body` overlay, not in the transcript scroller, and copies the
-inline appearance variables of `[data-chat-appearance-root]`. It runs only for the first message of a
-new chat, on all three ways a draft becomes a chat:
+**Render cost.** The brain sends up to ~8 snapshots a second during checkout.
 
-- *New lane (brain-owned launch).* The synthetic prompt row is the target.
-- *Existing lane (renderer-owned launch).* A foreground chat launch keeps
-  its prompt in the composer until the chat opens (so the text never
-  vanishes into an empty wait). The sent prompt and its text origin are
-  captured before the IPC wait, then the new pane seeds its optimistic bubble
-  from that prompt on mount. Text and attachments added while the launch waits
-  remain in the composer after the sent content is handed off.
-  `clearDraftLaunchComposer` also removes submitted content from stored drafts
-  when the pane unmounted mid-launch.
-- *In-place create (pane with no draft launch).* `submit` measures the
-  empty-state composer before `createSession` in both the inline and bottom-bar
-  layouts; a layout effect on
-  `selectedSessionId` hides the exiting empty-state composer copy and plays
-  both FLIPs. The optimistic-reset effect keeps a bubble whose session is
-  the one just selected.
+- `useChatLaunchSync` writes the store once per frame (newest per launch; a
+  50 ms timeout backs `requestAnimationFrame` for a hidden window).
+- `shareChatLaunchStages` keeps unchanged stage objects, so only the moving
+  stage re-renders; slide-out rows are memoized.
+- Work rows read `useChatLaunchRowState` (pending / failed / startedAt) and a
+  child reads the status line, so a tick updates one text node.
+- Live durations read one clock (`launchClock.ts`, 250 ms, only while one is
+  mounted, paused while hidden) as text.
+- The rail is compositor-only (`transform: scaleX()`, the
+  `ade-launch-rail-sheen` bar; no sheen under reduced motion).
 
-**Departing draft chrome.** A launch from the Work draft also sends the rest
-of the draft surface off. Elements marked `data-draft-depart` inside
-`[data-work-draft-surface]` (the Chat/CLI switcher is `rise`; the logo, the
-launch shelf, the usage module and the import hint are `fade`) are cloned
-into a fixed overlay over the originals at stash time, because the opening
-chat covers the draft surface on its first frame. When the chat settles, the
-switcher morphs into the chat's header (`[data-chat-shell-header]`, 420 ms,
-the glide's curve): a bar layer (the header clone with its glyphs made
-transparent) grows out of the pill while it fades in, the pill's labels fade,
-and a content layer (the header clone with its backgrounds made transparent)
-fades in from 60% at the final place. The real header is hidden from the
-chat's first paint until the morph lands, so the header and the switcher are
-never on screen together. Without a header to land in, the switcher flies up
-off the top (420 ms, ease-in). The rest fades out and drops 10 px (260 ms). Transform and opacity only; each layer is laid out
-once (`contain: layout style`). Copies that no chat plays remove themselves
-after the stash TTL.
+**CLI launches.** The brain stops at `awaiting-client` once the lane is ready.
+`useChatLaunchCliDriver` (beside `useWorkSessions`) starts the PTY through
+`launchPtySession` (disposition = the launch's mode) and reports it with
+`completeClient`, or the error. A window reloaded mid-launch reports that it
+lost the prepared launch. If the brain does not take the session, the driver
+disposes the PTY.
 
-If the bubble does not mount within 500 ms the flight is skipped. Both
-animations are skipped for reduced motion and when ADE's latest resource
-sample is at pressure level 3 or higher (`latestAppResourcePressureLevel`,
-fed by the top bar's sampler): frames drop then, and a stuttering flight
-reads worse than none. They also skip while the window is hidden (no
-animation frames run), and a parked handoff that sees no frames within
-1.5 s gives up: the copy is removed and the composer restored. The
-animations themselves are transform and opacity only; the real cost is the
-chat pane mount, which happens either way.
+**Composer dock.**
+
+- The draft captures its composer rect (`[data-chat-composer-wrapper]`, or
+  the bottom-bar dock with an App Control/iOS panel open). A brain-owned launch
+  stashes it right before the switch; an existing-lane launch captures it
+  before the IPC and moves it to the new session id (1.5 s TTL).
+- The chat pane pins its docked composer at that spot and, two frames later
+  (the first commit can block 150–300 ms), plays a WAAPI FLIP translate (420
+  ms, `cubic-bezier(0.4, 0, 0.2, 1)`), aligning bottom edges and centers. It
+  never scales the field.
+- Clipping ancestors that do not contain the start rect become `overflow:
+  visible` for the glide. `WorkViewArea` skips its blur dissolve for that
+  switch.
+
+**First-message flight** (`chatLaunchDock.ts`).
+
+- The handoff records the prompt text box and its typed text and style. The
+  pane parks a copy of its first bubble (`[data-chat-user-message-card]`) on
+  the prompt text and, once settled, flies it to the bubble (480 ms) with the
+  real bubble hidden.
+- Three layers: the chrome contracts from the text box into the bubble (fade
+  in over 45%); the typed text rises and fades out (40%); the bubble text fades
+  in from 25% to 70%. Each layer is laid out at its end geometry and animates
+  only `transform` and `opacity`, so it stays smooth while the chat mounts.
+- The docked composer's text stays blank until the glide lands. Neither layer
+  uses `backdrop-filter`. The copy lives in a `document.body` overlay with the
+  inline appearance variables of `[data-chat-appearance-root]`.
+- It runs for the first message of a new chat in all three paths: a new lane
+  (the synthetic prompt row is the target); an existing lane (the composer
+  keeps the prompt until the chat opens, the new pane seeds its optimistic
+  bubble, later additions stay in the composer, and
+  `clearDraftLaunchComposer` cleans stored drafts if the pane unmounted); and
+  in-place create (`submit` measures before `createSession`; a layout effect
+  on `selectedSessionId` hides the old composer and plays both FLIPs).
+
+**Departing draft chrome.** `data-draft-depart` elements in
+`[data-work-draft-surface]` (the Chat/CLI switcher is `rise`; logo, shelf,
+usage module and import hint are `fade`) are cloned into a fixed overlay at
+stash time. When the chat settles, the switcher morphs into
+`[data-chat-shell-header]` (420 ms): a bar layer grows out of the pill, the
+labels fade, a content layer fades in from 60%. The real header is hidden
+until the morph lands. With no header, the switcher flies off the top. The
+rest fades and drops 10 px (260 ms). Transform and opacity only (`contain:
+layout style`); unplayed copies remove themselves after the TTL.
+
+**The reply ends the send animations.** When the shown chat's reply shows the
+first text of its turn (`isFirstTextOfTurn`, `lib/chatSessionEvents.ts`) while
+that chat's draft copy is still on screen (copies are keyed by the chat that
+played them), or within 1 s after that chat took over from its draft,
+`settleSendHandoff` removes the copies and finishes the `WorkViewArea`
+dissolve (`onSendHandoffSettle`) in the same frame, so a quick reply is never
+drawn under a fade or a blur. The 1 s covers a dissolve that outlives the
+draft copy, and one that plays with no copy (the copy skips under resource
+pressure). Only animations that started within 250 ms of the take-over end
+(`startedWithSendHandoff`), so a later transition (a grid, another chat) plays
+in full. That first text also flushes in the next frame, not at the next
+work beat. A reply that comes after the animations end changes nothing.
+
+**Skips.** The flight is skipped when the bubble does not mount in 500 ms.
+Both animations are skipped for reduced motion, at resource pressure level 3
+or higher (`latestAppResourcePressureLevel`) and while the window is hidden;
+a handoff that sees no frames in 1.5 s gives up and restores the composer.
 
 ## Composer
 
-`AgentChatComposer` supports:
+### Turns, failures and limits
 
-- **Post-failure recovery.** A failed/interrupted turn releases the input and
-  send controls. A failed turn's line offers **Retry**, which resends the
-  original user prompt (with its attachments, context items, and metadata) in
-  the same durable provider thread. Usage limits offer no Retry; the chip above
-  the composer owns them. Recovery never starts automatically and is disabled
-  while another turn is active.
+- **Post-failure recovery.** A failed or interrupted turn releases the input.
+  A failed turn's line offers **Retry**, which resends the original prompt
+  (attachments, context, metadata) in the same provider thread. Usage limits
+  have no Retry; the chip owns them. Recovery never starts by itself and is
+  disabled while another turn runs.
+- **Usage-limit resume.** With `AgentChatSessionSummary.usageLimitResume`
+  (the source of truth), `UsageLimitChip`
+  shows `Usage limit reached · resumes in …` with **Cancel**, `auto-resume
+  off` with **Resume in …**, `paused after 2 tries` with **Try again**,
+  `resuming…`, or the provider's name when it gave no reset. **Continue on
+  <account>** copies the provider thread to another account with room and
+  resumes there; a thread that cannot move continues in a new chat in the
+  same lane (a compaction-only turn reports the failure). Clock and provider
+  text are in the tooltip.
+- **Quiet limits.** A turn that ended at a 429, or the live resume turn, shows
+  `Paused · usage limit · <elapsed>` in its footer, with usage behind the
+  details. Two or more consecutive failed subagent results naming a usage
+  limit fold into `<n> agents stopped · usage limit`.
+- **Work-list badge.** `sessionStatusPresentation` shows `armed` / `resuming`
+  as a neutral `Resumes <local time>` / `Resuming`, and `paused` as `Paused ·
+  limit`. `opted_out` and `no_reset` fall through to the normal phase.
+- **Deferred model handoffs.** A new model in an existing chat changes only the
+  composer until the next send; its permission, effort and Fast controls stay
+  local too. The pick is per chat. Send applies the handoff with those
+  controls. A `model_handoff` divider (two provider marks; iOS draws logo →
+  `HANDOFF` → logo) is recorded only when the top-level provider group
+  changes; OpenCode, Cursor and Droid are one group each. A same-provider
+  switch still rebinds the runtime but draws no divider, and renderers drop a
+  same-provider pair from older transcripts.
 
-- **Usage-limit resume.** When the host reports `AgentChatSessionSummary.usageLimitResume`,
-  `UsageLimitChip` joins the composer's status row: `Usage limit reached ·
-  resumes in …` with **Cancel**, `auto-resume off` with **Resume in …**,
-  `paused after 2 tries` with **Try again**, `resuming…`, or just the
-  provider's name when it published no reset. **Continue on <account>** shows
-  when the host publishes another account with room, and continues *this* chat
-  on that account: the provider thread is copied into that login and the same
-  conversation resumes there. A chat whose thread cannot move continues in a
-  new chat in the same lane instead, except after a compaction-only turn, which
-  reports the failure. The clock and the
-  provider's own sentence are in the tooltip, and the chip disappears when the
-  host clears the resume state.
-  The `usageLimitResume` state, not the deprecated parked-until mirror, is the
-  renderer source of truth.
+### Input
 
-- **Quiet limit presentation.** A turn that ended at a provider 429 or is
-  anchored to the live resume turn renders `Paused · usage limit · <elapsed>`
-  in the completed-turn footer; the usage row moves behind the turn details
-  disclosure. A consecutive run of two or more failed subagent results whose
-  summaries identify a usage/rate limit folds into one expandable
-  `<n> agents stopped · usage limit` row. Interrupt-stopped subagents keep
-  their separate interruption group semantics.
+- **Auto-grow** up to `composerMaxHeightPx`; grid tiles pass a fixed 144 px.
+- **Paste is plain text.** The rich editor inserts the clipboard's
+  `text/plain`, so pasted text takes the prompt's own style. Chips, images,
+  files, folded large pastes and URL chips are handled as before.
+- **Focus-on-active.** The composer takes focus when its pane is active
+  (`isTileActive: true` for grid tiles).
+- **Smart links.** A completed HTTP(S) or `ade://` URL becomes an atomic violet
+  chip with the provider's mark (`smartLinkChipMark.ts`: GitHub, Linear
+  `LINEAR_LOGO_PATH`, ADE), or a globe that a resolved favicon replaces
+  (`chat.resolveSmartLinkPreview`). The literal URL stays in the draft and is
+  what the agent gets. Click, Enter or Space opens Copy link / Remove link;
+  Backspace/Delete removes the whole chip. The editor is left-aligned.
+- **Chips.** Every chip has a kind-naming `data-composer-chip` attribute and
+  keeps its literal text in `data-composer-chip-text`. Chips are
+  `contentEditable="false"`, so a `selectionchange` effect marks intersected
+  chips with `data-composer-chip-selected` and `index.css` paints an overlay;
+  see [Chip selection marking must stay cheap](#fragile-and-tricky-wiring).
+- **Chat-context chips.** Select assistant output → Add to chat. The chip shows
+  the quote's first words, serializes an `<ade-chat-context>` block telling
+  the agent the text after it is the user's reply, and the sent message shows
+  a quote card.
+- **Typed triggers** anywhere in the draft; see
+  [The command menus](#the-command-menus). Selecting replaces only the trigger
+  span (`replaceComposerTriggerSpan`), or only `@` plus the label for a
+  multi-word pick (`composerTriggerForSelection`). A lone leading command keeps
+  the fill-the-draft path (`/clear` intercept, argument hints). The textarea
+  draws a backdrop overlay for confirmed tokens. IME composition freezes
+  trigger checks until `compositionend`.
+- **File search** (`ade.agentChat.fileSearch`, 40 ms debounce, per-session
+  cache, stale-result guard). An empty-query search on bind warms the lane's
+  index (`fileService.warmQuickOpenIndex`).
+- **Slash commands.** Local commands (`/clear`, `/login`) resolve in the
+  renderer where the provider owns them. SDK commands, Codex prompt files
+  (`.codex/prompts/**/*.md`), Claude command files (`.claude/commands/**/*.md`)
+  and skills (`.claude/skills`, `.agents/skills`, `.ade/skills`,
+  `.codex/skills`, `ADE_AGENT_SKILLS_DIRS`, bundled roots) merge through
+  `ade.agentChat.slashCommands`. Only a local `/clear` is intercepted; every
+  other command goes to the agent. `isProviderSlashCommandInput`
+  (`shared/chatSlashCommands.ts`) reads `"/rebase the lane?"` as text and
+  `"/plan"` as a command.
+- **Issue context.** The attach menu (Linear and GitHub) opens
+  `LinearIssueSelectModal` / `GitHubIssueSelectModal`; GitHub only when
+  `detectRepo()` matches this project, and never in personal chats. Items are
+  `linear_issue` / `github_issue` (`chatContextAttachments.ts`); sending
+  records them on the session (`attachLinearIssueToSession` /
+  `attachGitHubIssueToSession`). PRs are not attachable. iOS has the same
+  section, gated per attach command and per the focused machine's project; a
+  CLI start records Linear only. PR bodies get `Refs ADE-123` and `Closes
+  owner/repo#42`; see [Linear integration](../linear-integration/README.md).
+- **Drag a chat in.** A Work row's drag carries `CHAT_MENTION_DND_MIME` (`{ kind,
+  id, title }`); dropped on a composer ("Drop to reference") it becomes an
+  `@chat:` / `@term:` chip. A chat dropped on itself is ignored.
 
-- **Work-list badge.** `sessionStatusPresentation` projects a live `armed` or
-  `resuming` resume state into a neutral waiting row (`Resumes <local time>` or
-  `Resuming`); a `paused` state reads `Paused · limit`. `opted_out` and
-  `no_reset` fall through to the ordinary session phase because they have no
-  scheduled wake. This keeps a chat waiting on a published reset out of the
-  red **Failed** state while preserving a truthful failure state when no resume
-  is armed.
+### The command menus
 
-- **Deferred model handoffs.** Choosing a different model in an existing chat
-  updates the composer locally but leaves the committed session and provider
-  runtime unchanged until the next message is sent. Permission, reasoning, and
-  Fast Mode controls for that pending model stay local too — writing them
-  immediately would apply the new provider's fields to the still-bound previous
-  provider and snap the picker back to a default. The pending pick is scoped to
-  that chat: switching to another locked Work chat hydrates the incoming
-  session instead of carrying the pick across. Send applies the existing
-  handoff together with those pending native controls. A `model_handoff`
-  divider is recorded only when the *top-level provider group* actually
-  changes — `claude` → `codex` is a handoff; Claude Opus → Claude Fable is
-  not, and neither is swapping the vendor model fronted by an aggregator
-  provider (OpenCode, Cursor, and Droid each collapse to a single group).
-  A same-provider switch is still a full model change: it tears down and
-  rebinds the provider runtime and re-adopts the title, it just emits no
-  handoff, because a divider with the same logo on both sides says nothing.
-  When one is emitted, desktop draws the divider with the previous and
-  current provider marks (20px marks, one baseline) and keeps the current
-  provider mark stacked above prior handoff marks on the Work session card.
-  iOS draws its own
-  logo → `HANDOFF` → logo divider. Both renderers additionally drop a
-  same-provider pair at render time, so an older transcript that already
-  carries `Claude → Claude` stops showing it.
+`ChatCommandMenu.tsx` draws the `/`, `@` and `#` menus from a `ComposerTrigger`
+(`shared/composerTriggers.ts`), so a trigger opens mid-draft too.
 
-- **Text input** with auto-grow up to `composerMaxHeightPx`. Grid tiles
-  pass a fixed 144 px ceiling (computed statically from `layoutVariant`)
-  rather than the old `ResizeObserver`-based 28 %-of-height formula;
-  that eliminated the observer churn without changing the visible
-  ceiling for normal tile sizes.
-- **A paste into the rich editor is plain text.** Text pasted into the
-  contenteditable prompt box enters at the caret as the clipboard's
-  `text/plain`, so it takes the prompt box's own font and colour instead of
-  the source's HTML — a copy from a web page or a chat transcript used to
-  carry its size, weight and white background along. Chip payloads, images
-  and files, large pastes folded into a `Pasted · N lines` attachment, and
-  the plain-textarea path (before a completed URL promotes the box) are
-  unchanged; a pasted URL is still tokenized into a chip.
-- **Drafts and scheduled send.** Cmd/Ctrl+S stores the current prompt text
-  in the project runtime and clears the composer only after the runtime confirms
-  the write. The bookmark control immediately left of the context-usage meter
-  performs the same action; invoking either path with an empty composer opens
-  the drafts list instead. The list is one flat set filtered by three tabs —
-  **All**, **Scheduled**, and **Needs you** — whose counts come from the same
-  entries as the rows, so a tab can never disagree with what is under it.
-  Attaching a plain draft to the composer is claim-first: the runtime deletes
-  the row as the claim, and only the caller whose delete won may fill a
-  composer, so the sequential two-machine case can no longer put the same text
-  in two composers (two humans clicking the same row in the same instant is
-  still decided by CRR convergence afterwards, not before). A save copies up to
-  ten attached images into the owning runtime first and rolls the draft back if
-  the runtime cannot preserve them. On another synced runtime the row keeps its
-  text and image count, marks the images as living on another machine, and
-  refuses to attach them — draft images are not replicated, and the refusal is
-  explicit rather than a silent drop. Up to 20 plain drafts are retained, newest
-  first; armed sends are exempt from that prune and capped separately (50). The
-  CRR-backed `prompt_stashes` table makes the list available to other synced
-  runtimes, while renderer calls always route through the currently bound local
-  or remote project runtime. ArrowUp from a new draft preserves it through the
-  selected chat's draft flow before loading the newest sent prompt; ArrowDown
-  past that history restores the draft. Appearance > Drafts button can hide the
-  bookmark; the keyboard shortcut remains active. **Schedule send** opens
-  `DraftSchedulePopover`, which requires an explicit target — this chat or a new
-  chat in a chosen lane — a fire time at the target machine's local clock, the
-  if-late policy (`wait` / `strict` / `grace` window), and the composer's own
-  provider/model/permission/thinking config; an elevated permission mode is
-  badged rather than silently armed. iOS mirrors the same surface in
-  `WorkDrafts.swift` over `chat.listDrafts` / `createDraft` / `updateDraft` /
-  `deleteDraft` / `claimDraft`; those actions are optional in mobile
-  compatibility so an older host hides drafts (or just `Schedule send…`)
-  instead of going limited. Personal chats hide drafts.
-- **Smart links.** Once an HTTP(S) or `ade://` URL is completed by paste,
-  whitespace, or paragraph insertion, the rich editor replaces its visible run
-  with an atomic violet chip. Each chip shows the provider's real brand mark —
-  the GitHub octocat, the Linear mark (shared `LINEAR_LOGO_PATH`), and an ADE
-  monogram — rendered as an inline `currentColor` SVG by `smartLinkChipMark.ts`;
-  generic pages show a globe until they asynchronously adopt a bounded page
-  title and favicon from `chat.resolveSmartLinkPreview` (a resolved favicon
-  replaces the globe). The provider catalog in `smartLinks.ts` still supplies
-  the compact text label beside the mark. The literal URL remains `draft` and
-  is what the agent receives. Hover/title reveals the full URL; click, Enter, or
-  Space opens Copy link / Remove link; Backspace/Delete removes an adjacent or
-  focused chip in one operation. The rich contenteditable is explicitly
-  left-aligned so a pasted link (which swaps the textarea for the rich editor)
-  cannot inherit a centered ancestor's `text-align`.
-- **Focus-on-active.** The composer receives focus whenever the
-  enclosing `AgentChatPane` reports `isTileActive: true` (for packed
-  grid tiles) or any equivalent active state — typing in the grid
-  immediately targets the focused tile's composer.
-- **Attachments** via drag-drop in the composer or anywhere in the selected
-  chat surface, paste, and an inline picker. Pasted and dropped image files
-  show a pending thumbnail while ADE writes the temp attachment. Electron
-  clipboard images use
-  `ade.app.saveClipboardImageAttachment` when available so the main
-  process can save the image and return a small preview without sending
-  the full base64 payload through the renderer; the legacy
-  `ade.agentChat.saveTempAttachment` path remains as the fallback.
-  The clipboard never holds the file that was copied: a photo copied out of
-  Messages or Photos is a decoded bitmap that Electron re-encodes as PNG, often
-  several times the size of the photo and over the 10 MB pasted-bytes ceiling.
-  Both main-process clipboard readers fit it with
-  `encodeClipboardImageWithinCap` (`clipboardImageEncoding.ts`): PNG when it
-  fits, otherwise JPEG, shrinking the long edge from 4096 px until it fits, and
-  refusing only below 768 px. On desktop a single pasted image over the
-  ceiling is routed to that reader instead of being refused, unless it is a
-  file with a path on disk (copied in Finder), which streams from its path; if
-  the clipboard turns out to hold no bitmap, the pasted file goes through the
-  normal path, which says why it is refused. The hosted web client keeps the
-  normal path, because its clipboard reader does no fitting.
-  On macOS, `.heic` and `.heif` file drops are converted to JPEG through
-  the main-process image bridge before the temp attachment is saved, so
-  the preview and provider payload use the converted bytes. Windows and
-  Linux do not bundle a HEIF codec; those drops stay out of the attachment
-  list and show a clear instruction to convert the photo to JPEG first.
-  Before reading anything, the composer asks the machine that owns this
-  chat how it stages attachments — once per batch, because the answer is a
-  property of the machine and re-asking mid-batch would only widen the
-  window in which half the files were staged under a different contract.
-  The answer is a `ChatAttachmentStagingMode`, a mode plus the ceiling that
-  goes with it, so the renderer never hardcodes a cap the chosen transport
-  then rejects halfway. There are three: **`copy`** (the chat's machine is
-  this one, so only the path moves), **`upload`** (a paired host advertising
-  the streamed HTTP route), and **`base64`** (everything else). `copy` is
-  decided in preload rather than by the main process, because it is a
-  property of the caller, not of the target.
-  A drag-dropped or picked file carries a real disk path
-  (`window.ade.project.getDroppedPath`, backed by Electron `webUtils`), so
-  under `copy` or `upload` it is staged by path — the bytes never enter the
-  renderer — and any file type up to 50 MB is accepted. Clipboard pastes,
-  HEIC files the renderer converts first, and every file in the hosted web
-  client have no path, so they take the base64 leg with its 10 MB ceiling
-  whatever the machine said. The image MIME sniff on that leg runs on the
-  sync host only (remote peers); the local IPC/action handlers check size
-  and extension shape.
-  When staging fails for a reason a retry could fix, the
-  composer keeps the file handles and offers **Try again** beside the
-  error; a size rejection does not, because retrying it cannot succeed, and
-  neither does a HEIC the renderer could not convert, which would fail the
-  same way every time.
-- **Issue context.** The composer attach menu (~180px, opaque, Linear and GitHub rows, no subtitle) opens `LinearIssueSelectModal` or `GitHubIssueSelectModal`. GitHub is offered only when `detectRepo()` returns this project's repository; personal chats hide GitHub and still allow Linear. Each attachment is a `linear_issue` or `github_issue` context item built by `makeLinearIssueContextAttachment` / `makeGitHubIssueContextAttachment` from `chatContextAttachments.ts`. Sending the turn persists the issue on the chat session (`attachLinearIssueToSession` / `attachGitHubIssueToSession`); mixed Linear + GitHub attachments are allowed. GitHub PRs are not attachable. Clicking a chip reopens the same pane in details mode (Open + Remove). On send, the composer chip moves onto that user message. iOS **Attach issue** in the chat overflow menu reuses the Linear pane in attach mode when `lane.attachLinearIssueToSession` is advertised. PR bodies get Linear `Refs ADE-123` (`closeOnMerge: false`) and GitHub `Closes owner/repo#42` (`closeOnMerge: true`) — see [features/linear-integration/README.md](../linear-integration/README.md).
-- **Typed triggers anywhere.** `detectComposerTrigger(text, cursorPos)`
-  (`shared/composerTriggers.ts`) finds an in-progress `/command` or
-  `@file` or multi-word `@chat` token that ends at the cursor — at any position
-  in the draft,
-  not just position 0 (`fix @src/foo.ts then run /test`). Both the rich
-  contenteditable and the plain textarea consume it (as do the
-  `WorkViewArea` continue-composer, which imports
-  the same module). A matching multi-word suggestion remains available while
-  following prose is typed, and selecting it replaces only the `@` plus the
-  selected label (`composerTriggerForSelection`), preserving that prose.
-  Selecting a suggestion otherwise replaces exactly the trigger span
-  (`replaceComposerTriggerSpan`); a lone leading command keeps the
-  legacy fill-the-draft path so the local `/clear` intercept and
-  argument-hint scaffold still work. Confirmed tokens render as chips:
-  the rich editor inserts non-editable chip nodes
-  (`data-composer-chip-text`, serialized back to their literal text),
-  and the textarea renders a backdrop overlay that styles confirmed
-  `@path`/`/command` tokens while the textarea text goes transparent
-  (overlay only mounts when at least one confirmed token exists). IME
-  composition freezes trigger re-evaluation until `compositionend`.
-- **Dismissed triggers stay dismissed.** A suggestion search only
-  *narrows* as its query grows — once nothing matched `@cursor`,
-  `@cursor agent` cannot match either — so
-  `isComposerTriggerDismissed(trigger, dismissal)`
-  (`shared/composerTriggers.ts`, over a
-  `ComposerTriggerDismissal` = `Pick<ComposerTrigger, "type" | "start" |
-  "query">`) treats any extension of a dismissed query as still
-  dismissed. Backspacing out of it, editing it into a different query,
-  or typing a new `@` elsewhere is a genuinely new search and reopens
-  the menu. `AgentChatComposer` keeps the last dismissal in a ref — it
-  gates the next open, never a render — and closes the menu three
-  different ways: `closeCommandMenu()` forgets the dismissal because the
-  trigger is resolved (a selection was made, the trigger is gone, the
-  composer locked or reset); `dismissCommandMenu(trigger)` records one,
-  for Escape (an explicit dismissal: typing the rest of the token must
-  not bring the menu back), for Enter/Tab with no matching row, and for
-  the menu's own dead-query report; and
-  `closeCommandMenuKeepingDismissal()` leaves the record alone because
-  this trigger cannot open a menu right now (it is already a confirmed
-  token, or still covered by an earlier dismissal) but nothing is
-  resolved and nothing new was dismissed — clearing the dismissal there
-  would reopen the menu the user just escaped, and recording one would
-  suppress the menu for a trigger the user never dismissed. The dead-query
-  report itself is `ChatCommandMenu`'s `onNoMatches?(trigger)`, fired once
-  when a **non-empty** `@` query settles with zero rows; an empty query is
-  a browse, not a search, so it never reports. `useDebouncedSuggestions`
-  carries the query its results belong to and treats results from a
-  previous provider *or a previous query* as discarded **and still
-  loading**, because state written by this render's effects is invisible
-  to consumers until the next render — `loading` alone would read
-  "settled" for one frame after every keystroke and fire a false
-  no-match.
-- **Chip selection highlight.** Rich-composer chips are
-  `contentEditable="false"`, so the browser skips them when it paints the native
-  selection and dragging across one renders as two disconnected highlight runs.
-  Every chip therefore carries a `data-composer-chip` attribute naming its kind
-  (`ios-context`, `app-control-context`, `built-in-browser-context`, …), and a
-  `selectionchange`-driven effect marks the chips the current range intersects
-  with `data-composer-chip-selected`. `index.css` paints that marker as a
-  translucent `::after` overlay in the platform selection color, so the
-  highlight reads as one continuous run. `range.getRangeAt(0)` is already
-  start-before-end, so a backwards drag needs no special casing, and a range
-  outside the editor simply drops the marks. The performance contract is
-  load-bearing — see
-  [Chip selection marking must stay cheap](#fragile-and-tricky-wiring).
-- **File attach picker** opened with the `@` key. Runs
-  `ade.agentChat.fileSearch` with a 40 ms debounce, a per-menu-session
-  query cache (cache hits render same-frame and revalidate silently),
-  and a sequence guard that discards stale results. The spinner only
-  shows when there is nothing cached to display. The composer fires an
-  empty-query `fileSearch` when it binds to a session, which the action
-  bridge treats as a warm ping (`fileService.warmQuickOpenIndex`) so
-  the lane's name index is built before the first real query.
-- **Slash commands.** Local commands (`/clear`, `/login`) are available
-  where the current provider owns them and are resolved renderer-side.
-  SDK commands, Codex prompt files (`.codex/prompts/**/*.md`), Claude
-  command files (`.claude/commands/**/*.md`), and Agent Skill entries
-  from `.claude/skills`, `.agents/skills`, `.ade/skills`,
-  `.codex/skills`, inherited `ADE_AGENT_SKILLS_DIRS`, and bundled ADE
-  skill roots merge in through `ade.agentChat.slashCommands`.
-  Claude sessions use Claude SDK/runtime commands plus Claude-compatible
-  command/skill files; Codex, Droid, Cursor, and OpenCode also expose
-  the filesystem-backed prompt/skill list when their native runtimes do
-  not auto-list it. Only `/clear` with `source: "local"` is intercepted
-  client-side — every other command is sent to the agent verbatim so
-  provider-native commands still flow. The composer also
-  decides whether a leading-slash draft is a command or just a sentence
-  via `isProviderSlashCommandInput` (heuristics in
-  `shared/chatSlashCommands.ts`): `"/rebase the lane?"` is treated as
-  chat text, `"/plan"` is treated as a command.
-- **Model selection.** `ProviderModelSelector` is embedded and filters
-  the registry via `filterChatModelIdsForSession`. Switching within the
-  allowed family is a normal update; crossing families triggers a
-  handoff. Backed by the modular `ModelPicker` under
-  `renderer/components/shared/ModelPicker/` (see
-  [ModelPicker structure](#modelpicker-structure)). Dynamic-runtime
-  inventories (Cursor / Droid / OpenCode / Ollama / LM Studio) are no
-  longer fetched on chat boot — the picker calls
-  `window.ade.agentChat.modelCatalog({ mode: "cached" | "refresh-stale" |
-  "force", refreshProvider? })` and only triggers a runtime probe when
-  the user actually opens the corresponding rail and the per-provider
-  freshness TTL has lapsed (`runtimeCatalogCache.ts`: 30 min for
-  Cursor / Droid / OpenCode, 30 s for `lmstudio` / `ollama`). Cursor
-  runtime rows carry `cursorAvailability`, so chat surfaces hide
-  CLI-only models while Work CLI setup includes them and hides
-  SDK-only/chat-only rows.
+- **Triggers.** `detectComposerTrigger` finds a `/command`, `@` or `#` query
+  ending at the cursor; the one typed closest to the cursor wins. `#` takes a
+  number or a short query with no space, so `# Title` and `owner/repo#12` never
+  trigger. `@` queries may hold spaces but stop at a newline or another `@`.
+  Selecting narrows the replaced span to the label, so trailing prose stays.
+  `findConfirmedComposerTokens` finds confirmed tokens (`ComposerTokenKind`:
+  `"file" | "command" | "mention"`; mentions are known by their `chat:` /
+  `lane:` / `term:` / `pr:` / `mac:` prefix).
+- **`@`, bare:** recent rows grouped by kind (Chats, Lanes, Terminals, Pull
+  requests, Machines, MCP servers, Files), five each.
+- **`@` with a kind word** (`@pr`, `@mac`/`@machine`, `@mcp`/`@server`,
+  `@chat`, `@lane`, `@term`): that section only, searching the rest
+  (`parseChatMentionKindFilter`; files are not searched).
+- **`@` with any other query:** one mixed list (files, folders, chats, lanes,
+  terminals, PRs, machines, MCP servers) ranked by `rankComposerAtMenuItems`
+  (exact, prefix, substring, subsequence). Files and mentions are two
+  debounced (40 ms) `useDebouncedSuggestions` sources, each with a
+  per-session query cache (`QUERY_CACHE_MAX = 40`) cleared on close or a
+  provider change. Results for an older provider or query are dropped **and
+  count as loading**, so no false no-match fires.
+- **Rows.** PR rows: state dot, `#<n> title`, checks glyph. Machine rows:
+  online dot, name, "this machine · online / last seen · N projects". MCP
+  rows name the chat machine's registry servers; the transcript hover card
+  shows cached tool count, first tools and the last error without probing.
+  Clicking an MCP chip, or **Open MCP settings**, opens this computer's MCP
+  Settings page on that server.
+- **Selection** inserts an opaque `@chat:<id>`, `@lane:<id>`, `@term:<id>`,
+  `@pr:<id>`, `@mac:<id>` or `@mcp:<name>` pointer and shows a title chip
+  (`shared/chatMentions.ts`; a PR chip reads `#1319 title`).
+- **`#`** lists the PRs the chat can reach (`ComposerPrSuggestion`,
+  `prs.listAll` on the chat's pin) and inserts a PR chip.
+- **`/`** groups Commands, Skills and MCP prompts (per server), ranked by the
+  same tiers (`shared/slashCommandSections.ts`), so `/test` ranks `test` first.
+- `onNoMatches?(trigger)` fires once when a **non-empty** `@` query settles
+  empty, so the owner closes the menu; an empty query never reports.
+- Both menus use the opaque `ade-chat-drawer-solid` background, because blur
+  does not work in portaled menus. All rows share `MenuRow`.
 
-  **Everything a prompt box offers is scoped to the machine set in that
-  prompt box.** A Work tab unions chats from every machine on the account,
-  so the machine a chat runs on is frequently not the one the project tab
-  is bound to — and a runtime catalog is a machine fact (local ollama /
-  LM Studio endpoints, the installed `cursor-agent`, the opencode
-  inventory). `AgentChatPane` always passes `activeComposerRuntimeBinding`
-  (the session's `chatRuntimePin` or the draft shelf's machine, never
-  collapsed to `null`) to `AgentChatComposer` as `modelRuntimePin`, even
-  when that machine is also the project tab. The picker routes
-  `agentChat.modelCatalog(args, pin)` to that machine and caches the
-  result under that binding key. Collapsing same-as-tab composers into
-  the shared `""` bucket let a global-tab switch poison the prompt box
-  with Electron's static OpenCode inventory (or the previous tab's
-  leftover). During a project-tab switch, `modelCatalog` and
-  `getAvailableModels` stay on the runtime instead of falling through to
-  that in-process registry. Tools / git / iOS / App Control still
-  collapse to `null` when they match the tab so they keep the bound IPC
-  path. On ADE Web a foreign pin is rejected by
-  `assertWebRuntimePinRoutable` (single-machine adapter) and the picker
-  falls back to the pin-scoped model list. When a
-  caller passes `availableModelIdsOverride`, `AgentChatPane` constrains
-  selection to exactly those ids: `filterChatModelIdsForSession({
-  includeActiveSessionModel: false })` skips the usual "preserve the
-  active model even if it's not in the list" rule, the runtime-catalog
-  merge is bypassed, and `AgentChatComposer` is rendered with
-  `constrainModelSelection={true}` so the `ModelPicker` opens with
-  `constrainToAvailableModelIds`. The picker drops registry expansion
-  (no "Show all models" suggestion) and the picker rail and the
-  composer both refuse to commit a value outside the allowlist. A
-  matching `constrainedModelSelectionError` blocks submit, draft
-  auto-create, and parallel launches if the current model or any
-  parallel-slot model fell off the allowlist — main and slot setters
-  also no-op on out-of-list ids instead of silently bouncing.
-  Handoffs create a root-store `HandoffLaunchJob` before the IPC call
-  starts, label it by mode (`preparing-summary` for a brief,
-  `forking-history` for a fork) while the old surface closes, and remove
-  it once the new chat is created or the handoff fails — or hide it
-  earlier as soon as a matching real session row appears in the sidebar
-  (`handoffJobLikelyMaterialized`), so an in-flight handoff never reads
-  as two sessions with one vanishing (ADE-122). When the source provider
-  is fork-capable
-  (`providerSupportsHandoffFork`: Claude, Codex, OpenCode, Droid, or
-  Cursor) the local handoff surface exposes both **Brief** and **Fork**
-  modes, defaulting to fork. Fork keeps the new chat in the
-  source lane and on the same provider — the fork model picker is
-  constrained to that provider's models — while a brief can retarget any
-  active lane in the project (via `targetLaneId`) or a freshly created
-  lane. Claude forks the SDK session pointer, Codex the app-server thread
-  (`thread/fork`), OpenCode `session.fork`, and Droid `session.fork()`.
-  Cursor's fork is an ADE-side transcript replay rather than a provider
-  fork, so `providerForkReplaysTranscript` swaps the panel's three copy
-  slots (subtitle, body, footnote) for wording that says the whole
-  conversation is replayed into a new Cursor agent instead of promising a
-  copied provider thread — the claim has to match what actually happens,
-  because a Cursor thread cannot be resumed twice. The
-  surface also includes an optional handoff note textarea; blank notes
-  are ignored, brief handoffs append non-empty notes to the hidden handoff
-  prompt, and forks send the note as the first user turn. Codex handoff
-  targets do not inherit ADE session goals or seed app-server goals; forked
-  Codex threads are cleared through the goal RPC before user input is sent.
-  The Work sidebar renders the job as a non-selectable placeholder in the
-  same lane/status/time groups as real sessions.
-- **Reasoning effort.** A standalone `ReasoningEffortPicker` (extracted
-  from the model row) is rendered next to the model trigger when the
-  active descriptor exposes `reasoningTiers`. Its collapsed trigger wears a
-  signal-bar `EffortMeter` — one rising bar per tier, lit up to the current
-  effort in that tier's tone — so the level reads before the label does. The
-  picker remembers the last-used effort per model family via the
-  `useReasoningByFamily` hook. The open control is a segmented track: one
-  segment per tier, with a single tinted indicator that slides between them by
-  `transform` (never `left`, which would lay the popover out on every frame).
-  Click or drag moves the indicator; the segment under the pointer wins and
-  release commits it; arrows, Home, and End provide the same keyboard path. On
-  a track with more than four levels each segment shows a short label
-  (`Min` / `Med` / `XHigh` / `Ultra`) while the accessible name and the header
-  keep the full tier name. A tier choice does **not** close the popover — the
-  user can compare levels until clicking outside or pressing Escape.
-  The collapsed trigger uses the full tier label on normal-width composers
-  (for example, `Medium` rather than `MED`) and removes the nested label
-  outline because the trigger already supplies the interactive boundary.
-  Narrow/mobile layouts retain the abbreviated label to preserve space.
-  GPT-5.6 displays Light / Medium / High / Extra High / Ultra; ordinary Max
-  is hidden for that family, and Ultra explains that it can delegate to
-  multiple agents and use limits faster.
-- **Model hint (Jev).** `useComposerModelHint` (in
-  `useComposerModelHint.ts`, drawn by `ComposerModelHintChip.tsx`) suggests a model and effort for a new chat's
-  first prompt; a chat that already has turns gets none. It asks only after
-  700 ms without typing, for a prompt of at least three words or 12
-  characters (`isModelHintPrompt`: "say hi back" counts, "fix it" does not),
-  and not again until the text has changed by 10% or more; an answer about
-  older text never shows under newer text. One interactive `ai.jevDecide`
-  call (feature `model_hint`, `modelHint.ts`) sends the prompt, this user's
-  recent new chats with the same provider and the same model maker (up to 5,
-  newest first, only on models still offered: model · effort and the prompt's start, from
-  `modelHintHistory.ts`), and two `choice` questions: which model of that
-  provider for that maker (`hintChoices`: the current model, every model in
-  the history, and the four strongest others; only image models when images
-  are attached; none asked under `effort_only`), and which effort. Two small
-  questions cost half the tokens of one over every model × effort pair,
-  pick as well, and are harder to talk into a pick from inside the prompt.
-  Jev answers what this user would want. The chip shows only when the pick
-  is clearly off: another model Jev is at least 0.7 sure of, or an effort
-  Jev puts at least 0.7 probability on being two or more levels away. This
-  question only suggests a model the catalogue rates stronger (both
-  intelligence scores known): it sees model names, not how hard the request
-  is, so it would send real work to a small model the user once used. No model is moved up for a request Jev puts at the lowest effort. Asked only what
-  the user would pick, Jev copies them (five "say hello" chats on Opus give
-  Opus again), so a third question, `cheapest`, asks for the cheapest model
-  that does the request well, with each model's intelligence index and
-  price from the catalogue (`HintChoice.facts`). Alone it sends real work to
-  the smallest model too, so it shows (`cheaperChoice`, the only path to a
-  weaker model) only at 0.9 confidence or more, on a request Jev puts at
-  the lowest effort, for a weaker model than the current one, and when a
-  fourth question, `wouldTake` (noul), puts at least 0.5 on this user taking
-  a cheaper model for this request. Jev answers it from the user's last five
-  answers to cheaper-model chips, sent with the request
-  (`readCheaperHintOutcomes`): after one dismissal of "Haiku?" for small
-  requests it falls to about 0.3 and the chip stops; three acceptances keep
-  it near 0.85. It reads `↓ low effort?` or `↑ Opus 5.5 · max?`; hovering says whether
-  it came from the user's similar chats or from the prompt alone. While the
-  chip shows, the effort picker's trigger drops its level name below a wide
-  composer (`squeezed`), keeping its bars and caret. A model the catalogue
-  lists only in another harness (Claude Code's Haiku 4.5) borrows that
-  entry. A click applies the model through the picker's `onModelChange`,
-  then the effort through `onReasoningEffortChange`; the × or an effort
-  picked by hand hides it for this prompt. It never changes anything by
-  itself, and is hidden while a turn runs, when the picker is locked, for a
-  Custom (preset) pick, and in parallel launch. It needs Smart decisions
-  (`ai.chat.smartDecisionsEnabled`) and Settings ›
-  Chat › Smart decisions › **Model and effort hint**
-  (`ai.chat.modelHintMode`: `model_and_effort`, the default, `effort_only`,
-  or `off` when its switch is off). Any failure (Jev null or unsure, no catalogue) shows nothing. The catalogue and the setting are cached per machine (10
-  minutes and 1 minute) and every call goes to the composer's
+**Dismissal.** `isComposerTriggerDismissed(trigger, dismissal)` keeps an
+extension of a dismissed query dismissed (search only narrows); backspacing,
+editing into another query, or a new `@` reopen. The composer holds the last
+dismissal in a ref and has three close calls:
+
+- `closeCommandMenu()` closes and forgets: the trigger is resolved (selection,
+  trigger gone, composer locked or reset).
+- `dismissCommandMenu(trigger)` closes and stays closed while the query
+  grows: Escape, Enter/Tab with no row, and the menu's no-match report.
+- `closeCommandMenuKeepingDismissal()`: this trigger cannot open a menu now
+  (already a token, or still covered), but nothing was resolved or dismissed.
+  Do not clear or record a dismissal here.
+
+### Attachments
+
+- Drag-drop anywhere on the chat, paste, or the picker; images show a pending
+  thumbnail. A pending image also holds its place in the prompt as an
+  uploading token at the caret (`composerPendingAttachmentChip.ts`,
+  `data-composer-pending-id`, the id of the same pending record the tray
+  tile draws); it serializes to nothing and the real chip replaces it in
+  place when the save lands. A failed save keeps tile and token, marked
+  failed, with **Retry** (the same bytes, the same token, a fresh staged
+  copy) and **Remove** (tile and token together) until the user chooses;
+  a retry that cannot start stays failed with the reason. Electron clipboard images use
+  `ade.app.saveClipboardImageAttachment` (main saves and returns a preview);
+  `ade.agentChat.saveTempAttachment` is the fallback.
+- **Clipboard images are re-encoded bitmaps**, often over the 10 MB paste
+  ceiling. `encodeClipboardImageWithinCap` (`clipboardImageEncoding.ts`)
+  fits them: PNG, else JPEG, shrinking the long edge from 4096 px, refusing
+  below 768 px. On desktop an oversized single pasted image goes to that
+  reader, unless it has a disk path (streams from the path). The hosted web
+  keeps the normal path.
+- **HEIC/HEIF** drops convert to JPEG on macOS before staging. Windows and
+  Linux have no codec and ask the user to convert.
+- **Staging mode.** The composer asks the chat's machine once per batch for a
+  `ChatAttachmentStagingMode` (mode plus ceiling): **`copy`** (this machine;
+  decided in preload), **`upload`** (a host with the streamed HTTP route) or
+  **`base64`**. A dropped or picked file has a path
+  (`window.ade.project.getDroppedPath`), so `copy` and `upload` stage it by
+  path, any type up to 50 MB. Pastes, converted HEIC and hosted-web files take
+  base64 with its 10 MB ceiling. The MIME sniff on that leg runs on the sync
+  host only.
+- A fixable staging failure offers **Try again**; a size rejection or a failed
+  HEIC conversion does not.
+- Parallel mode caps attachments at `PARALLEL_CHAT_MAX_ATTACHMENTS = 12`, since
+  every lane gets the same list.
+
+### Drafts and scheduled send
+
+- Cmd/Ctrl+S (or the bookmark left of the context meter) saves the prompt in
+  the project runtime and clears the composer after the write is confirmed;
+  with an empty composer it opens the list. Appearance > Drafts can hide the
+  bookmark; the shortcut stays. The bookmark also hides while the composer and
+  list are both empty.
+- The list has **All**, **Scheduled** and **Needs you** tabs whose counts come
+  from the same rows. It is a viewport-clamped portal with a scrolling list.
+- **Claim first.** Attaching deletes the row as the claim; only the winner
+  fills a composer. A save copies up to ten images into the owning runtime
+  first and rolls back if it cannot. On another runtime a row keeps text and
+  image count and refuses to attach the images. Machine-bound context and
+  non-image files are not kept.
+- 20 plain drafts, newest first; armed sends cap at 50. `prompt_stashes` syncs
+  the list; calls go to the bound runtime.
+- ArrowUp from a new draft keeps it before loading history; ArrowDown past the
+  newest restores it.
+- **Schedule send** (`DraftSchedulePopover`) needs a target (this chat or a new
+  chat in a lane), a fire time on the target machine's clock, an if-late
+  policy (`wait` / `strict` / `grace`), and the composer's config; an elevated
+  permission mode is badged.
+- iOS mirrors it (`WorkDrafts.swift`, `chat.listDrafts` / `createDraft` /
+  `updateDraft` / `deleteDraft` / `claimDraft`, optional so an older host hides
+  it). Personal chats hide drafts.
+
+### Model, effort and Fast
+
+- **Model selection.** `ProviderModelSelector` filters by
+  `filterChatModelIdsForSession`; crossing families is a handoff. Dynamic
+  inventories load only when their rail opens and the TTL lapsed
+  (`agentChat.modelCatalog({ mode: "cached" | "refresh-stale" | "force",
+  refreshProvider? })`; `runtimeCatalogCache.ts`: 30 min for Cursor / Droid /
+  OpenCode, 30 s for `lmstudio` / `ollama`). A change on a machine (a
+  provider installed, signed in, given a key, or set up in Settings ›
+  Providers) marks that machine's cached buckets out of date
+  (`invalidateRuntimeCatalogScope`, `refreshRuntimeCatalogsForMachine`;
+  Settings re-reads only the changed provider through
+  `MODEL_CATALOG_REFRESH_PROVIDERS` / `refreshProvider`, since a full
+  refresh starts several provider processes). The old list stays on screen,
+  and every surface that shows models (the "@" menu, the picker, the effort
+  control) follows the bucket's change version
+  (`useRuntimeCatalogVersion`). The "@" menu shows a quiet **Loading
+  models…** row, and a query with no match yet is not called empty, while
+  its machine's list is being read (`modelsLoading`). On the host the chat
+  catalog goes stale when the OpenCode inventory or a provider's model list
+  really changed (`openCodeInventoryGeneration`, `providerModelsGeneration`),
+  not on a re-check that kept them. Chat hides CLI-only Cursor rows;
+  Work CLI hides SDK-only ones.
+- **Everything a prompt box offers is scoped to its machine.** `AgentChatPane`
+  always passes `activeComposerRuntimeBinding` (the chat's `chatRuntimePin` or
+  the shelf's machine, never `null`) as `modelRuntimePin`; the picker routes
+  `agentChat.modelCatalog(args, pin)` there and caches by binding. During a tab
+  switch, `modelCatalog` and `getAvailableModels` stay on the runtime. Tools,
+  git, iOS and App Control still use `null` for the tab's own machine. ADE Web
+  rejects a foreign pin (`assertWebRuntimePinRoutable`) and uses the pinned
+  list.
+- **Allowlist.** With `availableModelIdsOverride`, selection is limited to
+  exactly those ids (`includeActiveSessionModel: false`, no catalog merge,
+  `constrainModelSelection` / `constrainToAvailableModelIds`, no "Show all
+  models"). `constrainedModelSelectionError` blocks submit, auto-create and
+  parallel launches when a model falls off; setters ignore outside ids.
+- **Handoff jobs.** A root-store `HandoffLaunchJob` (`preparing-summary` or
+  `forking-history`) shows as a placeholder in the Work sidebar until the
+  chat exists or fails, or until a matching row appears
+  (`handoffJobLikelyMaterialized`). Fork is the default when
+  `providerSupportsHandoffFork`; it stays on the source lane and provider. A
+  brief can target any lane (`targetLaneId`) or a new one. Cursor's copy
+  says the conversation is replayed (`providerForkReplaysTranscript`). An
+  optional note goes into a brief's hidden prompt, or as a fork's first turn.
+  Codex targets get no ADE goals; forked Codex threads have their goal cleared
+  first.
+- **Reasoning effort.** `ReasoningEffortPicker` sits beside the model when the
+  descriptor has `reasoningTiers`. Its trigger shows an `EffortMeter` (one bar
+  per tier, lit to the level) and the full tier name on normal widths
+  (abbreviated on narrow ones). `useReasoningByFamily` remembers the last
+  effort per family. The open track slides one indicator by `transform`;
+  click, drag, arrows, Home and End move it. Over four levels, segments show
+  short labels (`Min` / `Med` / `XHigh` / `Ultra`). A pick does not close the
+  popover. GPT-5.6 shows Light / Medium / High / Extra High / Ultra (no Max);
+  Ultra warns that it can delegate and use limits faster.
+  A chat's saved level always shows: when the ladder in view does not
+  list it (the machine's catalog is not loaded, its computer is asleep, or the
+  list is partial) the control shows that level on a common ladder instead of
+  "Auto", read-only until the catalog arrives, and nothing writes it back.
+- **Fast mode** lives on the model row inside `ModelPicker`.
+  - **Account gate first.** With `fastModeAllowed === false` the toolbar shows
+    no Fast control. Row chips stay but a press selects nothing, closes the
+    popover and calls `onFastModeLocked` ("Turn on Fast mode in Settings";
+    Continue opens Settings → Chat → Fast mode with the spotlight). Without
+    `onFastModeLocked` no chips show while locked. The picker never sends
+    `fastMode: true` while locked.
+  - The chip shows when the descriptor has `serviceTiers: ["fast"]` and the
+    caller passes `onFastModeChange`. It reads on only on the **selected** row
+    (`fastModeOn={fastMode && isActive}`). The selected row's chip cycles the
+    tier; another row's chip selects that model with Fast. A plain switch
+    keeps Fast only when the new model has the tier. States: muted outline,
+    darker hover, violet on. Presses change colour, never size.
+  - The trigger names the state (`composeModelPickerTriggerLabel()`: "GPT-5.6
+    Terra Fast", with an `aria-hidden` glyph). Parallel slots use
+    `onParallelSlotCodexFastModeChange`.
+  - **Codex Ultrafast.** Where the surface passes `fastTier` and the model's
+    catalog lists `ultrafast`, the chip cycles Off → Fast → Ultrafast (`Ultra`,
+    double bolt); the tier is `onFastModeChange`'s second argument. Other
+    surfaces keep two states. See
+    [Provider service tiers](agent-routing.md#provider-service-tiers-fast-mode).
+  - **What came back.** Pass `effectiveFastTier` (the session's
+    `codexServiceTier`) and the selected row draws a badge with the tier the
+    server reported: quiet when it matches, amber when not; unknown words
+    (`default`, `priority`) show as is.
+  - When Claude answers a Fast request at standard speed, the transcript shows
+    one notice per reason (`fast_mode_disabled_reason` or a rate-limit
+    cooldown); the toggle keeps the user's choice.
+  - `ModelSelector` still uses the deprecated `fastModeActive` /
+    `onFastModeToggle` sibling chip.
+
+### Model hint (Jev)
+
+`useComposerModelHint` (drawn by `ComposerModelHintChip.tsx`) suggests a model
+and effort for a new chat's first prompt.
+
+- **When it asks.** After 700 ms idle, for a prompt of at least three words or
+  12 characters (`isModelHintPrompt`), again only after a 10% change; an
+  answer about older text never shows.
+- **The call.** One `ai.jevDecide` (feature `model_hint`, `modelHint.ts`) with
+  the prompt, up to five recent new chats on the same provider and maker
+  (`modelHintHistory.ts`), and `choice` questions: which model
+  (`hintChoices`: current, history models, four strongest others; only image
+  models with images; skipped under `effort_only`) and which effort.
+- **When it shows.** Another model at 0.7 confidence or more, or an effort two
+  or more levels away at 0.7. It suggests only a model the catalogue rates
+  stronger, and moves no model up for a lowest-effort request.
+- **Cheaper model.** A `cheapest` question (with each model's intelligence and
+  price, `HintChoice.facts`) shows `cheaperChoice` only at 0.9 confidence, for
+  a lowest-effort request, for a weaker model, and when `wouldTake` puts 0.5
+  or more on the user accepting, judged from their last five answers to such
+  chips (`readCheaperHintOutcomes`).
+- **The chip** reads `↓ low effort?` or `↑ Opus 5.5 · max?`; hover says whether
+  it came from similar chats or the prompt. While it shows, the effort
+  trigger drops its level name below a wide composer (`squeezed`). A model
+  listed only in another harness borrows that entry. A click applies model
+  (`onModelChange`) then effort (`onReasoningEffortChange`); × or a manual
+  effort hides it for this prompt. It never acts by itself.
+- **Hidden** while a turn runs, when the picker is locked, for a Custom
+  preset, in parallel launch, and on any failure. It needs Smart decisions
+  (`ai.chat.smartDecisionsEnabled`) and **Model and effort hint**
+  (`ai.chat.modelHintMode`: `model_and_effort` default, `effort_only`, `off`).
+  The catalogue and setting cache per machine (10 min, 1 min); every call uses
   `modelRuntimePin`.
-- **Cheaper-model answers.** `modelHintHistory.ts` also keeps the user's last
-  20 answers to cheaper-model chips (`ade.modelHint.cheaperOutcomes.v1` in
-  localStorage): provider, maker, the suggestion, accepted or dismissed, and
-  the prompt's first 100 characters. A chip left alone is not recorded: it
-  says nothing about what the user wants.
-- **Model hint history.** `modelHintHistory.ts` keeps the last 100 new chats
-  the user sent from the composer in the window's localStorage
-  (`ade.modelHint.history.v1`), because it describes the person, not a
-  machine or a project: provider, model maker, model, effort, and the first
-  100 characters of the prompt. Chats agents start never pass through the
-  composer, so they are not in it. The prompt starts are sent to Jev with
-  later prompts.
-- **Voice dictation.** Dictation types for you. It is not the Codex voice
-  conversation button. When voice input is enabled and the bundled
-  model is installed, a mic button appears beside Send. Capture is
-  owned by the app-global `globalVoiceRecorder`, so recording survives
-  composer unmounts and tab/pane navigation. The recorder down-samples
-  mic input to 16 kHz mono PCM, calls the main-process transcription
-  service, runs deterministic glossary cleanup, inserts the cleaned
-  transcript at the registered composer's cursor, and copies the same
-  text to the clipboard as a recovery path. The composer pill and top
-  bar pill both observe the root-store dictation slice, so their timer
-  and waveform stay in sync. macOS permission requests use
-  `systemPreferences.askForMediaAccess`; Windows reads Electron's media access
-  status and blocks only explicit `denied` / `restricted` results. The error
-  card directs Windows users to **Settings > Privacy & security > Microphone**
-  and names both device access and app access instead of showing macOS System
-  Settings copy.
-- **Voice conversation.** The waveform button beside the dictation mic
-  starts a spoken conversation with the chat. See
+- **Local memory** (`modelHintHistory.ts`, window `localStorage`): the last
+  100 composer-sent new chats (`ade.modelHint.history.v1`: provider, maker,
+  model, effort, first 100 characters) and the last 20 cheaper-chip answers
+  (`ade.modelHint.cheaperOutcomes.v1`); an ignored chip is not recorded.
+  Agent-started chats are not in it.
+
+### Voice
+
+- **Dictation** types for you (not the voice conversation button). With voice
+  input on and the model installed, a mic sits beside Send. The app-global
+  `globalVoiceRecorder` survives unmounts, records 16 kHz mono PCM, transcribes
+  in main, cleans with the glossary, inserts at the registered composer's
+  cursor and copies the text. The composer and top-bar pills share the root
+  dictation state. macOS asks through `systemPreferences.askForMediaAccess`;
+  Windows blocks only `denied` / `restricted` and points to **Settings >
+  Privacy & security > Microphone**.
+- **Voice conversation**: the waveform button; see
   [Voice conversations](#voice-conversations).
-- **Fast mode.** Toggles the `fastMode` bit for the selected session. Fast
-  mode is a property of a *model*, so the toggle lives on the model row inside
-  the shared `ModelPicker` rather than as a separate composer chip — every
-  surface that mounts the picker gets it, and the composer toolbar keeps one
-  control where it used to spend two.
-  When a Claude chat asks for Fast and Claude Code answers at standard speed
-  anyway, the transcript shows one quiet info notice saying why (from the
-  turn result's `fast_mode_disabled_reason`, or a rate-limit cooldown), once
-  per reason; the toggle keeps showing the user's choice.
-  **The account gate comes first.** When the account has not allowed Fast
-  (`fastModeAllowed === false`), the composer toolbar shows no Fast control:
-  Fast is rarely used, so it stays out of sight. The popover's per-row Fast
-  chips (and Cursor Cloud's `fast` service tier) stay, but they do not turn
-  Fast on. A press selects nothing, records no recent model, closes the popover
-  and calls `onFastModeLocked`, which opens a small `confirmDialog` ("Turn on
-  Fast mode in Settings"). Continue opens Settings → Chat → Fast mode and rings
-  that row with the "show me" spotlight. A surface that passes no
-  `onFastModeLocked` gets no per-row Fast chips while locked, and any selection
-  that still asks for Fast goes through at Standard. No banner or toast. The
-  picker never sends `fastMode: true` while locked; the brain refuses it anyway.
-  The row chip renders whenever that descriptor advertises
-  `serviceTiers: ["fast"]` (dynamic Cursor SDK/CLI rows, GPT-5.6, and older
-  fast-capable Codex entries) *and* the caller supplied `onFastModeChange` (or,
-  on a locked account, `onFastModeLocked`). Fast is one bit per surface but it
-  belongs to the model it was enabled for, so a chip reads as on only on the
-  *selected* row (`fastModeOn={fastMode && isActive}`) — never on every
-  fast-capable row at once. On an account that allows Fast, clicking the
-  selected row's chip cycles the tier; clicking a non-selected row's chip means
-  "use this model, fast" — one press commits the model selection and turns fast
-  on. A plain row click onto a different model keeps Fast when the new model
-  has a fast tier and clears it when it does not; Ultrafast carries over only to a model whose catalog offers it. The chip's
-  states are rest (muted outline, outline lightning) → hover (darker fill,
-  still off) → on (violet fill, filled lightning). A press does not change the
-  chip's size: ADE buttons give press feedback with color, not with a scale
-  transform, so a release near the edge of a button still lands on it. The
-  collapsed trigger names the state rather than showing a separate indicator —
-  `composeModelPickerTriggerLabel()` in `ModelPicker.tsx` renders "GPT-5.6
-  Terra Fast", with a filled lightning glyph rendered before the model name
-  (`aria-hidden`, so the accessible name stays text-only). Codex state flows
-  into the next `thread/start` / `turn/start` as `serviceTier: "fast"`; Cursor
-  SDK state flows through the discovered model-parameter selection, and Work
-  CLI launches resolve fast Cursor rows to the matching `*-fast` alias.
-  Parallel mode passes the per-slot setter through the slot's own picker
-  (`onParallelSlotCodexFastModeChange`).
 
-  **Codex Ultrafast.** On a Codex model whose catalog lists the `ultrafast`
-  service tier, and only where the surface passes `fastTier`, the chip cycles
-  Off → Fast → Ultrafast (the chip reads `Ultra` and shows a double lightning).
-  A surface that omits `fastTier` (the phone, older clients) keeps the
-  plain two-state Fast chip. The tier arrives as `onFastModeChange`'s second
-  argument; the trigger says "Ultrafast" only when the model offers the tier.
-  Ultrafast is granted per account — the Codex model/list is the only thing
-  that can say a model has it — so the runtime keeps a stored Ultrafast choice
-  until a catalog says the model lacks it, and sends `serviceTier:
-  "ultrafast"` only when that model is not known to be without it. An update
-  changes the tier only when it names `fastTier` (Fast-only clients resend
-  `fastMode: true` with every model or effort change, and that must not drop an
-  Ultrafast choice made elsewhere); Fast off clears it, and a model switch
-  keeps it only when the update names it or the new model is known to offer it.
-  It is never stored for a non-Codex provider. See
-  [Provider service tiers](agent-routing.md#provider-service-tiers-fast-mode).
-  **Fast is a request, and the picker now says what came back.** Codex can
-  answer a thread with a different tier than ADE asked for, and the session
-  records it as `codexServiceTier` — which the picker used to ignore, so a
-  tier the server declined or downgraded stayed invisible behind a chip still
-  reading `Ultra`. Pass `effectiveFastTier` (the session's `codexServiceTier`)
-  and the selected row draws a badge beside the Fast chip naming the tier the
-  server actually reported: quiet when it matches the ask, amber when it does
-  not. Only the selected row carries it, because the report belongs to the
-  chat rather than to the model, and an unfamiliar word is shown as-is rather
-  than dropped — the server also answers `default` and `priority` when it
-  inherits the user's own `config.toml`. Surfaces that pass no
-  `effectiveFastTier` draw nothing.
+### Toolbar controls
 
-  Surfaces not yet migrated (`ModelSelector`, `CtoSettingsPage`)
-  still pass the deprecated `fastModeActive` / `onFastModeToggle` pair,
-  which keeps rendering the old sibling chip. Migrating them is a prop
-  rename with nothing else to unwind.
-- **Overflow control.** Issue context, parallel models,
-  and the iOS Simulator / App Control drawer toggles are folded behind one
-  `⋯` trigger (`ComposerOverflowMenu`). Each entry is gated by exactly the
-  condition that used to gate its standalone button, so a control that
-  would not have rendered does not become a row, and with no entries left
-  the trigger disappears entirely.
+- **Overflow `⋯`** (`ComposerOverflowMenu`): issue context, account (new chat
+  only), parallel models and the iOS / App Control toggles, each under its own
+  condition; no entries means no trigger. One entry renders as a plain icon
+  button (`items.length === 1`; a Work CLI draft hides lane drawers with
+  `hideLaneToolDrawers`), so tests accept both forms. The trigger carries an
+  accent dot when any entry is on; rows report `aria-checked` and may carry a
+  `badge`. Rows with their own portal position against `triggerRef`. The menu
+  portals to `document.body` (`composerSplitMenuPosition`), because the shell
+  clips.
+- **Account entry.** Only on a new Claude or Codex chat with a real choice
+  (several working logins, or one that is not the default). It lists
+  `Default (machine picks)` and each account by email; the pick travels as
+  `instanceId`. A failed read offers Retry and never clears the pick.
+  Provider sign-ins (OpenCode's Anthropic / OpenAI) are never accounts.
+- **Send split.** Background launch is Send's second caret row. Send is a
+  split control (one `rounded-full` body, arrow, hairline, caret), the same
+  shape as `ActiveTurnSendButton`. It splits only with `onSubmitInBackground`
+  and outside parallel and Cursor Cloud modes.
+- **Permission controls.** Interaction mode (`default` / `plan`); Claude's mode
+  popover (**Ask permissions** green, **Accept edits** blue, **Plan mode**
+  purple, **Bypass permissions** red; `CLAUDE_MODE_TONE_STYLES`); Codex presets
+  (Plan / Guarded Edit / Full Auto, plus a read-only "Custom" row for custom
+  and `config-toml`); OpenCode modes; Cursor's mode snapshot and options. Rows
+  show titles only; detail is the tooltip. Popovers portal to
+  `document.body` (`getBoundingClientRect` + `window.innerHeight`); outside
+  clicks check the anchor and a `data-*-picker-dropdown` attribute.
+- **Border beam.** On standard layouts the shell has `BorderBeam`
+  (`colorful` at rest, slower `ocean` during a turn).
+- `launchPromptClipboardNoticeEnabled` controls the clipboard reminder,
+  separate from `launchPromptClipboardEnabled`.
 
-  How many entries survive is **contextual**, not fixed — a Work CLI draft
-  hides the lane tool drawers (`hideLaneToolDrawers`), so it can be left
-  with one. A `⋯` that opens onto a single
-  row is a menu pretending to be a button, so at `items.length === 1` the
-  control renders that entry directly as an icon button instead. Callers
-  must therefore not assume either form; tests reach it through a helper
-  that accepts both.
+### Parallel and auto-create launches
 
-  Because folding hides active state, the collapsed trigger carries an
-  accent dot whenever any entry is on, rows report `aria-checked`, and an
-  entry may carry a `badge` count (issue context uses it for attached
-  issues) which surfaces on the inline button too. Rows that open their
-  own portal — issue context — position against the `triggerRef` rather
-  than against the row, because the row unmounts with the menu while the
-  trigger stays mounted.
+- **Parallel mode** (an empty embedded Work draft with no session) shows a
+  slot list: each slot holds model, effort, execution mode and native
+  permissions; the first two copy the composer. Send needs text and two or
+  more slots.
+- **Brain-owned auto-create.** A single-model local launch on "Auto-create
+  lane" (chat or CLI, foreground or background) goes to the brain
+  ([New-lane launches](#new-lane-launches)). The composer picks the session
+  and lane UUIDs, names the lane (`createDeterministicAutoLaneName`; the brain
+  renames it later), inserts an optimistic snapshot, clears, and fires
+  `chatLaunch.start` without waiting. Create args come from
+  `buildChatCreateArgs`, so the chat starts with the settings on screen.
+- **Renderer-owned chain** (`launch/rendererOwnedLaunch.ts`) for an existing
+  lane, parallel launches, Cursor Cloud, and a runtime without
+  `chat.startLaunch` (`action_not_callable` / `action_not_exposed`, `Unknown
+  ADE action`, or no web descriptor; other rejections are real failures).
+  - A `DraftLaunchJob` goes `creating-lane` → `starting-session` →
+    `sending-prompt` → `ready` / `failed`. Lanes are named at once;
+    `startBackgroundLaneNaming` asks for an AI name and branch, with `Naming
+    lane…` labels (`laneNamingStore`).
+  - The composer clears at start; `DraftLaunchSnapshot` freezes the controls.
+    Jobs live in `appStore.draftLaunchJobsByScope` (project, lane, profile,
+    draft kind).
+  - A foreground result opens only if it is still the latest
+    (`latestForegroundDraftLaunchJobIdRef`) and the person asked for no new
+    draft since the send. `showDraftKind` (⌘⇧N, the New chat button, the
+    Chat/CLI switch) and `openStartChatDraft` (the palette, a lane's menu, a
+    chip) count each request per project tab (`noteNewDraftRequested`); the job
+    keeps its project's count at Send, before any await
+    (`markNewDraftRequests`), and
+    `launchMayOpenItsSession` compares it. A request in another project tab
+    does not count. A
+    result that may not open keeps `autoOpen` off, so a later draft pane does
+    not open it either; the session shows in the list. Cursor Cloud and Devin
+    Cloud launches follow the same rule (`adoptCloudChatSession`), and a
+    cloud launch that may not open leaves the draft's cloud and lane choices
+    as they are. A foreground CLI carries the mark into `launchPtySession`
+    (`WorkPtyLaunchArgs.newDraftMarkAtSend`, also on the brain-owned new-lane
+    path through the local launch record), which focuses the terminal only
+    while the mark holds. The open in the Work tab also puts the chat in the
+    URL (`?sessionId=`), which the Work page applies only once the chat is in
+    its list; `noteLaunchUrlOpen` keeps the project's count at the open, and
+    the page drops that URL without opening the chat when a new draft was
+    asked for since (`takeLaunchUrlOpenAllowed`). Background
+    jobs show a strip with Open. Failed jobs offer Restore (also on the
+    matching error banner). Stale active jobs can be hidden; terminal rows are
+    pruned.
 
-  The menu itself **portals to `document.body`** via
-  `composerSplitMenuPosition`, like every other composer popover. The
-  composer shell clips its overflow, so an inline-absolute menu is cut off
-  at the prompt-box edge and simply cannot be read.
-- **Send options.** Background launch is the second row on Send's caret,
-  and Send is a **split control**: one `rounded-full` body, the arrow on
-  the left, a hairline divider, a caret sharing the same fill. This is
-  deliberately the same shape as `ActiveTurnSendButton`, so the composer
-  uses one send idiom whether or not a turn is running. The earlier
-  arrangement — a second filled circle beside Send, also carrying an arrow
-  — read as one control accidentally duplicated and overflowed the
-  composer's padding, clipping against its rounded edge. The split renders
-  only when `onSubmitInBackground` is supplied and the surface is neither
-  parallel nor Cursor-Cloud mode; otherwise Send stays a plain circle.
-- **Attachments.** Allows the user to attach files and artifacts to
-  the next turn.
-- **Permission controls.** Inline with the composer:
-  - Interaction mode selector (`default` / `plan`).
-  - Claude permission mode — a trigger button that opens a popover
-    picker with four tone-coded options: **Ask permissions** (default,
-    green), **Accept edits** (blue), **Plan mode** (purple, read-only
-    turns), **Bypass permissions** (red). Tone styles live in
-    `CLAUDE_MODE_TONE_STYLES`.
-  - Codex preset modes (Plan / Guarded Edit / Full Auto) — trigger
-    button + popover list. Custom and `config-toml` configurations
-    appear as a non-selectable "Custom" row with the active summary
-    tooltip, so the trigger can always show the effective preset.
-  - OpenCode permission mode selector.
-  - Cursor mode snapshot + config options when on Cursor.
+### Staged messages and sending during a turn
 
-  All shared permission dropdowns render only each mode's title in the row.
-  The longer explanation remains available as the row tooltip/title instead
-  of forcing the popover to become a wall of text.
+- **Pending steers.** Queued messages show above the input as
+  `PendingSteerItem`s ("Sends after turn"). The action strip
+  (`pending-steer-actions`) hides behind hover only inside `@media (hover:
+  hover)`, so touch screens always show it. Actions: edit (cancel with
+  `requireQueued: true`, then merge text and attachments back), cancel
+  (`ade.agentChat.cancelSteer`), and the immediate actions
+  `ACTIVE_TURN_DISPATCH_MODES` allows: **send during turn**
+  (`dispatchSteer({ mode: "inline" })`, `deliveryState: "inline"`; Cursor and
+  OpenCode show `accepted` first and fall back to `queued` on refusal; Claude
+  gets `priority: "next"`) and **interrupt** (Claude's `priority: "now"`
+  redirect; Cursor's **Interrupt & continue**). A Cursor Cloud chat has
+  interrupt only (`cursorSessionRunsInCloud`, see
+  [Agent Routing](agent-routing.md)).
 
-  Both the Claude and Codex popovers render via `createPortal` into
-  `document.body` and are positioned with `getBoundingClientRect` +
-  `window.innerHeight`. That keeps them visible when the composer is
-  inside an overflow-hidden container (grid tiles, shells). Clicking
-  outside or pressing Escape closes them; the outside-click handler
-  checks both the anchor ref and a `data-*-picker-dropdown` attribute
-  on the portalized list so clicks inside the popover don't self-close.
+**Per provider** (`ACTIVE_TURN_DISPATCH_MODES`, `queuedSteersCanReorder`,
+`providerStopModeSupport`; a provider not in the dispatch table is queue-only):
 
-- **Parallel launch controls.** When the Work pane mounts an empty,
-  embedded draft composer with no locked or initial session, the
-  composer can switch into parallel mode. Parallel mode shows a slot
-  list instead of the single-session model selector; each slot captures
-  the model, reasoning effort, execution mode, and provider-specific
-  permission controls that will be copied into that child session.
-  The first two slots are cloned from the current composer defaults.
-  Users can add/remove slots and open one slot at a time for detailed
-  controls. Send is enabled only when the draft is non-empty and at
-  least two model slots are configured.
+| Provider | Mid-turn modes | Reorder staged rows | Stop ends background work | Stop can keep the queue |
+|---|---|---|---|---|
+| Claude | inline, queue, interrupt | yes | yes | yes |
+| Codex | inline, queue | no (app-server queue) | yes | yes |
+| Muse | inline, queue, interrupt | no | yes | yes |
+| Cursor | inline, queue, interrupt | yes | no | yes |
+| OpenCode | inline, queue | no | yes | yes |
+| Pi | inline, queue | yes | no | no |
+| Copilot | inline, queue | yes | no | no |
+| Kimi | queue, interrupt | yes | no | no |
+| Droid | queue | yes | no | yes |
+| Qwen, Grok, Antigravity, Devin | queue | yes | no | no |
 
-  Attachments in parallel mode are capped by
-  `PARALLEL_CHAT_MAX_ATTACHMENTS = 12`. The same attachment list is
-  sent to every created lane, so the cap is enforced both when toggling
-  parallel mode and when adding files.
+- A refused inline dispatch returns `{ dispatchedAt: null }` without throwing;
+  the row stays staged and one notice says it will send as a new message.
+- `stagedSteerHint` names the provider and the actions this pane can really
+  dispatch (a cloud Cursor chat: "Interrupt with this message, edit or
+  remove."). Queue-only providers say so ("Droid cannot take a message
+  mid-turn, so this one waits for the turn to end."), keyed off
+  `capability.modes`, not wired handlers.
+- **Reordering.** With two or more staged rows, a drag handle
+  (`pending-steer-reorder-handle`, an `application/x-ade-pending-steer` drag)
+  or ArrowUp / ArrowDown / Home / End moves a row. The pane calls
+  `ade.agentChat.moveSteer({ sessionId, steerId, toIndex })`, shows the new
+  order and reverts on refusal. The host reorders the queue
+  `deliverNextQueuedSteer` reads (or the persisted `pendingSteers` with no
+  runtime) and emits `queue_reordered { steerIds }`. A row an inline dispatch
+  owns is refused. Only ADE-held queues move (`queuedSteersCanReorder`). iOS offers a long-press menu when the
+  host has `chat.moveSteer`.
+- Staged attachments show in the composer's `ChatAttachmentTray`.
+- A failed cancel shows "Couldn't remove the queued message: …" in the banner.
+- **Mid-turn split Send** (`ActiveTurnSendButton`) when the provider offers
+  more than queue. The caret picks a mode; the button and Enter run it. Modes
+  come from `ACTIVE_TURN_DISPATCH_MODES` (`activeTurnDispatchModes` /
+  `defaultActiveTurnDispatchMode`; `activeTurnSendModesForProvider` adds the
+  copy; the pane, the service guards and iOS `WorkActiveSendCapability` read
+  the same table). Copy: **Send during turn** / **Send after turn** /
+  **Interrupt & send**, or **Interrupt & continue** for Cursor
+  (`activeTurnInterruptContinues`). The default is the provider's first mode
+  (`defaultActiveTurnDispatchMode`). Descriptions name the provider ("Stop and redirect Cursor now.").
+- The mode is held per session and re-normalized on a provider change. A mode
+  with no wired handler (a model of another provider picked mid-turn, or a
+  Cursor Cloud chat) falls back to **queue**, never interrupt. Immediate modes
+  are one atomic `steer({ dispatchMode })`. The button disables on an empty
+  draft; the caret does not. Queue-only providers keep plain queue-on-send
+  ("Message queued — will be sent when the current turn completes.").
+- **The CTO composer never offers *Send after turn*.** `surfaceProfile ===
+  "persistent_identity"` sets `activeTurnSendModesForProvider(provider, {
+  liveRedirectOnly: true })`, because the CTO's steer queue cap is zero.
 
-- **Work auto-create launch behavior.** A single-model local launch on
-  the "Auto-create lane" target — chat or CLI, foreground or background —
-  is owned by the brain (see [New-lane launches](#new-lane-launches)).
-  The composer picks the chat's session id and the lane's id (both UUIDs),
-  names the lane deterministically from the prompt
-  (`createDeterministicAutoLaneName`; the brain renames it in the
-  background once the AI name arrives), inserts an optimistic launch
-  snapshot, clears itself, and fires `chatLaunch.start` without awaiting
-  it. No `DraftLaunchJob` and no draft banner is created for these
-  launches. The chat create args come from the same `buildChatCreateArgs`
-  the direct create path uses (minus the lane) and the opening message
-  from the same prepared text/attachments the old send used, so a
-  brain-owned launch starts the chat with exactly the settings on screen.
+### Stop choices
 
-  Launches into an existing lane, parallel multi-model launches and
-  Cursor Cloud launches keep the renderer-owned chain below, as does a
-  new-lane launch whose runtime predates `chat.startLaunch`: when `start`
-  rejects because the action does not exist there (the brain's coded
-  `action_not_callable` / `action_not_exposed`, a JSON-RPC `Unknown ADE
-  action`, or the web client finding no command descriptor), that one
-  launch drops its optimistic card and sidebar row and runs the chain
-  instead of showing a failed card. Any other rejection is a real failure
-  and shows on the card.
+Stop is a split control over `shared/chatStopModes.ts`: **Turn only**
+(`stop_only`), **Turn + queue** (`stop_and_clear`, the default), **Turn +
+background (N jobs)** (`stop_and_background`), **Turn + queue + background (N
+jobs)** (`stop_and_clear_and_background`), and, while spawned chats work,
+**Turn + queue + child chats (N)** (`stop_and_clear_and_children`) and
+**Everything + child chats (N)** (`stop_everything_and_children`; children stop
+depth-first with the same mode, reported as `stoppedChildChatCount`).
 
-  The renderer-owned chain (`launch/rendererOwnedLaunch.ts`, called by the
-  pane with its dependencies passed in) creates a `DraftLaunchJob` that
-  tracks progress through `creating-lane` / `starting-session` /
-  `sending-prompt` / `ready` / `failed` states. Auto-created lanes on this
-  path (Cursor Cloud and the legacy fallback) are named deterministically
-  and created immediately; when AI titles are enabled,
-  `startBackgroundLaneNaming` asks for a structured lane title + branch
-  identity in the background, and affected lanes are flagged in
-  `laneNamingStore` so lane labels show `Naming lane…`.
-  The composer is
-  cleared optimistically when the job starts so the user can begin
-  composing the next prompt immediately; the `DraftLaunchSnapshot`
-  freezes the model, reasoning effort, execution mode, and native
-  controls at capture time so the async create/send flow uses the
-  settings the user had when they pressed Send. Jobs are stored in
-  `appStore.draftLaunchJobsByScope`, scoped by project, lane, surface
-  profile, and Work draft kind, so loading/error strips survive a new
-  chat pane or remount without leaking into another lane pane.
-  Foreground launches auto-open the result only if the job is still the
-  latest foreground job (tracked by
-  `latestForegroundDraftLaunchJobIdRef`); background launches keep the
-  current Work focus and render a job strip with an Open action once
-  ready. Failed jobs offer a Restore button that merges the snapshot
-  back into the composer, and the top error banner mirrors Restore when
-  its message matches that failed job. Active jobs remain visible, and
-  stale active jobs can be hidden if the backing async never settles;
-  terminal rows are pruned per scope.
+- `providerStopModeSupport` disables rows a provider cannot honour, with the
+  reason (see the table above; iOS mirrors it in `WorkChatStopCapability`).
+  Codex stops background work through
+  `thread/backgroundTerminals/terminate` (never user shells), and a
+  user-picked queue clear deletes its app-server queue
+  (`thread/queue/delete`); ADE's internal Codex stops leave that queue. A
+  remembered choice that cannot apply falls back to the default.
+- The job count is `activeBackgroundTaskCount`. Default Stop leaves Claude's
+  query and background jobs when `perTaskStopAffordance` is declared; square
+  stops call `ade.agentChat.stopTask` for one `taskId`.
+- The choice is stored per chat and drives the button and `Cmd+.`; the menu
+  closes on selection. A clear that cancelled ADE messages shows an eight-second
+  Undo card (`restoreCancelledQueue`).
+- CLI: `ade chat interrupt --stop-children [--stop-background]`, `ade chat
+  stop-task <session> <taskId>`.
 
-- **Border beam.** On standard (non-grid-tile) layout the composer
-  shell is wrapped in `BorderBeam` (`colorVariant="colorful"` at rest,
-  `"ocean"` with a slower duration while a turn is active). `active`
-  toggles off for quiet, mid-conversation states.
-- **Pending steers.** When steers are queued during an active turn, the
-  composer renders a pending-steers section above the input area with
-  per-message controls. Each `PendingSteerItem` displays a "Sends after
-  turn" badge plus the message text. The action strip
-  (`data-testid="pending-steer-actions"`) hides itself behind hover **only**
-  inside `@media (hover: hover)`; a touch pointer never hovers, so on mobile and
-  ADE Web the controls stay visible. Both the hidden state and the
-  `group-hover` reveal sit inside that one media query, and `group-hover` wins
-  on specificity, so the reveal never depends on stylesheet order. Actions per
-  entry: edit (guard-cancel the queued entry with `requireQueued: true`, then
-  merge its text, file attachments, and structured context attachments into the
-  main composer so the user can revise it and choose a delivery mode again),
-  cancel (`ade.agentChat.cancelSteer`), and the immediate-dispatch actions the
-  session's provider accepts per `ACTIVE_TURN_DISPATCH_MODES`: **send during
-  turn** (`ArrowBendDownRight`) and **interrupt** (`Lightning`). **Send during
-  turn** dispatches the queued message into the active turn via
-  `ade.agentChat.dispatchSteer({ mode: "inline" })`; the user message then
-  appears in-transcript with `deliveryState: "inline"` (Cursor and OpenCode
-  show it as `accepted` first, while the turn decides, and put it back to
-  `queued` if the turn refuses it); the service pushes an
-  SDK message with `priority: "next"` and `shouldQuery: true`. Claude's
-  **Interrupt & send** calls `dispatchSteer({ mode: "interrupt" })`, which uses
-  SDK priority `now` to redirect the current model step without tearing down the
-  Claude query. Codex sessions get the **send during turn** action only: the
-  app-server folds a `turn/steer` request into the turn already running, but has
-  no interrupt-and-resend, so `"interrupt"` is rejected. Cursor gets both
-  actions on a local session: **send during turn** folds the staged row into the
-  live run through `Run.steer()`, and **Interrupt & continue** promotes it to
-  the cancel-and-resend redirect. OpenCode gets **send during turn** only: its
-  v2 session prompt admits the row with `delivery: "steer"`, folded into the
-  live agent loop, and it has no interrupt-and-resend. A Cursor **Cloud**
-  session gets the interrupt
-  action only, because a cloud run refuses every steer
-  (`cursorSessionRunsInCloud`, see [Agent Routing](agent-routing.md)). A refused
-  inline dispatch answers `{ dispatchedAt: null }` **without throwing**: the row
-  stays staged, its chip stays up, and the transcript gets one notice saying the
-  message will send as a new message instead. The tooltips and the hint above
-  the staged list name the real provider and follow the actions this pane can
-  actually dispatch rather than the provider name alone (`stagedSteerHint`), so
-  a cloud Cursor session reads "Interrupt with this message, edit or remove."
-  rather than promising an inline send. Both buttons are hidden for the
-  remaining providers (Droid, Pi, the ACP providers), which only
-  support post-turn delivery — and for those the hint says so outright ("Droid
-  cannot take a message mid-turn, so this one waits for the turn to end."). That
-  sentence keys off `capability.modes`, not the wired handlers, so a Claude or
-  Codex chat whose dispatch handler is merely unwired never claims the provider
-  is queue-only.
-- **Reordering staged messages.** With two or more staged messages, each row
-  shows a drag handle (`DotsSixVertical`, `data-testid="pending-steer-reorder-handle"`)
-  in place of its dot. Drag the handle onto another row's top or bottom half
-  (a `application/x-ade-pending-steer` drag, so file drops never read as a
-  reorder), or focus it and use ArrowUp / ArrowDown / Home / End; focus stays
-  on the moved message. The pane calls `ade.agentChat.moveSteer({ sessionId,
-  steerId, toIndex })`, shows the new order at once, and drops back to the
-  host's order if the call is refused (the pane error banner says why). The
-  host splices its staged queue — the one `deliverNextQueuedSteer` shifts
-  from, so delivery follows the new order — and publishes the full order as a
-  `queue_reordered { steerIds }` event, which every surface's pending-steer
-  derivation sorts by and which draws nothing in the transcript. On a
-  torn-down session (no runtime yet) the persisted `pendingSteers` are
-  reordered instead, the same way cancel tombstones them. A row an inline
-  dispatch owns is refused. Only ADE-held queues move
-  (`queuedSteersCanReorder`): Codex keeps follow-ups in its app-server queue
-  keyed by message id and OpenCode in its own inbox, and neither has a move
-  operation, so those chats show no handle. iOS offers the same moves as a
-  long-press menu (Send first / Move up / Move down / Send last) and VoiceOver
-  actions, gated on the host advertising the optional `chat.moveSteer`
-  command.
-- **Queued attachments are visible.** A staged message with files or context
-  items shows them under its text in the composer's own `ChatAttachmentTray`,
-  so a queue of several reads at a glance.
-- **Drag a chat in to reference it.** Every Work row (`SessionCard`) also puts a
-  `CHAT_MENTION_DND_MIME` payload (`{ kind, id, title }`) on its drag. Dropped
-  on a composer, the overlay reads "Drop to reference" and the row becomes an
-  `@chat:` / `@term:` chip, the same pointer the `@` menu inserts; a chat
-  dropped on its own composer is ignored.
-- **A cancel that fails is reported.** `onCancelSteer` catches the rejection and
-  raises "Couldn't remove the queued message: …" in the pane error banner. A
-  swallowed rejection read as a cancellation that never happened while the agent
-  still sent the message.
-- **Mid-turn split Send button.** While a Claude, Codex, Cursor, or OpenCode
-  turn is
-  active, the composer's primary send control is a split button
-  (`ActiveTurnSendButton`, Claude Code parity). The caret selects a delivery
-  mode without sending; the primary click and Enter execute the selected mode,
-  and the icon, tooltip, and accessible label follow it. Which modes appear is
-  the canonical per-provider table `ACTIVE_TURN_DISPATCH_MODES` in
-  `apps/desktop/src/shared/types/chat.ts` (read through
-  `activeTurnDispatchModes` / `defaultActiveTurnDispatchMode`; the composer's
-  `activeTurnSendModesForProvider` only layers the copy on top, and the chat
-  pane, the main service's steer/dispatch guards and the
-  iOS `WorkActiveSendCapability` mirror all read the same table). Read the table
-  itself for the per-provider lists rather than a second copy here; the copy is
-  layered on top per mode — **Send during turn** / **Send after turn** /
-  **Interrupt & send** — except that Cursor's interrupt reads **Interrupt &
-  continue** because it cancels the run and resends on the same agent thread
-  rather than folding into a live query. That per-provider fact is
-  `activeTurnInterruptContinues`, beside the table, which the composer
-  and the iOS mirror both read. Claude and Cursor both carry all three modes and
-  default to *Send during turn*. Codex and OpenCode are the partial cases: each
-  takes a mid-turn fold-in (Codex's `turn/steer`, OpenCode's
-  `delivery: "steer"`) but offers no interrupt-and-resend, so each has *Send
-  during turn* and no interrupt affordance at all. Mode descriptions name the
-  actual provider
-  ("Stop and redirect Cursor now."). The selection is held for the session and
-  re-normalized when the provider changes, so a mode the new provider cannot
-  honor can never stay selected. A mode this pane has no wired handler for —
-  reachable while a model for another provider is picked mid-turn, since the
-  menu follows the picked provider and the handlers follow the live session, and
-  the state a Cursor **Cloud** session is deliberately put in — downgrades to
-  **queue** rather than dead-ending, so Enter and the primary button always
-  deliver the draft somewhere and the primary button never labels itself with a
-  mode the caret does not show. The downgrade target is queue and never
-  interrupt: a mode the user did not pick must not cancel their running agent.
-  The visible consequence is that a cloud Cursor chat defaults to *Send after
-  turn* rather than the *Interrupt & continue* it defaulted to before Cursor
-  gained inline; interrupt is still one click away in the caret menu. The one
-  exception is the CTO identity composer, which filters queue out of the mode
-  list entirely — that thread cannot stage a message for later, so interrupt is
-  the only downgrade target left there. Immediate
-  modes are a single atomic
-  `steer({ dispatchMode })` call rather than queue-then-dispatch. The primary
-  action disables on an empty draft, while the caret remains available so the
-  user can inspect or change the delivery mode. Providers with no atomic
-  active-turn dispatch (Droid, Pi, the ACP providers) keep the single
-  queue-on-send affordance, and a queued Cursor message still gets the plain
-  "Message queued — will be sent when the current turn completes." notice.
-- **The CTO composer never offers *Send after turn*.** `AgentChatPane` passes
-  its `surfaceProfile` into the composer, and `surfaceProfile ===
-  "persistent_identity"` (the CTO thread) sets
-  `activeTurnSendModesForProvider(provider, { liveRedirectOnly: true })`, which
-  filters `queue` out of the menu and re-points the default at the provider's
-  first remaining mode. This is presentation catching up with the host: the CTO
-  session's steer queue cap is zero, so a delivery that would have queued is
-  rewritten into a live redirect anyway, and offering the wait would promise
-  something the backend never honors. The filter is a fallback-safe narrowing —
-  if a queue-only provider ever reached this path it would keep its real menu
-  rather than render nothing. `ACTIVE_TURN_DISPATCH_MODES` itself is untouched.
-- **Stop choices.** In an active chat, Stop is a compact split control whose
-  menu is the matrix in `apps/desktop/src/shared/chatStopModes.ts`, on every
-  provider: **Turn only** (`stop_only`), **Turn + queue** (`stop_and_clear`,
-  the default everywhere, trash icon), **Turn + background (N jobs)**
-  (`stop_and_background`), **Turn + queue + background (N jobs)**
-  (`stop_and_clear_and_background`), and — only while this chat has spawned
-  chats that are working — **Turn + queue + child chats (N)**
-  (`stop_and_clear_and_children`) and **Everything + child chats (N)**
-  (`stop_everything_and_children`). Child chats are stopped by ADE,
-  depth-first, each with the same mode; the result reports
-  `stoppedChildChatCount`.
-  `providerStopModeSupport` decides each row from the provider's real
-  interrupt semantics and a row it cannot honour is shown disabled with the
-  reason: Cursor, Droid, Pi, and ACP agents cannot stop background work their
-  agent started; Pi and ACP agents drop queued messages when stopped, so the
-  choices that keep the queue are off there. Codex stops background work by
-  ending the terminals its agent left running (`thread/backgroundTerminals/terminate`,
-  never terminals the user opened with a shell command), and a queue-clearing
-  Stop the user picks deletes Codex's app-server queue (`thread/queue/delete`
-  per submission); ADE's own internal stops of a Codex turn (recovery, a
-  headless turn limit) leave that queue alone. A remembered choice the chat
-  cannot honour right now falls back to the default.
-  The live job count is the same `activeBackgroundTaskCount` the session
-  summary already exposes. Default Stop does **not** tear down the Claude
-  query or its background jobs once `perTaskStopAffordance` is declared;
-  square stops on Chat Info / spawn cards call `ade.agentChat.stopTask` for
-  one `taskId`. The selection is stored per chat, drives the primary button
-  and `Cmd+.`, and the custom portal menu dismisses as soon as an option is
-  selected. A successful clear that cancelled ADE-attributed messages
-  produces one transcript Undo card for eight seconds; Undo calls
-  `restoreCancelledQueue` and restores the original queued payloads. `ade chat interrupt --stop-children [--stop-background]`
-  picks the child-chat modes; for a per-task stop, use
-  `ade chat stop-task <session> <taskId>`.
-- **Context meter lifecycle.** `ContextUsageDial` shows a percentage only for
-  `state: "measured"`. During compaction it shows an ellipsis and explains that
-  the last exact reading is hidden; after a boundary without an exact post
-  count it stays `recalculating`; a failed authoritative read shows `?` /
-  `unknown`. Streamed usage can move the dial during a turn, but the
-  control-channel snapshot after settle/compaction is the authoritative value.
-  The ring fills against the model's maximum window. A short warning-coloured
-  tick on the ring marks `compactAtTokens`, the point where the provider
-  compacts (for Claude, 33,000 tokens below its compaction window). Clicking
-  the dial opens a "Context usage" popover: `312k of 1M used
-  · compacts at 367k`, the source of that point ("Your setting" or "Claude
-  default"), a **Compact now** button, and a "Provider compaction setting" link.
-  Compact now sends `/compact` without replacing the unsent draft. It appears for
-  Claude, Codex, Pi, OpenCode when the OpenCode server lists `compact`, and
-  local Cursor chats (`manualCompactAvailable` on the session summary for web
-  and iOS). Cursor Cloud chats, Droid, and ACP agents stay read-only. It is disabled while a turn or pending
-  input is live; ADE already compacts Claude at 97% of its compaction window
-  at a turn boundary when Claude did not compact by itself.
-- **Compact first after the cache expires.** For a chat of a provider whose
-  `/compact` ADE can run (Claude, Codex, Pi, OpenCode, local Cursor) whose prompt cache has
-  expired and whose last measured context is 200,000 tokens or more (Claude
-  Code's own idle-compaction floor), a
-  `StatusChip` in the composer's status strip reads `Cache expired · 412k` with
-  one action, **Compact first**. The tooltip gives the trade: the next message
-  re-sends all 412k tokens, or about 8k after compacting (the last `postTokens`
-  for the chat, else `estimateCompactedTokens`: 2% of the context, never under
-  5k). The action turns it on for the next
-  send only; the chip then reads `Compacts on next send · 412k` in the accent
-  tone with **Cancel** to undo. The × hides the chip until the next turn
-  ends, and that send keeps the full history. With it on, `chat.send` carries `compactFirst: true`. The brain starts
-  `/compact` as its own turn and, once that turn is running, queues the message
-  behind it like any message sent during a turn, so the send returns at once
-  and the thread shows the message as queued, not sent. It is delivered when
-  the compaction ends. For Codex, Pi and OpenCode, `/compact` is an action
-  rather than a turn, so there is no queue to put the message behind. Those
-  providers and Cursor, whose compaction is a short turn, take the same path:
-  the brain runs the `/compact` the meter's **Compact now** sends, waits for the
-  compaction to end (up to `COMPACT_FIRST_INLINE_WAIT_MS`, 90 seconds), and then
-  sends the message. A failure, or a wait that runs long, sends the message with
-  the full chat and shows the notice below; the compaction keeps running either
-  way. A Cursor compaction still running at the deadline is a live turn, so the
-  message queues behind it instead and needs no notice. If the compaction fails or does not shrink the chat, the
-  messages queued behind it are kept and sent with the full chat, with the notice "Compaction did
-  not finish, so your message was sent with the full chat." Stop during the
-  compaction cancels it like any queued message. There is no ADE time limit;
-  Stop ends the compaction, as for a typed `/compact`. A send whose call times
-  out (`isRuntimeTransportTimeoutError`) does not go back in the composer
-  unless it never appears in the chat within two minutes (if another chat is
-  open by then, or a new draft fills the composer, a toast says so instead). Each
-  provider page's setting "After
-  the cache expires" chooses `ask` (the chip), `always` (the chip starts on), or
-  `never` (no chip). Claude defaults to `ask` (the chip has shipped that way);
-  Codex, Pi, OpenCode and Cursor default to `never`, so their offer appears only once
-  someone turns it on. With `always`, ADE also does what Claude Code does by
-  itself: a chat on a one-hour cache is compacted 54 minutes in (90% of the
-  cache's life, `WARM_IDLE_COMPACT_FRACTION`), while the cache is still warm and
-  the compaction reads the chat at the cached price (`warmIdleCompactAtMs`,
-  `warmIdleCompactionScheduler.ts`). That timer is Claude's alone; the other
-  providers only ever offer. Claude's own timer cannot fire in ADE, which
-  closes an idle Claude process after five minutes. A turn cancels the timer, a
-  timer that fires more than a minute late (a machine that slept) is dropped,
-  and a chat it misses compacts on the next send as before. Claude's
-  `idleCompaction` setting is left alone. Only a send that carries `compactFirst: true` compacts
-  first, so CLI, automation, and queued sends never do. When Claude's own
-  `resume_return` question is pending, ADE does not also compact. ADE never
-  compacts a chat on its own while background work is live: the automatic timer
-  also asks `hasRuntimeActiveWorkload`, so a background shell or subagent is
-  never compacted underneath. Thresholds:
-  `shared/compactFirst.ts` (`compactFirstIdleMs`, `COMPACT_FIRST_MIN_TOKENS`).
-  The brain sends the floor to every client on the session summary
-  (`compactFirstMinTokens`), so a client built with an older floor uses it.
-  The idle clock starts at the cache's `since`, except that a `since` older than
-  the start of the last finished turn (`lastFinishedTurnMs`) is from an earlier
-  turn whose summary has not caught up, so that turn's end is used instead. The
-  cache window itself is per provider (`compactFirstIdleMs`): Claude's measured
-  per chat (5m/1h, see **The real cache lifetime** below), Codex 30 minutes
-  (OpenAI's `prompt_cache_options.ttl` — "The only supported value, `30m`, is
-  also the default"), and Pi/OpenCode the window of the model's own vendor (30
-  minutes on OpenAI models, an hour on Claude's or when the vendor is not
-  known, which only ever makes the offer later). The brain sends the window
-  too (`compactFirstIdleMs` on the summary) and the chip stays hidden while a
-  message is queued, since it sends on its own.
-  Desktop, web, and iOS
-  share the rule. iOS fetches the summary for a chat in another project
-  too, since only the summary says whether its cache expired. To try it on a small chat, start the
-  brain with `ADE_COMPACT_FIRST_MIN_TOKENS=<n>`: the brain uses that limit and
-  sends it to the clients on the session summary (`compactFirstMinTokens`).
-- **The real cache lifetime.** Claude Code picks the prompt cache lifetime of
-  the main conversation per request: 1 hour on a subscription within its
-  limits, 5 minutes on an API key, Bedrock, Vertex or extra usage. ADE does not
-  guess. At each Claude turn end, `claudePromptCacheTtlOfWrites`
-  (`shared/claudePromptCache.ts`) reads the turn's cache writes
-  (`done.usage.cacheCreationTokens` and `cacheWrite1hTokens`; when a turn
-  holds both lifetimes, the one most of the tokens used). The chat service
-  stores the result as `promptCache: { ttl, since }` on the session, its
-  persisted record and its summary (`TerminalSessionSummary.chatPromptCache`).
-  `ttl` is `"5m"` or `"1h"`. `since` is the start of the turn's last model
-  request (`done.usage.lastRequestStartedAt`), because Claude times a cache
-  entry from the request that wrote or read it, not from the end of the
-  answer; when no request time is known, the turn end stands in. A turn that
-  wrote no cache but read it keeps the lifetime and moves `since`. A move to
-  another account clears it: the cache belongs to the login that wrote it.
-  Two things read it:
-  - **Compact first** waits that lifetime from `since`, or an hour after the
-    last turn ended when no lifetime is known yet.
-  - **The cache countdown badge** (`ClaudeCacheTtlBadge`, `lib/claudeCacheTtl.ts`)
-    on the chat header and the Work session card. A 5-minute cache counts down
-    from 5:00, measured from `since`. A 1-hour cache shows nothing for 45 minutes, then
-    counts down from 10:00 and ends at 55 minutes: measured cache misses climb
-    from there, and a message needs time to reach Claude. With
-    no known lifetime (a gateway preset, a chat with no cache write yet) there
-    is no badge.
-- **Question answering.** When a question-type pending input is active, the
-  question card *replaces* the composer textarea (`AskQuestionComposer`) and
-  the model / permission / effort footer is hidden until it resolves. Selecting
-  an option marks it and never submits; `Next` / `Enter` advances. A selection
-  and a typed note both travel, selection first — see [Answer
-  semantics](#answer-semantics). Multi-select questions render a toggle ledger
-  plus a fixed-height preview pane (sanitised via `ReactMarkdown` +
-  `rehype-raw` + `rehype-sanitize` + `remark-gfm`), disclosed by an explicit
-  click rather than hover or keyboard focus.
-- **Composer lock while pending input is unresolved.** When
-  `pendingInput.blocking` is set, the composer hard-locks: the textarea
-  / rich editor are disabled, attachment, slash-command, and edit
-  affordances are gated, the placeholder switches to a "resolve the
-  pending request above" hint, and Enter is a no-op (Escape cancels
-  the request). Codex `item/tool/requestUserInput` with `isBlocking:
-  false` is the exception: it is live steering, not a gate. The card
-  sits above the still-open composer (`data-testid="codex-steering-question"`)
-  in the same centered `--chat-column` wrapper the composer uses, so the
-  two line up column-for-column,
-  the session row stays Working with a `?` pip, and `sendMessage` is
-  allowed. Missing `isBlocking` still blocks (`unwrap_or(true)` in Codex
-  0.156.0). The same gate runs server-side: `agentChatService`
-  refuses `sendMessage`, queued steers, and `dispatchSteer` while a
-  live **blocking** pending input exists, throwing
-  `"Answer or decline the pending request before sending another
-  message."`. `AgentChatPane.submit` mirrors the message into the
-  composer's error banner so a fast double-Enter doesn't silently
-  drop the second send.
-- **Sending while an approval waits declines it and redirects.** An
-  approval, permissions, plan or model-choice card does not lock the
-  composer (`isRedirectablePendingRequest` in `shared/pendingInputAnswers.ts`).
-  The placeholder reads "Send a message to decline and redirect the agent"
-  ("…to reject the plan…" for a plan), and sending declines every waiting
-  card through `respondToInput`, then delivers the message the way any
-  mid-turn message goes (a steer, or a new turn if the decline ended it).
-  The decline runs inside `AgentChatPane.submit`, after the local commands
-  (`/context`, `/output-style`, Codex memory reset) and right before
-  dispatch, so only a message that is really going out declines anything.
-  A failed decline sends nothing and keeps the draft; a draft edited while
-  the declines were in flight is not sent (the banner says so). A send
-  that would go anywhere but this chat's next turn (a subagent, a queued
-  launch message, a continued chat on another machine, a cloud launch)
-  refuses while a card waits instead of slipping past it. Escape clears a typed redirect
-  first and cancels the card only from an empty composer. The card's own
-  buttons are unchanged. Still hard-locked: ACP runtimes (no mid-turn steer,
-  so the message would be dropped), Codex and Cursor plan approvals (their
-  decline starts a follow-up turn of its own), and cards only the user may
-  answer (`isUserOnlyConsentCard`: secrets, desktop consent, MCP App calls).
-  Questions keep their own card: a typed reply there is already the user
-  talking back (`withTypedReplyNote`).
+### Context meter and Compact first
+
+- **The dial** (`ContextUsageDial`) shows a percent only for `state:
+  "measured"`: an ellipsis during compaction, `recalculating` after a boundary
+  with no exact count, `?` / `unknown` after a failed read. The settled
+  snapshot is authoritative. The ring fills against the model window; a tick
+  marks `compactAtTokens` (Claude: 33,000 below its compaction window).
+- **The popover**: `312k of 1M used · compacts at 367k`, its source ("Your
+  setting" / "Claude default"), **Compact now** and a settings link. Compact
+  now sends `/compact` and keeps the draft; it exists for Claude, Codex, Pi,
+  OpenCode (when the server lists `compact`) and local Cursor
+  (`manualCompactAvailable` for web and iOS), and is disabled during a turn or
+  pending input. ADE compacts Claude at 97% at a turn boundary when Claude did
+  not.
+- **Compact first.** For those providers, when the prompt cache expired and
+  the last measured context is at least 200,000 tokens
+  (`COMPACT_FIRST_MIN_TOKENS`), a `StatusChip` reads `Cache expired · 412k`
+  with **Compact first**. The tooltip compares re-sending everything with
+  about 8k after compacting (the last `postTokens`, else
+  `estimateCompactedTokens`: 2%, at least 5k). The action applies to the next
+  send only (`Compacts on next send · 412k`, with **Cancel**); × hides it until
+  the next turn ends. The chip hides while a message is queued.
+- **How it sends.** `chat.send` carries `compactFirst: true`. For Claude, the
+  brain starts `/compact` as a turn and queues the message behind it (shown as
+  queued). For Codex, Pi, OpenCode and Cursor, the brain runs the same
+  `/compact` as Compact now, waits for it to end (up to
+  `COMPACT_FIRST_INLINE_WAIT_MS`, 90 s), then sends. A Cursor compaction still
+  running at the deadline is a live turn, so the message queues. A failed or
+  non-shrinking compaction sends with the full chat and the notice "Compaction
+  did not finish, so your message was sent with the full chat." Stop cancels
+  it. A send that times out (`isRuntimeTransportTimeoutError`) returns to the
+  composer only if it does not appear within two minutes (else a toast).
+- **Setting** "After the cache expires": `ask` (chip), `always` (chip starts
+  on) or `never`. Claude defaults to `ask`; the others to `never`.
+- **Warm timer (Claude, `always`).** A one-hour-cache chat compacts 54 minutes
+  in (`WARM_IDLE_COMPACT_FRACTION`, `warmIdleCompactAtMs`,
+  `warmIdleCompactionScheduler.ts`), because ADE closes an idle Claude process
+  after five minutes. A turn cancels it; a timer over a minute late is dropped.
+  Claude's `idleCompaction` setting is left alone.
+- Only a send with `compactFirst: true` compacts first; CLI, automation and
+  queued sends never do. No compaction while Claude's `resume_return` question
+  waits, or while background work is live (`hasRuntimeActiveWorkload`).
+- **Shared values.** `shared/compactFirst.ts` (`compactFirstIdleMs`,
+  `COMPACT_FIRST_MIN_TOKENS`); the summary carries `compactFirstMinTokens` and
+  `compactFirstIdleMs`. The idle clock starts at the cache's `since`, or at
+  `lastFinishedTurnMs` when `since` is older. Windows: Claude measured (5m/1h),
+  Codex 30 min, Pi/OpenCode the model vendor's (30 min OpenAI, else an hour).
+  iOS fetches summaries for other projects too. `ADE_COMPACT_FIRST_MIN_TOKENS=<n>`
+  on the brain lowers the floor for testing.
+- **The real cache lifetime (Claude).** At each turn end
+  `claudePromptCacheTtlOfWrites` (`shared/claudePromptCache.ts`) reads the
+  cache writes (`cacheCreationTokens`, `cacheWrite1hTokens`; the larger share
+  wins) and stores `promptCache: { ttl: "5m" | "1h", since }` on the session
+  and summary (`TerminalSessionSummary.chatPromptCache`). `since` is the last
+  request's start (`lastRequestStartedAt`), else the turn end. A read-only
+  turn moves `since`; an account move clears it. Compact first waits that
+  lifetime (or an hour after the last turn when unknown). The countdown badge
+  (`ClaudeCacheTtlBadge`, `lib/claudeCacheTtl.ts`) on the header and Work card
+  counts a 5-minute cache from 5:00; a 1-hour cache shows nothing for 45
+  minutes, then counts from 10:00 to 55 minutes. No known lifetime, no badge.
+
+### Pending input in the composer
+
+- **Questions** replace the textarea (`AskQuestionComposer`) and hide the model
+  footer until resolved. Picking marks, never submits; `Next` / `Enter`
+  advances. Selection and note both travel; see
+  [Answer semantics](#answer-semantics). Multi-select previews are sanitized
+  (`rehype-raw` + `rehype-sanitize` + `remark-gfm`) and open on click.
+- **Blocking input locks the composer.** With `pendingInput.blocking`, the
+  editor, attachments, slash commands and edits are off, the placeholder says
+  to resolve the request, Enter does nothing and Escape cancels. The service
+  refuses `sendMessage`, queued steers and `dispatchSteer` with "Answer or
+  decline the pending request before sending another message.", mirrored in
+  the composer banner.
+- **Codex non-blocking questions** (`item/tool/requestUserInput` with
+  `isBlocking: false`) are live steering: the card sits above the open
+  composer in the same `--chat-column` (`codex-steering-question`), the row
+  stays Working with a `?` pip, and sends work. Missing `isBlocking` blocks.
+- **Sending while an approval waits declines it and redirects.** Approval,
+  permission, plan and model-choice cards do not lock
+  (`isRedirectablePendingRequest`). The placeholder reads "Send a message to
+  decline and redirect the agent" ("…to reject the plan…"). `AgentChatPane.submit`
+  declines every waiting card through `respondToInput` right before dispatch
+  (after local commands), then sends as a mid-turn message or new turn. A
+  failed decline sends nothing; a draft edited during the declines is not
+  sent. Sends that would go elsewhere (a subagent, a queued launch message, a
+  continued chat, a cloud launch) are refused while a card waits. Escape
+  clears a typed redirect first.
+- **Still hard-locked:** ACP runtimes (no mid-turn steer), Codex and Cursor plan
+  approvals (their decline starts a turn), and user-only cards
+  (`isUserOnlyConsentCard`: secrets, desktop consent, MCP App calls).
 
 ### Launch memory
 
-What you last launched with — model, reasoning effort, fast mode (with its
-Codex tier), permission
-level — is remembered **per machine**, under
-`ade.chat.lastLaunchConfig.v1:<surfaceProfile>:<kind>` in renderer
-`localStorage`. The key deliberately carries no project root and no lane id.
-Including them meant every new lane started from a blank slate, so the memory
-felt random: set a model and a permission level, open the next lane, and the
-defaults were back. The intent being remembered is "I prefer Opus", not "in
-this lane I prefer Opus".
-
-Two dimensions still split the memory. **Kind** does, because a chat and a CLI
-session are genuinely different choices. **Surface profile** does, because a
-CTO-style persistent identity deliberately launches with different autonomy.
-
-The pre-2026-09 per-project, per-lane key is still read, never written, and
-always ranks below the machine-wide key, so a user who already had a remembered
-launch config keeps it the first time they open a lane that had one.
+The last launch settings (model, effort, Fast with its Codex tier, permission
+level) are remembered **per machine** under
+`ade.chat.lastLaunchConfig.v1:<surfaceProfile>:<kind>` in `localStorage`, with
+no project root or lane id: the intent is "I prefer Opus", not "in this lane".
+**Kind** (chat or CLI) and **surface profile** (the CTO launches with other
+autonomy) still split it. The older per-project, per-lane key is read, never
+written, and ranks below the machine key.
 
 ### Layout variants
 
-`AgentChatComposer` accepts a `layoutVariant` prop:
-
-- `"standard"` -- full-width composer (default).
-- `"grid-tile"` -- constrained for packed grid tiles; `composerMaxHeightPx`
-  limits auto-grow.
+`AgentChatComposer`'s `layoutVariant` is `"standard"` (default) or
+`"grid-tile"` (packed tiles; `composerMaxHeightPx` caps growth).
 
 ### ModelPicker structure
 
-The desktop ModelPicker under
-`apps/desktop/src/renderer/components/shared/ModelPicker/` is split into
-focused modules. Each piece is independently testable.
+`renderer/components/shared/ModelPicker/`:
 
 | Module | Role |
 |---|---|
-| `ModelPicker.tsx` | Trigger + popover entry point. Owns runtime-catalog loading through `sharedCatalogFetch` (which owns the cache claim and the request key), fast mode, and the favorites/recents fan-out. Pass `fastMode` + `onFastModeChange` and the picker owns the affordance: a per-row Fast chip inside the popover plus a `<Model name> Fast` trigger suffix composed by the pure `composeModelPickerTriggerLabel` helper. Pass `effectiveFastTier` as well and the selected row shows a badge beside that chip naming the tier the server reported back, amber when it differs from the ask. Pass `fastTier` (null included) too and the surface accepts Codex Ultrafast: a model whose catalog offers the `ultrafast` tier cycles Off → Fast → Ultrafast, the second `onFastModeChange` argument carries the tier, and the trigger reads `Ultrafast`. A surface that omits `fastTier` keeps the two-state Fast chip. Surfaces that pass neither (and no `onFastModeLocked` on a locked account) render no fast affordance at all; the deprecated `fastModeActive` / `onFastModeToggle` / `fastModeSupported` props still render the old sibling chip for call sites that have not migrated. |
-| `ModelPickerContent.tsx` | The popover body: search bar, rail, virtualized list (`@tanstack/react-virtual`), empty state. Layout: the rail and search bar share one recessed L, and the list sits on a raised panel cut into it, led by a section label naming what the list shows (the provider, `Favorites`, `Recents`, `Custom`, or `N results`) so the icon-only rail never leaves the current provider a guess. Sub-provider tabs (e.g. `Anthropic (via Cursor)`) carry the maker's logo; a catch-all group of mixed makers gets none. Rows are a fixed 50 px (`MODEL_ROW_HEIGHT` = a 48 px row plus its gap), so the list never measures a row and `overscan` is 4; before the scroller has a height the list paints one screen (10 rows). The search field is focused after the first paint, not in a layout effect, so opening does not run a second layout pass before the panel is placed. Props include `hidePermissionRail` (hook for surfaces that pin the permission tier and suppress permission-related affordances), `allowCliOnlyModels` (switch Cursor filtering from SDK chat models to CLI launch models), `allowRegistryExpansion` (when false, skip merging `MODEL_REGISTRY` entries into the runtime catalog), `registryFilter` (restrict registry expansion by descriptor, used by fork handoffs to keep the provider fixed without freezing the picker to a stale concrete-id list), `fastTier` + `ultrafastEnabled` (carry Fast's tier and let offering rows cycle to Ultrafast), and `runtimePin` (the prompt-box / chat machine, forwarded into auth and OpenCode-installed probes). Inside a provider's own rail the row detail line drops that provider's name (`omitProviderInDetail`), keeping only the route and context size; mixed lists (Search / Favorites / Recents) keep it. When the authenticated-only filter is active, authenticated CLI-backed providers (Claude, Codex, Droid, Qwen, Kimi, Grok, Copilot) may expand from the static registry even if the last discovered model-id list is incomplete. The left rail always includes those ACP families (plus Cursor / OpenCode / local runtimes) so they stay reachable before catalog refresh; Favorites only lists starred models. |
-| `ModelPickerRail.tsx` | Left-rail tabs (Favorites, Recents, Anthropic, OpenAI, Muse, Cursor, Devin, OpenCode, Pi, GitHub Copilot, Grok, Droid, Kimi, Qwen, Ollama, LM Studio). The desktop, hosted renderer, and iOS catalog keep this provider order (Cursor is omitted on unsupported Windows ARM); reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. Tabs are icon-only; the selected one is raised onto the same surface as the list panel, and its rail has no scrollbar. |
-| `ModelListRow.tsx` | A single model row: fixed 48 px and two lines — the maker logo, the display name, a check on the selected row, an optional local/`Sign in` mark, a fixed two-slot capability pill (reasoning, then image input, shown faint when absent so the columns line up), a fixed-width Fast/Ultrafast slot (a blank spacer on rows without the chip, when the surface offers the control), and the favorite star at the end (revealed on hover/focus, always shown when starred). The Fast chip renders when the surface supplied `onFastModeChange` (or `onFastModeLocked` on a locked account) and `modelSupportsFastMode()` holds for that row's descriptor; a row whose catalog offers Ultrafast and whose surface enabled it cycles Off → Fast → Ultrafast, and toggling it changes neither the selection nor the popover's open state. Its context menu is stacked through `Z_LAYERS.contextMenu`. |
-| `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. The trigger carries an `EffortMeter` signal-bar glyph (one rising bar per tier, lit to the current effort in its tone); the open control is a segmented track with one tinted indicator that slides between segments by `transform`, driven by click, drag, or arrows/Home/End, with short segment labels when the ladder has more than four levels (`reasoningEffortTrackLabel`). It also exports `resolveDisplayedReasoningEffort`, the pure function behind what the trigger shows: when nothing explicit is set the control falls back to the effort last used for the model's family, so a launch that reads the unset state instead sends the model default while the trigger says "High". `AgentChatPane` resolves the same function at the owner of the value, which keeps the two in step without a presentational component writing its parent's state on mount. |
-| `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder` — pure helpers that flatten the IPC catalog into a `ModelDescriptor[]` and reconcile it with the static registry while preserving runtime metadata such as `serviceTiers` and Cursor `cursorAvailability`. All four take the same optional catalog scope key as `runtimeCatalogCache.ts`: descriptors are remembered per machine because a catalog's `reasoningEfforts` (the thinking-level ladder) and context window are machine-reported. There is deliberately **no fallback to another machine's bucket** — answering a miss from the bound machine is the same cross-machine leak the bucketing exists to prevent. A miss falls through to the static registry and then to `createUnknownModelPlaceholder`: correct-but-generic beats confident-and-wrong. |
-| `modelOrdering.ts` | `sortModelItems` — provider/group ordering and intra-group ranking (favorites first, then recents, then default registry order). |
-| `modelPickerSearch.ts` | `scoreModelPickerSearch` — fuzzy search across display name, family, provider, and ids; ranks favorites/recents above strict matches. |
-| `providerEmptyState.tsx` | Per-provider empty/auth/install CTA copy. Surfaces "Install OpenCode" when the binary is missing, "Sign in to Cursor" when auth is missing, etc. |
-| `runtimeCatalogCache.ts` | Renderer-side catalog cache, **bucketed per machine** by binding key. `DEFAULT_RUNTIME_CATALOG_SCOPE` (`""`) is only for surfaces with no composer machine (Settings, an unpinned picker). Work composers always key by the prompt-box / chat machine's binding key, including when that machine is also the project tab, so a tab switch cannot overwrite the prompt-box catalog. Capped at 8 scopes. Each bucket tracks its own per-provider freshness (30 min for `opencode`/`cursor`/`droid` after a **live** probe, 30 s for `lmstudio`/`ollama`); a cached catalog that only has ADE's static OpenCode rows does not start that TTL. Each bucket also owns the descriptors parsed from its catalog, so one cap and one eviction govern both and a dropped scope cannot leave descriptors behind; the unpinned `""` bucket is never evicted. It holds the in-flight request map, but the request-key format and the claim-before-await protocol live in `sharedCatalogFetch.ts`. |
-| `sharedCatalogFetch.ts` | The one catalog fetch in the window, de-duplicated across surfaces. `fetchSharedRuntimeCatalog` claims the bucket (`reserveRuntimeCatalogScope`) **before** the await, so a response for a bucket that was evicted mid-flight is dropped rather than resurrecting it, and a caller arriving while another caller's request is open awaits that one instead of starting a second. Concurrent requests dedupe by `${scopeKey}|${mode}:${refreshProvider}:${cursorSource}`. It answers a `SharedCatalogFetchResult` — `ok` / `unavailable` / `error` — because an older host with no `agentChat.modelCatalog` bridge and a bridge that threw are not the same event, and collapsing both to `null` is what made a refresh failure indistinguishable from a missing capability. It sits beside `modelCatalog` and `runtimeCatalogCache` rather than inside either: `modelCatalog` already imports the cache, so putting the fetch in the cache would close an import cycle. The composer's picker and the Custom preset wizard both go through it; neither keeps its own copy of the protocol. |
-| `useRuntimeCatalogForFamily.ts` | React state over the runtime catalog for **one** provider family, for surfaces that need the list and nothing else — the Custom preset wizard's model select. `enabled` is the caller's "this control is on screen and a source is picked" condition, so a wizard parked on another step costs nothing. Families the host enumerates at run time (Cursor, OpenCode, Pi, the ACP CLIs) get the same cached → refresh-stale → force ladder the provider rail performs; the rest are satisfied by whatever the shared bucket already holds. Every exit path settles the loading flag — an early return that left it set was how the select came back from another step still reading "Loading models…" over a list that had already arrived. |
-| `useProviderAuthStatus.ts` | Resolves `AuthStatus` (`ok` / `limited` / `unauthed` / `unknown`) per `ProviderFamily` from the runtime-binding-scoped `aiDiscoveryCache`. Pass `runtimePin` so Work composers probe a foreign prompt-box machine (`ai.getStatus` / `ai.isOpenCodeInstalled(pin)`); identity is the pin's `key`, so a reallocated pin object does not re-probe. When that machine is the project tab, auth shares Settings' unpinned `projectRoot` cache instead of isolating into `root::pin:<key>`, and a tab switch to another runtime with the same root force-refetches that unpinned bucket (IPC stays unpinned; pin-scoped caches are left alone). A picker with no explicit `providerAuthStatus` seeds from the cached value, joins the shared single-flight refresh, and reacts to cache update/invalidation events — matching `projectRoot` with renderer `arePathsEqual` so Windows drive-letter case and separators still apply. Callers that already supply status opt out of the full fetch. The separate cheap OpenCode-binary probe is deduplicated by runtime/project scope. |
-| `useAuthOnlyFilter.ts` | Hides models whose provider is not authenticated, with a toggle for the catalog browse mode. |
-| `useModelFavorites.ts` / `useModelRecents.ts` | Cross-surface favorites and recents persisted to the per-project `ade.db` tables `model_picker_favorites` and `model_picker_recents` via the `modelPicker.*` JSON-RPC methods on `adeRpcServer`. Desktop and iOS share the CRR-backed store; the legacy `~/.ade/modelPicker.json` file is only a one-time migration source. |
-| `useReasoningByFamily.ts` | Last-used reasoning effort per model family. |
+| `ModelPicker.tsx` | Trigger and popover; runtime catalogs through `sharedCatalogFetch`; favorites and recents. With `fastMode` + `onFastModeChange` it owns the row Fast chips and the `<Model> Fast` trigger (`composeModelPickerTriggerLabel`); `effectiveFastTier` adds the reported-tier badge; `fastTier` enables Ultrafast. Without them (and no `onFastModeLocked`) there is no Fast control; the deprecated `fastModeActive` / `onFastModeToggle` / `fastModeSupported` render the old chip. |
+| `ModelPickerContent.tsx` | The popover body: search, rail, virtualized list (`@tanstack/react-virtual`), empty state. The rail and search share one recessed L; the list panel has a section label (provider, `Favorites`, `Recents`, `Custom`, `N results`). Sub-provider tabs show the maker's logo. Rows are a fixed 50 px (`MODEL_ROW_HEIGHT`), `overscan` 4, ten rows before the scroller has a height. Search focuses after first paint. Props: `hidePermissionRail`, `allowCliOnlyModels`, `allowRegistryExpansion`, `registryFilter` (fork handoffs), `fastTier` + `ultrafastEnabled`, `runtimePin`. A provider's own rail drops its name from row details (`omitProviderInDetail`). With the auth filter on, signed-in CLI providers (Claude, Codex, Droid, Qwen, Kimi, Grok, Copilot) may expand from the registry. |
+| `ModelPickerRail.tsx` | Icon-only tabs: Favorites, Recents, Free models (see [Free models](#free-models)), Anthropic, OpenAI, Muse, Cursor, Devin, OpenCode, Pi, GitHub Copilot, Grok, Droid, Kimi, Qwen, Ollama, LM Studio (the same order on desktop, web and iOS; no Cursor on Windows ARM). Auth gates and the "Install OpenCode" CTA come from `providerEmptyState`. |
+| `ModelListRow.tsx` | A 48 px two-line row: logo, name, check, local mark, then fixed columns: **Sign in** (or a blank of the same width; a "Not signed in" tag when the surface has no sign-in), a two-slot capability pill (faint when absent), a Fast/Ultrafast slot, and the star (on hover/focus, or when starred). On a narrow row Fast goes first, then capabilities, then Sign in becomes an icon. Toggling Fast changes neither the selection nor the popover. Context menu via `Z_LAYERS.contextMenu`. |
+| `ReasoningEffortPicker.tsx` | The effort control (beside the model and in parallel slots); see [Model, effort and Fast](#model-effort-and-fast). `reasoningEffortTrackLabel` gives the short labels. `resolveDisplayedReasoningEffort` falls back to the family's last effort; `AgentChatPane` resolves the same function, so trigger and launch agree. |
+| `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder`: flatten the catalog and merge it with the registry, keeping `serviceTiers` and `cursorAvailability`. All take the machine's scope key, with **no fallback to another machine's bucket**: a miss goes to the registry, then the placeholder. |
+| `modelOrdering.ts` | `sortModelItems`: favorites, recents, then registry order. |
+| `modelPickerSearch.ts` | `scoreModelPickerSearch`: fuzzy over name, family, provider and ids. |
+| `providerEmptyState.tsx` | Empty, auth and install copy ("Install OpenCode", "Sign in to Cursor"). |
+| `runtimeCatalogCache.ts` | The catalog cache, **bucketed per machine**. `DEFAULT_RUNTIME_CATALOG_SCOPE` (`""`) only for surfaces with no composer machine; Work composers always key by their machine. Up to 8 scopes; the `""` bucket is never evicted. Per-provider freshness (30 min after a **live** probe for `opencode`/`cursor`/`droid`; 30 s for `lmstudio`/`ollama`); static OpenCode rows start no TTL. Each bucket owns its parsed descriptors. |
+| `sharedCatalogFetch.ts` | The one deduplicated catalog fetch (`${scopeKey}|${mode}:${refreshProvider}:${cursorSource}`). `fetchSharedRuntimeCatalog` claims the bucket (`reserveRuntimeCatalogScope`) **before** the await, so an evicted bucket is not revived. Returns `ok` / `unavailable` (no bridge) / `error`. Separate from the cache to avoid an import cycle. Used by the composer picker and the Custom preset wizard. |
+| `useRuntimeCatalogForFamily.ts` | One family's catalog for the Custom preset wizard; `enabled` gates it. Host-enumerated families (Cursor, OpenCode, Pi, ACP) get the cached → refresh-stale → force ladder. Every exit clears loading. |
+| `useProviderAuthStatus.ts` | `AuthStatus` (`ok` / `limited` / `unauthed` / `unknown`) per family from `aiDiscoveryCache`, plus `runtimeMissing` (`familiesWithoutRuntime`, shown dimmed). `runtimePin` probes the composer's machine, keyed on `pin.key`. For the tab's own machine it shares Settings' unpinned cache, and a same-root tab switch refetches it. A picker with no `providerAuthStatus` seeds from cache and reacts to cache events (`arePathsEqual`). |
+| `useAuthOnlyFilter.ts` | **Only models I can use**: off by default (signed-out models stay selectable with Sign in); stored in `ade.modelPicker.onlyUsable.v1`. |
+| `useModelFavorites.ts` / `useModelRecents.ts` | Per client (`localStorage`), not per machine. The old per-project lists (`model_picker_favorites`, `model_picker_recents` via `modelPicker.*`) are imported once and merged; a failed import retries next start; nothing writes back. |
+| `useReasoningByFamily.ts` | Last effort per family. |
 
-The picker's provider rail stays stable across auth and
-runtime-loading states, always shows the full provider catalog with
-unavailable rows dimmed, and uses separate rail/list focus so arrow-key
-navigation matches the rendered two-column picker.
+- The rail is stable across auth and loading states, shows every provider
+  (unavailable ones dimmed), and has its own focus, separate from the list.
+- Use the shared auth path, not `availableModelIds` alone; a signed-in CLI
+  provider exposes registry models. The status read runs only while the
+  picker is open, from the shared cache, with no polling.
+- A caller passing `providerAuthStatus` (Work's `AgentChatPane`) must itself
+  listen for `ade:ai-status-cache-updated` / `invalidated`, apply
+  `peekAiStatusCached`, and settle an orphan invalidate with one non-force
+  `getAiStatusCached`. Otherwise Settings shows Connected while the picker
+  stays Off.
+- Fork handoffs add a same-provider descriptor filter.
 
-All desktop call sites should use this shared auth path rather than derive
-provider availability from only `availableModelIds`. The ids are a discovered
-inventory and can lag authentication; for CLI-backed providers, a positive
-provider-auth status is enough to expose registry models. The full status read
-starts only while picker content is mounted, uses the shared project cache, and
-does not poll. When a caller **does** pass `providerAuthStatus` (Work chat's
-`AgentChatPane`), it opts the picker out of the live auth hook — so that caller
-must itself listen for `ade:ai-status-cache-updated` / `invalidated`, apply
-`peekAiStatusCached` on update, and at most settle an orphan invalidate with one
-coalesced non-force `getAiStatusCached` for the active tile. Otherwise Settings
-auth looks Connected while the Work picker stays Off until remount. Local and
-cross-machine fork handoffs additionally apply a same-provider descriptor
-filter, so they can show newly registered models from that provider without
-allowing a cross-provider fork.
+### Free models
+
+A person with no paid plan, account or key can still chat: OpenCode Zen's
+free tier runs in ADE's pinned OpenCode with nothing signed in.
+`shared/freeModels.ts` holds the rule (`modelOnlyRunsInOpenCode`: a
+`-free` id or `big-pickle`); iOS mirrors it in `WorkFreeModels.swift`.
+
+- **Free page.** The picker rail's gift tab, under Recents, lists every free
+  model of the picker's machine. A picker narrowed to its caller's own list
+  shows the tab only when that list has a free model. It needs no sign-in, so "Only models I can
+  use" never hides it. Each row carries a `source` (one tab per source; one
+  source draws no tabs) and a `badge` (`free` or `ad-supported`), shown by
+  `FreeModelBadge.tsx` on that row everywhere in the picker. Searching
+  "free" finds them from any page.
+- **No OpenCode yet.** `FreeModelsEmptyState.tsx` offers **Get free models**
+  (`pinnedToolDownload` on the picker's machine), shows the download's
+  progress, then re-reads that machine's status and force-refreshes
+  OpenCode's catalog. It mounts only while the page is empty, so a page with
+  rows reads nothing extra. It shares `PickerEmptyMessage` with the provider
+  pages.
+- **Nothing signed in.** The status of the composer's machine carries
+  `freeModels` (`main/services/ai/freeModelsStatus.ts`): `nothingSignedIn`
+  (no provider, key, custom provider or local model), `everSignedIn` and
+  `preferredDefaultModelIds` (the manifest's `defaults.free`).
+  `everSignedIn` reads a record in ADE's cache: the first check writes it,
+  counting an agent that ran there before (older ADE versions), and the
+  first sign-in seen marks it. Later agent runs do not count, because a
+  runtime start is noted even with no sign-in. A local model is not a
+  sign-in: it clears `nothingSignedIn` but never marks the record. Pi
+  counts only with a stored key or login, because its settings list models
+  that have no sign-in.
+  With nothing signed in:
+  - the picker opens on the Free page (also when the status arrives after
+    the picker opened, unless the person picked a page);
+  - a fresh chat draft starts on the preferred free model, else the first
+    listed one (`chat/useFreeModelsDraft.ts`). It loads OpenCode's catalog
+    for that machine, and a load that found no free model runs again on a
+    later status read, at most once in 30 s. ADE set it, so it is not
+    remembered as the launch default or "last used", also after a launch or
+    a reload, until a person picks a model; another chat or draft starts
+    without the mark. A model someone chose
+    wins, also one chosen before the status arrived, the tour's pick and a
+    restored saved draft. A sign-in on that
+    machine puts the draft back on the model it opened on;
+  - a person who never signed in there gets **Use a free model** on the
+    sign-in strip, on a draft or an open chat (iOS: on the chat's sign-in
+    card, which also re-sends a turn that stopped on the sign-in, once the
+    model change succeeded);
+  - the app banner says **Free models are ready** (accent) instead of the
+    missing-provider warning, once OpenCode is on the machine.
+- **Download at launch.** A computer with no sign of any agent downloads
+  OpenCode at launch (`agentToolDemand.ts`, `signals` policy
+  only). The banner, the first-run OpenCode tile and a waiting draft follow
+  the tools cache's push (`renderer/lib/toolsCacheEvents.ts`), this computer
+  only.
+- **Other machines.** Every read and download goes to the composer's
+  machine: the status through the pinned status cache, the download through
+  `pinnedToolDownload` with the picker's pin. The phone and the web client
+  reach the same calls as `ai.pinnedToolStatus` / `ai.pinnedToolDownload`
+  remote commands.
+- **Analytics.** One `ade_feature_used` (`feature: chat`, `action:
+  free_model_used`, `provider: opencode`) per chat, on its first settled
+  turn on a free model. The model id goes only to `$ai_generation`.
 
 ### Attachment handling
 
-- Pasted and dropped images are written to a temp location. The selected
-  chat surface (header, transcript, and composer) accepts the same file and
-  image-URL drops as the composer and routes them through one attachment
-  pipeline, while composer-owned drops are handled only once. File-backed
-  renderer payloads use `ade.agentChat.saveTempAttachment`; native
-  clipboard images prefer `ade.app.saveClipboardImageAttachment`, which
-  reads the Electron clipboard, writes the PNG beside other chat
-  attachments, and returns a downsized preview data URL. While either
-  save is in flight, the composer disables send and shows a cancellable
-  pending thumbnail in `ChatAttachmentTray`.
-- iOS Simulator selections add `IosElementContextItem` chips to the
-  composer instead of plain attachments. Each chip is a `data-ios-context`
-  node in a contenteditable rich-input variant; submission serialises
-  the chips back into the prompt via `formatIosElementContextForPrompt`
-  so the model sees a structured tag with `componentId`, source
-  file/line, and any metadata. When the same selection produced a
-  paired screenshot within 10 s, the chip carries an
-  `attachmentPath` so the chip and image stay linked. See the
-  [Apple device feature](../apple-device/README.md) for the upstream
-  flow.
-- `inferAttachmentType` and `mergeAttachments` in `shared/types/chat.ts`
-  dedupe attachments by path (last-write wins).
-- MIME-type validation happens per provider, against one allowlist:
-  `PROVIDER_IMAGE_BYTE_MEDIA_TYPES` in `providerInlineImage.ts`
-  (`image/jpeg | image/png | image/gif | image/webp`). An image attachment
-  outside it (SVG, TIFF, BMP, ICO, AVIF, an unconverted HEIC) is never sent
-  as image bytes: every provider path — Claude, Codex's `localImage` input,
-  and the Cursor/Pi/Droid/OpenCode workers — sends the same text reference,
-  `[Image attached (image/svg+xml): <path>]`, built by
-  `imageAttachmentReferenceText`, so the agent reads the file itself. macOS
-  HEIC/HEIF uploads are normalized to JPEG before that boundary, while
-  Windows/Linux report the missing codec instead of relabeling HEIC bytes.
-  OpenCode uses runtime content blocks.
-- **Staged names follow the MIME type.** A pasted or dropped image whose name
-  has no extension or the wrong one (a clipboard `image`, a `diagram.bin` that
-  is really `image/svg+xml`) is renamed by `normalizeImageAttachmentFilename`
-  on both staging paths, so the stored file and `inferAttachmentType` agree.
-- **Thumbnails for formats Chromium cannot draw.** Every `getImageDataUrl`
-  route (desktop IPC, the runtime action, sync and personal chats) reads
-  through `readImageFileAsDataUrl` in `imageAttachmentConverter.ts`: the type
-  comes from the bytes (`shared/imageSniff.ts`), and TIFF or HEIC/HEIF becomes
-  a JPEG through `sips` on a macOS host. A Windows or Linux host has no decoder
-  and returns the original bytes: iOS draws them natively, and the desktop tray
-  falls back to its placeholder when the picture does not load.
-- **The attachment cap and the provider inline caps are different numbers.**
-  `shared/chatAttachmentLimits.ts` single-sources them:
-  `MAX_CHAT_ATTACHMENT_BYTES` (50 MB) is what may be staged on disk;
-  `MAX_PROVIDER_INLINE_FILE_BYTES` (10 MB) is the most non-image file bytes
-  an adapter base64s into a request; images are fitted to
-  `MAX_PROVIDER_INLINE_IMAGE_BYTES` (3.5 MB raw, under Anthropic's 5 MB
-  base64 limit) and `MAX_PROVIDER_INLINE_IMAGE_EDGE_PX` (2000 px) by
-  `fitImageForProviderInline`, which downscales PNG/JPEG to 1568 px. Most
-  providers receive a path and do not care about size. Every path that
-  inlines (Claude sends and steers, OpenCode streaming content, ACP prompt
-  blocks, the Cursor/Pi/Droid workers) fits the image or substitutes a text
-  hint naming the path, so an oversized attachment degrades the message
-  instead of failing the turn. A Claude turn that still ends on
-  `terminal_reason: "image_error"` gets a "Claude couldn't read an attached
-  image" notice, and the SDK's `<synthetic>` model never replaces the turn's
-  real model on its done row.
-- **Remote hosts.** A chat pinned to a paired machine asks that machine how
-  it stages attachments before reading anything
-  (`agentChat.getAttachmentStagingMode`). A host advertising
-  `features.attachmentUploadV1` in `hello_ok` accepts a streamed HTTP
-  upload: the desktop mints a single-use ticket over the already
-  authenticated sync socket (`chat.createAttachmentUpload`), then POSTs the
-  file body to `/ade-attachments/upload` on the host's sync port with that
-  ticket as a bearer. The ticket is consumed before the first body byte, so
-  a retry needs a fresh one. Hosts predating the feature, relay-routed
-  sockets (the relay brokers WebSocket frames, not HTTP), and SSH targets
-  all fall back to `chat.saveTempAttachment` with the legacy 10 MB
-  attachment contract. The capability is purely additive; **iOS stays on
-  the legacy path for images** and is not offered the upload route.
-  Pasted bytes take the same route. Preload `agentChat.saveTempAttachment`
-  checks the machine first: for a paired machine (an explicit remote pin,
-  or no pin in a window bound to one) that takes uploads, it sends the
-  base64 to `IPC.remoteRuntimeUploadChatAttachment` as `data`, with the
-  machine's advertised `maxBytes`. The IPC handler only validates and calls
-  `remoteConnectionService.uploadChatAttachmentBytes`. That method enforces the
-  smaller of `maxBytes` and `MAX_CHAT_ATTACHMENT_BYTES`, checks the encoded
-  length before it decodes (`maxBase64EncodedLength`), writes the bytes to a
-  private temp file (`withTempAttachmentFile`), runs the same two-leg upload,
-  and removes the file. The connection service reports a failed upload to
-  Sentry under `chat/attachment_upload_failed` and falls back directly to the
-  runtime command, but only when the payload fits the command's 10 MB cap
-  and the host's smaller advertised or ticket limit. It bounds the file read
-  even if the source grows during recovery. A larger payload would only be refused again with a
-  misleading 10 MB reason, or overflow the host's RPC buffer, so the upload's
-  own error reaches the caller. The composer's clipboard paste and the
-  terminal's image paste both go through this call, so neither sends a
-  screenshot inside one runtime command when the machine can take a stream.
-  File staging resolves the same explicit pin or bound window machine before
-  choosing a local copy or remote upload. The composer captures the effective
-  project binding, including local project identity, and its chat API before
-  probing a batch. Every file uses that captured owner. A project or machine
-  switch stops the remaining files and rejects an in-flight result.
-  Dropped files and pasted bytes share
-  recovery in the connection service, using the original target and project
-  without repeating the failed HTTP upload. Larger files retain the upload
-  failure. Attachment errors include the underlying reason in the
-  inline notice and its diagnostic report.
-- **Attachment images.** Every surface that shows or copies an attachment
-  image (the tray thumbnail, the drafts list, draft transfer between
-  machines) reads it through `readAttachmentImageDataUrl(path, pin)` in
-  `renderer/lib/attachmentImage.ts`. A personal chat passes its own reader
-  (`useChatImageReader`), which is the only route to its attachment store and
-  workspace. Otherwise it reads through the pin's runtime (no pin means the
-  window's machine). The runtime allows the project, its lanes, temp, and the
-  user's Downloads, Documents and Desktop. It asks this computer's
-  `app.getImageDataUrl` too only when the owner is this computer and the
-  runtime gave no final answer about the file ("does not exist", "not an
-  image", too large). A remote-owned path is never read here, because on this
-  computer it is missing or names a different file. A viewed image is cached
-  per view (`version`), so a remount does not read it again.
-- **File-shaped attachments over sync (iOS).** Documents and videos cannot
-  use either of the routes above: `chat.saveTempAttachment` sniffs for an
-  image MIME and rejects them, and the HTTP upload route needs a direct TCP
-  leg the relay does not provide. They ride a chunked base64 contract
-  instead — `chat.beginTempFileAttachment` /
-  `chat.appendTempFileAttachmentChunk` / `chat.finishTempFileAttachment` /
-  `chat.abortTempFileAttachment` (`apps/ade-cli/src/services/fileAttachment.ts`)
-  — at the same 50 MB product ceiling, in 512 KiB slices, landing in a
-  `.part` file that is renamed only on finish. The host owns the ceiling, so
-  a client cannot talk past it by understating the size. The staged ref
-  carries type `File`, so the agent receives a path exactly as it does on
-  desktop. `chat.getAttachmentChunk` is the read mirror, used for in-thread
-  QuickLook and video previews on the phone. The phone gates the two menu
-  items on `chat.beginTempFileAttachment` appearing in the host's advertised
-  command list *before* opening a picker: against an older brain "Attach
-  file…" / "Attach video…" render disabled under "Update ADE on your
-  computer to attach files and videos.", image attach keeps working, and the
-  handshake still succeeds in limited mode. Personal chats hide both items
-  outright — that surface is images-only regardless of host version.
-  `workChatFileAttachmentAvailability` (`WorkComposerAttachmentStaging.swift`)
-  is the single decision; `SyncService.saveChatFileAttachment` re-checks it
-  so a bypassed menu still cannot queue an unroutable action.
-- **iOS composer.** Attachments upload the moment they are staged, so the
-  send button stays live while bytes move (the send awaits the in-flight
-  task) and the persisted draft holds *refs*, not bytes —
-  `WorkComposerDraftStore.Entry` v2 mirrors desktop's
-  `ComposerDraftStorageSnapshot`. When the host is unreachable the bytes go
-  to a purgeable `Caches/ade-composer-drafts/<key>` directory (<=5 files,
-  <=10 MB), purged on send, on clear, and on LRU eviction. The composer also
-  has a collapse control (`keyboard.chevron.compact.down`, top right of the
-  card) that lowers the keyboard, clamps the field to one line, hides the
-  suggestion strip and switches the tray to 24 pt chips; tapping a chip or
-  the field expands it again. Nothing is unstaged by collapsing.
-- Parallel launches reuse this same attachment path after the renderer
-  validates the 12-file cap. Every child session receives identical
-  attachment refs; provider-specific handling still happens inside
-  `agentChatService.sendMessage`.
+- **One pipeline.** The whole chat surface accepts the composer's file and
+  image-URL drops; composer drops are handled once. Files use
+  `ade.agentChat.saveTempAttachment`; clipboard images prefer
+  `ade.app.saveClipboardImageAttachment` (writes the PNG, returns a small
+  preview). During a save, send is disabled and the tray shows a cancellable
+  thumbnail.
+- **The tray** (`ChatAttachmentTray`, composer and sent messages): images get a
+  thumbnail and a copy button (`window.ade.app.writeClipboardImage`); other
+  files get a chip with `getFileIcon`, a middle-truncated name, size (only
+  for files this composer staged) and ×. Chips are focusable (Delete removes,
+  Enter opens, arrows move). Clicking opens the lazy
+  `ChatAttachmentPreviewModal`, which uses the Files tab's viewers
+  (`resolveViewerKind`, `ViewerHost`), found by
+  `resolveAttachmentWorkspaceTarget` on the chat's machine; an image outside
+  every workspace falls back to the chip's bytes.
+- **iOS Simulator selections** become `IosElementContextItem` chips
+  (`data-ios-context`), serialized by `formatIosElementContextForPrompt` with
+  `componentId`, source file and line. A screenshot from the same selection
+  within 10 s links through `attachmentPath`. See
+  [Apple device](../apple-device/README.md).
+- `inferAttachmentType` and `mergeAttachments` (`shared/types/chat.ts`) dedupe
+  by path, last write wins.
+- **Image types.** `PROVIDER_IMAGE_BYTE_MEDIA_TYPES` (`providerInlineImage.ts`:
+  JPEG, PNG, GIF, WebP) is the one allowlist. Any other image is sent as the
+  text reference `[Image attached (image/svg+xml): <path>]`
+  (`imageAttachmentReferenceText`) on every provider. OpenCode uses runtime
+  content blocks.
+- `normalizeImageAttachmentFilename` renames an image with a missing or wrong
+  extension on both staging paths.
+- **Thumbnails.** Every `getImageDataUrl` route reads through
+  `readImageFileAsDataUrl` (`imageAttachmentConverter.ts`): type from the bytes
+  (`shared/imageSniff.ts`); TIFF and HEIC become JPEG through `sips` on macOS.
+  Other hosts return the bytes; the desktop tray shows its placeholder if they
+  do not draw.
+- **Stage cap and inline caps differ** (`shared/chatAttachmentLimits.ts`).
+  Images inlined into a request are fitted by `fitImageForProviderInline`
+  (PNG/JPEG down to 1568 px). Every inlining path (Claude sends and steers,
+  OpenCode, ACP, the Cursor/Pi/Droid workers) fits or substitutes a path
+  hint, so a big file degrades the message instead of failing the turn. A
+  Claude `terminal_reason: "image_error"` gets "Claude couldn't read an
+  attached image", and the SDK's `<synthetic>` model never replaces the
+  turn's model.
+- **Remote hosts.** A host with `features.attachmentUploadV1` in `hello_ok`
+  takes a streamed upload: a single-use ticket (`chat.createAttachmentUpload`,
+  consumed before the first byte) and a POST to `/ade-attachments/upload` on
+  its sync port. Older hosts, relay sockets and SSH use
+  `chat.saveTempAttachment` (10 MB). **iOS sends images through the
+  10 MB command.**
+  - Pasted bytes: preload's `agentChat.saveTempAttachment` sends them to
+    `IPC.remoteRuntimeUploadChatAttachment` for an upload-capable paired
+    machine. `remoteConnectionService.uploadChatAttachmentBytes` enforces the
+    smaller of `maxBytes` and `MAX_CHAT_ATTACHMENT_BYTES`, checks the encoded
+    length first, writes a private temp file (`withTempAttachmentFile`),
+    uploads and removes it. A failed upload is reported
+    (`chat/attachment_upload_failed`) and falls back to the command only when
+    it fits that command's cap; otherwise the upload's own error shows.
+  - The composer captures the project binding and chat API before a batch;
+    a project or machine switch stops the rest and rejects in-flight results.
+    Errors include the underlying reason.
+- **Attachment images** are read through `readAttachmentImageDataUrl(path,
+  pin)`: a personal chat's own reader (`useChatImageReader`), else the pin's
+  runtime (which allows the project, lanes, temp, Downloads, Documents and
+  Desktop), and this computer's `app.getImageDataUrl` only as described in
+  the source map. A remote path is never read here. A viewed image is cached
+  per `version`.
+- **File attachments over sync (iOS).** Documents and videos use a chunked
+  base64 contract: `chat.beginTempFileAttachment` /
+  `appendTempFileAttachmentChunk` / `finishTempFileAttachment` /
+  `abortTempFileAttachment` (`apps/ade-cli/src/services/fileAttachment.ts`),
+  50 MB, 512 KiB slices, a `.part` file renamed on finish; the host owns the
+  ceiling. The ref has type `File`. `chat.getAttachmentChunk` reads them back
+  for previews. The phone enables "Attach file…" / "Attach video…" only when
+  the host lists `chat.beginTempFileAttachment` (else "Update ADE on your
+  computer to attach files and videos."); personal chats hide them.
+  `workChatFileAttachmentAvailability` decides, and
+  `SyncService.saveChatFileAttachment` re-checks.
+- **iOS composer.** Attachments upload when staged, so Send stays live and the
+  saved draft holds refs (`WorkComposerDraftStore.Entry` v2). Offline bytes go
+  to `Caches/ade-composer-drafts/<key>` (≤5 files, ≤10 MB), purged on send,
+  clear and eviction. A collapse control (`keyboard.chevron.compact.down`)
+  lowers the keyboard, clamps the field to one line and shrinks chips to 24 pt.
+- Parallel launches give every child the same refs after the 12-file check.
+
+### A slow or dropping link to the chat's machine
+
+The composer adapts to the chat's machine (`shared/slowLinkMode.ts`; see
+[Remote runtime](../remote-runtime/README.md#a-slow-or-dropping-link)).
+
+- With slow-connection mode on, a `Slow connection · <rtt> ms` chip shows in
+  the status strip (the hover explains tap-to-load pictures and terminal
+  type-ahead).
+- A pasted picture shows its pending tile at once. Over 128 KiB, to a machine
+  with `chatAttachmentParts`, it goes in resumable parts that each say where
+  they start (`chatAttachmentParts.ts`, `remoteAttachmentParts.ts`).
+- **`clientSendId`.** The composer keeps the id of an unconfirmed send, keyed
+  by chat and the whole payload, and reuses it for the same payload, so the
+  machine never writes a message twice. The id is forgotten once confirmed.
+- The brain writes that id on the message it wrote for the send
+  (`AgentChatEvent.user_message.clientSendId`). A pane that sees it, here or in
+  the transcript after a reconnect, treats the send as delivered whatever words
+  the message holds: its words, files and context never go back in a composer
+  or saved draft. An older brain writes no id, so only its id-less rows count by
+  words; a row that names another send is never evidence for this one.
+- A send that lost its answer shows "Sending is taking longer than expected"
+  and holds the words for up to two minutes while it checks the chat. A send to
+  another machine then waits for that machine's link to settle (at most ten
+  minutes, then the text goes back), because its message and id show only once
+  the chat's history does.
+- An older machine gets one upload request and a new id per send.
 
 ## Voice conversations
 
-A voice conversation lets the user talk with any chat. Voice always runs on
-the Codex app server's realtime API (`thread/realtime/*`, protocol `v3`, WebRTC)
-with the user's ChatGPT sign-in. It is desktop-only.
+A voice conversation lets the user talk with any chat. It always runs on the
+Codex app server's realtime API (`thread/realtime/*`, protocol `v3`, WebRTC)
+with the user's ChatGPT sign-in, on desktop only.
 
-**Who sees it.** The composer shows the waveform button when all of these
-are true: the "Voice conversations" setting is on (Settings → Chat), Codex is
-signed in on the chat's machine (`availableProviders.codex`), the surface is the
-desktop app, and the composer is not a grid tile or a parallel launch. A Codex sign-in on the Free or
-Go plan, or with an API key, gets a clear refusal when voice starts.
-
-**Audio path.** The renderer (`useCodexVoice`) owns the microphone, the
-`RTCPeerConnection`, and playback. It sends only its SDP offer to the brain
-(`chat.startCodexRealtime`); the brain returns the SDP answer and a session
-token. Audio never passes through ADE. Do not trim the offer: SDP lines end in
-CRLF, and OpenAI rejects a trimmed offer with "unmarshal SDP: EOF". Always send
-`version: "v3"`; WebRTC otherwise defaults to v1, which OpenAI's call endpoint
-rejects.
-
-**Which brain.** Every voice call (`startCodexRealtime`, `stopCodexRealtime`,
-`getCodexRealtimeState`) carries the chat's runtime pin
-(`useChatRuntimeScope().pin`), so a chat whose lane lives on another connected
-machine starts voice on that machine's brain and its Codex sign-in. The
-connection keeps the pin it started with, so its stop and state reads reach the
-same brain. Audio still flows from the computer the user is sitting at.
-
-**Two modes.**
+- **Who sees it.** The waveform button shows when "Voice conversations" is on
+  (Settings → Chat), Codex is signed in on the chat's machine
+  (`availableProviders.codex`), the surface is the desktop app, and the
+  composer is not a grid tile or parallel launch. Free, Go and API-key Codex
+  sign-ins get a clear refusal at start.
+- **Audio path.** The renderer (`useCodexVoice`) owns the mic, the
+  `RTCPeerConnection` and playback. It sends only its SDP offer to the brain
+  (`chat.startCodexRealtime`) and gets the answer and a token; audio never
+  passes through ADE. Do not trim the offer (SDP lines end in CRLF; OpenAI
+  answers "unmarshal SDP: EOF"). Always send `version: "v3"`.
+- **Which brain.** `startCodexRealtime`, `stopCodexRealtime` and
+  `getCodexRealtimeState` carry the chat's pin (`useChatRuntimeScope().pin`),
+  kept for the whole call. Audio still flows from the user's computer.
 
 | Mode | Chats | Where voice runs | How a request reaches the chat |
 |---|---|---|---|
-| native | Codex | The chat's own Codex thread | Codex runs each hand-off as a turn on that thread. ADE adopts that turn (normally ADE ignores a turn it did not start) and shows the spoken request as its user message. Adoption also runs on the resumed-turn path, because starting voice resumes the thread. |
-| host | every other provider | A private `codex app-server` with every config.toml MCP server switched off by name (`codexMcpOff.ts`) with one ephemeral relay thread (`codexVoiceHost.ts`) | Codex still runs each hand-off as a turn on the relay thread, which replies only `[RELAYED]` on GPT-6 Luna at low effort. ADE sends the spoken text into the real chat with `sendMessage` or an inline `steer`, then narrates that chat's turn. |
+| native | Codex | The chat's own Codex thread | Codex runs each hand-off as a turn on that thread; ADE adopts the turn (also on the resumed-turn path) and shows the spoken request as its user message. |
+| host | every other provider | A private `codex app-server` with every config.toml MCP server switched off (`codexMcpOff.ts`) and one ephemeral relay thread (`codexVoiceHost.ts`) | The relay turn replies only `[RELAYED]` (GPT-6 Luna, low). ADE sends the spoken text to the real chat with `sendMessage` or an inline `steer` and narrates that chat's turn. |
 
-Both modes set `clientManagedHandoffs: true`, so Codex never speaks an agent's
-output on its own and ADE is the single place that decides what voice says and
-when. That is what makes a Codex chat behave the same as every other provider.
+Both modes set `clientManagedHandoffs: true`, so ADE alone decides what voice
+says. A spoken request is a `user_message` with `metadata.voiceInput` ("Spoken"
+with a mic glyph). Subagent start and finish reach the session as context; a
+finish is spoken.
 
-In both modes a spoken request is a normal `user_message` with
-`metadata.voiceInput`; `describeUserMessageStatus` shows it as "Spoken" with a
-mic glyph. Subagent start and finish events reach the voice session as
-context, and a finish is also spoken, so voice does not report a subagent as
-done while it still runs.
+**Narration** (`codexVoiceNarration.ts`) streams the turn's prose into speech:
 
-**Narration.** Voice talks about the work while it happens instead of reading
-the finished answer once. ADE follows the turn a hand-off produced (host) or
-that Codex ran on the chat's thread (native), and streams its prose into speech
-as it is written:
+- A sentence at a time; a paused stream flushes after `SPEECH_FLUSH_MS`.
+- Fenced code is dropped whole and markdown stripped (`speakableText` for an
+  unstreamed turn).
+- Milestones (a plan, a long command in `chatty`, an error, a subagent
+  finishing), gated by `NARRATION_MIN_GAP_MS`, once per turn.
+- A progress line after `NARRATION_IDLE_MS` of silence; the model's own speech
+  (`thread/realtime/outputAudio/delta` → `lastSpokeAt`) counts.
+- The turn's end says only what was not streamed.
+- **The user wins.** There is no cancel call, so `speakNow` refuses within
+  `BARGE_IN_HOLD_MS` of the user's transcribed words and drops (does not
+  queue) that narration. `speakResult` defers a result instead.
+- `updates`: `balanced` (default) and `chatty` narrate; `quiet` acks and reads
+  the answer once.
+- The developer item makes voice a narrator: work in progress has not
+  concluded, a result is stated only from the agent's finished message, and
+  the user may cut in.
 
-- Prose is taken a sentence at a time, and a stream that pauses is flushed
-  after `SPEECH_FLUSH_MS`. A turn with no line breaks still starts speaking
-  while it is being written.
-- Fenced code is dropped whole, opening fence to closing one, and markdown is
-  stripped. An agent writes far more code than prose, and reading it aloud is
-  the fastest way to make voice worse than silence. `speakableText` does the
-  same job for a turn that was never streamed.
-- Milestones are spoken too: an announced plan, a long command starting
-  (`chatty` only), an error, a subagent finishing. They are gated by
-  `NARRATION_MIN_GAP_MS` and said once per turn.
-- A long quiet stretch gets a progress line — what the agent is running, what
-  tool it is using — once the voice has said nothing for `NARRATION_IDLE_MS`.
-  Left silent, the realtime model fills that gap with "still on it"; handing it
-  the real progress is what makes the pause informative. The idle clock counts
-  the model's own speech, because `thread/realtime/outputAudio/delta` updates
-  `lastSpokeAt`, so a progress line is never read over the model talking.
-- The turn's end says only what was not already streamed, so nothing is read
-  twice.
+**Ending.** `asksToEnd` matches the user's own words ("end the call", "hang
+up", a bare farewell) and closes after `END_GRACE_MS`; negations and questions
+back out. `speakNow` refuses once closing. `handleHandoff` checks `asksToEnd`
+first, so an end request never goes to the agent.
 
-The user always wins. The realtime protocol has no cancel call — the only
-speech controls are `appendText`, `appendSpeech`, `appendAudio`, `start` and
-`stop` — so barge-in is restraint rather than interruption: `speakNow` refuses
-while the user's words were transcribed within `BARGE_IN_HOLD_MS`, and dropped
-narration is *not* queued, because describing a step that already finished is
-worse than saying nothing. A result is the exception: `speakResult` defers it
-until the user stops rather than losing it.
+**The bar.** `CodexVoiceBar` is the composer's own top row (`voiceBar` slot on
+`ChatComposerShell`): waveform, newest caption, state word, timer, mute and
+end. Only the waveform moves. States: Connecting, Listening, Speaking, Working,
+Muted. Captions come from `chat.getCodexRealtimeState`, polled every 300 ms
+only while live. Small talk stays out of the thread.
 
-The `updates` preference finally does something. `balanced` (the default) and
-`chatty` narrate; `chatty` adds long-command starts. `quiet` is what voice did
-before narration existed — ack, then the answer once at the end.
+**The card.** A finished session leaves a `system_notice` with `status:
+"voice_session"`: a one-line `message` ("Voice conversation · 2:26 · 8 requests
+· 5 handed to the agent"), the transcript in `detail`, and the numbers in a
+`voiceSession` field beside them (an object `detail` would print as JSON on
+iOS). `VoiceSessionCard` draws it as a `ChatCard`.
 
-**Instructing it.** The developer item tells voice it is the narrator rather
-than a log reader, and that work in progress has not concluded: it says what
-the agent looks like it is doing, and states a result flatly only when the
-agent's own finished message says it. It is also told the user can cut in at
-any time.
+**Context and style.** Voice gets Codex's startup context plus an ADE developer
+item: chat, lane, worktree, model, these rules, the `codexVoice` preferences
+(`shared/codexVoice.ts`: personality, voice, name, updates, language) and the
+last 12 messages. Codex's own voice instructions stay. `v3` uses the older
+voice list (cove default).
 
-**Ending it.** End is not the only way out. When the user's own transcribed
-words ask for it — "end the call", "hang up", or a bare farewell — `asksToEnd`
-marks the session and it closes `END_GRACE_MS` later, which leaves the voice
-room to say goodbye. The matcher is deliberately narrow: a negation ("don't end
-the call") and a question that is not a request ("does this end the call?") both
-back out, because hanging up on someone who did not ask is the one mistake here
-that cannot be taken back. `speakNow` refuses once the call is on its way out, so
-narration never talks over the farewell.
+**Cost.** $0.05 a minute of the plan's Codex allowance (1.25 credits a minute
+on credit billing). Handed-off work bills the chat's provider; a relay turn
+costs a fraction of a cent.
 
-A request to end is also *not* routed to the agent. Voice hands it over like any
-other request, and routing it bought a chat turn explaining that the agent could
-not end a call it never had control over. `handleHandoff` checks `asksToEnd`
-first and ends the call instead — which also decides the race, since either the
-hand-off or the user's own transcript may arrive first.
-
-**The bar.** `CodexVoiceBar` is the composer's **own top row** — a `voiceBar`
-slot on `ChatComposerShell`, drawn inside the glass above the input rather than
-as a second box above the composer. It is one line: a waveform, the newest
-caption taking the width, then the state word, the timer, and two quiet round
-buttons (mute, end). The waveform is the only thing that moves, so it carries
-the state — dim and still while connecting or muted, reactive to whoever is
-talking otherwise. Colour is the accent on the waveform and the state word only.
-
-The status reads Connecting, Listening, Speaking, Working or Muted. Captions and
-the working flag come from `chat.getCodexRealtimeState`, polled every 300 ms
-only while a session is live. Small talk that voice answers itself stays out of
-the thread.
-
-**The card.** A session that ends leaves a `system_notice` with
-`status: "voice_session"`: a one-line `message` every surface reads ("Voice
-conversation · 2:26 · 8 requests · 5 handed to the agent"), the readable
-transcript in `detail`, and the numbers the card needs in a `voiceSession` field
-beside them. `VoiceSessionCard` draws that field as a `ChatCard` — a head with
-the duration and what the call produced, the transcript opening underneath.
-The numbers ride **beside** `detail` rather than inside it because iOS prints an
-object `detail` as pretty-printed JSON, which would have replaced the readable
-transcript on the phone with a blob.
-
-**Context and style.** At start, voice gets Codex's own startup context plus an
-ADE developer item: the chat, lane, worktree, and model, the rules above, the
-user's style from `codexVoice` preferences (`shared/codexVoice.ts`: personality,
-voice, name, update level, language), and the chat's last 12 messages. Codex's
-own voice instructions stay in place because they carry the hand-off rules; the
-default "playful" personality adds nothing on top of them. The `v3` protocol
-takes the older voice list (cove is the default).
-
-**Cost.** OpenAI meters voice at $0.05 a minute of the plan's Codex usage
-allowance (1.25 credits a minute on credit billing). Work that voice hands off
-is billed by the chat's own provider at its normal rates; a host-mode relay
-turn costs a fraction of a cent.
-
-**Lifecycle and edge cases.** One session per chat; a new start replaces the
-old one, and the replaced renderer sees `status: "ended"`. Switching chats,
-closing the window, turning the chat into a non-voice surface, a Codex restart,
-or OpenAI closing the call ends the session and closes the bar with the
-reason. A stop during connect still ends the brain session it opened.
-
-This replaced the legacy CTO voice call (an OpenAI-API-key realtime session
-with its own tools), which was removed; the CTO chat now uses this same button.
+**Lifecycle.** One session per chat; a new start replaces the old (which sees
+`status: "ended"`). Switching chats, closing the window, a non-voice surface, a
+Codex restart or OpenAI closing ends it with the reason. A stop during connect
+still ends the brain session. The CTO chat uses the same button.
 
 ## Chips
 
-Every special token ADE draws as a pill comes from one model in
-`apps/desktop/src/shared/chips.ts`. It combines the shared `@chat:` / `@lane:` /
-`@term:` / `@pr:` / `@mac:` / `@mcp:` mention grammar, model and permission
-mentions, URL-shaped smart links, and file or folder paths. It also represents
-the richer transcript chips for skills, artifacts, commits, branches, and web
-pages.
+Every pill comes from one model, `shared/chips.ts`: the `@chat:` / `@lane:` /
+`@term:` / `@pr:` / `@mac:` / `@mcp:` mentions, model and permission mentions,
+smart links, file and folder paths, and the transcript's skill, artifact,
+commit, branch and web-page chips. A `Chip` carries its canonical `token` next
+to its `label`:
 
-A `Chip` always carries its canonical `token` next to its display `label`. That
-one property is what makes the rest work:
-
-- **Copy and cut** write the canonical tokens to `text/plain` and a label payload
-  to `text/x-ade-composer` (`shared/composerClipboard.ts`). A native copy reads
-  the DOM, which holds the label, so without this a PR chip degrades to
-  `owner/repo#123` and a mention to a bare title.
-- **Paste** reads the payload, registers each label through
-  `onMentionLabelChange`, and rebuilds the pills. Registering the labels first is
-  what makes a paste into a *different* chat work: the rebuild only promotes a
-  token it has a label for, and a new chat's registry starts empty.
-- **Sent messages** render through `splitTextIntoChipParts` in `ChipText.tsx`, so
-  the transcript shows the same pill the composer did. Clicking a chat, lane,
-  or terminal mention opens that target through its owning machine. A machine
-  mention opens its facts card; a PR mention resolves ADE's row id before
-  opening its PR destination; an MCP mention opens this computer's MCP Settings
-  page focused on that server.
-- **Typed ADE deeplinks.** `deeplinks.ts` parses `ade://` URLs into a precise
-  target, which `smartLinks.ts` discarded in favour of one generic
-  `ADE · <path>` kind. Chips route through the real parser, so `ade://pr/...`
-  produces the same PR pill a github.com URL produces.
-- 
-Folders are chips too. The file index used to hold files only
-(`fileSearchIndexService.ts`), so `@src/main` could never be suggested. It now
-records directories in a separate map, and a folder inserts a pointer chip
-without becoming an attachment, because a folder has no bytes to upload.
+- **Copy and cut** write tokens to `text/plain` and labels to
+  `text/x-ade-composer` (`shared/composerClipboard.ts`).
+- **Paste** registers each label (`onMentionLabelChange`) before rebuilding
+  pills, so a paste into another chat works.
+- **Sent messages** render through `splitTextIntoChipParts` (`ChipText.tsx`).
+  A chat, lane or terminal mention opens through its owning machine; a machine
+  mention opens its facts card; a PR mention resolves ADE's row id first; an
+  MCP mention opens this computer's MCP Settings on that server.
+- **ADE deeplinks** go through `deeplinks.ts`, so `ade://pr/...` is a PR pill.
+- **Folders** are chips (`fileSearchIndexService.ts` keeps directories in a
+  separate map); a folder is a pointer, never an attachment.
 
 ### The four surfaces, and what each one owns
 
 | Surface | What it draws a chip from |
 |---|---|
-| Desktop composer | `contentEditable` spans (`contenteditable=false`, `data-composer-chip`, `data-composer-chip-text`). `composerChipDom.serializeComposerDom` walks them back to draft text for **both** send and copy. |
-| Desktop transcript | `ChipText.splitTextIntoChipParts` over the stored `event.text` for user bubbles, and `remarkThreadEntities` (see [Entities an agent's reply names](#entities-an-agents-reply-names)) over the markdown of assistant replies and user briefs. The text on disk is unchanged; only the rendering differs. |
-| iOS | Swift re-implementations (`WorkComposerTypedTriggers.swift`, `WorkStatusAndFormattingHelpers.swift`) held to the TypeScript by `shared/__fixtures__/chipCases.json`. The composer and transcript parse and draw `@mcp` as a named MCP chip; tapping a machine mention opens its native facts sheet. |
+| Desktop composer | `contentEditable` spans (`contenteditable=false`, `data-composer-chip`, `data-composer-chip-text`); `composerChipDom.serializeComposerDom` serves send and copy. |
+| Desktop transcript | `ChipText.splitTextIntoChipParts` over `event.text` for user bubbles, and `remarkThreadEntities` ([Entities an agent's reply names](#entities-an-agents-reply-names)) over assistant markdown and briefs. Stored text is unchanged. |
+| iOS | Swift ports (`WorkComposerTypedTriggers.swift`, `WorkStatusAndFormattingHelpers.swift`) held to `shared/__fixtures__/chipCases.json`. `@mcp` draws a named chip; a machine mention opens a native sheet. |
 
-Only one of the four can import the model. That is why the fixture exists, and
-why the `test-ios` CI gate watches `apps/desktop/src/shared/__fixtures__/` as
-well as `apps/ios/**`: a desktop-only PR that adds a chip case must run the
-Swift suite, or the divergence lands on main silently.
+Only one surface can import the model, so the fixture exists, and the
+`test-ios` gate watches `apps/desktop/src/shared/__fixtures__/` too.
 
 ### Model chips
 
-A model chip names a model, a thinking level, and a permission mode in one
-pill, so a user can write "start an agent in this lane with <chip>" instead of
-spelling out the model id and the flags.
+One pill names a model, a thinking level and a permission mode.
 
 - **Token.** `@model:<registry-id>?effort=<level>&perm=<mode>`
-  (`shared/modelMentions.ts`). Both query keys are optional. `perm` is one of
-  `default | auto | plan | edit | full-auto`, the same values as
-  `ade chat create --permissions`.
-- **Menu.** The `@` menu lists models in a "Models" section
-  (`rankComposerModelSuggestions`). A model shows only when the query names it
-  (an exact, prefix, word-prefix, or substring hit on the display name, two
-  characters or more), so an ordinary `@` search is not flooded. A query that
-  starts with `model` lists every model. A name hit puts the section first, so
-  `@deep` + Tab picks the model. The list is every model a new chat could start
-  on (`mentionModelIds`), not the narrower list the running chat can switch to.
-  Among models that match the query **equally well**, the ones picked recently
-  lead, newest first (`rankComposerModelMatches` `recentModelIds`) — the same
-  synced recents the picker's Recents rail uses, and a pick from the `@` menu
-  now records one too (desktop). A better match always wins: `@de`
-  still puts DeepSeek above a recent model that only contains "de".
-- **Editing.** The chip has a fixed name part and two editable parts
-  (`composerModelChip.ts`). After insertion the thinking part opens with the
-  model's default level. Tab moves thinking → permission → out of the chip,
-  Shift+Tab moves back, the arrow keys change the value, a letter jumps to the
-  first value that starts with it, and Enter or Escape leaves the chip. A
-  click on a part opens it again. A model with no thinking levels skips that
-  part. The list above the part is `ModelChipSegmentMenu` on `AnchoredMenu`.
-- **Send.** `chatMentionService` expands each distinct model token into an
+  (`shared/modelMentions.ts`); both keys optional; `perm` is `default | auto |
+  plan | edit | full-auto`, as `ade chat create --permissions`.
+- **Menu.** A "Models" section (`rankComposerModelSuggestions`) shows a model
+  only when the query names it (two or more characters); a query starting with
+  `model` lists all, and a name hit puts the section first (`@deep` + Tab). The
+  list is every model a new chat could start on (`mentionModelIds`). Among
+  equal matches, recent picks lead (`rankComposerModelMatches`
+  `recentModelIds`, the picker's recents; an `@` pick records one). A better
+  match always wins.
+- **Editing** (`composerModelChip.ts`). After insertion the thinking part opens
+  at the model's default. Tab moves thinking → permission → out, Shift+Tab
+  back, arrows change the value, a letter jumps, Enter or Escape leaves. A
+  click reopens a part. No thinking levels, no thinking part. The list is
+  `ModelChipSegmentMenu` on `AnchoredMenu`.
+- **Send.** `chatMentionService` expands each model token into an
   `<ade-mention kind="model">` block with the exact `ade chat create` and
-  `ade chat handoff` flags. An unknown model expands as `resolved="false"` and
-  tells the agent to ask, not guess. A thinking level the model does not accept
-  is dropped from the flags and named in the block.
-- **Transcript.** `chips.ts` parses the token into a `model` chip whose label
-  is `Display name · Level · Mode`. Its chip menu offers **New chat with this
-  model**, which opens an unsent Work draft in the same lane and machine and
-  selects the model, thinking level, and permission mode when that model is in
-  the chat machine's catalog.
+  `ade chat handoff` flags. An unknown model is `resolved="false"` (ask, do
+  not guess); an unsupported level is dropped and named.
+- **Transcript.** The label is `Display name · Level · Mode`. **New chat with
+  this model** opens an unsent Work draft in the same lane and machine with
+  those settings, when the machine's catalog has the model.
 
 ### Local files an agent embeds
 
-When a reply uses markdown image syntax for a file on disk (an absolute path
-such as `/abs/out.wav`, a workspace-relative path, or a `file:` URL),
-`chatMarkdownBlock.tsx`'s
-`img` override hands it to `ChatInlineMedia.tsx` instead of drawing an `<img>`
-the CSP would block. Remote `http(s)`/`data:` images and `ade-proof://`
-citations keep their own paths.
+Markdown image syntax for a file on disk (absolute, workspace-relative or
+`file:`) goes from `chatMarkdownBlock.tsx`'s `img` override to
+`ChatInlineMedia.tsx`, not an `<img>` the CSP blocks. `http(s)` / `data:`
+images and `ade-proof://` keep their paths.
 
-- **It resolves like a link.** `resolveWorkspaceMediaTarget` in
-  `chatWorkspacePaths.tsx` runs the same lane-aware rules as clicking a file
-  link, against the chat's machine (`useChatRuntimeScope().pin`), with a 30 s
-  cache so a lane created a moment ago still resolves. Nothing resolves until
-  the embed is near the viewport, so a long transcript does no work for
-  messages nobody scrolled to.
-- **What it draws.** An image draws inline (up to 25 MB) and opens in Files on
-  click. Audio gets `ChatInlineAudio`: a single-row player (play, seek, time,
-  mute, 1×/1.5×/2×, Open) that reads no bytes until the first Play, plays only
-  one clip at a time across the chat, and offers Retry after a failure. A video
-  is a tile that streams only when Play is pressed. Any other file is a chip
-  that opens it in Files, and a path outside the chat machine's workspaces is
-  the same chip, muted, saying it is not available on that machine — never a
-  broken image.
-- **Bytes stay on the chat's machine.** Every read is `streamFileBytes` over
-  `createPinnedFilesApi(pin)`, capped at 100 MB, into a Blob URL that is
-  revoked on unmount.
-- **Sent audio attachments use the same player.** A user message's audio
-  attachment renders `ChatInlineAudio` instead of a file chip.
+- It resolves like a link (`resolveWorkspaceMediaTarget`,
+  `chatWorkspacePaths.tsx`) on the chat's machine, with a 30 s cache, and only
+  near the viewport.
+- An image draws inline (up to 25 MB) and opens in Files. Audio gets
+  `ChatInlineAudio` (play, seek, time, mute, 1×/1.5×/2×, Open; no bytes before
+  Play; one clip at a time; Retry after failure). Video streams on Play. Other
+  files are a chip; a path outside the machine's workspaces is a muted chip
+  saying so.
+- Reads are `streamFileBytes` over `createPinnedFilesApi(pin)`, capped at 100
+  MB, into a Blob URL revoked on unmount.
+- A sent audio attachment uses the same player.
 
 ### Entities an agent's reply names
 
-An agent narrates in prose and names real ADE things — a lane, a chat, a model,
-a permission mode, a slash command, a PR, a commit, a Linear issue, a zoned
-timestamp, a bare line range after a file. Those names used to print as grey
-code. `shared/threadEntities.ts` finds them so every surface draws the same pill
-the composer draws, from four rules:
+`shared/threadEntities.ts` turns names an agent writes (lane, chat, model,
+permission mode, slash command, PR, commit, Linear issue, zoned timestamp, a
+line range after a file) into the composer's pills:
 
-- **Only real things.** A span becomes a lane or chat chip only when it matches
-  a lane or chat in the index the surface passes in, so an unknown id stays
-  code — a guessed link is worse than no link.
-- **Inline code is the strong signal.** Agents put identifiers in backticks, so
-  `matchInlineCodeEntity` reads whole code spans: explicit tokens
-  (`@lane:…`, `@model:…`, an `ade://` link), lane names, ids and unique 8+
-  character prefixes, explicit mentions including `@mcp:…`, the distinctive
-  permission values, `#123`, `/skill`, a known `TEAM-123`, a zoned ISO
-  timestamp, a bare `3461-3468` that follows a file in the same block, a commit
-  SHA, and a registry model with a `-` or `/`.
-- **Prose is narrow.** `findProseEntities` only matches shapes that cannot be
-  ordinary words: full UUIDs, zoned ISO timestamps, `PR #123`, and known Linear
-  keys. A lane named in prose does not chip.
-- **The token stays the truth.** A chip carries the raw text the agent wrote as
-  its token, so a hover always shows the original.
+- **Only real things.** A lane or chat chip needs a match in the surface's
+  index; an unknown id stays code.
+- **Inline code is the strong signal.** `matchInlineCodeEntity` reads whole
+  code spans: explicit tokens (`@lane:…`, `@model:…`, `ade://`), lane names,
+  ids and unique 8+ character prefixes, `@mcp:…`, distinctive permission
+  values, `#123`, `/skill`, a known `TEAM-123`, a zoned ISO timestamp, a bare
+  `3461-3468` after a file in the same block, a commit SHA, and a registry
+  model with `-` or `/`.
+- **Prose is narrow.** `findProseEntities` matches only full UUIDs, zoned ISO
+  timestamps, `PR #123` and known Linear keys.
+- **The token stays the truth**, so hover shows the original.
 
-Ids and names are live: `ChipText.tsx` resolves lane names and colours and chat
-titles and live dots from the chat's machine. A zoned timestamp renders in the
-reader's local time, and a tap toggles back to raw text iOS-side. The rules are
-shared code, not re-implemented prose: iOS
-ports them (`WorkThreadEntityRules.swift`), which drops the bare line follow-up
-because its markdown renderer does not link file paths. Model, permission, and
-skill chips also use the shared model.
+Lane names, colours, chat titles and live dots resolve on the chat's machine;
+a timestamp shows local time. iOS ports the rules
+(`WorkThreadEntityRules.swift`) without the line follow-up.
 
 ### Settings and page chips
 
-When the user asks where something is ("how do I manage my providers?"), an
-agent runs `ade settings find <words>` (named in one clause of the startup
-guidance, and nowhere else) and writes the link it prints. `find` runs in the
-CLI from `shared/settingsManifest.ts`, with no brain call, and prints one line
-per hit: path, link, and `[user only: <why>]` for a setting only the user
-changes, plus one line telling the agent not to look for another way.
+An agent asked where something is runs `ade settings find <words>` (from
+`shared/settingsManifest.ts`, no brain call) and writes the printed link;
+`[user only: <why>]` marks settings only the user changes.
 
-- **`ade://settings/<id>`** draws a `setting` chip labelled with the
-  manifest's path (`App › Studio › Providers › AI connections`), never the
-  agent's text, so a markdown link's own words are dropped. On a Computer page
-  that follows a machine, the chat machine's name goes after "Computer"; a link
-  that names its own `?machine=` leaves the name out. Appearance and Apple
-  devices are only This computer's and never name a machine. The path shortens
-  in the middle when it does not fit.
+- **`ade://settings/<id>`** draws a `setting` chip labelled with the manifest
+  path (`App › Studio › Providers › AI connections`), never the agent's text.
+  A Computer page adds the chat machine's name unless the link names
+  `?machine=`; Appearance and Apple devices never do. Long paths shorten in
+  the middle.
 - **A lock** replaces the gear on protected settings (publishing, sign-ins,
-  money, agent reach, the computer, data). Preferences are also the user's but
-  draw a gear, so the lock keeps meaning something. The hover card says "Only
-  you can change this" and why.
-- **The click** opens the card. A Computer page opens on the machine the link
-  names, else the chat's machine (`chatSettingsMachineId`: the chat's pin, else
-  the tab's binding); This-computer-only pages never carry one. A setting
-  this window cannot show (macOS only, hidden on the web client, no project)
-  draws muted, and a click shows why instead of opening a page without it.
-- **The chip's colour** is the theme accent, so it reads as a button when
-  scanning a reply; on the user's own (accent-coloured) bubble it is white
-  glass instead (`index.css`).
-- **`ade://open/<place>`** draws a `place` chip for a page on the short list in
-  `shared/openPlaces.ts`. Open-only: nothing on the list starts or changes
-  anything, and the protocol handler refuses `open` links from outside ADE.
-- **iOS** labels both from
-  `WorkSettingsCatalog.swift`, generated by
-  `apps/desktop/scripts/generate-ios-settings-catalog.mjs` (`--check` runs in
-  CI), and does not link them: they are changed in ADE on a computer.
+  money, agent reach, the computer, data); the card says "Only you can change
+  this" and why.
+- **The click** opens the card; a Computer page opens on the named machine,
+  else the chat's (`chatSettingsMachineId`). A setting this window cannot show
+  is muted and explains why.
+- The chip uses the theme accent (white glass on the user's bubble).
+- **`ade://open/<place>`** draws a `place` chip for a page in
+  `shared/openPlaces.ts`; open-only, and outside `open` links are refused.
+- **iOS** labels both from `WorkSettingsCatalog.swift`
+  (`generate-ios-settings-catalog.mjs`, `--check` in CI) without linking them.
 - An `ade://` link in backticks is never a workspace path
-  (`parseWorkspacePathLocation`), so `ade://settings/agents.providers` is not
-  mistaken for a file with an extension.
+  (`parseWorkspacePathLocation`).
 
 ### Chips are pointers, so pointers need hover cards
 
-A chip is deliberately compact — `#1237` or `Lane 25f280a4` says little about
-what it refers to. `ChipHoverCard.tsx`, `chipMenu.ts`, and `chipActions.ts`
-provide an on-demand card and action menu. A held hover or keyboard focus opens
-the card; a right-click opens the contextual menu. The chip's primary click
-uses its target action. Cards cover PRs, lanes, chats, terminals, models,
-permission modes, skills, artifacts, commits, branches, web pages, machines,
-and MCP servers, as well as the existing issue links.
+`ChipHoverCard.tsx`, `chipMenu.ts` and `chipActions.ts` give a hover/focus card
+and a right-click menu; the primary click runs the target action. Cards cover
+PRs, lanes, chats, terminals, models, permission modes, skills, artifacts,
+commits, branches, web pages, machines, MCP servers and issue links.
 
-- **It never steals focus.** A `pointer-events-none` portal with
-  `role="tooltip"`, not a Radix `Popover` (which moves focus into its content by
-  design). The caret stays in the composer and a hover cannot swallow the next
-  keystroke.
-- **It stays lazy.** The card reads only after it opens. Missing or stale
-  records leave out the card details; they do not change the transcript.
-- **It uses the owning machine.** Chat, lane, terminal, commit, skill, artifact,
-  and PR reads use the chat runtime pin. A chat or lane mention navigates to its
-  target on that machine, and a terminal mention focuses the terminal there.
-  PR, branch, and commit cards use the chat's pinned project data. Machine
-  facts come from the account directory and the shared connection snapshot.
-- **It explains the target.** Terminal cards show its title, lane, tool, state,
-  and start time; model cards show model and routing facts; permission and skill
-  cards explain their setting or source; artifact cards show the proof kind and
-  time; commit and branch cards show their repository facts; web page cards use
-  the cached title, host, and preview. MCP cards show cached server state,
-  transport, tool count and names, plus the last provider error after secret
-  redaction. These cards do not probe MCP servers on hover.
-- **Machine mentions show connection facts.** `@mac:<key>` chips read the
-  account directory through its shared TTL cache and use the same presence
-  resolver and remote connection snapshot as Connections. The card shows
-  presence and available route details; **Open in Connections** selects the
-  Machines page and focuses that machine. The composer opens the same facts in
-  a caret-safe portal, and iOS shows them in a native sheet. Unavailable
-  identity, build, or route details stay omitted.
-- **MCP mentions stay references.** `@mcp:<server>` points to a server from the
-  chat brain's cached registry. Its card shows cached status and redacted
-  runtime details; the chip click and **Open MCP settings** action focus that
-  server in this computer's account-scoped Settings. The route does not move
-  the tab or select the chat's machine, and the mention does not attach tools
-  or grant authority.
-- **Model chips can start a draft.** The model chip menu's **New chat with this
-  model** action opens an unsent Work draft in the same lane and machine and
-  requests the model, effort, and permission choices carried by the chip. The
-  user still sends the draft to create the chat.
-
-Enrichment follows the same split. The composer already asked the runtime for a
-page title and favicon and redrew its chip when the answer landed; the
-transcript did not, so one link read `Release notes · ADE` with a favicon while
-being typed and reverted to `https://…` on send. `chipPreviewStore.ts` is the
-renderer-side cache that lets the transcript reuse that exact route: one request
-per URL, never throwing, and keyed by URL **plus the active project's state
-key** — the runtime deliberately keeps authenticated provider titles out of its
-process-global cache because they were read with one project's credentials, and
-a URL-only cache here would reintroduce that leak across a project switch.
+- **No focus theft**: a `pointer-events-none` `role="tooltip"` portal.
+- **Lazy**: reads start when the card opens; missing data drops details.
+- **Owning machine**: chat, lane, terminal, commit, skill, artifact and PR
+  reads use the chat's pin; machine facts come from the account directory and
+  the connection snapshot.
+- **Contents**: terminal (title, lane, tool, state, start), model and routing
+  facts, permission and skill explanations, artifact kind and time, commit and
+  branch facts, cached web title and host, and MCP cached state, transport,
+  tools and the last redacted error (never a probe).
+- **Machine mentions** (`@mac:<key>`) use the account directory's TTL cache
+  and the Connections presence resolver; **Open in Connections** focuses the
+  machine. iOS uses a native sheet.
+- **MCP mentions** are references only: they attach no tools and grant
+  nothing.
+- **Model chips** offer **New chat with this model** (an unsent draft).
+- **Enrichment.** `chipPreviewStore.ts` lets the transcript reuse the
+  composer's title and favicon route, so a sent link keeps its preview.
 
 ## Message list
 
-`AgentChatMessageList` windows its rendering with a **custom
-virtualizer** (no `@tanstack/react-virtual`): a `measuredHeights` row-key
-→ height `Map` supplies estimates, a top and a bottom spacer div hold the
-scroll height around the rendered window, and `MeasuredEventRow`'s
-`ResizeObserver` feeds real heights back through `handleMeasure` →
-`reconcileMeasuredScrollTop`. Rows below the virtualization threshold
-render unwindowed. Key rules:
+`AgentChatMessageList` uses a **hand-rolled virtualizer** (not
+`@tanstack/react-virtual`): a `measuredHeights` row-key → height `Map`, top
+and bottom spacers, and `MeasuredEventRow` `ResizeObserver`s feeding
+`handleMeasure` → `reconcileMeasuredScrollTop`, so a correction above the
+viewport does not move what the reader sees. Short transcripts render
+unwindowed.
 
-- Assistant message cards constrain to `max-w-[78ch]` for readability
-  (recent bump from `72ch` to `78ch` on large screens).
-- User messages animate in with a `motion/react` spring transition.
-- User messages render in full, however long. There is no length-based
-  clamp and no **Show full message** toggle: a prompt the reader wrote is
-  never shown in part. A user message long enough to be a markdown document
-  (a handoff brief, a pasted spec — `userTextLooksLikeMarkdown`) renders as
-  formatted markdown in the bubble, with the bubble's neutral white palette;
-  every other message keeps its exact text. The one variant that still hides
-  text is the hidden-prompt brief: it shows only its `displayText` breadcrumb
-  chip and never exposes or copies the machine-generated prompt body.
-- Code blocks render through `HighlightedCode`.
-- Tables get rounded borders, separated spacing, and a subtle inset
-  shadow.
-- System notices render compact inline (no pill badges).
-- Turn dividers (`ChatTurnDivider`) separate turns.
-- Plan approval cards display the plan body as rich markdown. Inside the
-  transcript the body is uncapped — it scrolls with the transcript like any
-  other row. The pinned `ChatProposedPlanCard` above the composer keeps a
-  generous `min(52vh, 560px)` cap, which is not a clamp on the text (nothing
-  is hidden behind a disclosure) but a guard on the shell: that card sits
-  outside the transcript's scroller, so an unbounded body pushes **Implement**
-  and **Keep planning** out of the viewport with no way to scroll back to
-  them. When a plan-approval event
-  carries non-empty body text, it is rendered as a `MarkdownBlock`
-  (`chatMarkdownBlock.tsx`) beneath the header.
-- The jump-to-latest pill (shown while scrolled away from the bottom of
-  a live session) reads `N new · Jump to latest` when rows arrived after
-  the reader detached, and plain `Jump to latest` otherwise. The count
-  comes from `countRowsAppendedSince` in `chatTranscriptRows.ts`. While the
-  composer's chip row shows a chip, the pill (`ChatJumpToLatestPill.tsx`)
-  docks at the right end of that row; otherwise it floats centered above the
-  composer.
-- The transcript head pages older history **silently**: an
-  IntersectionObserver on a fixed-height sentinel — plus an underfill
-  effect for tails too short to scroll — backfills without asking the
-  reader to do anything, so the healthy path renders an empty slot. The
-  fetch starts roughly two viewport-heights out
-  (`resolveOlderHistoryPrefetchTriggerPx`, falling back to the 300 px
-  near-top threshold before the pane has been measured), so normal reading
-  arrives after the content rather than before it; the observer's
-  `rootMargin` uses the same runway and re-arms on container resize. At most
-  one page is ever in flight, because the load callback is a no-op while a
-  request is outstanding. Each triggered batch is turn-anchored in
-  `readOlderHistoryBatch` — it keeps paging until the loaded span contains a
-  user message — so a byte-sized page made entirely of superseded streaming
-  deltas can no longer look like "loaded nothing". The
-  `couldn't load earlier messages · retry` control appears only after a
-  genuine failure that survived the two backoff retries
-  (`OLDER_HISTORY_RETRY_DELAYS_MS = [800, 2400]` in `AgentChatPane`).
-  The slot height is constant either way, so toggling it never shifts
-  the transcript. Clicking **retry** performs one immediate request, keeps
-  the failure visible with a loading state, and never repeats the automatic
-  backoff ladder. A late result from a previous chat, runtime binding, or
-  cursor is discarded, and a request still in flight when the pane unmounts
-  ends its ladder instead of retrying for a pane that is gone.
-- In the Work chat pane the rest of the transcript also **backfills in idle
-  time** (`backfillOlderHistory` on the list, one page per idle slot, or at
-  once when the reader is already inside the prefetch runway), so a cold
-  chat has its whole history resident within about a second and the reader
-  never waits at the top. Backfill only serves the chat on screen and stops
-  at the resident cap: a backfill page that would hit it is dropped (the cap
-  merge keeps the oldest events and would detach a reader at the live tail).
-  A reader who pages up past the cap still gets the detached view. Other
-  list owners (personal chats, the import preview) keep scroll-driven
-  paging only.
-- Plain scrolling commits no React render: `handleScroll` commits
-  `scrollTop` only when the mounted window or the active minimap tick would
-  change (plus one exact commit after the scroll settles), and snapshots the
-  per-chat scroll memory itself. Row offsets are cached on a
-  measured-heights version, not on the debounced `measurementTick`.
-- The timeline keeps programmatic scrolling and the left tick rail, but hides
-  the native browser scrollbar. The minimap remains the transcript-position
-  affordance without adding a second bright rail at the window edge.
-- The left tick rail (`ChatUserMinimap`) mounts as a direct child of the
-  list root, because its `left-0` gutter maths assume the offset parent
-  is the element measured as `listWidthPx`. It marks messages typed by the
-  reader; automated user-message events do not get ticks. The rail draws up to
-  50 resident prompts at once, newest first, with earlier/later controls to
-  page through the rest. Its window stays attached to an entry when older
-  history backfills or new prompts arrive, and follows the message being read
-  when that message moves outside the window. Backfill still happens on its own
-  (above); the rail controls page through resident prompts and do not request
-  history from the host.
-- Pull requests open in the lane's PR Work tool, not as a floating overlay on the transcript. The minimap stays anchored to the list root.
-- iOS uses the same healthy-path contract: a fixed-height head sentinel
-  automatically reveals the next local window and requests a 256 KiB host
-  page near the top. It renders words only while loading or after a retryable
-  failure, preserves the cursor on failure, and uses `LazyVStack` so older
-  history does not make every transcript row resident. The subagent roster is
-  owned exclusively by Chat Info; only lifecycle cards remain inline at their
-  transcript positions.
-- **Per-chat and nested-transcript scroll memory.** The owning pane still
-  remounts the list when the chat session changes (`key={renderedSessionId ??
-  "chat-draft"}`), but native transcript drill-in keeps that list mounted.
-  `AgentChatPane` passes `scrollMemoryKey` for the parent session and for each
-  `subagent:<session>:<taskId>` child view, so a parent position cannot be
-  overwritten by a nested transcript position. The list keeps a bounded
-  per-key snapshot alongside the module-scope LRU `Map`
-  (`chatScrollMemoryBySession`, capped at 32 entries) — not the store, since
-  this is throwaway view state, not user data. Each entry records
-  `wasPinnedToBottom`, the `anchorRowKey` at the viewport top, its
-  `anchorOffsetPx`, and the `lastSeenRowKey` that seeds the `N new` counter on
-  return. The active key is captured from layout effects as rows, measurements,
-  or pin state change and finalized on cleanup, so following the scroll costs
-  no renders while the chat is open. Restore is hybrid: a reader who left
-  pinned to the tail comes back pinned, otherwise a layout effect re-anchors —
-  waiting for a non-zero container height, because the container measures 0 on
-  the first frame and writing `scrollTop` against that clamps to 0 and reads as
-  "it forgot where I was" — then applies exactly one correction on the next
-  frame once real measured heights replace `ESTIMATED_ROW_HEIGHT`. Any real
-  scroll between the two passes means the reader took over and the correction
-  is abandoned. The anchor uses `measuredRowStartOffsets`, the same shared
-  height model as the prepend anchor and the minimap, so the three cannot
-  disagree about where a row starts.
+**Rows.**
 
-Row derivation uses `chatTranscriptRows.ts` (see
+- Assistant cards cap at `max-w-[78ch]`. User messages spring in
+  (`motion/react`) and render in full, with no clamp. A markdown-length user
+  message (`userTextLooksLikeMarkdown`) renders as markdown (`MarkdownBlock
+  tone="bubble"`). A `metadata.hideFullPrompt` message shows and copies only
+  its `displayText`, with a brief chip.
+- Code blocks use `HighlightedCode`; tables get rounded borders; system
+  notices are compact; `ChatTurnDivider` separates turns.
+- A `Woke on schedule` divider precedes each scheduled turn. Real subagents
+  get inline `SubagentSpawnCard` / `SubagentResultCard` rows; backgrounded
+  shell runs get `BackgroundJobRunRow`.
+- A run of `codex_image_view` events in one turn folds into one `Viewed N
+  images` strip; a local thumbnail reads through the chat's machine.
+- An interim narration line (any assistant text row but the turn's last)
+  floats its hover actions below the row instead of reserving a strip.
+- Assistant text has an icon-only Copy; the turn-end row has Copy turn (that
+  turn's assistant text only).
+- A Claude `queue_recovery: available` row shows one eight-second Undo card;
+  later `restored` / `expired` rows settle it.
+- Plan approvals render their body as markdown, uncapped in the transcript.
+  The pinned `ChatProposedPlanCard` caps at `min(52vh, 560px)` so
+  **Implement** and **Keep planning** stay reachable.
+- Codex goal rows read `Goal set` / `Goal paused` / `Goal cleared`. A stalled
+  Codex turn shows a Wait / Nudge / Retry / Resume card
+  (`agentChat.recoverCodexTurn`). A failed turn is one `TurnFailureLine`.
+- A fork's seeded history gets one `Forked from the previous chat — full
+  history above` divider (`computeForkHistoryDividerRowKey`).
+
+**Scrolling.**
+
+- **Sticky bottom.** A pinned reader stays pinned through streamed growth,
+  late measurements and a shrinking viewport. The content `ResizeObserver`
+  pins in the same frame; a pin commits `scrollTop` only when it changes what
+  the list draws (`commitPinnedScrollTop`); a pinned reader's growing last row
+  takes no measure tick.
+- Plain scrolling commits no render: `handleScroll` commits only when the
+  window or the active minimap tick changes (plus one after settling). Row
+  offsets cache on a measured-heights version.
+- The native scrollbar is hidden; the minimap is the position control.
+- **Jump to latest** reads `N new · Jump to latest` (`countRowsAppendedSince`)
+  or `Jump to latest`; it docks in the chip row when a chip shows, else floats.
+- **Older history pages silently.** A head sentinel (plus an underfill effect)
+  starts about two viewports out (`resolveOlderHistoryPrefetchTriggerPx`, 300
+  px before measuring), one page at a time. `readOlderHistoryBatch` pages
+  until it holds a user message. `couldn't load earlier messages · retry`
+  shows only after both backoff retries fail (`OLDER_HISTORY_RETRY_DELAYS_MS =
+  [800, 2400]`); retry is one immediate request. The slot height is constant.
+  Late results for another chat, binding or cursor are dropped.
+- **Idle backfill** (Work pane only): `backfillOlderHistory` loads one page
+  per idle slot until the history is resident, stopping at the resident cap.
+  Other owners page on scroll only.
+- **The minimap** (`ChatUserMinimap`) is a direct child of the list root. It
+  ticks only messages the reader typed, draws up to 50 at once with
+  earlier/later controls, and stays attached as history loads.
+- PRs open in the lane's PR Work tool, not over the transcript.
+- **Scroll memory.** The list remounts per chat (`key={renderedSessionId ??
+  "chat-draft"}`) but not for nested transcripts; `scrollMemoryKey` separates
+  the parent and each `subagent:<session>:<taskId>`. A module LRU
+  (`chatScrollMemoryBySession`, 32) keeps `wasPinnedToBottom`, `anchorRowKey`,
+  `anchorOffsetPx` and `lastSeenRowKey`. A pinned reader returns pinned;
+  otherwise restore waits for a non-zero height, then corrects once after real
+  measurements, unless the reader scrolled. The anchor uses
+  `measuredRowStartOffsets`, as do the prepend anchor and the minimap.
+- **iOS** uses the same contract: a head sentinel, 256 KiB host pages, words
+  only while loading or after a failure, and `LazyVStack`. Chat Info owns the
+  subagent roster; lifecycle cards stay inline.
+
+Rows come from `chatTranscriptRows.ts` (see
 [transcript-and-turns](transcript-and-turns.md)).
 
 ### Row identity stabilization
 
-`events` gets a fresh array on every streaming delta, so every `useMemo`
-keyed on it produced a new object each token flush even when nothing it
-described had changed. `useStableIdentity(value, isSame)` returns the
-previous reference whenever a cheap content comparison says the two are
-equivalent — `sameMapContents`, `sameSetContents`, `sameKeyList` — and is
-applied to `resolvedInputStates`, `resolvedInputAnswers`,
-`staleInterruptReceipts`, `settledQueueRecoveryIds`, and `groupedRowKeys`.
-`groupedRowKeys` is the load-bearing one: its identity feeds `rowHeight`,
-which feeds `handleMeasure`, which feeds every rendered row's
-`ResizeObserver`. Without the latch, a pure content delta recreated all of
-them on each flush. When the keys genuinely change (rows added, removed,
-regrouped) the fresh array is returned and every downstream memo and effect
-recomputes exactly as before.
+`events` is a new array on every delta. `useStableIdentity(value, isSame)`
+returns the previous reference when a cheap comparison (`sameMapContents`,
+`sameSetContents`, `sameKeyList`) says nothing changed, for
+`resolvedInputStates`, `resolvedInputAnswers`, `staleInterruptReceipts`,
+`settledQueueRecoveryIds` and `groupedRowKeys`. `groupedRowKeys` matters most:
+it feeds `rowHeight`, `handleMeasure` and every row's `ResizeObserver`.
 
 ### Paced text reveal
 
-Streamed assistant text arrives in lumps — the runtime coalesces deltas and
-flushes 5–7 times a second, and in subagent-heavy turns the gaps stretch
-past half a second. The paced reveal can type those lumps out, but it is
-**off by default**: side by side at the brain's 100 ms buffer, paint on
-arrival looked the same, and the reveal cost a 50 KB reply about twice the
-main-thread time and painted its last line about 600 ms late
-(`docs/perf/macos-baseline.md`, the PandaCode streaming section). The
-**store** is never delayed either way (copy, export, and every derivation
-read the full text the instant it arrives); only the painted slice can be.
+The paced reveal is **off by default**: at the brain's 100 ms buffer, paint on
+arrival looks the same and costs half the main-thread time
+([PandaCode streaming](../../perf/macos-baseline.md)). The store is never
+delayed.
 
-The streaming row keeps its settled/tail split with pacing off: the settled
-text renders as one memoized `MarkdownBlock` body per piece
-(`settledSegments`), so a block is parsed once when it settles instead of the
-whole reply on every update, and only the tail re-parses. A reply whose
-settled text defines a link reference or footnote outside a code fence
-(`[label]: …`) parses it as one body instead, because a definition serves the
-whole document. A finished row gets one body through the parse cache.
-
-`AgentChatMessageList` picks exactly one row to pace: the trailing `text`
-row of a streaming turn, found by scanning back at most
-`PACED_TEXT_ROW_SCAN_DEPTH` (8) rows so the search stays O(1) per delta. It
-passes `pacedTextReveal` down to that row, and `AssistantTextBody` owns the
-reveal from there. Everything else — ended sessions, idle turns, history,
-rows that mount already complete — keeps the pre-pacing paint-on-arrival
-path. `AgentChatPane` passes `textPacingEnabled={false}` for subagent
-transcript views: they are a secondary surface, so only the user's own prose
-pays for the reveal.
-
-Mechanics and guardrails:
-
-- The pacing algorithm, the grapheme-safe cutting, and the settled/tail
-  block scanner live in `textReveal.ts`; the frame loop lives in
-  `useRevealedText.ts`. See their source-map rows above.
-- Reveal is a leaf concern. The re-rendering component is
-  `AssistantTextBody`, not the row, the list, or any derivation above it.
-- The revealed prefix is split at the last blank line at fence depth zero.
-  The settled half is byte-identical between frames so `MarkdownBlock`'s
-  memoized body bails out; only the growing tail re-parses. The cut is never
-  placed inside a fenced code block, which would leave the settled half with
-  an unterminated fence and swallow the rest of the message.
-- Switch: set `ade.textRevealHorizonMs` in renderer `localStorage` to a
-  positive horizon (the old default was `150`) and reload to turn pacing on;
-  the default `0` paints on arrival. The value is read once per session and
-  memoized — it is on the per-frame path. A missing `Intl.Segmenter` disables
-  pacing the same way, because grapheme-safe cuts cannot be guaranteed
-  without it.
-- Elapsed time fed into a commit is clamped to 250 ms, so a backgrounded tab
-  or a stalled runtime cannot make the first frame after the stall dump the
-  entire backlog — the exact lump the reveal exists to remove.
-- Commits are capped at 60 Hz. On a 240 Hz display one character per frame
-  is invisible and costs four times the React work for the same perceived
-  speed, so sub-interval frames accumulate their elapsed time instead.
+- With pacing off the streaming row still splits: settled text renders as one
+  memoized body per piece (`settledSegments`), and only the tail re-parses. A
+  reply with a link reference or footnote definition outside a fence parses
+  as one body. A finished row is one body through the parse cache.
+- `AgentChatMessageList` paces one row: the trailing `text` row of a
+  streaming turn, found within `PACED_TEXT_ROW_SCAN_DEPTH` (8) rows, via
+  `pacedTextReveal`. Subagent views pass `textPacingEnabled={false}`.
+- The cut is the last blank line outside fences, so the settled half is
+  byte-identical between frames.
+- Turn it on with a positive `ade.textRevealHorizonMs` in `localStorage` and
+  a reload (read once per session). See `textReveal.ts` and
+  `useRevealedText.ts` in the source map for the step, clamps and frame rules.
 
 ## Mermaid diagrams
 
 A ` ```mermaid ` fence in an assistant reply draws as a diagram
-(`MarkdownBlock`'s code-fence handler, `chatMarkdownBlock.tsx`). A fence in the
-user's own message stays the code they wrote. Tool calls render elsewhere and
-are not affected. Edge labels sit on the app's background colour
-(`edgeLabelBackground`) rather than mermaid's mid-grey dark-theme box. While the turn streams and a mermaid
-fence is still open (`openFence` in `shared/chatScene.ts`, the same line
-scanner the scene guard uses), that fence stays as highlighted code, because
-half a source either fails to parse or draws the wrong graph; the diagrams
-above it, already closed, stay drawn. Under the diagram a small row toggles back to the code and copies
-the source; clicking the diagram opens it full size in `MediaLightbox` through
-one blob URL at a time.
+(`MarkdownBlock`'s fence handler, `chatMarkdownBlock.tsx`); a fence in the
+user's own message stays code.
 
-Chat, PR descriptions and comments (`PrMarkdown`), and markdown files
-(`RichMarkdown`) all use one renderer, `components/shared/MermaidDiagram.tsx`:
-mermaid is imported on the first diagram, renders run at
-`securityLevel: "strict"` with HTML labels off (both, the `flowchart` block
-and `themeCSS` are on mermaid's `secure` list, so a `%%{init}%%` line cannot
-change them), one at a time because mermaid's config is global, and results
-are cached per source and theme (64 settled entries; a pending render is never
-evicted). The diagram follows the light or dark theme. A failed import shows
-Retry; a parse error shows mermaid's message above the source. iOS renders
-markdown natively and shows the fence as code.
+- Edge labels sit on the app background (`edgeLabelBackground`).
+- While a fence is still open during streaming (`openFence`,
+  `shared/chatScene.ts`), it stays highlighted code; closed diagrams above it
+  stay drawn.
+- A row under the diagram toggles to code and copies the source; a click opens
+  it in `MediaLightbox` (one blob URL at a time).
+- Chat, PR markdown (`PrMarkdown`) and markdown files (`RichMarkdown`) share
+  `components/shared/MermaidDiagram.tsx`: mermaid loads on the first diagram,
+  renders at `securityLevel: "strict"` with HTML labels off (both on mermaid's
+  `secure` list, so `%%{init}%%` cannot change them), one at a time (global
+  config), cached per source and theme (64 settled entries; pending never
+  evicted). A failed import shows Retry; a parse error shows mermaid's message
+  above the source.
+- iOS shows the fence as code.
 
 ## Tasks section
 
-The Chat Info pane (`ChatSubagentsPanel`) shows ONE Tasks section: the chat's
-task list from `deriveChatTaskList()`, whichever provider and event shape wrote
-it (see [One task list per chat](transcript-and-turns.md#one-task-list-per-chat)).
-It is always expanded and uncapped, in the provider's order, drawn by the same
-`ChatTaskListView` the thread card expands to. A plan list shows its own header
-(`label  done/total`); a bare todo list puts the count on the section header.
-There is no separate Progress section. `AgentChatPane` derives the list once
-and passes it as `taskList`; the panel derives it from `events` when the prop is
-omitted. A cleared list, a plan-mode proposal, and a plan with no steps are not
-content, so a chat with nothing else renders no panel at all.
+Chat Info (`ChatSubagentsPanel`) shows **one** Tasks section: the chat's task
+list from `deriveChatTaskList()`, whatever wrote it (see
+[One task list per chat](transcript-and-turns.md#one-task-list-per-chat)). It
+is always expanded, uncapped and in provider order, drawn by
+`ChatTaskListView`. A plan shows `label  done/total`; a bare todo list puts
+the count on the header. `AgentChatPane` passes it as `taskList` (else the
+panel derives it from `events`). A cleared list, a plan-mode proposal and a
+plan with no steps are not content.
 
 ## File changes panel
 
-A turn reports its tools and file changes together as one expandable
-`N tools · M files` line above the done divider's time/usage row (left-aligned
-with Thought). Expanding lists that activity above the time/usage row, which
-stays last. Which
-of the two summaries renders depends on whether the turn moved HEAD.
+A turn shows its tools and files as one expandable `N tools · M files` line
+above the done row's time/usage row. Which summary renders depends on whether
+the turn moved HEAD; a done row whose turn has a `turn_diff_summary`
+suppresses the fallback, so a turn never shows two. `work_log_group` rows are
+dropped. iOS follows the same turn-end contract
+([transcript-and-turns](transcript-and-turns.md#render-pipeline)).
 
-**Checkpoint-backed.** `ChatTurnFileChangesPanel` renders `turn_diff_summary`
-events inline at
-the bottom of the turn that produced them. The collapsed row shows the
-turn's file count and aggregate insert/delete totals. Expanding it shows
-two nested diff scopes:
-
-- **This turn** — fetches the selected turn diff via
-  `ade.agentChat.getTurnFileDiff`.
-- **Full thread** — aggregates all available turn summaries for the
-  session, advancing `afterSha` and stats as later turns amend the same
-  file, then fetches the combined diff through the same API.
-
-Both scopes render the shared `AdeDiffViewer`; the former bottom-of-chat
-aggregate bar is not mounted on ADE chat surfaces.
-
-**Entry-derived fallback.** When a turn produced no checkpoint — no lane, a
-runtime with no git integration, edits that never moved HEAD —
-`ChatTurnFilesChangedSummary` (in `ChatWorkLogBlock.tsx`) renders instead. It
-aggregates that turn's work-log `file_change` and write-tool entries, deduped
-by path, into one collapsed `N files changed +A −D` row at the same divider.
-Expanded rows show the lane-relative path (full path in the tooltip), open in
-the Files tab, and expand the per-file diff carried on the entry. The row's
-**Review in Files** action just opens the Files tab for the lane — reverting is
-checkpoint-scoped and stays on the `turn_diff_summary` panel, which owns the
-before/after SHAs.
-
-`AgentChatMessageList` picks between them per row: a done row whose turn id
-appears in the session's `turn_diff_summary` set suppresses the fallback, so a
-turn never shows two files-changed summaries. The timeline drops
-`work_log_group` rows outright, so neither summary competes with per-burst file
-panels. iOS follows the same turn-end contract documented in
-[transcript-and-turns.md](transcript-and-turns.md#render-pipeline) (turn-end
-marker + activity sheet on iOS).
+- **Checkpoint-backed** (`ChatTurnFileChangesPanel`, from `turn_diff_summary`):
+  file count and totals; expanded, **This turn** and **Full thread** (summaries
+  merged, advancing `afterSha`), both through `ade.agentChat.getTurnFileDiff`
+  and `AdeDiffViewer`. Reverting lives here (it owns the SHAs).
+- **Entry-derived fallback** (`ChatTurnFilesChangedSummary` in
+  `ChatWorkLogBlock.tsx`) for a turn with no checkpoint: the turn's
+  `file_change` and write-tool entries, deduped by path, as `N files changed +A
+  −D`. Rows show the lane-relative path, open in Files and expand the entry's
+  diff. **Review in Files** only opens the Files tab.
 
 ## Rewind files confirmation
 
-Claude and Codex user messages expose an undo affordance when the provider
-can prove a rewind target. The pane first calls
-`ade.agentChat.rewindFiles({ dryRun: true })`; if the checkpoint or
-rollback plan can be restored, `rewindFilesPreview.ts` filters turn diff
-summaries after the selected user message and pairs each reported file
-with the earliest `beforeSha` and latest `afterSha` it can prove. The
-confirmation dialog then shows:
+Claude and Codex user messages offer undo when the provider can prove a
+target.
 
-- The user message being rewound to and its sent time.
-- Aggregate insertion/deletion counts from the SDK dry run.
-- One expandable row per file, including status and per-file stats when
-  a turn diff summary is available.
-- Lazy `AdeDiffViewer` previews via `ade.agentChat.getTurnFileDiff`.
+1. The pane calls `ade.agentChat.rewindFiles({ dryRun: true })`.
+2. `rewindFilesPreview.ts` pairs each reported file with the earliest
+   `beforeSha` and latest `afterSha` from later turn summaries.
+3. The dialog shows the message and its time, the dry-run totals, one row per
+   file (status and stats when known) and lazy `AdeDiffViewer` previews.
+4. Confirm calls `rewindFiles` without `dryRun`.
 
-Confirming calls `rewindFiles` without `dryRun`. Claude leaves
-conversation history untouched and only restores files. Codex moves the
-upstream thread back and restores the matching files: on app-server
->= 0.145.0 it forks the thread before the selected turn (`thread/fork`
-with `beforeTurnId`); on older servers, or when the turn id cannot be
-resolved, it falls back to the deprecated `thread/rollback` and is limited
-to the latest user message (see
-[agent-routing.md](./agent-routing.md#codex-rewind-and-0145-readiness)).
+Claude restores files only. Codex also moves the thread back: `thread/fork`
+with `beforeTurnId` on app-server 0.145.0 or later, else the deprecated
+`thread/rollback`, limited to the latest user message (see
+[agent-routing](agent-routing.md#codex-rewind-and-0145-readiness)).
 
 ## Chat Info and subagents panel
 
-When the Claude Agent SDK spawns background subagents, the service
-emits `subagent_started`, `subagent_progress`, and `subagent_result`
-events. `ChatSubagentsPanel` renders running/completed/failed/stopped
-subagents with usage metrics. Each roster row shows a sentence-case model
-chip from `subagentModelAttribution`: a reported envelope `model` is ground
-truth, and a missing model falls back to the parent session label marked
-**inherited** (display-only — the parent model is never written onto the
-envelope). Inspecting a subagent switches the Chat Info / takeover header to
-that child's attribution and locks the composer model picker without changing
-the parent session's `modelId`. Running subagent and background-command durations
-tick from wall-clock time once per second instead of freezing on the last SDK
-usage snapshot; terminal rows retain their final duration. The same panel also renders the current
-Codex goal, the chat's one task list, and the Schedule section
-derived from `scheduled_work_update` events. The Work tab actions badge
-shows, in order of precedence: the proof count; else the running subagent
-count; else `done/total` of the task list while it has unfinished items (a
-finished list shows no badge). The drawer auto-opens once per chat when
-subagents, a task list (a plan alone counts), or scheduled work first appear.
-Full native Claude subagent-text forwarding is disabled. Any tagged child
-assistant/tool frames the parent SDK query still emits carry `parent_tool_use_id`,
-and ADE filters those frames out of the main
-timeline and resolves the backing Claude session pointer when opening the
-dedicated child transcript. A user's mid-turn steer always carries
-`parent_tool_use_id: null`, so it remains addressed to the parent agent.
-The same lifecycle events also render inline in the transcript as
-identity-anchored spawn/result cards, so the panel is a live roster and the
-transcript keeps a durable per-agent boundary. The desktop transcript derives
-those rows in `chatTranscriptRows.ts` (a backgrounded shell command gets a
-single `background_job_line` there instead of cards);
-`deriveSubagentTimelineRows()` in `shared/chatSubagents.ts` is the portable
-spawn / result / `background_chip` shape iOS mirrors in
-`buildWorkSubagentTimelineRows`, and it still models a background shell as one
-settle-position chip rather than a live line.
+`ChatSubagentsPanel` draws the Codex goal, the task list, subagents
+(`subagent_started` / `_progress` / `_result`), background work and Schedule in
+**one scroller with sticky section headers**.
 
-Claude wakeups, cron tasks, `/loop`, remote triggers, and background work
-are folded by `deriveScheduledWorkSnapshots()` into rows with kind,
-status, cron/prompt/reason details, source ids, fire timestamps, and late
-state. A parent turn ending does not coerce a running background row to
-`stopped`; only an explicit terminal work update or genuine runtime teardown
-does. The SDK's `background_tasks_changed` level set also keeps the owning
-query alive past the normal idle cleanup window and is authoritative for
-whether `local_bash` is actually backgrounded; ordinary foreground Bash uses
-the same task kind and never enters Background. Stop-hook snapshots keep real
-session-wide child shell/Monitor rows, but native Agents/workflows remain only
-in Subagents so one task cannot appear in both sections. The desktop Schedule header calls the typed
-`agentChat.setScheduledWorkPaused` API for the owning chat. While paused,
-active schedule rows remain visible but dim and show `paused`; on resume,
-overdue work fires once. Cron rows show `last ran <time> · next <relative>`.
-Large Chat Info rosters use the shared stable partition in
-`shared/chatSubagents.ts`: Subagents cap at 12 active rows, Background at 8,
-and Schedule at 10; the Tasks section is uncapped. Terminal rows move into a
-single `Completed (N)` disclosure without sorting either group; failed and
-pinned rows remain active and cap-exempt. Clear (shown beside the toggle only
-while the fold is expanded) hides clearable terminal ids, Restore brings them
-back, collapse/Completed/clear state is scoped to the chat session, and Show
-all resets when the surface remounts. Small sections
-retain the original static header without disclosure chrome. Fired one-shot
-wakeups keep their fired time and optional `late` marker in the dim Completed
-row. iOS mirrors the
-same predicates, caps, persistence semantics, and fired/late decoding.
+**Rows.**
 
-Desktop renders those rows in the Chat Info drawer, and iOS shows the roster only in its Chat Info popup/sheet for
-active scheduled items above the composer. The renderer does not own the
-timers: all controls mutate the project runtime's durable scheduler.
+- A sentence-case model chip from `subagentModelAttribution`: a reported
+  `model` is ground truth; else the parent's label marked **inherited**
+  (display only). Inspecting a subagent switches the header to the child's
+  attribution and locks the model picker without changing the parent's
+  `modelId`.
+- Running durations tick once a second from the wall clock; finished rows
+  keep their final time.
+- Square stops are labelled `Stop ${agentType}`; `chat:` rows have none.
+- **Spawned chats** (`ade chat create --parent` from a tracked shell) list via
+  synthetic `subagent_*` events keyed `chat:<childSessionId>`.
+  `deriveChatSubagentSnapshots` keeps that id and `spawnKind` when the
+  dot-form twin merges, and sets `childSessionId`; the row shows the child's
+  live title and runtime chip and opens on the parent's machine. The parent
+  transcript gets a "Subagent spawned" chip (`status: "subagent_spawned"`).
+  Chats filed under this one on the same machine and lane, grandchildren
+  included, come from `filedSubagentsOf` (`chatSubagentRoster.ts`); a waiting
+  child reads **needs you**.
+- Native Claude subagent text is not forwarded. Child frames carrying
+  `parent_tool_use_id` are filtered from the main timeline; a user steer
+  always carries `parent_tool_use_id: null`.
+- The transcript also shows identity-anchored spawn/result cards
+  (`chatTranscriptRows.ts`; a backgrounded shell is one `background_job_line`).
+  `deriveSubagentTimelineRows()` (`shared/chatSubagents.ts`) is the portable
+  shape iOS mirrors (`buildWorkSubagentTimelineRows`), with a background shell
+  as one chip.
 
-Interrupt transitions all running subagents to `stopped` by emitting a
-`subagent_result` with `status: "stopped"` for each, matching the
-Claude Code CLI behavior. Each such `subagent_result` is only emitted when
-its `subagent_started` was, and in the transcript a run of two or more
-**same-cause** cards folds into one `SubagentStoppedGroupCard` instead of a
-wall of identical rows. The card carries the cause: `interrupt` heads
-`<n> agents stopped when you interrupted`, `usage_limit` heads
-`<n> agents stopped · usage limit`. Neither is an error block — nothing broke
-— and a run splits wherever the cause changes.
+**Badge and auto-open.** The Work actions badge shows the proof count, else
+running subagents, else `done/total` of an unfinished task list. The drawer
+opens once per chat when subagents, a task list (a plan counts) or scheduled
+work first appear.
 
-Claude Workflow runs (the SDK's multi-agent orchestration tool) render in
-the same Agents panel: `claudeWorkflowProgress.ts` normalizes
-the undocumented `workflow_progress` snapshot and fans each workflow agent
-out as its own subagent row (phase in the summary line, tokens/duration
-from the snapshot, `workflowName` chip), while the parent workflow task row
-falls back to a phase/count rollup summary. Child chat sessions spawned with
-a parent lineage (`ade chat create` from a tracked agent shell, `--parent`)
-also list here via synthetic `subagent_*` events keyed
-`chat:<childSessionId>`. `deriveChatSubagentSnapshots` preserves that prefixed
-task id and the underscore event's `spawnKind` when the canonical dot-form
-`subagent.started` twin merges into the same snapshot, then derives an explicit
-`childSessionId`. The panel uses that field for routing, labels the row with
-the live child-session title when available, and shows the runtime as the small
-kind chip. The parent transcript additionally shows a quiet "Subagent spawned"
-chip (a `status:"subagent_spawned"` system notice) that deep-links to the child
-chat.
+**Schedule.** `deriveScheduledWorkSnapshots()` folds wakeups, cron, `/loop`,
+remote triggers and background work into rows (kind, status, details, ids,
+fire times, late).
 
-When a workflow snapshot is available, the Agents pane also puts a compact
-**Workflow activity** card above the ordinary roster. The card is a deliberate
-entry point rather than a second live dashboard: clicking it opens a modal over
-the chat with the provider-reported phase rail, running/completed/failed/queued
-counts, per-agent summaries, model, token, tool, duration, and last-tool
-details. Agent rows with a pullable transcript route through the same existing
-subagent selection behavior; synthetic workflow-agent rows are drill-down
-details and the parent workflow owns the stop action. The modal can stop the parent workflow while
-it is active. The modal traps focus, closes on Escape or backdrop click, locks
-background scrolling, and keeps the raw workflow prompt out of the UI; parser
-caps and clipped previews remain the boundary for provider-supplied text.
+- A parent turn ending never marks a running background row `stopped`; only a
+  terminal update or teardown does.
+- `background_tasks_changed` keeps the query alive past idle cleanup and
+  decides whether `local_bash` is backgrounded.
+- Stop-hook snapshots keep child shell/Monitor rows; native Agents and
+  workflows stay in Subagents only.
+- The header's pause/play calls `agentChat.setScheduledWorkPaused`; paused
+  rows dim; on resume overdue work fires once. Cron rows read `last ran <time> ·
+  next <relative>`. The runtime's scheduler owns the timers.
 
-Codex parallel-agent lifecycle comes from both legacy `collabAgentToolCall`
-items and newer app-server `subAgentActivity` items. The service registers
-each child thread for transcript backfill, carries `label`, `model`, and
-`reasoningEffort` when the app-server provides them, and emits the same
-`subagent_started` / `subagent_progress` / `subagent_result` rows the
-panel already understands. Codex parallel agent failures emit a
-system-notice plus `failed` / `stopped` `subagent_result` rows. The
-agentChatService maps
-`failed | errored | rejected | refused | denied` Codex status values
-to `failed` and `stopped | interrupted | shutdown | notfound |
-cancelled | canceled` to `stopped`; `readCodexCollabFailureSummary`
-pulls the human-readable rejection out of `item.error` /
-`item.result` / `item.contentItems[*].text` so the chat surface shows
-a useful reason instead of a bare "Agent spawn failed".
+**Large rosters** (`shared/chatSubagents.ts`, mirrored on iOS): Subagents cap
+at 12 active rows, Background 8, Schedule 10 (Tasks uncapped), with **Show
+all** (reset on remount). Finished rows go into one `Completed (N)` fold
+without re-sorting; failed and pinned rows stay active and uncapped. Clear
+(while the fold is open) hides finished ids and Restore brings them back,
+scoped per chat. Fired one-shot wakeups keep their time and `late` mark. iOS
+shows the roster only in its Chat Info sheet.
 
-`deriveChatSubagentSnapshots` (in `chatExecutionSummary.ts`) keeps
-sibling Codex subagents distinct when they share a `parentToolUseId`:
-it pre-scans every envelope to count the resolved subagent ids per
-parent, only adopts the placeholder parent row when exactly one
-sibling resolves under that parent, and otherwise creates separate
-snapshots keyed by `agentId ?? taskId`.
+**Interrupt** emits `subagent_result` `status: "stopped"` for each started
+subagent. In the transcript two or more same-cause stops fold into one
+`SubagentStoppedGroupCard`: `<n> agents stopped when you interrupted` or `<n>
+agents stopped · usage limit`, not an error.
 
-Subagent envelopes carry both an `agentId` (raw runtime id) and an
-`agentType` label that's used as the row title when present. The label
-sources differ per runtime:
+**Claude Workflow runs.** `claudeWorkflowProgress.ts` normalizes
+`workflow_progress` and fans each workflow agent out as a row (phase, tokens,
+duration, `workflowName` chip); the parent row rolls up phases and counts. A
+**Workflow activity** card above the roster opens a modal with the phase rail,
+counts and per-agent details; it traps focus, closes on Escape or backdrop,
+hides the raw prompt and can stop the parent workflow (which owns the stop).
 
-- **Claude.** `agentType` comes from the Task tool's
-  `input.subagent_type` (e.g. `code-reviewer`, `Explore`). The service
-  stashes that input at the assistant `tool_use` boundary
-  (`runtime.taskToolInputByToolUseId`, keyed by `tool_use_id`) and
-  joins it onto the later `system:task_started` / `task_progress` /
-  `task_completed` envelopes via `parentToolUseId`. Stale entries are
-  cleared at turn boundaries and on subagent completion.
-- **Codex parallel agents.** The Codex wire format has no
-  human-friendly name for collab agents, so the service assigns
-  `Agent #N` labels via `assignCodexAgentLabel`: 1-based, per-turn,
-  remembered in `runtime.codexAgentIndexByTurn` (a
-  `Map<turnId, Map<threadId, index>>`), and cleared when the turn
-  ends. The raw threadId is kept on the snapshot as `agentId`.
-- **OpenCode subagents.** OpenCode encodes the agent's identity in
-  `session.title`, which already flows through as `description`; the
-  service intentionally does NOT set `agentType` so the renderer falls
-  back to that description for the row label.
+**Codex parallel agents** come from `collabAgentToolCall` and
+`subAgentActivity` items. The service registers each child thread for
+backfill, carries `label`, `model` and `reasoningEffort`, and emits the same
+events. `failed | errored | rejected | refused | denied` map to `failed`;
+`stopped | interrupted | shutdown | notfound | cancelled | canceled` to
+`stopped`; `readCodexCollabFailureSummary` pulls the reason from `item.error`,
+`item.result` or `item.contentItems[*].text`. `deriveChatSubagentSnapshots`
+(`chatExecutionSummary.ts`) keeps siblings under one `parentToolUseId`
+distinct, adopting the placeholder only when exactly one resolves.
+
+**Row titles** (`agentType`):
+
+| Runtime | Title source |
+|---|---|
+| Claude | The Task tool's `input.subagent_type`, stashed at `tool_use` (`runtime.taskToolInputByToolUseId`) and joined onto `task_*` envelopes via `parentToolUseId`; cleared at turn end and completion. |
+| Codex | `Agent #N` from `assignCodexAgentLabel`, per turn (`runtime.codexAgentIndexByTurn`); the thread id stays `agentId`. |
+| OpenCode | No `agentType`; the row uses `session.title` (the `description`). |
 
 ## Chat Actions and Sources
 
-`ChatActionsDrawerPanel` is one scroll, opened by the tree icon to the left of
-the Tools toggle. There is no tab strip and no predefined area. The host passes
-a list of sections, in order: progress (goal, tasks, subagents, background
-work), proof, Droid mission, sources. A section is passed only when it has
-something to show. Proof needs at least one artifact. The mission needs
-features or progress entries. Sources need at least one source, for any
-provider, through `hasChatSources()` in `AgentChatPane`. That check runs only
-while the drawer is open. `ChatSubagentsPanel` is always passed and renders
-`null` when it has nothing, so plan-only and Claude-goal chats show up without
-a host-side gate.
+`ChatActionsDrawerPanel` (tree icon left of the Tools toggle) is one scroll of
+sections the host passes in order, each only when it has content: progress
+(goal, tasks, subagents, background), proof (one or more artifacts), Droid
+mission (features or progress), sources (`hasChatSources()`, checked only
+while open). `ChatSubagentsPanel` is always passed and renders `null` when
+empty.
 
-The drawer draws dividers only between sections that rendered
-(`[&>*+*]:border-t`). No section carries its own border, height, or scroller.
-In `variant="pane"`, `ChatSubagentsPanel` renders its body with no `h-full`,
-`min-h-full`, or inner `overflow-y-auto`, so the drawer's scroll is the only
-one. This holds in both hosts: the floating card and the split right pane. When
-nothing rendered, the drawer shows one line: "Nothing here yet. Agents, tasks,
-proof and sources show up as the chat runs." When sections were passed but all
-rendered `null`, the same line shows through `only:block`, because it is the
-last and only child left.
+- Dividers only between rendered sections (`[&>*+*]:border-t`); no section has
+  its own border, height or scroller (in `variant="pane"`, no `h-full`,
+  `min-h-full` or inner `overflow-y-auto`), in the floating card and the split
+  pane.
+- Empty: "Nothing here yet. Agents, tasks, proof and sources show up as the
+  chat runs." (also via `only:block` when every section rendered `null`).
 
-Handoff is not in that pane. Right-click a session card. In the Lifecycle
-section, the **Hand off…** submenu has **Local handoff**, **Another
-machine**, then **Auto handoff…** (**Edit auto handoff…** and **Remove auto
-handoff** when rules exist). The menu queues the destination through
-`lib/chatHandoffIntent.ts` and selects the row. The chat pane of that session
-takes the intent and opens the matching surface. A running turn does not
-disable those rows. Each surface says the turn is still running and keeps its
-send disabled until the turn ends.
+**Handoff** is on the session card's context menu: Lifecycle → **Hand off…** →
+**Local handoff**, **Another machine**, **Auto handoff…** (**Edit auto
+handoff…** / **Remove auto handoff** when rules exist). The menu queues the
+destination (`lib/chatHandoffIntent.ts`) and selects the row; that chat's pane
+opens the surface. A running turn does not disable the rows; each surface
+keeps send disabled until the turn ends.
 
-- **Local handoff** opens the local handoff form in a modal dialog
-  (`ChatHandoffDialogs.tsx`). The form has the fork/brief mode toggle, lane
-  targeting, and the optional note described above. Each open starts in fork
-  mode on the current lane.
-- **Another machine** opens the staged `CrossMachineHandoffModal`. It shows
-  the source blockers the chat's brain reports, lets the user choose a machine
-  on the account, brief or fork mode, and an optional continuation note,
-  explains clone/storage/model failures from the destination's preview, and
-  shows what the move includes and excludes before final confirmation. It
-  opens for every chat, including one that already runs on another machine
-  (see below).
-- **Auto handoff…** opens `AutoHandoffModal`, hosted by `SessionContextMenu`.
+- **Local handoff** opens a modal (`ChatHandoffDialogs.tsx`) with fork/brief,
+  lane target and note, starting in fork mode on the current lane.
+- **Another machine** opens `CrossMachineHandoffModal`: source blockers, a
+  machine on the account, brief or fork, a note, the destination's preview
+  failures, and what moves, before confirming. It opens for every chat,
+  including one on another machine: calls go through `chatRuntimePin` (frozen
+  per operation) and that brain runs the move. See
+  [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md).
+- **Auto handoff…** opens `AutoHandoffModal` (from `SessionContextMenu`).
+- The dialogs use Radix Dialog and set `PortalContainerContext`, so the
+  `LaneCombobox` list stays clickable; Escape closes only an open list.
+- The quota card's **Fork in this lane** opens the form in fork mode with its
+  note.
+- The form picks a target model other than the source's when one exists, and
+  keeps choosing as the catalog grows until the user picks.
 
-`ChatHandoffDialogs` uses Radix Dialog, so Escape, a click outside, and focus
-trapping work the same in each dialog. The dialog content is the portal
-container (`PortalContainerContext` in `components/ui/portalContainer.tsx`), so
-the `LaneCombobox` popover portals into the dialog and stays clickable. While
-that lane list is open, Escape closes only the list.
-
-The quota card's **Fork in this lane** button prefills the local form: it
-opens the dialog in fork mode with the card's note, or writes the note into a
-form that is already open.
-
-When a handoff form opens, the target model is a model other than the source
-chat's model, when the catalog has one. The model catalog can arrive first with
-only the source model and then grow, so the form keeps choosing until an
-alternative is available or the user picks a model.
-
-Any chat can start a cross-machine handoff, including a chat that runs on
-another machine than the window's (a MacBook window showing a Mac Studio chat).
-The modal's calls go to the chat's own machine through `chatRuntimePin` (passed
-as its `runtimePin`, frozen once per operation), and that machine's brain runs
-the move: it lists the other machines on the account (never itself), prepares,
-asks the destination, and sends. The window only collects choices and reads the
-move record.
-The complete Git, capsule, fork-transport, idempotency, and security rules live
-in [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md).
-
-When the selected provider is Codex, **Sources** is the last section in that
-scroll and receives the current display event set. Droid missions sit in the
-same place, under proof.
-`deriveChatSources()` builds four compact sections:
-
-- **Files** — user attachments and image URLs.
-- **Apps & tools** — MCP servers/plugins/connectors, grouped by app identity
-  with the distinct actions summarized once.
-- **Web** — search queries and result URLs/titles/snippets.
-- **External resources** — HTTP(S) links and resource URIs found in MCP
-  metadata/results, including Linear issue context.
-
-The derivation is bounded and recursive only for JSON-shaped tool results,
-deduplicates by canonical path/URL/source id, and excludes the internal
-`node_repl` execution host. A row is clickable only for an allowed HTTP(S)
-URL and opens through `openUrlInAdeBrowser`; local paths remain informational.
-The main transcript separately keeps web, image, MCP/connector, and subagent
-lifecycle compact across Codex, Claude, Cursor, Droid, and OpenCode adapters.
+**Sources** (last section, Codex chats; Droid missions sit under proof).
+`deriveChatSources()` builds **Files** (attachments, image URLs), **Apps &
+tools** (MCP servers and connectors grouped by app), **Web** (queries and
+results) and **External resources** (HTTP(S) links and resource URIs from MCP
+results, Linear context). It is bounded, recursive only for JSON results,
+deduplicated, and skips `node_repl`. Only allowed HTTP(S) rows click
+(`openUrlInAdeBrowser`).
 
 ## Terminal drawer
 
-`ChatTerminalDrawer` is a collapsible drawer at the bottom of the chat
-surface. Each drawer tab creates an untracked shell PTY in the current
-lane, reusing the shared `TerminalView` component (with global
-terminal preferences) rather than managing raw xterm instances
-directly. Tabs track PTY exit state and auto-close the drawer when the
-last tab is removed. When a new chat-owned terminal is created from a
-non-drawer source (e.g. an in-chat agent calling
-`ade --socket app-control launch`, the localhost-strip "Logs" button,
-or another chat surface) the pane subscribes to
-`window.ade.sessions.onChanged` and dedupes the new terminal into the
-drawer instead of opening a duplicate tab — `ChatTerminalDrawer.openTab`
-checks the existing tab list by `sessionId` / `ptyId` before pushing a
-new entry, and the `AgentChatPane` `revealCreatedTerminal` effect calls
-the same drawer with the recovered `{ terminalId, ptyId, label }`.
+`ChatTerminalDrawer` is a collapsible drawer at the bottom of the chat. Each
+tab is an untracked shell PTY in the current lane, drawn by the shared
+`TerminalView`. Tabs track exit state; removing the last tab closes the drawer.
 
-The drawer is mounted only when lane tool drawers are visible on the
-chat surface. Work-grid tiles pass `hideLaneToolDrawers` because the
-Work sidebar owns lane-scoped tools there; chat headers no longer expose
-a separate Terminal shortcut. Other chat-owned terminal creation paths
-still reveal the matching drawer tab through the shared
-`revealCreatedTerminal` flow.
+- A chat-owned terminal created elsewhere (an agent's `ade --socket app-control
+  launch`, the localhost strip's "Logs") is deduped into the drawer:
+  `AgentChatPane` watches `window.ade.sessions.onChanged`, and
+  `revealCreatedTerminal` calls `ChatTerminalDrawer.openTab`, which matches by
+  `sessionId` / `ptyId`.
+- The drawer mounts only when lane tool drawers show; Work grid tiles pass
+  `hideLaneToolDrawers`.
 
 ## Pending input card
 
-The ask-question surface is **anchored in the composer**, not in the
-transcript. `AskQuestionComposer` replaces the composer textarea inside the
-same prompt-box frame — same border, radius, and width — so nothing shifts when
-the question resolves back into a textarea. (There is no longer a separate
-`AgentQuestionModal`, no `InlineQuestionRequestCard`, and no question-kind
-`pendingBanner`: that banner sat on a composer `composerInputLocked` had
-already hard-locked, so the composer was dead *and* wearing a sign saying so.
-`plan_approval`, `model_selection`, `approval`, and `permissions` keep their
-banners — they render real controls.)
+The question surface is **in the composer**: `AskQuestionComposer` replaces
+the textarea inside the same prompt-box frame, so nothing shifts when it
+resolves. Question kinds have no `pendingBanner`; `plan_approval`,
+`model_selection`, `approval` and `permissions` keep banners because they
+carry real controls.
 
-The transcript keeps only the record: `OpenQuestionReceipt` while the gate is
-open (which is also where a *queued* second question waits until it becomes the
-composer's primary gate), and `AnsweredQuestionReceipt` once it resolves.
-
-Which card the composer draws is not the transcript's decision alone. The pane
-renders `resolvedPendingInputsBySession[sessionId][0]`, and that list is the
-transcript derivation reconciled against the session summary's
-`pendingInputItemId` — because a card's asker can outlive the turn it was
-tagged with (a backgrounded `ade actions run`, an `ask_user` whose caller
-stopped waiting), and only main knows whether it is still blocked. The renderer
-deciding alone is what produced the invisible wedge: no card on screen, `send`
-refused with "Answer or decline the pending request before sending another
-message", fork refused. The full rule is the "Pending input derivation" entry in
-[Fragile and tricky wiring](README.md#fragile-and-tricky-wiring).
+- The transcript keeps the record: `OpenQuestionReceipt` while open (a queued
+  second question waits there) and `AnsweredQuestionReceipt` after.
+- The pane draws `resolvedPendingInputsBySession[sessionId][0]`: the
+  transcript derivation reconciled with the summary's `pendingInputItemId`,
+  because an asker can outlive its turn and only main knows whether it still
+  blocks. See "Pending input derivation" in
+  [Fragile and tricky wiring](README.md#fragile-and-tricky-wiring).
 
 ### Answer semantics
 
-`apps/desktop/src/shared/pendingInputAnswers.ts` is the contract. Four states
-per question — `EMPTY`, `PICK`, `PICK_NOTE`, `NOTE` — and five rules:
+`shared/pendingInputAnswers.ts` is the contract for desktop and web (iOS
+mirrors it): `answerState` (`EMPTY`, `PICK`, `PICK_NOTE`, `NOTE`), `sendLabel`,
+`buildAnswers`, `notePlaceholder`, `foldedSummary`,
+`sanitizeAnswersForTranscript`.
 
-1. **Both travel.** A note never replaces a selection; a selection never clears
-   a note.
-2. **Typing never deselects. Selecting never clears the note.**
-3. **Selection values come first**, note last, so a model reads the choice
-   before the qualification.
-4. **The Send label is the payload receipt.** `sendLabel` is derived from the
-   state and nothing else (`Send 1`, `Send 3 picks`, `Send 1 + note`,
-   `Send note`, `Send N answers`). If the label and the payload can disagree,
-   the implementation is wrong.
-5. **Multi-question:** Send is enabled only when every question is answered.
-   The one exception is a lone typed reply (`isLoneTypedReply`): text on the
-   current page and nothing picked or typed anywhere else. A `Send note`
-   button beside `Next` sends it alone, so typing "skip these, do X instead"
-   redirects the agent. Every other question is answered with
-   `QUESTION_SKIPPED_FOR_REPLY_ANSWER` (`loneTypedReplyAnswers`), because a
-   partial set is refused by Claude's AskUserQuestion ("The user did not
-   provide answers"). Enter still means `Next`.
+1. **Both travel.** Typing never deselects; selecting never clears the note.
+2. **Selection first**, note last.
+3. **The Send label is the payload receipt** (`Send 1`, `Send 3 picks`, `Send 1
+   + note`, `Send note`, `Send N answers`), derived from the state alone.
+4. **Multi-question:** Send needs every question answered, except a lone typed
+   reply (`isLoneTypedReply`): a `Send note` button beside `Next` sends it, and
+   the other questions get `QUESTION_SKIPPED_FOR_REPLY_ANSWER`
+   (`loneTypedReplyAnswers`), because Claude refuses a partial set. Enter
+   still means `Next`.
 
-The note row's placeholder says which of its two jobs is live: `Your answer`
-when the question has no options, `Or send your own response instead` when
-nothing is picked, `Add a note (sent with your pick)` once something is. No
-disabled state, no mode switch.
+- The note placeholder names its live job: `Your answer` (no options), `Or
+  send your own response instead` (nothing picked), `Add a note (sent with
+  your pick)`.
+- Droid takes one string; `flattenAnswerForSingleStringProvider` labels the
+  note instead of comma-joining it.
+- **What the model hears.** `isQuestionKind(kind)` splits asking from
+  allowing; an unknown or missing kind is an approval.
+  - Decline (button or Escape) sends `QUESTION_DECLINED_MODEL_MESSAGE` (stop
+    and ask in plain text, never "choose for me") for Claude `AskUserQuestion`,
+    ADE `ask_user`, Codex `requestUserInput` and Cursor. Pi sends
+    `QUESTION_UNANSWERED_MODEL_MESSAGE`.
+  - `declineMessageForModel` picks `LIVE_QUESTION_DECLINED_MODEL_MESSAGE`
+    ("keep working") for a live Codex question (`isBlocking: false`).
+  - A Codex async question (`delivery: "async"`) sends nothing on dismiss; a
+    cancelled Cursor planning question starts no turn.
+  - `answersForModel` / `withTypedReplyNote` mark a typed reply with no pick
+    ("eli5 please") as talking back, so the model answers it instead of
+    re-asking; text naming only offered options ("A, B") is a choice. Claude,
+    Codex, Cursor, Pi and `ask_user` apply it. Droid (`cancelled: true`) and
+    OpenCode's question tool keep their own wording.
 
-This module previously did not exist and the surfaces disagreed: desktop
-sent both as an array and iOS
-silently dropped the note once more than one question was in play. No provider
-forces any of it — Claude's `question.reply` takes `answers: string[][]`, ADE's
-own `askUser` tool returns free-form JSON, and Droid takes a single string ADE
-joins itself (now via `flattenAnswerForSingleStringProvider`, which labels the
-note rather than comma-joining it into the picks).
+### Card behaviour
 
-### The three defects this shape fixes
-
-- **Hidden mode switch.** `handleOption`'s `submitSingle` branch submitted
-  immediately on click for a single single-select question — *unless* the
-  freeform field held text, in which case the same click only selected. One
-  gesture, two outcomes, no signal. Select marks now; `Next` / `Enter`
-  advances.
-- **Hover-reflow jitter.** Options set `onMouseEnter → setFocusedOption`, which
-  swapped the preview, which changed the card's height, which made the
-  virtualizer re-measure and `reconcileMeasuredScrollTop`, so the row walked out
-  from under the cursor and the click landed on its neighbour. **Hover mutates
-  no state.** Previews open on their own disclosure control, which neither
-  selects the option nor advances the question. The option region is
-  natural-height and capped: explicit disclosure may grow it once, while hover
-  and focus cannot trigger any reflow.
-- **Unbounded height.** Only the option list scrolls; header, note row, and
-  footer are pinned outside it, so Decline / Next / Send are reachable at any
-  list length. Rows that fall fully below the fold get a `⌄ N more options` row
-  **on its own line** — floating it over the list would let it cover a row the
-  user meant to click, and a shadow alone is deniable (a list that cuts cleanly
-  after option 4 reads as "there are four options").
-
-**Height budget (desktop).** `useOptionsMaxHeight` measures
-`[data-chat-appearance-root]` — the flex column holding the transcript *and* the
-composer — and gives the option list `clamp(260, height * 0.55, 520)`. The
-260px floor keeps the normal three-option case, including one disclosed
-preview, out of a cramped inner scroller; long lists still scroll with the
-footer pinned. Budgeting from that column rather than the transcript viewport
-is load-bearing for the same reason it is on iOS
-(`workPendingInputMaxHeight`): the column's height does not change when the
-card grows, the viewport's does, and feeding the viewport back in is a runaway
-loop that eats the screen.
-
-**Minimize.** A `⌄` beside the `×` folds the card to one line inside the prompt
-box (provider mark · `{header} — {question}` · `N/M` or `ANSWER` · `⌃`) so the
-transcript can be scrolled freely. It does **not** dismiss and does **not**
-unblock — the gate stays open, and picks survive the fold. `×` remains the
-decline; the two affordances must not be merged. iOS already ships this as
-`pendingInputCollapsed`; both share the summary string (`foldedSummary`).
-
-Anatomy:
-
-- **Header** — the provider mark (`ProviderLogo(source)`) plus a kind-derived
-  verb from `pendingInputHeaderLabel(source, kind)`: `{Provider} asks` for
-  questions, `{Provider} · Plan ready` for plan approvals. No clock icon and no
-  generic "Question from {provider}" title. For paged sets a **dot rail** sits
-  on the right (filled = current, green = answered) and jumps between
-  questions; `N / M` lives in the footer. Then the minimize `⌄` and the decline
-  `×`.
-- **Body** — the question's short `header` renders as a kicker, then the
-  question text exactly **once**. A request-level `description` only renders
-  when it differs from the question text, so it never duplicates the question.
-- **Options — a ledger.** One column always, never a 2-col grid (three options
-  in two columns leaves a ragged orphan). A hairline between rows and nothing
-  else: no per-option border, fill, radius, or radio glyph. Selection is a `✓`
-  flush-right; the leading number stays constant. Rows carry
-  `role="radio"`/`"checkbox"` in a `radiogroup`/`group` container, support
-  multi-select, and show a quiet `Recommended` label. Nothing is preselected.
-- **Previews** — `QuestionOptionPreview` (in `questionOptionPreview.tsx`) is
-  format-aware: wireframe/ASCII content (detected by `looksLikeWireframe`, or
-  `previewFormat: "html"`) renders in a column-preserving monospace `<pre>`
-  (`white-space: pre`, horizontal scroll), and prose markdown routes through
-  the shared code-fence-aware `ChatMarkdown`. This replaced a bare
-  `ReactMarkdown` that collapsed ASCII alignment. Previews live inside the
-  capped option region. The closed state stays natural-height with no blank
-  preview reserve; an explicit disclosure may grow the composer up to the cap,
-  after which only the option region scrolls. When ≥2 options carry previews,
-  a `⇄ Compare` toggle shows two side by side.
-- **Keyboard-first** — `1-9` pick, `↵` next/send, `←→` page between questions,
-  `esc` declines. Digits typed into the note field are never hijacked.
-- **Accent** — chrome uses `var(--chat-accent)`, which the chat surface sets per
-  provider, so the card is amber for Claude, warm-white for Codex, violet for
-  Cursor/Droid, blue for OpenCode (and honours the neutral-chrome preference).
-  The tint count is deliberately **two** — the header mark and the selected `✓`
-  — plus one structural use: a hairline top border on the composer meaning "you
-  are in answer mode". Not a glow, not a fill. The same accent treatment is
-  applied to `ChatProposedPlanCard`.
+- **Select marks; `Next` / `Enter` advances.** A click never submits.
+- **Hover changes no state.** Previews open on their own disclosure control,
+  so the row never moves under the cursor.
+- **Only the option list scrolls**; header, note and footer stay pinned. Rows
+  fully below the fold get a `⌄ N more options` row on its own line.
+- **Height (desktop).** `useOptionsMaxHeight` measures
+  `[data-chat-appearance-root]` (transcript plus composer, which does not
+  change as the card grows) and gives the list `clamp(260, height * 0.55,
+  520)`. Measuring the transcript viewport would feed back into itself.
+- **Minimize.** `⌄` beside `×` folds the card to one line (mark · `{header} —
+  {question}` · `N/M` or `ANSWER` · `⌃`, from `foldedSummary`). It neither
+  dismisses nor unblocks; picks survive. `×` is decline; keep the two apart.
+- **Header**: `ProviderLogo(source)` and `pendingInputHeaderLabel(source,
+  kind)` (`{Provider} asks`, `{Provider} · Plan ready`); paged sets get a dot
+  rail (filled current, green answered); `N / M` sits in the footer.
+- **Body**: the short `header` as a kicker, the question once, and a
+  `description` only when it differs.
+- **Options are a ledger**: one column, hairlines only, a flush-right `✓`, a
+  constant leading number, `role="radio"` / `"checkbox"` in a `radiogroup` /
+  `group`, a quiet `Recommended` label, nothing preselected.
+- **Previews** (`QuestionOptionPreview`, `questionOptionPreview.tsx`):
+  wireframes (`looksLikeWireframe` or `previewFormat: "html"`) in a
+  `white-space: pre` block, prose through `ChatMarkdown`, inside the capped
+  region; `⇄ Compare` shows two side by side when two or more options have
+  previews.
+- **Keys**: `1-9` pick, `↵` next/send, `←→` page, `esc` declines; digits in the
+  note field are not captured.
+- **Accent**: `var(--chat-accent)` on two things only (the header mark and the
+  `✓`) plus a hairline top border meaning answer mode. `ChatProposedPlanCard`
+  uses the same treatment.
 
 ### The free-text answer is the composer, not a second text box
 
-A question card's free-text field **is** the composer's own `contentEditable`
-editor, mounted inside the card. Everything the composer can do while you write
-a message you can do while you answer a question: `@` mentions, the `#` PR menu,
-smart-link chips, paste-image, drag-and-drop, and the paperclip.
+The free-text field **is** the composer's `contentEditable` editor, so `@`, `#`,
+smart links, image paste, drag-drop and the paperclip all work.
+`AskQuestionComposer` takes it through `renderAnswerEditor`; without the slot
+(mobile, tests) it falls back to a textarea.
 
-`AskQuestionComposer` takes the editor as a slot
-(`renderAnswerEditor`) rather than building one, so nothing is duplicated:
-`AgentChatComposer` still owns the editor and renders it into whichever of its
-two homes is live. When the slot is absent — mobile, tests, any non-composer
-host — the plain textarea is the fallback, so the card still stands alone.
+- **The host owns the current question's text.** `answerValue` (with
+  `onAnswerValueChange`) is the serialized string, chip tokens included; every
+  all-question read (dots, count, payload) merges it in.
+- **Paging moves the answer.** `goToPage` stashes the editor's text under the
+  question left and loads the next one's.
+- **Secret answers use a masked input**, never the rich editor (it cannot mask
+  or keep the value out of the DOM). `allowsFreeform === false` gets no field.
+- **`inField`** counts `input`, `textarea`, `isContentEditable` and
+  `closest("[contenteditable='true']")` (the explicit `'true'`, because chips
+  are `contenteditable="false"`). Without all four the card steals digits and
+  handles Enter twice.
+- **A question locks text, not files.** `canAttach` ignores
+  `composerInputLocked`; staged files ride the **next** turn, the lock does not
+  discard them, and submitting an answer leaves them.
 
-Three consequences follow from the editor being hosted rather than owned:
+**Responses** go through `ade.agentChat.respondToInput`
+(`AgentChatRespondToInputArgs`: `answers` values `string` or `string[]`, an
+optional `decision`); `ade.agentChat.approve` still works. Plan approval cards
+take the plan text from the `ExitPlanMode` input.
 
-- **The host owns the current question's text.** `answerValue` is the editor's
-  canonically serialized string, chip tokens and all. Every read that walks all
-  the questions — progress dots, answered count, the final payload — merges it
-  in, or the card reports itself unanswered while the field holds an answer.
-- **Paging moves the answer by hand.** One editor serves every page, so
-  `goToPage` stashes what it holds under the question being left and hands it
-  whatever the question being entered had.
-- **A secret answer is excluded on purpose.** A masked single-line input is the
-  whole contract for `isSecret`, and a `contentEditable` cannot be masked,
-  cannot keep its value out of the DOM text, and would happily tokenize a secret
-  into a chip. `allowsFreeform === false` gets no field at all.
-
-The card's own keyboard handling has to recognise both field shapes. `inField`
-counts `input`, `textarea`, `isContentEditable`, **and**
-`closest("[contenteditable='true']")` — the event target inside a rich editor is
-routinely a descendant, `isContentEditable` is an inherited computed flag not
-every environment implements, and the explicit `='true'` matters because chips
-are `contenteditable="false"` and a bare attribute selector would count a click
-on one as being in a field. Without all four, the card steals the digits of a
-typed answer as option shortcuts and handles Enter a second time after the field
-already did.
-
-**A pending question locks text, not files.** Attaching was disabled whenever a
-question was on screen, so the one moment you most want to hand the agent a
-screenshot — it just asked which of two designs to use — was the one moment you
-could not. `canAttach` no longer consults `composerInputLocked`. No provider
-adapter carries a file inside an answer, so staged files ride the **next** turn;
-that is a delivery detail, not a reason to refuse the drop. For the same reason
-the lock effect no longer discards staged attachments, and submitting an answer
-clears the answer draft but deliberately leaves the attachments alone.
-
-Responses are sent back via `ade.agentChat.respondToInput` (accepts
-`AgentChatRespondToInputArgs` with structured `answers`; values may be
-`string` or `string[]` for multi-select, plus an optional `decision`).
-Legacy `ade.agentChat.approve` is still supported. Plan approval cards
-receive the plan text from the `ExitPlanMode` tool input so the UI shows
-meaningful content rather than a generic label.
-
-Codex app-server `mcpServer/elicitation/request` uses the same contract.
-Form-mode JSON Schema properties become paged questions (enum/oneOf,
-boolean, freeform primitive, and multiselect array); answers are coerced back
-to the schema before ADE replies. Approval/URL mode shows **Allow once** and
-**Deny**, an **Open authorization** action only for safe web URLs, and
-**Always allow** only when `_meta.persist` includes `always`. Claude chats
-raise the same card for an MCP server's elicitation (`onElicitation`); it
-offers no **Always allow**, because the Agent SDK has no persistent consent
-for elicitations, so every request is answered on its own. In a Claude
-full-auto chat or an automation run ADE answers the card itself (a form with
-no fields is accepted, a form takes its schema defaults when every required
-field has one, anything else is declined) and shows the receipt with a
-notice; an unanswered Claude card cancels itself after 5 minutes.
-Codex full-auto mode does not auto-answer these app/connector consent
-requests.
-`serverRequest/resolved` emits the usual resolution event so a request
-completed outside the card cannot leave the composer locked.
+**MCP elicitations.** Codex `mcpServer/elicitation/request` form-mode schema
+properties become paged questions (enum/oneOf, boolean, primitive,
+multiselect), coerced back to the schema. Approval/URL mode shows **Allow
+once** and **Deny**, **Open authorization** only for safe web URLs, and
+**Always allow** only when `_meta.persist` includes `always`. Claude
+(`onElicitation`) raises the same card without **Always allow**. In a Claude
+full-auto chat or automation run ADE answers it (an empty form is accepted, a
+form takes schema defaults when every required field has one, anything else is
+declined) with a notice; an unanswered Claude card cancels after 5 minutes.
+Codex full-auto does not auto-answer. `serverRequest/resolved` closes a card
+answered elsewhere.
 
 ### Private secret card
 
-An agent never asks the person to paste a secret into chat. It runs
-`ade secrets request NAME --reason "…" [--generate] [--timeout 30m]` (the ADE
-action `project_secret.request`), and the chat shows the private secret card in
-the composer's place: the secret name, the agent's reason, a password field
-with show/hide and copy, a "Generate a strong one" button (32 random bytes as
-hex; the agent's `--generate` marks it as suggested), and one line of copy —
-"Saved encrypted to this project's secrets. The agent only sees the name." Enter
-saves, Esc declines. When the name already exists the card opens on "Keep
-existing" (Enter) with "Replace" one click away.
+An agent never asks for a secret in chat. It runs `ade secrets request NAME
+--reason "…" [--generate] [--timeout 30m]` (`project_secret.request`), and the
+composer shows the secret card: name, reason, a password field with show/hide
+and copy, "Generate a strong one" (32 random bytes as hex; `--generate` marks
+it suggested), and "Saved to Passwords & Secrets for this project. The agent
+only sees the name." Enter saves, Esc declines. An existing name opens on
+"Keep existing" with "Replace" one click away.
 
-**Temporary private file.** The card also asks where the value goes: "Save to
-ADE secrets" or "Temporary private file" (`--delivery file` on the request makes
-the file the default; the person decides). A file answer is written on the
-chat's machine to `<ADE home>/secrets/temp-files/<random>` (0600 in a 0700 dir,
-created with `wx`, owner-only ACL on Windows) with a value-free `<id>.json`
-sidecar, and the agent gets only `{saved: true, delivery: "file", file,
-expiresAt}`. The value never enters the project's secrets, the transcript,
-events or logs; the agent's own commands can read the file, and the card says
-so. Files go when the chat is archived or deleted, after the TTL (24 h, the
-maximum), and in the next runtime start's sweep (`secretTempFiles.ts`). A
-retry with the same `--request-id` returns the same file without a second card
-(or joins the card still open). The pick is the `secret_delivery` question, so
-a client with no native card (the phone) shows it as a normal choice;
-an answer with no pick (an older desktop) goes where the agent asked.
-
-The card is an ordinary pending-input request (`requestChatInput`, kind
-`question`) marked by `providerMetadata.projectSecretRequest` (`name`, `reason`,
-`generate`, `exists`; `shared/projectSecretRequest.ts`). The value travels as
-the answer to the request's `isSecret` question `secret_value`, so the
-transcript writer drops it, and the brain's `requestProjectSecretFromUser`
-(`main/services/secrets/projectSecretRequest.ts`) passes it straight to
-`projectSecretService.set` **before the card resolves**: `requestChatInput`'s
-`beforeAccept` hook runs inside the user's `respondToInput` call, so a save that
-fails keeps the card open with the error and never produces a "saved" receipt;
-the retry from the same card clears that error. The value is stored exactly as
-typed (`normalizePendingInputAnswers` does not trim `isSecret` answers). The
-action returns only `{name, saved: true, replaced}`,
-`{name, saved: false, kept: true}` or `{name, saved: false, declined: true}`.
-A name that exists adds a non-secret `secret_action` pick (`keep` / `replace`),
-which is what lets the receipt say which happened. The card is user-only
-(`isUserOnlyConsentCard`): no agent caller may answer it. A session-bound agent
-can raise it only in its own chat, and it shares `ask_user`'s rate limit. A
-client that does not draw the card (the phone, an older desktop) still
-gets a working password question. Once answered, the transcript keeps one line
-behind a lock glyph: "NAME saved to this project · never shown to the agent",
-"NAME · kept the existing value", or "NAME · declined". `ade.agentChat.respondToInput` redacts `answers` and
-`responseText` in IPC traces.
-
-The card is a transcript event, so it outlives its asker (a brain restart, a
-CLI process that was killed). Answering such a card saves nothing and sends
-nothing: `isQuestionShapedPendingInput` refuses to re-route any card with an
-`isSecret` question as a chat message, so the card closes with a notice naming
-the secret ("… stopped waiting, so ADE did not save it. Add it with Add
-secret… in the composer, or ask the agent again."). Each card's outcome is one
-`chat/secret_requested` product event (see [Logging](../../logging.md)).
-
-The person can add one themselves from the composer's overflow menu ("Add
-secret…"): the same fields in a `Dialog`, saved through
-`window.ade.projectSecrets.set`. On save, a note naming the secret (never its
-value) is appended to the draft, so the next message tells the agent the name
-exists and how to use it without printing it.
+- **Temporary private file.** The card also asks "Save to ADE secrets" or
+  "Temporary private file" (`--delivery file` sets the default; the person
+  decides; the `secret_delivery` question, so the phone shows a normal
+  choice). The file is written on the chat's machine to `<ADE
+  home>/secrets/temp-files/<random>` (0600 in a 0700 dir, `wx`, owner-only ACL
+  on Windows) with a value-free `<id>.json` sidecar; the agent gets `{saved:
+  true, delivery: "file", file, expiresAt}`. The value never enters secrets,
+  transcript, events or logs. Files go on archive or delete, after the TTL (24
+  h max), and in the next start's sweep (`secretTempFiles.ts`). The same
+  `--request-id` returns the same file. An answer with no pick goes where the
+  agent asked.
+- **Mechanism.** A pending-input `question` (`requestChatInput`) marked by
+  `providerMetadata.projectSecretRequest` (`name`, `reason`, `generate`,
+  `exists`; `shared/projectSecretRequest.ts`). The value is the `isSecret`
+  answer `secret_value`, so the transcript writer drops it.
+  `requestProjectSecretFromUser` (`main/services/secrets/projectSecretRequest.ts`)
+  saves through `projectSecretService.set` in the `beforeAccept` hook, inside
+  the user's `respondToInput`, so a failed save keeps the card open with the
+  error. The value is stored as typed (`normalizePendingInputAnswers` does not
+  trim `isSecret`). An existing name adds a `secret_action` pick (`keep` /
+  `replace`).
+- **Results**: `{name, saved: true, replaced}`, `{name, saved: false, kept:
+  true}` or `{name, saved: false, declined: true}`. The receipt is one locked
+  line: "NAME saved to this project · never shown to the agent", "NAME · kept
+  the existing value" or "NAME · declined". IPC traces redact `answers` and
+  `responseText`.
+- **Rules.** User-only (`isUserOnlyConsentCard`); a session-bound agent can
+  raise it only in its own chat, under `ask_user`'s rate limit. A client that
+  does not draw the card still gets a password question.
+- **Orphaned card.** Answering a card whose asker is gone saves and sends
+  nothing (`isQuestionShapedPendingInput` never re-routes an `isSecret` card
+  as a message); a notice names the secret. Each outcome is one
+  `chat/secret_requested` event ([Logging](../../logging.md)).
+- **Add secret…** in the overflow menu opens the same fields in a `Dialog`
+  (`window.ade.projectSecrets.set`) and appends a note naming the secret, never
+  its value, to the draft.
 
 ### Connect card
 
-An agent that needs GitHub, Linear or Jira does not ask for a key in chat. It
-runs `ade integrations connect <provider> --reason "…" [--timeout 30m]` (the
-ADE action `integration_connect.request`). If the integration is connected,
-the command returns at once with `method: "already"`. Otherwise the chat shows
-the connect card in the composer's place.
+An agent that needs GitHub, Linear or Jira runs `ade integrations connect
+<provider> --reason "…" [--timeout 30m]` (`integration_connect.request`). A
+connected integration returns `method: "already"` at once; otherwise the
+composer shows the connect card.
 
-The card wears the integration's Settings page look: the maker's banner art,
-the 3D logo (`SolidLogo`), and the maker's accent (`integrationThemeVars`).
-Under the banner it shows the agent's reason, one tab for each way to connect,
-the fields, a link to the page where the person makes the key, "Open in
-Settings" (opened on the chat's machine with `chatSettingsMachineId`), "Not
-now", and one line that says where the credential goes. Enter connects, Esc
-says not now.
+- **Look**: the Settings page's banner, `SolidLogo` and accent
+  (`integrationThemeVars`); the reason, one tab per method, the fields, a link
+  to make a key, "Open in Settings" (on the chat's machine via
+  `chatSettingsMachineId`), "Not now", and a line on where the credential
+  goes. Enter connects, Esc is not now.
+- **Methods** (`shared/integrationConnect.ts`): Linear "Sign in" (browser
+  OAuth) and "API key"; Jira "API token" (site, email, token); GitHub "Access
+  token". Browser sign-in returns to a port on the chat's machine, so it is
+  offered only when that machine is the computer in front of the person (no
+  remote pin, tab not bound elsewhere); otherwise the card says why.
+- **Mechanism.** Marked by `providerMetadata.integrationConnectRequest`
+  (`provider`, `reason`); user-only. The method is the `connect_method` answer;
+  each key is an `isSecret` answer. `requestIntegrationConnect`
+  (`main/services/integrations/integrationConnectRequest.ts`) saves in
+  `beforeAccept`. A key is checked with the provider first
+  (`integrationConnectAdapters.ts`: `api.github.com/user`, Linear `viewer`,
+  `jiraService.connect`), then stored by the integration's service. A sign-in
+  runs `cto.startLinearOAuth` with the chat's pin and the host checks it now
+  reports connected. A refusal keeps the card open with the host's message in
+  the card (`pendingInputError`). A second request joins the open card.
+- **Results**: `{provider, connected: true, method, account, next}` (`next`
+  names commands to use) or `{provider, connected: false, declined: true}`.
+  Receipts: "Linear connected with an API key · never shown to the agent",
+  "Jira · not now", "Connect GitHub · awaiting you". An answer after the asker
+  stopped saves nothing; a finished browser sign-in says it is signed in.
+- `ade integrations status` (`integration_connect.status`) lists connection
+  and account, never a credential.
+- Events: `chat/connect_requested`; `mcp_registry.request` →
+  `chat/mcp_server_requested`; `mcp_registry.remove` (the removal card, see
+  [MCP servers](../onboarding-and-settings/mcp-servers.md#agents-adding-and-removing-servers))
+  → `chat/mcp_server_remove_requested` ([Logging](../../logging.md)).
 
-Ways to connect come from one record per provider
-(`shared/integrationConnect.ts`):
-
-- Linear: "Sign in" (browser OAuth) and "API key".
-- Jira: "API token" (site, email, token).
-- GitHub: "Access token".
-
-A browser sign-in comes back to a port on the chat's machine. So the card
-offers it only when that machine is the computer in front of the person (no
-remote pin, and the tab is not bound to another machine). For a chat on
-another machine the card shows the key methods and says why.
-
-The card is a pending-input request marked by
-`providerMetadata.integrationConnectRequest` (`provider`, `reason`). It is
-user-only (`isUserOnlyConsentCard`). The method travels as the answer to the
-`connect_method` question. Each key or token travels as the answer to an
-`isSecret` question, so the transcript writer drops it. The brain's
-`requestIntegrationConnect`
-(`main/services/integrations/integrationConnectRequest.ts`) saves in the
-`beforeAccept` hook, before the card resolves. For a key, the adapter
-(`integrationConnectAdapters.ts`) first checks it with the provider
-(`api.github.com/user`, Linear's GraphQL `viewer`, `jiraService.connect`).
-Then it stores it through the integration's own service. For a browser sign-in,
-the card runs `cto.startLinearOAuth` with the chat's pin, and the host checks
-that the integration now reports connected. A refusal keeps the card open.
-The pane shows the host's message inside the card (`pendingInputError`), not
-in the chat banner. A second `connect` for the same chat and provider joins
-the open card.
-
-The action returns `{provider, connected: true, method, account, next}` or
-`{provider, connected: false, declined: true}`; `next` names the commands to
-use now. The transcript keeps one line with the provider's mark: "Linear
-connected with an API key · never shown to the agent", "Jira · not now", or
-"Connect GitHub · awaiting you" while it is open. If the asker stopped waiting,
-an answer saves nothing, and a notice says so. A browser sign-in that already
-finished says the integration is signed in.
-
-`ade integrations status` (`integration_connect.status`) lists each
-integration with connected or not and the account, never a credential.
-
-The action records how the card ended as `chat/connect_requested`,
-`mcp_registry.request` records `chat/mcp_server_requested`, and
-`mcp_registry.remove` (the removal card, see
-[MCP servers](../onboarding-and-settings/mcp-servers.md#agents-adding-and-removing-servers))
-records `chat/mcp_server_remove_requested` (see [Logging](../../logging.md)).
-
-A bare `ade://` address in an agent's reply is a link in the transcript
-(`remarkBareAdeLinks.ts`), drawn as the same chip as `[…](ade://…)`; the
-sanitized preview renderer (`ChatMarkdown`, plan cards) leaves it as text.
+A bare `ade://` address in a reply is a link (`remarkBareAdeLinks.ts`), the
+same chip as `[…](ade://…)`; the sanitized preview renderer (`ChatMarkdown`,
+plan cards) leaves it as text.
 
 ### Approval vs question
 
-`approval_request.kind` describes the *shape* of the thing being confirmed
-(`tool_call`, `permissions`, `plan_approval`, …) and has no word for "the agent
-asked you a question". Claude's `AskUserQuestion` therefore rode the event as a
-`tool_call` approval, and every surface downstream of the transcript — push and
-the lock screen — offered **Approve / Deny** for something that wants
-prose. The answer branches in those surfaces were unreachable code.
+`approval_request.kind` names the shape (`tool_call`, `permissions`,
+`plan_approval`, …); the optional `requestKind: PendingInputKind` names what is
+asked. Without it an event is an approval. Readers use
+`isQuestionKind(requestKind)`:
 
-So the event carries an additional optional `requestKind: PendingInputKind` —
-what is actually being asked, alongside the shape of it. It is additive: an
-event without it is an approval, which is exactly what every build before this
-one meant by sending one. Readers classify through
-`isQuestionKind(requestKind)` from `shared/pendingInputAnswers.ts` rather than
-re-deriving the split:
-
-- `AgentChatMessageList` uses it directly instead of wrapping the kind in
-  `isAskQuestionRequest({ kind })`.
-- The brain's push publisher (`pushPublisherService.ts`) sets the run phase to
-  `waiting_for_input` for a question and `waiting_for_approval` otherwise, and
-  ships the question **without** the Approve/Deny notification category — a
-  question has nothing for those inline buttons to do. Both flavours alert once
-  per card (`alert:<sessionId>:approval:<itemId>`), since one chat can hold the
-  main agent's card and its subagents' cards at once. See
+- `AgentChatMessageList` uses it directly.
+- The push publisher (`pushPublisherService.ts`) sets `waiting_for_input` for a
+  question and `waiting_for_approval` otherwise, and sends a question without
+  the Approve/Deny category. Each card alerts once
+  (`alert:<sessionId>:approval:<itemId>`). See
   [push notifications](../sync-and-multi-device/push-notifications.md).
 
 ### Subagent cards
 
-A subagent that runs inside the chat's own provider session (a Claude
-background agent, a Codex `spawn_agent` child thread, an OpenCode child session,
-a Muse subagent) asks through the **parent** chat. Its card is an ordinary
-pending input on the parent session, so the answer key (session id + item id)
-and the machine pin are the same as for the main agent's cards. ADE child chats
-(`ade chat create --type subagent`) are separate chats and keep their cards in
-the child.
+A subagent inside the chat's own provider session (a Claude background agent,
+a Codex `spawn_agent` child, an OpenCode child session, a Muse subagent) asks
+through the **parent** chat, with the parent's answer key and pin. ADE child
+chats (`ade chat create --type subagent`) keep their own cards.
 
-- **Naming.** The request carries `subagent: { key, name, background? }`
-  (`PendingInputSubagent`; `readPendingInputSubagent` keeps it through reloads
-  and sync). `key` is the subagent row's id in the Chat Info roster
-  (`subagentAgentKey`); `name` comes from the row's start `title`, not its
-  progress text. The card header reads "`<name>` asks". Copilot, Cursor, Droid
-  and ACP requests carry no subagent id ADE can match, so their cards stay
-  unnamed. Grok's ACP child asks on the parent's own session id, so its cards
-  already reach the parent.
-- **Several at once.** `PendingInputStack` lists every open card above the open
-  one ("N waiting for you": who asks, and what), three rows, then "+N more". A
-  click opens that card. The pane's open card is the one the person picked,
-  else the first. Chat Info marks a subagent with an open card **needs you**
+- **Naming.** `subagent: { key, name, background? }` (`PendingInputSubagent`,
+  kept by `readPendingInputSubagent`); `key` is the roster id
+  (`subagentAgentKey`), `name` the row's start `title`. The header reads
+  "`<name>` asks". Copilot, Cursor, Droid and ACP carry no matchable id, so
+  their cards stay unnamed; Grok's ACP child asks on the parent's session id.
+- **Several at once.** `PendingInputStack` lists open cards above the open one
+  ("N waiting for you", three rows, then "+N more"). The open card is the
+  person's pick, else the first. Chat Info marks the subagent **needs you**
   (`waitingSubagentKeys`), on desktop and iOS.
-- **Accept all covers the chat.** A subagent's card with a session choice says
-  "Accept all covers this whole chat: the main agent and all its subagents."
-  Claude's session rule already covers the whole query. Codex and OpenCode keep
-  "for session" to the thread or child session that asked, so ADE remembers the
-  grant per chat (`ManagedChatSession.sessionApprovalGrants`, keyed by
-  `sessionApprovalGrantKey` in `sessionApprovalGrants.ts`) and answers a later
-  matching request itself, from any thread, with no card. A key is exact: a
-  Codex command matches on command, `cwd` and extra permissions; a file change
-  on its grant root or its exact file set; an OpenCode ask on its type and
-  resources. A request with nothing to key on gets no grant. A policy that
-  denies by fallback still wins over a remembered grant.
-- **Lifecycle.** The default Stop (`stop_and_clear`) leaves background work
-  running, so it also leaves a running background subagent's cards open; Stop
-  with background stops them and closes their cards. A Codex parent turn that
-  ends (`turn/completed` arrives while children still run) keeps every card
-  whose child is still running. When a subagent ends or is stopped, its own
-  cards close (`settleEndedSubagentCardsSoon`, after `subagent_result`), and a
-  Codex `serverRequest/resolved` on a child thread closes that card. A Claude
-  card ADE closes tells the SDK nobody denied it (`CLAUDE_CARD_CLOSED_MESSAGE`),
+- **Accept all covers the chat** ("…the main agent and all its subagents.").
+  Claude's session rule covers the query already. For Codex and OpenCode ADE
+  remembers the grant per chat (`ManagedChatSession.sessionApprovalGrants`,
+  `sessionApprovalGrantKey` in `sessionApprovalGrants.ts`) and answers later
+  matches itself. Keys are exact: Codex command + `cwd` + extra permissions; a
+  file change's grant root or file set; an OpenCode ask's type and resources.
+  Nothing to key on, no grant. A fallback deny still wins.
+- **Lifecycle.** Default Stop leaves running background subagents and their
+  cards; Stop with background closes them. A Codex parent turn ending keeps
+  cards of running children. A subagent ending closes its cards
+  (`settleEndedSubagentCardsSoon`); a child-thread `serverRequest/resolved`
+  closes that card. A Claude card ADE closes sends `CLAUDE_CARD_CLOSED_MESSAGE`,
   not "User denied". Dismissing a Muse subagent's card declines only that
-  approval (or stops only that subagent when Muse offers no deny choice); it
-  never interrupts the parent turn.
-- **After a restart.** A subagent's question answered after ADE restarted (or
-  after the subagent ended) is not sent to the main agent as a message, unlike
-  a main-agent question. The card closes, and a `system_notice` with status
-  `subagent_answer_unsent` holds the answer. Its row offers
-  **Send my answer to the main agent**, which sends it as a user message (with
-  the chat's pin) only on that click, and stays gone once the transcript holds
-  that message.
+  approval (or stops only that subagent); the parent turn continues.
+- **After a restart.** An answer to a subagent question after a restart (or
+  after it ended) is not sent as a message. The card closes and a
+  `subagent_answer_unsent` notice holds the answer with **Send my answer to the
+  main agent** (sent with the chat's pin, only on click).
 
 ### Cross-surface parity
 
-The card's data contract (`PendingInputRequest` / `PendingInputQuestion`
-/ `PendingInputOption` in `shared/types/chat.ts`) is the single source of
-truth: iOS (`WorkStructuredQuestionCard` / `WorkPlanComposerStrip`) render the
-same header verb, dedup, monospace preview, and per-provider accent.
+`PendingInputRequest` / `PendingInputQuestion` / `PendingInputOption`
+(`shared/types/chat.ts`) is the one contract; iOS
+(`WorkStructuredQuestionCard`, `WorkPlanComposerStrip`) draws the same verb,
+dedup, monospace preview and accent. Label helpers live in
+`shared/pendingInputLabels.ts` (mirrored in Swift).
 
-On iOS the pending inputs collapse into a **single consolidated strip**
-pinned above the composer (`consolidatedPendingStripSection` in
-`WorkChatSessionView+Timeline.swift`), replacing the previous split of
-plan/approval composer strips plus inline question/permission/model-selection
-transcript cards. It renders the current (primary) request, shows a
-"Request 1 of N" header once more than one gate is queued, and advances to
-the next request as each is answered. Answers use an **optimistic-removal**
-path (`dispatchPendingInputAnswer` / `optimisticallyAnsweredInputIds`): the
-answered item is hidden the instant its decision is dispatched so the strip
-advances without waiting on the host round-trip, then reconciled out of the
-set once it leaves the host-derived queue (`canonicalPendingInputSignature`
-change) or rolled back if the command errored. An **"Accept all"** affordance
-appears when the current gate is an approval/permission kind (never question,
-plan-approval, or model-selection): it flips `acceptForSession` on the current
-gate, then accepts each remaining sweepable gate sequentially (stale itemIds
-no-op on the host, so re-sends after auto-resolution are safe). The
-verb/name helpers live in `shared/pendingInputLabels.ts` so desktop
-shares them; iOS mirrors them in Swift. A blocking pending input also
-surfaces an "Awaiting you" badge on the Lanes row and the Work grid tile
-(derived from exact pending-input counts, not idle CLI attention heuristics),
-and iOS fires a light haptic when a new blocking gate arrives.
-
-**Height budget (iOS).** The strip is capped so a gate can never claim the
-whole page. `workPendingInputMaxHeight(chatSurfaceHeight:)` (in
-`WorkChatSessionView.swift`) returns
-`max(160, min(available * 0.82, chatSurfaceHeight * 0.62))` where `available`
-subtracts a fixed 110pt composer reserve. The input is `chatSurfaceHeight =
-max(240, scrollViewportHeight + composerLayoutHeight)`, **not** the transcript
-viewport: the transcript and the composer inset split the same surface, so
-their sum is invariant to how the two divide it, while the viewport alone
-shrinks as the card grows — feeding that back in was a runaway loop where the
-card ate the screen. The composer reserve is a constant for the same reason;
-`composerLayoutHeight` already includes the strip being sized, so measuring it
-would be circular. Inline-in-transcript question cards use the separate
-`workInlinePendingInputMaxHeight(transcriptViewportHeight:)` rule
-(`max(240, viewport * 0.62)`) because the composer sits below that viewport
-either way and there is nothing to reserve for.
-
-The card's own arithmetic subtracts its measured top/bottom chrome plus named
-`cardPadding` / `cardStackSpacing` constants from that budget and floors the
-scroll region at 64pt — roughly one option row. On a small phone with the
-keyboard up the irreducible chrome can still exceed the budget; the overflow is
-absorbed by the transcript, not the composer, because the composer inset is
-`fixedSize(vertical:)` and the transcript scroll view is the flexible sibling.
-That view ordering is the actual guarantee that Send/Decline stay on screen;
-the number only keeps the common case from getting there.
-
-**Minimize (iOS).** The strip header carries a chevron that collapses the card
-to a one-line pill showing the provider mark, a content-derived summary
-(`workPendingInputCollapsedSummary` — the question header, plan title, or
-`Permission: <tool>`, never a generic "1 request"), the queued count, and an
-expand chevron. The gate stays open and the composer stays locked; only the
-card is swapped out, so the user can scroll the conversation for the context
-the question needs. State is a `collapsedPendingInputId`, with the boolean
-derived from it — a minimize applies to the gate the user chose to defer, so it
-must expire the moment a different gate becomes primary, and deriving makes
-that impossible to get wrong. A keyboard `Done` toolbar item (gated on the
-freeform field actually holding focus, because a toolbar declared
-unconditionally would surface over the main composer's keyboard and silently do
-nothing), a footer dismiss button, and interactive scroll-to-dismiss are the
-three ways back out of the keyboard.
-
-**Draft persistence (iOS).** Mobile keeps unsent text the way desktop does.
-`WorkComposerDraftStore` persists each chat's composer draft under
-`chat:<sessionId>`, plus fixed keys for the Hub inline composer and the Work
-New Chat composer; `WorkQuestionDraftStore` persists a still-open question's
-selections, per-question freeform, shared freeform, and page index under the
-request id, so backing out of the chat to check the transcript — the exact
-reason a user minimizes the card — no longer discards what they picked. Both
-autosave on a 400 ms debounce and flush on disappear, because a cancelled
-`.task` throws out of its sleep before the write and a navigation pop is
-precisely the case the debounce misses. Send clears the stored draft
-**synchronously** rather than waiting out the debounce: a jetsam inside that
-window would otherwise restore an already-sent message into the composer, where
-it reads as unsent and invites sending it twice. Two deliberate exclusions:
-answers to `isSecret` questions are never written (the backing store is App
-Group `UserDefaults`, shared with the widget extension, so that would put a
-credential on disk in plaintext), and unpair does not clear the stores (its only
-production trigger fires automatically on an attributed auth failure, and the
-stores are keyed by session, not by host, so clearing would destroy unsent text
-for every other paired machine).
+- **One strip on iOS** (`consolidatedPendingStripSection`,
+  `WorkChatSessionView+Timeline.swift`) above the composer: the primary
+  request, "Request 1 of N" when several wait, advancing as each is answered.
+  Answers remove optimistically (`dispatchPendingInputAnswer` /
+  `optimisticallyAnsweredInputIds`), reconciled when the host queue changes
+  (`canonicalPendingInputSignature`) or rolled back on error.
+- **Accept all** (approval and permission gates only) sets `acceptForSession`
+  on the current gate, then accepts each remaining sweepable gate in turn.
+- A blocking input shows "Awaiting you" on the Lanes row and Work tile (from
+  exact counts); iOS plays a light haptic on a new blocking gate.
+- **Height (iOS).** `workPendingInputMaxHeight(chatSurfaceHeight:)` returns
+  `max(160, min(available * 0.82, chatSurfaceHeight * 0.62))`, `available`
+  minus a fixed 110 pt composer reserve, with `chatSurfaceHeight = max(240,
+  scrollViewportHeight + composerLayoutHeight)` (invariant as the card grows).
+  Inline cards use `workInlinePendingInputMaxHeight` (`max(240, viewport *
+  0.62)`). The card floors its scroll region at 64 pt. The composer inset is
+  `fixedSize(vertical:)` and the transcript is the flexible sibling, which
+  keeps Send/Decline on screen.
+- **Minimize (iOS).** A chevron folds the strip to a pill: mark,
+  `workPendingInputCollapsedSummary` (question header, plan title or
+  `Permission: <tool>`), queued count, expand. The gate stays open. State is
+  `collapsedPendingInputId`, so it expires when another gate becomes primary.
+  A keyboard `Done` item (only while the freeform field has focus), a footer
+  dismiss and scroll-to-dismiss lower the keyboard.
+- **Drafts (iOS).** `WorkComposerDraftStore` keeps drafts under
+  `chat:<sessionId>` plus Hub and New Chat keys; `WorkQuestionDraftStore`
+  keeps an open question's picks, notes and page by request id. Both save on a
+  400 ms debounce and flush on disappear. Send clears synchronously. `isSecret`
+  answers are never written (App Group `UserDefaults` is shared with the
+  widget). Unpair does not clear them (keyed by session, not host).
 
 ### Per-runtime question richness (ceilings)
 
-Each runtime populates as much of the schema as its SDK exposes; the card
-renders whatever is present:
-
-- **Claude** — full: `header`, options `description`/`preview`/
-  `previewFormat`/`recommended`, `multiSelect` (from the `AskUserQuestion`
-  tool).
-- **Codex** — full via the app-server `item/tool/requestUserInput`
-  payload (header, multiSelect, isSecret, per-option description/preview).
-  `isBlocking: false` is non-blocking Astra steering: header
-  `{Provider} has a question`, composer stays open, list/tile stay
-  Working with a question pip, and the card dies on Stop or
-  `turn/completed` with a `pending_input_resolved` cancel receipt.
-  It does not set `awaitingInput` or `pendingInputItemId`. Missing
-  `isBlocking` is blocking. Typed send stays
-  ungated (`pendingApprovalCapturesPrompt`). Thread start/resume always send
-  `config.tools.update_plan.enabled = true`.
-- **Cursor** — full via `normalizeCursorControlQuestions` (incl.
-  `defaultAssumption`, `impact`, `isSecret`).
-- **OpenCode** — `header`, `multiSelect` (from `multiple`),
-  `allowsFreeform` (from `custom`), per-option `description`. **Ceiling:**
-  no `recommended`/`preview`/`isSecret`.
-- **Droid** — `topic` → `header` and bare-string `options` only.
-  **Ceiling:** the `@factory/droid-sdk` 0.9.x ask-user schema
-  (`AskUserQuestionSchema`) exposes per-question `multiSelect`, but ADE does not
-  yet render it as a distinct control, and the schema has no per-option
-  description or preview, so those fields stay empty for Droid.
+| Runtime | Fields filled |
+|---|---|
+| Claude | Full (`AskUserQuestion`): `header`, option `description` / `preview` / `previewFormat` / `recommended`, `multiSelect`. |
+| Codex | Full (`item/tool/requestUserInput`: header, multiSelect, isSecret, option description/preview). `isBlocking: false` is non-blocking steering: header `{Provider} has a question`, composer open, row stays Working with a pip, the card dies on Stop or `turn/completed` with a `pending_input_resolved` cancel; no `awaitingInput` / `pendingInputItemId`; typed send ungated (`pendingApprovalCapturesPrompt`). Missing `isBlocking` blocks. Thread start/resume send `config.tools.update_plan.enabled = true`. |
+| Cursor | Full via `normalizeCursorControlQuestions` (with `defaultAssumption`, `impact`, `isSecret`). |
+| OpenCode | `header`, `multiSelect` (`multiple`), `allowsFreeform` (`custom`), option `description`. No `recommended` / `preview` / `isSecret`. |
+| Droid | `topic` → `header` and string options. The `@factory/droid-sdk` 0.9.x schema has per-question `multiSelect`, which ADE does not draw as its own control; no option description or preview. |
 
 ## Presentation profiles
 
-`ChatSurfacePresentation` (in `shared/types/chat.ts`) drives the
-surface's visual treatment:
+`ChatSurfacePresentation` (`shared/types/chat.ts`) drives the surface's look:
 
 | Field | Effect |
 |---|---|
 | `mode` | `standard | resolver | worker-thread | activity-feed`. |
-| `profile` | `standard | persistent_identity` -- persistent identity adjusts accent color, chips, title, and some layouts. |
-| `modelSwitchPolicy` | Overrides the default switch policy for the session. |
+| `profile` | `standard | persistent_identity`; persistent identity changes accent, chips, title and some layouts. |
+| `modelSwitchPolicy` | Overrides the session's switch policy. |
 | `title`, `subtitle`, `assistantLabel`, `messagePlaceholder` | Text overrides. |
-| `accentColor` | Accent color used in header, chips, and active-turn indicators. |
-| `chips` | List of `{ label, tone }` chips shown in the header. |
-| `showMcpStatus` | Whether to render the ADE CLI status indicator. |
+| `accentColor` | Accent for the header, chips and active-turn indicators. |
+| `chips` | `{ label, tone }` header chips. |
+| `showMcpStatus` | Whether to show the ADE CLI status indicator. |
 
-CTO and resolver surfaces set `profile: "persistent_identity"` and
-override the chips.
+CTO and resolver surfaces set `profile: "persistent_identity"` and their own
+chips.
 
 ### Resolving the accent for the chat on screen
 
-Codex/OpenAI user-message bubbles blend the near-white provider accent into
-muted violet at each gradient stop, keeping the highlight soft and the white
-message text readable. Provider icons and other chrome retain their accent.
+Codex/OpenAI user bubbles blend the near-white accent into muted violet at each
+gradient stop; icons and other chrome keep the accent.
 
-`chatAccentForRenderedChat()` in `chatSurfaceTheme.ts` is the single
-derivation, and it is synchronous — the accent must be right on the frame a
-chat switch renders, not one IPC round trip later. Best evidence first:
+`chatAccentForRenderedChat()` (`chatSurfaceTheme.ts`) is the one derivation,
+and it is synchronous so the accent is right on the switch frame. Best evidence
+first:
 
-1. `sessionProvider` — the rendered chat's own provider.
-2. `lockSessionProvider` — the provider an embedding surface already knows for
-   the locked chat.
-3. `modelFamily` — the composer model's provider family.
-4. `modelColor` — the per-model registry color.
+1. `sessionProvider`, the rendered chat's provider.
+2. `lockSessionProvider`, the provider an embedding host knows.
+3. `modelFamily`, the composer model's family.
+4. `modelColor`, the registry colour.
 5. `NEUTRAL_CHAT_ACCENT` (`#A1A1AA`).
 
-**The caller owns staleness.** Pass `null` for anything you cannot vouch for
-this frame, so the answer falls through to a source you can — or to gray —
-rather than landing on a stale color. Neutral gray is the only honest answer
-when nothing trustworthy identifies the chat: a held-over color reads as the
-*previous* chat's provider.
+**The caller owns staleness.** Pass `null` for anything not true for this
+frame; gray is better than the previous chat's colour.
 
-`AgentChatPane` applies that rule twice:
-
-- Its `sessionProvider` comes from `renderedSession`, which is resolved from
-  `renderedSessionId` (with the host's `initialSessionSummary` as the
-  switch-frame fallback), so it already describes the chat on screen and needs
-  no freshness test.
-- The model-derived inputs do need one, because the pane is **not remounted**
-  across a chat switch and the composer's model trails a prop-driven change.
-  They are withheld unless `composerModelDescribesRenderedChat`
-  (`selectedSession?.sessionId ?? null === renderedSessionId`) holds. That is
-  deliberately not `!chatSelectionTransitioning`, which compares the composer id
-  to the rendered id and already agrees in the frame where the incoming id is
-  known but its row has not been listed yet — the frame where `selectedSession`
-  is still null and the stale model args must stay withheld. A draft pane has no
-  session at all, so `null === null` holds and it keeps its composer model color.
-
-`lockSessionProvider` is the never-borrow guard for embedded panes: a host that
-has the Work row in hand supplies the provider directly. `WorkViewArea`'s
-`SessionSurface` passes `providerFromChatToolType(session.toolType)` — the
-inverse of `chatToolTypeForProvider`, both now living in `renderer/lib/sessions.ts`
-as two hand-written literal tables (a `Record<KnownChatProvider, …>` forward map
-keyed on a closed six-member union so adding a seventh provider is a type error,
-plus a `Record<string, …>` reverse map whose agreement is pinned by a round-trip
-test). Both directions look up through `Object.hasOwn`, so a provider or tool
-type literally named `constructor` or `toString` falls back instead of resolving
-to an `Object.prototype` member.
+- `AgentChatPane`'s `sessionProvider` comes from `renderedSession` (from
+  `renderedSessionId`, with `initialSessionSummary` as the switch-frame
+  fallback).
+- The model inputs are withheld unless `composerModelDescribesRenderedChat`
+  (`selectedSession?.sessionId ?? null === renderedSessionId`), because the pane
+  is not remounted on a chat switch. Do not use `!chatSelectionTransitioning`:
+  it already agrees on the frame where `selectedSession` is still null. A draft
+  (`null === null`) keeps its model colour.
+- `WorkViewArea`'s `SessionSurface` passes `lockSessionProvider` as
+  `providerFromChatToolType(session.toolType)`, the inverse of
+  `chatToolTypeForProvider` (`renderer/lib/sessions.ts`). The forward map is a
+  `Record<KnownChatProvider, …>` (a new provider is a type error); a round-trip
+  test pins the reverse map. Both look up with `Object.hasOwn`, so
+  `constructor` or `toString` fall back.
 
 ## State derivation helpers
 
-These modules are pure and unit-testable:
+Pure modules:
 
-- `chatTranscriptRows.ts` -- event-to-row pipeline (hidden/visible,
-  work-log grouping, tool-use summary absorption).
-- `pendingInput.ts` -- event-to-pending-input derivation plus the
-  read-time reconciliation that decides which derived cards are live.
-  `derivePendingInputRequests` hard-deletes only on an explicit
-  `pending_input_resolved` receipt; a `done` status or a `tool_result` /
-  `command` / `file_change` that moots a card only *marks* it
-  `sweptWithoutReceipt`. `resolvePendingInputs(derived, summary)` then keeps a
-  swept entry the summary still names in `pendingInputItemId` and drops the
-  rest. Renderers call the second function, never read the flag themselves,
-  and never fold the summary back into the derivation — see
-  the "Pending input derivation" entry in
-  [Fragile and tricky wiring](README.md#fragile-and-tricky-wiring).
-- `shared/chatTaskList.ts` -- the chat's one task list: provider
-  normalization, merge/replace/clear rules, progress and summary line.
-- `chatExecutionSummary.ts` -- subagent snapshots, turn diff
-  summaries, and re-exports the shared scheduled-work derivation.
-- `apps/desktop/src/shared/chatScheduledWork.ts` -- scheduled-work
-  snapshots from `scheduled_work_update` envelopes.
-- `chatNavigation.ts` -- keyboard navigation between transcript rows.
-- `chatToolAppearance.tsx` -- tool-specific visuals (icons, tone, label
-  formatting).
-- `pendingInput.ts` exports `getPendingInputQuestionCount()` and
-  `hasPendingInputOptions()` for introspection inside the composer, and
-  `resolvePendingInputs()` for the summary join described above.
+- `chatTranscriptRows.ts`: events to rows (visibility, work-log grouping,
+  tool summary absorption).
+- `pendingInput.ts`: `derivePendingInputRequests` deletes a card only on an
+  explicit `pending_input_resolved`; a `done` or a mooting `tool_result` /
+  `command` / `file_change` only marks it `sweptWithoutReceipt`.
+  `resolvePendingInputs(derived, summary)` keeps a swept card the summary still
+  names in `pendingInputItemId`. Renderers call it and never read the flag or
+  fold the summary into the derivation (see "Pending input derivation" in
+  [Fragile and tricky wiring](README.md#fragile-and-tricky-wiring)). Also
+  `getPendingInputQuestionCount()` and `hasPendingInputOptions()`.
+- `shared/chatTaskList.ts`: the one task list (provider normalization,
+  merge/replace/clear, progress, summary line).
+- `chatExecutionSummary.ts`: subagent snapshots and turn diff summaries;
+  re-exports `shared/chatScheduledWork.ts` (scheduled-work snapshots from
+  `scheduled_work_update`).
+- `chatToolAppearance.tsx`: tool icons, tone and labels.
 
 ## Cloud agents (Devin Cloud and Cursor Cloud)
 
-One pattern, two clouds. A **cloud lane** is a lane whose git branch lives on
-the cloud: ADE keeps a local worktree as a mirror, and the chats in that lane
-run on the cloud's VM against that branch. The machine picked in the prompt
-box is where the lane lives, and a cloud is one of those machines.
+A **cloud lane** is a lane whose branch lives on the cloud: ADE keeps a local
+worktree as a mirror, and the lane's chats run on the cloud's VM. The machine
+in the prompt box is where the lane lives, and a cloud is one of those
+machines.
 
 ### The model
 
-- **A lane is a cloud lane when it carries the synced tag** `ade:cloud:devin`
-  or `ade:cloud:cursor` (`shared/cloudLanes.ts`: `cloudLaneTag`,
-  `laneCloudProvider`, `withCloudLaneTag`). Tags sync through CRR, so every
-  machine and the phone agree. `isReservedLaneTag` keeps the tag out of the
-  user's tag editor.
-- **Chats in a Devin Cloud lane are Devin Cloud sessions.** The composer's
-  lane list is scoped to cloud lanes when the machine is a cloud, and choosing
-  a cloud lane in a draft selects cloud mode by itself.
-- **One running cloud chat per lane.** `cloudAgents.launch` refuses a second
-  one; this also keeps two sessions from pushing to one branch.
-- **Devin has no branch field**, so the branch rides the prompt.
-  `buildDevinCloudBranchPin` (`shared/devinCloud.ts`) writes a full "fetch and check out `<branch>`"
-  block on the first turn and a one-line reminder on later turns.
-  `AgentChatDevinCloudConfig.pinned` records that the first turn went through.
-  `stripDevinCloudBranchPin` removes the pin wherever Devin echoes the prompt
-  back (history replay, list excerpts), so the user never sees ADE's
-  instructions as their own words.
-- **After each successful turn** the lane mirror fetches `origin/<branch>` and
-  fast-forwards (`lanes/cloudLaneMirror.ts` `syncCloudLaneMirror`), then the
-  diff summary is emitted. It fast-forwards only when the worktree is checked
-  out on that branch (`git symbolic-ref`) and is clean; a switched, dirty or
-  diverged worktree is logged and left alone.
+- **The synced tag** `ade:cloud:devin` or `ade:cloud:cursor` marks a cloud lane
+  (`shared/cloudLanes.ts`: `cloudLaneTag`, `laneCloudProvider`,
+  `withCloudLaneTag`); `isReservedLaneTag` hides it from the tag editor.
+- **A Devin Cloud lane's chats are Devin Cloud sessions.** On a cloud machine
+  the lane list shows cloud lanes, and picking one selects cloud mode.
+- **One running cloud chat per lane** (`cloudAgents.launch` refuses a second).
+- **Devin has no branch field**, so `buildDevinCloudBranchPin`
+  (`shared/devinCloud.ts`) puts a "fetch and check out `<branch>`" block in the
+  first turn and a reminder later (`AgentChatDevinCloudConfig.pinned`).
+  `stripDevinCloudBranchPin` removes it wherever Devin echoes the prompt.
+- **After each successful turn** `syncCloudLaneMirror`
+  (`lanes/cloudLaneMirror.ts`) fetches `origin/<branch>` and fast-forwards only
+  a clean worktree on that branch (`git symbolic-ref`), then emits the diff
+  summary; anything else is logged and left.
 
 ### Transport
 
-Devin Cloud chats use the **ACP cloud relay**, `devin acp --cloud`
-(`acpHost/acpDialects/devinCloud.ts`). It runs on the CLI login, so no API
-token is needed. `session/new` takes `repos`, `devin_version` (the model,
-through `modelConfigOptionId`) and `platform`, applied as `initialConfigValues`
-on new sessions only. Relay session ids are `devin-<hex>`, and the REST/web id
-is `<hex>` (`devinCloudAcpSessionId` / `devinCloudRestSessionId`).
-`session/load` replays history, including user messages, which the translator
-echoes as cloud `user_message` rows (`echoRemoteUserMessages`), deduped by
-`cognition.ai/eventId`. `session_info_update` carries status
-(working / blocked / finished), `userActionRequired`, `pendingRequest` and the
-title, which drive attention and the Work row.
+Devin Cloud uses the **ACP cloud relay**, `devin acp --cloud`
+(`acpHost/acpDialects/devinCloud.ts`), on the CLI login (no API token).
 
-The relay is the only Devin Cloud transport. `openDevinCloudChat` needs a
-`devinCloud` config (the Cloud agents service always passes one) unless the
-chat is already a relay chat, and it rejects a session id that is not
-`[devin-]<letters, digits, - or _>` (`normalizeDevinCloudSessionId`). The
-relay's status drives the chat's Needs-you marker through
-`devinDirectoryStatus`, the same rule the panel uses: blocked with
-`userActionRequired` or `pendingRequest` is needs_you.
-
-The **directory** (`devinCloudDirectory.ts`) is a short-lived scripted relay
-client used for `session/list` (4 s cache, single-flight), for cancel
-(`session/load` + `session/cancel`) and for archive (the `/archive` prompt;
-there is no unarchive). Cursor Cloud reuses `cursorCloudFleetService`.
+- `session/new` takes `repos`, `devin_version` (the model, via
+  `modelConfigOptionId`) and `platform` as `initialConfigValues` on new
+  sessions. Relay ids are `devin-<hex>`, REST/web ids `<hex>`
+  (`devinCloudAcpSessionId` / `devinCloudRestSessionId`).
+- `session/load` replays history; user messages become cloud `user_message`
+  rows (`echoRemoteUserMessages`), deduped by `cognition.ai/eventId`.
+- `session_info_update` carries status, `userActionRequired`,
+  `pendingRequest` and title. `devinDirectoryStatus` maps blocked with either
+  flag to needs_you, for the chat and the panel.
+- `openDevinCloudChat` needs a `devinCloud` config unless the chat is already a
+  relay chat, and rejects ids outside `[devin-]<letters, digits, - or _>`
+  (`normalizeDevinCloudSessionId`).
+- **The directory** (`devinCloudDirectory.ts`) is a short-lived relay client
+  for `session/list` (4 s cache, single-flight), cancel (`session/load` +
+  `session/cancel`) and archive (the `/archive` prompt; no unarchive). Cursor
+  Cloud reuses `cursorCloudFleetService`.
 
 ### The service and actions
 
-`cloudAgentsService.ts` is one provider-neutral surface behind the `ai`-domain
-actions `listCloudAgents`, `openCloudAgent`, `stopCloudAgent`,
-`archiveCloudAgent` and `launchCloudAgent`. It is available as IPC, as
-`window.ade.cloudAgents.*`, and as the sync remote commands
-`ai.listCloudAgents` / `ai.openCloudAgent` / `ai.stopCloudAgent` /
-`ai.archiveCloudAgent` / `ai.launchCloudAgent`, which is how the web client's
-panel works. It is shared by the brain and desktop main.
+`cloudAgentsService.ts` (brain and desktop main) backs the `ai`-domain actions
+`listCloudAgents`, `openCloudAgent`, `stopCloudAgent`, `archiveCloudAgent` and
+`launchCloudAgent`, as IPC, `window.ade.cloudAgents.*` and the sync commands
+`ai.*CloudAgent*` (which the web panel uses).
 
-- `list` returns `CloudAgent` rows with a status in ADE's vocabulary
-  (starting / working / needs_you / idle / finished / failed / archived), the
-  PR, model, platform, and a `link` to the ADE chat and lane when one exists.
-- `open` reuses the linked chat. Otherwise it resolves a lane: the lane
-  already on the PR branch, else a lane imported from that branch. If the
-  branch is gone (merged or closed PR), or there is no PR, it creates a new
-  cloud lane on a pushed branch. The chat then opens with the history loaded.
-- `stop` interrupts the linked chat's turn, or cancels through the directory.
-- `launch` creates or reuses a cloud lane
-  (`<provider>/<slug>-<rand>`, pushed), creates the chat, and sends the prompt.
+- `list`: `CloudAgent` rows with ADE status (starting / working / needs_you /
+  idle / finished / failed / archived), PR, model, platform and a `link` to
+  the ADE chat and lane.
+- `open`: reuses the linked chat; else the lane on the PR branch, else a lane
+  imported from it; with no branch (merged or closed PR) or no PR, a new cloud
+  lane on a pushed branch. The chat opens with history.
+- `stop`: interrupts the linked chat, or cancels through the directory.
+- `launch`: creates or reuses a cloud lane (`<provider>/<slug>-<rand>`,
+  pushed), creates the chat and sends the prompt.
 
 ### The panels
 
-`renderer/components/app/cloudAgents/` holds `CloudAgentsPanel`,
-`CloudAgentRow` and `cloudAgentsModel.ts`. The model holds filters, sections
-(Needs you / Working / In ADE / Recent), brands, and the model-label rule:
-unknown Devin model ids are internal codenames and read as "Devin".
+`renderer/components/app/cloudAgents/` (`CloudAgentsPanel`, `CloudAgentRow`,
+`cloudAgentsModel.ts`: filters, sections Needs you / Working / In ADE / Recent,
+brands; an unknown Devin model id reads "Devin"). Each cloud has its own
+top-bar modal (`CloudAgentsQuickViewButton` with its `provider`), opened by
+`openCloudAgentsPanel(provider)`.
 
-Each cloud keeps its own top-bar modal, mounted by
-`CloudAgentsQuickViewButton` with that cloud's `provider`. Anything can open one with
-`openCloudAgentsPanel(provider)`, which is how the composer menu does it.
-
-- **Launch bar:** prompt, Model, VM (Devin), and Lane (a new cloud lane or an
-  existing one). ⌘↵ starts it.
-- **List:** filters with counts, This project / All repos, and search.
-- **Row actions:** Open (in ADE), Stop, web, and ⋯. The ⋯ menu has Shell on
-  the VM, Forward a port, Take over its desktop (Cursor), Copy link and
-  Archive.
-
-Opening or launching refreshes lanes and reveals the chat.
-`ade:work:select-session` reloads the session list and refocuses when the chat
-is not loaded yet.
+- **Launch bar:** prompt, Model, VM (Devin), Lane (new or existing); ⌘↵ starts.
+- **List:** filters with counts, This project / All repos, search.
+- **Row actions:** Open, Stop, web, and ⋯ (Shell on the VM, Forward a port,
+  Take over its desktop for Cursor, Copy link, Archive).
+- Opening or launching refreshes lanes and reveals the chat;
+  `ade:work:select-session` reloads the list when the chat is not loaded yet.
 
 ### Honest gating
 
-- **Shell in a Devin Cloud lane** is `devin ssh <id>` to the VM
-  (`useWorkSessions.launchPtySession`), never a local shell. It needs a chat
-  with a session first.
-- **Cursor Cloud has no shell.** The launch throws and says so.
-- **Machine-bound tools** (iOS, Mac desktop, App Control) are unavailable in
-  cloud lanes, with the reason shown (`workTools.ts` `CLOUD_MACHINE_TOOLS`).
-- **A Devin Cloud chat's model is fixed.** The composer shows it as a label
-  (`fixedModelLabel`) instead of the picker.
-- **Cloud lanes are marked** by `LaneCloudMarker` on lane headers, and by a
-  cloud glyph on any card that names its lane.
+- **Shell in a Devin Cloud lane** is `devin ssh <id>`
+  (`useWorkSessions.launchPtySession`), never local, and needs a chat first.
+- **Cursor Cloud has no shell**; the launch throws and says so.
+- **Machine-bound tools** (iOS, Mac desktop, App Control) are off in cloud
+  lanes with the reason (`workTools.ts` `CLOUD_MACHINE_TOOLS`).
+- **A Devin Cloud chat's model is fixed** and shows as a label
+  (`fixedModelLabel`).
+- **Cloud lanes are marked** by `LaneCloudMarker` and a cloud glyph on cards
+  that name the lane.
 
 ## Fragile and tricky wiring
 
-- **New-lane launch ids.** A chat launch's `launchId` IS the chat's session
-  id, chosen by the renderer before anything exists. Everything keys off it:
-  the Work tab, the sidebar row, the pane's `lockSessionId`, the dock stash
-  and the transcript card id. Never mint a second id for the same launch.
-- **Launch rows in the Work roster.** `useWorkSessions` keeps the host's list
-  in `hostSessions` and derives `sessions` by merging launch rows for chats
-  the roster (or the cross-machine slice) does not list yet. Launch rows are
-  never mirrored into `sessionsCacheByProject` and never count as running for
-  refresh cadence. Tabs close through one channel
-  (`chatLaunchDraftRestore`): the store posts a close notice the first time
-  a host snapshot moves a launch it held to `cancelled` (from any device),
-  which closes the tab and, if it was on screen, returns Work to the draft.
-  Cancel/Delete in this window post a notice with the prompt to restore,
-  which also switches the draft to the launch's kind so the prompt lands in
-  the right composer.
-- **Launch subscriptions stay narrow.** Stage snapshots arrive many times a
-  second during checkout. Only the setup card, the sidebar row of that chat
-  and the slide-out read full snapshots; the Work page, the pane and the app
-  shell read through equality-gated selectors. Adding a plain
-  `useChatLaunchEntries()` to a page-level component re-renders it on every
-  tick.
-- **An existing chat never shows an empty model.** "Select model" is only for
-  a new draft. The composer resolves a chat's model in this order: the
-  summary's `modelId`, its `model` string matched in the registry, its preset's
-  model, the newest `done` event in the chat's own transcript that names a
-  model (`resolveTranscriptComposerModelId`, the last 2,000 events), then the
-  summary's raw `model` string. While none of these is known the picker shows
-  "Loading model…" (`ModelPicker`'s `emptyLabel`), and a locked pane clears a
-  model left over from the chat shown before, so a send cannot carry it. The
-  model-fallback effect never swaps an existing chat's own model for another,
-  even when this window's catalog cannot list it (a preset or route model, a
-  custom Codex `config.toml` model, a model newer than this build): that swap
-  moved the chat to another model on the next send. A model picked in a chat
-  whose model is not known yet is still applied on send.
-- **The locked summary read retries.** A locked Work chat takes its title and
-  model mainly from its summary, and a finished chat gets no events that would
-  read it again, so `refreshLockedSessionSummary` never gives up on a read
-  that fails: it keeps the summary already held (and the turn flag it implies)
-  and retries on a 1, 2, 4, 8, 15, then every-30-seconds backoff while the pane
-  stays on that chat. A "not found" answer also keeps the held summary until it
-  has persisted for 60 seconds, so a chat briefly unknown while a project opens
-  or a handoff lands does not drop to "New chat" with "Select model". A read
-  that resolves after the pane moved to another chat writes nothing, and an
-  unmount or chat switch cancels the retry.
-- **Pending pane reads.** While `launchAwaitingSession`, the pane skips the
-  locked summary read, history hydration, active-turn recovery, delta and
-  computer-use reads; the history effect re-runs when it flips. Queued sends
-  are intercepted before the model/lane checks in `submit`, because a
-  launching chat has no session model to check against.
+**Launches**
 
-- **Draft launch job lifecycle.** `DraftLaunchJob` tracks the
-  renderer-owned multi-step async launches (existing lane, Cursor Cloud, and
-  the fallback for runtimes without `chat.startLaunch`; brain-owned new-lane
-  launches do not create one) and is stored in the **root** store's
-  `draftLaunchJobsByScope` (read/written via `useRootAppStore` /
-  `rootAppStoreApi.getState().setDraftLaunchJobs`) rather than the
-  per-project store or local pane state. This is load-bearing: a launch
-  routinely outlives the pane that started it, and switching to another
-  remote project tears down the originating project's scoped store
-  entirely — keeping the job in the root store is what lets it re-surface
-  (and ready jobs auto-open / failures show Restore) when the user
-  returns. The composer is cleared immediately when the job starts, not
-  when it finishes. Auto-created lanes start at `creating-lane` (named
-  deterministically up front), then move through session start and prompt
-  send; any AI rename happens in the background after the lane exists and
-  is surfaced via the "Auto-naming…" card status, not a launch-job phase.
-  If the launch fails, the Restore action
-  merges the snapshot back via `restoreDraftLaunchSnapshot`, which appends
-  rather than replaces existing draft text and merges context items by id.
-  `isDraftLaunchJobStale` makes an active row hideable after the stale
-  threshold so a hung IPC call cannot leave a permanent status strip.
-  `latestForegroundDraftLaunchJobIdRef` prevents stale foreground jobs
-  from auto-opening when a newer foreground launch superseded them. The
-  `DraftLaunchSnapshot` captures the full composer control state
-  (model, reasoning, execution mode, native controls) so
-  `createSessionForLane` receives a `launchState` that overrides the
-  live composer state during the async gap.
-- **Draft launch project-switch safety.** Because the launch chain is
-  detached from the pane lifecycle, it must never act on the wrong
-  project. It captures the originating project's `OpenProjectBinding`
-  (`launchBinding`) at the start and passes it as the optional `pin` arg
-  to project config reads, branch discovery, lane create/rename,
-  background lane-name suggestions, session create/send/delete,
-  and CLI PTY create/dispose. The
-  preload routes a `pin` through `callPinnedRuntimeAction` — see
-  [Remote runtime internal architecture](../remote-runtime/internal-architecture.md#local-runtime-routing)
-  — so a mid-launch project switch keeps the detached work targeting the
-  project that started it instead of the now-active project. Rollback of
-  a partially-created launch is pinned to the same binding:
-  `window.ade.lanes.delete(..., launchBinding)` and
-  `window.ade.agentChat.delete(..., pin)` delete the lane/session they
-  created even after the active project changed. The legacy fallback
-  where no binding is available still aborts on project-root drift with
-  `LAUNCH_PROJECT_CHANGED_MESSAGE`. Each step is also wrapped in
-  `withDraftLaunchTimeout` so a runtime call that neither resolves nor
-  rejects (`DRAFT_LAUNCH_TIMEOUT_MS = 90 s`) fails the job instead of
-  wedging it in a non-terminal state and blocking re-submission.
-- **Composer draft persistence.** `ComposerDraftStorageSnapshot` is
-  persisted to `localStorage` on every draft/model/attachment change
-  and restored on scope switch. `composerDraftHydratingRef` suppresses
-  the first write-back after hydration so the restore does not
-  immediately re-persist with a new timestamp. Normalization
-  (`normalizeStoredComposerDraft`) validates every field defensively
-  so corrupt stored data degrades gracefully instead of crashing.
-- **Empty-state hero column.** The new-chat hero column in
-  `AgentChatPane` lives in an `overflow-hidden` wrapper and caps itself
-  with `max-h-full`, so exactly one row — the ADE logo — may be
-  flexible; every sibling (heading, lane pill, inline composer, extras)
-  must be `shrink-0`, and the logo keeps a `min-h` floor so it shrinks
-  instead of the column overflowing and clipping top and bottom in a
-  short window. The optical lift is wrapper padding (`pb-[100px]` with
-  no app panel), not a negative margin on the column: a negative margin
-  escapes the `max-h-full` cap and reintroduces the clipping.
-- **Session creation and first turn race.** When a new session is
-  created from the composer, the pane awaits the `onSessionCreated`
-  callback and the session-list refresh before sending the first agent
-  turn. Skipping this wait renders a blank "new chat" screen because
-  the parent surface has not yet navigated to the chat tab.
-- **Model warmup is not on selection.** Changing the composer model does
-  not call `ade.agentChat.warmupModel`. Warmup remains an IPC for callers
-  that explicitly preload a Claude runtime; the Work composer waits until
-  Send to bind the new model, so a selection must not tear down the
-  current provider.
-- **Reasoning slider pointer ownership.** The track captures a drag only
-  after the small movement threshold, writes preview positions through CSS
-  custom properties, and commits exactly once on pointer-up. Ridge-button
-  clicks take the normal radio path; a drag that starts on a ridge suppresses
-  the trailing synthetic click so it cannot toggle the newly snapped tier
-  back to Auto. Do not close the Radix popover from `onChange` — outside click
-  and Escape are the intentional close actions.
-- **Stale slash commands.** SDK-provided slash commands fetch by session
-  while the composer matches the committed model. A pending model handoff
-  fetches by lane and the pending provider (the draft path), so the menu
-  does not keep the previous provider's commands. Missing that refetch
-  surfaces slash commands from the still-bound session.
-- **File-search debounce.** The `@` picker debounces input (40 ms in
-  `ChatCommandMenu`) and stamps each request with a sequence number to
-  discard stale results; cached queries re-render immediately and
-  revalidate in the background. Stale-result handling is easy to
-  regress when adjusting the debounce.
-- **Trigger detection is cursor-relative.** Both composer inputs
-  share `shared/composerTriggers.ts`. Slash tokens require a
-  word boundary before `/` and allow no whitespace or `/` inside, so
-  paths (`/usr/bin`), URLs, and fractions never open the menu. Don't
-  reintroduce `startsWith("/")` gates — that regresses mid-sentence
-  commands. `@` queries may contain spaces so multi-word chat names remain
-  searchable; the trigger still stops at a newline or another `@`. In the
-  rich editor, detection runs on the DOM text run
-  around the caret (`getRichTriggerContext`), NOT on serialized-draft
-  offsets: serialization collapses whitespace and flattens chips, so
-  serialized indices cannot be mapped back onto DOM positions.
-- **Chip selection marking must stay cheap.** `selectionchange` fires on every
-  caret move on the Work tab's hottest input path, so the chip-highlight effect
-  in `AgentChatComposer` holds five constraints together: the document listener
-  exists **only** while the editor is focused *and* actually holds a chip; a
-  collapsed caret costs one boolean (it returns early unless an earlier
-  selection left marks behind); every DOM write is coalesced into a single
-  `requestAnimationFrame`; all queries are scoped to the editor element, never
-  the document; and because chips are inserted/removed by direct DOM writes
-  rather than React renders, a `MutationObserver` watches the editor's
-  **structure** (`childList` + `subtree`) and never its character data, and only
-  while the editor is focused. Widening any of these — a permanently attached
-  listener, a document-wide query, or a `characterData` observer — puts work on
-  every keystroke of every chat.
-- **Smart-link presentation is not prompt storage.** The chip label, remote
-  title, and favicon are presentation only. Preserve the full URL in
-  `data-composer-chip-text` and in the controlled draft; reconciliation must
-  never replace sent text with a compact label. Metadata failures are expected
-  and must degrade to the deterministic provider label or complete URL.
-- **Chat event identity is never the sequence number alone.**
-  `eventSequence` is a runtime counter, but the transcript it numbers is
-  durable and appended across desktop restarts, so a rehydrated session
-  that restarts at 0 mints sequence numbers the file already contains —
-  one transcript can hold two events numbered 67, hours apart. Any
-  consumer keying identity on `sessionId + sequence` then mistakes the
-  newer event for a replay of the older one and drops it. Both halves of
-  the fix are load-bearing. Host side,
-  `readTranscriptHydrationState` (`agentChatService.ts`) seeds
-  `managed.eventSequence` from the transcript's max sequence in the same
-  pass that recovers todo items — one pass, because the transcript is
-  not cached — so sequences stay strictly increasing for the life of the
-  file. Client side, iOS's `AgentChatEventEnvelope.id` includes the
-  timestamp (`sessionId:timestamp:sequence`), so a genuine redelivery
-  (same timestamp *and* sequence) still collapses while cross-epoch
-  collisions do not. On a real 425-event transcript the old key destroyed
-  103 events, including two `approval_request` envelopes carrying whole
-  AskUserQuestion cards and 31 short text chunks (short text has no
-  content dedupe key of its own — that requires >= 24 characters — so it
-  fell through to the sequence-derived id). The phone's thread engine now
-  keys its log on the durable envelope `sequence`, and pending-input cards
-  are still derived per `itemId` (`derivePendingWorkInputs`), so a gate
-  delivered twice renders one answerable card.
-- **`isAskUserToolName` deliberately does not match `AskUserQuestion`.**
-  For Claude's own ask-user tool the host emits *both* a `tool_call` (keyed
-  by the SDK tool-use id) and a separate `approval_request` (keyed by a
-  fresh `randomUUID`). iOS's `derivePendingWorkInputs` dedupes by item id,
-  so adding `askuserquestion` to that name list produces two cards for one
-  question — and the `tool_call`-derived one is unanswerable, because the
-  host has no approval registered under that id and discards the response
-  silently. The `tool_call` branch exists only as a fallback for hosts that
-  emit a bare ask-user call with no wrapping approval.
-- **Question drafts persistence.** Question answer state (selected
-  options + notes) is local to `AskQuestionComposer` on
-  desktop. If the user navigates away and back, drafts reset. Minimizing the
-  card does *not* reset them — folding to read the transcript is a normal step
-  in answering, so picks survive it. This is
-  intentional to avoid stale answers leaking across sessions. iOS makes
-  the opposite call for the same surface — see
-  [Cross-surface parity](#cross-surface-parity) — because minimizing the
-  card to read the transcript is a normal step in answering it there, not
-  a session change. The card's one-time focus
-  and entrance animation are guarded by module-level sets
-  (`focusedQuestionCardKeys` / `enteredQuestionCardKeys`) so the
-  virtualized list re-mounting the row mid-scroll doesn't re-steal focus
-  or replay the fade.
-- **Terminal drawer tab lifecycle.** PTY exit must trigger tab removal,
-  and the last-tab-removed condition must collapse the drawer; the
-  `ChatTerminalDrawer` state machine is the canonical source.
-- **Virtual-scroll offset drift.** The hand-rolled virtualizer is
-  sensitive to changing row heights (plan approval cards, work-log
-  expansion, expanding a collapsed user message). The spacer heights are
-  computed from the `measuredHeights` map, so a row that resizes above
-  the viewport desyncs the spacer math from `el.scrollTop` unless
-  `handleMeasure` → `reconcileMeasuredScrollTop` compensates. The map is
-  keyed by stable row keys; rolling back to an unstable key causes the
-  list to "jump" on updates. Sticky-bottom
-  recovery intentionally follows for a few animation frames after row
-  measurement changes; removing that follow-up can make active streams
-  appear to stop short of the newest output.
-- **Native permission picker updates serialize before submit.**
-  `AgentChatPane` tracks the in-flight native-control update through
-  `pendingNativeControlUpdateRef` (sessionId + monotonic `updateId` +
-  promise). Every `updateSession` dispatched from the permission
-  popovers chains onto the previous promise so the backend always sees
-  the final picker state, and `submit()` awaits that chain for the
-  active session before dispatching the turn. The handler also
-  optimistically patches the renderer session summary with the fields
-  returned from `updateSession` (`permissionMode`,
-  `interactionMode`, `claudePermissionMode`, `codexApprovalPolicy`,
-  `codexSandbox`, `codexConfigSource`, `opencodePermissionMode`,
-  `cursorModeId`, `cursorModeSnapshot`) so the chip state reflects the
-  server's normalized values before the list refresh lands.
-- **Inbound mode changes re-seed composer state.** When another client
-  changes a session's mode, the service emits a `session_meta_updated`
-  event carrying the mode fields (see
-  [transcript-and-turns](transcript-and-turns.md)). `AgentChatPane`'s
-  event handler patches the session summary with any mode fields present
-  and — because the composer seeds its local mode state from the session
-  scope, not from summary content — also applies the authoritative fields
-  directly to composer state (`setInteractionMode`,
-  `setClaudePermissionMode`, `setCodexApprovalPolicy`/`setCodexSandbox`/
-  `setCodexConfigSource`, `setOpenCodePermissionMode`,
-  `setDroidPermissionMode`, and the Cursor mode/config setters derived
-  from `cursorModeSnapshot`) when the event targets the selected session,
-  mirroring the plan-mode transition special-case. A title-only emit
-  changes no mode key and is a no-op for composer state.
+- **One id.** A chat launch's `launchId` IS the session id, chosen by the
+  renderer first. The Work tab, sidebar row, `lockSessionId`, dock stash and
+  card id key off it. Never mint a second id.
+- **Launch rows.** `useWorkSessions` keeps the host list in `hostSessions` and
+  merges launch rows into `sessions` for chats not listed yet. Launch rows are
+  never mirrored into `sessionsCacheByProject` and never count as running.
+  Tabs close through `chatLaunchDraftRestore`: the first host snapshot that
+  moves a held launch to `cancelled` posts a close notice (closing the tab and
+  returning Work to the draft if it was on screen). Cancel/Delete here also
+  restore the prompt and switch the draft to the launch's kind.
+- **Narrow subscriptions.** Only the setup card, that chat's sidebar row and
+  the slide-out read full snapshots; page-level components use
+  equality-gated selectors. A plain `useChatLaunchEntries()` in a page
+  re-renders it every tick.
+- **Pending pane reads.** While `launchAwaitingSession` the pane skips the
+  summary read, history, turn recovery, delta and computer-use reads (history
+  re-runs when it flips). `submit` intercepts queued sends before the
+  model/lane checks.
+- **Draft launch jobs live in the root store** (`draftLaunchJobsByScope` via
+  `useRootAppStore` / `rootAppStoreApi.getState().setDraftLaunchJobs`), because a
+  launch outlives its pane and a project switch tears down the project store.
+  Restore (`restoreDraftLaunchSnapshot`) appends text and merges context by id.
+  `isDraftLaunchJobStale` makes a hung row hideable.
+  `DraftLaunchSnapshot` gives `createSessionForLane` a `launchState` that
+  overrides the live composer.
+- **Project-switch safety.** The chain captures `launchBinding` and passes it
+  as `pin` to config reads, branch discovery, lane create/rename, name
+  suggestions, session create/send/delete and PTY create/dispose (preload's
+  `callPinnedRuntimeAction`; see
+  [Remote runtime](../remote-runtime/internal-architecture.md#local-runtime-routing)).
+  Rollback uses the same binding (`window.ade.lanes.delete(..., launchBinding)`,
+  `window.ade.agentChat.delete(..., pin)`). With no binding the chain aborts on
+  root drift (`LAUNCH_PROJECT_CHANGED_MESSAGE`). Each step has
+  `withDraftLaunchTimeout` (`DRAFT_LAUNCH_TIMEOUT_MS = 90 s`).
+- **First turn waits.** A composer-created session awaits `onSessionCreated` and
+  the list refresh before the first turn; otherwise the screen shows a blank
+  new chat.
+
+**Composer state**
+
+- **An existing chat never shows an empty model.** The model resolves from the
+  summary's `modelId`, its `model` in the registry, its preset, the newest
+  `done` event naming a model (`resolveTranscriptComposerModelId`, last 2,000
+  events), then the raw `model`. Until then the picker shows "Loading model…"
+  (`emptyLabel`), and a locked pane clears a model left from the previous chat.
+  The fallback effect never swaps an existing chat's model, even when this
+  catalog cannot list it. A pick made before the model is known still applies.
+- **The locked summary read retries** (`refreshLockedSessionSummary`): it keeps
+  the held summary and retries at 1, 2, 4, 8, 15 s, then every 30 s while the
+  pane stays; "not found" keeps it until it persists 60 s. A late result for
+  another chat writes nothing; unmount or a switch cancels.
+- **Draft persistence.** `ComposerDraftStorageSnapshot` saves to
+  `localStorage` on each change and restores on scope switch;
+  `composerDraftHydratingRef` skips the first write-back;
+  `normalizeStoredComposerDraft` validates every field.
+- **Empty-state column.** Only the logo may flex (with a `min-h` floor); every
+  sibling is `shrink-0`; the lift is padding (`pb-[100px]`), because a negative
+  margin escapes `max-h-full`.
+- **No warmup on selection.** A model change does not call
+  `ade.agentChat.warmupModel`; the new model binds on Send.
+- **Effort track pointer.** A drag starts after a small threshold, previews
+  through CSS custom properties and commits once on pointer-up; a drag from a
+  ridge suppresses the trailing click. Do not close the Radix popover from
+  `onChange`.
+- **Native permission updates serialize.** `pendingNativeControlUpdateRef`
+  (sessionId, monotonic `updateId`, promise) chains every `updateSession`, and
+  `submit()` awaits it. The handler patches the summary with the returned
+  fields (`permissionMode`, `interactionMode`, `claudePermissionMode`,
+  `codexApprovalPolicy`, `codexSandbox`, `codexConfigSource`,
+  `opencodePermissionMode`, `cursorModeId`, `cursorModeSnapshot`).
+- **Inbound mode changes re-seed the composer.** On `session_meta_updated`
+  ([transcript-and-turns](transcript-and-turns.md)) for the selected session,
+  `AgentChatPane` patches the summary and calls the composer setters
+  (`setInteractionMode`, `setClaudePermissionMode`, the Codex, OpenCode, Droid
+  and Cursor setters), because the composer seeds from session scope. A
+  title-only event changes nothing.
+
+**Menus and chips**
+
+- **Stale slash commands.** SDK commands fetch by session; a pending model
+  handoff fetches by lane and pending provider, so the menu drops the old
+  provider's commands.
+- **File-search debounce.** 40 ms in `ChatCommandMenu`, a sequence number
+  drops stale results; cached queries show at once and revalidate.
+- **Triggers are cursor-relative** (`shared/composerTriggers.ts`). A slash
+  needs a word boundary before it and no whitespace or `/` inside, so paths,
+  URLs and fractions never open the menu; do not add `startsWith("/")` gates.
+  `@` queries may contain spaces and stop at a newline or another `@`. The
+  rich editor detects on the DOM text around the caret
+  (`getRichTriggerContext`), not serialized offsets.
+- **Chip selection marking must stay cheap.** The `selectionchange` listener
+  exists only while the editor is focused and holds a chip; a collapsed caret
+  costs one boolean; DOM writes coalesce into one `requestAnimationFrame`;
+  queries stay inside the editor; a `MutationObserver` watches `childList` +
+  `subtree` (never `characterData`) only while focused. Widening any of these
+  adds work to every keystroke.
+- **Smart-link presentation is not prompt storage.** Keep the full URL in
+  `data-composer-chip-text` and the draft; a failed lookup degrades to the
+  provider label or URL.
+
+**Transcript**
+
+- **Event identity is never the sequence alone.** The transcript is durable across restarts, so a rehydrated session that
+  restarts at 0 would reuse numbers already in the file. Host: `readTranscriptHydrationState` (`agentChatService.ts`)
+  seeds `managed.eventSequence` from the transcript's max in the same pass
+  that recovers todos. iOS: `AgentChatEventEnvelope.id` is
+  `sessionId:timestamp:sequence`; the thread engine keys on the durable
+  `sequence`, and cards derive per `itemId` (`derivePendingWorkInputs`). Short
+  text (under 24 characters) has no content dedupe key, so it depends on this.
+- **`isAskUserToolName` does not match `AskUserQuestion`.** Claude's ask emits a
+  `tool_call` (tool-use id) and an `approval_request` (a fresh `randomUUID`);
+  matching both makes two cards, and the `tool_call` one is unanswerable. That
+  branch is only for a bare ask-user call.
+- **Question drafts.** On desktop, picks and notes live in
+  `AskQuestionComposer` and reset when you leave the chat (minimizing keeps
+  them), so stale answers do not cross sessions; iOS keeps them
+  ([Cross-surface parity](#cross-surface-parity)). Focus and entrance run once
+  per card (`focusedQuestionCardKeys` / `enteredQuestionCardKeys`).
+- **Terminal drawer tabs.** PTY exit removes the tab; the last removal closes
+  the drawer (`ChatTerminalDrawer` owns the state machine).
+- **Virtual-scroll drift.** Spacers come from `measuredHeights` keyed by stable
+  row keys; a resize above the viewport needs `handleMeasure` →
+  `reconcileMeasuredScrollTop`. Unstable keys make the list jump. Sticky-bottom
+  recovery follows for a few frames after a measurement; removing it makes a
+  stream look cut short.
+
+## Browser dock context
+
+The Browser dock strips URL credentials, sensitive query values and fragments
+from page context, adds the current tab to ordinary sends and queued launch
+messages while showing only the user's text, and leaves provider slash commands
+unchanged. Its page card replaces the empty-chat logo.
 
 ## Related docs
 
-- [Chat README](README.md) -- service overview and IPC surface.
-- [Transcript and Turns](transcript-and-turns.md) -- the data the UI
-  renders.
-- [Tool System](tool-system.md) -- tool tiers surfaced in the composer.
-
-The Browser dock removes URL credentials, sensitive query values, and fragments from automatic page context. It adds the current tab context to ordinary sends and queued launch messages while displaying only the user’s text. Provider slash commands keep their original input. The dock supplies its page card in place of the default empty-chat logo.
+- [Chat README](README.md): service overview and IPC.
+- [Transcript and Turns](transcript-and-turns.md): the data the UI renders.
+- [Tool System](tool-system.md): tool tiers in the composer.

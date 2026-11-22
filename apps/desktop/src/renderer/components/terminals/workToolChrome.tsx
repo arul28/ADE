@@ -21,6 +21,7 @@
 import type { ReactNode } from "react";
 import { cn } from "../ui/cn";
 import { PaneTooltip } from "../ui/PaneTooltip";
+import { Spinner } from "../ui/Spinner";
 
 /**
  * 40px. The one chrome-row height in the app.
@@ -39,10 +40,12 @@ export const WORK_TOOL_CHROME_MOTION = "transition-colors duration-[120ms] ease-
  *
  * An inset accent hairline rather than the app-wide outline halo: these
  * controls sit flush in a 40px row, and an outset ring on a 28px square
- * overlaps its neighbours.
+ * overlaps its neighbours. `outline-none!` because the app-wide ring
+ * (`surfaceKit.css`) is unlayered CSS, which beats any layered utility: without
+ * it a picked chip wore both rings, the outer one clipped by its row.
  */
 export const WORK_TOOL_CHROME_FOCUS =
-  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]";
+  "focus-visible:outline-none! focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]";
 
 /**
  * The row itself: 40px, hairline below at 60% of the border token.
@@ -183,17 +186,27 @@ export function WorkToolEmptyLine({
   title,
   action,
   testId,
+  busy = false,
 }: {
   title: string;
   action?: ReactNode;
   testId?: string;
+  /** Still reading: the line gets the device tools' spinner. */
+  busy?: boolean;
 }) {
   return (
     <div
       data-testid={testId}
       className="flex h-full min-h-0 flex-col items-center justify-center gap-3 px-5 text-center"
     >
-      <p className="font-sans text-[14px] font-medium text-fg/85">{title}</p>
+      {busy ? (
+        <p role="status" aria-live="polite" className="inline-flex items-center gap-2 font-sans text-[14px] font-medium text-fg/85">
+          <Spinner />
+          {title}
+        </p>
+      ) : (
+        <p className="font-sans text-[14px] font-medium text-fg/85">{title}</p>
+      )}
       {action}
     </div>
   );

@@ -9,7 +9,12 @@ import {
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
-import { listOpenCodeStoreSessions, openUserOpenCodeStore } from "./openCodeStore";
+import {
+  listOpenCodeStoreSessions,
+  openAdeOpenCodeStore,
+  openUserOpenCodeStore,
+  type OpenCodeStoreSessionRow,
+} from "./openCodeStore";
 
 /**
  * ADE runs its own background prompts (terminal summaries, commit messages,
@@ -43,39 +48,80 @@ export async function discoverOpenCodeSessions(
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
   const lookupId = args.sessionId?.trim() || null;
-  const store = openUserOpenCodeStore(args);
+  const userStore = openUserOpenCodeStore(args);
+  // ADE-launched terminals and chats run on ADE's managed server, so their
+  // sessions never land in the user's own store. Only the import path opts in
+  // to that store; every other caller keeps reading the user's sessions.
+  const adeStore = args.includeAdeOwned ? openAdeOpenCodeStore(args) : null;
   // No store (OpenCode never ran here) or an unknown schema is an empty list,
   // not an error.
-  if (!store) return [];
+  if (!userStore && !adeStore) return [];
   try {
     // ADE's own background rows and out-of-scope rows are dropped after the
     // query, so a scoped or plain list reads a wider window than it returns.
     const requestedLimit = lookupId
       ? 1
       : Math.min(MAX_EXTERNAL_SESSION_LIMIT, args.scopeRoots?.length ? Math.max(limit, 1000) : Math.max(limit * 4, 200));
-    const rows = listOpenCodeStoreSessions(store, { limit: requestedLimit, sessionId: lookupId });
+    const readStore = (
+      store: typeof userStore,
+      adeOwned: boolean,
+    ): Array<{ row: OpenCodeStoreSessionRow; adeOwned: boolean }> => {
+      if (!store) return [];
+      try {
+        return listOpenCodeStoreSessions(store, { limit: requestedLimit, sessionId: lookupId })
+          .map((row) => ({ row, adeOwned }));
+      } catch (error) {
+        // One malformed or mid-migration store must not take the healthy
+        // store's rows with it (the service would show a false empty list).
+        args.logger?.warn?.("external_sessions.opencode_store_query_failed", {
+          adeOwned,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return [];
+      }
+    };
+    const rows = [...readStore(userStore, false), ...readStore(adeStore, true)];
+    // The same id can exist in both stores after an older build copied a
+    // session across. The newer row is the one the person last used; on a tie
+    // ADE's own store wins.
+    const byId = new Map<string, { row: OpenCodeStoreSessionRow; adeOwned: boolean }>();
+    for (const entry of rows) {
+      const existing = byId.get(entry.row.id);
+      if (
+        !existing
+        || (entry.row.updatedAt ?? 0) > (existing.row.updatedAt ?? 0)
+        || ((entry.row.updatedAt ?? 0) === (existing.row.updatedAt ?? 0) && entry.adeOwned)
+      ) {
+        byId.set(entry.row.id, entry);
+      }
+    }
     const records: ExternalSessionDiscoveryRecord[] = [];
-    for (const row of rows) {
+    for (const entry of byId.values()) {
+      const { row } = entry;
       const rowCwd = normalizeProviderCwd(row.directory);
       if (!cwdIsInScope(rowCwd, args.scopeRoots)) continue;
       if (isAdeBackgroundTaskTitle(row.title)) continue;
-      records.push(recordWithFile({
-        provider: "opencode",
-        id: row.id,
-        cwd: rowCwd,
-        title: cleanSessionTitle(row.title),
-        preview: null,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-        messageCount: row.userMessageCount,
-        filePath: null,
-        sourceMtimeMs: row.updatedAt,
-      }));
+      records.push({
+        ...recordWithFile({
+          provider: "opencode",
+          id: row.id,
+          cwd: rowCwd,
+          title: cleanSessionTitle(row.title),
+          preview: null,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+          messageCount: row.userMessageCount,
+          filePath: null,
+          sourceMtimeMs: row.updatedAt,
+        }),
+        adeOwned: entry.adeOwned,
+      });
     }
     return sortDiscoveryRecords(records, limit);
   } catch (error) {
     throw new Error(`OpenCode session discovery failed: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
-    store.close();
+    userStore?.close();
+    adeStore?.close();
   }
 }

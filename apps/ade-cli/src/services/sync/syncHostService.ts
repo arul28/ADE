@@ -1,3 +1,4 @@
+import type { LaneShareEvent } from "../../../../desktop/src/shared/types/laneShare";
 import { REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES } from "../../../../desktop/src/shared/projectIcons";
 import { readRecentHostStall } from "../runtime/hostStallRecord";
 import {
@@ -14,6 +15,18 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { runWithAbortSignal } from "./abortSignal";
+import {
+  closeSocketQuietly,
+  createSyncTerminalStreams,
+  normalizeTerminalInputId,
+  type SyncTerminalTarget,
+} from "./syncTerminalStreams";
+import {
+  isSyncTerminalEnvelopeType,
+  resolveBootedTerminalProject,
+  syncTerminalProjectTarget,
+} from "./syncTerminalTargets";
+import type { PendingTerminalSnapshotBarrier } from "./syncTerminalSnapshotBarrier";
 import { promisify } from "node:util";
 import {
   recordUsageInteraction,
@@ -72,12 +85,12 @@ import type {
   SyncChatLaunchEventPayload,
   SyncChatSubscribePayload,
   SyncChatSubscribeSnapshotPayload,
+  SyncChatSubscribeUnavailable,
   SyncChatUnsubscribePayload,
   SyncArtifactRange,
   SyncFileBlob,
   SyncFileRequest,
   SyncFileResponsePayload,
-  SyncHelloPayload,
   SyncHelloErrorPayload,
   SyncInvalidationBatchPayload,
   SyncMobileProjectSummary,
@@ -105,12 +118,6 @@ import type {
   SyncHostReadinessSnapshot,
   SyncTailnetDiscoveryStatus,
   SyncTerminalHistoryResponsePayload,
-  SyncTerminalDataPayload,
-  SyncTerminalExitPayload,
-  SyncTerminalInputAckPayload,
-  SyncTerminalInputPayload,
-  SyncTerminalSnapshotPayload,
-  SyncTerminalScreenSnapshot,
 } from "../../../../desktop/src/shared/types";
 import {
   SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
@@ -162,7 +169,9 @@ import {
   transcriptStorageKey,
 } from "./syncChatTranscriptReads";
 import {
+  CHAT_TRANSCRIPT_READ_FAILED,
   chatEventDeliveryKey,
+  chatSubscribeUnavailableSnapshot,
   compactChatEventEnvelopeForMobileSync,
   compactChatEventEnvelopeForSync,
   prepareChatSnapshotEventsForPeer,
@@ -182,6 +191,7 @@ import type { createAiIntegrationService } from "../../../../desktop/src/main/se
 import type { JevService } from "../../../../desktop/src/main/services/jev/jevService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
+import type { CtoAccountCopyService } from "../../../../desktop/src/main/services/cto/ctoAccountCopyService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
@@ -220,6 +230,7 @@ export {
 };
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore, isValidDpopPublicKey, type SyncPairingRecord } from "./syncPairingStore";
+import { MACHINE_UPDATE_AND_RESTART_ACTION } from "./machineUpdateRemoteCommands";
 import {
   createPairFailureTracker,
   type PairFailureSubject,
@@ -237,6 +248,11 @@ import {
   authenticateSyncAccountHello,
   SYNC_REPAIR_REQUIRED_MESSAGE,
 } from "./syncAccountHelloAuth";
+import type { LaneShareGuestRole } from "./laneShareGuestPolicy";
+import { type LaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
+import type { LaneShareMoveService } from "./laneShareMoveService";
+import { createLaneShareGuestHost, type LaneShareGuestHandoff } from "./laneShareGuestHost";
+import type { LaneShareGrantSource } from "./laneShareGrantService";
 import {
   createRelayAuthorizationLifecycle,
   SYNC_RELAY_AUTHORIZATION_CLOSE_CODE,
@@ -299,7 +315,8 @@ import {
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
-import { createTailnetHttpsServe } from "./tailnetHttpsServe";
+import { adeLoopbackForwardPort, createTailnetHttpsServe } from "./tailnetHttpsServe";
+import { enqueueTailscaleServe } from "./tailscaleServeCommand";
 import { registerMachineTailnetRoute } from "./machineConnectionRoutes";
 import {
   commandErrorResult,
@@ -346,6 +363,7 @@ import {
   type SyncPeerCursorResolution,
 } from "./syncPeerCursorResolution";
 import {
+  detachSocketForHandoff,
   SYNC_HOST_BIND_HOST,
   SYNC_HOST_BIND_LOOPBACK_ONLY,
   SYNC_HOST_MAX_PAYLOAD_BYTES,
@@ -373,6 +391,7 @@ import {
 import { tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { readInstalledDesktopAppVersion } from "../../../../desktop/src/main/services/native/nativeHelperPaths";
+import { hostUpdateFacts } from "../../lib/hostUpdateFacts";
 export { selectChangesetBatchChunk } from "./changesetPump";
 // Existing importers of the wire adapters keep this path.
 export { compactChatEventEnvelopeForMobileSync, compactChatEventEnvelopeForSync } from "./syncChatWire";
@@ -542,10 +561,11 @@ function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boo
  * Ports still advertised through `tailscale serve` that ADE published on an
  * earlier run and never tore down.
  *
- * Only ADE's exact signature is reclaimed: a port inside ADE's own sync range
- * forwarding to 127.0.0.1 on the SAME port. A hand-rolled `tailscale serve`
- * that happens to sit in that range — anything forwarding elsewhere — is left
- * strictly alone.
+ * Only ADE's shape is reclaimed: a port inside ADE's own sync range
+ * forwarding to 127.0.0.1 on the same port, or to the side door a few ports
+ * above it (`adeLoopbackForwardPort`). A hand-rolled `tailscale serve` of any
+ * other shape is left alone; one of exactly this shape is removed only while
+ * nothing serves at either end (the caller probes both).
  */
 export function staleAdeTailnetServePorts(
   serveStatusJson: string,
@@ -565,11 +585,33 @@ export function staleAdeTailnetServePorts(
     if (!Number.isInteger(port)) continue;
     if (port < DEFAULT_SYNC_HOST_PORT || port > SYNC_HOST_MAX_PORT) continue;
     if (port === currentPort) continue;
-    const forward = (value as { TCPForward?: unknown } | null)?.TCPForward;
-    if (forward !== `127.0.0.1:${port}`) continue;
+    // ADE forwards a sync port to itself, or to the side door the listener
+    // opened while another program held 127.0.0.1:<port>.
+    if (adeLoopbackForwardPort(port, (value as { TCPForward?: unknown } | null)?.TCPForward) == null) continue;
     stale.push(port);
   }
   return stale.sort((left, right) => left - right);
+}
+
+/** Sync port → the loopback port its `tailscale serve --tcp` entry forwards to. */
+export function adeTailnetServeTargets(serveStatusJson: string): Map<number, number> {
+  const targets = new Map<number, number>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serveStatusJson);
+  } catch {
+    return targets;
+  }
+  const tcp = (parsed as { TCP?: unknown } | null)?.TCP;
+  if (!tcp || typeof tcp !== "object") return targets;
+  for (const [key, value] of Object.entries(tcp as Record<string, unknown>)) {
+    const port = Number.parseInt(key, 10);
+    const target = Number.isInteger(port)
+      ? adeLoopbackForwardPort(port, (value as { TCPForward?: unknown } | null)?.TCPForward)
+      : null;
+    if (Number.isInteger(port) && target != null) targets.set(port, target);
+  }
+  return targets;
 }
 
 export function isRuntimeHostPairingRecord(
@@ -589,7 +631,8 @@ export function isSyncHostRecoveryPairingRecord(
   return record?.syncHostRecoveryGranted === true;
 }
 
-type SyncHostAuthKind = "bootstrap" | "paired" | "account" | null;
+/** `guest`: another account reaching a shared lane (lane sharing); never record-backed. */
+type SyncHostAuthKind = "bootstrap" | "paired" | "account" | "guest" | null;
 
 function isRecordBackedSyncAuthKind(kind: SyncHostAuthKind): kind is "paired" | "account" {
   return kind === "paired" || kind === "account";
@@ -620,6 +663,8 @@ const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 // state a wake trigger fails to observe.
 const DEFAULT_SYNC_POLL_IDLE_INTERVAL_MS = 2_000;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
+/** How often the account lease is checked while no peer is connected (see `accountLeaseTimer`). */
+const ACCOUNT_LEASE_IDLE_CHECK_MS = 15_000;
 // A peer on the relay gets the periodic status at most this often. Every frame
 // through the tunnel relay wakes its Durable Object from hibernation, and the
 // periodic status was most of an idle peer's traffic (docs/perf/cloudflare-costs.md).
@@ -628,16 +673,10 @@ const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const RELAY_PEER_BRAIN_STATUS_INTERVAL_MS = 30_000;
 const NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS = 1_000;
 const NATIVE_LAN_DISCOVERY_FALLBACK_MS = 30_000;
-const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
-const DEFAULT_TERMINAL_HISTORY_PAGE_BYTES = 262_144;
-const MIN_TERMINAL_HISTORY_PAGE_BYTES = 4_096;
-const MAX_TERMINAL_HISTORY_PAGE_BYTES = 524_288;
-const MAX_PENDING_TERMINAL_SNAPSHOT_EVENTS = 256;
-const MAX_PENDING_TERMINAL_SNAPSHOT_BYTES = 2_000_000;
-const MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS = 4;
-const MAX_TERMINAL_SCREEN_SERIALIZED_CHARS = 256_000;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
-const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
+/** A required reply that takes this long to encode and send is logged. */
+const SLOW_REQUIRED_SEND_MS = 1_000;
+export const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
 const DEFAULT_SYNC_MESSAGE_TIMEOUT_MS = 60_000;
 const DEFAULT_SYNC_SLOW_COMMAND_MS = 5_000;
@@ -795,7 +834,7 @@ export function buildSyncProjectCatalogMessages(args: {
  * `read*`, `search*`). Everything else — including verbs that only look
  * harmless, like `git.fetch` — is treated as a write.
  */
-const MAX_CONCURRENT_PEER_READS = 4;
+export const MAX_CONCURRENT_PEER_READS = 4;
 
 const CONCURRENT_READ_FILE_ACTIONS: ReadonlySet<string> = new Set<SyncFileRequest["action"]>([
   "listWorkspaces",
@@ -830,8 +869,23 @@ export function isConcurrentReadCommandAction(action: string): boolean {
  * lanes) and writes only the host's own lane-status cache; `prs.refresh`
  * asks GitHub (1-1.5 s a call) and writes only the host's PR cache. As
  * barriers they held a connecting phone's chat open behind them.
+ * `ai.cursorCloudFleet` is the older name of `ai.getCursorCloudFleet` (the
+ * same `getFleet` read, which writes only its own cache). It asks Cursor's
+ * API and took 49 s on a brain that had just started; as a barrier it held a
+ * browser's chat link behind it for all of that time.
  */
-const CONCURRENT_READ_COMMAND_ACTIONS: ReadonlySet<string> = new Set(["lanes.refreshSnapshots", "prs.refresh"]);
+const CONCURRENT_READ_COMMAND_ACTIONS: ReadonlySet<string> = new Set([
+  "lanes.refreshSnapshots",
+  "prs.refresh",
+  "ai.cursorCloudFleet",
+]);
+
+/**
+ * Commands that run longer than the message timeout and answer after their
+ * envelope returns: `machine.updateAndRestart` waits on a download, an install
+ * and the app's answer, for up to fifteen minutes.
+ */
+const DETACHED_COMMAND_ACTIONS: ReadonlySet<string> = new Set([MACHINE_UPDATE_AND_RESTART_ACTION]);
 
 export function isConcurrentReadEnvelope(envelope: ParsedSyncEnvelope): boolean {
   // Opening a chat reads its transcript and records the subscription on this
@@ -887,28 +941,6 @@ type ChatScopeRequest = Pick<
   SyncChatSubscribePayload,
   "chatScope" | "projectId" | "projectRootPath"
 >;
-
-type PendingTerminalSnapshotEvent =
-  | {
-      kind: "data";
-      payload: SyncTerminalDataPayload;
-      byteLength: number;
-    }
-  | {
-      kind: "exit";
-      payload: SyncTerminalExitPayload;
-      byteLength: 0;
-    };
-
-type PendingTerminalSnapshotBarrier = {
-  generation: number;
-  captureAttempt: number;
-  requiredCaptureAttempt: number;
-  requiredSnapshotEndOffset: number | null;
-  events: PendingTerminalSnapshotEvent[];
-  queuedBytes: number;
-  failed: boolean;
-};
 
 type PeerState = {
   ws: WebSocket;
@@ -1026,6 +1058,13 @@ type PeerState = {
   inFlightOperationControllers: Set<AbortController>;
   /** Local consent for this browser/phone; never mutates machine-wide consent. */
   productAnalyticsEnabled: boolean;
+  /**
+   * Set only by the host after a guest hello (lane sharing). Null for every
+   * other peer. While set, the default-refuse gates in this file apply: the
+   * inbound gate in `handleMessage`/`handleImmediateControlEnvelope`, the
+   * command gate in `handleCommand`, and the outbound gate in `send*`.
+   */
+  laneShareGuest: LaneShareGuestRole | null;
 };
 
 type PendingChangesetBatch = {
@@ -1212,6 +1251,8 @@ type SyncHostServiceArgs = {
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   /** The `cloud` action domain (the phone's ADE Cloud page); null with no project runtime yet. */
   cloudActions?: () => Record<string, unknown> | null;
+  /** The `cloud_phone` action domain (the account's ADE Cloud iPhone), read lazily from the runtime's registry. */
+  cloudPhoneActions?: () => Record<string, unknown> | null;
   cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: Pick<
     PersonalChatScopeContract,
@@ -1224,6 +1265,7 @@ type SyncHostServiceArgs = {
   pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  ctoAccountCopyService?: () => CtoAccountCopyService | null;
   /**
    * Read-only Work-tools mirror for iOS and the hosted web client.
    *
@@ -1295,6 +1337,31 @@ type SyncHostServiceArgs = {
   getAccountAttestationConfig?: () => AccountAttestationConfig;
   /** Test seam for controlling an in-flight account attestation. */
   verifyAccountAttestation?: typeof verifyClerkAccountAttestation;
+  /**
+   * This machine's lane-share grants (lane sharing, read from the account
+   * directory). Absent: every guest hello is refused.
+   */
+  laneShareGrants?: LaneShareGrantSource | null;
+  /**
+   * The rights and counters of each share this machine serves (local table).
+   * Absent: no grant has rights here, so every guest hello is refused.
+   */
+  laneShareRights?: LaneShareRightsStore | null;
+  /**
+   * The repository of the project this host serves (`repo:host/owner/name`),
+   * or null when it has no remote. A guest hello for a lane of another
+   * project (the brain switched projects) is refused as "not hosted here".
+   */
+  getLaneShareRepoKey?: () => string | null;
+  /** Moves of a chat to or from the other person of a share (`laneShare.move` guest command). */
+  laneShareMoves?: LaneShareMoveService | null;
+  /**
+   * This machine's `process.platform` (the default). Lane sharing reads it:
+   * a Windows host cannot let a guest type into a CLI (`laneShareCliTypingFor`).
+   */
+  platform?: NodeJS.Platform;
+  /** Lane sharing events for the owner's app (a guest turn still running after a revoke). */
+  onLaneShareEvent?: (event: LaneShareHostEvent) => void;
   /** Test seam for account-session lease reconciliation. */
   accountLeasePollMs?: number;
   runtimeNameStore?: SyncRuntimeNameStore;
@@ -1309,6 +1376,14 @@ type SyncHostServiceArgs = {
    * to the listener instead of closing them.
    */
   sharedListener?: SharedSyncListener | null;
+  /**
+   * Lane sharing: a host that serves only guests of this project's shared
+   * lanes, beside the brain's served project (`syncService.adoptLaneShareGuest`).
+   * It never attaches to the shared listener (guests are handed to it), never
+   * publishes discovery or a Tailscale route, runs no changeset pump and no
+   * brain status broadcast, and on dispose closes its guests (they reconnect).
+   */
+  laneShareGuestsOnly?: boolean;
   discoveryEnabled?: boolean;
   runtimeKind?: SyncRuntimeKind;
   runtimeVersion?: string;
@@ -1333,7 +1408,11 @@ type SyncHostServiceArgs = {
   remoteCommandService?: SyncRemoteCommandService;
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
   /** Booted project scopes only; routed file requests must never start a runtime. */
-  projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
+  projectScopes?: {
+    getIfBooted(projectId: string): Promise<unknown> | null;
+    /** One input ledger for every phone ingress of this brain (see `createTerminalInputDedupeLedger`). */
+    terminalInputDedupeLedger?: TerminalInputDedupeLedger;
+  };
   /** A connected client just changed a file here (a save from the web or the phone). */
   onRemoteFileWrite?: () => void;
   productAnalyticsService?: ProductAnalyticsService | null;
@@ -1402,8 +1481,15 @@ function toSyncPeerConnectionState(peer: PeerState, currentServerDbVersion: numb
     isBrain: false,
     isHost: false,
     isAuthenticated: peer.authenticated,
+    ...(peer.laneShareGuest ? { laneShareGuest: true } : {}),
   };
 }
+
+/** What the host tells the owner's clients about its shares (`lane_share_event`). */
+export type LaneShareHostEvent = LaneShareEvent;
+
+/** What the host did to close a share at once (revoke, lane deleted). */
+export type { LaneShareCloseResult } from "./laneShareGuestHost";
 
 export function syncHeartbeatMissLimitForPeerMetadata(metadata: Pick<SyncPeerMetadata, "platform" | "deviceType"> | null | undefined): number {
   return metadata?.platform === "iOS" || metadata?.deviceType === "phone"
@@ -1763,6 +1849,8 @@ export function buildSyncHostHelloOkPayload(args: {
   connectionTransport?: "direct" | "relay";
   /** Advertise only when this concrete handler accepts terminal_input. */
   terminalInputAckEnabled?: boolean;
+  /** Advertise only when `terminal_*` envelopes reach every open project here. */
+  rosterTerminalEnabled?: boolean;
   /**
    * Advertise the streamed HTTP attachment-upload route. Purely additive:
    * older clients and iOS ignore it and stay on `chat.saveTempAttachment`.
@@ -1961,6 +2049,7 @@ export function buildSyncHostHelloOkPayload(args: {
             },
           }
         : {}),
+      ...(args.rosterTerminalEnabled ? { rosterTerminal: { enabled: true as const } } : {}),
       ...(args.terminalInputAckEnabled
         ? {
             terminalInputAck: {
@@ -2105,7 +2194,6 @@ function looksLikePendingTailnetApproval(text: string): boolean {
 export const CHAT_EVENT_REPLAY_MAX_EVENTS = 500;
 export const CHAT_EVENT_REPLAY_MAX_BYTES = 2_000_000;
 export const TERMINAL_INPUT_DEDUPE_MAX_ENTRIES = 2_048;
-export const TERMINAL_INPUT_ID_MAX_CHARS = 128;
 export const TERMINAL_INPUT_RETRY_WINDOW_MS = 60_000;
 export const TERMINAL_INPUT_MAX_OUTSTANDING = 64;
 export const ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS = 5 * 60_000;
@@ -2124,6 +2212,9 @@ type TerminalInputDedupeEntry = {
   dataFingerprint: string;
   recordedAtMs: number;
 };
+
+/** Input receipts per device, session and input id, for one retry window. */
+export type TerminalInputDedupeLedger = ReturnType<typeof createTerminalInputDedupeLedger>;
 
 export function createTerminalInputDedupeLedger(options: {
   maxEntries?: number;
@@ -2240,13 +2331,6 @@ export function createTerminalInputDedupeLedger(options: {
       return insertionOrder.size;
     },
   };
-}
-
-function normalizeTerminalInputId(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const inputId = value.trim();
-  if (!inputId || inputId.length > TERMINAL_INPUT_ID_MAX_CHARS) return null;
-  return inputId;
 }
 
 export type ChatEventReplayBufferEntry = {
@@ -2498,6 +2582,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
     cloudActions: args.cloudActions,
+    cloudPhoneActions: args.cloudPhoneActions,
     cloudAgentsService: args.cloudAgentsService,
     personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
@@ -2506,6 +2591,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
+    ctoAccountCopyService: args.ctoAccountCopyService,
     workToolsStateService: args.workToolsStateService,
     builtInBrowserService: args.builtInBrowserService ?? null,
     computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
@@ -2621,6 +2707,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // The brain's own ADE version. A phone reads its update track from it
       // (the "Beta" chip). Additive: older phones ignore it.
       ...(brainVersion ? { appVersion: brainVersion } : {}),
+      ...hostUpdateFacts(),
     };
   };
 
@@ -2634,8 +2721,48 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }>();
   // Host-scoped rather than peer-scoped so a transport reconnect from the
   // same authenticated device can retry a lost ACK without rewriting input.
-  const terminalInputDedupeLedger = createTerminalInputDedupeLedger();
-  const terminalInputOperationQueues = new Map<string, Promise<void>>();
+  // The brain shares its ledger with its own phone ingress: a phone that
+  // reconnects to the other ingress then cannot apply the same input twice.
+  const terminalInputDedupeLedger = args.projectScopes?.terminalInputDedupeLedger
+    ?? createTerminalInputDedupeLedger();
+  // Terminal streams of this project, and of this machine's other open
+  // projects when a peer names one (`rosterTerminal`).
+  const terminalStreams = createSyncTerminalStreams<PeerState>({
+    logger: args.logger,
+    peers: () => peers,
+    isPeerReceiving: (peer) => peer.authenticated && peer.ws.readyState === WebSocket.OPEN,
+    isPeerSocketOpen: (peer) => peer.ws.readyState === WebSocket.OPEN,
+    isPeerLifecycleCurrent,
+    isPeerConnected: (peer) => !disposed && peers.has(peer) && peer.authenticated,
+    isPeerBackpressured,
+    sendRequired: (peer, type, payload, requestId) => sendRequired(peer, type, payload, requestId),
+    send: (peer, type, payload) => {
+      send(peer.ws, type, payload);
+    },
+    peerDeviceId: (peer) => toOptionalString(peer.pairedDeviceId) ?? toOptionalString(peer.metadata?.deviceId),
+    closePeer: (peer, code, reason) => closeSocketQuietly(peer.ws, code, reason),
+    hostedBackend: { ptyService: args.ptyService, sessionService: args.sessionService },
+    ...(args.projectScopes
+      ? { resolveProject: (target) => resolveBootedTerminalProject(args.projectScopes!, target.projectId, args.logger) }
+      : {}),
+    dedupeLedger: terminalInputDedupeLedger,
+    logPrefix: "sync_host",
+  });
+  /**
+   * Where a `terminal_*` envelope goes: this project, another open project of
+   * this machine, or nowhere (null) when its scope is refused. A lane share
+   * guest only ever reaches this host's own project: never a route to another.
+   */
+  function terminalTargetFor(
+    peer: PeerState,
+    envelope: ParsedSyncEnvelope,
+    scope: SyncHostProjectScopeResolution,
+  ): SyncTerminalTarget | null {
+    if (scope.ok) return { kind: "hosted" };
+    if (peer.laneShareGuest) return null;
+    if (scope.code !== "project_mismatch" || !args.projectScopes) return null;
+    return syncTerminalProjectTarget(envelope);
+  }
   let accountLeaseUserId: string | null = null;
   let accountLeaseGeneration = 0;
   let accountLeaseInitialized = false;
@@ -2871,6 +2998,66 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     lifecycle.initialize(initial);
     peer.relayAuthorization = lifecycle;
   };
+  // The listener that routes a guest on to another project (none for a host without one).
+  const routingListener = args.sharedListener ?? null;
+  // Lane sharing: guests. `laneShareGuestHost.ts` owns the grants and rights
+  // of connected guests and the grant refresh; `laneShareGuestHello.ts` the
+  // guest hello and hand-off;
+  // `laneShareGuestGates.ts` owns the gates, all default refuse:
+  //   - inbound: `admitLaneShareGuestEnvelope` (queued) and
+  //     `admitLaneShareGuestImmediateEnvelope` (top of
+  //     `handleImmediateControlEnvelope`);
+  //   - commands: `handleLaneShareGuestCommand`, before the command cache;
+  //   - outbound: `laneShareGuestOutboundPayload` in `send`,
+  //     `sendRequired` and `sendAndWait`.
+  // This host keeps only the hook calls.
+  const laneShareGuestHost = createLaneShareGuestHost({
+    args,
+    peers,
+    send,
+    sendRequired,
+    remoteCommandService,
+    readBrainMetadata,
+    captureAccountAuthorization,
+    isPeerLifecycleCurrent,
+    clearPeerAuthTimeout,
+    discardChatEventCoalescer,
+    isDisposed: () => disposed,
+    getLocalActiveLaneIds: () => localActiveLaneIds,
+    heartbeatIntervalMs,
+    pollIntervalMs,
+    compressionThresholdBytes,
+    hostProjectIdAliases,
+    projectIdMatchesHost,
+    safeObjectValue,
+    requestedProjectChatScope,
+    normalizeTerminalInputId,
+    buildSyncHostHelloOkPayload,
+    releasePeerForHandoff: (peer) => releasePeerForHandoff(peer as PeerState),
+    ...(routingListener
+      ? { routeLaneShareGuest: (handoff: LaneShareGuestHandoff) => routingListener.routeLaneShareGuest(handoff) }
+      : {}),
+  });
+  const {
+    trackLaneShareTurns,
+    handleLaneShareGuestHello,
+    acceptHandedOffLaneShareGuest,
+    laneShareHasPendingGuestWork,
+    admitLaneShareGuestEnvelope,
+    admitLaneShareGuestImmediateEnvelope,
+    laneShareGuestTypedLineStillAllowed,
+    handleLaneShareGuestCommand,
+    laneShareGuestOutboundPayload,
+    notifyLaneShareGuests,
+    laneShareGuestSocketClosed,
+    refreshLaneShareGrants,
+    applyLaneShareRights,
+    closeLaneShareGrant,
+    closeLaneShareLane,
+    notifyLaneShareLaneChanged,
+    laneShareConnectedDevices,
+  } = laneShareGuestHost;
+
   const mobileCommandResultCache = new Map<string, CachedMobileCommand>();
   let commandReplayCount = 0;
   let commandConflictCount = 0;
@@ -3127,6 +3314,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     );
     const marker = readLocalPresenceMarker();
     let changed = false;
+    // Lanes where the owner came or went: their guests read who is here again.
+    const toggled = new Set<string>();
+    for (const laneId of localActiveLaneIds) if (!nextLaneIds.has(laneId)) toggled.add(laneId);
+    for (const laneId of nextLaneIds) if (!localActiveLaneIds.has(laneId)) toggled.add(laneId);
     if (marker) {
       for (const laneId of localActiveLaneIds) {
         if (!nextLaneIds.has(laneId)) {
@@ -3144,6 +3335,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       args.onStateChanged?.();
       broadcastBrainStatus();
     }
+    if (toggled.size > 0) notifyLaneShareGuests((role) => role.grants.some((grant) => toggled.has(grant.laneId)));
   };
 
   const buildRemotePresenceMarker = (peer: PeerState): DeviceMarker | null => {
@@ -3212,6 +3404,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
   const sharedListener = args.sharedListener ?? null;
+  // A guests-only host (`syncService.adoptLaneShareGuest`) serves only lane
+  // share guests handed to it. It changes five things, all gated here:
+  // no poll pump wake, no brain status timer, no shared-listener attach, no
+  // tailnet route, and dispose closes its guests ("Sync host changed projects").
+  const guestsOnly = args.laneShareGuestsOnly === true;
   const expectedLoopbackNonce = sharedListener?.getExpectedLoopbackNonce()
     ?? generateLoopbackNonce();
   // Self-owned listener (desktop-embedded / standalone): only created when no
@@ -3523,9 +3720,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    * run. Because capability only ever begins at one of those call sites, the
    * wait from "this peer can receive" to "the pump ran for it" is at most one
    * active interval — the same bound the free-running interval gave.
+   *
+   * With no socket at all the pump walks an empty set, so no timer runs.
+   * A new socket and an adopted peer call this at once, which arms it again.
    */
   function wakePollPump(): void {
-    if (disposed) return;
+    // Guests never get changesets: a guests-only host has nothing to pump.
+    if (disposed || guestsOnly) return;
+    if (peers.size === 0) {
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = null;
+      pollTimerIntervalMs = 0;
+      return;
+    }
     const intervalMs = pollPumpHasReceivableWork() ? pollIntervalMs : pollIdleIntervalMs;
     if (pollTimer && pollTimerIntervalMs === intervalMs) return;
     if (pollTimer) clearTimeout(pollTimer);
@@ -3616,16 +3823,72 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     if (dbVersionError) throw dbVersionError;
   }
-  const brainStatusTimer = setInterval(() => {
-    broadcastBrainStatus({ periodic: true });
-  }, brainStatusIntervalMs);
-  const accountLeaseTimer = setInterval(() => {
-    void refreshAccountLease();
-  }, Math.max(250, Math.floor(args.accountLeasePollMs ?? 1_000)));
-  accountLeaseTimer.unref?.();
+  // Brain status never reaches a guest, so a guests-only host has none to send.
+  // With no socket there is nobody to send it to, and a peer that connects gets
+  // a fresh status from its own handshake, so this timer runs only while a
+  // socket is connected (`wakePeerTimers`).
+  let brainStatusTimer: ReturnType<typeof setInterval> | null = null;
+  // Each check reads the account status and asks for an access token. With a
+  // peer connected it runs every second, so a sign-out or account switch
+  // closes that peer at once. With none, nothing is held open by the lease:
+  // every connect and pairing reads the lease itself first
+  // (`refreshAccountLease`, `captureAccountAuthorization`), so the idle check
+  // only revokes account-owned pairings ahead of time and runs every 15 s,
+  // on a timer of that period rather than a one-second timer that skips.
+  const accountLeasePollMs = Math.max(250, Math.floor(args.accountLeasePollMs ?? 1_000));
+  let lastAccountLeaseCheckAtMs = 0;
+  let accountLeaseTimer: ReturnType<typeof setInterval> | null = null;
+  let accountLeaseTimerIdle = false;
+  function armAccountLeaseTimer(): void {
+    if (disposed) return;
+    const idle = peers.size === 0;
+    if (accountLeaseTimer && accountLeaseTimerIdle === idle) return;
+    if (accountLeaseTimer) clearInterval(accountLeaseTimer);
+    accountLeaseTimerIdle = idle;
+    accountLeaseTimer = setInterval(() => {
+      const nowMs = Date.now();
+      if (peers.size === 0 && !idle) {
+        // The last peer left: the idle cadence from here, and this check only
+        // when the idle period has passed since the last one.
+        armAccountLeaseTimer();
+        if (nowMs - lastAccountLeaseCheckAtMs < ACCOUNT_LEASE_IDLE_CHECK_MS) return;
+      } else if (peers.size > 0 && idle) {
+        armAccountLeaseTimer();
+      }
+      lastAccountLeaseCheckAtMs = nowMs;
+      void refreshAccountLease();
+    }, idle ? ACCOUNT_LEASE_IDLE_CHECK_MS : accountLeasePollMs);
+    accountLeaseTimer.unref?.();
+  }
+  /**
+   * Moves every per-peer timer to the cadence the connected sockets call for.
+   * A new socket and an adopted peer call it at once; each timer also calls it
+   * from its own tick when it finds the last socket gone.
+   */
+  function wakePeerTimers(): void {
+    wakePollPump();
+    armAccountLeaseTimer();
+    if (disposed || guestsOnly) return;
+    if (peers.size === 0) {
+      if (brainStatusTimer) clearInterval(brainStatusTimer);
+      brainStatusTimer = null;
+      return;
+    }
+    if (brainStatusTimer) return;
+    brainStatusTimer = setInterval(() => {
+      if (peers.size === 0) {
+        wakePeerTimers();
+        return;
+      }
+      broadcastBrainStatus({ periodic: true });
+    }, brainStatusIntervalMs);
+  }
+  armAccountLeaseTimer();
+  lastAccountLeaseCheckAtMs = Date.now();
   void refreshAccountLease();
   const chatEventSubscription = args.agentChatService?.subscribeToEvents(
     (event) => {
+      trackLaneShareTurns(event);
       broadcastChatEvent(event);
     },
   ) ?? null;
@@ -3652,30 +3915,50 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }) ?? null;
 
-  /**
-   * Snap a PTY back to the desktop-preferred size once no connected peer is
-   * still viewing it (mobile unsubscribe or disconnect). While another peer
-   * remains subscribed the mobile size stays — that peer is still actively
-   * driving the viewport.
-   */
-  function restoreDesktopTerminalSizeIfUnwatched(sessionId: string): void {
-    for (const other of peers) {
-      if (other.subscribedSessionIds.has(sessionId) && other.ws.readyState === WebSocket.OPEN) return;
-    }
-    try {
-      args.ptyService.restoreDesktopSizeBySessionId(sessionId);
-    } catch (error) {
-      args.logger.warn("sync_host.restore_desktop_terminal_size_failed", {
-        sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
   function clearPeerAuthTimeout(peer: PeerState): void {
     if (!peer.authTimeout) return;
     clearTimeout(peer.authTimeout);
     peer.authTimeout = null;
+  }
+
+  /**
+   * A guest socket moves to another project's host (`LaneShareGuestHandoff`):
+   * this host drops the peer without closing the socket and removes every
+   * listener it put on it, so nothing here acts on the socket again. Only a
+   * peer still in its hello is released; it has no subscription or presence.
+   */
+  function releasePeerForHandoff(peer: PeerState): void {
+    peer.lifecycleGeneration += 1;
+    abortPeerOperations(peer, "Sync peer moved to another project.");
+    clearPeerAuthTimeout(peer);
+    peer.relayAuthorization?.dispose();
+    peer.relayAuthorization = null;
+    peer.envelopeChunks.reset();
+    detachSocketForHandoff(peer.ws);
+    peers.delete(peer);
+    laneShareGuestSocketClosed(peer);
+  }
+
+  /**
+   * A guest socket handed to this host by the brain's router. False when it
+   * closed on the way. The hello runs in the peer's queue, as a frame would.
+   */
+  function adoptLaneShareGuest(handoff: LaneShareGuestHandoff): boolean {
+    if (disposed || handoff.ws.readyState !== WebSocket.OPEN) return false;
+    const peer = registerPeer(handoff.ws, handoff.remoteAddress, handoff.remotePort, handoff.transportOrigin);
+    const negotiatedCompression = negotiateSyncApplicationCompression(handoff.hello.compression);
+    const generation = peer.lifecycleGeneration;
+    peer.messageQueue = peer.messageQueue
+      .then(() => acceptHandedOffLaneShareGuest(peer, handoff, generation, negotiatedCompression))
+      .catch((error) => {
+        args.logger.warn("sync_host.lane_share_guest_adopt_failed", { error: error instanceof Error ? error.message : String(error) });
+        try {
+          peer.ws.close(4003, "Authentication failed");
+        } catch {
+          // ignore close failures
+        }
+      });
+    return true;
   }
 
   function abortPeerOperations(peer: PeerState, reason: string): void {
@@ -3690,206 +3973,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       && peers.has(peer)
       && peer.lifecycleGeneration === generation
       && peer.ws.readyState === WebSocket.OPEN;
-  }
-
-  function isActiveTerminalSnapshotBarrier(
-    peer: PeerState,
-    sessionId: string,
-    barrier: PendingTerminalSnapshotBarrier,
-    lifecycleGeneration: number,
-  ): boolean {
-    const currentBarrier = peer.pendingTerminalSnapshots.get(sessionId);
-    return isPeerLifecycleCurrent(peer, lifecycleGeneration)
-      && currentBarrier === barrier;
-  }
-
-  function clearTerminalSnapshotBarrier(
-    peer: PeerState,
-    sessionId: string,
-    barrier?: PendingTerminalSnapshotBarrier,
-  ): void {
-    const currentBarrier = peer.pendingTerminalSnapshots.get(sessionId);
-    if (barrier && currentBarrier !== barrier) return;
-    peer.pendingTerminalSnapshots.delete(sessionId);
-  }
-
-  function requireFreshTerminalSnapshot(
-    barrier: PendingTerminalSnapshotBarrier,
-    endOffset?: number | null,
-  ): void {
-    barrier.requiredCaptureAttempt = Math.max(
-      barrier.requiredCaptureAttempt,
-      barrier.captureAttempt + 1,
-    );
-    if (typeof endOffset === "number" && Number.isSafeInteger(endOffset) && endOffset >= 0) {
-      barrier.requiredSnapshotEndOffset = Math.max(
-        barrier.requiredSnapshotEndOffset ?? 0,
-        endOffset,
-      );
-    }
-  }
-
-  function discardTrackedTerminalDataForRecapture(barrier: PendingTerminalSnapshotBarrier): void {
-    const retained: PendingTerminalSnapshotEvent[] = [];
-    let queuedBytes = 0;
-    for (const event of barrier.events) {
-      if (event.kind === "data" && event.payload.offset != null) {
-        requireFreshTerminalSnapshot(barrier, event.payload.offset);
-        continue;
-      }
-      retained.push(event);
-      queuedBytes += event.byteLength;
-    }
-    barrier.events = retained;
-    barrier.queuedBytes = queuedBytes;
-  }
-
-  function readTerminalScreenSnapshot(sessionId: string): SyncTerminalScreenSnapshot | null {
-    const screen = args.ptyService.readScreenSnapshot?.(sessionId) ?? null;
-    if (!screen?.serialized) return null;
-    if (screen.serialized.length > MAX_TERMINAL_SCREEN_SERIALIZED_CHARS) return null;
-    if (!Number.isFinite(screen.cols) || !Number.isFinite(screen.rows)) return null;
-    if (screen.cols < 1 || screen.rows < 1) return null;
-    return {
-      cols: Math.floor(screen.cols),
-      rows: Math.floor(screen.rows),
-      bufferType: screen.bufferType === "alternate" ? "alternate" : "normal",
-      serialized: screen.serialized,
-    };
-  }
-
-  function withTerminalScreen(
-    sessionId: string,
-    snapshot: SyncTerminalSnapshotPayload,
-  ): SyncTerminalSnapshotPayload {
-    if (snapshot.delta === true) return snapshot;
-    const screen = readTerminalScreenSnapshot(sessionId);
-    return screen ? { ...snapshot, screen } : snapshot;
-  }
-
-  function failTerminalSnapshotBarrier(
-    peer: PeerState,
-    sessionId: string,
-    barrier: PendingTerminalSnapshotBarrier,
-    reason: string,
-  ): void {
-    if (barrier.failed) return;
-    barrier.failed = true;
-    args.logger.warn("sync_host.terminal_snapshot_barrier_failed", {
-      sessionId,
-      reason,
-      captureAttempt: barrier.captureAttempt,
-      queuedEvents: barrier.events.length,
-      queuedBytes: barrier.queuedBytes,
-      peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
-    });
-    // Do not close the controller socket. A hot Claude TUI can overflow the
-    // catch-up queue on LAN; tearing down sync blanks every other surface on
-    // that phone. The subscribe loop sends the last captured snapshot instead.
-  }
-
-  function enqueueTerminalSnapshotEvent(
-    peer: PeerState,
-    sessionId: string,
-    event: PendingTerminalSnapshotEvent,
-  ): boolean {
-    const barrier = peer.pendingTerminalSnapshots.get(sessionId);
-    if (!barrier) return false;
-    if (barrier.failed) return true;
-
-    const exceedsBudget = (): boolean => (
-      barrier.events.length >= MAX_PENDING_TERMINAL_SNAPSHOT_EVENTS
-      || barrier.queuedBytes + event.byteLength > MAX_PENDING_TERMINAL_SNAPSHOT_BYTES
-    );
-    if (exceedsBudget()) {
-      // Numeric-offset data is durably represented by a fresh authoritative
-      // transcript snapshot, so shed only those queued events and require the
-      // next capture to cover their highest end offset. Offsetless data and
-      // exits are not reconstructable and must remain explicitly queued.
-      discardTrackedTerminalDataForRecapture(barrier);
-    }
-    if (exceedsBudget()) {
-      if (event.kind === "data" && event.payload.offset != null) {
-        requireFreshTerminalSnapshot(barrier, event.payload.offset);
-        return true;
-      }
-      failTerminalSnapshotBarrier(peer, sessionId, barrier, "unreconstructable_queue_overflow");
-      return true;
-    }
-
-    if (event.kind === "data" && event.payload.offset == null) {
-      requireFreshTerminalSnapshot(barrier);
-    }
-    barrier.events.push(event);
-    barrier.queuedBytes += event.byteLength;
-    return true;
-  }
-
-  function planTerminalSnapshotFlush(
-    barrier: PendingTerminalSnapshotBarrier,
-    snapshotEndOffset: number | null,
-  ): { needsRecapture: boolean; events: PendingTerminalSnapshotEvent[] } {
-    if (
-      barrier.requiredCaptureAttempt > barrier.captureAttempt
-      || (
-        barrier.requiredSnapshotEndOffset != null
-        && (snapshotEndOffset == null || snapshotEndOffset < barrier.requiredSnapshotEndOffset)
-      )
-    ) {
-      return { needsRecapture: true, events: [] };
-    }
-
-    const planned: PendingTerminalSnapshotEvent[] = [];
-    let watermark = snapshotEndOffset;
-    let offsetsAreContinuous = watermark != null;
-    for (const event of barrier.events) {
-      if (event.kind === "exit") {
-        planned.push(event);
-        continue;
-      }
-      const endOffset = event.payload.offset;
-      const bytes = Buffer.from(event.payload.data, "utf8");
-      if (
-        !offsetsAreContinuous
-        || endOffset == null
-        || !Number.isSafeInteger(endOffset)
-        || endOffset < bytes.length
-      ) {
-        planned.push(event);
-        offsetsAreContinuous = false;
-        continue;
-      }
-      const startOffset = endOffset - bytes.length;
-      if (endOffset <= watermark!) {
-        continue;
-      }
-      if (startOffset > watermark!) {
-        requireFreshTerminalSnapshot(barrier, endOffset);
-        discardTrackedTerminalDataForRecapture(barrier);
-        return { needsRecapture: true, events: [] };
-      }
-      const overlapBytes = watermark! - startOffset;
-      if (
-        overlapBytes > 0
-        && overlapBytes < bytes.length
-        && (bytes[overlapBytes]! & 0b1100_0000) === 0b1000_0000
-      ) {
-        requireFreshTerminalSnapshot(barrier, endOffset);
-        discardTrackedTerminalDataForRecapture(barrier);
-        return { needsRecapture: true, events: [] };
-      }
-      const suffix = overlapBytes === 0 ? bytes : bytes.subarray(overlapBytes);
-      planned.push({
-        ...event,
-        payload: {
-          ...event.payload,
-          data: suffix.toString("utf8"),
-        },
-        byteLength: suffix.length,
-      });
-      watermark = endOffset;
-    }
-    return { needsRecapture: false, events: planned };
   }
 
   async function withHelloCommitLock<T>(deviceId: string, work: () => Promise<T> | T): Promise<T> {
@@ -3985,12 +4068,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // connection until that client explicitly reasserts consent, so an
       // opted-out reconnect cannot leak an exportable first mutation.
       productAnalyticsEnabled: false,
+      laneShareGuest: null,
     };
     peers.add(peer);
     // A new socket may become a receivable peer at its hello; wake the pump so
     // its first catch-up runs on the active cadence rather than waiting out an
-    // idle interval.
-    wakePollPump();
+    // idle interval. The first socket also starts the per-peer timers.
+    wakePeerTimers();
     peer.authTimeout = setTimeout(() => {
       if (disposed || peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) return;
       args.logger.warn("sync_host.auth_timeout", {
@@ -4104,6 +4188,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         broadcastBrainStatus();
       }
       peers.delete(peer);
+      // The grant refresh runs only while a guest is connected.
+      laneShareGuestSocketClosed(peer);
       // Every Mac Desktop viewer this socket owned is gone. The release stops
       // the encoder when the set empties, same as a closing chat.
       macDesktopSyncStream?.releaseConnection(peer.macDesktopConnectionId);
@@ -4127,9 +4213,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // this method existed; the TTL still covers that host.
       remoteCommandService.releaseMacDesktopConnection?.(peer.macDesktopConnectionId);
       if (peer.rosterSubscribed) rosterFanout.peerRemoved();
-      for (const sessionId of peer.subscribedSessionIds) {
-        restoreDesktopTerminalSizeIfUnwatched(sessionId);
-      }
+      terminalStreams.releasePeer(peer);
       pairedChannelService.closePeer(peer.ws, "Sync socket closed.", false);
       args.onStateChanged?.();
       broadcastBrainStatus();
@@ -4197,9 +4281,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // The previous owner (host service or listener parking) must leave no
       // listeners behind — this host attaches its own message/close/error
       // handlers via registerPeer.
-      ws.removeAllListeners("message");
-      ws.removeAllListeners("close");
-      ws.removeAllListeners("error");
+      detachSocketForHandoff(ws);
       const peer = registerPeer(
         ws,
         sanitizeRemoteAddress(snapshot.remoteAddress),
@@ -4371,12 +4453,28 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     runPollPump();
     // Adopted peers arrive already authenticated and subscribed; the cadence
-    // this host inherited may be the idle one.
-    wakePollPump();
+    // this host inherited may be the idle one, or no timer at all.
+    wakePeerTimers();
   }
 
   let detachSharedListener: (() => void) | null = null;
-  if (sharedListener) {
+  let detachSharedListenerStatus: (() => void) | null = null;
+  if (sharedListener && !guestsOnly) {
+    // The listener re-checks loopback on its own (and moves off a shadowed
+    // port). Mirror its verdict so route health and Tailscale publication
+    // follow it instead of the last check this host happened to run.
+    detachSharedListenerStatus = sharedListener.onLoopbackStatusChanged(() => {
+      if (disposed) return;
+      loopbackValidationStatus = sharedListener.getLoopbackValidationStatus();
+      const port = sharedListener.getPort();
+      if (port == null) return;
+      void publishValidatedDiscovery(port).catch((error) => {
+        args.logger.warn("sync_host.discovery_refresh_failed", {
+          port,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
     detachSharedListener = sharedListener.setConnectionHandler((connection) => {
       const peer = registerPeer(
         connection.ws,
@@ -4675,14 +4773,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // and it also pinned the listener to a constant port (8787) that never
     // matched the live socket. Per-node serve works on any node and targets the
     // actual port phones must connect to.
-    const signature = `serve:${port}`;
+    // Tailscale Serve forwards to 127.0.0.1: the listener's own port, or its
+    // local side door while another program holds 127.0.0.1:<port>. The
+    // tailnet-facing port stays the sync port either way.
+    const targetPort = sharedListener?.getLoopbackPort() ?? port;
+    const signature = `serve:${port}->${targetPort}`;
     if (tailnetServeSignature === signature && !options?.force) return;
     if (tailnetServeLastFailureSignature === signature && !options?.force) return;
     const publishToken = ++tailnetServePublishSequence;
     tailnetServeActivePublishToken = publishToken;
     tailnetServeSignature = signature;
     tailnetServePort = port;
-    const target = `tcp://127.0.0.1:${port}`;
+    const target = `tcp://127.0.0.1:${targetPort}`;
     updateTailnetDiscoveryStatus({
       state: "publishing",
       serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
@@ -4698,7 +4800,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       `--tcp=${port}`,
       target,
     ];
-    void execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" })
+    void enqueueTailscaleServe(() => execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" }))
       .then(({ stdout, stderr }) => {
         if (tailnetServeActivePublishToken !== publishToken) return;
         tailnetServeLastFailureSignature = null;
@@ -4725,7 +4827,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // must never delay or endanger advertising the live port.
         if (tailnetServeActivePublishToken === publishToken) {
           void reclaimStaleTailnetServes(port).catch(() => {});
-          if (discoveryEnabled) void tailnetHttps.publish(port);
+          if (discoveryEnabled) void tailnetHttps.publish(port, { targetPort });
         }
       })
       .catch((error: unknown) => {
@@ -4793,12 +4895,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const reclaimStaleTailnetServes = async (currentPort: number): Promise<void> => {
     const cli = resolveTailscaleCliPath();
     let stale: number[];
+    let serveStatusJson: string;
     try {
       const { stdout } = await execFileAsync(
         cli,
         ["serve", "status", "--json"],
         { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
       );
+      serveStatusJson = stdout;
       stale = staleAdeTailnetServePorts(stdout, currentPort);
       // The same read answers for ADE's stale HTTPS entries.
       void tailnetHttps.reclaimStale(stdout);
@@ -4808,6 +4912,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     if (stale.length === 0) return;
+    // Where each entry forwards: the sync port itself, or a side door.
+    const staleTargets = adeTailnetServeTargets(serveStatusJson);
     let reclaimed = 0;
     for (const port of stale) {
       // The snapshot is stale the moment reclaiming starts: turning off a low
@@ -4826,12 +4932,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // into nothing. Probe immediately before each teardown, so the window
       // between the snapshot and this `off` is closed too.
       if (await isLocalPortServing(port)) continue;
+      const target = staleTargets.get(port);
+      if (target != null && target !== port && await isLocalPortServing(target)) continue;
       try {
-        await execFileAsync(
+        await enqueueTailscaleServe(() => execFileAsync(
           cli,
           ["serve", `--tcp=${port}`, "off"],
           { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
-        );
+        ));
         reclaimed += 1;
       } catch {
         // A single stubborn entry must not stop the rest.
@@ -4858,7 +4966,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
   });
 
-  const unregisterTailnetRoute = registerMachineTailnetRoute({
+  const unregisterTailnetRoute = guestsOnly ? () => {} : registerMachineTailnetRoute({
     tcp: () => ({
       published: tailnetDiscoveryStatus.state === "published",
       error: tailnetDiscoveryStatus.state === "published" ? null : tailnetDiscoveryStatus.error,
@@ -4866,7 +4974,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     https: () => tailnetHttps.route(),
     recheckHttps: async () => {
       if (tailnetServePort == null || tailnetDiscoveryStatus.state !== "published") return;
-      await tailnetHttps.publish(tailnetServePort, { force: true });
+      await tailnetHttps.publish(tailnetServePort, {
+        force: true,
+        targetPort: sharedListener?.getLoopbackPort() ?? tailnetServePort,
+      });
     },
   });
 
@@ -4894,11 +5005,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const cli = resolveTailscaleCliPath();
     try {
       // Plain per-node teardown matching the `serve --bg --tcp=<port>` form.
-      await execFileAsync(
+      await enqueueTailscaleServe(() => execFileAsync(
         cli,
         ["serve", `--tcp=${servePort}`, "off"],
         { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
-      );
+      ));
       updateTailnetDiscoveryStatus({
         state: "disabled",
         serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
@@ -4937,6 +5048,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     port: number,
     options?: { force?: boolean },
   ): Promise<void> => {
+    if (sharedListener) {
+      // The shared listener owns the local route: its own port, or a side
+      // door while another program holds 127.0.0.1:<port>. Probing the port
+      // here would call a working side door a failure.
+      try {
+        await sharedListener.revalidateLoopback();
+      } finally {
+        loopbackValidationStatus = sharedListener.getLoopbackValidationStatus();
+      }
+      return;
+    }
     // Re-publish paths pass force:true so a shadow that arose AFTER startup is
     // caught before we (re)advertise the port; the startup path keeps the cheap
     // short-circuit once a port is validated.
@@ -4972,17 +5094,50 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
-  const publishValidatedDiscovery = async (
+  // One publication at a time: two overlapping ones (a port move and a
+  // loopback verdict change) could each tear down the other's Tailscale route.
+  let discoveryChain: Promise<unknown> = Promise.resolve();
+  const publishValidatedDiscovery = (
     port: number,
     options?: { forceLan?: boolean; forceTailnet?: boolean },
   ): Promise<void> => {
+    const run = discoveryChain.then(
+      () => publishValidatedDiscoveryNow(port, options),
+      () => publishValidatedDiscoveryNow(port, options),
+    );
+    discoveryChain = run.catch(() => undefined);
+    return run;
+  };
+
+  const publishValidatedDiscoveryNow = async (
+    port: number,
+    options?: { forceLan?: boolean; forceTailnet?: boolean },
+  ): Promise<void> => {
+    // A publication for a port the shared listener has already left is stale:
+    // the move's own refresh publishes the live port. Checked again after the
+    // await below, which runs an external `tailscale serve`.
+    const isStale = (): boolean => sharedListener != null && sharedListener.getPort() !== port;
+    if (isStale()) return;
     const lanPortChanged = bonjourPort != null && bonjourPort !== port;
     const tailnetPortChanged = tailnetServePort != null && tailnetServePort !== port;
     if (lanPortChanged) unpublishLanDiscovery();
     if (tailnetPortChanged) await unpublishTailnetDiscovery();
-    if (disposed) return;
+    if (disposed || isStale()) return;
+    // LAN peers reach the wildcard bind, not loopback, so a program holding
+    // 127.0.0.1:<port> does not stop LAN. Tailscale Serve forwards to
+    // 127.0.0.1:<port>, so only that route waits for loopback to answer as
+    // this listener (the shared listener moves off a shadowed port by itself).
     publishLanDiscovery(port, { force: options?.forceLan });
-    publishTailnetDiscovery(port, { force: options?.forceTailnet });
+    // Read the shared listener's live verdict, not a copy: a check that
+    // finished for an older port must not unpublish the current one.
+    const localRouteReady = sharedListener
+      ? sharedListener.getLoopbackPort() != null
+      : loopbackValidationStatus.port === port && loopbackValidationStatus.loopbackAdeValidated;
+    if (localRouteReady) {
+      publishTailnetDiscovery(port, { force: options?.forceTailnet });
+    } else if (tailnetServePort != null) {
+      await unpublishTailnetDiscovery();
+    }
   };
 
   function peerForSocket(ws: WebSocket): PeerState | null {
@@ -5040,6 +5195,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   function send<TPayload>(target: WebSocket | PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
     const ws = target instanceof WebSocket ? target : target.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
+    const guestPayload = laneShareGuestOutboundPayload(ws, type, payload);
+    if (!guestPayload) return false;
+    payload = guestPayload.payload;
     // Drop sends to backpressured peers as the default — most envelopes are
     // either replayable (chat events / changesets re-derived from db state) or
     // tolerable to lose (acks, status pings). Routes that *must* deliver under
@@ -5064,6 +5222,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   ): boolean {
     const ws = peer.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
+    const guestPayload = laneShareGuestOutboundPayload(ws, type, payload);
+    if (!guestPayload) return false;
+    payload = guestPayload.payload;
+    const sendStartedAt = Date.now();
     const frames = encodeFramesFor(peer, type, payload, requestId);
     const frameBytes = frames.reduce((sum, frame) => sum + syncFrameByteLength(frame), 0);
     const bufferedAmount = ws.bufferedAmount;
@@ -5117,6 +5279,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
       });
     }
+    // Encoding and handing a reply to the socket run on the brain's loop. A
+    // freeze inside `ws.send` (ADE-BRAIN-8A) says nothing about the reply;
+    // this names its type, action and size.
+    const sendMs = Date.now() - sendStartedAt;
+    if (sendMs >= SLOW_REQUIRED_SEND_MS) {
+      args.logger.warn("sync_host.slow_send", { ...logFields, frames: frames.length, durationMs: sendMs });
+    }
     return true;
   }
 
@@ -5169,6 +5338,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
       return Promise.reject(new Error("Cannot send on closed WebSocket."));
     }
+    const guestPayload = laneShareGuestOutboundPayload(ws, type, payload);
+    if (!guestPayload) {
+      return Promise.reject(new Error(`${type} is not sent to a lane-share guest.`));
+    }
+    payload = guestPayload.payload;
     const frames = encodeFramesFor(ws, type, payload, requestId);
     const frameBytes = frames.reduce((sum, frame) => sum + syncFrameByteLength(frame), 0);
     if (ws.bufferedAmount + frameBytes > REQUIRED_SEND_MAX_BUFFERED_BYTES) {
@@ -5579,6 +5753,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     let result: SyncProjectSwitchResultPayload | null = null;
+    // Which device moved this machine's hosted project: every other client
+    // still on the old project is refused project-scoped requests after it.
+    args.logger.info("sync_host.project_switch_requested", {
+      fromProjectId: args.projectId ?? null,
+      toProjectId: toOptionalString(payload?.projectId) ?? null,
+      peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+      peerDeviceName: peer.metadata?.deviceName ?? null,
+      peerPlatform: peer.metadata?.platform ?? null,
+    });
     try {
       result = await args.projectCatalogProvider.prepareProjectConnection(payload ?? {});
       await sendAndWait(peer.ws, "project_switch_result", result, requestId);
@@ -5986,6 +6169,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     );
   }
 
+  /**
+   * The chat payload a request stamped with a non-hosted project becomes: it
+   * names that project (unless it already names its own scope), so the
+   * file-backed cross-project path serves it. Null when that project is not
+   * one this machine can serve chats for (not registered, refused as too slow
+   * to open, no resolver), and the envelope is refused as before.
+   */
+  function chatPayloadForNonHostedProject(
+    payload: Record<string, unknown> | null,
+    envelopeProjectId: string,
+  ): Record<string, unknown> | null {
+    if (!args.foreignChatProvider || !payload) return null;
+    const sessionId = toOptionalString(payload.sessionId);
+    if (!sessionId) return null;
+    const namesOwnScope = toOptionalString(payload.projectId) != null
+      || toOptionalString(payload.projectRootPath) != null;
+    const routed = namesOwnScope ? payload : { ...payload, projectId: envelopeProjectId };
+    const scope = resolveForeignChatScope(routed as ChatScopeRequest, sessionId);
+    return scope.kind === "foreign" ? routed : null;
+  }
+
   // Resolve a foreign-project subscription's transcript path via the provider
   // (the security boundary — validates the project is registered and confines
   // the path to that project's `.ade` transcripts). `kind: "local"` means the
@@ -6143,6 +6347,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    */
   function peerWantsSlimChat(peer: PeerState): boolean {
     return peer.metadata?.capabilities?.includes(SYNC_MOBILE_CHAT_SLIM_CAPABILITY) === true;
+  }
+
+  /**
+   * Answers a `chat_subscribe` this host cannot serve. Without an answer the
+   * phone waits out its snapshot watchdog and shows a generic "didn't answer";
+   * a peer that understands `unavailable` shows the real reason instead. Older
+   * peers get nothing, as before: they would read the empty events as an
+   * empty chat.
+   */
+  function sendChatSubscribeUnavailable(
+    peer: PeerState,
+    requestId: string | null,
+    sessionId: string,
+    unavailable: SyncChatSubscribeUnavailable,
+  ): void {
+    const answer = chatSubscribeUnavailableSnapshot(peer.metadata, sessionId, unavailable, nowIso());
+    if (answer) sendRequired(peer, "chat_subscribe", answer, requestId);
   }
 
   function chatEventCoalescerFor(peer: PeerState, sessionId: string): SubagentProgressCoalescer {
@@ -6396,6 +6617,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const currentDbVersion = args.db.sync.getDbVersion();
     const nowMs = Date.now();
       if (!peer.authenticated || !peer.metadata || peer.ws.readyState !== WebSocket.OPEN) return;
+      // A guest is a roster peer already; this is the second lock.
+      if (peer.laneShareGuest) return;
       // A paired desktop runtime connection shares this authenticated socket
       // only for rpc/fwd envelopes. The authoritative pairing record remains
       // the gate so a phone/browser cannot suppress its normal CRDT stream by
@@ -7063,6 +7286,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     payload: SyncCommandPayload,
     signal: AbortSignal,
   ): Promise<void> {
+    // Before the command cache and lane presence: a guest has its own path.
+    if (peer.laneShareGuest) {
+      await handleLaneShareGuestCommand(peer, peer.laneShareGuest, requestId, payload, signal);
+      return;
+    }
     const commandId = toOptionalString(payload.commandId) ?? requestId ?? `cmd-${Date.now()}`;
     const requestedProjectId = toOptionalString(payload.projectId);
     const hostProjectId = toOptionalString(args.projectId);
@@ -7231,132 +7459,151 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       message: `Executing ${payload.action}.`,
     });
 
-    try {
-      const executor = shouldRouteToProject && args.remoteCommandExecutor
-        ? args.remoteCommandExecutor
-        : remoteCommandService;
-      const surface = usageClientSurfaceFromPeer(peer.metadata?.deviceType, peer.metadata?.platform);
-      const rawCommandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
-        ? payload.args as Record<string, unknown>
-        : {};
-      const canonicalProjectId = matchesHostProject
-        ? hostProjectId
-        : requestedProjectId;
-      const preparedAnalytics = prepareProductAnalyticsRemoteCommand({
-        action: payload.action,
-        args: rawCommandArgs,
-        surface,
-        projectId: canonicalProjectId,
-        clientEnabled: peer.productAnalyticsEnabled,
-      });
-      peer.productAnalyticsEnabled = preparedAnalytics.clientEnabled;
-      const surfaceBoundPayload = preparedAnalytics.args === rawCommandArgs
-        ? payload
-        : { ...payload, args: preparedAnalytics.args };
-      const routedPayload = matchesHostProject && hostProjectId
-        ? { ...surfaceBoundPayload, projectId: hostProjectId }
-        : surfaceBoundPayload;
-      const executionStartedAtMs = Date.now();
-      const stopTrackingCommand = trackBrainLoopWatchdogCommand(payload.action);
-      // Only the Mac Desktop stream methods read the sink, and a subscription
-      // outlives the command that created it, so the sink closes over the peer
-      // rather than the command's own reply path. Every `macDesktop.*` command
-      // also gets the connection id, which the takeover handlers derive the
-      // lease's controller id from — the stream fan-out is not a requirement
-      // for control, so the id is passed independently of the sink.
-      const macDesktopConnectionId =
-        peer.authenticated && payload.action.startsWith("macDesktop.")
-          ? peer.macDesktopConnectionId
-          : undefined;
-      const macDesktopStreamSink: MacDesktopSyncStreamSink | undefined =
-        macDesktopSyncStream && macDesktopConnectionId
-          ? {
-              connectionId: macDesktopConnectionId,
-              // Hand the transport's own answer back: `send` refuses once the
-              // socket is over its 4 MiB gate, and the fan-out must then skip
-              // the picture to the next keyframe instead of pretending the
-              // record went out.
-              sendRecord: (record) => send(peer, "macDesktop.streamRecord", record),
-              sendEnded: (ended) => {
-                send(peer, "macDesktop.streamEnded", ended);
-              },
-              pendingBytes: () => peer.ws.bufferedAmount,
-            }
-          : undefined;
-      // App Control frames ride the same per-socket id. The subscribe handler
-      // pushes frames through the sink; unsubscribe reads only its connection
-      // id, so a connection can end its own streams and never another's.
-      const appControlStreamSink: AppControlSyncStreamSink | undefined =
-        args.appControlSyncStream
-        && peer.authenticated
-        && (payload.action === "appControl.streamSubscribe" || payload.action === "appControl.streamUnsubscribe")
-          ? {
-              connectionId: peer.macDesktopConnectionId,
-              sendFrame: (frame) => send(peer, "appControl.streamFrame", frame),
-              sendEnded: (ended) => {
-                send(peer, "appControl.streamEnded", ended);
-              },
-              pendingBytes: () => peer.ws.bufferedAmount,
-              isClosed: () => peer.ws.readyState !== WebSocket.OPEN,
-            }
-          : undefined;
-      let created: unknown;
+    const execute = async (): Promise<void> => {
       try {
-        created = preparedAnalytics.captureDisabled
-          ? { accepted: false, reason: "disabled" }
-          : await executor.execute(routedPayload, {
-              signal,
-              ...(macDesktopConnectionId ? { connectionId: macDesktopConnectionId } : {}),
-              ...(macDesktopStreamSink ? { macDesktopStream: macDesktopStreamSink } : {}),
-              ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
-            });
-        if (payload.action === "files.writeTextAtomic") args.onRemoteFileWrite?.();
-      } finally {
-        stopTrackingCommand();
-        const durationMs = Math.max(0, Date.now() - executionStartedAtMs);
-        if (durationMs >= slowCommandThresholdMs) {
-          args.logger.warn("sync_host.command_slow", {
-            action: payload.action,
-            durationMs,
-            peerKind: surface,
-          });
-        }
-      }
-      if (
-        matchesHostProject
-        && !payload.action.startsWith("analytics.")
-      ) {
-        const commandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
+        const executor = shouldRouteToProject && args.remoteCommandExecutor
+          ? args.remoteCommandExecutor
+          : remoteCommandService;
+        const surface = usageClientSurfaceFromPeer(peer.metadata?.deviceType, peer.metadata?.platform);
+        const rawCommandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
           ? payload.args as Record<string, unknown>
           : {};
-        const separator = payload.action.indexOf(".");
-        const actionDomain = separator > 0 ? payload.action.slice(0, separator) : payload.action;
-        const actionName = separator > 0 ? payload.action.slice(separator + 1) : "";
-        const usageAction = actionName
-          ? usageActionFromRpcDomain(actionDomain, actionName)
-          : payload.action;
-        recordUsageInteraction(args.db, {
-          projectId: hostProjectId,
-          client: surface,
-          action: usageAction,
-          feature: usageAction.split(".", 1)[0] ?? "other",
-          sessionId: toOptionalString(commandArgs.sessionId),
-          analyticsEligible:
-            peer.productAnalyticsEnabled
-            && args.productAnalyticsService?.getStatus().effective === true,
+        const canonicalProjectId = matchesHostProject
+          ? hostProjectId
+          : requestedProjectId;
+        const preparedAnalytics = prepareProductAnalyticsRemoteCommand({
+          action: payload.action,
+          args: rawCommandArgs,
+          surface,
+          projectId: canonicalProjectId,
+          clientEnabled: peer.productAnalyticsEnabled,
         });
+        peer.productAnalyticsEnabled = preparedAnalytics.clientEnabled;
+        const surfaceBoundPayload = preparedAnalytics.args === rawCommandArgs
+          ? payload
+          : { ...payload, args: preparedAnalytics.args };
+        const routedPayload = matchesHostProject && hostProjectId
+          ? { ...surfaceBoundPayload, projectId: hostProjectId }
+          : surfaceBoundPayload;
+        const executionStartedAtMs = Date.now();
+        const stopTrackingCommand = trackBrainLoopWatchdogCommand(payload.action);
+        // Only the Mac Desktop stream methods read the sink, and a subscription
+        // outlives the command that created it, so the sink closes over the peer
+        // rather than the command's own reply path. Every `macDesktop.*` command
+        // also gets the connection id, which the takeover handlers derive the
+        // lease's controller id from — the stream fan-out is not a requirement
+        // for control, so the id is passed independently of the sink.
+        const macDesktopConnectionId =
+          peer.authenticated && payload.action.startsWith("macDesktop.")
+            ? peer.macDesktopConnectionId
+            : undefined;
+        const macDesktopStreamSink: MacDesktopSyncStreamSink | undefined =
+          macDesktopSyncStream && macDesktopConnectionId
+            ? {
+                connectionId: macDesktopConnectionId,
+                // Hand the transport's own answer back: `send` refuses once the
+                // socket is over its 4 MiB gate, and the fan-out must then skip
+                // the picture to the next keyframe instead of pretending the
+                // record went out.
+                sendRecord: (record) => send(peer, "macDesktop.streamRecord", record),
+                sendEnded: (ended) => {
+                  send(peer, "macDesktop.streamEnded", ended);
+                },
+                pendingBytes: () => peer.ws.bufferedAmount,
+              }
+            : undefined;
+        // App Control frames ride the same per-socket id. The subscribe handler
+        // pushes frames through the sink; unsubscribe reads only its connection
+        // id, so a connection can end its own streams and never another's.
+        const appControlStreamSink: AppControlSyncStreamSink | undefined =
+          args.appControlSyncStream
+          && peer.authenticated
+          && (payload.action === "appControl.streamSubscribe" || payload.action === "appControl.streamUnsubscribe")
+            ? {
+                connectionId: peer.macDesktopConnectionId,
+                sendFrame: (frame) => send(peer, "appControl.streamFrame", frame),
+                sendEnded: (ended) => {
+                  send(peer, "appControl.streamEnded", ended);
+                },
+                pendingBytes: () => peer.ws.bufferedAmount,
+                isClosed: () => peer.ws.readyState !== WebSocket.OPEN,
+              }
+            : undefined;
+        let created: unknown;
+        try {
+          created = preparedAnalytics.captureDisabled
+            ? { accepted: false, reason: "disabled" }
+            : await executor.execute(routedPayload, {
+                signal,
+                ...(macDesktopConnectionId ? { connectionId: macDesktopConnectionId } : {}),
+                ...(macDesktopStreamSink ? { macDesktopStream: macDesktopStreamSink } : {}),
+                ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
+                // Credits an update to the paired device, never the client's claim.
+                ...(payload.action.startsWith("machine.") ? { requester: peer.pairingRecord } : {}),
+              });
+          if (payload.action === "files.writeTextAtomic") args.onRemoteFileWrite?.();
+        } finally {
+          stopTrackingCommand();
+          const durationMs = Math.max(0, Date.now() - executionStartedAtMs);
+          if (durationMs >= slowCommandThresholdMs) {
+            args.logger.warn("sync_host.command_slow", {
+              action: payload.action,
+              durationMs,
+              peerKind: surface,
+            });
+          }
+        }
+        if (
+          matchesHostProject
+          && !payload.action.startsWith("analytics.")
+        ) {
+          const commandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
+            ? payload.args as Record<string, unknown>
+            : {};
+          const separator = payload.action.indexOf(".");
+          const actionDomain = separator > 0 ? payload.action.slice(0, separator) : payload.action;
+          const actionName = separator > 0 ? payload.action.slice(separator + 1) : "";
+          const usageAction = actionName
+            ? usageActionFromRpcDomain(actionDomain, actionName)
+            : payload.action;
+          recordUsageInteraction(args.db, {
+            projectId: hostProjectId,
+            client: surface,
+            action: usageAction,
+            feature: usageAction.split(".", 1)[0] ?? "other",
+            sessionId: toOptionalString(commandArgs.sessionId),
+            analyticsEligible:
+              peer.productAnalyticsEnabled
+              && args.productAnalyticsService?.getStatus().effective === true,
+          });
+        }
+        // Create-in-place (possibly into another project) adds a lane/chat row the
+        // hub must see; nudge the roster (coalesced, no-op without subscribers).
+        if (ROSTER_DIRTYING_COMMAND_ACTIONS.has(payload.action)) markRosterDirty();
+        sendResult(acceptedRecord, {
+          commandId,
+          ok: true,
+          result: decorateCommandResult(payload.action, created),
+        });
+      } catch (error) {
+        sendResult(acceptedRecord, commandErrorResult(commandId, error));
       }
-      // Create-in-place (possibly into another project) adds a lane/chat row the
-      // hub must see; nudge the roster (coalesced, no-op without subscribers).
-      if (ROSTER_DIRTYING_COMMAND_ACTIONS.has(payload.action)) markRosterDirty();
-      sendResult(acceptedRecord, {
-        commandId,
-        ok: true,
-        result: decorateCommandResult(payload.action, created),
+    };
+    // A command that runs for minutes (an update downloading and installing)
+    // answers off this peer's queue: its ack is out, the result reaches the
+    // command record when it lands, and the message timeout never closes the
+    // socket the answer comes back on.
+    if (DETACHED_COMMAND_ACTIONS.has(payload.action)) {
+      void execute().catch((error) => {
+        args.logger.warn("sync_host.command_detached_failed", {
+          action: payload.action,
+          commandId,
+          errorType: error instanceof Error ? error.name : typeof error,
+        });
       });
-    } catch (error) {
-      sendResult(acceptedRecord, commandErrorResult(commandId, error));
+      return;
     }
+    await execute();
   }
 
   function rejectProjectScopedEnvelope(
@@ -7438,6 +7685,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
 
+    if (type === "chat_subscribe") {
+      const sessionId = toOptionalString((payload as { sessionId?: unknown } | null | undefined)?.sessionId);
+      if (sessionId) {
+        sendChatSubscribeUnavailable(peer, requestId, sessionId, {
+          code: resolution.code,
+          message: resolution.message,
+        });
+      }
+      return;
+    }
+
     if (type === "chat_tool_result") {
       const toolPayload = (payload ?? {}) as { sessionId?: string; itemId?: string };
       sendRequired(peer, "chat_tool_result", {
@@ -7479,6 +7737,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   function handleImmediateControlEnvelope(peer: PeerState, envelope: ParsedSyncEnvelope): boolean {
     if (!peer.authenticated) return false;
+    // Lane sharing: the unqueued guest gate (`laneShareGuestGates.ts`).
+    const guestGate = admitLaneShareGuestImmediateEnvelope(peer, envelope);
+    if (guestGate !== null) return guestGate;
     if (envelope.type === "changeset_ack") {
       // An ack only moves this peer's changeset cursor, so it does not wait in
       // the request queue: there it waited behind any slow command before it
@@ -7530,7 +7791,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         : Promise.resolve();
       const work = Promise.all([priorInput, ownershipBarrier]).then(async () => {
         if (disposed || !peers.has(peer) || !peer.authenticated) return;
-        await handleTerminalInputSerialized(peer, envelope);
+        // A guest's line waited above: dropped when the guest or its rights changed meanwhile.
+        if (!laneShareGuestTypedLineStillAllowed(peer, envelope)) return;
+        const projectScope = resolveSyncHostInboundProjectScope(
+          envelope.type,
+          envelope.projectId,
+          args.projectId,
+          hostProjectIdAliases,
+        );
+        await terminalStreams.handleInput(peer, envelope, terminalTargetFor(peer, envelope, projectScope));
       });
       peer.terminalInputQueue = work.catch((error) => {
         args.logger.warn("sync_host.terminal_input_failed", {
@@ -7545,168 +7814,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const heartbeatAwaitedAt = markPeerMessageSeen(peer);
     handleHeartbeatEnvelope(peer, envelope, heartbeatAwaitedAt);
     return true;
-  }
-
-  async function handleTerminalInputSerialized(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
-    const payload = envelope.payload as Partial<SyncTerminalInputPayload> | null;
-    const deviceId = toOptionalString(peer.pairedDeviceId) ?? toOptionalString(peer.metadata?.deviceId);
-    const sessionId = toOptionalString(payload?.sessionId);
-    const inputId = normalizeTerminalInputId(payload?.inputId);
-    if (!deviceId || !sessionId || !inputId) {
-      handleTerminalInputEnvelope(peer, envelope);
-      return;
-    }
-    const key = `${deviceId}\0${sessionId}\0${inputId}`;
-    const prior = terminalInputOperationQueues.get(key) ?? Promise.resolve();
-    const operation = prior.catch(() => {}).then(() => {
-      if (disposed || !peers.has(peer) || !peer.authenticated) return;
-      handleTerminalInputEnvelope(peer, envelope);
-    });
-    terminalInputOperationQueues.set(key, operation);
-    try {
-      await operation;
-    } finally {
-      if (terminalInputOperationQueues.get(key) === operation) {
-        terminalInputOperationQueues.delete(key);
-      }
-    }
-  }
-
-  function handleTerminalInputEnvelope(peer: PeerState, envelope: ParsedSyncEnvelope): void {
-    // Forward keystrokes / pasted text from an attached client into the active
-    // PTY. An input id is exactly-once only for the same payload bytes; reusing
-    // an id for different bytes is a protocol conflict, never a duplicate ACK.
-    const payload = envelope.payload as Partial<SyncTerminalInputPayload> | null;
-    const sessionId = toOptionalString(payload?.sessionId);
-    const data = typeof payload?.data === "string" ? payload.data : null;
-    const hasInputId = payload?.inputId != null;
-    const inputId = normalizeTerminalInputId(payload?.inputId);
-    const sendAck = (ack: SyncTerminalInputAckPayload): void => {
-      try {
-        if (sendRequired(peer, "terminal_input_ack", ack, envelope.requestId)) return;
-        args.logger.warn("sync.terminal_input_ack_not_sent", {
-          sessionId: ack.sessionId,
-          inputId: ack.inputId ?? null,
-          peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
-        });
-      } catch (error) {
-        args.logger.warn("sync.terminal_input_ack_send_failed", {
-          sessionId: ack.sessionId,
-          inputId: ack.inputId ?? null,
-          peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    };
-    const sendFailure = (
-      code: Extract<SyncTerminalInputAckPayload, { ok: false }>["error"]["code"],
-      message: string,
-    ): void => {
-      if (!hasInputId) return;
-      const error = code === "not_subscribed"
-        ? { code, message, retryable: true as const }
-        : { code, message, retryable: false as const };
-      sendAck({
-        sessionId,
-        ...(inputId ? { inputId } : {}),
-        ok: false,
-        duplicate: false,
-        error,
-      } satisfies SyncTerminalInputAckPayload);
-    };
-    if (hasInputId && !inputId) {
-      args.logger.warn("sync.terminal_input_invalid_input_id", { sessionId });
-      sendFailure("invalid_input_id", "Terminal input id must be a bounded non-empty string.");
-      return;
-    }
-    const projectScope = resolveSyncHostInboundProjectScope(
-      envelope.type,
-      envelope.projectId,
-      args.projectId,
-      hostProjectIdAliases,
-    );
-    if (!projectScope.ok) {
-      sendFailure("project_mismatch", "Terminal input does not belong to this hosted project.");
-      return;
-    }
-    if (!sessionId || data == null) {
-      sendFailure("project_mismatch", "Terminal input does not belong to this hosted project.");
-      return;
-    }
-    const deviceId = toOptionalString(peer.pairedDeviceId) ?? toOptionalString(peer.metadata?.deviceId);
-    const dataFingerprint = inputId
-      ? createHash("sha256").update(data, "utf8").digest("hex")
-      : null;
-    if (inputId && deviceId && dataFingerprint) {
-      const recordedFingerprint = terminalInputDedupeLedger.fingerprint(deviceId, sessionId, inputId);
-      if (recordedFingerprint) {
-        if (recordedFingerprint !== dataFingerprint) {
-          args.logger.warn("sync.terminal_input_id_conflict", {
-            sessionId,
-            peerDeviceId: deviceId,
-            inputId,
-          });
-          sendFailure("input_id_conflict", "This terminal input id was already used for different data.");
-          return;
-        }
-        sendAck({
-          sessionId,
-          inputId,
-          ok: true,
-          duplicate: true,
-        } satisfies SyncTerminalInputAckPayload);
-        return;
-      }
-    }
-    if (!peer.subscribedSessionIds.has(sessionId)) {
-      args.logger.warn("sync.terminal_input_unsubscribed_session", { sessionId });
-      sendFailure("not_subscribed", "Subscribe to this terminal before sending input.");
-      return;
-    }
-    const session = args.sessionService.get(sessionId);
-    if (!session) {
-      args.logger.warn("sync.terminal_input_project_mismatch", { sessionId });
-      sendFailure("project_mismatch", "This terminal belongs to a different hosted project.");
-      return;
-    }
-    if (!args.ptyService.hasLivePty(sessionId)) {
-      args.logger.info("sync.terminal_input_no_active_pty", { sessionId });
-      sendFailure("session_not_live", "This terminal session is no longer live.");
-      return;
-    }
-    if (inputId && deviceId && dataFingerprint) {
-      if (!terminalInputDedupeLedger.hasCapacity()) {
-        sendFailure("dedupe_capacity", "Too many terminal inputs are awaiting retry-window expiry.");
-        return;
-      }
-    }
-    const accepted = args.ptyService.writeBySessionId(sessionId, data);
-    if (!accepted) {
-      args.logger.info("sync.terminal_input_no_active_pty", { sessionId });
-      sendFailure("session_not_live", "This terminal session is no longer live.");
-      return;
-    }
-    if (inputId && deviceId && dataFingerprint) {
-      const remembered = terminalInputDedupeLedger.remember(deviceId, sessionId, inputId, dataFingerprint);
-      if (remembered !== "recorded") {
-        // Capacity and duplicate checks run synchronously before the PTY write,
-        // so this indicates an internal contract violation. Close rather than
-        // acknowledge an untracked write that a retry could duplicate.
-        args.logger.warn("sync.terminal_input_receipt_failed", { sessionId, remembered });
-        try {
-          peer.ws.close(4002, "Terminal input receipt failed");
-        } catch {
-          // ignore close failures
-        }
-        return;
-      }
-      sendAck({
-        sessionId,
-        inputId,
-        ok: true,
-        duplicate: false,
-      } satisfies SyncTerminalInputAckPayload);
-    }
   }
 
   function handleMessageWithTimeout(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
@@ -8091,6 +8198,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         hello.auth = opened.auth;
         sealedAdoption = opened.adoption;
+      }
+      // Lane sharing: its own path end to end. It shares no state with the
+      // owner's auth kinds below (no pairing record, no arbitration).
+      if (hello.auth?.kind === "guest") {
+        await handleLaneShareGuestHello(peer, envelope.requestId, hello, hello.auth, lifecycleGeneration, negotiatedCompression);
+        return;
       }
       let authenticatedPairingRecord: SyncPairingRecord | null = null;
       let accountPairing: { deviceId: string; secret: string } | null = null;
@@ -8538,6 +8651,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         relayAuthorization: peer.relayAuthorization?.metadata() ?? null,
         connectionTransport: syncConnectionTransportForOrigin(peer.transportOrigin),
         terminalInputAckEnabled: true,
+        rosterTerminalEnabled: Boolean(args.projectScopes),
         attachmentUploadEnabled,
         macDesktopStreamEnabled,
         macDesktopControlEnabled,
@@ -8603,6 +8717,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
 
+    // Lane sharing: default refuse for every envelope type below this line.
+    if (peer.laneShareGuest && !admitLaneShareGuestEnvelope(peer, peer.laneShareGuest, envelope)) return;
+
     if (envelope.type === "pairing_commit") {
       const payload = safeObjectValue(envelope.payload);
       const deviceId = toOptionalString(payload?.deviceId);
@@ -8650,21 +8767,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // peers; paired phones/browsers get the channel closed with a clear
         // reason instead of reaching the full runtime action registry.
         isRecordBackedSyncAuthKind(peer.authKind) && isRuntimeHostPairingRecord(peer.pairingRecord),
-        { peerDeviceId: isRecordBackedSyncAuthKind(peer.authKind) ? peer.pairedDeviceId : null },
+        isRecordBackedSyncAuthKind(peer.authKind)
+          ? { peerDeviceId: peer.pairedDeviceId, peerDeviceName: peer.pairingRecord?.peerName ?? null }
+          : { peerDeviceId: null },
       );
       return;
     }
 
     const envelopePayload = safeObjectValue(envelope.payload);
-    const personalChatEnvelope =
-      (
-        envelope.type === "chat_subscribe"
-        || envelope.type === "chat_unsubscribe"
-        || envelope.type === "chat_history"
-        || envelope.type === "chat_tool_result"
-      )
-      && envelopePayload?.chatScope === "personal";
-    const projectScope: SyncHostProjectScopeResolution = personalChatEnvelope
+    const chatStreamEnvelope =
+      envelope.type === "chat_subscribe"
+      || envelope.type === "chat_unsubscribe"
+      || envelope.type === "chat_history"
+      || envelope.type === "chat_tool_result";
+    const personalChatEnvelope = chatStreamEnvelope && envelopePayload?.chatScope === "personal";
+    let projectScope: SyncHostProjectScopeResolution = personalChatEnvelope
       ? { ok: true, projectId: null, usedSingleProjectFallback: false }
       : resolveSyncHostInboundProjectScope(
           envelope.type,
@@ -8672,6 +8789,36 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           args.projectId,
           hostProjectIdAliases,
         );
+    // Lane sharing: a guest's envelope that names another project never takes
+    // a route to this machine's other projects (terminals, files). Like every
+    // refused guest envelope it gets no reply, so a guest cannot probe which
+    // projects are open here.
+    if (peer.laneShareGuest && !projectScope.ok) {
+      args.logger.warn("sync_host.lane_share_guest_refused_envelope", {
+        type: envelope.type,
+        guestUserId: peer.laneShareGuest.userId,
+        code: projectScope.code,
+      });
+      return;
+    }
+    if (
+      !projectScope.ok
+      && projectScope.code === "project_mismatch"
+      && chatStreamEnvelope
+      && projectScope.receivedProjectId
+      && !peer.laneShareGuest
+    ) {
+      // A phone whose project is not the one this machine hosts right now
+      // (the host moved under it: a restart, another device's switch). Its
+      // commands, files and terminals already reach that project; serve its
+      // chats too, from that project's transcripts, the way a cross-project
+      // chat is served.
+      const routedPayload = chatPayloadForNonHostedProject(envelopePayload, projectScope.receivedProjectId);
+      if (routedPayload) {
+        envelope = { ...envelope, payload: routedPayload };
+        projectScope = { ok: true, projectId: args.projectId ?? null, usedSingleProjectFallback: false };
+      }
+    }
     const executeFileRequest = args.remoteCommandExecutor?.executeFileRequest;
     if (
       !projectScope.ok
@@ -8694,6 +8841,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         rejectProjectScopedEnvelope(peer, envelope.type, envelope.requestId, envelope.payload, projectScope);
       }
       return;
+    }
+    if (!projectScope.ok && isSyncTerminalEnvelopeType(envelope.type)) {
+      // A phone opening a terminal of this machine's other open project.
+      const terminalTarget = terminalTargetFor(peer, envelope, projectScope);
+      if (terminalTarget) {
+        if (envelope.type === "terminal_input") {
+          await terminalStreams.handleInput(peer, envelope, terminalTarget);
+        } else {
+          await terminalStreams.handleEnvelope(peer, envelope, terminalTarget, lifecycleGeneration, signal);
+        }
+        return;
+      }
     }
     if (!projectScope.ok) {
       rejectProjectScopedEnvelope(peer, envelope.type, envelope.requestId, envelope.payload, projectScope);
@@ -8869,271 +9028,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       case "file_request":
         await handleFileRequest(peer, envelope.requestId, envelope.payload as SyncFileRequest);
         break;
-      case "terminal_subscribe": {
-        const payload = envelope.payload as { sessionId?: string; maxBytes?: number; sinceOffset?: number } | null;
-        const sessionId = toOptionalString(payload?.sessionId);
-        if (!sessionId) break;
-        const barrier: PendingTerminalSnapshotBarrier = {
-          generation: ++peer.nextTerminalSnapshotGeneration,
-          captureAttempt: 0,
-          requiredCaptureAttempt: 0,
-          requiredSnapshotEndOffset: null,
-          events: [],
-          queuedBytes: 0,
-          failed: false,
-        };
-        peer.pendingTerminalSnapshots.set(sessionId, barrier);
-        peer.subscribedSessionIds.add(sessionId);
-        const maxBytes = Math.max(1_024, Math.min(2_000_000, Math.floor(payload?.maxBytes ?? DEFAULT_TERMINAL_SNAPSHOT_BYTES)));
-        const sinceOffset = typeof payload?.sinceOffset === "number" && Number.isInteger(payload.sinceOffset)
-          ? payload.sinceOffset
-          : null;
-        let forceReplacement = false;
-        let barrierCompleted = false;
-        let lastCapturedTranscript: {
-          data: string;
-          startOffset: number | null;
-          endOffset: number | null;
-        } | null = null;
-        const sendReplacingSnapshot = (
-          session: ReturnType<typeof args.sessionService.get>,
-          transcriptSnapshot: {
-            data: string;
-            startOffset: number | null;
-            endOffset: number | null;
-          } | null,
-        ): boolean => {
-          const snapshot = withTerminalScreen(sessionId, {
-            sessionId,
-            transcript: transcriptSnapshot?.data ?? "",
-            status: session?.status ?? null,
-            runtimeState: session?.runtimeState ?? null,
-            lastOutputPreview: session?.lastOutputPreview ?? null,
-            capturedAt: nowIso(),
-            startOffset: transcriptSnapshot?.startOffset ?? null,
-            endOffset: transcriptSnapshot?.endOffset ?? null,
-            live: args.ptyService.hasLivePty(sessionId),
-          });
-          return sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId);
-        };
-        try {
-          while (barrier.captureAttempt < MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS) {
-            if (!isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
-            if (barrier.failed) {
-              if (sendReplacingSnapshot(args.sessionService.get(sessionId), lastCapturedTranscript)) {
-                barrierCompleted = true;
-              }
-              break;
-            }
-            barrier.captureAttempt += 1;
-            const session = args.sessionService.get(sessionId);
-            const transcriptSnapshot = session
-              ? await runWithAbortSignal(
-                  () => args.ptyService.readTranscriptSnapshot({
-                    sessionId,
-                    maxBytes,
-                    alignStartToSafeBoundary: true,
-                  }),
-                  signal,
-                  "Sync operation aborted.",
-                )
-              : null;
-            if (transcriptSnapshot) lastCapturedTranscript = transcriptSnapshot;
-            if (!isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
-            if (barrier.failed) {
-              if (sendReplacingSnapshot(session, lastCapturedTranscript)) {
-                barrierCompleted = true;
-              }
-              break;
-            }
-
-            const flush = planTerminalSnapshotFlush(
-              barrier,
-              transcriptSnapshot?.endOffset ?? null,
-            );
-            if (flush.needsRecapture) {
-              forceReplacement = true;
-              continue;
-            }
-
-            let snapshot: SyncTerminalSnapshotPayload | null = null;
-            // Resume fast-path: the PTY snapshot is an exact logical suffix and
-            // includes buffered live bytes beyond the flushed file. Slice that
-            // authoritative suffix instead of re-reading the physical transcript,
-            // otherwise a reconnect can silently miss output that arrived before
-            // this subscription while the WriteStream was still draining.
-            if (
-              !forceReplacement
-              && sinceOffset != null
-              && transcriptSnapshot
-              && sinceOffset >= transcriptSnapshot.startOffset
-              // Equality has no delta to deliver. Send the replacing snapshot
-              // below so a remounted controller cannot hydrate to an empty screen.
-              && sinceOffset < transcriptSnapshot.endOffset
-            ) {
-              const snapshotBytes = Buffer.from(transcriptSnapshot.data, "utf8");
-              const byteStart = sinceOffset - transcriptSnapshot.startOffset;
-              const startsAtUtf8Boundary = byteStart >= 0
-                && byteStart <= snapshotBytes.length
-                && (byteStart === snapshotBytes.length || (snapshotBytes[byteStart]! & 0b1100_0000) !== 0b1000_0000);
-              if (
-                startsAtUtf8Boundary
-                && snapshotBytes.length === transcriptSnapshot.endOffset - transcriptSnapshot.startOffset
-              ) {
-                snapshot = withTerminalScreen(sessionId, {
-                  sessionId,
-                  transcript: snapshotBytes.subarray(byteStart).toString("utf8"),
-                  status: session?.status ?? null,
-                  runtimeState: session?.runtimeState ?? null,
-                  lastOutputPreview: session?.lastOutputPreview ?? null,
-                  capturedAt: nowIso(),
-                  startOffset: sinceOffset,
-                  endOffset: transcriptSnapshot.endOffset,
-                  delta: true,
-                  live: args.ptyService.hasLivePty(sessionId),
-                });
-              }
-            }
-            snapshot ??= withTerminalScreen(sessionId, {
-              sessionId,
-              transcript: transcriptSnapshot?.data ?? "",
-              status: session?.status ?? null,
-              runtimeState: session?.runtimeState ?? null,
-              lastOutputPreview: session?.lastOutputPreview ?? null,
-              capturedAt: nowIso(),
-              startOffset: transcriptSnapshot?.startOffset ?? null,
-              endOffset: transcriptSnapshot?.endOffset ?? null,
-              live: args.ptyService.hasLivePty(sessionId),
-            });
-            if (!sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId)) break;
-            barrierCompleted = true;
-            for (const event of flush.events) {
-              const sent = event.kind === "data"
-                ? sendRequired(peer, "terminal_data", event.payload)
-                : sendRequired(peer, "terminal_exit", event.payload);
-              if (!sent) {
-                barrierCompleted = false;
-                break;
-              }
-            }
-            break;
-          }
-          if (
-            !barrierCompleted
-            && isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)
-            && (barrier.failed || barrier.captureAttempt >= MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS)
-          ) {
-            failTerminalSnapshotBarrier(peer, sessionId, barrier, "capture_did_not_reach_stable_offset");
-            if (sendReplacingSnapshot(args.sessionService.get(sessionId), lastCapturedTranscript)) {
-              barrierCompleted = true;
-            }
-          }
-        } catch (error) {
-          if (peer.pendingTerminalSnapshots.get(sessionId) === barrier) {
-            peer.subscribedSessionIds.delete(sessionId);
-            restoreDesktopTerminalSizeIfUnwatched(sessionId);
-          }
-          throw error;
-        } finally {
-          clearTerminalSnapshotBarrier(peer, sessionId, barrier);
-        }
-        break;
-      }
-      case "terminal_unsubscribe": {
-        const payload = envelope.payload as { sessionId?: string } | null;
-        const sessionId = toOptionalString(payload?.sessionId);
-        if (sessionId) {
-          clearTerminalSnapshotBarrier(peer, sessionId);
-          peer.subscribedSessionIds.delete(sessionId);
-          restoreDesktopTerminalSizeIfUnwatched(sessionId);
-        }
-        break;
-      }
-      case "terminal_history": {
-        // Pull-to-load-older paging over the transcript file. Reuses the
-        // terminal_input access gate: only a peer with a live subscribe for
-        // the session may read its history.
-        const payload = envelope.payload as { sessionId?: string; beforeOffset?: number; maxBytes?: number } | null;
-        const sessionId = toOptionalString(payload?.sessionId);
-        if (!sessionId) break;
-        const beforeOffset = typeof payload?.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
-          ? Math.max(0, Math.floor(payload.beforeOffset))
-          : 0;
-        const refused: SyncTerminalHistoryResponsePayload = {
-          sessionId,
-          data: "",
-          startOffset: beforeOffset,
-          endOffset: beforeOffset,
-          atStart: true,
-        };
-        const session = args.sessionService.get(sessionId);
-        if (!peer.subscribedSessionIds.has(sessionId) || !session) {
-          args.logger.warn("sync.terminal_history_unsubscribed_session", { sessionId });
-          sendRequired(peer, "terminal_history", refused, envelope.requestId);
-          break;
-        }
-        const pageBytes = Math.max(
-          MIN_TERMINAL_HISTORY_PAGE_BYTES,
-          Math.min(
-            MAX_TERMINAL_HISTORY_PAGE_BYTES,
-            Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_HISTORY_PAGE_BYTES),
-          ),
-        );
-        const transcriptWindow = args.ptyService.getTranscriptWindow(sessionId);
-        if (!transcriptWindow) {
-          sendRequired(peer, "terminal_history", refused, envelope.requestId);
-          break;
-        }
-        const endOffset = Math.max(
-          transcriptWindow.startOffset,
-          Math.min(beforeOffset, transcriptWindow.endOffset),
-        );
-        const requestedStartOffset = Math.max(transcriptWindow.startOffset, endOffset - pageBytes);
-        const range = await runWithAbortSignal(
-          () => args.ptyService.readTranscriptRange({
-            sessionId,
-            startOffset: requestedStartOffset,
-            endOffset,
-            alignStartToSafeBoundary: true,
-          }),
-          signal,
-          "Sync operation aborted.",
-        );
-        if (!range) {
-          sendRequired(peer, "terminal_history", refused, envelope.requestId);
-          break;
-        }
-        sendRequired(peer, "terminal_history", {
-          sessionId,
-          data: range.data,
-          startOffset: range.startOffset,
-          endOffset: range.endOffset,
-          // Alignment can move the returned start past the retained base. The
-          // unaligned/clamped request still tells the client whether any older
-          // bytes exist; using the returned boundary causes an empty paging
-          // loop after transcript rollover.
-          atStart: requestedStartOffset <= transcriptWindow.startOffset,
-        } satisfies SyncTerminalHistoryResponsePayload, envelope.requestId);
+      case "terminal_subscribe":
+      case "terminal_unsubscribe":
+      case "terminal_history":
+      case "terminal_resize": {
+        await terminalStreams.handleEnvelope(peer, envelope, { kind: "hosted" }, lifecycleGeneration, signal);
         break;
       }
       case "terminal_input": {
-        handleTerminalInputEnvelope(peer, envelope);
-        break;
-      }
-      case "terminal_resize": {
-        // Mobile clients re-emit this whenever their visible viewport
-        // changes (rotation, split view, dynamic font). We forward to the
-        // active PTY so command-line apps re-flow correctly. Out-of-bound
-        // values are clamped inside ptyService.
-        const payload = envelope.payload as { sessionId?: string; cols?: number; rows?: number } | null;
-        const sessionId = toOptionalString(payload?.sessionId);
-        const cols = typeof payload?.cols === "number" ? Math.floor(payload.cols) : null;
-        const rows = typeof payload?.rows === "number" ? Math.floor(payload.rows) : null;
-        if (!sessionId || cols == null || rows == null) break;
-        if (!peer.subscribedSessionIds.has(sessionId)) break;
-        // Tagged as mobile so the phone's viewport never becomes the
-        // desktop-preferred size — it is restored when the phone detaches.
-        args.ptyService.resizeBySessionId(sessionId, cols, rows, { source: "mobile" });
+        await terminalStreams.handleInput(peer, envelope, { kind: "hosted" });
         break;
       }
       case "chat_history": {
@@ -9576,6 +9479,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         let transcriptSize: number;
         let tailStartOffset = 0;
         let hasOlderHistory = false;
+        // The chat service's own answer that this host has no such chat (its
+        // row went with a deleted chat or lane). Desktop and web read it from
+        // the same history call; the snapshot must carry it too, or the phone
+        // shows a working chat with no messages instead of "deleted".
+        let sessionFound = true;
         if (foreignTranscriptPath) {
           const foreignSnapshot = await readFileBackedChatSnapshot({
             transcriptPath: foreignTranscriptPath,
@@ -9603,6 +9511,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               })
             : null;
           events = history?.events ?? [];
+          sessionFound = history?.sessionFound !== false;
           pinnedEvents = chatLogV2Requested ? history?.pinnedEvents ?? [] : [];
           transcriptSize = await readTranscriptLogicalSize(transcriptPath);
           truncated = history?.truncated ?? (transcriptSize > maxBytes);
@@ -9638,6 +9547,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           ...chatLogFields,
           ...(sequenceGap ? { gap: true } : {}),
           ...(chatLogV2Requested && pinnedEvents.length > 0 ? { pinnedEvents } : {}),
+          ...(sessionFound ? {} : { sessionFound: false }),
           ...(await resolveLiveStatusFields()),
         };
         sendRequired(peer, "chat_subscribe", snapshot, envelope.requestId);
@@ -9652,6 +9562,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           markChatEventSent(peer, event);
         }
         hydrationSucceeded = true;
+        } catch (error) {
+          // A transcript that cannot be read must not leave the phone waiting
+          // on a request that will never be answered.
+          // Not after an answer already sent (a resume ack, a snapshot).
+          if (!signal?.aborted && !hydrationSucceeded) {
+            sendChatSubscribeUnavailable(peer, envelope.requestId, sessionId, CHAT_TRANSCRIPT_READ_FAILED);
+          }
+          throw error;
         } finally {
           peer.hydratingChatSessionIds.delete(sessionId);
           if (!hydrationSucceeded) {
@@ -9789,16 +9707,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         try {
           // A project-host handoff may happen long after the listener's bind
           // probe. Force a fresh identity check before this host republishes
-          // LAN/Tailscale discovery for the shared port.
+          // discovery for the shared port.
           await sharedListener!.revalidateLoopback();
+        } catch (error) {
+          // A shadowed loopback is a degraded route, not a failed host: relay
+          // pipes arrive in process and LAN on the wildcard bind. Refusing to
+          // host here is what used to take every route down at once. The
+          // listener's self-heal moves off the port; Tailscale waits for it.
+          if (!isLoopbackShadowedError(error)) throw error;
+          args.logger.warn("sync_host.loopback_shadowed_hosting_degraded", {
+            port,
+            error: error.message,
+          });
+          void sharedListener!.healNow();
         } finally {
           loopbackValidationStatus = sharedListener!.getLoopbackValidationStatus();
         }
-        if (!loopbackValidationStatus.loopbackAdeValidated || loopbackValidationStatus.port !== port) {
-          throw new Error(`The shared sync listener on 127.0.0.1:${port} was not ADE-validated.`);
-        }
-        await publishValidatedDiscovery(port);
-        return port;
+        await publishValidatedDiscovery(sharedListener!.getPort() ?? port);
+        return sharedListener!.getPort() ?? port;
       }
       if (startupError) {
         throw startupError;
@@ -9882,11 +9808,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const port = getListeningPort();
       if (port != null) {
         // Re-validate the loopback listener before republishing so a post-startup
-        // shadow cannot re-advertise a stale port. On failure validateListeningPort
-        // marks the route unvalidated and throws, so we skip the publish.
+        // shadow cannot re-advertise Tailscale onto another program. A shadow
+        // only withholds Tailscale (see publishValidatedDiscovery); any other
+        // failure skips the publish.
         void (async () => {
-          await validateListeningPort(port, { force: true });
-          await publishValidatedDiscovery(port, options);
+          try {
+            await validateListeningPort(port, { force: true });
+          } catch (error) {
+            if (!sharedListener || !isLoopbackShadowedError(error)) throw error;
+            void sharedListener.healNow();
+          }
+          await publishValidatedDiscovery(getListeningPort() ?? port, options);
         })().catch((error) => {
           args.logger.warn("sync_host.discovery_refresh_failed", {
             port,
@@ -9918,9 +9850,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Re-enabling discovery must also re-validate the loopback listener so a
         // shadow that appeared while discovery was off cannot be published.
         void (async () => {
-          await validateListeningPort(port, { force: true });
-          publishLanDiscovery(port, { force: true });
-          publishTailnetDiscovery(port, { force: true });
+          try {
+            await validateListeningPort(port, { force: true });
+          } catch (error) {
+            // A shadow withholds only Tailscale (publishValidatedDiscovery).
+            if (!sharedListener || !isLoopbackShadowedError(error)) throw error;
+            void sharedListener.healNow();
+          }
+          await publishValidatedDiscovery(getListeningPort() ?? port, { forceLan: true, forceTailnet: true });
         })().catch((error) => {
           args.logger.warn("sync_host.discovery_refresh_failed", {
             port,
@@ -9962,6 +9899,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     getPeerStates(): SyncPeerConnectionState[] {
+      // Every sync status read asks (the account publisher's relay check runs
+      // one every 2 s); with no peer there is no lag to compute, and the
+      // version read is a database query.
+      if (peers.size === 0) return [];
       const dbVersion = args.db.sync.getDbVersion();
       const latestByDevice = new Map<string, SyncPeerConnectionState>();
       for (const peer of [...peers]
@@ -9980,7 +9921,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
-      return { ...loopbackValidationStatus };
+      // The shared listener owns the verdict; read it live, not a copy.
+      return sharedListener?.getLoopbackValidationStatus() ?? { ...loopbackValidationStatus };
     },
 
     getLanePresenceSnapshot(): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> {
@@ -10032,6 +9974,31 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
     },
 
+    /**
+     * Tell the person's connected devices that the provider sign-ins changed
+     * (a pass or key saved, a sign-in applied here). Only a tiny signal: an
+     * open sign-ins card reads `providerLogins.status` once. Never to a lane
+     * share guest, whose sign-ins these are not. Sent as required: nothing
+     * re-derives it, so a backlogged peer is closed instead and reads again
+     * when it reconnects.
+     */
+    broadcastProviderLoginsChanged(): void {
+      const payload = { changedAt: nowIso() };
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.laneShareGuest || peer.ws.readyState !== WebSocket.OPEN) continue;
+        sendRequired(peer, "provider_logins_changed", payload, null, { action: "provider_logins_changed" });
+      }
+    },
+
+    /** The account's project list changed on this brain: a client reads it again. Older clients ignore the type. */
+    broadcastAccountProjectsChanged(): void {
+      const payload = { changedAt: nowIso() };
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.laneShareGuest || peer.ws.readyState !== WebSocket.OPEN) continue;
+        sendRequired(peer, "account_projects_changed", payload, null, { action: "account_projects_changed" });
+      }
+    },
+
     async broadcastProjectCatalog(): Promise<void> {
       const payload = await buildProjectCatalogPayload();
       if (bonjourPort != null) {
@@ -10044,47 +10011,39 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     handlePtyData(event: PtyDataEvent): void {
-      const payload = {
-        sessionId: event.sessionId,
-        ptyId: event.ptyId,
-        data: event.data,
-        at: nowIso(),
-        offset: event.offset ?? null,
-      } satisfies SyncTerminalDataPayload;
-      for (const peer of peers) {
-        if (!peer.authenticated || !peer.subscribedSessionIds.has(event.sessionId) || peer.ws.readyState !== WebSocket.OPEN) continue;
-        if (enqueueTerminalSnapshotEvent(peer, event.sessionId, {
-          kind: "data",
-          payload,
-          byteLength: Buffer.byteLength(event.data, "utf8"),
-        })) continue;
-        if (isPeerBackpressured(peer)) continue;
-        send(peer.ws, "terminal_data", payload);
-      }
+      terminalStreams.handlePtyData(event);
     },
 
     handlePtyExit(event: PtyExitEvent): void {
-      const payload = {
-        sessionId: event.sessionId,
-        ptyId: event.ptyId,
-        exitCode: event.exitCode,
-        at: nowIso(),
-      } satisfies SyncTerminalExitPayload;
-      for (const peer of peers) {
-        if (!peer.authenticated || !peer.subscribedSessionIds.has(event.sessionId) || peer.ws.readyState !== WebSocket.OPEN) continue;
-        if (enqueueTerminalSnapshotEvent(peer, event.sessionId, {
-          kind: "exit",
-          payload,
-          byteLength: 0,
-        })) continue;
-        if (isPeerBackpressured(peer)) continue;
-        send(peer.ws, "terminal_exit", payload);
-      }
+      terminalStreams.handlePtyExit(event);
+    },
+
+    /** Read this machine's lane-share grants now and apply them to connected guests. */
+    refreshLaneShareGrants,
+    applyLaneShareRights,
+    closeLaneShareGrant,
+    closeLaneShareLane,
+    notifyLaneShareLaneChanged,
+    laneShareConnectedDevices,
+    /** A guest socket the brain's router hands to this project (`LaneShareGuestHandoff`). */
+    adoptLaneShareGuest,
+    /**
+     * Whether a guests-only host must stay: an open socket, a guest message
+     * queued behind a turn (its start is checked here), or a move it runs.
+     */
+    laneShareGuestsBusy(): boolean {
+      return peers.size > 0 || laneShareHasPendingGuestWork();
+    },
+    /** A move of this grant changed: its guests read their state again. */
+    notifyLaneShareGuestState(grantId: string): void {
+      notifyLaneShareGuests((role) => role.grantId === grantId);
     },
 
     async dispose(): Promise<void> {
       if (disposed) return;
       disposed = true;
+      // Routed streams listen on other projects' runtimes, which outlive this host.
+      terminalStreams.releaseAll();
       stopStorageWaitListener();
       // Never dispose a shared listener's registry: it outlives this host and
       // still serves the next project's uploads.
@@ -10098,13 +10057,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       chatEventSubscription?.();
       sessionChangeSubscription?.();
       chatLaunchSubscription?.();
+      laneShareGuestHost.dispose();
       if (pollTimer) clearTimeout(pollTimer);
       pollTimer = null;
       clearInterval(heartbeatTimer);
-      clearInterval(brainStatusTimer);
+      if (brainStatusTimer) clearInterval(brainStatusTimer);
+      brainStatusTimer = null;
       if (ackBrainStatusTimer) clearTimeout(ackBrainStatusTimer);
       ackBrainStatusTimer = null;
-      clearInterval(accountLeaseTimer);
+      if (accountLeaseTimer) clearInterval(accountLeaseTimer);
+      accountLeaseTimer = null;
       rosterFanout.dispose();
       unpublishLanDiscovery();
       unregisterTailnetRoute();
@@ -10113,7 +10075,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       } catch {
         // Never throw from dispose.
       }
-      if (!server) {
+      if (guestsOnly) {
+        // Only guests, handed to this host: close them with the code a guest
+        // reads as "reconnect", so each lands on its project's host again.
+        for (const peer of peers) {
+          abortPeerOperations(peer, "Sync host stopped.");
+          clearPeerAuthTimeout(peer);
+          try {
+            peer.ws.close(4002, "Sync host changed projects");
+          } catch {
+            // ignore close failures
+          }
+        }
+        peers.clear();
+      } else if (!server) {
         // Shared listener: do NOT close the server or the peer sockets this
         // host does not own. Detach the connection handler and hand every
         // open, authenticated socket back to the listener so the next hosted
@@ -10122,6 +10097,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // was disabled), the listener closes them after a grace period.
         detachSharedListener?.();
         detachSharedListener = null;
+        detachSharedListenerStatus?.();
+        detachSharedListenerStatus = null;
         const snapshots: SyncPeerHandoffSnapshot[] = [];
         for (const peer of peers) {
           abortPeerOperations(peer, "Sync host changed.");
@@ -10131,9 +10108,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.relayAuthorization?.dispose();
           peer.relayAuthorization = null;
           peer.envelopeChunks.reset();
-          peer.ws.removeAllListeners("message");
-          peer.ws.removeAllListeners("close");
-          peer.ws.removeAllListeners("error");
+          detachSocketForHandoff(peer.ws);
           // No new terminal input can enter after listener detachment. Drain
           // the dedicated synchronous-input queue before exporting receipts so
           // a write and its dedupe record move to the next host atomically.
@@ -10185,7 +10160,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             transportOrigin: peer.transportOrigin,
             metadata: peer.metadata,
             negotiatedCompression: peer.negotiatedCompression,
-            authKind: peer.authKind,
+            // A guest is a roster peer and was closed above, never handed off.
+            authKind: peer.authKind === "guest" ? null : peer.authKind,
             pairedDeviceId: peer.pairedDeviceId,
             connectedAt: peer.connectedAt,
             relayAccountExpiresAtMs: relayAuthorizationSnapshot?.expiresAtMs ?? null,

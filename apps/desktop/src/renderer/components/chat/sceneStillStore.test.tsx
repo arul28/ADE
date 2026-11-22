@@ -2,7 +2,9 @@
 
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import type { OpenProjectBinding } from "../../../shared/types";
+import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 
 import {
   readSceneStill,
@@ -13,6 +15,20 @@ import {
   useSceneStillRecord,
 } from "./sceneStillStore";
 import { stubSceneCaptureBridge } from "./sceneStillTestHarness";
+
+/** The chat's machine: its stills are listed there. */
+const CHAT_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
+/** Every probe renders inside a chat, as the transcript does. */
+function render(ui: React.ReactElement) {
+  return rtlRender(ui, {
+    wrapper: ({ children }) => (
+      <ChatRuntimeScopeProvider pin={CHAT_PIN} binding={CHAT_PIN} laneId={null} sessionId={null}>
+        {children}
+      </ChatRuntimeScopeProvider>
+    ),
+  });
+}
 
 /**
  * The cache in front of "a scene always leaves a picture".

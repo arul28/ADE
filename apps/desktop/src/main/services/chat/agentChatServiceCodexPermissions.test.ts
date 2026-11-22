@@ -78,6 +78,9 @@ describe("createAgentChatService", () => {
       expect(child.codexSandbox).toBe(expectedSandbox);
       expect(child.codexApprovalPolicy).toBe(expectedApproval);
       expect(sessionService.get).toHaveBeenCalledWith("cli-tracked-1");
+      // The level this brain hands another machine for a child the CLI starts
+      // there (`machines.call` caller) is the same one, not unknown (`ask`).
+      expect(service.permissionLevelOf("cli-tracked-1")).toBe(_level);
     });
 
     it("caps what an agent can start or raise at its own level, and leaves a person free", async () => {
@@ -373,31 +376,31 @@ describe("createAgentChatService", () => {
           mode: "plan" as const,
           approvalPolicy: "on-request",
           lifecycleSandbox: "read-only",
-          turnSandboxType: "readOnly",
+          turnSandboxPolicy: { type: "readOnly", networkAccess: true },
         },
         {
           mode: "default" as const,
           approvalPolicy: "on-request",
           lifecycleSandbox: "workspace-write",
-          turnSandboxType: "workspaceWrite",
+          turnSandboxPolicy: { type: "workspaceWrite", networkAccess: true },
         },
         {
           mode: "edit" as const,
           approvalPolicy: "untrusted",
           lifecycleSandbox: "workspace-write",
-          turnSandboxType: "workspaceWrite",
+          turnSandboxPolicy: { type: "workspaceWrite", networkAccess: true },
         },
         {
           mode: "full-auto" as const,
           approvalPolicy: "never",
           lifecycleSandbox: "danger-full-access",
-          turnSandboxType: "dangerFullAccess",
+          turnSandboxPolicy: { type: "dangerFullAccess" },
         },
         {
           mode: "config-toml" as const,
           approvalPolicy: undefined,
           lifecycleSandbox: undefined,
-          turnSandboxType: undefined,
+          turnSandboxPolicy: undefined,
         },
       ];
 
@@ -432,10 +435,11 @@ describe("createAgentChatService", () => {
         const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
         const turnParams = turnStartRequest?.params as {
           approvalPolicy?: unknown;
-          sandboxPolicy?: { type?: unknown };
+          sandboxPolicy?: unknown;
         } | undefined;
         expect(turnParams?.approvalPolicy).toBe(scenario.approvalPolicy);
-        expect(turnParams?.sandboxPolicy?.type).toBe(scenario.turnSandboxType);
+        // Commands reach the network in every mode; the sandbox keeps only its file limits.
+        expect(turnParams?.sandboxPolicy).toEqual(scenario.turnSandboxPolicy);
       }
     });
 

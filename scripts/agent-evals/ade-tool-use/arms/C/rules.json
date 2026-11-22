@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "id": "screen-tools",
+      "command": "screencapture|osascript|cliclick",
+      "decision": "deny",
+      "reason": "Blocked: this drives the user's real screen. Use `ade screen` (the lane's own screen), `ade app-control` (a dev Electron app) or `ade browser`. See the ade-computer-use skill."
+    },
+    {
+      "id": "gh-pr-create",
+      "command": "gh",
+      "args": "pr\\s+create\\b",
+      "decision": "deny-once",
+      "reason": "Use `ade prs create --lane <lane>` so ADE links the PR to this chat. If the user asked for gh by name, run the same command again and it will go through."
+    },
+    {
+      "id": "gh-pr-edit-body",
+      "command": "gh",
+      "args": "pr\\s+edit\\b.*\\s(?:--body|-b|-F)(?=[\\s=]|$)",
+      "decision": "deny-once",
+      "reason": "Use `ade prs body <pr> --body-file <file>`. If the user asked for gh by name, run the same command again and it will go through."
+    }
+  ]
+}

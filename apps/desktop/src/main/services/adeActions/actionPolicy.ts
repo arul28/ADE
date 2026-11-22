@@ -7,7 +7,13 @@ import {
 import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../../shared/claudePluginUi";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
+import { CLOUD_PHONE_AGENT_ACTIONS, CLOUD_PHONE_USER_ONLY_ACTIONS } from "../../../shared/cloudPhone";
 import { ANDROID_AGENT_ACTIONS, ANDROID_PERSON_ONLY_ACTIONS, ANDROID_USER_ONLY_ACTIONS } from "../../../shared/types/androidEmulator";
+import {
+  PROVIDER_LOGIN_ACCOUNT_WRITES,
+  PROVIDER_LOGIN_ACTIONS,
+  PROVIDER_LOGIN_PERSON_ACTIONS,
+} from "../../../shared/types/providerLogins";
 import type { AdeActionDomain } from "./domains";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -41,6 +47,7 @@ export type CtoOnlyRule =
 /** Saving a key, Claude's sign-in, and forgetting one: Settings › Integrations › the provider only. */
 const CLOUD_SIGN_IN_WRITES = [
   "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
+  "cloud_sign_in_keep",
 ] as const;
 
 /**
@@ -49,6 +56,7 @@ const CLOUD_SIGN_IN_WRITES = [
  * agent is told where the setting is rather than that it lacks a role.
  * `ADE_ACTION_CTO_ONLY` reads these lists, so a write added here is refused.
  */
+
 const USER_SETTING_WRITES = {
   account_settings: { actions: ["set", "remove"], entryId: null },
   provider_instances: {
@@ -58,8 +66,14 @@ const USER_SETTING_WRITES = {
     ],
     entryId: "agents.providers",
   },
+  // Copying this computer's sign-ins into the account, and which ones ADE
+  // Cloud uses, are the person's calls (P5). The five account writes are also
+  // user-only below: outside apps and agents read the status, never change it.
+  provider_logins: { actions: [...PROVIDER_LOGIN_PERSON_ACTIONS], entryId: "agents.providers" },
   keybindings: { actions: ["set"], entryId: null },
-  project_config: { actions: ["setPrTranscriptGists"], entryId: "lanes-git.pr-chat-transcripts" },
+  // Answering a moved setting's notice can turn on PR chat transcripts
+  // (`use_local`), and the notices show on that card.
+  project_config: { actions: ["setPrTranscriptGists", "resolveAccountSettingNotice"], entryId: "lanes-git.pr-chat-transcripts" },
   keep_awake: { actions: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"], entryId: "general.keep-awake" },
   pty: { actions: ["setDefaultShell"], entryId: "behaviour.terminal-shell" },
   budget: { actions: ["updateConfig"], entryId: "agents.budget" },
@@ -134,6 +148,11 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // ADE MCP grants an outside app this machine. Every action is also user-only
   // (below), so only the desktop reaches it through the action bus.
   remote_mcp: { allExcept: [] },
+  // Lane sharing gives another person's account a lane on this computer:
+  // only the owner decides, from their own client (also user-only, below).
+  // An agent may list, make a Watch share and stop a share: the host service
+  // holds it to that (`laneShareHostService.ts`, docs/features/lanes/lane-sharing.md).
+  lane_share: { allExcept: ["list", "create", "revoke"] },
   linear_credentials: {
     only: [
       "setToken",
@@ -147,7 +166,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Installing or removing the ADE agent, or changing who runs unrouted
   // delegations, changes a Linear workspace for everyone in it.
   linear_agent: { only: ["startInstall", "uninstall", "updateSettings"] },
-  github: { only: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"] },
+  github: { only: ["setToken", "clearToken", "setGhAccountSharing", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"] },
   // Jira credentials are machine-wide and never belong in an agent's hands.
   jira: { only: ["connect", "disconnect"] },
   update: { only: ["quitAndInstall"] },
@@ -158,15 +177,16 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: { only: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"] },
   // Writing or destroying a provider credential is operator work.
-  // `acpProviderDiagnostics` can run a provider CLI's doctor, so it is
+  // `acpProviderDiagnostics` and `runAcpProviderDoctor` can run a provider CLI's doctor, and
+  // `verifyProviderSignIn` starts the provider's CLI or agent, so both are
   // operator-only.
   // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
   // (it is how `ade harness env` runs a custom provider in the user's own
   // terminal), and `testHarnessRoute` spends the user's key on a live request.
-  // Both are operator work, like `project_secret.exportEnv`. `museSettings`
+  // Both are operator work, like `project_secret.get`. `museSettings`
   // opens a Muse host on the user's credential to read or change Muse's own
   // settings, the same tier.
-  ai: { only: ["setContinueAfterRestart", "harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel", ...USER_SETTING_WRITES.ai.actions] },
+  ai: { only: ["setContinueAfterRestart", "harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "runAcpProviderDoctor", "verifyProviderSignIn", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel", ...USER_SETTING_WRITES.ai.actions] },
   budget: { only: USER_SETTING_WRITES.budget.actions },
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
@@ -181,7 +201,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // not any agent's. Deleting is the person's alone (ADE_ACTION_USER_ONLY).
   archive: { only: ["restore"] },
   search: { only: ["rebuildIndex"] },
-  project_secret: { only: ["exportEnv"] },
   account_vault: { only: ["get", "set", "remove"] },
   // The person's settings. What an agent may and may not change is listed in
   // `shared/settingsAgentAccess.ts`; these are the writes behind the "only
@@ -192,6 +211,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // (`ownerOnlyProjectConfigChange`).
   account_settings: { only: USER_SETTING_WRITES.account_settings.actions },
   provider_instances: { only: USER_SETTING_WRITES.provider_instances.actions },
+  provider_logins: { only: USER_SETTING_WRITES.provider_logins.actions },
   keybindings: { only: USER_SETTING_WRITES.keybindings.actions },
   project_config: { only: USER_SETTING_WRITES.project_config.actions },
   /*
@@ -204,25 +224,22 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
    * restriction means a `cto_memory` method added later is CTO-only by default
    * and cannot be opened up by forgetting to update this file.
    *
-   * `getSnapshot` and `searchMemory` are deliberately open, and stay open, for
-   * backward compatibility: they were reachable by any agent before this domain
-   * was inverted, and automation `ade-action` steps call them. Closing them
-   * would be a silent breaking change that protects nothing — CTO memory is
-   * plain markdown under `<adeDir>/cto/` inside the project, and every coding
-   * agent already has file read access to it, so this gate is not the boundary.
-   * `updateMemory` (the rewrite path) stays CTO-only.
+   * `getSnapshot` is deliberately open, and stays open, for backward
+   * compatibility: it was reachable by any agent before this domain was
+   * inverted, and automation `ade-action` steps call it. Closing it would
+   * protect nothing — the notes are plain markdown under `<adeDir>/cto/`, and
+   * every coding agent already has file read access to them. The writes
+   * (`updateNotes`, `updateOpenWork`) stay CTO-only.
    */
-  cto_memory: { allExcept: ["recordDiscovery", "getSnapshot", "searchMemory"] },
+  cto_memory: { allExcept: ["recordDiscovery", "getSnapshot"] },
   /*
-   * `startFreshSession` retires the conversation every other CTO surface is
-   * talking to and starts a new one. Nothing it touches is destructive — memory,
-   * identity and the retired transcript all survive — but deciding that a thread
-   * is finished is the operator's call, not an agent's, and an agent that could
-   * make it could quietly drop the context it was being supervised with. Listed
-   * as `only` because every other method on this domain is a read the whole
-   * fleet already depends on.
+   * `refreshContext` replaces the CTO's provider thread. Nothing it touches is
+   * lost — the conversation, notes and open work all carry over — but when the
+   * CTO starts over is the operator's call, not an agent's. Listed as `only`
+   * because every other method on this domain is a read the whole fleet
+   * already depends on.
    */
-  cto_state: { only: ["startFreshSession"] },
+  cto_state: { only: ["refreshContext"] },
   // Every settle WRITER is CTO-only on purpose. "Is this work actually done?"
   // is a subjective judgment and agents are unreliable at it, so settlement is
   // reachable only from surfaces that connect at cto role — the desktop
@@ -267,6 +284,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       // The desktop's post-update resume arm: machine-wide, and each row it
       // creates spends a real turn. A session-bound agent must not drive it.
       "armUpdateResume",
+      // The machine brain taking a chat back from a lane's test brain. It
+      // stops that brain's agent process; an agent must not call it.
+      "releaseChatRuntime",
       // Thread comments are the user's unsent review of an agent's reply. An
       // agent that could write or delete them could edit what the user is
       // about to tell it.
@@ -294,9 +314,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   //   • search.query / indexStatus — reads over an index agents already build.
   //     `search.rebuildIndex` stays CTO-only above (it is a privileged rebuild).
   //   • project_config.get and project_secret.list — reads with no secret VALUES
-  //     in them. `project_secret.get`/`exportEnv` return values, so the CTO's
-  //     generic action tool refuses them (`isSecretBearingAdeAction`), and no
-  //     other CTO tool calls either one.
+  //     in them. `project_secret.get` returns a value, so the CTO's generic
+  //     action tool refuses it (`isSecretBearingAdeAction`), and no other CTO
+  //     tool calls it.
   // Proof lifecycle and ingestion operate on project-scoped persisted bytes.
   // Session-bound agents use the dedicated RPC tools, which derive an owner
   // and filesystem jail from their authenticated chat context.
@@ -365,18 +385,40 @@ const ROLE_ORDER: Record<AdeActionRole, number> = {
  */
 export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
   ios_simulator: APPLE_USER_ONLY_ACTIONS,
+  // The view link drives the phone from a window.
+  cloud_phone: CLOUD_PHONE_USER_ONLY_ACTIONS,
   // The SDK install and folder (Google's licences), deleting an AVD, and the
   // render a window drew: the same rule as the Apple device.
   android_emulator: ANDROID_PERSON_ONLY_ACTIONS,
   // Another machine's chat owns each copy; only a person deletes one for it.
   remote_work: ["list", "delete"],
+  // Which sign-ins ADE Cloud uses, removing one from the account, and the one OS keyring read on the person's desktop (P5).
+  provider_logins: [...PROVIDER_LOGIN_ACCOUNT_WRITES, "allowKeychain", "allowGitHubCli"],
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
+  // Where the CTO lives is the person's choice: no agent moves it (or itself).
+  cto_state: ["adoptAccountCopy"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
+  // A secret's value is the person's to read (Settings, or the desktop's own
+  // calls). Agents use secrets by name with `ade secrets exec`, which puts
+  // them in a command's environment and returns its output masked.
+  project_secret: ["get"],
+  // Passwords: only the person adds, changes, imports or removes saved items;
+  // agents use logins through `ade browser signin` and never read a value.
+  passwords: ["saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "importLaneEnv", "previewLaneEnv", "exportSecrets", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
+  // Sharing a gh sign-in with the account hands it to every computer the
+  // person signs in to; only the person decides, from Settings › GitHub.
+  github: ["setGhAccountSharing"],
   // Only the person's desktop saves a key or runs Claude's sign-in for new machines.
-  cloud: CLOUD_SIGN_IN_WRITES,
+  // Entering an invite code sets the account's referrer once, forever: the
+  // person enters it in Settings › Account (desktop, or the phone's own
+  // `cloud.write`), never an agent, an ADE MCP app or a terminal.
+  // (`clear_caches` is not here: an agent may ask, and the action asks the person with a card.)
+  // Moving a kept ADE Cloud lane to this machine brings its branch and every chat here and
+  // then forgets the lane on ADE Cloud: the person's call, as a batch move of chats is.
+  cloud: [...CLOUD_SIGN_IN_WRITES, "invite_redeem", "kept_lane_move"],
   // An agent asking to move a chat or batch must not approve its own request.
   // Only a person's client hosts an MCP App, so only it may pass an app's call on.
   chat: [
@@ -386,6 +428,12 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
     "revokeMcpAppGrant",
     // Taking a chat off Recently deleted means it can no longer be reopened.
     "removeDeletedChats",
+    // A person's composer only. An agent makes a chat with `createSession`,
+    // whose actor cap and message provenance the runtime applies per action.
+    "createSessionAndSend",
+    // Letting agents run with Full access as root covers the whole machine;
+    // an agent must not grant it to itself.
+    "setRootFullAccess",
   ],
   // Granting an outside AI app this computer is the person's call. `ade mcp`
   // in their own terminal reaches the same service through `remoteMcp.call`.
@@ -397,6 +445,19 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
     "createToken",
     "updateConnection",
     "removeConnection",
+  ],
+  // Sharing a lane with another account, and what that person may do in it,
+  // is the owner's call. An agent may only list shares, make a Watch share
+  // and stop a share of this machine (`list`, `create`, `revoke`; the host
+  // service checks the caller the RPC server stamps). No agent widens a
+  // share, sends an invite again, reads or leaves shares given to the
+  // account, or moves a chat to or from the other person (`move*`).
+  // Watching or driving a browser tab on another machine is a person's view:
+  // it skips the ownership and access checks agent browser commands keep.
+  work_tools: ["readBrowserTabFrame", "sendBrowserTabInput"],
+  lane_share: [
+    "updateRights", "resendInvite", "listReceived", "leave",
+    "moveStart", "moveRespond", "moveCancel", "moveList", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveStatus", "moveReceiveCancel", "movePackStart", "movePackStatus", "movePackChunk", "movePackRelease",
   ],
 };
 
@@ -410,14 +471,24 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
  * `cloud.call` and `accountVault.call` (multiProjectRpcServer). Every rule
  * above still applies to them.
  *
- * The other `cloud` actions stay with a project: a ready machine is a
+ * The other `cloud` actions stay with a project: a lane launch is a
  * project's, and what spends money or deletes asks in the caller's own chat.
  * The vault actions are for this computer's desktop and reach only the provider's
  * items (cloudVaultItems.ts).
  */
 export const ADE_ACTION_MACHINE_SCOPED = {
-  cloud: ["access", "list", "hours", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
+  // `saved_chat_machine`: which asleep computer saved a chat (`ade chat send` to it).
+  // The account's lanes, saved chats, copies, backups and jobs are read from any folder
+  // (`ade cloud lanes|chats|sessions|backups|jobs|project`); `lane_keep` only restarts an idle clock.
+  cloud: [
+    "access", "status", "list", "hours", "limits", "sleep", "wake", "referral", "invite_redeem", "cloud_sign_in_status", "saved_chat_machine", ...CLOUD_SIGN_IN_WRITES,
+    "lanes", "lane_show", "lane_git", "lane_keep", "saved_chats_list", "saved_chats_read", "sessions_list", "session_read", "backups_list", "jobs_list", "project_overview",
+  ],
   account_vault: ["get", "set", "remove"],
+  // The account's sign-ins, from a window with no project here (`providerLogins.call`).
+  provider_logins: PROVIDER_LOGIN_ACTIONS,
+  // Passwords is the account's, not a project's (`passwords.call`).
+  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "exportSecrets", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse"],
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
 export type AdeMachineScopedDomain = keyof typeof ADE_ACTION_MACHINE_SCOPED;
@@ -438,7 +509,9 @@ export function isMachineScopedAdeAction(domain: AdeMachineScopedDomain, action:
 export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly string[]>> = {
   account: ["getToken", "createToken"],
   account_vault: ["get"],
-  project_secret: ["get", "exportEnv"],
+  project_secret: ["get"],
+  // The values of a saved login, for desktop main to fill a page with.
+  passwords: ["resolveForFill", "revealValue", "passkeysForRp"],
   // A custom provider's launch env, tokens included.
   ai: ["harnessLaunchEnv"],
   // Raw proof bytes, streamed to the user's own desktop.
@@ -542,6 +615,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "sendNotification",
   ],
   keep_awake: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"],
+  lane_share: [
+    "create", "list", "updateRights", "revoke", "resendInvite", "listReceived", "leave",
+    "moveStart", "moveRespond", "moveCancel", "moveList", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveStatus", "moveReceiveCancel", "movePackStart", "movePackStatus", "movePackChunk", "movePackRelease",
+  ],
   remote_mcp: [
     "getStatus",
     "listActivity",
@@ -574,6 +651,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "diagnosticsRunFullCheck",
     "diagnosticsRunHealthCheck",
     "checkBranchName",
+    "cloudStartBranch",
+    "pushCloudStartBranch",
     "getBranchDrift",
     "getDefaultTemplate",
     "getNewLaneDefaults",
@@ -800,12 +879,17 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   tests: ["getLogTail", "listRuns", "listSuites", "run", "stop"],
   chat: [
     "archiveSession",
+    "getRootFullAccess",
+    "setRootFullAccess",
     "cancelDispatchedSteer",
     "cancelSteer",
     // `ade chat ask --clear`: the agent takes back the hand it raised. Fenced
     // to `agent_explicit` in the service, and scoped to the caller's own chat
     // by the RPC server's chat guard, so it cannot drop a person's hand.
     "clearAsk",
+    // `ade devices use|current`: the caller's own chat's device sources (self-scoped by the RPC server).
+    "getDeviceSources",
+    "setDeviceSource",
     "createSession",
     "deleteSession",
     // Settings › Recently deleted (`ade chat deleted`). Agents may list and
@@ -887,6 +971,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // desktop names, and only the desktop's main process should do that.
     "listInterruptedChats",
     "armUpdateResume",
+    "releaseChatRuntime",
     "listClaudePlugins",
     "listCodexPlugins",
     "listClaudeSessions",
@@ -905,6 +990,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     ...THREAD_COMMENT_ACTION_NAMES,
     ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
     "messageSession",
+    // The Work input box's text for a running agent CLI, typed only at a free prompt.
+    "typeIntoCli",
     "modelCatalog",
     "approveToolUse",
     "codexFuzzyFileSearch",
@@ -935,6 +1022,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "resolveCrossMachineHandoffApproval",
     "startCrossMachineBatchMove",
     "getCrossMachineBatchMove",
+    "crossMachineBatchSourceChanged",
     "retryCrossMachineBatchMove",
     "resolveCrossMachineBatchMoveApproval",
     "acknowledgeCrossMachineHandoff",
@@ -956,6 +1044,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "reloadClaudePlugins",
     "rewindFiles",
     "saveTempAttachment",
+    "saveTempAttachmentPart",
     "copyTempAttachment",
     // The paired desktop's ticket mint for the streamed HTTP upload route.
     // `remoteConnectionService.uploadChatAttachment` calls it by string over
@@ -963,6 +1052,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // failing on every machine.
     "createAttachmentUpload",
     "sendMessage",
+    // The Work prompt box's new chat and its first message in one call (person only).
+    "createSessionAndSend",
     "readTranscript",
     "readTranscriptPage",
     "setClaudeOutputStyle",
@@ -972,6 +1063,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "continueUsageLimitOnAlternate",
     "switchAccount",
     "setScheduledWorkPaused",
+    "setScheduledWorkItemPaused",
+    "runScheduledWorkNow",
     "steer",
     "suggestLaneNameFromPrompt",
     "generateAutoLaneIdentity",
@@ -982,6 +1075,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setParent",
     "dismissSubagentTakeoverPrompt",
     "warmupModel",
+    "prewarmDraft",
   ],
   keybindings: ["get", "set"],
   ai: [
@@ -1013,11 +1107,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "museSettings",
     "museSettingsClose",
     "acpProviderDiagnostics",
+    "runAcpProviderDoctor",
     "listApiCredentials",
     "getApiCredential",
     "storeApiCredential",
     "removeApiCredential",
     "verifyApiKeyConnection",
+    "verifyProviderSignIn",
     "storeApiKey",
     "deleteApiKey",
     "listApiKeys",
@@ -1079,19 +1175,19 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   automation_planner: ["parseNaturalLanguage", "saveDraft", "simulate", "validateDraft"],
   cto_state: [
+    "adoptAccountCopy",
     "completeOnboardingStep",
+    "getAccountCopyStatus",
     "getAttention",
     "getIdentity",
     "getOnboardingState",
-    "getSessionLogs",
     "getSnapshot",
-    "getThreadHealth",
     "previewSystemPrompt",
+    "refreshContext",
     "runProjectScan",
-    "startFreshSession",
     "updateIdentity",
   ],
-  cto_memory: ["getSnapshot", "searchMemory", "updateMemory", "recordDiscovery"],
+  cto_memory: ["getSnapshot", "updateNotes", "updateOpenWork", "recordDiscovery"],
   session: [
     "backfillDeltas",
     "clearWokeMarker",
@@ -1102,6 +1198,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "list",
     "moveOnBoard",
     "readTranscriptTail",
+    "reportCliTurnSignal",
     "requestSessionAttention",
     "setSessionActivity",
     "setSessionStatusNote",
@@ -1120,23 +1217,50 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
-  project_config: ["diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
+  project_config: ["diffAgainstDisk", "get", "resolveAccountSettingNotice", "save", "setPrTranscriptGists", "validate"],
   // `request` asks the person through the private secret card; it returns the
   // outcome only, never the value, so it is not secret-bearing.
-  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request"],
+  project_secret: ["list", "get", "set", "delete", "request", "exec"],
+  // Passwords: `list`/`loginsForPage` return summaries only (agents use them
+  // to pick a login); every write and `resolveForFill` are user-only below.
+  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "previewLaneEnv", "importLaneEnv", "exportSecrets", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse"],
+  messages: ["status", "recent", "chats", "send", "codeWait"],
   // `request` raises the connect card in the caller's own chat; the person
   // types the key, and the host saves it. `status` reports connected or not,
   // never a credential. Neither is secret-bearing.
   integration_connect: ["request", "status"],
-  // the provider: ready machines (read the pool, take a project's ready machine,
-  // give an unused claim back) and the machine verbs. What spends money or
-  // deletes asks the person first (the RPC server stamps who asks). Never the key.
+  // the provider: the machine verbs. What spends money or deletes asks the
+  // person first (the RPC server stamps who asks). Never the key.
   cloud: [
-    "access", "ready_status", "claim_ready", "release_ready", "list", "hours", "create", "sleep", "wake", "resize", "update",
-    "copy", "move", "delete", "ready_set", "ready_off", "ready_retry", "make_status", "limits", "set_limits",
+    // `status` is the whole account in one read (plan, hours, disk, lanes,
+    // sizes, agent limits, canStartLane); no key, no wake, no spend.
+    "access", "status", "list", "hours", "create", "sleep", "wake", "resize", "update",
+    "copy", "move", "delete", "make_status", "limits", "set_limits",
+    // Which asleep computer saved a chat, and its project there: no wake, no messages.
+    "saved_chat_machine",
+    // The account's lanes (on a computer, or its computer deleted), saved chats, CLI
+    // copies, lane backups and server jobs: reads wake nothing. Every write but
+    // `lane_keep` is a delete and asks the person on a card in the caller's chat.
+    "lanes", "lane_show", "lane_git", "lane_keep", "lane_delete", "lane_free", "lane_start",
+    "saved_chats_list", "saved_chats_read", "saved_chat_delete",
+    "sessions_list", "session_read", "session_delete",
+    "backups_list", "backup_forget", "jobs_list", "job_cancel", "project_overview",
+    // A new lane on its own new computer (`ade chat create --machine cloud`).
+    "lane_launch", "lane_launch_status", "lane_launch_cancel",
+    // An agent asks the person for a tier change: a card in its chat; it changes nothing.
+    "tier_request",
+    // Clear a cloud computer's caches: the person from the dashboard; an agent asks the person with a card.
+    "clear_caches",
+    // Grow the disk of the cloud computer this runs on: up to its size's disk maximum, with no card.
+    "grow_disk",
     // Sign-ins for new machines: which are kept (never a value), and the
     // person's own saves and Claude sign-in (user-only, below).
     "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES,
+    // The invite link and what it earned; entering a friend's code (CTO-only above: a person's client).
+    "referral", "invite_redeem",
+    // A kept lane (its computer deleted) moved to this machine from the server copies:
+    // what would come back, the move itself (user-only, above) and its progress.
+    "kept_lane_move_preview", "kept_lane_move", "kept_lane_move_status",
   ],
   // `list` reads the MCP setup (names and set/not-set, never a value).
   // `request` raises the MCP server card in the caller's own chat; the person
@@ -1151,7 +1275,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   account_settings: ["list", "deletedKeys", "get", "set", "remove", "sync"],
   // `list` reports names and readability, never values, which is why it sits
   // beside the harmless actions. `get` returns a credential and is gated below
-  // for the same reason `project_secret.exportEnv` is.
+  // for the same reason `project_secret.get` is.
   account_vault: ["list", "get", "set", "remove", "sync", "pendingKeys"],
   linear_credentials: [
     "clearOAuthClientCredentials",
@@ -1242,6 +1366,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRepoLabels",
     "pollAppUserDeviceAuth",
     "publishCurrentProject",
+    "setGhAccountSharing",
     "setToken",
     "startAppUserDeviceAuth",
   ],
@@ -1356,6 +1481,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "probePort",
     "stopDevServer",
     "noteWatching",
+    // A person watching a browser tab from another machine or the phone, and
+    // their input when they take control. User clients only (adeRpcServer).
+    "readBrowserTabFrame",
+    "sendBrowserTabInput",
   ],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
@@ -1381,6 +1510,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // retyped: `getStatus().capabilities` reports it to agents and `apple.invoke`
   // gates the phone/web client on it, and three hand-kept copies is how an
   // action ships reachable on one surface and unnamed on the other two.
+  // The ADE Cloud iPhone (`cloudPhoneService`, shared/cloudPhone.ts).
+  cloud_phone: [...CLOUD_PHONE_AGENT_ACTIONS, ...CLOUD_PHONE_USER_ONLY_ACTIONS],
   ios_simulator: [...APPLE_AGENT_ACTIONS, ...APPLE_USER_ONLY_ACTIONS],
   /*
    * Mac Desktop: one private macOS screen per lane.
@@ -1551,6 +1682,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "loginCommand",
     "refresh",
   ],
+  /*
+   * The sign-ins the account keeps for ADE Cloud (P5). `status` returns no
+   * token, key, file content or hash, so agents and other machines may read
+   * it. `captureNow`, `allowKeychain` and `allowGitHubCli` are the person's.
+   */
+  provider_logins: [...PROVIDER_LOGIN_ACTIONS],
 };
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -1634,6 +1771,10 @@ export function isAutomationAllowedAdeAction(
   return isAllowedAdeAction(domain, action)
     && !isCtoOnlyAdeAction(domain, action)
     && !isUserOnlyAdeAction(domain, action)
+    // A lane share gives another account a lane on this computer. An
+    // automation step passes no caller the host can trust, so it makes,
+    // lists and stops none.
+    && domain !== "lane_share"
     // A config save writes the whole file, owner-only keys included. The RPC
     // server checks an agent's save key by key; an automation step skips that
     // check, so it may not save the config at all.

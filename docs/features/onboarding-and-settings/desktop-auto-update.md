@@ -100,9 +100,66 @@ write. It uses `cmd start` because, from Electron, a `detached`
 powershell.exe exits without running and an attached one dies with ADE. The
 small, topmost "Updating ADE to vX" window follows the old app quitting, the
 installer running, and the steps in `install-steps.log`. It closes when the new
-ADE has a window on screen. If the installer ends and no new ADE appears, it
-says so and offers Open ADE. Its log is read into `ade-update.jsonl` as
+ADE has a window on screen. If the installer ends and no new ADE appears, or
+the installer is still running after 10 minutes, it says so on the window and
+then acts without waiting for a click, because a remote update (from another
+machine or the phone) has nobody at the PC: it stops a still-running installer
+together with its child processes, then opens ADE. Whichever version is
+installed comes up and puts its background service back, so the machine
+returns to the relay. The heartbeat says `failed` first, so that ADE does not
+defer to the window (below). An install the person quit into only gets the
+stuck installer stopped. Its log is read into `ade-update.jsonl` as
 `autoUpdate.install_progress_report` 30 s into the next launch.
+
+No installer dialog may wait for an answer during a silent update: a
+`MessageBox` without `/SD` is shown even under `/S`. electron-builder's own
+"uninstall failed" box (`handleUninstallResult`, after the old uninstaller has
+failed five times) has none, so `installer.nsh` replaces it through the
+`customUnInstallCheck` and `customUnInstallCheckCurrentUser` hooks. The old
+uninstaller fails when it cannot rename a file out of the install folder, which
+a process outside that folder causes by holding a file open (a dev brain from a
+checkout with the installed `resources\app.asar` open did it on 2026-11-18,
+and the PC sat on the hidden box for two hours with no ADE and no service). The
+hook answers the box, reopens the old ADE when the run is a silent update, and
+exits with code 2, leaving the old install in place for a later retry. Before
+that reopen it closes this install's live update window through the window's
+own cancel file (killing it after 5 s), because the running window is the
+installed release's script: while it beats a non-failed heartbeat, the old ADE
+would take the launch as a hand-launch mid-install and exit. Stable and Beta
+keep their windows side by side in `%LOCALAPPDATA%\ADE`, so only a window whose
+`appExe` is this install's exe counts. A window for an install on
+quit is left alone and ADE stays closed, the same rule the window follows,
+unless the person opened ADE during the install (`launch-requested.json` is
+beside the window): then it is closed and ADE reopened.
+
+First, though, the hook names what blocked the update. It unpacks
+`build/ade-update-holders.ps1` into its plugins folder and runs it. The script
+asks Windows' Restart Manager which processes have the install folder's
+programs, libraries, native modules or `app.asar` open, and adds any process
+whose command line names the folder. Processes from outside the folder come
+first. It writes them to `<ADE home>\runtime\update-blocked.json` and adds an
+`install update_blocked … holders=` line to `install-steps.log`. On 2026-11-19
+an orphaned dev app from a PC lane blocked four updates in a row, and nothing
+said so. The brain reports the file in its handshake
+(`runtimeInfo.lastUpdateBlock`, `ade-cli/src/lib/hostUpdateFacts.ts`). It
+drops a report once that version is installed, or after 6 h. The brain reads the
+file off the event loop, at most every 30 s. Another computer's Machines card
+then reads "didn't install: node.exe (PID 7292) had ADE's files open. Close it,
+then press Update". The card uses a report only once the far brain has
+restarted since the update was sent, because the installer writes the report
+before it reopens the old ADE.
+
+That card also stops waiting out its grace (5 min, or 35 min while
+downloading) when the far brain has restarted since the update was sent and
+has stayed up a minute on the old version (`hostStartedAt`, taken from the
+handshake's `startedAgoMs`). `startedAgoMs` is wall-clock time since the brain
+started; `uptimeMs` stops while a Mac or Linux machine sleeps, so it is not
+used. A link that only dropped keeps the same brain, so it does not count. The
+phone gets both from the sync hello instead: every host's `brain` metadata
+carries `startedAgoMs` and `lastUpdateBlock` (`hostUpdateFacts`).
+`HostUpdateFacts` in `MachineUpdateStore.swift` reads them, and the phone's
+card applies the same two rules. The card logic lives in
+`renderer/components/remoteTargets/machineUpdateStatus.ts`.
 
 The window also writes a heartbeat. A copy of the old ADE opened by hand during
 the install (the person sees nothing happening and clicks the shortcut) reads
@@ -127,7 +184,8 @@ reinstalls, restarts and verifies the service itself (`runUpdateTransaction`). E
 from `quitAndInstall` (`autoInstallOnAppQuit` is off), which records the
 pending install that makes that launch run the transaction. The trade: if the
 new ADE does not open at all, the brain stays down, and the machine is
-unreachable from the phone, until ADE is next opened. `install-path.cmd` broadcasts
+unreachable from the phone, until ADE is next opened. The update window's
+recovery above is what opens it when nobody is there. `install-path.cmd` broadcasts
 `WM_SETTINGCHANGE` only when PATH actually changed, and detached. Its 5 s
 per-window timeout stacked to 82 s inside the installer. `customCheckAppRunning`
 replaces electron-builder's app-running check with one PowerShell pass instead
@@ -280,6 +338,11 @@ service and the `ade` CLI. The plan is `docs/plans/beta-track.md`.
 - **Remote "Update & restart".** It never moves a machine across tracks. A
   request that names a build of the other track updates the machine on its own
   track. See `apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts`.
+  A phone or ADE Web asks for the same run (`machine.updateImpact` /
+  `machine.updateAndRestart`), and learns each track's newest build from the
+  account directory's `GET /releases/latest`, which runs the desktop's own
+  reader over the same two release manifests; a track only ever takes a build of
+  that track.
 - **`ade brain update`.** The version `latest` follows the machine track. On Beta
   it is the build that `beta.json` names. It never falls back to the other
   track. See `apps/ade-cli/src/commands/brainUpdate.ts`.
@@ -678,6 +741,21 @@ kept, marked `noticeDismissedAt`, for the resumes it still owes — it simply
 stops being surfaced as a notice, including on the next launch — and it is
 dropped entirely once it owes nothing or a later install replaces it.
 
+The brain side does not depend on this list. Before the service uninstall,
+`prepareAutoUpdateInstall` writes the `accepted_update` stop intent
+(`noteBrainStopIntent`, cleared when the uninstall fails), and the stopping
+brain saves its chats and CLIs at work for its next start, with the continue
+cap starting again. `ade brain update` does the same before each service stop
+and the restart, and clears the intent when one fails. Both paths use the same
+durable row id, so a chat is continued once. See
+[work in flight across a brain stop](../storage-and-recovery/README.md#work-in-flight-across-a-brain-stop).
+
+If the native handoff goes stale and the update re-downloads
+(`recoverStaleInstallHandoff`), the retry is the same request: it keeps the
+resume flag, `requestedRemotely` and `closeAfterInstall`, and carries the
+chats the first attempt listed, because the brain that attempt stopped can no
+longer list them.
+
 Each row delivers the "ADE restarted, so your last turn ended early…" continue prompt (the same rows re-arm chats after a quit-prompt Repair)
 once. Only rows that actually landed `scheduled` (not paused) are reported in
 the post-update "Scheduled N chats to resume" notice, and typing into a chat
@@ -714,7 +792,7 @@ failure names the step in plain words. A failed `swap` is a warning banner in
 the retry). Every other failed step means the background service is down, and
 `BrainDownNotice` owns it: one error banner with the cause, **Fix it** (the real
 service reinstall and restart), then **Restart ADE**, then **Reset ADE**, and
-**Report issue** under the text — see
+**Report this error to ADE…** under the text — see
 [the brain-down notice](../storage-and-recovery/README.md#the-recovery-screen-and-the-brain-down-notice).
 A project open the pool refused mid-update (`LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE`)
 is part of the same notice ("Finishing the update"), never a second banner.
@@ -757,7 +835,9 @@ countdown immediately without querying runtime activity.
 `AutoUpdateBanner` renders the countdown as an "ADE will update in Ns" toast
 that ticks once per second. Reaching the deadline while the policy is still
 enabled and any required idle condition still holds calls the transactional
-`quitAndInstall()` path and emits `ade_update_auto_applied`. Renewed activity
+`quitAndInstall(true)` path and emits `ade_update_auto_applied`. It asks to
+continue chats like a manual install: idle is read before the feed refresh,
+and a chat that starts after that read is continued after the update. Renewed activity
 clears an idle-only countdown. An explicit **Cancel**
 (`updateCancelAutoApply`) sets `autoApplySuppressedUntil` so another countdown
 does not start until that epoch passes. Disabling automatic installation also

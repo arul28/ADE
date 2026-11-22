@@ -2,6 +2,7 @@ import React from "react";
 import { ArrowSquareOut, GitPullRequest } from "@phosphor-icons/react";
 
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import type {
   AppNavigationRequest,
   RecentProjectSummary,
@@ -23,6 +24,9 @@ type Candidate = {
  */
 export function CrossRepoPrBanner(): null {
   const [candidate, setCandidate] = React.useState<Candidate | null>(null);
+  // The open repository's remote, read from the tab's copy.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinKey = tabCopyPin?.key ?? null;
   const [activeRepo, setActiveRepo] = React.useState<{
     owner: string;
     name: string;
@@ -53,7 +57,11 @@ export function CrossRepoPrBanner(): null {
     let cancelled = false;
     const getStatus = window.ade?.github?.getRemoteStatus;
     if (typeof getStatus !== "function") return;
-    void getStatus()
+    if (!tabCopyPin) {
+      setActiveRepo(null);
+      return;
+    }
+    void getStatus(undefined, tabCopyPin)
       .then((status) => {
         if (cancelled) return;
         setActiveRepo(status.repo ? { owner: status.repo.owner, name: status.repo.name } : null);
@@ -65,7 +73,8 @@ export function CrossRepoPrBanner(): null {
     return () => {
       cancelled = true;
     };
-  }, [candidate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidate, tabCopyPinKey]);
 
   // When we know both the candidate and the active repo, decide whether to
   // show the banner and find a matching recent project to offer.

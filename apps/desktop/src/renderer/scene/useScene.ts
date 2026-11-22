@@ -5,6 +5,8 @@
  *
  * Loading is shared: every backdrop on screen reads the same module cache, so
  * a picture is fetched, decoded and colour-sampled once, not once per surface.
+ * Each draws the file sized for the screen: a bundled picture's copy
+ * (`sceneSrcForScreen`), or a user picture's screen-sized copy (`userSceneUrl`).
  * Shuffle picks once per launch (never the same picture twice in a row) and
  * `reshuffleScene()` picks again on demand.
  */
@@ -19,8 +21,12 @@ import { listUserScenes, subscribeUserScenes, userSceneUrl, type UserSceneSummar
 export type ActiveScene =
   /** The flat theme background (mode `plain`): no mesh is drawn and nothing moves. */
   | { kind: "plain" }
-  /** The theme's animated mesh (mode `gradient`, or a picture that is gone). */
-  | { kind: "gradient" }
+  /**
+   * The theme's animated mesh (mode `gradient`, or a picture that is gone).
+   * `pending`: shuffle has not drawn its picture yet (it waits for the user
+   * library), so a picture may still replace the mesh in a moment.
+   */
+  | { kind: "gradient"; pending?: true }
   | {
       kind: "image";
       id: string;
@@ -36,6 +42,24 @@ export type ActiveScene =
     };
 
 type Entry = { url: string | null; palette: ScenePalette | null; done: boolean };
+
+/**
+ * The cache key of a scene on this screen. A user picture has one entry per
+ * screen size, because each size draws its own copy; a bundled picture picks
+ * its file at render time, so one entry serves every screen.
+ */
+function entryKey(id: string, screen: ScreenPixels): string {
+  return isUserSceneId(id) ? `${id}@${screen.width}x${screen.height}` : id;
+}
+
+function sceneIdOfEntry(key: string): string {
+  const at = key.indexOf("@");
+  return at < 0 ? key : key.slice(0, at);
+}
+
+/** The last URL and colours each scene showed, kept while the copy for a new screen loads. */
+const lastUrlById = new Map<string, string>();
+const lastPaletteById = new Map<string, ScenePalette>();
 
 const SHUFFLE_LAST_KEY = "ade.sceneShuffleLast";
 
@@ -61,8 +85,13 @@ function refreshUserScenes(): void {
     userScenes = rows;
     userScenesLoaded = true;
     // A deleted picture must not linger in the cache.
-    for (const id of [...entries.keys()]) {
-      if (isUserSceneId(id) && !rows.some((row) => row.id === id)) entries.delete(id);
+    for (const key of [...entries.keys()]) {
+      const id = sceneIdOfEntry(key);
+      if (isUserSceneId(id) && !rows.some((row) => row.id === id)) {
+        entries.delete(key);
+        lastUrlById.delete(id);
+        lastPaletteById.delete(id);
+      }
     }
     emit();
   });
@@ -75,23 +104,50 @@ function ensureUserScenes(): void {
   refreshUserScenes();
 }
 
-function load(id: string): void {
-  if (entries.has(id)) return;
-  entries.set(id, { url: null, palette: null, done: false });
+function load(id: string, screen: ScreenPixels): void {
+  const key = entryKey(id, screen);
+  if (entries.has(key)) return;
+  entries.set(key, { url: null, palette: null, done: false });
   const bundled = findBundledScene(id);
-  const urlPromise = bundled ? Promise.resolve(bundled.src) : isUserSceneId(id) ? userSceneUrl(id) : Promise.resolve(null);
+  // A user picture shows its stored copy, or the picture itself at once; a
+  // copy that has to be made first replaces it when ready (`upgradeToCopy`).
+  const urlPromise = bundled
+    ? Promise.resolve(bundled.src)
+    : isUserSceneId(id)
+      ? userSceneUrl(id, screen, { makeCopy: false })
+      : Promise.resolve(null);
   // A user picture deleted while this load was in flight must not come back.
-  const stillWanted = () => entries.has(id);
+  const stillWanted = () => entries.has(key);
   void urlPromise.then(async (url) => {
     if (!stillWanted()) return;
-    entries.set(id, { url, palette: null, done: !url });
+    entries.set(key, { url, palette: null, done: !url });
+    if (url) lastUrlById.set(id, url);
     emit();
     if (!url) return;
     // The colours come from a 48px sample, so a bundled picture samples its
-    // thumbnail instead of decoding the full file a second time.
+    // thumbnail and a user picture its copy, instead of decoding the full
+    // file a second time. Colours are kept per picture, not per file.
     const palette = await extractScenePalette(id, bundled?.thumb ?? url);
     if (!stillWanted()) return;
-    entries.set(id, { url, palette, done: true });
+    if (palette) lastPaletteById.set(id, palette);
+    entries.set(key, { url, palette, done: true });
+    emit();
+    if (isUserSceneId(id)) upgradeToCopy(key, id, screen, url);
+  });
+}
+
+/**
+ * Makes a user picture's copy for this screen when it was not stored yet, and
+ * swaps it in. The layer keeps the picture on screen until the copy is
+ * decoded (`SceneImageLayer`), so the swap shows nothing; it only frees the
+ * larger decode.
+ */
+function upgradeToCopy(key: string, id: string, screen: ScreenPixels, shownUrl: string): void {
+  void userSceneUrl(id, screen).then((url) => {
+    const entry = entries.get(key);
+    if (!url || url === shownUrl || !entry || entry.url !== shownUrl) return;
+    entries.set(key, { ...entry, url });
+    lastUrlById.set(id, url);
     emit();
   });
 }
@@ -240,8 +296,34 @@ export function sceneIdFor(prefs: ScenePreferences): string | null {
   return null;
 }
 
-export function useActiveScene(): ActiveScene {
-  const prefs = useAppearanceStore((s) => s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES);
+/**
+ * Whether the scene will show a picture once it settles, read from the
+ * preferences alone, before the user library loads: the boot code that must
+ * know the window's final look early (the early prompt box) asks this. Null
+ * when only the user library can tell (shuffle with no bundled picture that
+ * fits this screen). A user picture chosen by hand counts as shown; if it was
+ * deleted, the gradient shows instead.
+ */
+export function sceneWillShowPicture(prefs: ScenePreferences): boolean | null {
+  if (!prefs.showImage) return false;
+  if (prefs.mode === "image") {
+    const id = prefs.imageId;
+    return id !== null && (findBundledScene(id) !== null || isUserSceneId(id));
+  }
+  if (prefs.mode !== "shuffle") return false;
+  if (shufflePick !== null || shufflePool(prefs).length > 0) return true;
+  return userScenesLoaded ? false : null;
+}
+
+/**
+ * `untouched` replaces the shipped default for a person who never picked a
+ * scene (ADE Web's signed-out page opens on a picture, not the flat
+ * background). A scene they chose always wins.
+ */
+export function useActiveScene(options: { untouched?: ScenePreferences } = {}): ActiveScene {
+  const stored = useAppearanceStore((s) => s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES);
+  const untouchedDefault = !stored.choiceMade && Boolean(options.untouched);
+  const prefs = untouchedDefault && options.untouched ? options.untouched : stored;
   useSyncExternalStore(subscribe, () => snapshotVersion);
   // Moving to a display of another size re-renders, so shuffle re-checks its
   // pick against the pictures that fit there and a bundled picture loads the
@@ -257,12 +339,18 @@ export function useActiveScene(): ActiveScene {
   const waitingForLibrary = prefs.mode === "shuffle" && !userScenesLoaded && !shufflePick;
   const id = waitingForLibrary ? null : sceneIdFor(prefs);
 
+  const key = id ? entryKey(id, screen) : null;
   useEffect(() => {
-    if (id) load(id);
-  }, [id]);
+    if (id) load(id, screen);
+    // `key` covers the screen for the scenes whose file depends on it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
-  if (!id) return prefs.mode === "plain" ? { kind: "plain" } : { kind: "gradient" };
-  const entry = entries.get(id);
+  if (!id) {
+    if (prefs.mode === "plain") return { kind: "plain" };
+    return waitingForLibrary ? { kind: "gradient", pending: true } : { kind: "gradient" };
+  }
+  const entry = key ? entries.get(key) : undefined;
   // A user picture that no longer exists falls back to the gradient.
   if (entry?.done && !entry.url) return { kind: "gradient" };
   const bundled = findBundledScene(id);
@@ -270,13 +358,17 @@ export function useActiveScene(): ActiveScene {
     kind: "image",
     id,
     name: sceneName(id),
-    url: bundled ? sceneSrcForScreen(bundled, screen) : entry?.url ?? null,
+    // On a move to another screen, a user picture keeps its last file until
+    // the copy for the new screen is ready, so it does not blink out.
+    url: bundled
+      ? untouchedDefault && bundled.signIn ? bundled.signIn.src : sceneSrcForScreen(bundled, screen)
+      : entry?.url ?? lastUrlById.get(id) ?? null,
     position: bundled?.position ?? "50% 50%",
     showImage: prefs.showImage,
     texture: prefs.texture,
     dim: prefs.dim,
     matchTheme: prefs.matchTheme,
-    palette: entry?.palette ?? null,
+    palette: entry?.palette ?? lastPaletteById.get(id) ?? null,
   };
 }
 

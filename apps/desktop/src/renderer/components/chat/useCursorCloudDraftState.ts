@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { cursorCloudErrorMessage, repoMatchKey, type CursorCloudExistingPr } from "../../lib/cursorCloudUtils";
 import { isInjectableCloudSecretName } from "./CursorCloudSecretsPicker";
 import type { LaneGitRemoteStatus } from "./useLaneGitRemote";
+import { withChatPin } from "./chatMachinePin";
 
 export type CursorCloudRepoListState =
   | { status: "loading" }
@@ -21,15 +23,21 @@ type UseCursorCloudDraftStateInput = {
   /** Tri-state read of the lane remote. See `useLaneGitRemote`. */
   laneGitRemoteStatus: LaneGitRemoteStatus;
   laneGitRemoteError: string | null;
+  /**
+   * The machine the chat's lane lives on, or null for the tab's own machine.
+   * The lane reads (remembered secrets, open PR) and the repo list go there:
+   * that machine's shared Cursor sign-in answers.
+   */
+  pin?: OpenProjectBinding | null;
 };
 
 /**
  * The account's Cursor repositories. The host caches and shares the request,
  * because Cursor allows five a minute per account; `force` (Retry) skips it.
  */
-function loadCursorCloudRepoUrls(force: boolean): Promise<string[]> {
-  return window.ade.ai
-    .cursorCloudListRepositories(force ? { refresh: true } : undefined)
+function loadCursorCloudRepoUrls(force: boolean, pin: OpenProjectBinding | null): Promise<string[]> {
+  return withChatPin(pin, (chatPin) => window.ade.ai
+    .cursorCloudListRepositories(force ? { refresh: true } : undefined, chatPin))
     .then((repos) => repos.map((repo) => repo.url));
 }
 
@@ -48,7 +56,12 @@ export function useCursorCloudDraftState({
   laneGitBranch,
   laneGitRemoteStatus,
   laneGitRemoteError,
+  pin = null,
 }: UseCursorCloudDraftStateInput) {
+  // Effects key on the pin's `key`; the object itself is read from a ref.
+  const pinRef = useRef<OpenProjectBinding | null>(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const [cursorCloudMode, setCursorCloudMode] = useState(false);
   const [cursorCloudAutoPr, setCursorCloudAutoPr] = useState(false);
   const [selectedSecretNames, setSelectedSecretNames] = useState<string[]>([]);
@@ -73,7 +86,7 @@ export function useCursorCloudDraftState({
     let cancelled = false;
     setRepoState({ status: "loading" });
     // A Retry (generation > 0) skips the cache; the first read may reuse it.
-    void loadCursorCloudRepoUrls(repoFetchGeneration > 0)
+    void loadCursorCloudRepoUrls(repoFetchGeneration > 0, pinRef.current)
       .then((urls) => {
         if (cancelled) return;
         setRepoState({ status: "ready", urls });
@@ -85,7 +98,7 @@ export function useCursorCloudDraftState({
     return () => {
       cancelled = true;
     };
-  }, [cursorAccountKey, cursorCloudAvailable, laneId, repoFetchGeneration]);
+  }, [cursorAccountKey, cursorCloudAvailable, laneId, pinKey, repoFetchGeneration]);
 
   useEffect(() => {
     if (!cursorCloudAvailable) {
@@ -94,11 +107,13 @@ export function useCursorCloudDraftState({
     }
     let cancelled = false;
     const list = window.ade.projectSecrets?.list;
-    if (!list) {
+    // The secrets of the draft's machine. None known: none to offer.
+    const secretsPin = pinRef.current;
+    if (!list || !secretsPin) {
       setAvailableSecretNames([]);
       return;
     }
-    void list()
+    void list(secretsPin)
       .then((result) => {
         if (cancelled) return;
         setAvailableSecretNames(
@@ -113,7 +128,7 @@ export function useCursorCloudDraftState({
     return () => {
       cancelled = true;
     };
-  }, [cursorCloudAvailable, laneId]);
+  }, [cursorCloudAvailable, laneId, pinKey]);
 
   useEffect(() => {
     if (!cursorCloudAvailable || !laneId) {
@@ -128,7 +143,7 @@ export function useCursorCloudDraftState({
       setRememberSecretNames(false);
       return;
     }
-    void readRemembered(laneId)
+    void withChatPin(pinRef.current, (chatPin) => readRemembered(laneId, chatPin))
       .then((names) => {
         if (cancelled) return;
         const injectable = names.filter(isInjectableCloudSecretName);
@@ -143,7 +158,7 @@ export function useCursorCloudDraftState({
     return () => {
       cancelled = true;
     };
-  }, [cursorCloudAvailable, laneId]);
+  }, [cursorCloudAvailable, laneId, pinKey]);
 
   useEffect(() => {
     if (!cursorCloudAvailable || !laneId || !laneGitBranch?.trim()) {
@@ -156,7 +171,7 @@ export function useCursorCloudDraftState({
       return;
     }
     let cancelled = false;
-    void getOpenPr({ laneId, branch: laneGitBranch })
+    void withChatPin(pinRef.current, (chatPin) => getOpenPr({ laneId, branch: laneGitBranch }, chatPin))
       .then((result) => {
         if (cancelled) return;
         const prUrl = result?.prUrl?.trim() || "";
@@ -174,7 +189,7 @@ export function useCursorCloudDraftState({
     return () => {
       cancelled = true;
     };
-  }, [cursorCloudAvailable, laneGitBranch, laneId]);
+  }, [cursorCloudAvailable, laneGitBranch, laneId, pinKey]);
 
   const cursorCloudRepoUrl = useMemo(() => {
     const target = repoMatchKey(laneGitRemote);

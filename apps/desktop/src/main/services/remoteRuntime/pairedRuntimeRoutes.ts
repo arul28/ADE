@@ -9,6 +9,7 @@ import { isTailnetHostname } from "../../../shared/tailnet";
 import {
   isPairedRuntimeSupersededError,
   PairedRuntimeHelloRejectedError,
+  PairedRuntimeHostMismatchError,
   PairedRuntimeRelayAuthRequiredError,
 } from "./pairedRuntimeErrors";
 import { normalizeSyncEndpoint } from "./syncRuntimeTransport";
@@ -41,6 +42,38 @@ export const LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 3_000;
  * by the full 10 s.
  */
 export const TAILNET_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 5_000;
+
+/**
+ * Event reads and subscription acknowledgements fail fast enough to notice a
+ * peer that disappeared during sleep, while still allowing a cold remote
+ * runtime a reasonable response window.
+ */
+export const REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS = 30_000;
+
+/**
+ * One reply to a sync call on another machine (`ade.remoteRuntime.callSync`):
+ * the short `sync.*` and `modelPicker.*` methods. The same 30 s the local twin
+ * gives each (LOCAL_RUNTIME_SYNC_TIMEOUT_MS), and its timeout names the method.
+ */
+export const REMOTE_RUNTIME_SYNC_CALL_TIMEOUT_MS = 30_000;
+
+/**
+ * The whole sync call: a dial it starts or joins, the reply, and the one retry
+ * after a dropped connection. Past it the call fails naming the method and the
+ * step it waited on (ADE-DESKTOP-B7 waited 10 minutes and named neither). The
+ * dial is not cancelled; the next call joins it.
+ */
+export const REMOTE_RUNTIME_SYNC_DEADLINE_MS = 2 * 60_000;
+
+/** The renderer's IPC budget for a sync call: above its deadline, so main answers first, with the method's name. */
+export const REMOTE_RUNTIME_SYNC_IPC_TIMEOUT_MS = REMOTE_RUNTIME_SYNC_DEADLINE_MS + 30_000;
+
+/**
+ * How long the paired runtime gets to answer `ade/initialize` and the first
+ * `projects.list`, once its socket is open and its hello came back. The hello
+ * proves the brain there is up, so this is the same window an event read gets.
+ */
+export const PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS = REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS;
 
 /** The shorter connect deadline for a direct route with another route behind it, or null. */
 export function pairedRouteConnectTimeoutMs(
@@ -127,7 +160,7 @@ const NETWORK_ERRNOS = [
 const NETWORK_ERRNO_IN_MESSAGE = new RegExp(`\\b(${NETWORK_ERRNOS.join("|")})\\b`);
 
 /** The first value `pick` finds on an error or the errors that caused it. */
-function findInErrorCauses<T>(error: unknown, pick: (candidate: object) => T | undefined): T | undefined {
+export function findInErrorCauses<T>(error: unknown, pick: (candidate: object) => T | undefined): T | undefined {
   let current: unknown = error;
   for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
     const found = pick(current);
@@ -367,6 +400,11 @@ const HELLO_CODE_FAILURES: Record<
   connection_attempt_superseded: "superseded",
   invalid_hello: "protocol",
   protocol_version_mismatch: "protocol",
+  // Lane sharing. A desktop runtime dial never sends a guest hello; mapped
+  // so the record stays total.
+  lane_share_refused: "authentication",
+  lane_share_unavailable: "unreachable",
+  lane_share_paused: "authentication",
 };
 
 export function classifyPairedRuntimeFailure(
@@ -377,6 +415,11 @@ export function classifyPairedRuntimeFailure(
   // close arrives as a plain transport error, so the message regex below would
   // file it as "unreachable" and demote a route that just answered.
   if (isPairedRuntimeSupersededError(error)) return "superseded";
+  // A different machine answered at this address. Whatever it said, even a
+  // rejection, is not the paired host's verdict: "pair it again" would send
+  // the person to fix a pairing that is fine. "identity" also makes the dial
+  // order forget the address (`recordPairedRouteFailure`).
+  if (error instanceof PairedRuntimeHostMismatchError) return "identity";
   if (error instanceof PairedRuntimeHelloRejectedError) {
     const mapped = error.helloCode
       ? HELLO_CODE_FAILURES[error.helloCode]
@@ -413,6 +456,7 @@ export function classifyPairedRuntimeFailure(
  * none of them is present.
  */
 export function pairedRuntimeFailureCode(error: unknown): string | undefined {
+  if (error instanceof PairedRuntimeHostMismatchError) return "host_mismatch";
   const structured = findInErrorCauses(error, (candidate) => {
     const { helloCode, closeCode, code } = candidate as { helloCode?: unknown; closeCode?: unknown; code?: unknown };
     // Sent by the other machine, so only the codes this build knows are repeated.
@@ -470,6 +514,8 @@ export function pairedRuntimeFailureMessage(
   failure: RemoteRuntimeConnectionAttemptFailure,
   machineNameValue: string | null | undefined,
   accountHelloCode?: PairedRuntimeAccountHelloCode | null,
+  /** A route opened and said hello, then its runtime never answered `ade/initialize`. */
+  options: { handshakeTimedOut?: boolean } = {},
 ): string {
   const machine = machineNameValue?.trim() || "that computer";
   switch (failure) {
@@ -490,7 +536,16 @@ export function pairedRuntimeFailureMessage(
       return `${machine} is running an older ADE — update it there, then try again.`;
     case "superseded":
       return `Another connection to ${machine} took over — try again.`;
+    case "timeout":
+      if (options.handshakeTimedOut) {
+        return `Could not reach ${machine}: it did not answer the connection handshake. ADE there may be busy or stuck — try again, or restart ADE on that computer.`;
+      }
+      return pairedRuntimeUnreachableMessage(machine);
     default:
-      return `Can't reach ${machine} — it may be asleep or ADE may be stopped there.`;
+      return pairedRuntimeUnreachableMessage(machine);
   }
+}
+
+function pairedRuntimeUnreachableMessage(machine: string): string {
+  return `Can't reach ${machine} — it may be asleep or ADE may be stopped there.`;
 }

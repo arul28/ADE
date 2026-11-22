@@ -1,8 +1,11 @@
 import React from "react";
 import { Desktop, HardDrives } from "@phosphor-icons/react";
+import { useLocation } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { Banner } from "../ui/notice";
+import { isProjectSettingsTab, resolveSettingsHash, resolveSettingsTab } from "./settingsManifest";
+import { decodeSettingsHash } from "./settingsHash";
 
 /**
  * Settings reflect whichever machine the active project is bound to. When the
@@ -28,7 +31,13 @@ export function useRemoteRuntimeContext(): {
 /** Banner shown atop the Settings content when viewing a remote project. */
 export function RemoteSettingsBanner() {
   const { isRemote, runtimeName } = useRemoteRuntimeContext();
+  const location = useLocation();
   if (!isRemote) return null;
+  // A project page names the copy it reads, and the copy may be on another
+  // computer than the tab's, so the page's own line says where it is.
+  const tab = (location.hash ? resolveSettingsHash(decodeSettingsHash(location.hash))?.tab : null)
+    ?? resolveSettingsTab(new URLSearchParams(location.search).get("tab"));
+  if (tab && isProjectSettingsTab(tab)) return null;
 
   return (
     <Banner

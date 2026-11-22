@@ -1,3 +1,6 @@
+import { normalizeSlowLinkPreference, type SlowLinkPreference } from "../../../shared/slowLinkMode";
+import { SettingsSegmented, type SegmentedOption } from "../settings/primitives/SettingsControls";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   ArrowClockwise,
@@ -52,6 +55,7 @@ import {
   nameStyle,
   subTextStyle,
 } from "./remoteTargetListStyles";
+import { adeCloudMachineLabel, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 const CONNECTING_STALE_MS = 20_000;
 
@@ -74,6 +78,12 @@ function useStaleConnecting(connecting: boolean): boolean {
   }, [connecting]);
   return stale;
 }
+
+const SLOW_LINK_MODE_OPTIONS: readonly SegmentedOption<SlowLinkPreference>[] = [
+  { value: "auto", label: "Automatic" },
+  { value: "on", label: "Always on" },
+  { value: "off", label: "Off" },
+];
 
 type SavedMachineRowProps = {
   row: SavedMachineRowModel;
@@ -120,6 +130,8 @@ type SavedMachineRowProps = {
   onCancelConnect: (targetId: string) => void;
   onSaveAndConnect: (input: RemoteRuntimeTargetInput) => void | Promise<void>;
   onAutoConnectChange: (targetId: string, enabled: boolean) => void;
+  /** This computer's slow-connection setting for the machine. Absent: no control. */
+  onSlowLinkModeChange?: (targetId: string, mode: SlowLinkPreference) => void;
   onTrustAndConnect: () => void;
   onCancelHostKeyTrust: () => void;
   /** Re-runs account adoption for this machine. Offered only when the host
@@ -137,6 +149,16 @@ type SavedMachineRowProps = {
    * (Wake). A sleeping box can't take a connection, so the row never offers one.
    */
   parked?: { label: string; action: ReactNode } | null;
+  /**
+   * ADE Web holds a fixed number of computer connections per tab: the limit
+   * while the tab holds that many, else null. A computer that waits for a
+   * slot says so instead of looking broken.
+   */
+  sessionLimit?: number | null;
+  /** The account directory sees this computer online (true) or offline (false); null when it does not list it. */
+  accountOnline?: boolean | null;
+  /** When the account directory last saw this computer online; null when it does not list it. */
+  accountLastSeenAt?: number | null;
 };
 
 export function SavedMachineRow({
@@ -170,6 +192,7 @@ export function SavedMachineRow({
   onCancelConnect,
   onSaveAndConnect,
   onAutoConnectChange,
+  onSlowLinkModeChange,
   onTrustAndConnect,
   onCancelHostKeyTrust,
   onPairAgain = null,
@@ -177,8 +200,15 @@ export function SavedMachineRow({
   hideLocalRemove = false,
   footer = null,
   parked = null,
+  sessionLimit = null,
+  accountOnline = null,
+  accountLastSeenAt = null,
 }: SavedMachineRowProps) {
   const { target, status } = row;
+  const cloudIndex = useAdeCloudLaneComputers();
+  // An ADE Cloud computer reads "ADE Cloud"; its own name moves to the tooltip.
+  const cloudLabel = adeCloudMachineLabel({ hostname: target.hostname, machineKey: target.pairedMachine?.machineKey ?? null }, cloudIndex);
+  const shownName = cloudLabel ?? target.name;
   // Covers this computer's own connect and main's automatic reconnect.
   const targetConnecting =
     connecting || (status?.state === "connecting" && !row.connected);
@@ -195,8 +225,27 @@ export function SavedMachineRow({
         status ?? null,
         connected?.target.id === target.id,
       );
+  const notConnected = statusLabel === "Not connected" && !row.connected && !targetConnecting;
+  // Not connected only because this tab already holds its limit of
+  // connections: the same words as the account row in that state.
+  const slotReason = sessionLimit != null && status?.waitingForSlot === true && notConnected
+    ? `This tab already has ${sessionLimit} computers connected`
+    : null;
   // Says why a machine that is not connected will not come back on its own.
   const autoConnectOff = statusLabel === "Not connected" ? autoConnectOffReason(target) : null;
+  // The account directory sees it online: it is up, only this app is not
+  // connected to it. Say so and why, never "Last seen".
+  const onlineLine = accountOnline === true && notConnected
+    ? ["Online", slotReason ?? autoConnectOff].filter(Boolean).join(" · ")
+    : null;
+  // A computer the account sees offline keeps its "Last seen" line.
+  const slotLine = slotReason && accountOnline !== false ? slotReason : null;
+  // When the computer was last online: the account directory's time when it
+  // lists the computer, else the end of this app's last connection to it, else
+  // the start of that connection.
+  const lastSeenAt = (accountOnline != null ? accountLastSeenAt : null)
+    ?? status?.disconnectedAt
+    ?? target.lastConnectedAt;
   const compatibilityWarnings = selected
     ? (status?.compatibilityWarnings ??
       (connected?.target.id === target.id
@@ -248,17 +297,21 @@ export function SavedMachineRow({
           : section === "unavailable" && row.unavailableReason
           ? row.unavailableReason
           : row.connected
-            ? [routeLabel ?? "Online", latency].filter(Boolean).join(" · ")
+            ? [routeLabel ?? "Online", latency, status?.slowLink?.active ? "Slow connection" : null].filter(Boolean).join(" · ")
             : targetConnecting && !connectingStale
               ? "Connecting…"
-              : target.lastConnectedAt || statusLabel !== "Not connected"
+              : onlineLine
+                ? onlineLine
+              : slotLine
+                ? slotLine
+              : lastSeenAt || statusLabel !== "Not connected"
                 ? [
                     // The hollow dot and the section already say "not connected".
                     statusLabel === "Not connected" ? null : statusLabel,
                     autoConnectOff,
                     statusLabel === "Not connected"
-                      ? formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "Last seen ")
-                      : formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "last seen "),
+                      ? formatLastSeen(lastSeenAt).replace(/^Last connected /, "Last seen ")
+                      : formatLastSeen(lastSeenAt).replace(/^Last connected /, "last seen "),
                   ].filter(Boolean).join(" · ")
                 : formatLastSeen(null);
   // A machine restarting for an update drops its connection on purpose. That
@@ -275,17 +328,10 @@ export function SavedMachineRow({
           opacity: section === "unavailable" ? 0.7 : 1,
         }}
       >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "auto minmax(0,1fr) auto",
-            gap: 12,
-            alignItems: "center",
-          }}
-        >
+        <div className="ade-cx-row-grid">
           <MachineAvatar
             colorKey={machineColorKey(target)}
-            name={target.name}
+            name={shownName}
             platform={machinePlatform(status?.arch, target.lastSeenArch)}
             formFactor={machineFormFactor({ name: target.name, power })}
             editable
@@ -293,7 +339,8 @@ export function SavedMachineRow({
           />
           <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-              <span style={nameStyle}>{target.name}</span>
+              {/* An ADE Cloud computer reads "ADE Cloud"; its own name stays in the tooltip for support. */}
+              <span style={nameStyle} title={cloudLabel ? target.name : undefined}>{shownName}</span>
               <PresenceDot state={presence} />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
@@ -308,7 +355,7 @@ export function SavedMachineRow({
               <span role={updatePhase ? "status" : undefined} style={subTextStyle}>{detailLine}</span>
             </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 2, justifyContent: "flex-end" }}>
+          <div className="ade-cx-row-actions" style={{ alignItems: "center", gap: 2 }}>
             {behind && onUpdateAndRestart && !updatePhase ? (
               <button
                 type="button"
@@ -361,14 +408,18 @@ export function SavedMachineRow({
                       icon: <Pulse size={14} />,
                       disabled: busy,
                       onSelect: () => onToggleTest(target.id),
-                    }, {
+                    },
+                    // The settings are this computer's SSH route to the
+                    // machine. ADE Web reaches it through the relay only, so
+                    // it has none to edit.
+                    ...(isWebClientMode() ? [] : [{
                       key: "edit",
                       label: formOpen ? "Close settings" : "Rename and settings",
                       ariaLabel: "Edit",
                       icon: <PencilSimple size={14} />,
                       disabled: locked,
                       onSelect: () => onToggleEdit(target),
-                    }]
+                    }])]
                   : []),
                 ...(row.connected
                   ? [{
@@ -554,6 +605,31 @@ export function SavedMachineRow({
               </span>
             </span>
           </label>
+          {onSlowLinkModeChange ? (
+            <div
+              style={{
+                display: "grid",
+                gap: 6,
+                color: COLORS.textPrimary,
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+              }}
+            >
+              <span>Slow connection mode</span>
+              <div style={{ justifySelf: "start" }}>
+                <SettingsSegmented<SlowLinkPreference>
+                  value={normalizeSlowLinkPreference(target.slowLinkMode)}
+                  options={SLOW_LINK_MODE_OPTIONS}
+                  disabled={busy}
+                  ariaLabel="Slow connection mode"
+                  onChange={(mode) => onSlowLinkModeChange(target.id, mode)}
+                />
+              </div>
+              <span style={helperTextStyle}>
+                On a slow or unsteady link to this machine, pictures load when you click them and terminals show what you type before the machine echoes it. Automatic turns it on from the measured link.
+              </span>
+            </div>
+          ) : null}
           <RemoteTargetForm
             busy={saving || locked}
             prefill={formPrefill}

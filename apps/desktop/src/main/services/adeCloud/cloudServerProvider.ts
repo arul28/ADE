@@ -8,16 +8,36 @@
  * already one plain sentence; that sentence is the error the person sees.
  */
 
-import type { CloudAccountState } from "../../../shared/adeCloud";
+import { CLOUD_COMPUTER_LIMIT_CODE, readCloudComputerLimitDetail, readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState, type CloudComputerLimitDetail, type CloudComputerStatus, type CloudFreeUnlockResult } from "../../../shared/adeCloud";
+import {
+  CLOUD_COMPUTER_FEATURES,
+  CLOUD_COMPUTER_HEADER,
+  CLOUD_COMPUTER_PLATFORM_HEADER,
+  CLOUD_PATHS,
+  type CloudCheckoutResult,
+  type CloudInviteRedeemResult,
+  type CloudLaneWithoutComputer,
+  type CloudCopyRecord,
+  type CloudFreeRecord,
+  type CloudMoveRecord,
+  type CloudPhoneStart,
+  type CloudPhoneState,
+  type CloudPhoneView,
+  type CloudReferralSummary,
+} from "../../../../../account-directory/src/cloud/contract";
 import {
   CLOUD_ACCESS_REFUSED,
   CloudProviderError,
   type CloudCreateInstanceInput,
   type CloudExecResult,
   type CloudInstance,
+  type CloudAccessAnswer,
   type CloudProvider,
+  type CloudUpdateChannel,
+  type CloudUpdateCheck,
 } from "./cloudProvider";
 import { cloudSavedChatUrl, cloudSavedChatsUrl, type CloudSavedChatList, type CloudSavedChatPage } from "../../../shared/cloudSavedChats";
+import { markExpected } from "../../../shared/expectedError";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -33,6 +53,9 @@ const EXEC_RESPONSE_GRACE_MS = 10_000;
 
 const INSTANCES = "/cloud/instances";
 
+/** This computer's free-plan id (`CLOUD_COMPUTER_HEADER`) and its OS (`CLOUD_COMPUTER_PLATFORM_HEADER`). */
+export type CloudComputerSignal = { id: string; platform: NodeJS.Platform };
+
 export type CloudServerProviderDeps = {
   /** The signed-in account's token, or null when there is none now. */
   accessToken: () => Promise<string | null>;
@@ -40,11 +63,27 @@ export type CloudServerProviderDeps = {
   baseUrl: () => string | null;
   /** Names this computer in the server's delete log. */
   deviceName?: () => string | null;
+  /** The update track of the app that makes a computer (`stable` or `beta`), sent with each create. */
+  updateChannel?: () => CloudUpdateChannel | null;
+  /**
+   * This computer's id for the free plan (one per physical computer), sent
+   * with every call but the access check as `x-ade-computer`; `unreadable`
+   * when the OS has none. Left out on an ADE Cloud computer, which never
+   * claims a free plan.
+   */
+  computer?: () => Promise<CloudComputerSignal | null>;
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
+  /** The account this client is made for (`CloudProvider.account`, `cloudAccessKey`). */
+  account: string;
 };
 
-export type CloudDeleteContext = { who?: string | null; reason?: string };
+export type CloudDeleteContext = {
+  who?: string | null;
+  reason?: string;
+  /** The lane the computer was made for stays, as a lane without a computer (`CloudLaneWithoutComputer`). */
+  keepLane?: { branchRef: string | null } | null;
+};
 
 const BAD_RESPONSE = "ADE Cloud answered with something ADE could not read.";
 
@@ -53,15 +92,46 @@ function instancePath(id: string, action?: string): string {
   return action ? `${base}/${action}` : base;
 }
 
+/** A move's record, checked enough that a follower never reads a wrong shape as progress. */
+function readMoveRecord(value: unknown): CloudMoveRecord {
+  const body = record(value);
+  if (typeof body?.moveId !== "string" || typeof body.state !== "string" || typeof body.sourceInstanceId !== "string") {
+    throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+  }
+  return body as unknown as CloudMoveRecord;
+}
+
+/** A copy's record, checked the same way. */
+function readCopyRecord(value: unknown): CloudCopyRecord {
+  const body = record(value);
+  if (typeof body?.copyId !== "string" || typeof body.state !== "string" || typeof body.sourceInstanceId !== "string") {
+    throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+  }
+  return body as unknown as CloudCopyRecord;
+}
+
+function readFreeRecord(value: unknown): CloudFreeRecord {
+  const body = record(value);
+  if (typeof body?.freeId !== "string" || typeof body.state !== "string" || typeof body.instanceId !== "string") {
+    throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+  }
+  return body as unknown as CloudFreeRecord;
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function readError(body: unknown): { code: string | null; message: string | null } {
+function readError(body: unknown): { code: string | null; message: string | null; reason: string | null; computerLimit?: CloudComputerLimitDetail } {
   const error = record(record(body)?.error);
+  // All the plan's computers in use: the limit card's facts sit flat on `error` (`CloudComputerLimitDetail`).
+  const computerLimit = error?.code === CLOUD_COMPUTER_LIMIT_CODE ? readCloudComputerLimitDetail(error) : null;
   return {
     code: typeof error?.code === "string" ? error.code : null,
     message: typeof error?.message === "string" ? error.message : null,
+    // A disk refusal's reason; a reason this build doesn't know still comes with `message`.
+    reason: typeof error?.reason === "string" ? error.reason : null,
+    ...(computerLimit ? { computerLimit } : {}),
   };
 }
 
@@ -91,11 +161,16 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     const base = deps.baseUrl()?.replace(/\/+$/, "");
     if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
     const token = await deps.accessToken();
-    if (!token) throw new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401);
+    // Signed out is a state the person fixes, not a defect.
+    if (!token) throw markExpected(new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401), "user");
+    // Cached after the first read: one OS probe per process. Not on the access
+    // check, which every signed-in account polls: the id goes only to an
+    // account ADE Cloud lets in.
+    const computer = path === CLOUD_PATHS.access ? null : await deps.computer?.().catch(() => null) ?? null;
     const controller = new AbortController();
     const timedOut = () => init.signal?.aborted
       ? new CloudProviderError("Cancelled.", "cancelled", 0)
-      : new CloudProviderError("ADE Cloud did not answer in time. Try again.", "timeout", 0);
+      : markExpected(new CloudProviderError("ADE Cloud did not answer in time. Try again.", "timeout", 0), "network");
     // The caller's signal (a cancelled create) stops the request too.
     const onCallerAbort = () => controller.abort();
     if (init.signal?.aborted) controller.abort();
@@ -112,6 +187,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
           headers: {
             accept: "application/json",
             authorization: `Bearer ${token}`,
+            ...(computer ? { [CLOUD_COMPUTER_HEADER]: computer.id, [CLOUD_COMPUTER_PLATFORM_HEADER]: computer.platform } : {}),
             ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
           },
           ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
@@ -120,7 +196,11 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
         });
       } catch (error) {
         if (controller.signal.aborted) throw timedOut();
-        throw new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0);
+        // Offline, DNS, a dropped connection: the person's network, not a defect.
+        throw markExpected(
+          new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0),
+          "network",
+        );
       }
       body = response.status === 204
         ? null
@@ -133,7 +213,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       init.signal?.removeEventListener("abort", onCallerAbort);
     }
     if (!response.ok) {
-      const { code, message } = readError(body);
+      const { code, message, reason, computerLimit } = readError(body);
       // Off the access list, the server answers every route 404. On the list route
       // that means this account, not one computer.
       const refused = response.status === 401 || code === "unauthorized"
@@ -142,23 +222,40 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
         message ?? (response.status >= 500 ? "ADE Cloud is having trouble right now. Try again in a moment." : `ADE Cloud answered with an error (${response.status}).`),
         refused ? CLOUD_ACCESS_REFUSED : code ?? `http_${response.status}`,
         response.status,
+        { reason, ...(computerLimit ? { computerLimit } : {}) },
       );
     }
     return body;
   }
 
   return {
+    account: deps.account,
+
     async accessEnabled(): Promise<boolean> {
       return record(await request("GET", "/cloud/access"))?.enabled === true;
     },
 
+    async accessAnswer(): Promise<CloudAccessAnswer> {
+      const body = record(await request("GET", "/cloud/access"));
+      const enabled = body?.enabled === true;
+      const reason = typeof body?.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 500) : null;
+      // An old server sends only `enabled`: no is read-only (blocked).
+      return { enabled, readOnly: enabled ? body?.readOnly === true : true, reason };
+    },
+
     async getAccount(): Promise<CloudAccountState> {
-      return await request("GET", "/cloud/account") as CloudAccountState;
+      const account = await request("GET", "/cloud/account");
+      // Every surface reads the plan's period; an answer without it is a failed read, not a crash.
+      if (!record(record(account)?.billing)) throw new Error("ADE Cloud sent account details without billing.");
+      return account as CloudAccountState;
     },
 
     async listInstances(): Promise<CloudInstance[]> {
       const data = record(await request("GET", INSTANCES))?.data;
-      return Array.isArray(data) ? data.map(readInstance) : [];
+      // An unreadable reply is a failed read, never "no computers": a caller
+      // that reads absence as deleted (a launch's gone-computer check) must not.
+      if (!Array.isArray(data)) throw new Error("ADE Cloud sent a list of computers ADE couldn't read.");
+      return data.map(readInstance);
     },
 
     async getInstance(id: string): Promise<CloudInstance> {
@@ -166,41 +263,111 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     },
 
     async createInstance(input: CloudCreateInstanceInput, signal?: AbortSignal): Promise<CloudInstance> {
-      return readInstance(await request("POST", INSTANCES, { body: input, timeoutMs: CREATE_TIMEOUT_MS, signal }));
+      // Every create names a channel, so a Beta app never makes a Stable computer by leaving it out.
+      const channel = input.channel ?? deps.updateChannel?.() ?? null;
+      const body = channel ? { ...input, channel } : input;
+      return readInstance(await request("POST", INSTANCES, { body, timeoutMs: CREATE_TIMEOUT_MS, signal }));
     },
 
     async deleteInstance(id: string, context?: CloudDeleteContext): Promise<void> {
       await request("DELETE", instancePath(id), {
-        body: { who: context?.who ?? deps.deviceName?.() ?? null, reason: context?.reason ?? "user" },
+        body: {
+          who: context?.who ?? deps.deviceName?.() ?? null,
+          reason: context?.reason ?? "user",
+          ...(context?.keepLane ? { keepLane: { branchRef: context.keepLane.branchRef } } : {}),
+        },
       });
+    },
+
+    async listLanesWithoutComputer(): Promise<CloudLaneWithoutComputer[]> {
+      let body: Record<string, unknown> | null;
+      try {
+        body = record(await request("GET", CLOUD_PATHS.lanesWithoutComputer));
+      } catch (error) {
+        // A server from before lanes without a computer has none to list.
+        if (error instanceof CloudProviderError && error.status === 404) return [];
+        throw error;
+      }
+      return Array.isArray(body?.lanes) ? body.lanes as CloudLaneWithoutComputer[] : [];
+    },
+
+    async forgetLaneWithoutComputer(laneId: string): Promise<boolean> {
+      const body = record(await request("DELETE", `${CLOUD_PATHS.lanesWithoutComputer}/${encodeURIComponent(laneId)}`));
+      return body?.forgotten === true;
     },
 
     async sleepInstance(id: string): Promise<string> {
       return statusOf(await request("POST", instancePath(id, "sleep"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
     },
 
-    async requestIdleSleep(id: string): Promise<string> {
-      return statusOf(await request("POST", instancePath(id, "idle"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
+    async keepIdleComputer(id: string): Promise<void> {
+      await request("POST", instancePath(id, "keep"), { body: {} });
     },
 
-    async startInstance(id: string, options?: { reason?: "push_work" }): Promise<string> {
-      return statusOf(await request("POST", instancePath(id, "start"), {
-        body: options?.reason ? { reason: options.reason } : {},
-        timeoutMs: LIFECYCLE_TIMEOUT_MS,
-      }), "running");
+    async computerStatus(id: string): Promise<CloudComputerStatus | null> {
+      try {
+        const body = record(await request("GET", instancePath(id, "status")));
+        return body && body.instanceId === id ? body as unknown as CloudComputerStatus : null;
+      } catch (error) {
+        // An older server has no status read; nor does a computer it no longer knows.
+        if (error instanceof CloudProviderError && error.status === 404) return null;
+        throw error;
+      }
+    },
+
+    async requestIdleSleep(id: string, options?: { backupReportId?: string | null }): Promise<string> {
+      const body = options?.backupReportId ? { backupReportId: options.backupReportId } : {};
+      return statusOf(await request("POST", instancePath(id, "idle"), { body, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
+    },
+
+    async startInstance(id: string, options?: { origin?: "mcp" }): Promise<string> {
+      const body = options?.origin === "mcp" ? { origin: "mcp" } : {};
+      return statusOf(await request("POST", instancePath(id, "start"), { body, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "running");
     },
 
     async stopInstance(id: string): Promise<string> {
       return statusOf(await request("POST", instancePath(id, "stop"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "stopped");
     },
 
-    async updateInstance(id: string): Promise<string> {
-      return statusOf(await request("POST", instancePath(id, "update"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "updating");
+    async updateInstance(id, options): Promise<string> {
+      const body = options?.reason === "idle" ? { reason: "idle", computerIdle: true } : {};
+      return statusOf(await request("POST", instancePath(id, "update"), { body, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "updating");
+    },
+
+    async checkForUpdate(id: string): Promise<CloudUpdateCheck> {
+      const body = record(await request("GET", instancePath(id, "update-check")));
+      const text = (value: unknown) => (typeof value === "string" && value ? value : null);
+      return {
+        behind: body?.behind === true,
+        channel: body?.channel === "beta" ? "beta" : "stable",
+        templateVersion: text(body?.templateVersion),
+        targetTemplate: text(body?.targetTemplate),
+        updateState: body?.updateState === "updating" || body?.updateState === "failed" ? body.updateState : null,
+      };
+    },
+
+    async reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean }> {
+      // Only the computer's own brain sends it, and that brain has every feature this build lists.
+      const body = record(await request("POST", instancePath(id, "booted"), { body: { adeVersion, features: CLOUD_COMPUTER_FEATURES } }));
+      return { sleepWhenIdle: body?.sleepWhenIdle === true };
+    },
+
+    async reportDiskUsage(id, report): Promise<void> {
+      await request("POST", instancePath(id, "disk-usage"), { body: report });
+    },
+
+    async reportSustainedCpu(id, report): Promise<void> {
+      await request("POST", instancePath(id, "cpu-report"), { body: report });
     },
 
     async resizeInstance(id, resources, options): Promise<string> {
       return statusOf(await request("POST", instancePath(id, "resize"), {
-        body: { ...resources, ...(options?.computerIdle ? { computerIdle: true } : {}) },
+        body: {
+          ...resources,
+          ...(options?.computerIdle ? { computerIdle: true } : {}),
+          ...(options?.origin === "auto" || options?.origin === "mcp" ? { origin: options.origin } : {}),
+          ...(options?.origin === "auto" && options.launchId ? { launchId: options.launchId } : {}),
+        },
         timeoutMs: LIFECYCLE_TIMEOUT_MS,
       }), "updating");
     },
@@ -238,6 +405,38 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       await request("PUT", instancePath(id, "name"), { body: { name: name.slice(0, 60) } });
     },
 
+    async startMove(id, input): Promise<CloudMoveRecord> {
+      return readMoveRecord(await request("POST", instancePath(id, "move"), { body: input }));
+    },
+
+    async readMove(moveId): Promise<CloudMoveRecord> {
+      return readMoveRecord(await request("GET", `${CLOUD_PATHS.moves}/${encodeURIComponent(moveId)}`));
+    },
+
+    async cancelMove(moveId): Promise<CloudMoveRecord> {
+      return readMoveRecord(await request("DELETE", `${CLOUD_PATHS.moves}/${encodeURIComponent(moveId)}`));
+    },
+
+    async startCopy(id, input): Promise<CloudCopyRecord> {
+      return readCopyRecord(await request("POST", instancePath(id, "copy"), { body: input }));
+    },
+
+    async readCopy(copyId): Promise<CloudCopyRecord> {
+      return readCopyRecord(await request("GET", `${CLOUD_PATHS.copies}/${encodeURIComponent(copyId)}`));
+    },
+
+    async cancelCopy(copyId): Promise<CloudCopyRecord> {
+      return readCopyRecord(await request("DELETE", `${CLOUD_PATHS.copies}/${encodeURIComponent(copyId)}`));
+    },
+
+    async startFree(id, freeId): Promise<CloudFreeRecord> {
+      return readFreeRecord(await request("POST", instancePath(id, "free"), { body: { freeId } }));
+    },
+
+    async readFree(freeId): Promise<CloudFreeRecord> {
+      return readFreeRecord(await request("GET", `${CLOUD_PATHS.frees}/${encodeURIComponent(freeId)}`));
+    },
+
     async setInstanceMetadata(id, metadata): Promise<void> {
       await request("PUT", instancePath(id, "metadata"), { body: { metadata } });
     },
@@ -259,10 +458,20 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       };
     },
 
-    async billingCheckout(): Promise<{ url: string }> {
-      const body = record(await request("POST", "/cloud/billing/checkout"));
+    async billingCheckout(plan, cleanup): Promise<CloudCheckoutResult> {
+      const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus", knowsMax: true, ...(cleanup ? { cleanup } : {}) } }));
+      if (body?.url === null && (body.change === "now" || body.change === "next_period")) {
+        // A downgrade with a pick: the computers ADE frees now. Without one, over the cheaper plan: what goes over.
+        const over = readCloudPlanCleanup(body.cleanup);
+        const freeing = Array.isArray(body.freeing) ? body.freeing.filter((id): id is string => typeof id === "string") : null;
+        return { url: null, change: body.change, ...(over ? { cleanup: over } : {}), ...(freeing ? { freeing } : {}) };
+      }
       if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
       return { url: body.url };
+    },
+
+    async pickPlanCleanup(input): Promise<CloudAccountState> {
+      return await request("POST", CLOUD_PATHS.billingPlanCleanup, { body: input }) as CloudAccountState;
     },
 
     async billingPortal(): Promise<{ url: string }> {
@@ -271,8 +480,32 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       return { url: body.url };
     },
 
+    async billingFreeUnlock(): Promise<CloudFreeUnlockResult> {
+      const body = record(await request("POST", CLOUD_PATHS.billingFreeUnlock, { body: {} }));
+      if (body?.unlocked === true) return { url: null, unlocked: true };
+      if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+      return { url: body.url, unlocked: false };
+    },
+
     async setExtraHours(enabled: boolean): Promise<CloudAccountState> {
       return await request("POST", "/cloud/billing/extra-hours", { body: { enabled } }) as CloudAccountState;
+    },
+
+    async setExtraPhoneMinutes(choice): Promise<CloudAccountState> {
+      return await request("POST", CLOUD_PATHS.billingExtraPhone, { body: choice }) as CloudAccountState;
+    },
+
+    async readReferral(): Promise<CloudReferralSummary> {
+      const referral = readCloudReferralSummary(await request("GET", CLOUD_PATHS.referrals));
+      if (!referral) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+      return referral;
+    },
+
+    async redeemInvite(code: string): Promise<CloudInviteRedeemResult> {
+      const body = record(await request("POST", CLOUD_PATHS.referralsRedeem, { body: { code } }));
+      const referral = readCloudReferralSummary(body?.referral);
+      if (body?.result !== "accepted" || !referral) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+      return { result: "accepted", rewarded: body.rewarded === true, referral };
     },
 
     async listSavedChats(args): Promise<CloudSavedChatList> {
@@ -308,6 +541,23 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async deleteSavedChat(args): Promise<void> {
       await request("DELETE", cloudSavedChatUrl("", args.machineKey, args.chatId));
+    },
+
+    async phoneState(): Promise<CloudPhoneState> {
+      return await request("GET", CLOUD_PATHS.phone) as CloudPhoneState;
+    },
+
+    async phoneStart(input): Promise<CloudPhoneStart> {
+      return await request("POST", CLOUD_PATHS.phone, { body: { ...(input.device ? { device: input.device } : {}), ...(input.attach ? { attach: true } : {}) } }) as CloudPhoneStart;
+    },
+
+    async phoneView(input): Promise<CloudPhoneView> {
+      return await request("POST", CLOUD_PATHS.phoneView, { body: { control: input.control } }) as CloudPhoneView;
+    },
+
+    async phoneStop(): Promise<{ stopped: boolean }> {
+      const answer = record(await request("DELETE", CLOUD_PATHS.phone));
+      return { stopped: answer?.stopped === true };
     },
   };
 }

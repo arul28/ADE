@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import {
   isPackageNoticeFile,
   RUNTIME_INLINED_PACKAGES,
@@ -123,8 +124,40 @@ function isPackageForOtherTarget(packageName, target) {
   return targetPlatform !== normalizedTargetPlatform || packageTarget.arch !== arch;
 }
 
+/**
+ * A cross-target build (darwin-x64 on an Apple Silicon runner) runs where
+ * `npm ci` installed only the host's optional platform packages, so the
+ * target's own (`@cursor/sdk-darwin-x64`) is missing. This puts it in
+ * node_modules from the exact tarball package-lock.json pins, checked against
+ * the lockfile's integrity hash. A package the lockfile does not restrict to
+ * the target's os and cpu is never fetched: on the target's own host, npm
+ * would have skipped it too. Nor is a package the archive never carries (the
+ * agent CLIs fetched into the tools cache): it would be hundreds of megabytes
+ * downloaded for nothing.
+ */
+async function installCrossTargetPackage(packageName, target) {
+  const destination = packagePath(packageName);
+  if (!shouldCopyPackageEntry(packageName, destination, destination, target)) return false;
+  const lock = await readJson(path.join(packageRoot, "package-lock.json"));
+  const entry = lock.packages?.[`node_modules/${packageName}`];
+  const { platform, arch } = targetParts(target);
+  if (!entry?.os?.includes(platform) || !entry?.cpu?.includes(arch)) return false;
+  if (!entry.resolved || !entry.integrity) {
+    throw new Error(`[package-native-deps] ${packageName} has no resolved URL or integrity in package-lock.json.`);
+  }
+  const { fetchVerified, unpackLockedTarball } = await import("../../../scripts/release-tools/lockedPackage.mjs");
+  await unpackLockedTarball(
+    await fetchVerified(entry.resolved, entry.integrity, { attempts: 4 }),
+    destination,
+    { expect: { name: packageName, version: entry.version } },
+  );
+  process.stderr.write(`[package-native-deps] Added ${packageName}@${entry.version} for ${target} from package-lock.json.\n`);
+  return true;
+}
+
 async function collectRuntimePackages(target) {
   const rootManifest = await readJson(path.join(packageRoot, "package.json"));
+  const crossTarget = target !== currentTarget();
   const platformCursorPackage = `@cursor/sdk-${target}`;
   const queue = [
     ...Object.keys(rootManifest.dependencies ?? {}),
@@ -139,7 +172,10 @@ async function collectRuntimePackages(target) {
     if (isOpenCodePlatformPackage(packageName)) continue;
     if (isPackageForOtherTarget(packageName, target)) continue;
     visited.add(packageName);
-    const manifest = await readPackageManifest(packageName);
+    let manifest = await readPackageManifest(packageName);
+    if (!manifest && crossTarget && await installCrossTargetPackage(packageName, target)) {
+      manifest = await readPackageManifest(packageName);
+    }
     if (!manifest) continue;
     packages.push(packageName);
 
@@ -404,6 +440,27 @@ async function makeTarGz(sourceDir, outputPath) {
   }
 }
 
+/**
+ * The brain loads these plain JavaScript packages from the archive on first
+ * use (`lazyPackages.ts`), so the build loads each one from the staged copy.
+ * A filter that drops a file they need then fails here, not on a computer:
+ * yaml's `dist/doc/` went missing this way and every ADE Cloud image from
+ * ade@54 to ade@58 failed its check.
+ */
+const LAZY_LOADED_PACKAGES = ["yaml", "node-cron", "mp4-muxer"];
+
+function assertLazyPackagesLoad(bundleRoot, copied) {
+  const requireFromBundle = createRequire(path.join(bundleRoot, "node_modules", "_"));
+  for (const packageName of LAZY_LOADED_PACKAGES) {
+    if (!copied.includes(packageName)) continue;
+    try {
+      requireFromBundle(packageName);
+    } catch (error) {
+      throw new Error(`The runtime archive's ${packageName} does not load: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const bundleRoot = path.join(args.outDir, `ade-${args.target}.native`);
@@ -430,6 +487,7 @@ async function main() {
   await copyAndroidScrcpyServer(bundleRoot);
   await chmodRuntimeExecutables(bundleRoot, args.target);
   await writeManifest(bundleRoot, args.target, copied, inlined);
+  assertLazyPackagesLoad(bundleRoot, copied);
 
   const archivePath = path.join(args.outDir, `ade-${args.target}.native.tar.gz`);
   await makeTarGz(bundleRoot, archivePath);

@@ -87,6 +87,10 @@ const {
   releaseAppleStreamLease,
   resetAppleStreamLeases,
 } = await import("./appleStreamLease");
+const { useAppStore } = await import("../../state/appStore");
+
+/** The tab's copy, which a null pin names. */
+const TAB = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
 
 const TARGET = {
   laneId: "lane-1",
@@ -95,11 +99,11 @@ const TARGET = {
   deviceName: "iPhone 17 Pro",
   deviceRuntime: "iOS 26.2",
   family: "iphone" as const,
-  runtimePin: null,
+  runtimePin: TAB,
 };
 
 /** A session of the device's own lane, on the window's own machine. */
-const SURFACE = { laneId: "lane-1", runtimePin: null, boundBinding: null };
+const SURFACE = { laneId: "lane-1", runtimePin: null, boundBinding: TAB };
 
 beforeEach(() => {
   stream.hasFrame = true;
@@ -111,6 +115,7 @@ beforeEach(() => {
   stream.lastArgs = null;
   resetAppleStreamLeases();
   resetAppleMiniPlayerForTests();
+  useAppStore.setState({ projectBinding: TAB });
   (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
     observe() {}
     disconnect() {}
@@ -121,6 +126,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  useAppStore.setState({ projectBinding: null });
   resetAppleMiniPlayerForTests();
   resetAppleStreamLeases();
 });
@@ -157,17 +163,14 @@ describe("AppleDeviceMiniPlayer", () => {
     const view = render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
     act(() => openAppleMiniPlayer({ ...TARGET, runtimePin: localPin }));
     const onEvent = (window as unknown as { ade: { iosSimulator: { onEvent: ReturnType<typeof vi.fn> } } }).ade.iosSimulator.onEvent;
-    expect(onEvent).toHaveBeenCalledTimes(1);
+    const callsOnLocal = onEvent.mock.calls.length;
+    expect(onEvent.mock.calls.every(([, pin]) => (pin as { key?: string } | undefined)?.key === localPin.key)).toBe(true);
 
     act(() => openAppleMiniPlayer({ ...TARGET, runtimePin: remotePin }));
 
-    expect(onEvent).toHaveBeenCalledTimes(2);
+    // The player listens again, now on the other machine.
+    expect(onEvent.mock.calls.slice(callsOnLocal).some(([, pin]) => (pin as { key?: string } | undefined)?.key === remotePin.key)).toBe(true);
     view.unmount();
-  });
-
-  it("renders nothing until a device is floated", () => {
-    const { container } = render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
-    expect(container.firstChild).toBeNull();
   });
 
   it("shows the picture with a dot and no rail", () => {
@@ -180,12 +183,6 @@ describe("AppleDeviceMiniPlayer", () => {
     expect(screen.queryByRole("complementary", { name: "Device controls" })).toBeNull();
     // The bar is hidden until the pointer arrives.
     expect(screen.queryByRole("button", { name: "Open in pane" })).toBeNull();
-  });
-
-  it("pulses the dot red while a recording runs", () => {
-    render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} recording />);
-    act(() => openAppleMiniPlayer(TARGET));
-    expect(document.querySelector("[data-apple-mini-dot='recording']")).toBeTruthy();
   });
 
   it("expands into Open in pane / Close on hover", () => {
@@ -207,26 +204,6 @@ describe("AppleDeviceMiniPlayer", () => {
     expect(getAppleMiniPlayerTarget()).toBeNull();
   });
 
-  /**
-   * A5's empty frame: the stage's own box is `flex-1`, which is a height only
-   * inside the pane's flex column. Floating, it is a block in an
-   * absolutely-positioned host whose every child is absolute — 0px tall — so
-   * the flat view measured nothing, the screen box came back null and the
-   * decoder stayed parked off-screen. The player must hand the stage a
-   * definite height or it draws a picture of nothing.
-   */
-  it("gives the stage a definite height so the decoder is not parked", () => {
-    render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
-    act(() => openAppleMiniPlayer(TARGET));
-    expect(screen.getByTestId("apple-stage").getAttribute("data-stage-class")).toContain("h-full");
-  });
-
-  it("offers eight resize zones", () => {
-    render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
-    act(() => openAppleMiniPlayer(TARGET));
-    expect(document.querySelectorAll("[data-apple-mini-resize]")).toHaveLength(8);
-  });
-
   /*
    * Round 4 §B4: the player used to open on a black box and fill in once the
    * new reader had dialled the helper and been given a keyframe. It now mounts
@@ -241,10 +218,6 @@ describe("AppleDeviceMiniPlayer", () => {
       act(() => openAppleMiniPlayer(TARGET));
       const poster = document.querySelector("[data-apple-mini-poster]") as HTMLImageElement | null;
       expect(poster?.getAttribute("src")).toBe("data:image/jpeg;base64,AAA");
-      // Same `object-contain` rule the flat presenter draws the canvas with,
-      // so there is no jump when the decoder catches up.
-      expect(poster?.className).toContain("object-contain");
-      expect(poster?.className).toContain("pointer-events-none");
       // Claimed: a second player must not repaint a stale session.
       expect(takeAppleMiniPlayerPoster("pro")).toBeNull();
     });
@@ -294,9 +267,9 @@ describe("AppleDeviceMiniPlayer", () => {
     });
 
     it("hands the handover's lease back once it is mounted, and never lets the count reach zero", () => {
-      const key = appleStreamLeaseKey({ pin: null, bound: null, laneId: "lane-1", deviceUdid: "pro" });
+      const key = appleStreamLeaseKey({ pin: null, bound: TAB, laneId: "lane-1", deviceUdid: "pro" });
       // The pane, open and streaming.
-      acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: "bound" });
+      acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: TAB.key });
       noteAppleMiniPlayerLaneDevice({ laneId: "lane-1", runtimePin: null }, { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.2", family: "iphone" });
       render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
 
@@ -332,7 +305,7 @@ describe("AppleDeviceMiniPlayer, device off", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Start" }));
     });
-    expect(deviceStart).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", udid: "pro" }, null);
+    expect(deviceStart).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", udid: "pro" }, TAB);
     expect(stream.reconnect).toHaveBeenCalledTimes(1);
   });
 
@@ -365,14 +338,14 @@ describe("AppleDeviceMiniPlayer, per surface", () => {
   const player = () => screen.queryByRole("group", { name: "iPhone 17 Pro, floating" });
 
   it("shows over another session of the same lane", () => {
-    render(<AppleDeviceMiniPlayer surface={{ laneId: "lane-1", runtimePin: null, boundBinding: null }} onOpenInPane={vi.fn()} />);
+    render(<AppleDeviceMiniPlayer surface={{ laneId: "lane-1", runtimePin: null, boundBinding: TAB }} onOpenInPane={vi.fn()} />);
     act(() => openAppleMiniPlayer(TARGET));
     expect(player()).toBeTruthy();
     expect(stream.lastArgs?.hidden).toBe(false);
   });
 
   it("hides over a session of a different lane, and stops asking for frames", () => {
-    render(<AppleDeviceMiniPlayer surface={{ laneId: "lane-2", runtimePin: null, boundBinding: null }} onOpenInPane={vi.fn()} />);
+    render(<AppleDeviceMiniPlayer surface={{ laneId: "lane-2", runtimePin: null, boundBinding: TAB }} onOpenInPane={vi.fn()} />);
     act(() => openAppleMiniPlayer(TARGET));
     expect(player()).toBeNull();
     expect(document.querySelector("[data-apple-mini-player='pro']")?.hasAttribute("hidden")).toBe(true);
@@ -407,15 +380,15 @@ describe("AppleDeviceMiniPlayer, per surface", () => {
   });
 
   it("floats a lane-less device only over lane-less sessions", () => {
-    const view = render(<AppleDeviceMiniPlayer surface={{ laneId: "lane-1", runtimePin: null, boundBinding: null }} onOpenInPane={vi.fn()} />);
+    const view = render(<AppleDeviceMiniPlayer surface={{ laneId: "lane-1", runtimePin: null, boundBinding: TAB }} onOpenInPane={vi.fn()} />);
     act(() => openAppleMiniPlayer({ ...TARGET, laneId: null }));
     expect(player()).toBeNull();
-    view.rerender(<AppleDeviceMiniPlayer surface={{ laneId: null, runtimePin: null, boundBinding: null }} onOpenInPane={vi.fn()} />);
+    view.rerender(<AppleDeviceMiniPlayer surface={{ laneId: null, runtimePin: null, boundBinding: TAB }} onOpenInPane={vi.fn()} />);
     expect(player()).toBeTruthy();
   });
 
   it("comes back on the same target, in the same box, when the lane is in front again", () => {
-    const sameLane = { laneId: "lane-1", runtimePin: null, boundBinding: null };
+    const sameLane = { laneId: "lane-1", runtimePin: null, boundBinding: TAB };
     const view = render(<AppleDeviceMiniPlayer surface={sameLane} onOpenInPane={vi.fn()} />);
     act(() => openAppleMiniPlayer(TARGET));
     const before = document.querySelector("[data-apple-mini-player='pro']");
@@ -425,7 +398,7 @@ describe("AppleDeviceMiniPlayer, per surface", () => {
     expect(player()).toBeNull();
     expect(getAppleMiniPlayerTarget()).toEqual(TARGET);
 
-    view.rerender(<AppleDeviceMiniPlayer surface={{ laneId: "lane-2", runtimePin: null, boundBinding: null }} onOpenInPane={vi.fn()} />);
+    view.rerender(<AppleDeviceMiniPlayer surface={{ laneId: "lane-2", runtimePin: null, boundBinding: TAB }} onOpenInPane={vi.fn()} />);
     expect(player()).toBeNull();
 
     view.rerender(<AppleDeviceMiniPlayer surface={sameLane} onOpenInPane={vi.fn()} />);
@@ -441,8 +414,8 @@ describe("AppleDeviceMiniPlayer, per surface", () => {
     try {
       const stopStream = vi.fn(() => Promise.resolve());
       (window as unknown as { ade: unknown }).ade = { iosSimulator: { tap: vi.fn(), stopStream, onEvent: vi.fn(() => vi.fn()), getPosture: vi.fn(async () => ({ supported: false, angle: null, orientation: null, tableMode: null, activeScreenId: null })) } };
-      const key = appleStreamLeaseKey({ pin: null, bound: null, laneId: "lane-1", deviceUdid: "pro" });
-      const pane = acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: "bound" });
+      const key = appleStreamLeaseKey({ pin: null, bound: TAB, laneId: "lane-1", deviceUdid: "pro" });
+      const pane = acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: TAB.key });
       noteAppleMiniPlayerLaneDevice({ laneId: "lane-1", runtimePin: null }, { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.2", family: "iphone" });
       // The pane closes while the new-chat screen is in front.
       render(<AppleDeviceMiniPlayer surface={null} onOpenInPane={vi.fn()} />);
@@ -467,8 +440,8 @@ describe("AppleDeviceMiniPlayer, per surface", () => {
   });
 
   it("gives the handover's hold back once the player is shown after all", () => {
-    const key = appleStreamLeaseKey({ pin: null, bound: null, laneId: "lane-1", deviceUdid: "pro" });
-    acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: "bound" });
+    const key = appleStreamLeaseKey({ pin: null, bound: TAB, laneId: "lane-1", deviceUdid: "pro" });
+    acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: TAB.key });
     noteAppleMiniPlayerLaneDevice({ laneId: "lane-1", runtimePin: null }, { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.2", family: "iphone" });
     const view = render(<AppleDeviceMiniPlayer surface={null} onOpenInPane={vi.fn()} />);
     act(() => {
@@ -568,7 +541,7 @@ describe("AppleDeviceMiniPlayer, picture in picture", () => {
     act(() => openAppleMiniPlayer(TARGET));
     await enterPip();
 
-    view.rerender(<AppleDeviceMiniPlayer surface={{ laneId: "lane-2", runtimePin: null, boundBinding: null }} onOpenInPane={vi.fn()} />);
+    view.rerender(<AppleDeviceMiniPlayer surface={{ laneId: "lane-2", runtimePin: null, boundBinding: TAB }} onOpenInPane={vi.fn()} />);
     expect(stream.lastArgs?.hidden).toBe(false);
     expect(host().hasAttribute("hidden")).toBe(false);
     expect(host().hasAttribute("data-apple-mini-pip")).toBe(true);

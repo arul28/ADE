@@ -1,15 +1,16 @@
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
-const STORAGE_KEY = "ade.modelPicker.authOnly.v1";
+// "Only models I can use". Off by default, so the picker lists every model
+// ADE offers and a signed-out one is still selectable. A new key (the old one
+// was `ade.modelPicker.authOnly.v1`, on by default) resets everyone once.
+const STORAGE_KEY = "ade.modelPicker.onlyUsable.v1";
 
 function readPersisted(): boolean {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw === null) return true;
-    return raw !== "false";
+    return window.localStorage.getItem(STORAGE_KEY) === "true";
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -28,7 +29,7 @@ type AuthOnlyState = {
 };
 
 const useAuthOnlyStore = create<AuthOnlyState>((set, get) => ({
-  authOnly: typeof window !== "undefined" ? readPersisted() : true,
+  authOnly: typeof window !== "undefined" ? readPersisted() : false,
   toggleAuthOnly: () => {
     const next = !get().authOnly;
     set({ authOnly: next });

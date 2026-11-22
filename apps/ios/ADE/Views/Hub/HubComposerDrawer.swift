@@ -42,13 +42,6 @@ struct HubCreatedChat: Equatable {
   }
 }
 
-/// Reports the destination control's global top edge so the picker popover can
-/// size to the room above it.
-private struct HubDestinationTopKey: PreferenceKey {
-  static var defaultValue: CGFloat = 0
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
 // MARK: - Inline composer
 
 /// The one animation every hub-composer expand/collapse rides on — shared with
@@ -61,6 +54,12 @@ struct HubInlineComposer: View {
   static let bottomPadding: CGFloat = 8
 
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  /// The account list: a project removed from ADE leaves the destination.
+  @ObservedObject private var accountProjects = AccountProjectStore.shared
+  /// ADE Cloud's launches and model catalog: a chat on ADE Cloud starts
+  /// through the account server, with no computer of its own linked yet.
+  @ObservedObject private var cloudLaunches = AccountCloudLaunchStore.shared
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
   private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
 
@@ -103,6 +102,8 @@ struct HubInlineComposer: View {
   @State private var errorMessage: String?
   @State private var modelPickerPresented = false
   @State private var destinationPickerPresented = false
+  /// The picker opens as a sheet when the popover has no room above.
+  @State private var destinationPickerAsSheet = false
   @State private var presentedPicker: WorkComposerPicker?
   @State private var isDictating = false
   // Global top edge of the destination control, so the picker popover can size
@@ -133,7 +134,15 @@ struct HubInlineComposer: View {
       _codexFastMode = State(initialValue: saved.codexFastMode)
     }
     var restoredProjectId = ""
-    if let dest = HubInlineComposer.loadLastDestination() {
+    let live = HubComposerLiveSelection.shared
+    if let projectId = live.projectId {
+      // Built again for another pose: the pick made a moment ago stays.
+      restoredProjectId = projectId
+      _pickedProjectId = State(initialValue: projectId)
+      _selectedLaneId = State(initialValue: live.laneId)
+      _pickedMachineKey = State(initialValue: live.machineKey)
+      _destinationPickerPresented = State(initialValue: live.pickerOpen)
+    } else if let dest = HubInlineComposer.loadLastDestination() {
       restoredProjectId = dest.projectId
       _pickedProjectId = State(initialValue: dest.projectId)
       _selectedLaneId = State(initialValue: dest.laneId)
@@ -181,6 +190,7 @@ struct HubInlineComposer: View {
   }
 
   private var pickedProject: MobileProjectSummary? {
+    if pickedAccountCloud { return accountCloudProject.map(hubAccountCloudSummary) }
     if pickedMachineKey != nil { return pickedRemoteProject?.asRemoteMachineProjectSummary }
     return syncService.projects.first { $0.id == pickedProjectId }
   }
@@ -202,9 +212,9 @@ struct HubInlineComposer: View {
   }
 
   private var selectedLaneName: String {
-    if isAutoCreateLane { return "Auto-create lane" }
+    if isAutoCreateLane { return pickedAccountCloud ? "New lane on ADE Cloud" : "Auto-create lane" }
     if let lane = lanesForPickedProject.first(where: { $0.id == selectedLaneId }) {
-      return lane.name
+      return lane.displayName
     }
     return selectedLaneId.isEmpty ? "Select lane" : selectedLaneId
   }
@@ -347,11 +357,29 @@ struct HubInlineComposer: View {
     .onChange(of: composerSelection) { _, newValue in
       WorkComposerPreferences.save(newValue)
     }
+    // A pose change builds this composer again in another layout; these keep
+    // the destination and an open picker across it.
+    .onChange(of: pickedProjectId) { _, _ in rememberLiveSelection() }
+    .onChange(of: selectedLaneId) { _, _ in rememberLiveSelection() }
+    .onChange(of: pickedMachineKey) { _, _ in
+      rememberLiveSelection()
+      // ADE Cloud runs its own models: switch to one it runs when picked.
+      if pickedAccountCloud {
+        Task {
+          await cloudLaunches.loadCatalogIfNeeded(using: syncService)
+          pickCloudModelIfNeeded()
+        }
+      }
+    }
+    .onChange(of: destinationPickerPresented) { _, _ in rememberLiveSelection() }
     // Projects/lanes can appear or vanish while the hub sits open (reconnects,
     // roster refreshes) — keep the persisted destination honest against them.
     .onChange(of: syncService.rosterRevision) { _, _ in reconcileDestination() }
     .onChange(of: syncService.projects.map(\.id)) { _, _ in reconcileDestination() }
     .onChange(of: machineFleet.machines) { _, _ in reconcileDestination() }
+    .onChange(of: accountProjects.removedProjects.map(\.id)) { _, _ in reconcileDestination() }
+    // A project added to the account (or read late) is the ADE Cloud pick when there is no primary.
+    .onChange(of: accountProjects.liveProjects.map(\.id)) { _, _ in reconcileDestination() }
     .sheet(isPresented: $modelPickerPresented, onDismiss: { composerFocused = true }) {
       WorkModelPickerSheet(
         currentModelId: modelId,
@@ -361,6 +389,8 @@ struct HubInlineComposer: View {
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         lanes: lanesForPickedProject.map { $0.asLaneSummary() },
         isBusy: false,
+        // ADE Cloud lists its own models, never the connected machine's.
+        cloudCatalog: pickedAccountCloud ? (cloudLaunches.catalog ?? .pending) : nil,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedModelOption = option
           modelId = option.id
@@ -380,14 +410,20 @@ struct HubInlineComposer: View {
 
   private var destinationControl: some View {
     Button {
+      // With the keyboard up on a short screen (a Duo held open, landscape)
+      // the room above the control is less than the picker's smallest height,
+      // and a popover there opened its Project section above the top edge.
+      // A sheet holds the same picker then.
+      destinationPickerAsSheet = destinationControlTopY > 0
+        && destinationControlTopY - 64 < Self.destinationPickerMinHeight
       destinationPickerPresented = true
     } label: {
       HStack(spacing: 7) {
         HubProjectIcon(iconDataUrl: pickedProject?.iconDataUrl, isActive: false, size: 18)
 
         Text(hubComposerDestinationTitle(
-          projectName: pickedProject?.displayName,
-          machineName: pickedRemoteMachine?.name
+          projectName: pickedAccountProject?.name ?? pickedProject?.displayName,
+          machineName: pickedAccountCloud ? ADECloudMachine.name : pickedRemoteMachine?.name
         ))
           .font(.system(size: 13.5, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
@@ -413,20 +449,39 @@ struct HubInlineComposer: View {
       .contentShape(Capsule())
     }
     .buttonStyle(.plain)
-    .background(
-      GeometryReader { proxy in
-        Color.clear.preference(key: HubDestinationTopKey.self, value: proxy.frame(in: .global).minY)
-      }
-    )
-    .onPreferenceChange(HubDestinationTopKey.self) { destinationControlTopY = $0 }
+    // Measured directly: the preference this used did not reach this view in
+    // every layout (it read 0 in the Duo's open pose), so the picker fell
+    // back to a fixed height taller than the room above it.
+    .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }) { top in
+      destinationControlTopY = top
+    }
     // Fixed while a send runs: it switches machines to reach this destination.
     .disabled(busy)
     .accessibilityLabel("Destination")
     .accessibilityValue("\(pickedProject?.displayName ?? "No project"), \(selectedLaneName)")
     .accessibilityHint("Choose the project and lane for this chat.")
-    .popover(isPresented: $destinationPickerPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+    .popover(
+      isPresented: Binding(
+        get: { destinationPickerPresented && !destinationPickerAsSheet },
+        set: { destinationPickerPresented = $0 }
+      ),
+      attachmentAnchor: .rect(.bounds),
+      arrowEdge: .bottom
+    ) {
       destinationPicker
+        .frame(width: 320, height: destinationPickerHeight)
         .presentationCompactAdaptation(.popover)
+    }
+    .sheet(
+      isPresented: Binding(
+        get: { destinationPickerPresented && destinationPickerAsSheet },
+        set: { destinationPickerPresented = $0 }
+      )
+    ) {
+      destinationPicker
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
     .onChange(of: destinationPickerPresented) { _, presented in
       // Presenting the popover can resign the text field; bring the keyboard
@@ -441,7 +496,7 @@ struct HubInlineComposer: View {
       HStack(spacing: 4) {
         Image(systemName: "sparkles")
           .font(.system(size: 10, weight: .semibold))
-        Text("Auto-create lane")
+        Text(pickedAccountCloud ? "New lane" : "Auto-create lane")
           .font(.system(size: 12.5, weight: .medium))
           .lineLimit(1)
       }
@@ -462,6 +517,8 @@ struct HubInlineComposer: View {
     }
   }
 
+  private static let destinationPickerMinHeight: CGFloat = 240
+
   /// The picker fills the room between the destination control and the top of
   /// the screen (minus a small margin) so it never overflows and clips a
   /// project — the two sections then split that height evenly. Falls back to a
@@ -470,7 +527,7 @@ struct HubInlineComposer: View {
     let deviceCap = min(UIScreen.main.bounds.height * 0.62, 560)
     guard destinationControlTopY > 0 else { return min(deviceCap, 320) }
     let available = destinationControlTopY - 64
-    return max(240, min(deviceCap, available))
+    return max(Self.destinationPickerMinHeight, min(deviceCap, available))
   }
 
   private var destinationPicker: some View {
@@ -478,11 +535,20 @@ struct HubInlineComposer: View {
       sectionLabel("Project")
       ScrollView {
         LazyVStack(spacing: 2) {
+          if let entries = composerEntries {
+            // Signed in: each account project once, then its computers.
+            if entries.isEmpty {
+              emptyPickerRow("No projects on a connected computer")
+            }
+            ForEach(entries) { entry in
+              entryRow(entry)
+            }
+          } else {
           if !machineFleet.composerDestinationMachines.isEmpty {
             HubComposerMachineHeader(name: syncService.focusedMachineDisplayName)
           }
           if syncService.projects.isEmpty {
-            emptyPickerRow("No projects on this machine")
+            emptyPickerRow("No projects on this computer")
           } else {
             ForEach(syncService.projects) { project in
               projectRow(project)
@@ -494,6 +560,7 @@ struct HubInlineComposer: View {
               projectRow(project.asRemoteMachineProjectSummary, machineKey: machine.machineKey)
             }
           }
+          }
         }
         .padding(4)
       }
@@ -504,16 +571,26 @@ struct HubInlineComposer: View {
       sectionLabel("Lane")
       ScrollView {
         LazyVStack(spacing: 2) {
-          autoCreateLaneRow
-          ForEach(lanesForPickedProject) { lane in
-            laneRow(lane)
+          if pickedMachineIsCloud {
+            // A new lane on ADE Cloud gets its own computer, through the account.
+            if let accountCopy = accountCloudCopy {
+              newCloudLaneRow(accountCopy)
+            }
+            // ADE Cloud is one machine: the lanes of each of its computers.
+            ForEach(cloudLaneChoices) { choice in
+              laneRow(choice.lane, copy: choice.copy)
+            }
+          } else {
+            autoCreateLaneRow
+            ForEach(lanesForPickedProject) { lane in
+              laneRow(lane)
+            }
           }
         }
         .padding(4)
       }
       .frame(maxHeight: .infinity)
     }
-    .frame(width: 320, height: destinationPickerHeight)
     .background(ADEKit.surface)
   }
 
@@ -533,6 +610,132 @@ struct HubInlineComposer: View {
       .foregroundStyle(ADEColor.textMuted)
       .frame(maxWidth: .infinity)
       .padding(.vertical, 12)
+  }
+
+  /// The composer's projects when the account lists them: each account
+  /// project once with its live copies (the primary's and every live
+  /// computer's), then the folders that are not on the account. Nil when the
+  /// account does not decide the projects (signed out, an older server).
+  private var composerEntries: [HubComposerProjectEntry]? {
+    guard let resolver = syncService.accountProjectResolver() else { return nil }
+    let account = AccountService.shared
+    let liveById = Dictionary(
+      accountProjects.liveProjects.map { ($0.id, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    var copies: [(copy: HubComposerCopy, accountProject: AccountProject?)] = []
+    func add(_ copy: HubComposerCopy) {
+      let id = syncService.accountProjectId(forCheckout: copy.project, onMachine: copy.machineKey, resolver: resolver)
+      // A folder of a project removed from ADE: the Hub hides its card, so
+      // the picker does not offer it either (`removedFromAccount`).
+      if let id, resolver.removedIds.contains(id) { return }
+      copies.append((copy, id.flatMap { liveById[$0] }))
+    }
+    let primaryName = syncService.focusedMachineDisplayName
+    let primaryAccountKey = account.machine(forFleetKey: syncService.focusedMachineKey)?.machineKey
+    let primaryIsCloud = syncService.isCloudFleetKey(syncService.focusedMachineKey)
+    // An unreachable primary can't take a chat: only the other machines and
+    // ADE Cloud are offered until it is back.
+    for project in syncService.connectionState == .connected ? syncService.projects : [] {
+      add(HubComposerCopy(
+        machineKey: nil, machineName: primaryName, accountMachineKey: primaryAccountKey,
+        project: project, isCloud: primaryIsCloud
+      ))
+    }
+    for machine in machineFleet.composerDestinationMachines {
+      let accountKey = account.machine(forFleetKey: machine.machineKey)?.machineKey
+      let isCloud = syncService.isCloudFleetKey(machine.machineKey)
+      for rosterProject in machine.projects {
+        add(HubComposerCopy(
+          machineKey: machine.machineKey,
+          machineName: isCloud ? ADECloudMachine.name : machine.name,
+          accountMachineKey: accountKey,
+          project: rosterProject.asRemoteMachineProjectSummary,
+          isCloud: isCloud
+        ))
+      }
+    }
+    // ADE Cloud is in every "Run on" list: each project on the account can
+    // start there, through the account server, linked computer or not.
+    if account.isSignedIn {
+      for project in accountProjects.liveProjects {
+        copies.append((HubComposerCopy(
+          machineKey: ADECloudMachine.id,
+          machineName: ADECloudMachine.name,
+          accountMachineKey: nil,
+          project: hubAccountCloudSummary(project),
+          isCloud: true
+        ), project))
+      }
+    }
+    return hubComposerProjectEntries(copies)
+  }
+
+  private func isPicked(_ copy: HubComposerCopy) -> Bool {
+    copy.project.id == pickedProjectId && copy.machineKey == pickedMachineKey
+  }
+
+  /// The account project of the current pick (one lookup, not the list).
+  private var pickedAccountProject: AccountProject? {
+    if pickedAccountCloud { return accountCloudProject }
+    return pickedProject.flatMap { syncService.accountProject(forCheckout: $0, onMachine: pickedMachineKey) }
+  }
+
+  private func pick(_ copy: HubComposerCopy) {
+    guard !isPicked(copy) else { return }
+    pickedMachineKey = copy.machineKey
+    pickedProjectId = copy.project.id
+    // Switching projects resets only that project's lane selection.
+    selectedLaneId = defaultLaneId(forProjectId: copy.project.id)
+  }
+
+  /// One project, named by the account; when chosen and on more than one
+  /// computer, its computers follow as chips (project first, then Start on).
+  @ViewBuilder
+  private func entryRow(_ entry: HubComposerProjectEntry) -> some View {
+    let isSelected = entry.copies.contains(where: isPicked)
+    let destinations = hubComposerDestinationCopies(entry.copies, isPicked: isPicked)
+    Button {
+      guard !isSelected else { return }
+      let last = entry.accountProjectId.flatMap { StartOnMemory.lastMachine(for: $0) }
+      let mains = entry.accountProjectId.flatMap { id in
+        accountProjects.liveProjects.first { $0.id == id }?.copies.filter(\.isMain)
+      } ?? []
+      if let copy = hubComposerDefaultCopy(entry, lastAccountMachineKey: last, mainCopies: mains) { pick(copy) }
+    } label: {
+      HStack(spacing: 9) {
+        HubProjectIcon(iconDataUrl: entry.iconDataUrl, isActive: isSelected)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(entry.name)
+            .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          if destinations.count == 1, let only = destinations.first, only.machineKey != nil {
+            Text(only.machineName)
+              .font(.system(size: 11.5))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        if isSelected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 6)
+      .background(
+        isSelected ? ADEKit.pressed : Color.clear,
+        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+      )
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    if isSelected, destinations.count > 1 {
+      HubComposerStartOnChips(copies: destinations, isSelected: isPicked, onPick: pick)
+    }
   }
 
   /// `machineKey`: the project's machine when it is not the primary one.
@@ -562,6 +765,42 @@ struct HubInlineComposer: View {
       .padding(.vertical, 6)
       .background(
         isSelected ? ADEKit.pressed : Color.clear,
+        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+      )
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func newCloudLaneRow(_ copy: HubComposerCopy) -> some View {
+    let selected = pickedAccountCloud && isAutoCreateLane
+    return Button {
+      if !isPicked(copy) {
+        pickedMachineKey = copy.machineKey
+        pickedProjectId = copy.project.id
+      }
+      selectedLaneId = workAutoCreateLaneSentinelId
+      destinationPickerPresented = false
+    } label: {
+      HStack(spacing: 8) {
+        Image(systemName: "sparkles")
+          .font(.system(size: 12, weight: .regular))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: 22)
+        Text("New lane on ADE Cloud")
+          .font(.system(size: 14, weight: selected ? .semibold : .regular))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        if selected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 7)
+      .background(
+        selected ? ADEKit.pressed : Color.clear,
         in: RoundedRectangle(cornerRadius: 8, style: .continuous)
       )
       .contentShape(Rectangle())
@@ -600,11 +839,16 @@ struct HubInlineComposer: View {
     .buttonStyle(.plain)
   }
 
-  private func laneRow(_ lane: RemoteRosterLane) -> some View {
-    let isSelected = lane.id == selectedLaneId
+  /// `copy`: the ADE Cloud computer the lane is on, picked with the lane.
+  private func laneRow(_ lane: RemoteRosterLane, copy: HubComposerCopy? = nil) -> some View {
+    let isSelected = lane.id == selectedLaneId && (copy.map(isPicked) ?? true)
     let tint = LaneColorPalette.displayColor(forHex: lane.color)
     let branch = normalizedPrBranchName(lane.branchRef)
     return Button {
+      if let copy, !isPicked(copy) {
+        pickedMachineKey = copy.machineKey
+        pickedProjectId = copy.project.id
+      }
       selectedLaneId = lane.id
       destinationPickerPresented = false
     } label: {
@@ -618,7 +862,7 @@ struct HubInlineComposer: View {
             Circle().fill(tint).frame(width: 8, height: 8)
               .frame(width: 22)
           }
-          Text(lane.name)
+          Text(lane.displayName)
             .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
@@ -799,9 +1043,15 @@ struct HubInlineComposer: View {
       if !busy { holdsDestination = false }
       return
     }
+    // A folder of a project removed from ADE while the composer was open.
+    if let picked = pickedProject, removedFromAccount()(picked, pickedMachineKey) {
+      holdsDestination = false
+      reconcileDestination()
+      return
+    }
     // Another machine's project: make that machine primary first, before the
     // draft is cleared, then send as usual.
-    if let key = pickedMachineKey, key != syncService.focusedMachineKey {
+    if let key = pickedMachineKey, key != syncService.focusedMachineKey, !pickedAccountCloud {
       holdsDestination = true
       // Set before the task runs, so a second tap cannot start a second switch.
       busy = true
@@ -814,6 +1064,12 @@ struct HubInlineComposer: View {
       }
       return
     }
+    // The computer this send starts on, saved as the project's next default
+    // only when the chat starts.
+    let remembered: (machine: String, project: String)? = pickedAccountProject.flatMap { project in
+      AccountService.shared.machine(forFleetKey: pickedMachineKey ?? syncService.focusedMachineKey)
+        .map { (machine: $0.machineKey, project: project.id) }
+    }
     let restoredDraft = draft
     let restoredAttachments = attachments
     collapse()
@@ -825,6 +1081,7 @@ struct HubInlineComposer: View {
     Task {
       let started = await submit(opener: restoredDraft, attachments: outgoingAttachments)
       holdsDestination = false
+      if started, let remembered { StartOnMemory.remember(remembered.machine, for: remembered.project) }
       if !started {
         draft = restoredDraft
         attachments = restoredAttachments
@@ -844,6 +1101,9 @@ struct HubInlineComposer: View {
         ? "This model is available for chat only. Choose a CLI-capable model."
         : "This model is available for CLI only. Choose a chat-capable model."
       return false
+    }
+    if pickedAccountCloud {
+      return await submitOnCloud(opener: opener, rawText: rawText, attachments: readyAttachments)
     }
     guard readyAttachments.isEmpty || canUploadAttachments else {
       errorMessage = "Reconnect to attach images."
@@ -1146,6 +1406,72 @@ struct HubInlineComposer: View {
   /// replace it, and every failure is logged with the lane id. Both calls carry
   /// the picked project's scope since the hub can launch into a project other
   /// than the active one (same envelope routing as createLane above).
+  /// A chat on ADE Cloud through the account server (as the Work screen
+  /// starts one): a new cloud lane, or an existing one. Its launch card then
+  /// shows in the project's Work tab, which opens.
+  @MainActor
+  private func submitOnCloud(opener: String, rawText: String, attachments: [WorkChatInputAttachment]) async -> Bool {
+    if let refusal = cloudStore.doingRefusal {
+      errorMessage = refusal
+      return false
+    }
+    guard sessionMode == .chat else {
+      errorMessage = "ADE Cloud starts chats from the phone. Switch to Chat."
+      return false
+    }
+    guard let project = accountCloudProject else {
+      errorMessage = "Pick a project first."
+      return false
+    }
+    guard let entry = cloudLaunches.catalog?.providers.first(where: { $0.provider == provider }),
+          entry.models.contains(where: { $0.id == modelId }) else {
+      errorMessage = "Pick a model ADE Cloud runs."
+      return false
+    }
+    var files: [(name: String, contentType: String, data: Data)] = []
+    for attachment in attachments {
+      guard let data = attachment.uploadData ?? attachment.image?.jpegData(compressionQuality: 0.85) else {
+        errorMessage = "\(attachment.filename) is on the machine that saved this draft. Remove it and attach it again to send it to ADE Cloud."
+        return false
+      }
+      files.append((name: attachment.filename, contentType: attachment.uploadData == nil ? "image/jpeg" : attachment.mimeType, data: data))
+    }
+    let existingLane: (id: String, name: String)? = isAutoCreateLane ? nil : lanesForPickedProject
+      .first { $0.id == selectedLaneId }
+      .map { (id: $0.id, name: $0.name) }
+    if !isAutoCreateLane, existingLane == nil {
+      errorMessage = "Pick a lane."
+      return false
+    }
+    WorkComposerPreferences.save(composerSelection)
+    busy = true
+    errorMessage = nil
+    let launchId = await cloudLaunches.start(
+      accountProjectId: project.id,
+      origin: "\(project.host)/\(project.owner)/\(project.name)",
+      prompt: opener,
+      provider: entry.provider,
+      modelId: modelId,
+      effort: reasoningEffort,
+      fast: codexFastMode && entry.models.contains { $0.id == modelId && $0.fast },
+      files: files,
+      existingLane: existingLane,
+      newLaneName: existingLane == nil
+        ? workDeterministicAutoLaneName(from: rawText, genericSuffix: workAutoLaneGenericSuffix())
+        : nil,
+      using: syncService
+    )
+    busy = false
+    if let failure = cloudLaunches.entries.first(where: { $0.launchId == launchId })?.startError {
+      errorMessage = failure
+      return false
+    }
+    ADEHaptics.success()
+    // The launch card (setup steps, then the chat) lives in the project's Work tab.
+    syncService.openAccountProjectScope(project.id)
+    return true
+  }
+
   private func startBackgroundLaneNaming(
     laneId: String,
     opener: String,
@@ -1181,7 +1507,7 @@ struct HubInlineComposer: View {
   /// when that machine cannot be reached or does not list the project.
   @MainActor
   private func focusPickedMachine(_ key: String) async -> Bool {
-    let machineName = pickedRemoteMachine?.name ?? "that machine"
+    let machineName = pickedRemoteMachine?.name ?? "that computer"
     let projectId = pickedProjectId
     let rootPath = syncNormalizedProjectRootScope(pickedRemoteProject?.rootPath)
     // The switch reconciles the destination against a roster that may not have
@@ -1218,12 +1544,106 @@ struct HubInlineComposer: View {
 
   // MARK: Destination resolution
 
-  private func lanes(forProjectId id: String) -> [RemoteRosterLane] {
-    if pickedMachineKey != nil {
-      return pickedRemoteMachine?.projects.first { $0.projectId == id }?.lanes ?? []
+  /// An ADE Cloud lane computer exists for its one lane: its main checkout is
+  /// left out and no new lane is made there.
+  private var pickedMachineIsCloud: Bool {
+    pickedAccountCloud || syncService.isCloudFleetKey(pickedMachineKey ?? syncService.focusedMachineKey)
+  }
+
+  /// Keeps the model on one ADE Cloud runs: the last cloud pick, else the
+  /// catalog's default (as the Work screen does).
+  private func pickCloudModelIfNeeded() {
+    guard pickedAccountCloud,
+          cloudLaunches.catalog?.providers.first(where: { $0.provider == provider })?.models.contains(where: { $0.id == modelId }) != true,
+          let pick = cloudLaunches.defaultModel() else { return }
+    provider = pick.provider
+    modelId = pick.modelId
+    selectedModelOption = nil
+    reasoningEffort = ""
+    codexFastMode = false
+  }
+
+  /// ADE Cloud through the account server: `pickedProjectId` is then the
+  /// account project's id.
+  private var pickedAccountCloud: Bool { pickedMachineKey == ADECloudMachine.id }
+
+  private var accountCloudProject: AccountProject? {
+    guard pickedAccountCloud else { return nil }
+    return accountProjects.liveProjects.first { $0.id == pickedProjectId }
+  }
+
+  private struct CloudLaneChoice: Identifiable {
+    let lane: RemoteRosterLane
+    /// Nil: the picked computer.
+    let copy: HubComposerCopy?
+    var id: String { "\(copy?.id ?? "")|\(lane.id)" }
+  }
+
+  /// The picked project's lanes on every ADE Cloud computer (each holds one),
+  /// so ADE Cloud lists as one machine; a pick routes to the lane's computer.
+  /// Signed out (no account entries): the picked computer's lanes.
+  private var cloudLaneChoices: [CloudLaneChoice] {
+    let cloudCopies = composerEntries?
+      .first { $0.copies.contains(where: isPicked) }?
+      .copies.filter(\.isCloud) ?? []
+    guard !cloudCopies.isEmpty else {
+      return lanesForPickedProject.map { CloudLaneChoice(lane: $0, copy: nil) }
     }
-    guard !id.isEmpty, let project = syncService.projects.first(where: { $0.id == id }) else { return [] }
-    return syncService.rosterProject(for: project)?.lanes ?? []
+    var choices = cloudCopies.filter { $0.machineKey != ADECloudMachine.id }.flatMap { copy in
+      cloudLanes(on: copy).map { CloudLaneChoice(lane: $0, copy: copy) }
+    }
+    // The project's other cloud lanes, read from the account (their computers
+    // are not linked here, or asleep): a chat there wakes its computer.
+    if let accountCopy = cloudCopies.first(where: { $0.machineKey == ADECloudMachine.id }) {
+      let shown = Set(choices.map(\.lane.id))
+      choices += accountCloudLanes(accountProjectId: accountCopy.project.id)
+        .filter { !shown.contains($0.id) }
+        .map { CloudLaneChoice(lane: $0, copy: accountCopy) }
+    }
+    return choices
+  }
+
+  /// The cloud lanes of one account project, from the account's ADE Cloud
+  /// computers (each holds one lane), newest name order.
+  private func accountCloudLanes(accountProjectId: String) -> [RemoteRosterLane] {
+    guard let project = accountProjects.liveProjects.first(where: { $0.id == accountProjectId }) else { return [] }
+    let origin = "\(project.host)/\(project.owner)/\(project.name)".lowercased()
+    var seen = Set<String>()
+    return syncService.cloudServerInstances.compactMap { instance -> RemoteRosterLane? in
+      guard instance.projectOrigin == origin, let id = instance.laneId, seen.insert(id).inserted else { return nil }
+      return RemoteRosterLane(id: id, name: instance.laneName ?? "Lane", laneType: "worktree", branchRef: instance.laneBranch)
+    }
+    .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+  }
+
+  /// The account-server ADE Cloud destination of the picked project.
+  private var accountCloudCopy: HubComposerCopy? {
+    composerEntries?
+      .first { $0.copies.contains(where: isPicked) }?
+      .copies.first { $0.machineKey == ADECloudMachine.id }
+  }
+
+  private func cloudLanes(on copy: HubComposerCopy) -> [RemoteRosterLane] {
+    let lanes: [RemoteRosterLane]
+    if let key = copy.machineKey {
+      lanes = machineFleet.machine(for: key)?.projects.first { $0.projectId == copy.project.id }?.lanes ?? []
+    } else {
+      lanes = syncService.projects.first { $0.id == copy.project.id }
+        .flatMap { syncService.rosterProject(for: $0)?.lanes } ?? []
+    }
+    return lanes.filter { ($0.laneType ?? "") != "primary" }
+  }
+
+  private func lanes(forProjectId id: String) -> [RemoteRosterLane] {
+    if pickedAccountCloud { return accountCloudLanes(accountProjectId: id) }
+    let lanes: [RemoteRosterLane]
+    if pickedMachineKey != nil {
+      lanes = pickedRemoteMachine?.projects.first { $0.projectId == id }?.lanes ?? []
+    } else {
+      guard !id.isEmpty, let project = syncService.projects.first(where: { $0.id == id }) else { return [] }
+      lanes = syncService.rosterProject(for: project)?.lanes ?? []
+    }
+    return pickedMachineIsCloud ? lanes.filter { ($0.laneType ?? "") != "primary" } : lanes
   }
 
   /// Primary lane for a project (or its first lane); falls back to the
@@ -1236,14 +1656,41 @@ struct HubInlineComposer: View {
     if let first = lanes.first {
       return first.id
     }
-    return workAutoCreateLaneSentinelId
+    if pickedAccountCloud { return workAutoCreateLaneSentinelId }
+    return pickedMachineIsCloud ? "" : workAutoCreateLaneSentinelId
   }
 
   /// Reconciles the (possibly persisted) destination against the live project +
   /// lane lists: keep a still-valid choice, else fall back to the active project
   /// (then first) and that project's primary/first lane.
+  /// A test for folders of projects removed from ADE, built once for a pass.
+  /// The picker hides them, so the composer neither keeps nor sends to one.
+  private func removedFromAccount() -> (MobileProjectSummary, String?) -> Bool {
+    guard let resolver = syncService.accountProjectResolver(), !resolver.removedIds.isEmpty else { return { _, _ in false } }
+    return { project, machineKey in
+      syncService.accountProjectId(forCheckout: project, onMachine: machineKey, resolver: resolver)
+        .map { resolver.removedIds.contains($0) } ?? false
+    }
+  }
+
   private func reconcileDestination() {
     guard !holdsDestination else { return }
+    let isRemoved = removedFromAccount()
+    if let picked = pickedProject, isRemoved(picked, pickedMachineKey) {
+      pickedMachineKey = nil
+      pickedProjectId = ""
+    }
+    if pickedAccountCloud {
+      // ADE Cloud through the account: kept while the project is on it.
+      if accountCloudProject != nil {
+        if !isAutoCreateLane, !lanesForPickedProject.contains(where: { $0.id == selectedLaneId }) {
+          selectedLaneId = workAutoCreateLaneSentinelId
+        }
+        return
+      }
+      pickedMachineKey = nil
+      pickedProjectId = ""
+    }
     if let key = pickedMachineKey {
       if key == syncService.focusedMachineKey {
         // That machine became primary: the same project id names it there.
@@ -1259,24 +1706,52 @@ struct HubInlineComposer: View {
         pickedProjectId = ""
       }
     }
-    let projects = syncService.projects
+    let projects = syncService.connectionState == .connected
+      ? syncService.projects.filter { !isRemoved($0, nil) }
+      : []
     guard !projects.isEmpty else {
+      // No primary to start on (none, or it is unreachable): ADE Cloud,
+      // for the open project when the account has it.
+      let live = accountProjects.liveProjects
+      let active = syncService.activeProject
+      let openProject = active?.accountProjectId.flatMap { id in live.first { $0.id == id } }
+        ?? active.flatMap { active in
+          live.first {
+            $0.owner.caseInsensitiveCompare(active.repoOwner ?? "") == .orderedSame
+              && $0.name.caseInsensitiveCompare(active.repoName ?? "") == .orderedSame
+          }
+        }
+      if let project = openProject ?? live.first {
+        pickedMachineKey = ADECloudMachine.id
+        pickedProjectId = project.id
+        selectedLaneId = workAutoCreateLaneSentinelId
+        return
+      }
       pickedProjectId = ""
       selectedLaneId = ""
       return
     }
     if pickedProjectId.isEmpty || !projects.contains(where: { $0.id == pickedProjectId }) {
-      let resolvedProjectId = syncService.activeProject?.id ?? projects[0].id
+      let active = syncService.activeProject.flatMap { active in projects.first { $0.id == active.id } }
+      let resolvedProjectId = active?.id ?? projects[0].id
       pickedProjectId = resolvedProjectId
       selectedLaneId = defaultLaneId(forProjectId: resolvedProjectId)
       return
     }
-    if !isAutoCreateLane {
+    if !isAutoCreateLane || pickedMachineIsCloud {
       let lanes = lanesForPickedProject
       if selectedLaneId.isEmpty || !lanes.contains(where: { $0.id == selectedLaneId }) {
         selectedLaneId = defaultLaneId(forProjectId: pickedProjectId)
       }
     }
+  }
+
+  private func rememberLiveSelection() {
+    let live = HubComposerLiveSelection.shared
+    live.projectId = pickedProjectId
+    live.laneId = selectedLaneId
+    live.machineKey = pickedMachineKey
+    live.pickerOpen = destinationPickerPresented
   }
 
   // MARK: Last-destination persistence (App Group)
@@ -1286,7 +1761,8 @@ struct HubInlineComposer: View {
     var laneId: String
   }
 
-  private static let lastDestinationKey = "ade.hub.lastDestination.v1"
+  /// Removed on sign-out with the account's other stores (`AccountService.publishSignedOut`).
+  static let lastDestinationKey = "ade.hub.lastDestination.v1"
 
   private static func loadLastDestination() -> HubLastDestination? {
     guard let data = ADESharedContainer.defaults.data(forKey: lastDestinationKey) else { return nil }
@@ -1354,4 +1830,35 @@ private func hubPrettyModelName(_ model: String) -> String {
     return pretty
   }
   return trimmed
+}
+
+/// The Hub composer's destination while the app runs. Each pose lays the Hub
+/// out in its own container, so the composer is built again on a fold or an
+/// unfold; it reads this, and the project, lane, computer and an open picker
+/// stay as the person left them. A send saves the lasting default
+/// (`HubLastDestination`) as before.
+@MainActor
+final class HubComposerLiveSelection {
+  static let shared = HubComposerLiveSelection()
+  /// Nil until the person (or a restore) picks a project in this run.
+  var projectId: String?
+  var laneId = ""
+  var machineKey: String?
+  var pickerOpen = false
+}
+
+/// The account project as the composer's project row for its ADE Cloud copy.
+private func hubAccountCloudSummary(_ project: AccountProject) -> MobileProjectSummary {
+  var summary = MobileProjectSummary(
+    id: project.id,
+    displayName: project.name,
+    repoOwner: project.owner,
+    repoName: project.name,
+    defaultBaseRef: project.defaultBranch,
+    laneCount: 0,
+    isAvailable: true,
+    isCached: false
+  )
+  summary.accountProjectId = project.id
+  return summary
 }

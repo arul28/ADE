@@ -1,7 +1,7 @@
 import { ArrowClockwise } from "@phosphor-icons/react";
 import { Banner, type NoticeAction } from "../ui/notice";
 import type { RemoteRuntimeConnectionRecovery } from "../../../shared/types";
-import { isMachineStateConnectError, type MachineErrorCard } from "./remoteMachineModel";
+import { HELD_ELSEWHERE_ACTION_LABEL, isMachineStateConnectError, type MachineErrorCard } from "./remoteMachineModel";
 
 type RemoteErrorCardProps = {
   card: MachineErrorCard;
@@ -24,7 +24,7 @@ type RemoteErrorCardProps = {
 const RETRY_LABEL_BY_RECOVERY: Record<RemoteRuntimeConnectionRecovery, string> = {
   reconnecting: "Reconnect now",
   waiting_for_user: "Reconnect",
-  held_elsewhere: "Use it here",
+  held_elsewhere: HELD_ELSEWHERE_ACTION_LABEL,
 };
 
 /**

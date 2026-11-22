@@ -31,6 +31,11 @@ export function ChatTargetField({
 
   useEffect(() => {
     if (!oneChat) return;
+    if (!runtimePin) {
+      // No machine to list chats on yet.
+      setChats([]);
+      return;
+    }
     let cancelled = false;
     void window.ade?.agentChat
       ?.list({}, runtimePin)
@@ -45,7 +50,9 @@ export function ChatTargetField({
     return () => {
       cancelled = true;
     };
-  }, [oneChat, runtimePin]);
+    // Keyed on the pin's key, not the object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [oneChat, runtimePin?.key]);
 
   const options: Array<{ value: "new" | "one"; label: string; hint: string; icon: typeof ChatCircleText }> = [
     { value: "new", label: "A new chat each time", hint: "Each run starts fresh in its own chat.", icon: ChatCircleText },

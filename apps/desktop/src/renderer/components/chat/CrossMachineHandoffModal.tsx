@@ -38,6 +38,7 @@ import {
   applyUnifiedPermissionToNativeControls,
   summarizeNativeControls,
 } from "../../lib/nativeLaunchControls";
+import { ownMoveMachines, useOwnMoveMachines } from "./crossMachineMoveTargets";
 import type { NativeControlState } from "../../lib/draftLaunchJobs";
 import { getPermissionOptions } from "../shared/permissionOptions";
 import { toPermissionPickerOption } from "../shared/permissionModePickerOptions";
@@ -66,6 +67,7 @@ import {
 } from "./crossMachineHandoffPresentation";
 import { Banner } from "../ui/notice/Banner";
 import { Dialog } from "../ui/dialog";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * Setup for moving a chat to another machine. A thin client of the source
@@ -261,7 +263,9 @@ export function CrossMachineHandoffModal({
     );
   }, [destinationDescriptor, modelId, nativeControls, onNativeControlsChange]);
 
-  const machines = useMemo(() => options?.machines ?? [], [options]);
+  // Own computers only: the choose stage shows ADE Cloud once, as a disabled row.
+  const ownMachines = useOwnMoveMachines(options?.machines);
+  const machines = useMemo(() => ownMachines ?? [], [ownMachines]);
   const selectedMachine = useMemo(
     () => machines.find((machine) => machine.machineKey === selectedMachineKey) ?? null,
     [machines, selectedMachineKey],
@@ -277,16 +281,18 @@ export function CrossMachineHandoffModal({
     const pin = runtimePinRef.current;
     setLoading(true);
     try {
-      const next = await window.ade.agentChat.getCrossMachineHandoffOptions({ sourceSessionId }, pin);
+      const next = await withChatPin(pin, (chatPin) => window.ade.agentChat.getCrossMachineHandoffOptions({ sourceSessionId }, chatPin));
       if (request !== loadRequestRef.current) return;
       setOptions(next);
+      // A single ADE Cloud computer is never a pick (D-9).
+      const pickable = ownMoveMachines(next.machines);
       setSelectedMachineKey((current) => {
         // A reload after a branch fix keeps the person's pick.
-        const kept = current ? next.machines.find((machine) => machine.machineKey === current) : undefined;
+        const kept = current ? pickable.find((machine) => machine.machineKey === current) : undefined;
         if (kept && machineAvailable(kept)) return kept.machineKey;
-        const preselected = findMachine(next.machines, preselectedMachine);
+        const preselected = findMachine(pickable, preselectedMachine);
         if (preselected && machineAvailable(preselected)) return preselected.machineKey;
-        return next.machines.find(machineAvailable)?.machineKey ?? null;
+        return pickable.find(machineAvailable)?.machineKey ?? null;
       });
     } catch (loadError) {
       if (request === loadRequestRef.current) setError(errorText(loadError));
@@ -339,13 +345,13 @@ export function CrossMachineHandoffModal({
     setError(null);
     setForkFallbackReason(null);
     try {
-      const next = await window.ade.agentChat.previewCrossMachineHandoff({
+      const next = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.agentChat.previewCrossMachineHandoff({
         sourceSessionId,
         machine: selectedMachine.machineKey,
         targetModelId: modelId,
         mode: requestedMode,
         ...(includeChanges ? { includeChanges: true } : {}),
-      }, runtimePinRef.current);
+      }, chatPin));
       setPreview(next);
       const fork = requestedMode === "fork" ? next.preflight?.forkHandoffSupport : undefined;
       if (requestedMode === "fork" && next.preflight && !fork?.supported) {
@@ -364,10 +370,19 @@ export function CrossMachineHandoffModal({
     setMode(next);
     setForkFallbackReason(null);
     setError(null);
-    if (next === "fork" && modelId && forkModelIds && forkModelIds.length > 0 && !forkModelIds.includes(modelId)) {
+    // Snap only a model that brief offers and fork does not. A model in
+    // neither list is a signed-out pick, and that pick stays.
+    if (
+      next === "fork"
+      && modelId
+      && forkModelIds
+      && forkModelIds.length > 0
+      && !forkModelIds.includes(modelId)
+      && availableModelIds?.includes(modelId)
+    ) {
       onModelChange?.(forkModelIds[0]!);
     }
-  }, [forkModelIds, modelId, onModelChange]);
+  }, [availableModelIds, forkModelIds, modelId, onModelChange]);
 
   /**
    * The brain runs the move from here (pack, destination checks, fast-forward,
@@ -380,7 +395,7 @@ export function CrossMachineHandoffModal({
     setBusyLabel(turnActive ? "Queuing the move…" : "Starting the move…");
     setError(null);
     try {
-      const record = await window.ade.agentChat.startCrossMachineHandoff({
+      const record = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.agentChat.startCrossMachineHandoff({
         ...target,
         sourceSessionId,
         machine: selectedMachine.machineKey,
@@ -389,7 +404,7 @@ export function CrossMachineHandoffModal({
         ...(includeChanges ? { includeChanges: true } : {}),
         ...(cloneApproved || queuedCloneApproved ? { clone: true } : {}),
         ...(turnActive ? { whenTurnEnds: true } : {}),
-      }, runtimePinRef.current);
+      }, chatPin));
       onStarted(record);
       onClose();
     } catch (startError) {
@@ -442,7 +457,7 @@ export function CrossMachineHandoffModal({
   }, [loadOptions]);
   const publishBranch = useCallback(() => runBranchFix(
     "Publishing the branch…",
-    (pin) => window.ade.git.push({ laneId: sourceLaneId }, pin),
+    (pin) => withChatPin(pin, (chatPin) => window.ade.git.push({ laneId: sourceLaneId }, chatPin)),
   ), [runBranchFix, sourceLaneId]);
   /**
    * Only offered when the branch is strictly behind. A diverged branch keeps
@@ -450,7 +465,7 @@ export function CrossMachineHandoffModal({
    */
   const updateBranch = useCallback(() => runBranchFix(
     "Updating the branch…",
-    (pin) => window.ade.git.pull({ laneId: sourceLaneId }, pin),
+    (pin) => withChatPin(pin, (chatPin) => window.ade.git.pull({ laneId: sourceLaneId }, chatPin)),
   ), [runBranchFix, sourceLaneId]);
   /**
    * A move whose answer was lost blocks new ones; the same Retry and Dismiss
@@ -458,11 +473,11 @@ export function CrossMachineHandoffModal({
    */
   const retryUnknownMove = useCallback(() => runBranchFix(
     "Retrying the move…",
-    (pin) => window.ade.agentChat.retryCrossMachineHandoff({ sourceSessionId }, pin),
+    (pin) => withChatPin(pin, (chatPin) => window.ade.agentChat.retryCrossMachineHandoff({ sourceSessionId }, chatPin)),
   ), [runBranchFix, sourceSessionId]);
   const dismissUnknownMove = useCallback(() => runBranchFix(
     "Dismissing the move…",
-    (pin) => window.ade.agentChat.cancelCrossMachineHandoff({ sourceSessionId }, pin),
+    (pin) => withChatPin(pin, (chatPin) => window.ade.agentChat.cancelCrossMachineHandoff({ sourceSessionId }, chatPin)),
   ), [runBranchFix, sourceSessionId]);
 
   if (!open) return null;

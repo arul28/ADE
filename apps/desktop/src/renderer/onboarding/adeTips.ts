@@ -1,6 +1,6 @@
 import {
   AppWindow,
-  AppleLogo,
+  ArrowCounterClockwise,
   ArrowsLeftRight,
   At,
   Bell,
@@ -12,9 +12,11 @@ import {
   ClockCounterClockwise,
   Cards,
   Cloud,
+  CloudArrowUp,
   Crown,
   DesktopTower,
   DeviceMobile,
+  DeviceMobileCamera,
   DownloadSimple,
   Eye,
   FileCode,
@@ -27,6 +29,7 @@ import {
   GridFour,
   GridNine,
   HardDrives,
+  Key,
   Keyboard,
   Laptop,
   Lightning,
@@ -53,6 +56,7 @@ import {
   TerminalWindow,
   Toolbox,
   UserSwitch,
+  UsersThree,
   type Icon,
 } from "@phosphor-icons/react";
 import type { ConnectionsPanelTab } from "../lib/connectionsPanel";
@@ -91,7 +95,9 @@ import proofShot from "../components/onboarding/tips/assets/proof.webp";
 import prsShot from "../components/onboarding/tips/assets/prs.webp";
 import quickSlotsShot from "../components/onboarding/tips/assets/quick-slots.webp";
 import secretsShot from "../components/onboarding/tips/assets/secrets.webp";
+import shareLaneShot from "../components/onboarding/tips/assets/share-lane.webp";
 import sideChatShot from "../components/onboarding/tips/assets/side-chat.webp";
+import signInOnceShot from "../components/onboarding/tips/assets/sign-in-once.webp";
 import subagentsShot from "../components/onboarding/tips/assets/subagents.webp";
 import themesShot from "../components/onboarding/tips/assets/themes.webp";
 import widgetsShot from "../components/onboarding/tips/assets/widgets.webp";
@@ -181,6 +187,14 @@ type AdeTipEntry = {
   sentence: string;
   icon: Icon;
   action?: AdeTipAction;
+  /** `false`: stays in ADE Tips, but is never offered unasked as a corner card (`tipOfferedAsCard`). */
+  card?: false;
+  /**
+   * Needs a desktop, so ADE Web never offers it as a corner card. Only for
+   * tips whose action `tipActionAvailable` does not already rule out on the
+   * web (Connections, Music and web-hidden Settings cards are ruled out there).
+   */
+  desktopOnly?: true;
 } & ({ size: "screen"; shot: TipShot } | { size: Extract<TipTileSize, "wide">; shot?: TipShot } | { size: Extract<TipTileSize, "small">; shot?: undefined });
 
 type AdeTipId = (typeof TIP_LIST)[number]["id"];
@@ -258,7 +272,7 @@ const TIP_LIST = [
   },
   {
     id: "cli-chats", group: "agents", icon: TerminalWindow, title: "CLI chats", size: "wide",
-    sentence: "Run the same agents in a terminal when you prefer their own interface, with ADE's lanes around them.",
+    sentence: "Run an agent's own CLI and it works like a chat: a row with its status, and an input box where @ mentions work.",
     action: draft(spot("draft-mode-switch", "Pick CLI to run an agent in its own terminal interface.")),
   },
   {
@@ -329,38 +343,41 @@ const TIP_LIST = [
     action: setting("agents.providers", "Open a provider and add a second account. A chat that hits its limit can continue on it."),
   },
   {
-    id: "ios-simulator", group: "agents", icon: AppleLogo, title: "iOS simulator", size: "wide",
+    // Keeps its first id, so a "done" stored before Android joined it still holds.
+    id: "ios-simulator", group: "agents", icon: DeviceMobileCamera, title: "Phone simulators", size: "wide",
     shot: { src: iosSimulatorShot, alt: "iPhone Duo in the simulator, half open" },
-    sentence: "Run your iOS app in a simulator inside ADE, including iPhone Duo with its hinge.",
+    sentence: "Run your app on an Android emulator or the iOS simulator inside ADE, foldables and iPhone Duo included.",
+    desktopOnly: true,
     action: inAChat(
-      "Open a chat, then Tools and Apple Development to run your app in the simulator.",
-      "Start a chat; its Tools pane has Apple Development, with the simulator.",
-      spot("tools-pane", "Open Apple Development here to run your app in the simulator."),
-      spot("tools-toggle", "Open Tools, then Apple Development, to run your app in the simulator."),
+      "Open a chat, then Tools: Apple Development and Android Development run your app.",
+      "Start a chat; its Tools pane has Apple Development and Android Development.",
+      spot("tools-pane", "Open Apple Development or Android Development here to run your app."),
+      spot("tools-toggle", "Open Tools, then Apple Development or Android Development, to run your app."),
     ),
   },
   {
-    id: "custom-provider", group: "agents", icon: ArrowsLeftRight, title: "Any harness on your plan", size: "small",
+    id: "custom-provider", group: "agents", icon: ArrowsLeftRight, title: "Any harness on your plan", size: "wide",
     sentence: "Run Claude Code, Codex or Droid on a plan you already pay for, with the sign-ins you already have.",
     action: setting("agents.harnesses", "Pick a harness and a model you already pay for. It shows up in every model picker."),
   },
   {
     id: "startup-context", group: "agents", icon: Brain, title: "Understand startup context", size: "small",
     sentence: "See what goes into your agent's context when a new chat starts, and where to change it.",
+    card: false,
     action: setting("agents.providers", "Open a provider to see its initial context and where each item is configured."),
   },
   {
-    id: "simulator-on-phone", group: "agents", icon: Screencast, title: "Simulator on your phone", size: "wide",
-    sentence: "Stream the simulator to your iPhone and tap it like a real phone.",
-    action: connections("mobile", "Pair your iPhone here. Then it can stream the simulator and drive it by touch."),
+    id: "recently-deleted", group: "agents", icon: ArrowCounterClockwise, title: "Recently deleted chats", size: "small",
+    sentence: "Reopen a chat you deleted, with its whole history.",
+    action: setting("storage.recentlyDeleted", "Open a deleted chat to read it, or press Reopen to bring it back."),
   },
 
   // Project brain
   {
     id: "cto", group: "brain", icon: Crown, title: "CTO",
-    size: "screen", shot: { src: ctoShot, alt: "The CTO introducing itself in its chat" },
-    sentence: "A lead for each project that knows its lanes, PRs and history, and plans work with you.",
-    action: page("/cto", spot("composer", "Ask your CTO what to work on next. It knows this project's lanes and PRs.")),
+    size: "screen", shot: { src: ctoShot, alt: "The CTO saying hi, with starters and what it remembers" },
+    sentence: "One CTO for each project. It remembers what you tell it, runs work on a schedule, and lives on a machine you pick: this computer or ADE Cloud.",
+    action: page("/cto", spot("composer", "Tell your CTO something to remember, or give it something to do every morning.")),
   },
   {
     id: "automations", group: "brain", icon: Lightning, title: "Automations",
@@ -379,10 +396,28 @@ const TIP_LIST = [
 
   // Machines
   {
+    id: "ade-cloud", group: "machines", icon: CloudArrowUp, title: "ADE Cloud", size: "wide",
+    sentence: "Pick ADE Cloud in a new chat's Run on menu and the work runs on its own cloud computer, so yours can sleep.",
+    action: {
+      ...draft(
+        spot("run-on", "Pick ADE Cloud here. The chat's lane gets its own cloud computer."),
+        spot("lane-picker", "Pick ADE Cloud in Run on, beside the lane. The chat's lane gets its own cloud computer."),
+      ),
+      // Offered only while the account has ADE Cloud (its Settings hide until then).
+      settingId: "integrations.ade-cloud",
+    },
+  },
+  {
     id: "connect-machine", group: "machines", icon: DesktopTower, title: "Connect another computer",
     size: "screen", shot: { src: machinesShot, alt: "The Connections panel listing connected, available and offline computers" },
-    sentence: "Drive lanes and chats that live on your other machines from this window.",
+    sentence: "One project tab shows every computer's work. Connect a computer to drive its lanes and chats from here.",
     action: connections("machines", "Your computers. Connect one to drive its lanes and chats from here."),
+  },
+  {
+    id: "sign-in-once", group: "machines", icon: Key, title: "Sign in once",
+    size: "screen", shot: { src: signInOnceShot, alt: "Providers on ADE Cloud: each sign-in shows where it came from" },
+    sentence: "Sign in to an agent once, and the sign-in follows your account to your other computers and ADE Cloud.",
+    action: setting("agents.providers", "Sign in to a provider here. Pick ADE Cloud at the top to see where each sign-in came from."),
   },
   {
     id: "keep-awake", group: "machines", icon: Moon, title: "Keep awake",
@@ -397,9 +432,14 @@ const TIP_LIST = [
     action: connections("mobile", "Pair the iPhone app here."),
   },
   {
+    id: "simulator-on-phone", group: "machines", icon: Screencast, title: "Simulator on your phone", size: "wide",
+    sentence: "Stream the simulator to your iPhone and tap it like a real phone.",
+    action: connections("mobile", "Pair your iPhone here. Then it can stream the simulator and drive it by touch."),
+  },
+  {
     id: "web-app", group: "machines", icon: Globe, title: "The web app", size: "wide",
     sentence: "Control every machine and agent from a browser, the same way as here.",
-    action: connections("web", "Turn on the web app here."),
+    action: connections("web", "Open ADE in your browser from here, and sign in with your ADE account."),
   },
   {
     id: "other-machine-commands", group: "machines", icon: ShareNetwork, title: "Work on another machine", size: "wide",
@@ -410,11 +450,13 @@ const TIP_LIST = [
     id: "beta-track", group: "machines", icon: Flask, title: "Beta track", size: "wide",
     shot: { src: betaShot, alt: "ADE 1.2.128-beta.2 with the Beta chip, above the Update track setting" },
     sentence: "Get new features first: the Beta track is built from main every few hours, on every machine you pick.",
+    card: false,
     action: setting("general.update-track", "Switch to Beta to get new features first."),
   },
   {
     id: "headless", group: "machines", icon: HardDrives, title: "Headless brain", size: "small",
     sentence: "Run ADE on a server with no screen; once it signs in it joins your other machines.",
+    card: false,
     action: connections("machines", "A server running ADE headless shows up here once it signs in."),
   },
   {
@@ -483,6 +525,20 @@ const TIP_LIST = [
     action: page("/files", at('[data-tour="files.fileTree"]', "This lane's files. Open one to edit it and see its diff.")),
   },
   {
+    id: "share-lane", group: "git", icon: UsersThree, title: "Share a lane",
+    size: "screen", shot: { src: shareLaneShot, alt: "A guest's message in the owner's chat, marked From Alex" },
+    sentence: "Invite someone to one lane. They work in its real chats on your computer, and their messages are marked as theirs.",
+    action: {
+      ...page(
+        "/lanes",
+        at('[data-tour="lanes.laneTab"]', "Right-click this lane and pick Share lane."),
+        at('[data-tour="lanes.newLane"]', "Make a lane first, then right-click it and pick Share lane. The main checkout can't be shared."),
+      ),
+      // Sharing is desktop only: the web has no channel for the owner's share actions (Settings › Sharing hides there).
+      settingId: "sharing.by-me",
+    },
+  },
+  {
     id: "pr-watch", group: "git", icon: Eye, title: "PR watch", size: "wide",
     sentence: "A chat can watch its PR and wake up on new reviews and failed checks.",
     action: inAChat("Open a chat that made a PR: Watch sits beside the PR in its header.", FIRST_CHAT),
@@ -519,12 +575,13 @@ const TIP_LIST = [
     id: "grid-view", group: "yours", icon: GridFour, title: "Grid view",
     size: "screen", shot: { src: gridShot, alt: "Two chats side by side in the grid view" },
     sentence: "Watch several chats work side by side in Work.",
-    action: page("/work", spot("work-focus", "Turn on Focus, then its grid half shows running chats side by side.")),
+    action: page("/work", spot("work-focus", "Turn on Focus, then its grid button shows every chat that needs you, side by side.")),
   },
   {
     id: "music", group: "yours", icon: MusicNotes, title: "Music", size: "wide",
     shot: { src: musicShot, alt: "An album open in the Music tab, ready to play" },
     sentence: "Play, pause and skip what you are listening to without leaving ADE.",
+    card: false,
     action: {
       place: { kind: "music" },
       spots: [
@@ -539,12 +596,16 @@ const TIP_LIST = [
     id: "keyboard", group: "yours", icon: Keyboard, title: "Your own shortcuts", size: "wide",
     shot: { src: keyboardShot, alt: "Settings, Keyboard: shortcuts for the command palette, Browser, Work and Files" },
     sentence: "Rebind any shortcut in Settings, Keyboard. They are saved for this computer, in every project.",
+    card: false,
+    desktopOnly: true,
     action: setting("keyboard.shortcuts", "Click a shortcut, then press the keys you want."),
   },
   {
     id: "quick-slots", group: "yours", icon: GridNine, title: "Quick slots", size: "wide",
     shot: { src: quickSlotsShot, alt: "Quick slots: nine numbered actions like New chat, Model picker and Git" },
     sentence: "Put nine actions or models on one key plus a digit, so the ones you use most are a chord away.",
+    card: false,
+    desktopOnly: true,
     action: setting("keyboard.quick-slots", "Fill a slot with an action or a model, then press the leader key and its digit."),
   },
 
@@ -560,15 +621,16 @@ const TIP_LIST = [
     ),
   },
   {
-    id: "secrets", group: "safety", icon: LockKey, title: "ADE secrets",
-    size: "screen", shot: { src: secretsShot, alt: "Settings, Secrets: three encrypted keys saved for this project" },
-    sentence: "Keep this project's API keys encrypted, where agents can use them without pasting them into chat.",
-    action: setting("secrets.secrets", "Add this project's keys here. Agents use them without seeing them in chat."),
+    id: "secrets", group: "safety", icon: LockKey, title: "Passwords & Secrets",
+    size: "screen", shot: { src: secretsShot, alt: "Passwords & Secrets: three logins, one with a live 2FA code" },
+    sentence: "Logins, 2FA codes, passkeys and API keys, encrypted on your account. Agents use them without seeing them.",
+    action: setting("passwords.logins", "Add a login or a key here. Agents use them without seeing them."),
   },
   {
     id: "private-desktop", group: "safety", icon: AppWindow, title: "A private desktop for agents", size: "wide",
     shot: { src: privateDesktopShot, alt: "A screenshot of an agent's private Windows desktop, posted in the chat" },
     sentence: "Agents drive apps on their own Mac, Windows or Linux screen, so yours stays free.",
+    desktopOnly: true,
     action: inAChat(
       "Open a chat, then its Tools: agents get a desktop of their own there.",
       "Start a chat; its Tools pane gives agents a desktop of their own.",
@@ -603,6 +665,17 @@ export function tipActionAvailable(action: AdeTipAction | undefined): boolean {
     return entry != null && isSettingAvailable(entry);
   }
   return true;
+}
+
+/**
+ * Whether a tip may be offered unasked, as a corner card: its "Try it" can run
+ * here, it is not one kept for ADE Tips only (`card: false`), and on ADE Web
+ * it does not need a desktop (`desktopOnly`).
+ */
+export function tipOfferedAsCard(tip: AdeTip): boolean {
+  if (tip.card === false) return false;
+  if (tip.desktopOnly && isWebClientMode()) return false;
+  return tipActionAvailable(tip.action);
 }
 
 /** Where a page-of-a-project tip sends someone with no project open. */

@@ -1,11 +1,12 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isInaccessible } from "@testing-library/dom";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { SettingsPage } from "./SettingsPage";
+import { useAppStore } from "../../state/appStore";
 
 /**
  * The settings shell resolves tabs, legacy deep links, and search through
@@ -57,7 +58,6 @@ vi.mock("../settings/GitHubIntegrationSection", () => ({ GitHubIntegrationSectio
 vi.mock("../settings/LinearIntegrationSection", () => ({ LinearIntegrationSection: stubSection(["linear-connection"]) }));
 vi.mock("../settings/AdeCliSection", () => ({ AdeCliSection: stubSection([]) }));
 vi.mock("../settings/NotificationsSection", () => ({ NotificationsSection: stubSection(["notification-events"]) }));
-vi.mock("../settings/SecretsSection", () => ({ SecretsSection: stubSection(["secrets"]) }));
 vi.mock("../settings/lanes/LanesSettingsPage", () => ({
   LanesSettingsPage: stubSection(["lane-list", "new-lane-start", "lane-templates"]),
   StorageSettingsPage: stubSection(["storage", "archive"]),
@@ -95,7 +95,14 @@ const visibleAnchors = (container: HTMLElement) =>
     .filter((node) => !isInaccessible(node))
     .map((node) => node.dataset.settingsAnchor);
 
-afterEach(() => cleanup());
+// A project is open on this computer: the project pages show its copy.
+beforeEach(() => {
+  useAppStore.setState({ projectBinding: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } });
+});
+afterEach(() => {
+  cleanup();
+  useAppStore.setState({ projectBinding: null });
+});
 
 describe("SettingsPage", () => {
   it("opens the tab named in the URL", async () => {
@@ -192,18 +199,6 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("lists General, then the You group starting with Account, and renders the account page in place", async () => {
-    renderSettings("/settings?tab=account");
-
-    expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
-    expect(screen.getByText("account embedded")).toBeTruthy();
-    const nav = screen.getByRole("navigation", { name: "Settings sections" });
-    const rows = [...nav.querySelectorAll("button")].map((button) => button.textContent);
-    // General sits alone at the top, then the groups: You (Account, Usage),
-    // then App, which opens on Chat.
-    expect(rows.slice(0, 4)).toEqual(["General", "Account", "Usage", "Chat"]);
-  });
-
   it("carries help, zoom, and the identity row above the sections", async () => {
     renderSettings("/settings?tab=appearance");
     await screen.findByRole("heading", { name: "Appearance" });
@@ -221,8 +216,8 @@ describe("SettingsPage", () => {
   });
 
   it("says so when nothing on the current tab matches", async () => {
-    renderSettings("/settings?tab=secrets");
-    await screen.findByRole("heading", { name: "Secrets" });
+    renderSettings("/settings?tab=appearance");
+    await screen.findByRole("heading", { name: "Appearance" });
 
     fireEvent.change(searchBox(), { target: { value: "zzzznotasetting" } });
 

@@ -1,14 +1,28 @@
-import { sendCloudEmail } from "./email";
+import { readBoundedBody } from "../sinkUtils";
+import { trustedHttpsOrigin } from "../trustedOrigin";
+import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
+import { CLOUD_WEB_BILLING_RETURN_PARAM, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
+import { unlockFreePlanWithCard } from "./freePlanGithub";
+import { claimCardForFreeUnlock, isCloudBlocked } from "./blocks";
+import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
+import { cloudReturnPageHtml } from "./returnPage";
+import { checkPlanCleanupPick, planCleanupFor, planCleanupTargetOf, recordPlanCleanupPick, waitingPlanOf, warnPlanCleanupAhead } from "./planCleanup";
+import type { CloudPaidPlanId } from "./plans";
 import {
   accountRules,
   applyCloudPlanChange,
+  boughtPlanIdOf,
   groupByUser,
+  isPaidDowngrade,
+  paidPlanOf,
   extraActive,
   extraOwedMilli,
+  extraUsedMilli,
   listComputers,
   liveUsedMilli,
   loadAccount,
+  isProduction,
   logCloud,
   reportCloudFailure,
   type AccountRow,
@@ -32,6 +46,8 @@ const REQUEST_TIMEOUT_MS = 15_000;
 /** The extra-hours tab is charged each time it reaches this many cents. */
 const EXTRA_THRESHOLD_CENTS = "500";
 const SIGNATURE_TOLERANCE_SECONDS = 300;
+/** Real Stripe events are far smaller; this keeps an anonymous body out of the isolate's 128 MB. */
+const MAX_WEBHOOK_BODY_BYTES = 1_048_576;
 /** A claimed event with no finish after this long was lost mid-work, so Stripe's retry takes it. */
 const EVENT_CLAIM_STALE_MS = 2 * 60_000;
 const MILLI_PER_HOUR = 1000;
@@ -41,6 +57,26 @@ const MAX_REPORTS_PER_ACCOUNT_TICK = 60;
 const RETURN_PATH = "/billing/return";
 const WEBHOOK_PATH = "/webhooks/stripe";
 
+/** The address Stripe sends the person back to, for each way its page can end; `plan` names what was bought. */
+export type BillingReturnUrlFor = (outcome: CloudBillingReturnOutcome, plan?: CloudPaidPlanId) => string;
+
+/**
+ * This server's own page (`returnPage`), which says to go back to ADE. It is on
+ * `BILLING_RETURN_ORIGIN` (a clean domain on this Worker, e.g.
+ * https://account.ade-app.dev) when set, else the origin the request came in
+ * on. Only an exact https origin is taken. The plan only picks the page's
+ * words, never grants anything.
+ */
+export function accountReturnUrl(env: CloudEnv, origin: string): BillingReturnUrlFor {
+  const base = trustedHttpsOrigin(env.BILLING_RETURN_ORIGIN, { requireExactOrigin: true }) ?? origin;
+  return (outcome, plan) => `${base}${RETURN_PATH}?to=${outcome}${plan ? `&plan=${plan}` : ""}`;
+}
+
+/** The hosted web client, which opens Settings › ADE Cloud. `webOrigin` is this server's own `WEB_CLIENT_ORIGIN`, never a request's. */
+export function webReturnUrl(webOrigin: string): BillingReturnUrlFor {
+  return (outcome) => `${webOrigin}/?${CLOUD_WEB_BILLING_RETURN_PARAM}=${outcome}`;
+}
+
 /** A refusal the client shows as is. */
 export class CloudBillingError extends Error {
   constructor(readonly code: string, message: string, readonly status: number) {
@@ -49,9 +85,12 @@ export class CloudBillingError extends Error {
   }
 }
 
-const unavailable = () => new CloudBillingError("billing_unavailable", "ADE Cloud can't reach billing right now. Try again soon.", 503);
+/** A plan switch retried inside this window reuses its Stripe idempotency key, so it switches once. */
+const PLAN_CHANGE_RETRY_WINDOW_MS = 10 * 60_000;
 
-class StripeRequestError extends Error {
+export const unavailable = () => new CloudBillingError("billing_unavailable", "ADE Cloud can't reach billing right now. Try again soon.", 503);
+
+export class StripeRequestError extends Error {
   constructor(readonly status: number, readonly stripeMessage: string) {
     super(`stripe answered ${status}`);
     this.name = "StripeRequestError";
@@ -60,7 +99,7 @@ class StripeRequestError extends Error {
 
 type StripeObject = Record<string, unknown>;
 
-async function stripeRequest(
+export async function stripeRequest(
   env: Pick<CloudEnv, "STRIPE_SECRET_KEY">,
   method: "GET" | "POST" | "DELETE",
   path: string,
@@ -95,24 +134,86 @@ const idOf = (value: unknown): string | null => textOf(value) ?? textOf(objectOf
 
 /* ---- Checkout, portal ---- */
 
-function billingConfig(env: CloudEnv): { planPrice: string; extraPrice: string } {
-  const planPrice = env.STRIPE_PLAN_PRICE_ID?.trim();
-  const extraPrice = env.STRIPE_EXTRA_PRICE_ID?.trim();
-  if (!planPrice || !extraPrice || !env.STRIPE_SECRET_KEY?.trim()) {
-    logCloud("cloud.billing_not_configured");
-    throw unavailable();
-  }
-  return { planPrice, extraPrice };
+/** Each paid plan's monthly price; Pro and Max are unset until `scripts/stripe-setup.mjs` made them. */
+function planPriceIds(env: CloudEnv): Record<CloudPaidPlanId, string | null> {
+  return { plus: env.STRIPE_PLAN_PRICE_ID?.trim() || null, pro: env.STRIPE_PRO_PRICE_ID?.trim() || null, max: env.STRIPE_MAX_PRICE_ID?.trim() || null };
 }
 
-/** One Stripe customer per account, even when two checkouts start at once. */
+/** Which paid plan a price is, or null when it is none of them. */
+function paidPlanOfPrice(env: CloudEnv, priceId: string | null): CloudPaidPlanId | null {
+  if (!priceId) return null;
+  const prices = planPriceIds(env);
+  return (["max", "pro", "plus"] as const).find((plan) => prices[plan] === priceId) ?? null;
+}
+
+/** The extra-hours price before Cloud 7 (1 cent, then 0.85). The var first: the older name is a Worker secret in production. */
+const firstExtraHoursPrice = (env: CloudEnv): string | null => env.STRIPE_EXTRA_HOURS_PRICE_ID?.trim() || env.STRIPE_EXTRA_PRICE_ID?.trim() || null;
+
+/**
+ * `plan`'s own extra-hours price (2, 1.5 or 1.2 cents an hour), all on the one
+ * hours meter. A plan whose price isn't set yet falls back to the first price.
+ */
+function extraHoursPriceFor(env: CloudEnv, plan: CloudPaidPlanId): string | null {
+  const own = { plus: env.STRIPE_EXTRA_HOURS_PLUS_PRICE_ID, pro: env.STRIPE_EXTRA_HOURS_PRO_PRICE_ID, max: env.STRIPE_EXTRA_HOURS_MAX_PRICE_ID }[plan]?.trim();
+  return own || firstExtraHoursPrice(env);
+}
+
+/**
+ * Every extra-hours price a subscription may hold: each plan's, the first one,
+ * and the ones a plan no longer sells. Older subscriptions keep theirs until
+ * a renewal moves it.
+ */
+function extraHoursPrices(env: CloudEnv): Set<string> {
+  const retired = env.STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS?.split(",").map((price) => price.trim()) ?? [];
+  const prices = [firstExtraHoursPrice(env), env.STRIPE_EXTRA_PRICE_ID?.trim(), ...(["plus", "pro", "max"] as const).map((plan) => extraHoursPriceFor(env, plan)), ...retired];
+  return new Set(prices.filter((price): price is string => Boolean(price)));
+}
+
+/** The plan's price. Its extra-hours price must be set too: a plan is sold only once extra hours can be turned on. */
+function billingConfig(env: CloudEnv, plan: CloudPaidPlanId): { planPrice: string } {
+  const planPrice = planPriceIds(env)[plan];
+  if (!planPrice || !extraHoursPriceFor(env, plan) || !env.STRIPE_SECRET_KEY?.trim()) {
+    reportCloudFailure("cloud.billing_not_configured", { plan });
+    throw unavailable();
+  }
+  return { planPrice };
+}
+
+/**
+ * One Stripe customer per account, even when two checkouts start at once,
+ * with the account's email so Checkout shows it filled in. The create's
+ * params never change (Stripe refuses a retry under the same idempotency key
+ * with other params), so the email is filled in after it, as for a customer
+ * made before emails were sent. The address comes from Clerk, never from the
+ * client, and is never logged; when it can't be read, Checkout just asks for it.
+ */
 async function ensureCustomer(env: CloudEnv, account: AccountRow, now: number): Promise<string> {
-  if (account.stripe_customer_id) return account.stripe_customer_id;
+  const email = await accountEmail(env, account.user_id).catch((error: unknown) => {
+    logCloud("cloud.customer_email_read_failed", { userId: account.user_id, message: error instanceof Error ? error.name : "unknown" });
+    return null;
+  });
+  if (account.stripe_customer_id) {
+    if (email) await fillCustomerEmail(env, account.stripe_customer_id, email);
+    return account.stripe_customer_id;
+  }
   const customer = await stripeRequest(env, "POST", "/customers", { "metadata[ade_user_id]": account.user_id }, `ade-cloud-customer-${account.user_id}`);
   const id = textOf(customer.id);
   if (!id) throw unavailable();
   await applyCloudPlanChange(env, account.user_id, { stripeCustomerId: id }, now);
+  // A retry's create answers the first customer, which may have its email already: the fill reads before it writes.
+  if (email) await fillCustomerEmail(env, id, email);
   return id;
+}
+
+/** Sets the customer's email when it has none; one the person changed in Stripe stays. A failure only leaves the field empty. */
+async function fillCustomerEmail(env: CloudEnv, customerId: string, email: string): Promise<void> {
+  try {
+    const customer = await stripeRequest(env, "GET", `/customers/${encodeURIComponent(customerId)}`);
+    if (textOf(customer.email)) return;
+    await stripeRequest(env, "POST", `/customers/${encodeURIComponent(customerId)}`, { email });
+  } catch (error) {
+    reportCloudFailure("cloud.customer_email_fill_failed", { status: error instanceof StripeRequestError ? error.status : 0 });
+  }
 }
 
 /** A person with two open Checkout tabs must not be able to buy twice. */
@@ -124,10 +225,31 @@ async function expireOpenCheckouts(env: CloudEnv, customer: string): Promise<voi
   }
 }
 
-export async function createCheckoutUrl(env: CloudEnv, userId: string, origin: string, now: number): Promise<{ url: string }> {
-  const { planPrice, extraPrice } = billingConfig(env);
+/**
+ * Checkout for a plan. A paid account asking for its other plan changes it in
+ * place (`changePaidPlan`); a downgrade carries the person's pick (`cleanup`).
+ */
+export async function createCheckoutUrl(
+  env: CloudEnv,
+  userId: string,
+  back: BillingReturnUrlFor,
+  now: number,
+  requested?: CloudPaidPlanId,
+  waitUntil?: CloudWaitUntil,
+  cleanup?: CloudPlanCleanupPick,
+): Promise<CloudCheckoutResult> {
+  const plan = requested ?? "plus";
+  const { planPrice } = billingConfig(env, plan);
   const account = await loadAccount(env, userId, now);
-  if (account.plan === "paid") throw new CloudBillingError("already_paid", "You're already on the paid plan.", 409);
+  if (account.plan === "paid") {
+    // A build that knows one paid plan names none: it only ever buys, never switches.
+    if (!requested) throw new CloudBillingError("already_paid", "You already have a paid plan.", 409);
+    const current = paidPlanOf(account);
+    const pending = account.paid_plan_next;
+    if (current === plan && pending == null) throw new CloudBillingError("already_paid", "You're already on that plan.", 409);
+    if (pending === plan) throw new CloudBillingError("already_paid", "Your plan already changes to that at the end of this period.", 409);
+    return changePaidPlan(env, account, plan, planPrice, now, waitUntil, cleanup);
+  }
   try {
     const customer = await ensureCustomer(env, account, now);
     await expireOpenCheckouts(env, customer);
@@ -136,49 +258,497 @@ export async function createCheckoutUrl(env: CloudEnv, userId: string, origin: s
       customer,
       client_reference_id: userId,
       "managed_payments[enabled]": "true",
+      // Only the plan: extra hours join the subscription when the person turns
+      // them on (`setExtraHours`), so Checkout and the portal show one price.
       "line_items[0][price]": planPrice,
       "line_items[0][quantity]": "1",
-      "line_items[1][price]": extraPrice,
       "metadata[ade_user_id]": userId,
       "subscription_data[metadata][ade_user_id]": userId,
-      success_url: `${origin}${RETURN_PATH}?to=done`,
-      cancel_url: `${origin}${RETURN_PATH}?to=cancelled`,
+      success_url: back("done", plan),
+      cancel_url: back("cancelled"),
     });
     const url = textOf(session.url);
     if (!url) throw unavailable();
     return { url };
   } catch (error) {
     if (error instanceof StripeRequestError) {
-      logCloud("cloud.checkout_failed", { status: error.status, message: error.stripeMessage });
+      reportCloudFailure("cloud.checkout_failed", { status: error.status, message: error.stripeMessage });
       throw unavailable();
     }
     throw error;
   }
 }
 
-export async function createPortalUrl(env: CloudEnv, userId: string, origin: string, now: number): Promise<{ url: string }> {
+/* ---- A card with no charge for the free plan ---- */
+
+/** `metadata[ade_purpose]` of the setup-mode Checkout that unlocks the free hours early. */
+const FREE_UNLOCK_PURPOSE = "free_unlock";
+
+/** The cards saved on a Stripe customer (at most 10), newest first: each one's id and fingerprint. */
+async function savedCards(env: Pick<CloudEnv, "STRIPE_SECRET_KEY">, customerId: string): Promise<Array<{ id: string; fingerprint: string }>> {
+  const cards = await stripeRequest(env, "GET", `/customers/${encodeURIComponent(customerId)}/payment_methods?type=card&limit=10`);
+  const list = Array.isArray(cards.data) ? cards.data : [];
+  return list.flatMap((entry) => {
+    const card = objectOf(entry);
+    const id = textOf(card?.id);
+    const fingerprint = textOf(objectOf(card?.card)?.fingerprint);
+    return id && fingerprint ? [{ id, fingerprint }] : [];
+  });
+}
+
+/** The fingerprints of the cards saved on a Stripe customer (at most 10), for the block list. */
+export async function savedCardFingerprints(env: Pick<CloudEnv, "STRIPE_SECRET_KEY">, customerId: string): Promise<string[]> {
+  return [...new Set((await savedCards(env, customerId)).map((card) => card.fingerprint))];
+}
+
+/**
+ * Takes a card that can't unlock free hours off the Stripe customer, so the
+ * next try goes through Checkout with another card. Best effort: a failure
+ * is reported and the refusal stands.
+ */
+async function detachRefusedCard(env: CloudEnv, userId: string, paymentMethodId: string): Promise<void> {
+  try {
+    await stripeRequest(env, "POST", `/payment_methods/${encodeURIComponent(paymentMethodId)}/detach`);
+  } catch (error) {
+    reportCloudFailure("cloud.free_unlock_card_detach_failed", { userId, status: error instanceof StripeRequestError ? error.status : 0 });
+  }
+}
+
+const CARD_USED_MESSAGE = "This card already unlocked free hours on another ADE account. Pick a plan, or wait until your GitHub account is 30 days old.";
+const CARD_REFUSED_MESSAGE = "This card can't unlock free hours. Pick a plan, or wait until your GitHub account is 30 days old.";
+
+/**
+ * `POST /cloud/billing/free-unlock`: a card saved with no charge starts the
+ * free hours of a GitHub account younger than 30 days (`freePlanGithub.ts`).
+ * A card already on file unlocks at once; otherwise this answers a Stripe
+ * Checkout in setup mode (nothing is charged), and its
+ * `checkout.session.completed` unlocks.
+ */
+export async function createFreeUnlockUrl(env: CloudEnv, userId: string, back: BillingReturnUrlFor, ctx: { now: number; waitUntil?: CloudWaitUntil }): Promise<CloudFreeUnlockResult> {
+  const waitUntil: CloudWaitUntil = ctx.waitUntil ?? ((promise) => { void promise; });
+  const account = await loadAccount(env, userId, ctx.now);
+  if (account.free_card_unlocked_at != null) return { url: null, unlocked: true };
+  if (accountRules(account) !== "free" || account.free_github_hold !== "github_too_new") {
+    throw new CloudBillingError("nothing_to_unlock", "Your free hours don't need a card.", 409);
+  }
+  if (!env.STRIPE_SECRET_KEY?.trim()) {
+    reportCloudFailure("cloud.billing_not_configured", { plan: FREE_UNLOCK_PURPOSE });
+    throw unavailable();
+  }
+  try {
+    const savedCard = account.stripe_customer_id ? (await savedCards(env, account.stripe_customer_id))[0] ?? null : null;
+    if (savedCard) {
+      const claim = await claimCardForFreeUnlock(env, userId, savedCard.fingerprint, { now: ctx.now, waitUntil });
+      if (claim !== "claimed") {
+        // Off the customer, so the next try can pick another card in Checkout.
+        await detachRefusedCard(env, userId, savedCard.id);
+        throw new CloudBillingError("card_refused", claim === "taken" ? CARD_USED_MESSAGE : CARD_REFUSED_MESSAGE, 409);
+      }
+      await unlockFreePlanWithCard(env, account, "card_on_file", { now: ctx.now, waitUntil });
+      return { url: null, unlocked: true };
+    }
+    const customer = await ensureCustomer(env, account, ctx.now);
+    const session = await stripeRequest(env, "POST", "/checkout/sessions", {
+      mode: "setup",
+      currency: "usd",
+      // Managed Payments (on for the plans' Checkout) takes only subscription and payment modes.
+      "managed_payments[enabled]": "false",
+      customer,
+      client_reference_id: userId,
+      "metadata[ade_user_id]": userId,
+      "metadata[ade_purpose]": FREE_UNLOCK_PURPOSE,
+      "setup_intent_data[metadata][ade_user_id]": userId,
+      "setup_intent_data[metadata][ade_purpose]": FREE_UNLOCK_PURPOSE,
+      // A card only: its fingerprint is what limits one free unlock per card. 3D Secure whenever the card supports it.
+      "payment_method_types[0]": "card",
+      "payment_method_options[card][request_three_d_secure]": "any",
+      success_url: back("card"),
+      cancel_url: back("card_cancelled"),
+    });
+    const url = textOf(session.url);
+    if (!url) throw unavailable();
+    captureCloudFreePlan(env, waitUntil, userId, "card_unlock_started", null, ctx.now);
+    return { url, unlocked: false };
+  } catch (error) {
+    if (error instanceof StripeRequestError) {
+      reportCloudFailure("cloud.free_unlock_checkout_failed", { status: error.status, message: error.stripeMessage });
+      throw unavailable();
+    }
+    throw error;
+  }
+}
+
+/**
+ * A setup-mode Checkout finished: the card is saved (its SetupIntent
+ * succeeded), so the free hours unlock, if the card's fingerprint isn't
+ * already another account's free unlock or on the block list.
+ */
+async function onFreeUnlockCompleted(env: CloudEnv, session: StripeObject, now: number, waitUntil: CloudWaitUntil): Promise<void> {
+  const metadata = objectOf(session.metadata);
+  const userId = textOf(session.client_reference_id) ?? textOf(metadata?.ade_user_id);
+  if (!userId) return;
+  if (session.status !== "complete") {
+    logCloud("cloud.free_unlock_incomplete", { userId, status: textOf(session.status) });
+    return;
+  }
+  const setupIntentId = idOf(session.setup_intent);
+  if (!setupIntentId) {
+    reportCloudFailure("cloud.free_unlock_no_setup_intent", { userId });
+    return;
+  }
+  const intent = await stripeRequest(env, "GET", `/setup_intents/${encodeURIComponent(setupIntentId)}?expand[]=payment_method`);
+  if (intent.status !== "succeeded") {
+    logCloud("cloud.free_unlock_not_succeeded", { userId, status: textOf(intent.status) });
+    return;
+  }
+  const paymentMethod = objectOf(intent.payment_method);
+  const fingerprint = textOf(objectOf(paymentMethod?.card)?.fingerprint);
+  if (!fingerprint) {
+    // Checkout takes cards only, so this is Stripe answering something new: nothing unlocks until a person looks.
+    reportCloudFailure("cloud.free_unlock_no_fingerprint", { userId });
+    return;
+  }
+  const claim = await claimCardForFreeUnlock(env, userId, fingerprint, { now, waitUntil });
+  if (claim !== "claimed") {
+    logCloud("cloud.free_unlock_card_refused", { userId, claim });
+    // Off the customer, so the next try can pick another card in Checkout.
+    const paymentMethodId = textOf(paymentMethod?.id);
+    if (paymentMethodId) await detachRefusedCard(env, userId, paymentMethodId);
+    // Told why only when the card is another account's: a blocked card is never named as blocked.
+    await sendCloudEmail(env, { userId, subject: "Your card didn't unlock ADE Cloud free hours", text: claim === "taken" ? CARD_USED_MESSAGE : CARD_REFUSED_MESSAGE });
+    return;
+  }
+  const account = await loadAccount(env, userId, now);
+  await unlockFreePlanWithCard(env, account, "checkout", { now, waitUntil });
+}
+
+/** The portal setup stripe-setup made (card, cancel at period end, invoices), when set. */
+const portalConfigParams = (env: CloudEnv): Record<string, string> => {
+  const id = env.STRIPE_PORTAL_CONFIG_ID?.trim();
+  return id ? { configuration: id } : {};
+};
+
+type SubscriptionItem = { id: string; price: string | null; meter: string | null };
+
+/** The meter a price bills from, or null for a licensed price. */
+const meterOfPrice = (price: unknown): string | null => idOf(objectOf(objectOf(price)?.recurring)?.meter);
+
+/** The subscription's items: which one is the plan, and the price (and meter) of each. */
+export async function subscriptionItems(env: CloudEnv, subscriptionId: string): Promise<SubscriptionItem[]> {
+  const subscription = await stripeRequest(env, "GET", `/subscriptions/${encodeURIComponent(subscriptionId)}`);
+  const items = (objectOf(subscription.items)?.data as StripeObject[] | undefined) ?? [];
+  return items.flatMap((item) => {
+    const id = textOf(item.id);
+    return id ? [{ id, price: idOf(item.price), meter: meterOfPrice(item.price) }] : [];
+  });
+}
+
+/**
+ * Moves the subscription's extra-hours item to the price `plan` bills with
+ * now, uncharged. Each price is on the same meter as the one it replaces, so
+ * what was reported keeps counting. An upgrade moves it at once; a renewal
+ * moves it too, which is how a downgrade's price and an older extra-hours
+ * price move: at the start of a period, never mid-period. Extra disk is no
+ * longer sold (Pricing v2), so a disk item is left as it is: nothing reports
+ * to its meter any more.
+ */
+async function moveMeteredItems(env: CloudEnv, subscriptionId: string, plan: CloudPaidPlanId, now: number): Promise<void> {
+  const items = await subscriptionItems(env, subscriptionId);
+  const hoursPrices = extraHoursPrices(env);
+  const move = async (item: SubscriptionItem, price: string, what: "extra_hours") => {
+    await stripeRequest(env, "POST", `/subscription_items/${encodeURIComponent(item.id)}`, { price, proration_behavior: "none" },
+      `ade-metered:${item.id}:${price}:${Math.floor(now / PLAN_CHANGE_RETRY_WINDOW_MS)}`);
+    logCloud("cloud.metered_price_moved", { subscriptionId, what, plan, from: item.price, to: price });
+  };
+  const hoursPrice = extraHoursPriceFor(env, plan);
+  // None until the person turns extra hours on (Checkout sells only the plan); that adds it at the plan's price.
+  const hoursItem = items.find((item) => item.price != null && hoursPrices.has(item.price));
+  if (hoursItem && hoursPrice && hoursItem.price !== hoursPrice) await move(hoursItem, hoursPrice, "extra_hours");
+}
+
+/**
+ * A move between paid plans (Plus, Pro, Max) on the subscription itself, never
+ * the billing portal: Stripe refuses a portal plan switch on a subscription
+ * with more than one item (one with extra hours on), and ADE's
+ * own switch is the one that checks a downgrade's cleanup pick.
+ * - Upgrade: charged now for the rest of the period; a declined card changes
+ *   nothing. The higher plan's hours apply at once, the hours used stay, and
+ *   extra hours move to its cheaper price.
+ * - Downgrade: no refund and no charge; the next invoice is the cheaper plan.
+ *   The higher plan's hours, computer limit and extra-hour price stay until
+ *   the period ends (`applyCloudPlanChange`; the renewal moves the price).
+ *   Over the cheaper plan's computer limit, the person's pick (`cleanup`) is checked before
+ *   Stripe is asked, so a pick that doesn't fit changes nothing; once the plan
+ *   changed, the pick is recorded and the minute cron frees exactly those
+ *   computers.
+ * - Back to the plan in force before a downgrade took effect: the item goes
+ *   back, uncharged.
+ * The webhook that follows applies the same change again, which is a no-op.
+ */
+/**
+ * After a failed upgrade from a waiting downgrade, the item goes back to the
+ * cheaper plan's price, uncharged. `operation` names the plan change it undoes
+ * (as its restore's key does), so a later, different change's rollback is a
+ * new request and only a retry of this same one replays.
+ */
+async function putBackWaitingPrice(env: CloudEnv, userId: string, itemId: string, price: string, operation: string): Promise<void> {
+  try {
+    await stripeRequest(env, "POST", `/subscription_items/${encodeURIComponent(itemId)}`, { price, quantity: "1", proration_behavior: "none" },
+      `ade-plan:${itemId}:put-back:${price}:${operation}`);
+    logCloud("cloud.plan_waiting_price_restored", { userId });
+  } catch (error) {
+    // The renewal would bill the plan in force instead of the waiting one: the owner must see it.
+    reportCloudFailure("cloud.plan_waiting_price_not_restored", { userId, status: error instanceof StripeRequestError ? error.status : 0 });
+  }
+}
+
+async function changePaidPlan(
+  env: CloudEnv,
+  account: AccountRow,
+  to: CloudPaidPlanId,
+  toPrice: string,
+  now: number,
+  waitUntil: CloudWaitUntil,
+  cleanup?: CloudPlanCleanupPick,
+): Promise<CloudCheckoutResult> {
+  if (!account.stripe_subscription_id) throw unavailable();
+  if (account.stripe_status === "past_due") {
+    throw new CloudBillingError("past_due", "Your last payment didn't go through. Update your card in Manage, then change your plan.", 409);
+  }
+  const current = paidPlanOf(account);
+  const downgrade = isPaidDowngrade(current, to);
+  // A downgrade's pick is checked before Stripe: one that doesn't fit changes nothing.
+  const computers = downgrade ? await listComputers(env, account.user_id) : [];
+  let picked: CloudPlanCleanupPick | null = null;
+  if (downgrade && cleanup) {
+    const check = checkPlanCleanupPick(env, account, computers, to, cleanup);
+    if (!check.ok && check.code !== "nothing_to_free") throw new CloudBillingError(check.code, check.message, check.code === "bad_request" ? 400 : 409);
+    if (check.ok) picked = { push: cleanup.push, instanceIds: check.instanceIds };
+  }
+  const undoDowngrade = to === current && account.paid_plan_next != null;
+  // Upward from the plan in force is charged; going back to it isn't. A higher plan
+  // than the one in force while a downgrade waits is still an upgrade from it.
+  const charged = !downgrade && !undoDowngrade;
+  const subscriptionId = account.stripe_subscription_id;
+  const planItemOf = async () => (await subscriptionItems(env, subscriptionId)).find((item) => paidPlanOfPrice(env, item.price) != null) ?? null;
+  let planItem: { id: string; price: string | null } | null;
+  try {
+    planItem = await planItemOf();
+  } catch (error) {
+    if (error instanceof CloudBillingError) throw error;
+    reportCloudFailure("cloud.plan_change_failed", { step: "read", status: error instanceof StripeRequestError ? error.status : 0 });
+    throw unavailable();
+  }
+  if (!planItem) {
+    reportCloudFailure("cloud.plan_item_missing", { userId: account.user_id });
+    throw unavailable();
+  }
+  // An upgrade while a downgrade waits: the item sits on the cheaper plan's price, and Stripe would
+  // credit only that. It goes back to the plan in force first, uncharged, so the proration credits
+  // what the person paid for.
+  const inForcePrice = planPriceIds(env)[current];
+  // This plan change, as its Stripe keys name it: a retry after a lost answer is the same one.
+  const operation = `${current}:${to}:${account.updated_at}:${Math.floor(now / PLAN_CHANGE_RETRY_WINDOW_MS)}`;
+  let waitingPrice: string | null = null;
+  if (charged && account.paid_plan_next != null && inForcePrice && planItem.price !== inForcePrice && planItem.price !== toPrice) {
+    try {
+      const restored = await stripeRequest(env, "POST", `/subscription_items/${encodeURIComponent(planItem.id)}`, {
+        price: inForcePrice,
+        quantity: "1",
+        proration_behavior: "none",
+      }, `ade-plan:${planItem.id}:${current}:restore:${account.updated_at}:${Math.floor(now / PLAN_CHANGE_RETRY_WINDOW_MS)}`);
+      if (idOf(restored.price) !== inForcePrice) throw new Error("item_not_restored");
+      waitingPrice = planItem.price;
+      planItem = { id: planItem.id, price: inForcePrice };
+    } catch (error) {
+      // An uncertain answer: Stripe may have restored anyway. Ask it, and put the waiting price back
+      // before saying nothing changed, or the renewal would bill the plan in force.
+      const waiting = planItem.price;
+      const after = await planItemOf().catch((readError: unknown) => {
+        reportCloudFailure("cloud.plan_waiting_price_unknown", { userId: account.user_id, status: readError instanceof StripeRequestError ? readError.status : 0 });
+        return null;
+      });
+      if (after && waiting && after.price !== waiting) await putBackWaitingPrice(env, account.user_id, planItem.id, waiting, operation);
+      reportCloudFailure("cloud.plan_change_refused", {
+        userId: account.user_id,
+        to,
+        step: "restore_in_force",
+        status: error instanceof StripeRequestError ? error.status : 0,
+      });
+      throw new CloudBillingError("plan_change_refused", "ADE Cloud couldn't change your plan right now. Nothing changed. Try again later.", 409);
+    }
+  }
+  if (planItem.price !== toPrice) {
+    let confirmed = false;
+    let failure: unknown = null;
+    try {
+      const changed = await stripeRequest(env, "POST", `/subscription_items/${encodeURIComponent(planItem.id)}`, {
+        price: toPrice,
+        quantity: "1",
+        proration_behavior: charged ? "always_invoice" : "none",
+        // A declined card leaves the subscription as it was: no half-switched plan.
+        ...(charged ? { payment_behavior: "error_if_incomplete" } : {}),
+        // The mode and the account's last change are in the key: "Stay on Pro" after a round
+        // trip, or the same switch again after it, is a new request; a retry after a lost answer is not.
+      }, `ade-plan:${planItem.id}:${to}:${charged ? "charge" : "no-charge"}:${account.updated_at}:${Math.floor(now / PLAN_CHANGE_RETRY_WINDOW_MS)}`);
+      // Trust the item Stripe returns, not the request: a replayed or partial answer writes nothing.
+      confirmed = idOf(changed.price) === toPrice;
+    } catch (error) {
+      failure = error;
+    }
+    if (!confirmed) {
+      // A failed or unexpected answer: Stripe may have switched anyway, so ask it and follow what it says.
+      const error = failure;
+      const after = await planItemOf().catch(() => null);
+      if (after?.price !== toPrice) {
+        // The upgrade didn't happen: the waiting downgrade's price goes back, so the next invoice is still the cheaper plan.
+        if (waitingPrice && planItem) await putBackWaitingPrice(env, account.user_id, planItem.id, waitingPrice, operation);
+        // The account stays exactly as it was. Managed Payments may refuse some subscription changes from the API.
+        if (error instanceof StripeRequestError && charged && error.status === 402) {
+          reportCloudFailure("cloud.plan_upgrade_declined", { userId: account.user_id });
+          throw new CloudBillingError("payment_failed", "Your card was declined, so your plan didn't change. Update your card in Manage.", 402);
+        }
+        reportCloudFailure("cloud.plan_change_refused", {
+          userId: account.user_id,
+          to,
+          status: error instanceof StripeRequestError ? error.status : 0,
+          message: error instanceof StripeRequestError ? error.stripeMessage : error instanceof Error ? error.name : error == null ? "item_not_on_target_price" : "unknown",
+        });
+        throw new CloudBillingError("plan_change_refused", "ADE Cloud couldn't change your plan right now. Nothing changed. Try again later.", 409);
+      }
+      reportCloudFailure("cloud.plan_change_unconfirmed", { userId: account.user_id, to });
+    }
+  }
+  try {
+    // A pick answers the over-the-limits email's question already: it isn't sent.
+    await applyAndAnnounce(env, account, { paidPlan: to }, now, waitUntil, { pickMade: picked != null });
+  } catch (error) {
+    // Stripe switched; the webhook that follows saves the same change.
+    reportCloudFailure("cloud.plan_change_unsaved", { userId: account.user_id, to, message: error instanceof Error ? error.message : "unknown" });
+  }
+  if (!downgrade) {
+    // The cheaper extra hour of the higher plan starts now. A failure leaves the old price until the renewal moves it.
+    try {
+      await moveMeteredItems(env, subscriptionId, to, now);
+    } catch (error) {
+      reportCloudFailure("cloud.extra_hours_price_move_failed", { userId: account.user_id, to, status: error instanceof StripeRequestError ? error.status : 0 });
+    }
+    return { url: null, change: "now" };
+  }
+  if (picked) {
+    if (await recordPlanCleanupPick(env, account.user_id, to, picked, now)) return { url: null, change: "next_period", freeing: picked.instanceIds };
+    // Another pick started meanwhile: the plan changed, and nothing of this one is freed.
+    reportCloudFailure("cloud.plan_cleanup_pick_lost", { userId: account.user_id });
+  }
+  // No pick (an older build): nothing is deleted; the answer says what goes over the cheaper plan.
+  const over = planCleanupFor(env, account, computers, to);
+  return { url: null, change: "next_period", ...(over ? { cleanup: { ...over, startsAt: account.period_end, freeing: null } } : {}) };
+}
+
+/**
+ * `POST /cloud/billing/plan-cleanup`: the person's pick for an account already
+ * over a cheaper plan (the plan in force, or the one a downgrade or a cancel
+ * made outside ADE waits for). The same check as a downgrade's pick, then the
+ * same freeing.
+ */
+export async function pickPlanCleanup(env: CloudEnv, userId: string, planId: unknown, pick: CloudPlanCleanupPick, now: number): Promise<void> {
+  const account = await loadAccount(env, userId, now);
+  const computers = await listComputers(env, userId);
+  const target = planCleanupTargetOf(env, account, computers);
+  if (!target) throw new CloudBillingError("nothing_to_free", "Your computers already fit your plan.", 409);
+  if (planId !== target) throw new CloudBillingError("cleanup_changed", "Your plan changed since ADE showed this. Look again.", 409);
+  const check = checkPlanCleanupPick(env, account, computers, target, pick);
+  if (!check.ok) throw new CloudBillingError(check.code, check.message, check.code === "bad_request" ? 400 : 409);
+  if (!(await recordPlanCleanupPick(env, userId, target, { push: pick.push, instanceIds: check.instanceIds }, now))) {
+    throw new CloudBillingError("cleanup_running", "ADE is still freeing the computers you picked. Try again when it's done.", 409);
+  }
+}
+
+export async function createPortalUrl(env: CloudEnv, userId: string, back: BillingReturnUrlFor, now: number): Promise<{ url: string }> {
   const account = await loadAccount(env, userId, now);
   if (!account.stripe_customer_id) throw new CloudBillingError("no_billing", "There's nothing to manage until you've bought a plan.", 409);
   try {
     const session = await stripeRequest(env, "POST", "/billing_portal/sessions", {
       customer: account.stripe_customer_id,
-      return_url: `${origin}${RETURN_PATH}?to=portal`,
+      return_url: back("portal"),
+      ...portalConfigParams(env),
     });
     const url = textOf(session.url);
     if (!url) throw unavailable();
     return { url };
   } catch (error) {
     if (error instanceof StripeRequestError) {
-      logCloud("cloud.portal_failed", { status: error.status, message: error.stripeMessage });
+      reportCloudFailure("cloud.portal_failed", { status: error.status, message: error.stripeMessage });
       throw unavailable();
     }
     throw error;
+  }
+}
+
+/**
+ * Makes sure the subscription bills extra hours before they can be used: a
+ * subscription bought since Cloud 8 has only the plan until the person turns
+ * extra hours on. Any extra-hours price counts as held (one from an older
+ * plan or before Cloud 7 moves at the renewal), so there is never a second
+ * item on the hours meter. Meter events bill by customer, so the item must be
+ * there before the first extra hour is reported; once added it stays, at
+ * zero while extra hours are off, which also keeps billing what was used
+ * before they went off.
+ *
+ * Stripe keeps a key's first answer for a day, a 500 too, so a create that
+ * failed on Stripe's side would fail every later turn-on the same way. After a
+ * 5xx the subscription is read again: an item that landed is enough, and with
+ * none the create is tried once more under a key of its own (`now`). Stripe
+ * refuses a second item with a price the subscription already has.
+ */
+async function ensureExtraHoursItem(env: CloudEnv, account: AccountRow, now: number): Promise<void> {
+  const subscriptionId = account.stripe_subscription_id;
+  // The plan in force: a downgrade waiting for the period end still bills the higher plan's hour.
+  const price = extraHoursPriceFor(env, paidPlanOf(account));
+  if (!subscriptionId || !price) {
+    reportCloudFailure("cloud.extra_hours_not_configured", { userId: account.user_id });
+    throw unavailable();
+  }
+  try {
+    const hoursPrices = extraHoursPrices(env);
+    const items = await subscriptionItems(env, subscriptionId);
+    if (items.some((item) => item.price != null && hoursPrices.has(item.price))) return;
+    const key = `ade-cloud-hours-item-${subscriptionId}-${price}`;
+    const create = (idempotencyKey: string) => stripeRequest(env, "POST", "/subscription_items", { subscription: subscriptionId, price }, idempotencyKey);
+    await create(key).catch(async (error: unknown) => {
+      if (!(error instanceof StripeRequestError) || error.status < 500) throw error;
+      if (await holdsExtraHoursItem(env, subscriptionId)) return;
+      await create(`${key}-${now}`);
+    });
+    logCloud("cloud.extra_hours_item_added", { userId: account.user_id, subscriptionId });
+  } catch (error) {
+    if (error instanceof StripeRequestError) {
+      // A 409 is usually a second turn-on racing this one: the item it added is all that's needed.
+      if (error.status === 409 && await holdsExtraHoursItem(env, subscriptionId)) return;
+      reportCloudFailure("cloud.extra_hours_item_failed", { status: error.status, message: error.stripeMessage });
+      throw unavailable();
+    }
+    throw error;
+  }
+}
+
+/** Whether the subscription now holds an extra-hours item; false when Stripe can't say. */
+async function holdsExtraHoursItem(env: CloudEnv, subscriptionId: string): Promise<boolean> {
+  try {
+    const hoursPrices = extraHoursPrices(env);
+    return (await subscriptionItems(env, subscriptionId)).some((item) => item.price != null && hoursPrices.has(item.price));
+  } catch (error) {
+    if (!(error instanceof StripeRequestError)) throw error;
+    reportCloudFailure("cloud.extra_hours_item_reread_failed", { status: error.status, message: error.stripeMessage });
+    return false;
   }
 }
 
 export async function setExtraHours(env: CloudEnv, userId: string, enabled: boolean, now: number): Promise<void> {
   const account = await loadAccount(env, userId, now);
   if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra hours need a paid plan.", 403);
+  // Before the switch goes on: an extra hour with nothing on the subscription to bill it would be free.
+  if (enabled) await ensureExtraHoursItem(env, account, now);
   // Turning them off stops new use; what was already used is still reported.
   const owed = !enabled && extraActive(account)
     ? extraOwedMilli(account, liveUsedMilli(account, await listComputers(env, userId), now))
@@ -190,17 +760,26 @@ export async function setExtraHours(env: CloudEnv, userId: string, enabled: bool
   if (enabled) await recordOwed();
 }
 
-/** Ends the account's subscription now, for a deleted account. Already gone counts as done. */
-export async function cancelAccountSubscription(env: Pick<CloudEnv, "DB" | "STRIPE_SECRET_KEY">, account: Pick<AccountRow, "user_id" | "stripe_subscription_id">, now: number): Promise<void> {
+/**
+ * Ends the account's subscription now, for a deleted or blocked account:
+ * no proration credit and no refund (`prorate=false`), and no final invoice
+ * for usage not yet billed (`invoice_now=false`). Already gone counts as done.
+ */
+export async function cancelAccountSubscription(
+  env: Pick<CloudEnv, "DB" | "STRIPE_SECRET_KEY">,
+  account: Pick<AccountRow, "user_id" | "stripe_subscription_id">,
+  now: number,
+  reason: "deleted_account" | "blocked_account" = "deleted_account",
+): Promise<void> {
   if (!account.stripe_subscription_id) return;
   try {
-    await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(account.stripe_subscription_id)}`);
+    await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(account.stripe_subscription_id)}`, { prorate: "false", invoice_now: "false" });
   } catch (error) {
     if (!(error instanceof StripeRequestError && error.status === 404)) throw error;
   }
-  await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, cancel_at_period_end = 0, updated_at = ? where user_id = ?")
+  await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, phone_extra_enabled = 0, cancel_at_period_end = 0, updated_at = ? where user_id = ?")
     .bind(now, account.user_id).run();
-  logCloud("cloud.subscription_cancelled_for_deleted_account", { userId: account.user_id });
+  logCloud(reason === "blocked_account" ? "cloud.subscription_cancelled_for_blocked_account" : "cloud.subscription_cancelled_for_deleted_account", { userId: account.user_id });
 }
 
 /* ---- Webhook ---- */
@@ -241,27 +820,70 @@ type SubscriptionFacts = {
   customer: string | null;
   userId: string | null;
   cancelAtPeriodEnd: boolean;
+  /** Which plan the plan item is; null when no item is a plan price (setup or Stripe changed). */
+  paidPlan: CloudPaidPlanId | null;
   /** Seconds, from the plan's own item. Null only if Stripe's shape changed. */
   periodStart: number | null;
   periodEnd: number | null;
   hasThreshold: boolean;
+  /** The extra-hours item and its price, or null when the subscription has none. */
+  hoursItem: { id: string; price: string } | null;
 };
 
 async function readSubscription(env: CloudEnv, id: string): Promise<SubscriptionFacts> {
   const subscription = await stripeRequest(env, "GET", `/subscriptions/${encodeURIComponent(id)}`);
   const items = (objectOf(subscription.items)?.data as StripeObject[] | undefined) ?? [];
-  const planItem = items.find((item) => objectOf(item.price)?.id === env.STRIPE_PLAN_PRICE_ID?.trim()) ?? items[0];
+  // Never `items[0]`: the metered items (extra hours, an old extra-disk item) carry their own periods.
+  const planItem = items.find((item) => paidPlanOfPrice(env, idOf(item.price)) != null);
+  if (!planItem) reportCloudFailure("cloud.plan_item_missing", { subscriptionId: id });
   const metadata = objectOf(subscription.metadata);
+  const hoursPrices = extraHoursPrices(env);
+  const hoursItem = items.flatMap((item) => {
+    const itemId = textOf(item.id);
+    const price = idOf(item.price);
+    return itemId && price && hoursPrices.has(price) ? [{ id: itemId, price }] : [];
+  })[0] ?? null;
   return {
     id,
     status: textOf(subscription.status) ?? "unknown",
     customer: idOf(subscription.customer),
     userId: textOf(metadata?.ade_user_id),
     cancelAtPeriodEnd: subscription.cancel_at_period_end === true || subscription.cancel_at != null,
+    paidPlan: planItem ? paidPlanOfPrice(env, idOf(planItem.price)) : null,
     periodStart: typeof planItem?.current_period_start === "number" ? planItem.current_period_start : null,
     periodEnd: typeof planItem?.current_period_end === "number" ? planItem.current_period_end : null,
     hasThreshold: objectOf(subscription.billing_thresholds)?.amount_gte != null,
+    hoursItem,
   };
+}
+
+/**
+ * An upgrade moves the extra-hours item to the higher plan's price at once
+ * (`changePaidPlan`); when that move failed, every later active-subscription
+ * event moves it until it holds. Only an item on another plan's own price
+ * moves: the first price (before Cloud 7) waits for the renewal, as
+ * `moveMeteredItems` says, and a renewal moves everything itself. An item
+ * already on the plan's price is left alone, so a replay changes nothing.
+ * A failure is reported and the next event tries again.
+ */
+async function reconcileExtraHoursPrice(env: CloudEnv, userId: string, subscription: SubscriptionFacts, now: number): Promise<void> {
+  const item = subscription.hoursItem;
+  if (!item) return;
+  const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
+  if (!account || account.plan !== "paid" || account.stripe_status === "past_due") return;
+  const plan = paidPlanOf(account);
+  const target = extraHoursPriceFor(env, plan);
+  if (!target || item.price === target) return;
+  const ownPrices = { plus: env.STRIPE_EXTRA_HOURS_PLUS_PRICE_ID, pro: env.STRIPE_EXTRA_HOURS_PRO_PRICE_ID, max: env.STRIPE_EXTRA_HOURS_MAX_PRICE_ID };
+  const otherPlans = (["plus", "pro", "max"] as const).filter((other) => other !== plan && ownPrices[other]?.trim() === item.price);
+  if (otherPlans.length === 0) return;
+  try {
+    await stripeRequest(env, "POST", `/subscription_items/${encodeURIComponent(item.id)}`, { price: target, proration_behavior: "none" },
+      `ade-metered:${item.id}:${target}:${Math.floor(now / PLAN_CHANGE_RETRY_WINDOW_MS)}`);
+    logCloud("cloud.extra_hours_price_reconciled", { userId, subscriptionId: subscription.id, plan, from: item.price, to: target });
+  } catch (error) {
+    reportCloudFailure("cloud.extra_hours_price_reconcile_failed", { userId, plan, status: error instanceof StripeRequestError ? error.status : 0 });
+  }
 }
 
 const periodChange = (subscription: SubscriptionFacts): Pick<CloudPlanChange, "periodStart" | "periodEnd"> =>
@@ -282,8 +904,23 @@ async function userForSubscription(env: CloudEnv, subscription: SubscriptionFact
   return row?.user_id ?? null;
 }
 
-/** Banner and email, once, when a payment fails or a paid invoice brings the plan back. */
-async function announceChange(env: CloudEnv, before: AccountRow, after: AccountRow): Promise<void> {
+/**
+ * Banner and email, once, when a payment fails or a paid invoice brings the
+ * plan back; and when a downgrade or a cancel is made over the cheaper plan's
+ * limits, the email naming what those limits will free (a cancel from the
+ * billing portal is never seen in ADE first).
+ */
+async function announceChange(env: CloudEnv, before: AccountRow, after: AccountRow, options: { pickMade?: boolean } = {}): Promise<void> {
+  const waitingBefore = waitingPlanOf(before);
+  const waitingAfter = waitingPlanOf(after);
+  if (waitingAfter && waitingAfter !== waitingBefore && !options.pickMade) {
+    // Its own failure must not cost the past-due or restored email below: Stripe's retry sees no change and never sends it.
+    try {
+      await warnPlanCleanupAhead(env, after, await listComputers(env, after.user_id), waitingAfter);
+    } catch (error) {
+      reportCloudFailure("cloud.plan_cleanup_warn_ahead_failed", { userId: after.user_id, message: error instanceof Error ? error.message : "unknown" });
+    }
+  }
   const wasPastDue = before.stripe_status === "past_due";
   const isPastDue = after.stripe_status === "past_due";
   if (!wasPastDue && isPastDue && after.plan === "paid") {
@@ -305,18 +942,23 @@ async function announceChange(env: CloudEnv, before: AccountRow, after: AccountR
   }
 }
 
-async function applyAndAnnounce(env: CloudEnv, before: AccountRow, change: CloudPlanChange, now: number): Promise<void> {
+async function applyAndAnnounce(env: CloudEnv, before: AccountRow, change: CloudPlanChange, now: number, waitUntil?: CloudWaitUntil, options: { pickMade?: boolean } = {}): Promise<void> {
   const after = await applyCloudPlanChange(env, before.user_id, change, now);
-  await announceChange(env, before, after);
+  await announceChange(env, before, after, options);
+  const plan = boughtPlanIdOf(after);
+  if (plan !== boughtPlanIdOf(before)) {
+    logCloud("cloud.plan_changed", { userId: after.user_id, from: boughtPlanIdOf(before), to: plan });
+    captureCloudAction(env, waitUntil, after.user_id, { action: "plan_change", plan, origin: "person" }, `plan:${plan}`, now);
+  }
 }
 
 /** Matches the account to what Stripe says about its subscription right now. */
-async function syncSubscription(env: CloudEnv, subscriptionId: string | null, now: number, paidInvoice?: StripeObject): Promise<void> {
+async function syncSubscription(env: CloudEnv, subscriptionId: string | null, now: number, waitUntil: CloudWaitUntil, paidInvoice?: StripeObject): Promise<void> {
   if (!subscriptionId) return;
   const subscription = await readSubscription(env, subscriptionId);
   const userId = await userForSubscription(env, subscription);
   if (!userId) {
-    logCloud("cloud.stripe_unknown_subscription", { subscriptionId });
+    reportCloudFailure("cloud.stripe_unknown_subscription", { subscriptionId });
     return;
   }
   const account = await loadAccount(env, userId, now);
@@ -325,11 +967,11 @@ async function syncSubscription(env: CloudEnv, subscriptionId: string | null, no
 
   const { status, cancelAtPeriodEnd } = subscription;
   if (status === "canceled" || status === "incomplete_expired") {
-    await applyAndAnnounce(env, account, { plan: "free", stripeSubscriptionId: null, stripeStatus: null, cancelAtPeriodEnd: false }, now);
+    await applyAndAnnounce(env, account, { plan: "free", stripeSubscriptionId: null, stripeStatus: null, cancelAtPeriodEnd: false }, now, waitUntil);
     return;
   }
   if (status === "past_due" || status === "unpaid") {
-    await applyAndAnnounce(env, account, { stripeStatus: "past_due", cancelAtPeriodEnd }, now);
+    await applyAndAnnounce(env, account, { stripeStatus: "past_due", cancelAtPeriodEnd }, now, waitUntil);
     return;
   }
   if (status !== "active" && status !== "trialing") return;
@@ -341,12 +983,22 @@ async function syncSubscription(env: CloudEnv, subscriptionId: string | null, no
   const movesPeriod = starting || isRenewal || account.stripe_status === "past_due";
   await applyAndAnnounce(env, account, {
     ...(starting ? { plan: "paid" as const } : {}),
+    // An upgrade or back: the plan's hours change now, the hours used stay.
+    ...(subscription.paidPlan ? { paidPlan: subscription.paidPlan } : {}),
     stripeStatus: status,
     cancelAtPeriodEnd,
     ...(movesPeriod ? periodChange(subscription) : {}),
-  }, now);
+  }, now, waitUntil);
   // On every active event, so a threshold that failed after the plan was saved still gets set.
   if (starting || account.plan === "paid") await ensureThreshold(env, subscription);
+  // A new period bills extra hours at the plan's price now: a downgrade's move happens here.
+  // A failure throws, so Stripe's retry moves it.
+  if (isRenewal && subscription.paidPlan) {
+    await moveMeteredItems(env, subscription.id, subscription.paidPlan, now);
+    return;
+  }
+  // Any other active event: an extra-hours item an upgrade failed to move goes to the plan's price now.
+  await reconcileExtraHoursPrice(env, userId, subscription, now);
 }
 
 /** Stripe refuses a threshold at Checkout on these subscriptions; it accepts one afterward. */
@@ -358,12 +1010,19 @@ async function ensureThreshold(env: CloudEnv, subscription: SubscriptionFacts): 
   });
 }
 
-async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: number): Promise<void> {
+async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: number, waitUntil: CloudWaitUntil): Promise<void> {
   const subscriptionId = idOf(session.subscription);
   const metadata = objectOf(session.metadata);
   const userId = textOf(session.client_reference_id) ?? textOf(metadata?.ade_user_id);
   if (session.mode !== "subscription" || !subscriptionId || !userId) return;
   const subscription = await readSubscription(env, subscriptionId);
+  // A Checkout opened before the owner blocked the account: the block had no subscription to
+  // cancel then, so this one is cancelled now (no proration) instead of joining a blocked account.
+  if (await isCloudBlocked(env, userId)) {
+    await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(subscription.id)}`, { prorate: "false", invoice_now: "false" });
+    logCloud("cloud.subscription_cancelled_for_blocked_account", { userId, via: "checkout" });
+    return;
+  }
   if (subscription.status === "incomplete") {
     // Payment still pending: remember the subscription so its `active` event starts the plan.
     const pending = await loadAccount(env, userId, now);
@@ -372,7 +1031,8 @@ async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: nu
         stripeCustomerId: subscription.customer ?? idOf(session.customer),
         stripeSubscriptionId: subscription.id,
         stripeStatus: "incomplete",
-      }, now);
+        ...(subscription.paidPlan ? { paidPlan: subscription.paidPlan } : {}),
+      }, now, waitUntil);
     }
     return;
   }
@@ -382,19 +1042,20 @@ async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: nu
   if (account.plan === "paid" && account.stripe_subscription_id && account.stripe_subscription_id !== subscription.id) {
     // Two Checkouts finished: keep the first plan and don't leave the person paying twice.
     await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(subscription.id)}`);
-    logCloud("cloud.duplicate_subscription_cancelled", { userId, subscriptionId });
+    reportCloudFailure("cloud.duplicate_subscription_cancelled", { userId, subscriptionId });
     await sendCloudEmail(env, { owner: true, subject: "ADE Cloud double purchase to refund", text: `Subscription ${subscription.id} duplicated an existing plan and was cancelled. Refund its first invoice.` });
     return;
   }
   if (account.stripe_subscription_id !== subscription.id || account.plan !== "paid") {
     await applyAndAnnounce(env, account, {
       plan: "paid",
+      ...(subscription.paidPlan ? { paidPlan: subscription.paidPlan } : {}),
       ...periodChange(subscription),
       stripeCustomerId: subscription.customer ?? idOf(session.customer),
       stripeSubscriptionId: subscription.id,
       stripeStatus: subscription.status,
       cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
-    }, now);
+    }, now, waitUntil);
   }
   await ensureThreshold(env, subscription);
 }
@@ -402,11 +1063,14 @@ async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: nu
 const invoiceSubscriptionId = (invoice: StripeObject): string | null =>
   idOf(objectOf(objectOf(invoice.parent)?.subscription_details)?.subscription) ?? idOf(invoice.subscription);
 
-async function applyStripeEvent(env: CloudEnv, type: string, object: StripeObject, now: number): Promise<void> {
-  if (type === "checkout.session.completed") return onCheckoutCompleted(env, object, now);
-  if (type === "customer.subscription.updated" || type === "customer.subscription.deleted") return syncSubscription(env, idOf(object.id), now);
-  if (type === "invoice.paid") return syncSubscription(env, invoiceSubscriptionId(object), now, object);
-  if (type === "invoice.payment_failed") return syncSubscription(env, invoiceSubscriptionId(object), now);
+async function applyStripeEvent(env: CloudEnv, type: string, object: StripeObject, now: number, waitUntil: CloudWaitUntil): Promise<void> {
+  if (type === "checkout.session.completed") {
+    if (object.mode === "setup" && textOf(objectOf(object.metadata)?.ade_purpose) === FREE_UNLOCK_PURPOSE) return onFreeUnlockCompleted(env, object, now, waitUntil);
+    return onCheckoutCompleted(env, object, now, waitUntil);
+  }
+  if (type === "customer.subscription.updated" || type === "customer.subscription.deleted") return syncSubscription(env, idOf(object.id), now, waitUntil);
+  if (type === "invoice.paid") return syncSubscription(env, invoiceSubscriptionId(object), now, waitUntil, object);
+  if (type === "invoice.payment_failed") return syncSubscription(env, invoiceSubscriptionId(object), now, waitUntil);
 }
 
 /** Takes this event for one delivery: a first delivery, or one whose earlier claim was lost mid-work. */
@@ -423,7 +1087,7 @@ async function claimStripeEvent(env: CloudEnv, eventId: string, type: string, no
   return retaken.meta.changes === 1 ? "claimed" : "in_progress";
 }
 
-async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Response> {
+async function handleStripeWebhook(request: Request, env: CloudEnv, waitUntil: CloudWaitUntil): Promise<Response> {
   if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
   const secret = env.STRIPE_WEBHOOK_SECRET?.trim();
   if (!secret) {
@@ -431,7 +1095,12 @@ async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Res
     return json({ error: "not configured" }, 503);
   }
   const now = Date.now();
-  const rawBody = await request.text();
+  const read = await readBoundedBody(request, MAX_WEBHOOK_BODY_BYTES);
+  if (!read.ok) {
+    logCloud("cloud.stripe_webhook_too_large");
+    return json({ error: "payload too large" }, 413);
+  }
+  const rawBody = read.text;
   if (!await verifyStripeSignature(rawBody, request.headers.get("stripe-signature"), secret, now)) {
     return json({ error: "invalid signature" }, 400);
   }
@@ -445,13 +1114,18 @@ async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Res
   const type = textOf(event.type);
   const object = objectOf(objectOf(event.data)?.object);
   if (!eventId || !type || !object) return json({ error: "invalid event" }, 400);
+  // Production takes live events only: a test-mode event (a test key's webhook pointed here by mistake) is dropped. Other environments keep them.
+  if (event.livemode === false && isProduction(env)) {
+    logCloud("cloud.stripe_test_event_dropped", { type });
+    return json({ received: true, ignored: "test_mode" });
+  }
 
   const claim = await claimStripeEvent(env, eventId, type, now);
   if (claim === "duplicate") return json({ received: true, duplicate: true });
   // Not done, so Stripe asks again later.
   if (claim === "in_progress") return json({ error: "in progress" }, 409);
   try {
-    await applyStripeEvent(env, type, object, now);
+    await applyStripeEvent(env, type, object, now, waitUntil);
     await env.DB.prepare("update cloud_stripe_events set applied_at = ? where event_id = ?").bind(Date.now(), eventId).run();
   } catch (error) {
     reportCloudFailure("cloud.stripe_webhook_failed", { type, eventId, status: error instanceof StripeRequestError ? error.status : null });
@@ -466,18 +1140,17 @@ async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Res
 
 /* ---- Public routes ---- */
 
-const RETURN_MESSAGES: Record<string, string> = {
-  done: "Thanks. Your plan will show in ADE in a moment.",
-  cancelled: "Nothing changed.",
-  portal: "Any changes you made will show in ADE in a moment.",
-};
-
 function returnPage(url: URL, method: string): Response {
   if (method !== "GET") return json({ error: "method not allowed" }, 405);
-  const message = RETURN_MESSAGES[url.searchParams.get("to") ?? ""] ?? RETURN_MESSAGES.portal;
-  const html = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ADE</title><style>body{font:16px/1.5 system-ui,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#111;color:#eee;text-align:center;padding:24px}p{margin:.25em 0}.dim{color:#999}</style><main><p>${message}</p><p class="dim">You can close this tab and go back to ADE.</p></main></html>`;
+  const html = cloudReturnPageHtml(url.searchParams.get("to") ?? "", url.searchParams.get("plan"));
   return new Response(html, {
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'" },
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      // Inline styles and inline SVG only: no script, no image, nothing from the network.
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "referrer-policy": "no-referrer",
+    },
   });
 }
 
@@ -486,19 +1159,19 @@ export function isCloudBillingPublicRequest(url: URL): boolean {
   return url.pathname === WEBHOOK_PATH || url.pathname === RETURN_PATH;
 }
 
-export async function handleCloudBillingPublicRequest(request: Request, env: CloudEnv): Promise<Response> {
+export async function handleCloudBillingPublicRequest(request: Request, env: CloudEnv, waitUntil?: CloudWaitUntil): Promise<Response> {
   const url = new URL(request.url);
-  return url.pathname === WEBHOOK_PATH ? handleStripeWebhook(request, env) : returnPage(url, request.method);
+  return url.pathname === WEBHOOK_PATH ? handleStripeWebhook(request, env, waitUntil) : returnPage(url, request.method);
 }
 
 /* ---- Extra hours to the meter ---- */
 
 /** Stripe refused a report because this identifier was already counted. */
-const isDuplicateReport = (error: unknown): boolean =>
+export const isDuplicateReport = (error: unknown): boolean =>
   error instanceof StripeRequestError && error.status === 400 && /identifier/i.test(error.stripeMessage) && /(already|duplicate|exists)/i.test(error.stripeMessage);
 
 /**
- * Each whole extra Small-hour is one report whose identifier is its place in
+ * Each whole extra hour (a Medium-hour since Pricing v2) is one report whose identifier is its place in
  * the period, so a retry after a crash can never count an hour twice. The part
  * of an hour left over waits for the next tick. A tick with no account on
  * extra hours is one indexed read.
@@ -521,7 +1194,8 @@ export async function reportExtraHours(env: CloudEnv, now = Date.now()): Promise
   for (const account of accounts) {
     const live = liveUsedMilli(account, awakeByUser.get(account.user_id) ?? [], now);
     // With the switch off, only what was used before it went off is billed.
-    const billable = account.extra_enabled === 1 ? live - account.included_milli : account.extra_owed_milli;
+    // Earned hours come before extra hours: only what they don't cover is billed.
+    const billable = account.extra_enabled === 1 ? extraUsedMilli(account, live) : account.extra_owed_milli;
     const owedHours = Math.floor((billable - account.extra_reported_milli) / MILLI_PER_HOUR);
     let reported = account.extra_reported_milli;
     for (let sent = 0; sent < Math.min(owedHours, MAX_REPORTS_PER_ACCOUNT_TICK); sent += 1) {

@@ -318,6 +318,12 @@ export const ANDROID_EMULATOR_ERROR_CODES = [
   "ANDROID_SDK_PATH_INVALID",
   /** P2 RAM guard: the start would push the machine into swap. `start` with `force` starts it anyway. */
   "ANDROID_LOW_MEMORY",
+  /**
+   * The device's first start needs room for its data partition, and the disk
+   * has too little free. The sentence carries both numbers
+   * (`shared/androidDisk.ts` writes and reads it).
+   */
+  "ANDROID_LOW_DISK",
 ] as const;
 export type AndroidEmulatorErrorCode = (typeof ANDROID_EMULATOR_ERROR_CODES)[number];
 
@@ -333,6 +339,13 @@ export type AndroidEmulatorError = {
    * so the pane offers none.
    */
   adbRestarted?: boolean;
+  /**
+   * `ANDROID_LOW_DISK` only: the free space the device's first start needs,
+   * and the free space the disk has, in MB. The pane offers a bigger disk
+   * from these; the message is for reading only.
+   */
+  neededMb?: number;
+  freeMb?: number;
 };
 
 /* ──────────────────────────────────────────────────────────────────────────

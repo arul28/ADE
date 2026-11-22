@@ -24,15 +24,20 @@ import { pinnedToolForProvider, pinnedToolPresence, resolvePinnedCursorAgentCli 
 import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
 import type { PinnedToolState } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { loadQwenUserSettings } from "./qwenUserSettings";
+import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, devinCredentialFiles, factoryConfigHome, ghHostsFiles, grokConfigHome } from "../shared/providerConfigHomes";
-import { resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
+import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
+import { kimiCodeLoginInKeyring, resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
 import type { AgentCliLoginProvider, AgentCliSavedLogin } from "../../../shared/types/agentCliLogin";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
-import { loadCursorSdk } from "./cursorSdkLoader";
+import { getCursorAccount, listCursorApiModels } from "./cursorCloudApi";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
+import { isOfflineFetchError } from "../../../shared/sentry/expectedFailure";
+import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
 import { resolveMuseExecutable } from "./museExecutable";
 
 type CliName =
@@ -79,6 +84,12 @@ export type CliAuthStatus = {
   pinnedState?: PinnedToolState;
   /** The sentence for that state, when not installed. */
   pinnedBlocker?: string | null;
+  /**
+   * Not installed, but ADE downloads it on this machine's first use (or is
+   * downloading it now). A signed-in provider in this state keeps its models:
+   * its first turn downloads it, as a status read never does.
+   */
+  pinnedDownloadPending?: boolean;
   authenticated: boolean;
   verified: boolean;
   /** Optional Cursor CLI diagnostic only — not used for Cursor SDK auth. */
@@ -173,7 +184,11 @@ async function inspectAcpCliCredentials(
   }
 
   if (cli === "qwen") {
-    if (env.OPENAI_API_KEY?.trim() || env.QWEN_API_KEY?.trim() || env.DASHSCOPE_API_KEY?.trim()) {
+    // On an ADE Cloud computer OPENAI_API_KEY is the Codex key, not a Qwen
+    // key: alone it must not mark Qwen ready. Qwen's ADE Cloud key goes in
+    // Qwen's own settings.json, which the settings read below finds.
+    const openAiCounts = !isAdeCloudComputer(env);
+    if ((openAiCounts && env.OPENAI_API_KEY?.trim()) || env.QWEN_API_KEY?.trim() || env.DASHSCOPE_API_KEY?.trim()) {
       return { authenticated: true, verified: false };
     }
     const root = dir(env.QWEN_HOME, ".qwen");
@@ -228,7 +243,8 @@ async function inspectAcpCliCredentials(
  * `gh auth login`. Keychain-only logins are invisible here; the SDK sees them.
  */
 async function inspectCopilotCliCredentials(): Promise<{ authenticated: boolean; verified: false }> {
-  const env = process.env;
+  // On a cloud computer the account's Copilot token is not in process.env; the launch helper gives it to Copilot.
+  const env = withCopilotCarriedEnv(process.env);
   if (COPILOT_TOKEN_ENV_KEYS.some((key) => env[key]?.trim())) {
     return { authenticated: true, verified: false };
   }
@@ -1008,11 +1024,12 @@ async function verifyCursorApiKey(
 ): Promise<ApiKeyVerificationResult> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   try {
-    const { Cursor } = await loadCursorSdk();
+    // The two GETs `Cursor.me` and `Cursor.models.list` make, without loading
+    // the SDK into this process for a key check.
     const user = await Promise.race([
       (async () => {
-        const account = await Cursor.me({ apiKey: key });
-        const models = await Cursor.models.list({ apiKey: key });
+        const account = await getCursorAccount(key);
+        const models = await listCursorApiModels(key);
         if (!Array.isArray(models) || models.length === 0) {
           throw new Error("Cursor model verification returned no available models.");
         }
@@ -1020,7 +1037,8 @@ async function verifyCursorApiKey(
       })(),
       new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(
-          () => reject(new Error("Verification timed out.")),
+          // Cursor's API not answering is the network or Cursor, not a broken key or runtime.
+          () => reject(markExpected(new Error("Verification timed out."), "network")),
           API_KEY_VERIFY_TIMEOUT_MS,
         );
       }),
@@ -1041,6 +1059,10 @@ async function verifyCursorApiKey(
     const authFailed = /auth|unauthorized|forbidden|invalid|api key/i.test(message);
     if (authFailed) {
       reportProviderRuntimeAuthFailure("cursor", "Cursor rejected the configured API key. Check the key from the Cursor dashboard API page.");
+    } else if (expectedErrorKind(error) === "network" || isOfflineFetchError(error)) {
+      // The check never got an answer, so it says nothing about the runtime:
+      // its health stays as it was, and the person sees the message below.
+      forwardLogToSentry("warn", "provider.cursor.verify_unreachable", { message });
     } else {
       reportProviderRuntimeFailure("cursor", message);
     }
@@ -1286,9 +1308,17 @@ export function getCachedCliAuthStatuses(): CliAuthStatus[] {
   return cachedCliAuth?.statuses ?? [];
 }
 
+/**
+ * Each provider CLI's presence and sign-in.
+ *
+ * `skipAuthProbe` is what every status read passes: saved logins are read off
+ * disk and no CLI starts, forced or not. `force` only drops the cache and
+ * reads again. The spawning checks (`claude auth status` and friends) run only
+ * without `skipAuthProbe`, or through `checkCliSignInLive` for one provider.
+ */
 export async function detectCliAuthStatuses(options?: { force?: boolean; skipAuthProbe?: boolean }): Promise<CliAuthStatus[]> {
   const now = Date.now();
-  const skipAuthProbe = options?.skipAuthProbe === true && options.force !== true;
+  const skipAuthProbe = options?.skipAuthProbe === true;
   if (
     !options?.force
     && cachedCliAuth
@@ -1310,7 +1340,9 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
   // Cached for 30 s, so a non-forced pass usually costs nothing. Provider CLIs
   // themselves are never looked up on the PATH: ADE runs its own copies.
   await refreshWindowsPersistedPathDirs({ force: options?.force === true });
-  if (options?.force || process.platform === "win32") {
+  // The login-shell PATH read starts a shell and blocks until it answers, so
+  // a status read never pays for it; only a check that spawns the CLIs does.
+  if ((options?.force && !skipAuthProbe) || process.platform === "win32") {
     await refreshProcessPathFromShell();
   }
 
@@ -1323,10 +1355,20 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
       const tool = pinnedToolForProvider(cli);
       const presence = tool
         ? pinnedToolPresence(tool.tool, tool.label, pinned?.command ?? null)
-        : { installed: pinned !== null, path: pinned?.command ?? null, state: "ready" as const, blocker: null };
+        : { installed: pinned !== null, path: pinned?.command ?? null, state: "ready" as const, blocker: null, fetchAllowed: false };
       const installed = pinned !== null;
       const path = presence.path;
-      const base = { cli, installed, path, pinnedState: presence.state, pinnedBlocker: presence.blocker };
+      const pinnedDownloadPending = !installed && Boolean(tool) && (
+        presence.state === "downloading" || (presence.state === "missing" && presence.fetchAllowed)
+      );
+      const base = {
+        cli,
+        installed,
+        path,
+        pinnedState: presence.state,
+        pinnedBlocker: presence.blocker,
+        ...(pinnedDownloadPending ? { pinnedDownloadPending } : {}),
+      };
       // Disk-only sign-ins are read whether or not ADE's copy is here yet, so
       // a signed-in provider reads "downloading", not "not signed in". Copilot
       // chats run on ADE's runtime, so a sign-in counts with no CLI at all.
@@ -1344,6 +1386,13 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
       if (!pinned && cli === "droid") {
         const seen = await droidCredentialSeen();
         return { ...base, authenticated: seen !== null, verified: seen === "key" };
+      }
+      // Claude and Codex before ADE's copy is here: their saved login on disk
+      // (never a probe, which would need the copy). Signed in, the provider
+      // keeps its models and its first turn downloads the copy.
+      if (!pinned && pinnedDownloadPending && (cli === "claude" || cli === "codex")) {
+        const { savedSignInPresent } = await import("./providerConnectionStatus");
+        return { ...base, authenticated: await savedSignInPresent(cli), verified: false };
       }
       // Every other probe runs ADE's copy, so it waits for that copy.
       if (!pinned) {
@@ -1369,7 +1418,7 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
       if (cli === "droid") {
         // Reached only when ADE's copy is here, so the shallow presence check
         // below is asking about credentials, not existence.
-        const auth = await inspectDroidCliPresence(pinned, { deep: options?.force === true });
+        const auth = await inspectDroidCliPresence(pinned, { deep: options?.force === true && !skipAuthProbe });
         return {
           ...base,
           installed: auth.installed,
@@ -1402,7 +1451,9 @@ export async function detectAllAuth(
     skipAuthProbe: options?.skipCliAuthProbe,
   });
   for (const cli of cliStatuses) {
-    if (!cli.installed) continue;
+    // Not here yet but downloaded on first use: a signed-in provider still
+    // lists its models, so a chat can start and its turn fetches the copy.
+    if (!cli.installed && !(cli.pinnedDownloadPending && cli.authenticated)) continue;
     if (!cli.authenticated && cli.verified) continue;
     results.push({
       type: "cli-subscription",
@@ -1504,6 +1555,77 @@ export function resetLocalProviderDetectionCache(): void {
   clearLocalProviderInspectionCache();
 }
 
+/**
+ * The logins a `copilot login` recorded on this machine, read from Copilot's
+ * `config.json` only (no token, no SDK start). Empty when there is none.
+ */
+export async function readCopilotRecordedLogins(env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  try {
+    const raw = await readFile(path.join(copilotConfigHome({ env }), "config.json"), "utf8");
+    return parseCopilotLoggedInUsers(raw);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Whether the saved sign-in a status read sees for Copilot or an ACP agent
+ * is on disk now. The same files the status read checks, read again; no
+ * process starts. Other providers answer false: their lists do not key on it.
+ */
+export async function savedCliSignInPresent(provider: string): Promise<boolean> {
+  if (provider === "copilot") return (await inspectCopilotCliCredentials()).authenticated;
+  if ((ACP_CLI_NAMES as readonly string[]).includes(provider)) {
+    return (await inspectAcpCliCredentials(provider as AcpCliName)).authenticated;
+  }
+  return false;
+}
+
+export type CliSignInLiveCheck = {
+  state: "signed-in" | "signed-out" | "unknown";
+  reason: string | null;
+};
+
+const LIVE_CHECK_LABEL: Record<"claude" | "codex" | "droid", string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  droid: "Droid",
+};
+
+/**
+ * Asks ADE's own copy of one CLI whether it is signed in, the way a forced
+ * status read used to for every CLI at once. Only the one-provider sign-in
+ * check calls this. Each spawn keeps its own 8 s limit; the caller adds the
+ * overall one.
+ */
+export async function checkCliSignInLive(cli: "claude" | "codex" | "droid"): Promise<CliSignInLiveCheck> {
+  const label = LIVE_CHECK_LABEL[cli];
+  const pinned = pinnedCliCommand(cli);
+  if (!pinned) {
+    return { state: "unknown", reason: `ADE's copy of ${label} is not on this computer yet, so it could not check.` };
+  }
+  if (cli === "droid") {
+    // Droid has no sign-in command that does not spend a model call, so the
+    // check is that ADE's copy runs and its saved sign-in is there.
+    const presence = await inspectDroidCliPresence(pinned, { deep: true });
+    if (!presence.installed) return { state: "unknown", reason: `ADE's copy of ${label} did not start.` };
+    const seen = await droidCredentialSeen();
+    if (seen === "key") return { state: "signed-in", reason: null };
+    if (seen === "sign_in") {
+      return { state: "signed-in", reason: "Droid's saved sign-in is on this computer. Droid has no separate check for it." };
+    }
+    return { state: "signed-out", reason: null };
+  }
+  const auth = await inspectCliAuthentication(cli, pinned);
+  if (auth.verified) return { state: auth.authenticated ? "signed-in" : "signed-out", reason: null };
+  return {
+    state: "unknown",
+    reason: auth.authenticated
+      ? `${label} does not report its sign-in in a form ADE can read.`
+      : `${label} did not answer the sign-in check.`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // One agent CLI's saved sign-in, for a sign-in ADE just ran
 // ---------------------------------------------------------------------------
@@ -1573,8 +1695,11 @@ export async function readAgentCliSavedLogin(
     case "kimi": {
       // The token file Kimi reads for this environment, not `config.toml`:
       // config can outlive a login, the token file is the login.
+      // Read again on every call: a login can move the slot `config.toml` names.
       const login = resolveKimiCodeLogin({ env });
-      if (!login) return { signedIn: false, fingerprint: "none" };
+      if (!login) {
+        return { signedIn: false, fingerprint: "none", ...(kimiCodeLoginInKeyring({ env }) ? { inKeyring: true } : {}) };
+      }
       return { signedIn: await nonEmptyFile(login.credentialPath), fingerprint: await fingerprintOf([login.credentialPath]) };
     }
   }

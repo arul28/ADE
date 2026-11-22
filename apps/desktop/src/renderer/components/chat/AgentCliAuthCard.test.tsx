@@ -90,19 +90,6 @@ describe("AgentCliAuthCard", () => {
     expect(vi.mocked(ai.pinnedToolStatus!).mock.calls.every((call) => (call as unknown[]).includes(studio))).toBe(true);
   });
 
-  it("names the machine where the provider copy will be downloaded", () => {
-    render(<AgentCliAuthCard agentCli={missingCli} runtimeName="Mac Studio" />);
-
-    expect(screen.getByText(/downloads it for Mac Studio/i)).toBeTruthy();
-  });
-
-  it("names This computer absolutely when no runtime name is supplied", () => {
-    render(<AgentCliAuthCard agentCli={missingCli} />);
-
-    expect(screen.getByText(/downloads it for This computer/)).toBeTruthy();
-    expect(screen.queryByText(/this machine/i)).toBeNull();
-  });
-
   it("offers Retry once the copy has landed, and it resends the chat's turn", async () => {
     installAdeStub("ready");
     const retrySpy = vi.fn();

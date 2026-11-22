@@ -1,3 +1,4 @@
+import type { SlowLinkPreference } from "../../../shared/slowLinkMode";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowClockwise,
@@ -42,32 +43,23 @@ import {
   type RemoteTargetFormPrefill,
 } from "./RemoteTargetForm";
 import { PairMachineForm } from "./PairMachineForm";
-import { NewCloudMachineForm } from "./NewCloudMachineForm";
+import { showToast } from "../app/toast/toastStore";
 import {
-  CLOUD_JOIN_WATCH_MS,
-  type CloudCreateMachineResult,
-  type CloudStatus,
-} from "../../../shared/adeCloud";
-import { accountMachineConnectionState } from "../../../shared/accountDirectory";
-import { captureError } from "../../../shared/sentry/capture";
-import { Banner } from "../ui/notice";
-import {
-  accountMachineMatchesTarget,
+  accountMachineForTarget as findAccountMachineForTarget,
   assignMachineSections,
   discoveredPairingInput,
   discoveredTargetInput,
   formatRemoteTargetError,
-  describeMachineUpdateAttempt,
   isMachineVersionOutdated,
-  machineUpdateGraceMs,
-  machineUpdatePhase,
   machinesBehindOnTheirTrack,
   machineUpdateTargetVersion,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
   type MachineSection,
 } from "./remoteMachineModel";
+import { describeMachineUpdateAttempt, machineUpdateGraceMs, machineUpdatePhase } from "./machineUpdateStatus";
 import {
+  accountMachinePresence,
   connectedMachineIds,
   isMachineConnected,
 } from "../../../shared/machinePresence";
@@ -76,13 +68,12 @@ import { MachinesBehindBanner } from "./MachinesBehindBanner";
 import { isMachineUpdateBusy, machineUpdateIsManual, requestMachineUpdates, useKnownAdeVersions, useMachineUpdates } from "./machineUpdates";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
+import { useOptionalWebWorkspace } from "../../webclient/workspace/WebWorkspaceContext";
 import { accountRowKey, useRowActions } from "./useRowActions";
 import {
   helperTextStyle,
   panelStyle,
 } from "./remoteTargetListStyles";
-import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
-import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudMachineGroup, type RowExtras } from "./useCloudMachineGroup";
 import type { MachineRow } from "./remoteMachineModel";
 
@@ -96,6 +87,8 @@ type RemoteTargetListProps = {
   ) => boolean | Promise<boolean>;
   /** Account-directory machines, merged into the sections alongside saved/discovered. */
   accountMachines?: AdeAccountMachine[];
+  /** ADE Web: the tab holds its limit of connections now (the number), else null. */
+  sessionLimit?: number | null;
   accountMachinesState?: AdeAccountMachinesResult["state"];
   accountSignedIn?: boolean;
   onAccountRequested?: () => void;
@@ -123,30 +116,8 @@ type ConnectTargetOptions = {
   onTrustRequired?: (state: "needs_trust" | "changed") => void;
 };
 
-type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code" | "cloud";
+type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code";
 
-/**
- * the provider in the add sheet. `loading` shows nothing extra; `unreachable` is a
- * saved key whose status couldn't be read (or that the provider refused): the
- * option still shows and opens a Retry.
- */
-type CloudPickerState =
-  | { kind: "loading" }
-  | { kind: "none"; signedOut: boolean }
-  | { kind: "ready"; status: CloudStatus }
-  | { kind: "unreachable"; refused: boolean; message: string };
-
-function cloudPickerState(status: CloudStatus | null): CloudPickerState {
-  if (!status) return { kind: "unreachable", refused: false, message: "ADE couldn't read ADE Cloud's status." };
-  if (status.connected && !status.error) return { kind: "ready", status };
-  if (status.error) {
-    return { kind: "unreachable", refused: !status.connected, message: status.error ?? "ADE couldn't reach ADE Cloud." };
-  }
-  return { kind: "none", signedOut: status.signedOut };
-}
-
-/** While a new box finishes starting, how often the account list is refreshed. */
-const CLOUD_JOIN_REFRESH_MS = 15_000;
 
 type AccountConnectionToast = {
   targetId: string;
@@ -208,17 +179,23 @@ function joinDiagnosticMessages(
   return diagnostics.map((entry) => entry.message).join(" ");
 }
 
+// "Not connected", not "Ready to connect": this section also holds computers
+// that are connecting or that this app can't reach right now, and the heading
+// has to be true for every row under it.
 const SECTION_LABELS: Record<MachineSection, string> = {
   connected: "Connected",
-  available: "Ready to connect",
+  available: "Not connected",
   unavailable: "Not reachable right now",
 };
+
+const NO_RELAYS: readonly string[] = [];
 
 export function RemoteTargetList({
   onConnected,
   onDisconnectRequested,
   onRemoveRequested,
   accountMachines,
+  sessionLimit = null,
   accountMachinesState,
   accountSignedIn = false,
   onAccountRequested,
@@ -282,6 +259,8 @@ export function RemoteTargetList({
   const [localMachineIdentity, setLocalMachineIdentity] =
     useState<{ machineKey: string; deviceId: string } | null>(null);
   const [pairingPrefill, setPairingPrefill] = useState<string | null>(null);
+  // The code pairing replaces a saved pairing the machine turned away.
+  const [pairingAgain, setPairingAgain] = useState(false);
   const [accountRowErrors, setAccountRowErrors] = useState<
     Record<string, string>
   >({});
@@ -372,6 +351,8 @@ export function RemoteTargetList({
       ? hostKeyTrust
       : null;
 
+  // ADE Web's own relay (configured per deployment) is trusted like ADE's.
+  const relayBaseUrls = useOptionalWebWorkspace()?.account.relayBaseUrls ?? NO_RELAYS;
   const statusById = useMemo(() => {
     const map = new Map<string, RemoteRuntimeConnectionStatus>();
     for (const entry of connectionSnapshot?.connections ?? []) {
@@ -405,6 +386,7 @@ export function RemoteTargetList({
       discoveredMachines,
       accountMachines: visibleAccountMachines,
       includeDiscoveredRows: false,
+      relayBaseUrls,
     });
     // A machine restarting for an update drops its connection on purpose.
     // It stays where it was, under Connected, until it is back or the update
@@ -430,7 +412,7 @@ export function RemoteTargetList({
       available: assigned.available.filter((row) => !restarting(row)),
       unavailable: assigned.unavailable.filter((row) => !restarting(row)),
     };
-  }, [targets, statusById, connected, discoveredMachines, visibleAccountMachines, restartingKey]);
+  }, [targets, statusById, connected, discoveredMachines, visibleAccountMachines, restartingKey, relayBaseUrls]);
 
   const loadTargets = useCallback(async () => {
     setLoading(true);
@@ -522,19 +504,22 @@ export function RemoteTargetList({
   // Only the latest scan's answer lands: an older scan finishing late must not
   // replace a newer scan's result.
   const discoveryScanRef = useRef(0);
-  const loadDiscoveredMachines = useCallback(async () => {
+  // Returns what the scan found, or null when it failed or a newer one ran.
+  const loadDiscoveredMachines = useCallback(async (): Promise<readonly RemoteRuntimeDiscoveredMachine[] | null> => {
     const scan = ++discoveryScanRef.current;
     setLoadingDiscovered(true);
     try {
       const next = await window.ade.remoteRuntime.listDiscoveredMachines();
-      if (scan !== discoveryScanRef.current) return;
+      if (scan !== discoveryScanRef.current) return null;
       setDiscoveredMachines(next.machines);
       setDiscoveryDiagnostics(next.diagnostics);
       setDiscoveryFetchError(null);
+      return next.machines;
     } catch (err) {
-      if (scan !== discoveryScanRef.current) return;
+      if (scan !== discoveryScanRef.current) return null;
       setDiscoveryDiagnostics([]);
       setDiscoveryFetchError(extractError(err));
+      return null;
     } finally {
       if (scan === discoveryScanRef.current) setLoadingDiscovered(false);
     }
@@ -668,6 +653,8 @@ export function RemoteTargetList({
             arch: result.arch,
             version: result.version,
             appVersion: result.appVersion ?? null,
+            hostStartedAt: result.hostStartedAt ?? null,
+            hostUpdateBlock: result.hostUpdateBlock ?? null,
             updateInstallMode: result.updateInstallMode,
             downloadUrl: result.downloadUrl,
             route: result.route,
@@ -805,17 +792,40 @@ export function RemoteTargetList({
   );
 
   const openNearbyPairing = useCallback(
-    (machine: RemoteRuntimeDiscoveredMachine): boolean => {
+    (machine: RemoteRuntimeDiscoveredMachine, again = false): boolean => {
       const directPairingInput = discoveredPairingInput(machine);
       if (!directPairingInput) return false;
       setSelectedId(null);
       setHostKeyTrust(null);
       setError(null);
       setPairingPrefill(directPairingInput);
+      setPairingAgain(again);
       setAddMode("pair");
       return true;
     },
     [],
+  );
+
+  // "Pair again" for a machine paired with its code (not through the
+  // account): the same code pairing, with the machine as it is found nearby
+  // now. A fresh scan runs when the last one did not see it.
+  const pairAgainNearby = useCallback(
+    async (target: RemoteRuntimeTarget) => {
+      const hostIdentity = target.pairedMachine?.hostIdentity ?? null;
+      const find = (machines: readonly RemoteRuntimeDiscoveredMachine[]) => machines.find((machine) => (
+        discoveredPairingInput(machine) != null
+        && ((hostIdentity != null && machine.hostIdentity === hostIdentity) || machineMatchesSavedTarget(machine, target))
+      ));
+      const match = find(discoveredMachines) ?? find((await loadDiscoveredMachines()) ?? []);
+      if (match && openNearbyPairing(match, true)) return;
+      showToast({
+        tone: "info",
+        title: `Can't find ${target.name} nearby`,
+        message: "Open ADE on it, on this Wi-Fi or your Tailscale network, then press Pair again.",
+        report: false,
+      });
+    },
+    [discoveredMachines, loadDiscoveredMachines, openNearbyPairing],
   );
 
   const connectDiscoveredMachine = useCallback(
@@ -937,96 +947,6 @@ export function RemoteTargetList({
     ],
   );
 
-  // the provider is account-wide (its key is in the account vault), so this asks
-  // with no pin. Read when the sheet opens, not polled. A saved key whose
-  // status couldn't be read still offers the option, which then says so.
-  const cloudEnabled = useAdeCloudEnabled();
-  const [cloud, setCloud] = useState<CloudPickerState>({ kind: "loading" });
-  const loadCloudStatus = useCallback((): (() => void) => {
-    const bridge = window.ade.cloud;
-    if (!bridge || !cloudEnabled) {
-      setCloud({ kind: "none", signedOut: false });
-      return () => undefined;
-    }
-    let cancelled = false;
-    void bridge.getStatus().then((next) => {
-      if (!cancelled) setCloud(cloudPickerState(next));
-    }, (error: unknown) => {
-      if (!cancelled) setCloud({ kind: "unreachable", refused: false, message: extractError(error) });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [cloudEnabled]);
-  useEffect(() => {
-    if (addMode !== "choose") return;
-    // The last answer stays up while this one loads, so the option never flickers.
-    return loadCloudStatus();
-  }, [addMode, loadCloudStatus]);
-  // Access went away while its form was open: the choice is gone with it.
-  useEffect(() => {
-    if (!cloudEnabled && addMode === "cloud") setAddMode("choose");
-  }, [addMode, cloudEnabled]);
-  const retryCloudStatus = useCallback(() => {
-    setCloud({ kind: "loading" });
-    loadCloudStatus();
-  }, [loadCloudStatus]);
-
-  // A box that signed in but wasn't ready to connect when the create ended:
-  // keep refreshing the account list (the same refresh the list uses) for a
-  // few minutes and connect when its row is ready. Otherwise its row stays
-  // for a manual Connect.
-  const [cloudJoin, setCloudJoin] = useState<{ machineKey: string; name: string; renamed: boolean; until: number } | null>(null);
-  useEffect(() => {
-    if (!cloudJoin) return;
-    const remaining = cloudJoin.until - Date.now();
-    if (remaining <= 0) {
-      setCloudJoin(null);
-      return;
-    }
-    const refresh = setInterval(() => onAccountMachinesChanged?.(), CLOUD_JOIN_REFRESH_MS);
-    const stop = setTimeout(() => setCloudJoin(null), remaining);
-    return () => {
-      clearInterval(refresh);
-      clearTimeout(stop);
-    };
-  }, [cloudJoin, onAccountMachinesChanged]);
-  useEffect(() => {
-    if (!cloudJoin) return;
-    const row = accountMachines?.find((machine) => machine.machineKey === cloudJoin.machineKey) ?? null;
-    if (!row || accountMachineConnectionState(row) !== "available") return;
-    setCloudJoin(null);
-    if (!cloudJoin.renamed && row.name !== cloudJoin.name) {
-      void window.ade.account.renameMachine(row.machineKey, cloudJoin.name).then(
-        () => onAccountMachinesChanged?.(),
-        (error: unknown) => captureError(error, { fingerprint: ["cloud", "join_rename"], handled: true }),
-      );
-    }
-    setAddMode((mode) => (mode === "cloud" ? null : mode));
-    void connectAccountMachine(row);
-  }, [accountMachines, cloudJoin, connectAccountMachine, onAccountMachinesChanged]);
-
-  // A new box signed in to this account on its own: find its row and connect.
-  const onCloudMachineCreated = useCallback(async (result: CloudCreateMachineResult) => {
-    onAccountMachinesChanged?.();
-    if (!result.machineKey) return;
-    if (!result.joined) {
-      setCloudJoin({ machineKey: result.machineKey, name: result.name, renamed: result.renamed, until: Date.now() + CLOUD_JOIN_WATCH_MS });
-      return;
-    }
-    const listed = await window.ade.account.listMachines().catch((error: unknown) => {
-      captureError(error, { fingerprint: ["cloud", "created_list"], handled: true });
-      return null;
-    });
-    const machine = listed?.machines.find((candidate) => candidate.machineKey === result.machineKey);
-    if (!machine) {
-      // Joined a moment ago but not in this read: watch for it like a slow one.
-      setCloudJoin({ machineKey: result.machineKey, name: result.name, renamed: result.renamed, until: Date.now() + CLOUD_JOIN_WATCH_MS });
-      return;
-    }
-    setAddMode(null);
-    await connectAccountMachine(machine);
-  }, [connectAccountMachine, onAccountMachinesChanged]);
 
   const onPaired = useCallback(
     async (targetId: string) => {
@@ -1178,6 +1098,21 @@ export function RemoteTargetList({
     ],
   );
 
+  const setTargetSlowLinkMode = useCallback(async (targetId: string, mode: SlowLinkPreference) => {
+    const setMode = window.ade.remoteRuntime.setSlowLinkMode;
+    if (!setMode) return;
+    setRowBusy(targetId, "autoConnect");
+    try {
+      const updated = await setMode(targetId, mode);
+      setTargets((current) => current.map((target) => (target.id === updated.id ? updated : target)));
+      setError(null);
+    } catch (err) {
+      setError(formatRemoteTargetError(err));
+    } finally {
+      setRowBusy(targetId, null);
+    }
+  }, [setRowBusy]);
+
   const setTargetAutoConnect = useCallback(async (targetId: string, enabled: boolean) => {
     setRowBusy(targetId, "autoConnect");
     try {
@@ -1234,9 +1169,7 @@ export function RemoteTargetList({
   // the stale pairing. Without a directory match there is nothing to re-adopt.
   const accountMachineForTarget = useCallback(
     (target: RemoteRuntimeTarget): AdeAccountMachine | null =>
-      (visibleAccountMachines ?? []).find((machine) =>
-        accountMachineMatchesTarget(machine, target),
-      ) ?? null,
+      findAccountMachineForTarget(visibleAccountMachines ?? [], target),
     [visibleAccountMachines],
   );
 
@@ -1297,7 +1230,11 @@ export function RemoteTargetList({
         busyById[accountRowKey(pairedMachineKey)] === "stopping";
       const updateAttempt = updateResultByTargetId[row.target.id] ?? null;
       const updateStatus = updateAttempt
-        ? describeMachineUpdateAttempt(updateAttempt, row, updateClockMs)
+        ? describeMachineUpdateAttempt(
+          updateAttempt,
+          { connected: row.connected, version: row.version, hostStartedAt: row.status?.hostStartedAt ?? null, hostUpdateBlock: row.status?.hostUpdateBlock ?? null },
+          updateClockMs,
+        )
         : null;
       const updatePhase = machineUpdatePhase({
         checking: machineUpdates.checkingIds.has(row.target.id),
@@ -1337,8 +1274,12 @@ export function RemoteTargetList({
           updateTargetVersion={
             updatePhase && updateAttempt?.pendingVersion
               ? updateAttempt.pendingVersion
-              : row.connected
-                ? machineUpdateTargetVersion({ version: row.version }, knownVersions)
+              // A cloud computer updates itself; its card shows that line instead.
+              : row.connected && !extras.selfUpdating
+                ? machineUpdateTargetVersion(
+                    { version: row.version, canUpdate: row.status?.capabilities?.remoteUpdate !== false },
+                    knownVersions,
+                  )
                 : null
           }
           manualDownloadUrl={machineUpdateIsManual(row.status ?? {}, updateAttempt) ? row.status?.downloadUrl ?? updateAttempt?.downloadUrl ?? null : undefined}
@@ -1379,15 +1320,23 @@ export function RemoteTargetList({
           onAutoConnectChange={(targetId, enabled) => {
             void setTargetAutoConnect(targetId, enabled);
           }}
+          onSlowLinkModeChange={typeof window.ade.remoteRuntime.setSlowLinkMode === "function"
+            ? (targetId, mode) => void setTargetSlowLinkMode(targetId, mode)
+            : undefined}
           onTrustAndConnect={() => void trustAndConnect()}
           onCancelHostKeyTrust={() => setHostKeyTrust(null)}
           onPairAgain={pairAgainMachine
             ? () => void connectAccountMachine(pairAgainMachine)
-            : null}
+            : row.target.transport === "paired"
+              ? () => void pairAgainNearby(row.target)
+              : null}
           extraActions={extras.extraActions}
           hideLocalRemove={extras.hideLocalRemove}
           footer={extras.footer}
           parked={extras.parked}
+          sessionLimit={sessionLimit}
+          accountOnline={pairAgainMachine ? accountMachinePresence(pairAgainMachine) === "online" : null}
+          accountLastSeenAt={pairAgainMachine?.lastSeenAt ?? null}
         />
       );
     }
@@ -1441,6 +1390,8 @@ export function RemoteTargetList({
           extraActions={extras.extraActions}
           footer={extras.footer}
           parked={extras.parked}
+          relayBaseUrls={relayBaseUrls}
+          sessionLimit={sessionLimit}
         />
       );
     }
@@ -1465,7 +1416,14 @@ export function RemoteTargetList({
       ? machinesBehindOnTheirTrack(
           rows.flatMap((row) =>
             row.kind === "saved" && row.connected
-              ? [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel, updateInstallMode: row.status?.updateInstallMode }]
+              ? [{
+                  id: row.target.id,
+                  name: row.target.name,
+                  version: row.version,
+                  versionLabel: row.versionLabel,
+                  updateInstallMode: row.status?.updateInstallMode,
+                  canUpdate: row.status?.capabilities?.remoteUpdate !== false,
+                }]
               : []),
           knownVersions,
         ).filter((machine) => !machineUpdateIsManual(machine, machineUpdates.attempts[machine.id]))
@@ -1504,7 +1462,10 @@ export function RemoteTargetList({
   );
 
   const chooseAddMode = useCallback((next: Exclude<AddMode, "choose">) => {
-    if (next !== "pair") setPairingPrefill(null);
+    if (next !== "pair") {
+      setPairingPrefill(null);
+      setPairingAgain(false);
+    }
     if (next === "nearby") void loadDiscoveredMachines();
     setAddMode(next);
   }, [loadDiscoveredMachines]);
@@ -1515,6 +1476,7 @@ export function RemoteTargetList({
     setError(null);
     setHostKeyTrust(null);
     setPairingPrefill(null);
+    setPairingAgain(false);
     if (mode === "nearby") void loadDiscoveredMachines();
     setAddMode(mode);
   }, [loadDiscoveredMachines]);
@@ -1530,15 +1492,6 @@ export function RemoteTargetList({
     label: string;
     detail: string;
   }> = [
-    // With ADE Cloud access: a new cloud machine, signed in for you.
-    ...(cloudEnabled && (cloud.kind === "ready" || cloud.kind === "unreachable")
-      ? [{
-          key: "cloud" as const,
-          icon: <CloudMark size={18} bold />,
-          label: `New ${ADE_CLOUD_NAME} machine`,
-          detail: "A cloud Linux computer, signed in to your account for you",
-        }]
-      : []),
     {
       key: "nearby",
       icon: <WifiHigh size={18} weight="bold" />,
@@ -1567,18 +1520,22 @@ export function RemoteTargetList({
     pair: "Pair with a nearby computer",
     ssh: "Add over SSH",
     code: "This computer's pairing code",
-    cloud: `New ${ADE_CLOUD_NAME} machine`,
   };
 
+  // Signed in and the account's list has not come back yet: its computers are
+  // not known, so the panel says it is loading rather than "Connect your other
+  // computers" (ADE Web scans no network, so nothing else fills the list).
+  const accountListPending = accountSignedIn && accountMachines === undefined;
   const showEmptyState = !loading
     && !loadingDiscovered
+    && !accountListPending
     && totalRows === 0
     && !showCloudGroup
     && !accountMachinesLoadFailed
     && !addMode;
 
   return (
-    <div style={panelStyle}>
+    <div className="ade-cx-rows" style={panelStyle}>
       <div style={{ display: "grid", gap: 12 }}>
         <div className="ade-cx-list-head">
           <span className="ade-cx-list-title">Your computers</span>
@@ -1588,7 +1545,12 @@ export function RemoteTargetList({
               aria-label="Refresh"
               title="Look for computers again"
               disabled={loadingDiscovered}
-              onClick={() => void loadDiscoveredMachines()}
+              onClick={() => {
+                // Looking again reads the account's list too: on ADE Web the
+                // account is the whole list, with no network scan behind it.
+                onAccountMachinesChanged?.();
+                void loadDiscoveredMachines();
+              }}
               className="ade-cx-icon-btn"
             >
               <ArrowClockwise size={14} weight="bold" className={loadingDiscovered ? "animate-spin" : undefined} />
@@ -1686,31 +1648,6 @@ export function RemoteTargetList({
               </>
             ) : null}
 
-            {addMode === "cloud" && cloudEnabled && cloud.kind === "ready" ? (
-              <NewCloudMachineForm onCreated={(result) => void onCloudMachineCreated(result)} />
-            ) : null}
-            {addMode === "cloud" && cloudEnabled && cloud.kind === "unreachable" ? (
-              <Banner
-                layout="inline"
-                model={{
-                  id: "cloud-status-unreachable",
-                  tone: cloud.refused ? "warning" : "error",
-                  icon: <CloudMark size={16} />,
-                  title: cloud.refused ? `${ADE_CLOUD_NAME} refused this account` : `ADE couldn't reach ${ADE_CLOUD_NAME}`,
-                  detail: cloud.message,
-                  actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: retryCloudStatus }],
-                  ...(cloud.refused ? { report: false as const } : {}),
-                }}
-              />
-            ) : null}
-            {addMode === "cloud" && cloudEnabled && cloud.kind === "loading" ? (
-              <div role="status" style={{ ...helperTextStyle, display: "flex", gap: 8, alignItems: "center" }}>
-                <CircleNotch size={14} className="animate-spin" /> Checking {ADE_CLOUD_NAME}…
-              </div>
-            ) : null}
-            {addMode === "cloud" && cloudEnabled && cloud.kind === "none" ? (
-              <div style={helperTextStyle}>{cloud.signedOut ? `Sign in to ADE to use ${ADE_CLOUD_NAME}.` : `${ADE_CLOUD_NAME} isn't available on this account yet.`}</div>
-            ) : null}
             {addMode === "code" ? (
               <div style={{ display: "grid", gap: 10 }}>
                 <div style={helperTextStyle}>
@@ -1723,6 +1660,7 @@ export function RemoteTargetList({
               <PairMachineForm
                 defaultDeviceName={localMachineName}
                 initialInput={pairingPrefill}
+                pairingAgain={pairingAgain}
                 busy={saving}
                 onPaired={onPaired}
               />
@@ -1783,7 +1721,7 @@ export function RemoteTargetList({
           </div>
         ) : null}
 
-        {loading ? (
+        {loading || (accountListPending && totalRows === 0) ? (
           <div
             style={{
               color: COLORS.textMuted,
@@ -1798,7 +1736,7 @@ export function RemoteTargetList({
         {renderSection("connected")}
         {renderSection("available")}
         {renderSection("unavailable")}
-        {cloudGroup.renderGroup(renderRow)}
+        {cloudGroup.renderGroup()}
 
         {accountMachinesLoadFailed ? (
           <div style={helperTextStyle}>

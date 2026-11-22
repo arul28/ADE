@@ -4,3 +4,5 @@ src/generated/*.ts
 *.png
 
 !build/icons/*.png
+# The Linux lane screen's wallpaper mark, compiled into the helper (include_bytes!).
+!native/ADEDesktopDriverLinux/assets/*.png

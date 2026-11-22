@@ -1218,8 +1218,19 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         if let sideChat = metadata[agentChatSideChatMetadataKey], !(sideChat is NSNull) {
           parsed.userMessageFromSideChat = true
         }
+        if let continuation = metadata["hostContinuation"] as? [String: Any] {
+          parsed.userMessageAdeReason = (continuation["reason"] as? String) ?? ""
+          parsed.userMessageAdeReasonLabel = continuation["label"] as? String
+        }
+        if let author = metadata["author"] as? [String: Any], (author["kind"] as? String) == "guest" {
+          parsed.userMessageGuestAuthorName = ((author["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         if (metadata["kind"] as? String) == "continuity_recovery" {
           parsed.userMessageIsRecoveryHandOff = true
+        }
+        if let wake = metadata["scheduledWake"] as? [String: Any],
+           workIsRestartResumeScheduleId(wake["scheduleId"] as? String) {
+          parsed.userMessageIsRestartResume = true
         }
       }
       if type == "system_notice" {

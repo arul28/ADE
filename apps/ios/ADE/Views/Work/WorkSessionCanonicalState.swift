@@ -145,7 +145,7 @@ func isWorkAgentToolType(_ toolType: String?) -> Bool {
 /// Mirrors desktop `isTrackedAgentCliToolType`.
 private let workTrackedAgentCliToolTypes: Set<String> = [
   "claude", "codex", "cursor-cli", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok",
-  "copilot", "devin", "claude-orchestrated", "codex-orchestrated", "opencode-orchestrated",
+  "copilot", "devin", "antigravity", "claude-orchestrated", "codex-orchestrated", "opencode-orchestrated",
 ]
 
 /// The tri-state settle override persisted on `terminal_sessions.settle_override`.

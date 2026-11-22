@@ -1,5 +1,5 @@
 import { confirmDialog } from "../ui/dialog";
-import { remoteAgentHolderLabel } from "../../../shared/runtimeClientNames";
+import { parseForeignCallerSessionId, remoteAgentHolderLabel } from "../../../shared/runtimeClientNames";
 import React, {
   Suspense,
   useCallback,
@@ -8,7 +8,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { AppleLogo } from "../ui/appleIcons";
+import { PaneMessage } from "./PaneMessage";
 import type {
   AppleDeviceCleanupResult,
   AppleNewDeviceSpec,
@@ -40,6 +40,7 @@ import {
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
+import { AppleDeviceConfirmBar } from "./AppleDeviceConfirmBar";
 import { AppleDeviceRail } from "./AppleDeviceRail";
 import { DEVICE_RAIL_WIDTH } from "../device/DeviceRail";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
@@ -84,10 +85,12 @@ import { appleDuoDisplayOrientation, useAppleDuoPosture } from "./useAppleDuoPos
 import { appleDuoHeldOrientation, appleDuoInTent, appleDuoScreenName } from "../../../shared/appleOrientation";
 import { useAppleRenderRequests } from "./useAppleRenderRequests";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
-import { isInParkedSurface } from "../../lib/parkedSurface";
+import { usePaneOffScreen } from "../../lib/parkedSurface";
 import { useTicker } from "../../lib/ticker";
 import { confirmAppleDeviceRelease } from "./appleReleaseConfirm";
 import { DEVICE_DRAWER_DOCK_CLASS } from "../device/DeviceToolsDrawerShell";
+import { useDeviceMachinePin } from "./useDeviceMachinePin";
+import { WorkToolEmptyLine } from "../terminals/workToolChrome";
 
 /**
  * The Apple device, as the body of the Work tools pane's Apple tab.
@@ -116,10 +119,50 @@ export type AppleDevicePaneProps = {
   runtimePin: OpenProjectBinding | null;
   /** The lane-scoped surface drives a device it does not own on purpose. */
   ignoreChatOwnership?: boolean;
+  /**
+   * The chat this pane is shown for, so that when IT is the agent on another
+   * machine driving the device, the pane names the chat rather than a computer.
+   */
+  driverChat?: AppleDriverChat | null;
   onAddContext?: ((item: IosElementContextItem) => void) | undefined;
   onInsertDraft?: ((text: string) => void) | undefined;
   className?: string;
 };
+
+/** A chat that may be the one driving a device from another machine. */
+export type AppleDriverChat = {
+  sessionId: string;
+  title: string | null;
+  /** The machine the chat runs on, or null when that is this computer. */
+  machineName: string | null;
+};
+
+/**
+ * The holder is the chat this pane serves (`paneChatId`: the driver chat's
+ * id, else the pane's own session id, so every host counts): a banner about
+ * that chat to that chat says nothing.
+ */
+function holderIsPaneChat(holderChatSessionId: string | null, paneChatId: string | null): boolean {
+  const chatId = parseForeignCallerSessionId(holderChatSessionId)?.chatSessionId ?? null;
+  return Boolean(paneChatId && chatId && chatId === paneChatId);
+}
+
+/**
+ * Who drives the device, at the start of a sentence: the chat by its title
+ * when it is the pane's own chat ("“Fix login” on Studio Mac", the machine
+ * only when it is not the one viewing), else "An agent on <machine>".
+ */
+function remoteDriverLabel(
+  holder: { machineName: string | null },
+  holderChatSessionId: string | null,
+  driverChat: AppleDriverChat | null,
+): string {
+  if (driverChat && holderIsPaneChat(holderChatSessionId, driverChat.sessionId)) {
+    const name = driverChat.title ? `“${driverChat.title}”` : "This chat";
+    return driverChat.machineName ? `${name} on ${driverChat.machineName}` : name;
+  }
+  return remoteAgentHolderLabel(holder.machineName, { sentenceStart: true });
+}
 
 
 function familyOf(device: AppleLaneDevice | null): "iphone" | "ipad" {
@@ -177,17 +220,29 @@ function showRuntimeRemoval(result: AppleRuntimeDeleteResult) {
   });
 }
 
-export function AppleDevicePane({
+/**
+ * The pane for one lane's simulator. Every simulator call names the lane's
+ * machine (`useDeviceMachinePin`). With no machine at all (no computer online
+ * for this project) it shows one line and makes no call.
+ */
+export function AppleDevicePane(props: AppleDevicePaneProps) {
+  const pin = useDeviceMachinePin(props.runtimePin);
+  if (!pin) return <WorkToolEmptyLine title="No computer with this project is online" testId="apple-pane-no-computer" />;
+  return <AppleDevicePaneOnMachine {...props} runtimePin={pin} />;
+}
+
+function AppleDevicePaneOnMachine({
   sessionId,
   laneId,
   projectRoot,
   runtimePin,
   ignoreChatOwnership = false,
+  driverChat = null,
   onAddContext,
   onInsertDraft,
   className,
-}: AppleDevicePaneProps) {
-  const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
+}: AppleDevicePaneProps & { runtimePin: OpenProjectBinding }) {
+  const runtimePinRef = useRef<OpenProjectBinding>(runtimePin);
   runtimePinRef.current = runtimePin;
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -228,7 +283,8 @@ export function AppleDevicePane({
   const [confirmSwitch, setConfirmSwitch] = useState(false);
   const [screenshotPending, setScreenshotPending] = useState(false);
   const [bodyWidth, setBodyWidth] = useState(720);
-  const [hidden, setHidden] = useState(false);
+  // The pane stops the stream when the PANE is off screen, not the window.
+  const hidden = usePaneOffScreen(bodyRef);
 
   const {
     status,
@@ -281,41 +337,6 @@ export function AppleDevicePane({
     return () => observer.disconnect();
   }, []);
 
-  /**
-   * The pane stops the stream when the PANE is not on screen. Not when the
-   * window is behind another one.
-   *
-   * Round 2 also paused on `document.visibilityState`, which on macOS goes
-   * "hidden" the moment any other app's window covers this one — and the
-   * matching `visibilitychange` does not reliably fire on the way back. The
-   * result, reproduced on the dev app in the round-3 test: a pane opened while
-   * another window was in front sat on the loading card forever, over a
-   * simulator that was booted and streaming the whole time. Minimising or
-   * closing the pane unmounts this component, which stops the stream through
-   * the lease; that is the case the visibility check was really for.
-   */
-  useEffect(() => {
-    const node = bodyRef.current;
-    let offScreen = false;
-    const apply = () => setHidden(offScreen);
-    let observer: IntersectionObserver | null = null;
-    if (node && typeof IntersectionObserver === "function") {
-      observer = new IntersectionObserver((entries) => {
-        const entry = entries[0];
-        if (!entry) return;
-        // A parked surface (another project or tab on screen) reports as not
-        // intersecting, but keeps its stream so switching back shows it live.
-        offScreen = !entry.isIntersecting && !isInParkedSurface(node);
-        apply();
-      });
-      observer.observe(node);
-    }
-    apply();
-    return () => {
-      observer?.disconnect();
-    };
-  }, []);
-
   const deviceUdidRef = useRef(deviceUdid);
   deviceUdidRef.current = deviceUdid;
   const installedForLane = useMemo(
@@ -325,6 +346,16 @@ export function AppleDevicePane({
 
   /* ── stream ────────────────────────────────────────────────────────────── */
 
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  /**
+   * A stream failure, held until a status read after it says the device is
+   * still on. A device turned off on purpose (`ade apple stop`, here or from
+   * another machine) breaks its stream first, and the relay answers that with
+   * a bare 502 before any "off" news arrives: shown at once, it read as a red
+   * error over a phone already marked Off.
+   */
+  const [streamError, setStreamError] = useState<{ error: Error; statusAtError: IosSimulatorStatus | null } | null>(null);
   const onStreamError = useCallback((message: string | null) => {
     if (!message) return;
     // Not an error to show: the device is off, and watching never boots it.
@@ -335,7 +366,9 @@ export function AppleDevicePane({
       refreshList();
       return;
     }
-    setError(new Error(message));
+    setStreamError({ error: new Error(message), statusAtError: statusRef.current });
+    // The re-read is what tells "stopped" from "broken".
+    refreshList();
   }, [markOff, refreshList]);
 
   const booted = appleLaneDeviceBooted({
@@ -372,6 +405,13 @@ export function AppleDevicePane({
     streamReady: stream.url != null,
     streamState: stream.state,
   });
+
+  // A device that is off, or a stream that is live again, owes no stream error.
+  const streamLive = stream.state === "live";
+  useEffect(() => {
+    if (!booted || streamLive) setStreamError(null);
+  }, [booted, streamLive]);
+  const shownStreamError = streamError && booted && status !== streamError.statusAtError ? streamError.error : null;
 
   useAppleLoadingWatchdog(startTracker, {
     loading: state === "starting",
@@ -605,7 +645,7 @@ export function AppleDevicePane({
   const [runtimesNonce, setRuntimesNonce] = useState(0);
   const runtimes$ = useAppleRuntimes({
     runtimePinRef,
-    pinKey: runtimePin?.key ?? null,
+    pinKey: runtimePin.key,
     laneId,
     enabled: !hidden,
     refreshNonce: runtimesNonce,
@@ -785,7 +825,7 @@ export function AppleDevicePane({
     laneId,
     chatSessionId: sessionId,
     runtimePinRef,
-    pinKey: runtimePin?.key ?? null,
+    pinKey: runtimePin.key,
     // Only a real fold moves the drawn hinge and the slider: a turn of the
     // phone, or a report a degree off, leaves both where the slider put them.
     onAngle: (angle) => setDuoState((current) => (appleDuoSameHinge(current.pose.angle, angle)
@@ -907,7 +947,7 @@ export function AppleDevicePane({
   const effectiveMode: AppleViewMode = canUse3d ? mode : "flat";
 
   const deviceName = laneDevice?.name ?? "Simulator";
-  const duoModel = useAppleDuoModel({ enabled: duoCapable && canUse3d, pinKey: runtimePin?.key ?? null, runtimePinRef });
+  const duoModel = useAppleDuoModel({ enabled: duoCapable && canUse3d, pinKey: runtimePin.key, runtimePinRef });
   /** How the Duo is held, in the rotate control's terms; null until it says. */
   const duoHeld = duoCapable ? appleDuoHeldOrientation(duoPosture) : null;
   const duoTent = appleDuoInTent(duoPosture);
@@ -952,7 +992,7 @@ export function AppleDevicePane({
     deviceName,
     duoCapable,
     runtimePinRef,
-    pinKey: runtimePin?.key ?? null,
+    pinKey: runtimePin.key,
     effectiveMode,
     setMode,
     live: (state === "live" || state === "video-lost") && canUse3d,
@@ -1199,17 +1239,23 @@ export function AppleDevicePane({
     && (!status.activeSession?.laneId || !laneId || status.activeSession.laneId === laneId)
     ? status.remoteHolder
     : null;
-  // "An agent on Mac mini": the wording the phone's owner ribbon uses too.
+  // The pane's own chat by its title; any other: "An agent on Mac mini", the
+  // wording the phone's owner ribbon uses too.
   const remoteHolderLabel = remoteHolder
-    ? remoteAgentHolderLabel(remoteHolder.machineName, { sentenceStart: true })
+    ? remoteDriverLabel(remoteHolder, status?.activeSession?.chatSessionId ?? null, driverChat)
     : null;
+  // This pane's own chat driving it is what the pane is for: the tools pane
+  // already shows what that agent does, with Take over. Only another agent's
+  // hold earns a strip.
+  const otherAgentHolds = Boolean(remoteHolder)
+    && !holderIsPaneChat(status?.activeSession?.chatSessionId ?? null, driverChat?.sessionId ?? sessionId);
   async function freeDeviceFromRemoteAgent(): Promise<void> {
     const holderSessionId = status?.activeSession?.chatSessionId ?? null;
     if (!holderSessionId) return;
     const confirmed = await confirmDialog({
-      title: "Free this device?",
-      message: `${remoteHolderLabel} is driving this device. Freeing it ends that agent's session here and stops its live view. If the agent is still working, it can take the device again.`,
-      confirmLabel: "Free device",
+      title: "Take the simulator back?",
+      message: `${remoteHolderLabel} is using this simulator. Taking it back ends that agent's hold on it; the simulator keeps running and nothing on it is lost. If that agent is still working, it can take it again.`,
+      confirmLabel: "Take it back",
       destructive: true,
     });
     if (!confirmed) return;
@@ -1238,12 +1284,19 @@ export function AppleDevicePane({
     }
   }
 
-  const strip = error != null
+  const stripError = error ?? shownStreamError;
+  const strip = stripError != null
     ? (
       <AppleDeviceStatusStrip
-        error={error}
-        onAction={handleStripAction}
-        onDismiss={() => setError(null)}
+        error={stripError}
+        onAction={(action) => {
+          setStreamError(null);
+          handleStripAction(action);
+        }}
+        onDismiss={() => {
+          setError(null);
+          setStreamError(null);
+        }}
       />
     )
     : state === "video-lost"
@@ -1267,14 +1320,14 @@ export function AppleDevicePane({
             onSecondaryAction={chooseAnotherDevice}
           />
         )
-        /* An agent on another machine (`ade apple … --machine`) holds this
-           device. Said here, on the pane the person is looking at, so the
-           simulator moving on its own has a reason; ending it asks first. */
-        : remoteHolder && state !== "no-device"
+        /* ANOTHER agent on another machine (`ade apple … --machine`) holds
+           this device: said here, so the simulator moving on its own has a
+           reason; taking it back asks first. Never for this pane's own chat. */
+        : otherAgentHolds && state !== "no-device"
           ? (
             <AppleDeviceNoticeStrip
-              sentence={`${remoteHolderLabel} is driving this device.`}
-              actionLabel="Free device"
+              sentence={`${remoteHolderLabel} is using this simulator.`}
+              actionLabel="Take it back"
               onAction={() => { void freeDeviceFromRemoteAgent(); }}
               busy={endingRemoteSession}
             />
@@ -1412,22 +1465,21 @@ export function AppleDevicePane({
           ) : null}
 
           {confirmSwitch ? (
-            <div className="absolute inset-x-0 bottom-0 z-20 flex min-w-0 flex-wrap items-center gap-2 border-t border-border bg-surface px-3 py-2 font-sans text-xs text-fg">
-              {/* What "switch" does depends on who made the device: ADE's own
-                  is deleted now, with its apps and data; the user's stays
-                  installed and is only given back. */}
-              <span className="min-w-0 flex-1">
-                {laneDevice && isAdeOwnedLaneDevice(laneDevice.origin)
-                  ? `Delete ${laneDevice.name} and pick another? ADE made it, so its apps and data go with it.`
-                  : "Give up this device and pick another? It stays installed."}
-              </span>
+            /* What "switch" does depends on who made the device: ADE's own
+               is deleted now, with its apps and data; the user's stays
+               installed and is only given back. */
+            <AppleDeviceConfirmBar
+              sentence={laneDevice && isAdeOwnedLaneDevice(laneDevice.origin)
+                ? `Delete ${laneDevice.name} and pick another? ADE made it, so its apps and data go with it.`
+                : "Give up this device and pick another? It stays installed."}
+            >
               <Button variant="ghost" size="sm" onClick={() => setConfirmSwitch(false)}>
                 Keep it
               </Button>
               <Button variant="danger" size="sm" onClick={switchDevice}>
                 {laneDevice && isAdeOwnedLaneDevice(laneDevice.origin) ? "Delete and switch" : "Switch device"}
               </Button>
-            </div>
+            </AppleDeviceConfirmBar>
           ) : null}
 
           <AppleRecordingSavedRow
@@ -1480,23 +1532,6 @@ export function AppleDevicePane({
           onRender={(request) => void runRender(request).catch(() => undefined)}
         />
       ) : null}
-    </div>
-  );
-}
-
-function PaneMessage({ title, description }: { title: string; description: string | null }) {
-  return (
-    <div
-      data-apple-pane-message=""
-      className="ade-tool-picker-static flex size-full items-center justify-center px-6 py-10"
-    >
-      <div className="ade-tool-card flex w-full min-w-0 max-w-sm flex-col items-center gap-2 p-6 text-center">
-        <AppleLogo size={28} aria-hidden="true" className="text-muted-fg/60" />
-        <p className="min-w-0 break-words font-sans text-sm font-medium leading-5 text-fg">{title}</p>
-        {description ? (
-          <p className="min-w-0 break-words font-sans text-xs leading-5 text-muted-fg">{description}</p>
-        ) : null}
-      </div>
     </div>
   );
 }

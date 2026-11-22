@@ -56,6 +56,7 @@ import { useMentionChipResolution } from "./mentionChipLabels";
 import { getFileIcon } from "../files/filePresentation";
 import { buildChipMenuEntries } from "./chipMenu";
 import { chipMenuExtras, isChipActionable, openChipTarget, type ChipActionContext } from "./chipActions";
+import { useChatMachineWake } from "./useChatMachineWake";
 import { useMachineFacts } from "./useMachineFacts";
 import { isComputerSettingsEntry, settingsEntryById, settingsEntryLabelPath, settingUnavailableReason } from "../settings/settingsManifest";
 import { settingIsProtected } from "../../../shared/settingsAgentAccess";
@@ -298,6 +299,8 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
   const mention = useMentionChipResolution(chip, chatScope);
   const machineKey = chip.source.origin === "mention" && chip.source.mentionKind === "machine" ? chip.source.id : null;
   const machineFacts = useMachineFacts(machineKey);
+  // A model chip's "New chat with this model" on a sleeping cloud computer (the chat works it out once).
+  const chatMachine = useChatMachineWake();
   // A terminal's name lives in the chat machine's session roster.
   const terminalId = chip.source.origin === "mention" && chip.source.mentionKind === "terminal"
     ? chip.source.id.toLowerCase()
@@ -316,6 +319,7 @@ export function TranscriptChip({ chip }: { chip: Chip }) {
     openWorkspacePath,
     prTarget: mention.prTarget,
     machineFacts: machineFacts ?? null,
+    machineResting: chatMachine.resting,
     openMenu: () => openMenuRef.current(),
   };
   const actionable = isChipActionable(chip, actionContext);

@@ -1,6 +1,6 @@
 # Windows Desktop
 
-On a Windows host, `ade screen` is Windows Desktop (every output says
+On Windows, `ade screen` is Windows Desktop (every output says
 "Windows Desktop"). The verbs are the Mac ones in SKILL.md, with the Windows notes
 here. Start every task with `ade screen status --text`: it names the seat, who
 holds the private screen, whether setup and the saved password are done, whether

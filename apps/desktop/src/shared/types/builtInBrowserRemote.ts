@@ -109,6 +109,13 @@ export const BUILT_IN_BROWSER_REMOTE_CALL_EVENT = "built_in_browser_remote_call"
  * other bridge method its machine; a method can be sent here only when it is
  * in this list.
  */
+/**
+ * The Messages integration's methods on the desktop bridge. Only the brain's
+ * `messages` domain calls them (it raises the send approval card first); the
+ * RPC server refuses them as `built_in_browser` actions.
+ */
+export const BUILT_IN_BROWSER_MESSAGES_METHODS = ["messagesStatus", "messagesRecent", "messagesChats", "messagesSend"] as const;
+
 export const BUILT_IN_BROWSER_REMOTE_CALL_METHODS = [
   "navigate",
   "createTab",
@@ -133,6 +140,9 @@ export const BUILT_IN_BROWSER_REMOTE_CALL_METHODS = [
   "dispatchKey",
   "scroll",
   "fill",
+  "signin",
+  "signup",
+  ...BUILT_IN_BROWSER_MESSAGES_METHODS,
   "clear",
   "wait",
   "captureScreenshot",
@@ -179,13 +189,15 @@ export function isBuiltInBrowserRemoteCallMethod(value: unknown): value is Built
  *   opening the collection, so `ade browser status` lists every tab on every
  *   machine with its owner.
  * - `releaseLaneTabs`: a lane was deleted or archived; free its tabs.
+ * - `chatBrowserLifecycle`: a chat started a turn, went idle, or ended; its
+ *   agent tabs keep running, start their countdown, or close.
  */
-export const BUILT_IN_BROWSER_REMOTE_BROADCAST_METHODS = ["listTabsForAgent", "releaseLaneTabs"] as const;
+export const BUILT_IN_BROWSER_REMOTE_BROADCAST_METHODS = ["listTabsForAgent", "releaseLaneTabs", "chatBrowserLifecycle"] as const;
 
 export type BuiltInBrowserRemoteBroadcastMethod = (typeof BUILT_IN_BROWSER_REMOTE_BROADCAST_METHODS)[number];
 
 export function isBuiltInBrowserRemoteBroadcastMethod(value: unknown): value is BuiltInBrowserRemoteBroadcastMethod {
-  return value === "listTabsForAgent" || value === "releaseLaneTabs";
+  return value === "listTabsForAgent" || value === "releaseLaneTabs" || value === "chatBrowserLifecycle";
 }
 
 /** Emitted by the daemon; taken only by the desktop it names. */

@@ -1,7 +1,12 @@
 {
   "version": 1,
-  "updatedAt": "2026-10-26T20:00:00Z",
+  "updatedAt": "2026-11-20T08:00:00Z",
   "defaults": {
+    "free": [
+      {
+        "model": "opencode/opencode/big-pickle"
+      }
+    ],
     "app": [
       {
         "model": "anthropic/claude-opus-5-5"
@@ -15,22 +20,22 @@
       ],
       "codex": [
         {
-          "model": "openai/gpt-6.1-sol"
+          "model": "openai/gpt-6.2-sol"
         }
       ]
     }
   },
   "models": [
     {
-      "id": "openai/gpt-6.1-sol",
+      "id": "openai/gpt-6.2-sol",
       "after": "anthropic/claude-opus-5",
       "fields": {
-        "shortId": "gpt-6.1-sol",
+        "shortId": "gpt-6.2-sol",
         "aliases": [
           "sol",
-          "gpt-6.1-sol"
+          "gpt-6.2-sol"
         ],
-        "displayName": "GPT-6.1 Sol",
+        "displayName": "GPT-6.2 Sol",
         "family": "openai",
         "authTypes": [
           "cli-subscription"
@@ -57,7 +62,7 @@
         ],
         "color": "#10A37F",
         "providerRoute": "codex-cli",
-        "providerModelId": "gpt-6.1-sol",
+        "providerModelId": "gpt-6.2-sol",
         "cliCommand": "codex",
         "isCliWrapped": true,
         "inputPricePer1M": 2,
@@ -66,8 +71,27 @@
       }
     },
     {
-      "id": "openai/gpt-6-astra",
+      "id": "openai/gpt-6.2-astra",
+      "after": "openai/gpt-6.2-sol",
       "fields": {
+        "shortId": "gpt-6.2-astra",
+        "aliases": [
+          "astra",
+          "gpt-6.2-astra"
+        ],
+        "displayName": "GPT-6.2 Astra",
+        "family": "openai",
+        "authTypes": [
+          "cli-subscription"
+        ],
+        "contextWindow": 1050000,
+        "maxOutputTokens": 128000,
+        "capabilities": {
+          "tools": true,
+          "vision": true,
+          "reasoning": true,
+          "streaming": true
+        },
         "reasoningTiers": [
           "low",
           "medium",
@@ -75,12 +99,24 @@
           "xhigh",
           "max",
           "ultra"
-        ]
+        ],
+        "defaultReasoningEffort": "low",
+        "serviceTiers": [
+          "fast"
+        ],
+        "color": "#10A37F",
+        "providerRoute": "codex-cli",
+        "providerModelId": "gpt-6.2-astra",
+        "cliCommand": "codex",
+        "isCliWrapped": true,
+        "inputPricePer1M": 8,
+        "outputPricePer1M": 40,
+        "costTier": "very_high"
       }
     },
     {
       "id": "openai/gpt-6.1-terra",
-      "after": "openai/gpt-6-astra",
+      "after": "openai/gpt-6.2-astra",
       "fields": {
         "shortId": "gpt-6.1-terra",
         "aliases": [
@@ -124,7 +160,7 @@
     },
     {
       "id": "openai/gpt-6-sol",
-      "after": "openai/gpt-6-astra",
+      "after": "openai/gpt-6.2-astra",
       "fields": {
         "shortId": "gpt-6-sol",
         "aliases": [
@@ -262,6 +298,66 @@
       "fields": {
         "deprecated": true
       }
+    },
+    {
+      "id": "openai/gpt-6.1-sol",
+      "after": "openai/gpt-5.5",
+      "fields": {
+        "shortId": "gpt-6.1-sol",
+        "aliases": [
+          "gpt-6.1-sol"
+        ],
+        "displayName": "GPT-6.1 Sol",
+        "family": "openai",
+        "authTypes": [
+          "cli-subscription"
+        ],
+        "contextWindow": 1050000,
+        "maxOutputTokens": 128000,
+        "capabilities": {
+          "tools": true,
+          "vision": true,
+          "reasoning": true,
+          "streaming": true
+        },
+        "reasoningTiers": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "defaultReasoningEffort": "low",
+        "serviceTiers": [
+          "fast"
+        ],
+        "color": "#10A37F",
+        "providerRoute": "codex-cli",
+        "providerModelId": "gpt-6.1-sol",
+        "cliCommand": "codex",
+        "isCliWrapped": true,
+        "inputPricePer1M": 2,
+        "outputPricePer1M": 10,
+        "costTier": "medium"
+      }
+    },
+    {
+      "id": "openai/gpt-6-astra",
+      "fields": {
+        "reasoningTiers": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "aliases": [
+          "gpt-6-astra"
+        ]
+      },
+      "after": "openai/gpt-6.1-sol"
     }
   ]
 }

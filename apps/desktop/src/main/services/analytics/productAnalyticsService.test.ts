@@ -5,8 +5,10 @@ import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ReleaseChannel } from "../../../shared/packageChannel";
 import type { AgentChatTurnSettledEvent } from "../chat/agentChatService";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { localDayKey, localDayOffset } from "../usage/localDay";
 import { recordUsageInteraction } from "../usage/usageStatsStore";
 import type { AdeUsageStats } from "../../../shared/types";
@@ -61,6 +63,7 @@ function makeHarness(options: {
   messages?: Array<Record<string, unknown>>;
   appVersion?: string;
   runtimeMode?: string;
+  releaseChannel?: ReleaseChannel;
   captureClientMessage?: ProductAnalyticsClient["capture"];
   flush?: () => Promise<void>;
   machineId?: () => string | null | undefined;
@@ -86,6 +89,7 @@ function makeHarness(options: {
     logger: { debug: vi.fn(), warn: vi.fn() } as never,
     appVersion: options.appVersion ?? "1.2.3",
     runtimeMode: options.runtimeMode ?? "test_harness",
+    releaseChannel: options.releaseChannel,
     projectToken: options.token ?? "phc_test_project_token",
     dailyBudget: options.dailyBudget,
     now: options.now,
@@ -108,6 +112,12 @@ describe("productAnalyticsService", () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("ADE_DISABLE_PRODUCT_ANALYTICS", "0");
     vi.stubEnv("ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT", "1");
+    // GitHub Actions sets these. The suite turns the test gate off on purpose
+    // so it can watch a send; it still has to clear the CI gate.
+    vi.stubEnv("CI", "");
+    vi.stubEnv("GITHUB_ACTIONS", "");
+    vi.stubEnv("ADE_TEMPLATE_CHECK", "");
+    vi.stubEnv("ADE_DEV_BRAIN", "");
   });
 
   afterEach(() => {
@@ -129,6 +139,9 @@ describe("productAnalyticsService", () => {
       ok: true,
       value: { surface: "cli" },
     });
+    // This case is a non-development send. The suite's default `NODE_ENV` is
+    // development, and that now marks the event internal.
+    vi.stubEnv("NODE_ENV", "production");
     const harness = makeHarness();
     const result = harness.service.capture({
       event: "ade_feature_used",
@@ -696,25 +709,30 @@ describe("productAnalyticsService", () => {
     expect(JSON.stringify(harness.messages)).not.toContain("private");
   });
 
-  it("accepts the three capture-gesture outcomes and nothing about the window", () => {
+  it.each([
+    { action: "capture_gesture", surface: "desktop", outcomes: ["delivered", "failed", "too_large"] },
+    { action: "cto_home_move", surface: "api", outcomes: ["completed", "kept", "failed"] },
+  ] as const)("accepts the CTO's $action outcomes and nothing private beside them", ({ action, surface, outcomes }) => {
     const harness = makeHarness();
 
-    for (const outcome of ["delivered", "failed", "too_large"]) {
+    for (const outcome of outcomes) {
       harness.service.captureInternal({
         event: "ade_feature_used",
-        surface: "desktop",
+        surface,
         properties: {
           feature: "cto",
-          action: "capture_gesture",
+          action,
           outcome,
           window_title: "Bank of Somewhere — Statement",
         },
-        dedupeKey: `capture_gesture:${outcome}`,
+        dedupeKey: `${action}:${outcome}`,
       });
     }
 
     expect(harness.messages.map((message) => (message.properties as { outcome?: string } | undefined)?.outcome))
-      .toEqual(["delivered", "failed", "too_large"]);
+      .toEqual([...outcomes]);
+    expect(harness.messages.map((message) => (message.properties as { action?: string } | undefined)?.action))
+      .toEqual(outcomes.map(() => action));
     expect(JSON.stringify(harness.messages)).not.toContain("Bank of Somewhere");
   });
 
@@ -966,6 +984,23 @@ describe("productAnalyticsService", () => {
     ].entries()) {
       expect(capture({ action_domain: "file", error_code: leaked }, `leak-${index}`))
         .not.toHaveProperty("error_code");
+    }
+
+    // `brain_frame` is the brain's own `function:line`, kept as written (case
+    // and all); a frame that carries a path, a file name or a sentence is dropped.
+    expect(capture({ action_domain: "diff", error_code: "rpc_tool_failed", brain_frame: "Object.getChanges:470" }, "f1"))
+      .toMatchObject({ brain_frame: "Object.getChanges:470" });
+    expect(capture({ action_domain: "diff", error_code: "rpc_tool_failed", brain_frame: "<anonymous>:88" }, "f2"))
+      .toMatchObject({ brain_frame: "<anonymous>:88" });
+    for (const [index, leaked] of [
+      "/Users/alice/secret-project/src/index.ts:12",
+      "getChanges (/Users/alice/secret-project/app.js:12:3)",
+      "C:\\Users\\alice\\app.js:12",
+      "could not read the file:12",
+      "getChanges",
+    ].entries()) {
+      expect(capture({ action_domain: "diff", error_code: "rpc_tool_failed", brain_frame: leaked }, `frame-${index}`))
+        .not.toHaveProperty("brain_frame");
     }
     expect(JSON.stringify(harness.messages)).not.toContain("alice");
     expect(JSON.stringify(harness.messages)).not.toContain("example.com");
@@ -1309,6 +1344,58 @@ describe("productAnalyticsService", () => {
     });
     fs.rmSync(unconfigured.root, { recursive: true, force: true });
     fs.rmSync(configured.root, { recursive: true, force: true });
+  });
+
+  it.each(["GITHUB_ACTIONS", "CI", "ADE_TEMPLATE_CHECK"] as const)(
+    "accepts nothing when %s is set",
+    (name) => {
+      vi.stubEnv(name, "true");
+      const harness = makeHarness();
+      expect(harness.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({
+        accepted: false,
+        reason: "disabled",
+      });
+      expect(harness.messages).toHaveLength(0);
+      fs.rmSync(harness.root, { recursive: true, force: true });
+    },
+  );
+
+  it("tags a development-channel send as internal when analytics is enabled", () => {
+    const harness = makeHarness({ releaseChannel: "development" });
+    expect(harness.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({
+      accepted: true,
+      reason: "accepted",
+    });
+    expect(harness.messages[0]).toMatchObject({
+      properties: { is_internal: true, environment: "development", release_channel: "development" },
+    });
+    // The event is internal. The account is not: `$identify` never lowers
+    // the person flag, so a development sign-in must not set it.
+    harness.service.identifyAccount("clerk_user_real_1");
+    const identify = harness.messages.find((message) => message.event === "$identify") as
+      | { properties: { $set: Record<string, unknown> } }
+      | undefined;
+    expect(identify?.properties).toMatchObject({ is_internal: true, environment: "development" });
+    expect(identify?.properties.$set).not.toHaveProperty("is_internal");
+    fs.rmSync(harness.root, { recursive: true, force: true });
+
+    // `NODE_ENV=development` with the opt-in is a development send even when
+    // the build has no release channel. The person stays unmarked.
+    const byNodeEnv = makeHarness();
+    expect(byNodeEnv.service.capture({ event: "ade_app_opened", surface: "desktop" })).toEqual({
+      accepted: true,
+      reason: "accepted",
+    });
+    expect(byNodeEnv.messages[0]).toMatchObject({
+      properties: { is_internal: true, environment: "development" },
+    });
+    byNodeEnv.service.identifyAccount("clerk_user_real_2");
+    const nodeIdentify = byNodeEnv.messages.find((message) => message.event === "$identify") as
+      | { properties: { $set: Record<string, unknown> } & Record<string, unknown> }
+      | undefined;
+    expect(nodeIdentify?.properties).toMatchObject({ is_internal: true, environment: "development" });
+    expect(nodeIdentify?.properties.$set).not.toHaveProperty("is_internal");
+    fs.rmSync(byNodeEnv.root, { recursive: true, force: true });
   });
 
   it("is inert in development unless analytics is explicitly enabled", () => {
@@ -2406,15 +2493,6 @@ describe("product analytics producers", () => {
         amount: "$5",
       })).toEqual({ feature: "connections", action: "cloud_plan", outcome });
     }
-    for (const outcome of ["enabled", "disabled", "completed", "failed", "ready_picker", "ready_cli"]) {
-      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
-        feature: "connections",
-        action: "cloud_ready",
-        outcome,
-        repository: "github.com/acme/app",
-        setup: "npm ci",
-      })).toEqual({ feature: "connections", action: "cloud_ready", outcome });
-    }
     for (const { id } of CLOUD_SIGN_INS) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "connections",
@@ -2504,6 +2582,9 @@ describe("product analytics producers", () => {
   });
 
   it.each([
+    ["browser", "tab_kept", "completed"],
+    ["browser", "remote_tab_watched", "completed"],
+    ["browser", "remote_tab_controlled", "completed"],
     ["lanes", "template_setup_started", "from_banner"],
     ["lanes", "template_setup_started", "from_settings"],
     ["lanes", "template_suggestion_hidden", "completed"],
@@ -2845,10 +2926,10 @@ describe("product analytics producers", () => {
 describe("usage product analytics exporter", () => {
   async function withUsageDb(
     name: string,
-    run: (db: Awaited<ReturnType<typeof openKvDb>>) => Promise<void>,
+    run: (db: AdeDb) => Promise<void>,
   ): Promise<void> {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), name));
-    const db = await openKvDb(path.join(root, "ade.db"), analyticsLogger() as never);
+    const db = await openFreshKvDb(path.join(root, "ade.db"), analyticsLogger() as never);
     try {
       await run(db);
     } finally {

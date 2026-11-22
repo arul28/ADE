@@ -28,6 +28,7 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import {
   copyIssueText,
   IssueActionDock,
+  IssueNoMachineNotice,
   IssueStaleBanner,
   IssueViewerFrame,
   IssueViewerHeader,
@@ -70,14 +71,14 @@ export function GitHubIssueViewer({
     return {
       readOnlyReason,
       catalog,
-      onNeedCatalog: () => loadGitHubRepoCatalog(repo),
+      onNeedCatalog: () => loadGitHubRepoCatalog(repo, entry.pin),
       onPatch: (patch, optimistic) => {
-        void editGitHubIssue(entry.projectRoot, issue, patch, optimistic).catch(fail);
+        void editGitHubIssue(entry.projectRoot, issue, patch, optimistic, entry.pin).catch(fail);
       },
-      onSaveTitle: (title) => editGitHubIssue(entry.projectRoot, issue, { title }, { title }),
-      onSaveBody: (body) => editGitHubIssue(entry.projectRoot, issue, { body }, { body }),
+      onSaveTitle: (title) => editGitHubIssue(entry.projectRoot, issue, { title }, { title }, entry.pin),
+      onSaveBody: (body) => editGitHubIssue(entry.projectRoot, issue, { body }, { body }, entry.pin),
       onComment: async (body) => {
-        await commentOnGitHubIssue(issue, body);
+        await commentOnGitHubIssue(issue, body, entry.pin);
         // The count on the issue feeds the activity header and the list rows.
         entry.refresh();
       },
@@ -106,7 +107,9 @@ export function GitHubIssueViewer({
   );
 
   let body: React.ReactNode;
-  if (!issue) {
+  if (!issue && !entry.pin) {
+    body = <IssueNoMachineNotice url={url} openLabel="Open on GitHub" onLeave={onClose} />;
+  } else if (!issue) {
     body = <GitHubLoadState status={entry.status} error={entry.error} githubRef={githubRef} url={url} onRetry={entry.refresh} />;
   } else if (issue.isPullRequest) {
     // GitHub numbers issues and pull requests from one sequence, and an
