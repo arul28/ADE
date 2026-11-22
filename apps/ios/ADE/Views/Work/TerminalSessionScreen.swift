@@ -11,6 +11,9 @@ struct TerminalSessionScreen: View {
   @Environment(\.dismiss) private var dismiss
 
   let session: TerminalSessionSummary
+  /// The lane's shown name (`workSessionLaneDisplayName`): "Main checkout",
+  /// never the stored "Primary".
+  let laneName: String
   /// The top bar's leading control: Back (the pushed screen), or, as the
   /// Duo's detail column beside the sessions list, the way back to the list
   /// while it is away and nothing while it shows (a column has no stack to
@@ -351,7 +354,7 @@ struct TerminalSessionScreen: View {
   }
 
   private var titleText: String {
-    "\(runtimeLabel) · \(session.laneName)"
+    "\(runtimeLabel) · \(laneName)"
   }
 
   private var runtimeLabel: String {

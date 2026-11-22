@@ -343,6 +343,14 @@ func resolvedWorkNavigationLaneId(for session: TerminalSessionSummary, lanes: [L
   return session.laneId
 }
 
+/// The name a screen shows for a session's lane: the main checkout reads
+/// "Main checkout", never its stored "Primary". A lane this phone does not
+/// list keeps the session's own name.
+func workSessionLaneDisplayName(_ session: TerminalSessionSummary, lanes: [LaneSummary]) -> String {
+  let laneId = resolvedWorkNavigationLaneId(for: session, lanes: lanes)
+  return lanes.first(where: { $0.id == laneId })?.displayName ?? session.laneName
+}
+
 private func normalizedWorkLaneLookupValue(_ value: String) -> String {
   value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }

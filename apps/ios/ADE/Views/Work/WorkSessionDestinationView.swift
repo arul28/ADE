@@ -1415,7 +1415,7 @@ struct WorkSessionDestinationView: View {
     // The CTO's lane is a stand-in named "CTO": the title already says it.
     if duoCtoSettings == nil,
        let current,
-       let lane = nonEmptyTrimmed(lanes.first(where: { $0.id == current.laneId })?.displayName ?? current.laneName) {
+       let lane = nonEmptyTrimmed(workSessionLaneDisplayName(current, lanes: lanes)) {
       parts.append(lane)
     }
     let model = shortModelLabel(composerChatSummary?.model)
@@ -2245,7 +2245,11 @@ struct WorkSessionDestinationView: View {
       if isChatSession(session) {
         chatSessionDestinationRoot(for: session)
       } else {
-        TerminalSessionScreen(session: session, leading: terminalLeadingControl)
+        TerminalSessionScreen(
+          session: session,
+          laneName: workSessionLaneDisplayName(session, lanes: lanes),
+          leading: terminalLeadingControl
+        )
           .environmentObject(syncService)
       }
     } else {
