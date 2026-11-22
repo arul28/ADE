@@ -326,7 +326,7 @@ function cloudPhoneIdleViewport(control: CloudPhoneControl, showing: boolean): R
   const { status, off, minutesLine, model, family, ready, run } = control;
   if (!status) return <PaneMessage title="ADE Cloud iPhone" description="Reading this account's cloud iPhone…" />;
   if (status.access !== "on") {
-    return <PaneMessage title={status.access === "soon" ? "ADE Cloud iPhone is coming soon" : "ADE Cloud iPhone"} description={status.reason} />;
+    return <PaneMessage title="ADE Cloud iPhone" description={status.reason} />;
   }
   if (off) {
     return (

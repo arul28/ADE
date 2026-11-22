@@ -14,7 +14,7 @@
  *   GET    /cloud/instances/:id                CloudInstance
  *   DELETE /cloud/instances/:id                { deleted: true }
  *   POST   /cloud/instances/:id/sleep          { status }
- *   POST   /cloud/instances/:id/start          { status }
+ *   POST   /cloud/instances/:id/start          { status }   ({ origin: "mcp" }: an outside agent asked; 403 `outside_agent_free_plan` on the free plan)
  *   POST   /cloud/instances/:id/stop           { status }
  *   POST   /cloud/instances/:id/idle           { status }   the computer asks to be slept ({ backupReportId }: it rests with that backup report)
  *   POST   /cloud/instances/:id/update         { status, templateVersion }   409 `update_in_progress`
@@ -26,7 +26,7 @@
  *   GET    /cloud/instances/:id/status         CloudComputerStatus   (the lane's status menu; never wakes it)
  *   POST   /cloud/agent37/webhook              { ok: true }   NO account token: the provider's signed status change (Standard Webhooks)
  *   POST   /cloud/instances/:id/keep           { ok: true }   "Keep it": restarts the idle cleanup clock with no wake
- *   POST   /cloud/instances/:id/resize         { status }
+ *   POST   /cloud/instances/:id/resize         { status }   ({ origin: "mcp" }: an outside agent asked; 403 `outside_agent_free_plan` on the free plan)
  *   POST   /cloud/instances/:id/backups        { id, created, sizeBytes }
  *   PUT    /cloud/instances/:id/auto-sleep     { ok: true }
  *   POST   /cloud/instances/:id/public-ports   { port, url }
@@ -49,7 +49,7 @@
  *   POST   /cloud/billing/plan-cleanup         CloudAccountState   ({ planId, push, instanceIds }) 409 `nothing_to_free`, `cleanup_does_not_fit`, `cleanup_changed`, `cleanup_running`
  *   POST   /cloud/billing/portal               { url }   409 `no_billing`
  *   POST   /cloud/billing/extra-hours          CloudAccountState   403 `needs_paid_plan`
- *   POST   /cloud/billing/extra-disk           CloudAccountState   403 `needs_paid_plan`, 409 `disk_over_plan` (404 while extra disk isn't set up)
+ *   POST   /cloud/billing/extra-disk           404 since Pricing v2 (there is no extra disk to buy)
  *   POST   /cloud/billing/free-unlock          CloudFreeUnlockResult   409 `nothing_to_unlock`
  *   GET    /cloud/chats?machine&notMachine&project&lane&limit&cursor   { chats: CloudChatRow[], nextCursor }
  *   GET    /cloud/chats/:machine/:chat?before&limit     CloudChatTranscriptPage
@@ -90,9 +90,11 @@
  * (`GET, POST, PUT, DELETE`, headers `authorization, content-type`); any other
  * Origin is refused before the token is read. Native clients send no Origin.
  *
- * Every wake is use: it bills hours and restarts the idle cleanup clock. No
- * wake is allowed at 0 hours, or on the free plan with more disk than it has
- * (`over_plan_disk`). The work of a resting computer is in its lane backups
+ * Every wake is use: it restarts the idle cleanup clock, and bills hours on
+ * every size but Small. At 0 hours no computer that uses hours wakes; a
+ * Small one still does, except on an account with no free plan (a refused
+ * or held free plan), where nothing wakes. Since Pricing v2 there is no
+ * account-wide disk: `over_plan_disk` is never sent. The work of a resting computer is in its lane backups
  * (`laneBackups.ts`), which read with no wake.
  * `DELETE /cloud/instances/:id` takes `{ who, reason }`, recorded in the log.
  * With `{ keepLane: { branchRef } }` the lane the computer was made for
@@ -108,7 +110,8 @@
  * `onlyIfSaved` says so on the instance (`deleteOnlyIfSaved`); a client
  * sends it only then, because an older server ignores it.
  * `POST /cloud/instances` with `{ moveFromInstanceId }` gives the new computer
- * that computer's disk (a move), under the same plan limits.
+ * that computer's disk (a move). A move never counts against the computer
+ * limit (its computer replaces the old one).
  * `POST /cloud/instances/:id/resize` needs `{ computerIdle: true }` to grow the
  * disk of a running computer (a disk grow restarts it).
  * `POST /cloud/billing/extra-hours` takes `{ enabled }`, on a paid plan only.
@@ -118,9 +121,9 @@
  * another plan it changes the plan itself and answers `{ url: null, change }`:
  * `now` for an upgrade (charged now for the rest of the period; 402
  * `payment_failed` when the card is declined), `next_period` for a downgrade
- * (the higher plan's hours and disk stay until the period ends). Each paid
- * plan bills extra hours at its own price. Over the cheaper plan's disk, ADE
- * asks first: the request carries `cleanup`
+ * (the higher plan's hours and computers stay until the period ends). Each
+ * paid plan bills extra hours at its own price. Over the cheaper plan's
+ * computers, ADE asks first: the request carries `cleanup`
  * (`CloudPlanCleanupPick`, the computers ADE frees and whether their work is
  * pushed first), checked to make the account fit before anything changes
  * (409 `cleanup_does_not_fit` / `cleanup_changed`), and the server starts
@@ -130,22 +133,24 @@
  * switch plans on a subscription with more than one item.
  * `POST /cloud/billing/plan-cleanup` takes `{ planId, push, instanceIds }` for
  * an account already over a cheaper plan (one made in the billing portal, or
- * a plan that ended): the same check, then the same freeing. A create or copy
- * while the account holds more disk than the plan in force allows (extra
- * disk not covering it) is refused with 403 `over_plan_limits`; nothing is
- * ever freed without a pick. There is no limit on how many computers an
- * account has. A create, copy or wake past the hidden cap on computers awake
- * at once is refused with 429 `too_many_awake` (a wake waits a few seconds
- * for one to fall asleep first); its message never names a plan.
- * `POST /cloud/billing/extra-disk` takes `{ enabled, monthlyLimitUsd }`
- * (`monthlyLimitUsd` a whole number from 1 to 1000, needed to turn it on).
- * Turning it off while the computers hold more than the plan's disk is
- * refused with `disk_over_plan`.
- * A disk refusal is `disk_limit` (or `needs_paid_plan` on the free plan) with
- * `error.reason` (`CloudDiskRefusalReason`).
- * A wake, exec, update or new timed wake on the free plan (a cancelled plan
- * included, never `past_due`) with more disk than it has is refused with 402
- * `over_plan_disk`; timed wakes already set are deleted, as at 0 hours.
+ * a plan that ended): the same check, then the same freeing. A create, copy
+ * or move while the account has more computers than the plan in force allows
+ * is refused with 403 `over_plan_limits`; nothing is ever freed without a pick.
+ * Each plan allows a number of computers (`CloudPlanFacts.computerLimit`;
+ * asleep ones count, a lane with no computer doesn't). A create, copy or new
+ * lane at that number is refused with 403 `computer_limit`, carrying
+ * `CloudComputerLimitDetail` on the error. A create, copy or wake past the
+ * hidden cap on computers awake at once is refused with 429 `too_many_awake`
+ * (a wake waits a few seconds for one to fall asleep first); its message
+ * never names a plan.
+ * A disk refusal is `disk_limit` with `error.reason`
+ * (`CloudDiskRefusalReason`): since Pricing v2 only `tier_limit` (past the
+ * size's own disk) or `unavailable`.
+ * An outside agent (ADE MCP) starting ADE Cloud work on the free plan (a
+ * `past_due` plan included) is refused with 403 `outside_agent_free_plan`.
+ * It is known by the lane metadata `ade_made_by_agent: "mcp"` (create, copy,
+ * move), a launch's `madeBy: { kind: "agent", agent: "mcp" }`, or
+ * `origin: "mcp"` on a server copy, a move, a start, a resize or a sent message.
  * Deleting a computer always works.
  * `POST /cloud/instances` takes `{ channel: "stable" | "beta" }` (an Alpha
  * build sends `beta`; left out is `stable`): the computer starts from that
@@ -179,11 +184,6 @@ export function formatCloudCents(cents: number): string {
   return `$${(cents / 100).toFixed(cents % 100 === 0 ? 0 : 2)}`;
 }
 
-/** Why no computer wakes on the free plan above its disk (`over_plan_disk`), said the same by the server and ADE. */
-export function overPlanDiskSentence(usedGb: number, freeGb: number): string {
-  return `Your computers use ${usedGb} GB and the free plan has ${freeGb} GB at one time. Delete a computer, or get Plus.`;
-}
-
 export const CLOUD_PATHS = {
   access: "/cloud/access",
   account: "/cloud/account",
@@ -192,7 +192,6 @@ export const CLOUD_PATHS = {
   billingCheckout: "/cloud/billing/checkout",
   billingPortal: "/cloud/billing/portal",
   billingExtraHours: "/cloud/billing/extra-hours",
-  billingExtraDisk: "/cloud/billing/extra-disk",
   /** `POST` `{ planId, push, instanceIds }`: free the picked computers to fit a cheaper plan (`CloudPlanCleanupPick`). */
   billingPlanCleanup: "/cloud/billing/plan-cleanup",
   /** `POST {}`: save a card with no charge to start the free hours of a GitHub account younger than 30 days (`CloudFreeUnlockResult`). */
@@ -599,12 +598,22 @@ export type CloudPlanId = "free" | "plus" | "pro" | "max";
 export type CloudTierId = "small" | "medium" | "large" | "xlarge";
 
 /**
- * What a plan includes. `diskGb` is what the account may have at one time,
- * shared by all its computers; hours and phone minutes are a month's. There
- * is no limit on how many computers an account has.
+ * What a plan includes (Pricing v2, `docs/plans/pricing-v2-and-gravity.md`):
+ * how many cloud computers the account may have, asleep or not
+ * (`computerLimit`), and a month's hours for the sizes bigger than Small.
+ * Small computers never use hours. There is no account-wide disk: each size
+ * has its own disk maximum (`CloudCatalog.sizes[].diskMaxGb`).
  */
 export type CloudPlanFacts = {
+  /** A month's hours, in thousandths of a Medium-hour. Small computers never use them. */
   includedMilli: number;
+  /**
+   * For builds before Pricing v2 only, which show this as the plan's disk
+   * shared by all computers and check their own disk grows against it. Set
+   * to `computerLimit` x the largest size's `diskMaxGb`, so such a build never
+   * refuses a grow this server allows (each size's own disk maximum is the
+   * only disk limit now). New builds never read or show it.
+   */
   diskGb: number;
   priceUsd: number;
   /** ADE Cloud iPhone minutes a month (`phones.ts`). Older servers leave it out. */
@@ -613,14 +622,25 @@ export type CloudPlanFacts = {
   extraPhoneMinuteCents?: number | null;
   /** What one hour past the plan costs, in cents; null on the free plan, where work stops. Older servers leave it out (`CloudCatalog.extraHourCents`). */
   extraHourCents?: number | null;
-  /**
-   * For older builds only, which showed a computer count: the hidden cap on
-   * computers awake at once. Not a plan limit; never show it.
-   */
+  /** How many cloud computers the account may have, asleep or not. Servers before Pricing v2 sent the hidden awake cap here. */
   computerLimit?: number;
+  /** Whether outside agents (ADE MCP) may start ADE Cloud work on this plan. Older servers leave it out: read it as true. */
+  outsideAgents?: boolean;
 };
 
-/** The sizes and plans, so no client carries its own copy. A rate is `multiplierMilli / 1000` of a Small computer. */
+/** The offer, as every surface says it (`docs/plans/pricing-v2-and-gravity.md`). Never "0 hours". */
+export const CLOUD_SMALL_UNLIMITED_SENTENCE = "Unlimited Small computers. They never use your hours.";
+/** The small print beside it: the owner may act on a rare outlier. */
+export const CLOUD_SMALL_FAIR_USE_SENTENCE = "Small computers are for your own work and fall under fair use.";
+/** What one hour of the plan is: one hour on a Medium computer. */
+export const CLOUD_HOUR_UNIT_SENTENCE = "One hour is one hour on a Medium computer. Bigger sizes use more an hour.";
+
+/**
+ * The sizes and plans, so no client carries its own copy. A size uses
+ * `multiplierMilli / 1000` hours for each hour awake, in Medium-hours
+ * (Medium 1000, Large 2500, X-Large 4000). Small is 0: it never uses hours.
+ * Servers before Pricing v2 counted in Small-hours (Small 1000).
+ */
 export type CloudCatalog = {
   sizes: Array<{
     type: "default" | "vm";
@@ -643,16 +663,19 @@ export type CloudCatalog = {
   /** Plus's price, for builds that know only two plans. */
   paidPriceUsd: number;
   /**
-   * What one extra Small-hour costs on the account's plan (Plus's on the free
+   * What one extra hour costs on the account's plan (Plus's on the free
    * plan), for builds that know one price. Each plan's own is
    * `CloudPlanFacts.extraHourCents`.
    */
   extraHourCents: number;
-  /** What 10 GB of extra disk costs for a month, counted by the day. Servers before extra disk leave it out. */
+  /** `medium`: hours count Medium-hours, and Small uses none (Pricing v2). Older servers leave it out (Small-hours). */
+  hourUnit?: "medium";
+  /** Older servers only: what 10 GB of extra disk cost for a month. Pricing v2 servers leave it out (no extra disk). */
   extraDiskCentsPer10GbMonth?: number;
 };
 
 /**
+ * Older servers only (Pricing v2 sells no extra disk).
  * Extra disk (paid plans): disk above the plan's, counted by the day.
  * - `off`: never decided. The first grow past the plan's disk is refused with reason `needs_approval`, and ADE asks once.
  * - `asked`: the person said no. A grow past the plan's disk is refused with reason `extra_off`.
@@ -664,7 +687,8 @@ export type CloudExtraDiskState = "off" | "asked" | "on";
 /**
  * Why a disk grow, a create or a copy was refused with code `disk_limit`
  * (`error.reason`). A client that doesn't know a reason shows `error.message`,
- * which is always a plain sentence.
+ * which is always a plain sentence. Pricing v2 servers send only
+ * `tier_limit` and `unavailable`; the rest came from older servers.
  * - `plan_disk`: past the free plan's disk (the code is then `needs_paid_plan`).
  * - `needs_approval`: past a paid plan's disk with extra disk never decided.
  * - `extra_off`: past a paid plan's disk with extra disk turned down.
@@ -674,15 +698,6 @@ export type CloudExtraDiskState = "off" | "asked" | "on";
  */
 export type CloudDiskRefusalReason = "plan_disk" | "needs_approval" | "extra_off" | "monthly_limit" | "tier_limit" | "unavailable";
 
-/**
- * At the account's disk limit (`plan_disk`, `needs_approval`, `extra_off`,
- * `monthly_limit`), the refusal also names the computers that hold the disk,
- * biggest first (`error.lanes`): the lane's name (or the computer's), and its
- * disk. Optional: servers before it send none, and clients that don't read it
- * still have `error.message`.
- */
-export type CloudDiskLimitLane = { laneName: string; diskGb: number };
-
 export type CloudAccountState = {
   /** What the person pays for. A `past_due` paid account still says `paid` here. */
   plan: "free" | "paid";
@@ -691,7 +706,7 @@ export type CloudAccountState = {
   /** Which plan: `plus`, `pro` or `max` when `plan` is `paid` (a `past_due` one included). Older servers leave it out. */
   planId?: CloudPlanId;
   hours: {
-    /** All in integer thousandths of a Small-hour. */
+    /** All in integer thousandths of a Medium-hour (`CloudCatalog.hourUnit`). Small computers never use them. */
     includedMilli: number;
     usedMilli: number;
     leftMilli: number;
@@ -699,21 +714,22 @@ export type CloudAccountState = {
     state: CloudHoursState;
   };
   extraHours: { available: boolean; enabled: boolean; usedMilli: number };
-  /** Absent from older servers and while extra disk isn't set up. `usedCents` is this period's billable extra disk so far. */
-  extraDisk?: { available: boolean; state: CloudExtraDiskState; monthlyLimitCents: number | null; usedCents: number };
   /** The ADE Cloud iPhone: access, this period's minutes and extra minutes. Older servers leave it out. */
   phone?: CloudAccountPhone;
   /**
-   * Disk all computers hold at one time. `limitGb` is the plan's disk; null
-   * only from servers before plans, where each free computer has its own.
+   * Disk all computers hold. `limitGb` is null: there is no account-wide disk,
+   * each computer's size has its own maximum. Servers before Pricing v2 sent
+   * the plan's shared disk.
    */
   disk: { usedGb: number; limitGb: number | null };
   /**
-   * How many computers the account has and how many are awake. There is no
-   * limit on how many: `limit` is for older builds only (the hidden awake
-   * cap, `AWAKE_COMPUTER_CAP`), never shown as a plan limit.
+   * How many computers the account has (asleep or not) and how many are
+   * awake. `limit` is the plan's computer limit (`CloudPlanFacts.computerLimit`);
+   * servers before Pricing v2 sent the hidden awake cap. `nextPlan` is the
+   * plan the limit card offers (the next one up that is sold), null on Max;
+   * the same object a `computer_limit` refusal carries.
    */
-  computers: { total: number; awake: number; limit?: number };
+  computers: { total: number; awake: number; limit?: number; nextPlan?: CloudNextPlan | null };
   /**
    * Hours the meter settled over the last `days` whole UTC days, for the
    * "your hours last until" estimate. Older servers leave it out.
@@ -821,7 +837,7 @@ export function parseCloudInviteCode(input: unknown): string | null {
 }
 
 export type CloudEarnedHours = {
-  /** Earned hours left now, after what this period already drew. Thousandths of a Small-hour. */
+  /** Earned hours left now, after what this period already drew. Thousandths of a Medium-hour. */
   leftMilli: number;
   /** What this period drew from earned hours so far. */
   usedThisPeriodMilli: number;
@@ -980,8 +996,8 @@ export type CloudPlanCleanupPick = { push: boolean; instanceIds: string[] };
 /**
  * A cheaper plan's limits, when the account holds more than they allow (the
  * owner's rules of 2026-11-13). ADE never frees a computer on its own: the
- * person cleans up, or picks what ADE frees (`CloudPlanCleanupPick`). Disk
- * that extra disk covers counts as fitting.
+ * person cleans up, or picks what ADE frees (`CloudPlanCleanupPick`). Since
+ * Pricing v2 only the number of computers counts.
  */
 export type CloudPlanCleanup = {
   /** The cheaper plan whose limits apply. */
@@ -990,11 +1006,17 @@ export type CloudPlanCleanup = {
   computers: CloudPlanCleanupComputer[];
   /** Every computer a pick may name, oldest first. Older servers leave it out (then only `computers`). */
   choices?: CloudPlanCleanupComputer[];
+  /**
+   * For older builds only, which compared disk: the account's disk, and a
+   * limit that is the same number (since Pricing v2 only the computer count
+   * counts). Never show them.
+   */
   usedGb: number;
   limitGb: number;
   /**
-   * For older builds only, which checked a computer count too: how many
-   * computers the account has, and a limit never below it. Only disk counts.
+   * How many computers the account has, and how many the cheaper plan
+   * allows. Servers before Pricing v2 compared disk and sent a limit never
+   * below the count.
    */
   computerCount?: number;
   computerLimit?: number;
@@ -1019,6 +1041,7 @@ export type CloudPlanCleanupDone = {
   kept: Array<{ name: string; reason: string }>;
 };
 
+/** `over_plan_disk` came from older servers only. At `out_of_hours` a Small computer's timed wake-ups stay (except on an account with no free plan). */
 export type CloudTimedWakesCancelled = { at: number; count: number; reason: "out_of_hours" | "over_plan_disk" };
 
 /** Why timed wake-ups were cancelled and how they come back: the email's body and ADE's notice. */
@@ -1114,23 +1137,87 @@ export function planCleanupDoneSentence(done: CloudPlanCleanupDone): string {
 
 /**
  * What goes over a cheaper plan's limits, said the same by the server, its
- * emails and ADE: "Plus allows 30 GB of disk at one time and your computers
- * use 63 GB." Only disk counts: there is no limit on how many computers.
+ * emails and ADE: "Plus allows 3 cloud computers and you have 5." Only the
+ * number of computers counts.
  */
-export function planCleanupSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "usedGb" | "limitGb">): string {
-  if (cleanup.usedGb <= cleanup.limitGb) return "";
+export function planCleanupSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "computerCount" | "computerLimit">): string {
+  const count = cleanup.computerCount ?? 0;
+  const limit = cleanup.computerLimit ?? count;
+  if (count <= limit) return "";
   const plan = CLOUD_PLAN_SENTENCE_NAMES[cleanup.planId];
   const Plan = plan.charAt(0).toUpperCase() + plan.slice(1);
-  return `${Plan} allows ${cleanup.limitGb} GB of disk at one time and your computers use ${cleanup.usedGb} GB.`;
+  return `${Plan} allows ${cloudComputersPhrase(limit)} and you have ${count}.`;
 }
 
 /**
  * Why a create is refused while the account is over the plan in force
  * (`over_plan_limits`): the server's refusal and ADE's notice say the same.
  */
-export function overPlanLimitsSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "usedGb" | "limitGb">): string {
-  return `${planCleanupSentence(cleanup)} ADE can't make a new computer until their disk fits. Delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees.`;
+export function overPlanLimitsSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "computerCount" | "computerLimit">): string {
+  return `${planCleanupSentence(cleanup)} ADE can't make a new computer until you have fewer. Free up or delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees.`;
 }
+
+/** A move refused for the same reason: a move makes a new computer too. */
+export function overPlanLimitsMoveSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "computerCount" | "computerLimit">): string {
+  return `${planCleanupSentence(cleanup)} A move makes a new computer, so ADE can't move this one until you have fewer. Free up or delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees.`;
+}
+
+/** "1 cloud computer", "3 cloud computers". */
+export const cloudComputersPhrase = (count: number): string => `${count} cloud ${count === 1 ? "computer" : "computers"}`;
+
+/* ---- The computer limit (Pricing v2) ---- */
+
+/**
+ * A create, copy or new lane past the plan's computers is refused with this
+ * code (403). The error also carries `CloudComputerLimitDetail`: what the
+ * limit card shows (free up a computer from another lane, delete a lane, or
+ * move to the next plan). A client that doesn't know it shows `message`.
+ */
+export const CLOUD_COMPUTER_LIMIT_CODE = "computer_limit";
+
+/** A computer the limit card offers to free up or delete, newest use last. */
+export type CloudComputerLimitLane = {
+  instanceId: string;
+  /** The lane's name, or the computer's when it holds no lane. */
+  laneName: string;
+  /** Awake now (freeing it up stops the work on it). */
+  awake: boolean;
+  lastAwakeAt: number | null;
+  /**
+   * The computer holds a lane, so "free up" keeps that lane. False: it was
+   * made with no lane (only "delete" applies; the free-up job refuses it with
+   * `no_lane`). Left out: read it as true.
+   */
+  hasLane?: boolean;
+};
+
+/** The next plan up, as the limit card offers it. Never Free. */
+export type CloudNextPlan = { planId: CloudPaidPlanId; computerLimit: number; priceUsd: number };
+
+export type CloudComputerLimitDetail = {
+  planId: CloudPlanId;
+  /** The plan's computer limit, and how many the account has (asleep or not). */
+  limit: number;
+  total: number;
+  /** The account's computers, least recently used first, for "free up" and "delete". */
+  lanes: CloudComputerLimitLane[];
+  /** The next plan up and its limit, or null on Max (or while it isn't sold). */
+  nextPlan: CloudNextPlan | null;
+};
+
+/** The card's sentence, also the refusal's `message`. */
+export function computerLimitSentence(detail: Pick<CloudComputerLimitDetail, "limit" | "nextPlan">): string {
+  const ways = ["Free up a computer from another lane (the lane and its chats stay; it gets a new computer the next time you send a message there)", "delete a lane"];
+  if (detail.nextPlan) ways.push(`move to ${CLOUD_PLAN_SENTENCE_NAMES[detail.nextPlan.planId]} for ${cloudComputersPhrase(detail.nextPlan.computerLimit)}`);
+  const last = ways.pop();
+  return `You're using all ${detail.limit} of your cloud computers. ${ways.join(", ")}, or ${last}.`;
+}
+
+/* ---- Outside agents (Pricing v2) ---- */
+
+/** An outside agent (ADE MCP) asking to start ADE Cloud work on the Free plan is refused with this code (403) and sentence, which the agent passes on. */
+export const CLOUD_OUTSIDE_AGENT_FREE_CODE = "outside_agent_free_plan";
+export const CLOUD_OUTSIDE_AGENT_FREE_MESSAGE = "ADE Cloud can't be started by outside agents on the Free plan. To let outside agents use ADE Cloud, move to a paid plan.";
 
 /** Largest part of a chat the server accepts, in bytes of its text. */
 export const CLOUD_CHAT_MAX_PART_BYTES = 8 * 1024 * 1024;
@@ -1250,6 +1337,7 @@ export type CloudChatTranscriptPage = {
 export const CLOUD_REFUSAL_CODES = {
   account_blocked: 403,
   out_of_hours: 402,
+  /** Older servers only (Pricing v2 has no account-wide disk). */
   over_plan_disk: 402,
   plan_past_due: 402,
   too_many_awake: 429,
@@ -1264,6 +1352,10 @@ export const CLOUD_REFUSAL_CODES = {
   needs_paid_plan: 403,
   disk_limit: 403,
   over_plan_limits: 403,
+  /** At the plan's computers (`CloudComputerLimitDetail` on the error). */
+  computer_limit: 403,
+  /** An outside agent (ADE MCP) on the free plan (`CLOUD_OUTSIDE_AGENT_FREE_MESSAGE`). */
+  outside_agent_free_plan: 403,
   git_credential_missing: 403,
   github_app_not_installed: 403,
   template_unset: 503,
@@ -1398,6 +1490,8 @@ export type CloudChatMessageRequest = {
    * it before. Ignored when the chat's computer still exists.
    */
   sizeId?: CloudTierId | null;
+  /** `mcp`: an outside agent (ADE MCP) sent it, refused on the free plan (`outside_agent_free_plan`). Left out: a person. */
+  origin?: "person" | "agent" | "automation" | "mcp";
 };
 
 export type CloudChatQueuedMessage = {
@@ -1916,11 +2010,12 @@ export type CloudLaunchAttachment = { fileId: string; name: string; contentType:
 export type CloudLaunchSizeChoice = "default" | "picked" | "capped";
 
 /**
- * The one step a default-size launch takes on its own: Small (4 GB) to Medium
- * (8 GB, 2x hours), never further. The server's sizes (`plans.ts`) hold the
+ * The one step a default-size launch takes on its own: Small (4 GB, uses no
+ * hours) to Medium (8 GB, one hour an hour), never further. Medium uses
+ * hours, so a launch with none left stays at Small. The server's sizes (`plans.ts`) hold the
  * same numbers.
  */
-export const CLOUD_AUTO_SIZE = { from: "small", to: "medium", fromMemoryGb: 4, toLabel: "Medium", toHoursRate: "2×" } as const;
+export const CLOUD_AUTO_SIZE = { from: "small", to: "medium", fromMemoryGb: 4, toLabel: "Medium" } as const;
 /** A repository remembered as needing Medium is started there for this long after its setup last needed it; then Small is tried again. */
 export const CLOUD_AUTO_SIZE_MEMORY_MS = 90 * 24 * 60 * 60_000;
 
@@ -1934,11 +2029,11 @@ export type CloudLaunchAutoSize = {
 
 /** The words for `CloudLaunchAutoSize`, the same on the server, the computer, the CLI and the app. */
 export function cloudAutoSizeSentence(why: CloudLaunchAutoSize["why"] | "checking" | "moving"): string {
-  const { fromMemoryGb, toLabel, toHoursRate } = CLOUD_AUTO_SIZE;
+  const { fromMemoryGb, toLabel } = CLOUD_AUTO_SIZE;
   if (why === "remembered") return `${toLabel}: this repo's setup needed more than ${fromMemoryGb} GB before.`;
   if (why === "checking") return `Setup needed more than this computer's memory. ADE is checking whether it can move it to ${toLabel}…`;
-  if (why === "moving") return `Setup needed more than ${fromMemoryGb} GB, so ADE is moving this computer to ${toLabel} (${toHoursRate} hours). It restarts for a moment, then setup runs again.`;
-  return `Setup needed more than ${fromMemoryGb} GB, so ADE moved this computer to ${toLabel} (${toHoursRate} hours).`;
+  if (why === "moving") return `Setup needed more than ${fromMemoryGb} GB, so ADE is moving this computer to ${toLabel}, which uses hours. It restarts for a moment, then setup runs again.`;
+  return `Setup needed more than ${fromMemoryGb} GB, so ADE moved this computer to ${toLabel}, which uses hours.`;
 }
 
 /**
@@ -1952,10 +2047,10 @@ export function cloudAutoSizeSentence(why: CloudLaunchAutoSize["why"] | "checkin
 export type CloudAutoSizeRefusal = "picked" | "capped" | "moved" | "not_launch";
 
 export function cloudAutoSizeRefusalSentence(reason: CloudAutoSizeRefusal): string {
-  const { toLabel, toHoursRate } = CLOUD_AUTO_SIZE;
+  const { toLabel } = CLOUD_AUTO_SIZE;
   switch (reason) {
     case "picked":
-      return `Small was picked for this launch, so ADE didn't move it up. Start it again on ${toLabel} (${toHoursRate} hours).`;
+      return `Small was picked for this launch, so ADE didn't move it up. Start it again on ${toLabel}, which uses hours.`;
     case "capped":
       return `Your agent limits keep agents nobody watches at Small, so ADE didn't move it up. Start it again on ${toLabel}, or raise the limit in Settings › ADE Cloud.`;
     case "moved":
@@ -2770,7 +2865,7 @@ export type CloudAgentLimitsValue = {
   unattendedSpend: boolean;
   machinesPerDay: number;
   maxShape: "2x4" | "4x8" | "4x16" | "4x32";
-  /** Cents a month of paid extra disk agents may grow into; null: the account's own extra-disk limit. */
+  /** Older apps' limit on paid extra disk (no longer sold since Pricing v2), cents a month: kept as saved, never a limit. */
   extraDiskMonthCents: number | null;
 };
 /** `revision`: what a write names in `ifRevision` (null: none stored yet). `stored: false`: these are the defaults. */
@@ -2871,9 +2966,12 @@ export type CloudPhoneDevice = (typeof CLOUD_PHONE_DEVICES)[number];
 export const isCloudPhoneDevice = (value: unknown): value is CloudPhoneDevice => (CLOUD_PHONE_DEVICES as readonly unknown[]).includes(value);
 
 /**
- * Who may use the ADE Cloud iPhone. `on`: the owner added this account to the
- * beta. `soon`: everyone else (the app says "coming soon"). `off`: the server
- * has no phone provider set up.
+ * Who may use the ADE Cloud iPhone. `on`: the switch (`CLOUD_PHONE_ACCESS`)
+ * is `all`, or it is `beta` and the owner added this account (by email,
+ * before or after it signed up). `off`: everyone else, and every account
+ * while no phone provider is set up; ADE then shows no iPhone anywhere.
+ * `soon` is never sent since Pricing v2 (older servers sent it to people not
+ * on the beta list).
  */
 export type CloudPhoneAccess = "on" | "soon" | "off";
 

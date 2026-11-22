@@ -117,7 +117,7 @@ func cloudPlanCleanupMessage(_ cleanup: CloudPhoneAccount.PlanCleanup) -> String
   }
   guard let sentence = cloudPhoneWords(cleanup.sentence) else { return nil }
   let when = cleanup.startsAt.map { "You move to \(cloudPlanSentenceName(cleanup.planId ?? "plus")) on \(cloudDate($0))." }
-    ?? "ADE can't make a new computer until their disk fits."
+    ?? "ADE can't make a new computer until you have fewer."
   return "\(sentence) \(when) ADE deletes nothing on its own: delete computers, or pick the ones ADE frees in the ADE desktop app."
 }
 
@@ -236,11 +236,13 @@ func cloudMachineOld(_ machine: CloudPhoneMachine, now: Date) -> Bool {
   return false
 }
 
-/// "Small · 1× hours · 3.4 GB" (the last run sits under the state).
+/// "Small · Never uses hours", "Large · Full computer" (the last run sits
+/// under the state). No multiplier and no disk: hours are time on a size,
+/// and disk shows only on a computer whose disk is nearly full.
 func cloudMachineLine(_ machine: CloudPhoneMachine, tier: CloudPhoneTier?, now: Date) -> String {
-  let size = tier.map { "\($0.label) · \(cloudHoursRate($0.rate))" } ?? machine.size ?? machine.hoursRate.map(cloudHoursRate)
-  let disk = machine.resources.map { cloudGb($0.diskGb) }
-  return [size, disk].compactMap { $0 }.joined(separator: " · ")
+  guard let tier else { return machine.size ?? "" }
+  if !tier.usesHours { return "\(tier.label) · Never uses hours" }
+  return tier.full ? "\(tier.label) · Full computer" : tier.label
 }
 
 func cloudLastRun(_ machine: CloudPhoneMachine, now: Date) -> String {
@@ -259,7 +261,8 @@ func cloudStateTone(_ machine: CloudPhoneMachine) -> ADEKitTone {
 // MARK: - Sizes and words
 
 /// One of the four lane sizes (`shared/cloudTiers.ts`), from the server's
-/// catalog: its rate is the catalog's, never a number here.
+/// catalog: how fast it uses hours is the catalog's, never a number here.
+/// Hours show as time on a size ("20 h on a Large"), never as a multiplier.
 struct CloudPhoneTier: Identifiable, Equatable {
   let id: String
   let label: String
@@ -270,8 +273,11 @@ struct CloudPhoneTier: Identifiable, Equatable {
   let multiplierMilli: Int
   let diskMaxGb: Double?
 
-  var rate: Double { Double(multiplierMilli) / 1000 }
+  /// Small on a Pricing v2 server: it never uses hours (`multiplierMilli` 0).
+  var usesHours: Bool { multiplierMilli > 0 }
   var full: Bool { type == "vm" }
+  /// "a Medium", "an X-Large".
+  var withArticle: String { "\(cloudSizeArticle(label)) \(label)" }
 
   var symbol: String {
     switch id {
@@ -282,9 +288,10 @@ struct CloudPhoneTier: Identifiable, Equatable {
     }
   }
 
-  /// "2 CPU", "4 GB memory", "Up to 12 GB disk" (the disk only when the server says).
+  /// "2 CPU", "4 GB memory". No disk: each size's disk maximum is a
+  /// backstop, never a number the person plans around.
   var specs: [String] {
-    ["\(cpu) CPU", "\(cloudGbText(memoryGb)) GB memory"] + (diskMaxGb.map { ["Up to \(cloudGbText($0)) GB disk"] } ?? [])
+    ["\(cpu) CPU", "\(cloudGbText(memoryGb)) GB memory"]
   }
 
   var runs: String {
@@ -296,15 +303,20 @@ struct CloudPhoneTier: Identifiable, Equatable {
     }
   }
 
-  /// "1 hour of work uses 5 hours".
-  var rateLine: String {
-    let value = rate.formatted(.number.precision(.fractionLength(0...1)))
-    return "1 hour of work uses \(value) hour\(rate == 1 ? "" : "s")"
+  /// What this size does with the account's hours, as time: "Never uses
+  /// your hours" on Small, else "Your hours last 20 h on it" (nil
+  /// `leftMilli`: the account wasn't read, "Uses your hours").
+  func hoursLine(leftMilli: Int?) -> String {
+    guard usesHours else { return "Never uses your hours" }
+    guard let leftMilli else { return "Uses your hours" }
+    return "Your hours last \(hoursLeftLabel(leftMilli)) on it"
   }
 
   /// How long `leftMilli` hours last at this size (`cloudTierHoursAt`): rounded
   /// down, to a tenth under 10 h and to whole hours from 10 up: "7.5 h", "57 h".
+  /// "Unlimited" on a size that never uses hours.
   func hoursLeftLabel(_ leftMilli: Int) -> String {
+    guard usesHours else { return "Unlimited" }
     let hours = Double(max(0, leftMilli)) / Double(max(1, multiplierMilli))
     let shown = hours >= 10 ? hours.rounded(.down) : (hours * 10).rounded(.down) / 10
     return "\(shown.formatted(.number.precision(.fractionLength(0...1)).grouping(.never)))\u{00A0}h"
@@ -389,9 +401,36 @@ func cloudHours(_ milli: Int) -> String {
   return shown.formatted(.number.precision(.fractionLength(0...1)).locale(Locale(identifier: "en_US")))
 }
 
-/// "2.5× hours", as the desktop writes it.
-func cloudHoursRate(_ rate: Double) -> String {
-  "\(rate.formatted(.number.precision(.fractionLength(0...1))))× hours"
+/// "a" or "an" before a size's name: "a Medium", "an X-Large" (said "ex").
+func cloudSizeArticle(_ label: String) -> String {
+  guard let first = label.uppercased().first else { return "a" }
+  return "AEIOUX".contains(first) ? "an" : "a"
+}
+
+/// A plan's hours as time on each size that uses them, never a multiplier:
+/// "50 hours on a Medium · 20 on a Large · 12 on an X-Large" (whole hours,
+/// rounded down). Nil when no size uses hours or the catalog has none.
+func cloudHoursOnSizes(_ milli: Int, tiers: [CloudPhoneTier]) -> String? {
+  let sized = tiers.filter(\.usesHours)
+  guard !sized.isEmpty else { return nil }
+  let parts = sized.enumerated().map { index, tier -> String in
+    let hours = Int((Double(max(0, milli)) / Double(tier.multiplierMilli)).rounded(.down))
+    let count = hours.formatted(.number.locale(Locale(identifier: "en_US")))
+    return index == 0 ? "\(count) \(hours == 1 ? "hour" : "hours") on \(tier.withArticle)" : "\(count) on \(tier.withArticle)"
+  }
+  return parts.joined(separator: " · ")
+}
+
+/// The offer, as every surface says it (`CLOUD_SMALL_UNLIMITED_SENTENCE`). Never "0 hours".
+let cloudSmallUnlimitedSentence = "Unlimited Small computers. They never use your hours."
+/// The small print beside it (`CLOUD_SMALL_FAIR_USE_SENTENCE`).
+let cloudSmallFairUseSentence = "Small computers are for your own work and fall under fair use."
+/// What one hour of the plan is (`CLOUD_HOUR_UNIT_SENTENCE`).
+let cloudHourUnitSentence = "One hour is one hour on a Medium computer. Bigger sizes use more an hour."
+
+/// "3 cloud computers" (`cloudComputersPhrase`).
+func cloudComputersPhrase(_ count: Int) -> String {
+  "\(count) cloud \(count == 1 ? "computer" : "computers")"
 }
 
 /// "4", "7.5": a GB figure without a trailing ".0".
@@ -450,7 +489,8 @@ struct CloudPlanMoment: Equatable {
   let accountKey: String
   let planId: String
   let includedMilli: Int
-  let diskGb: Double?
+  /// The plan's cloud computers (Pricing v2); nil from an older server.
+  let computerLimit: Int?
   let renewsAt: Double
   /// Free hours left before the upgrade that the paid period replaced; nil when none were.
   let replacedFreeMilli: Int?
@@ -459,7 +499,8 @@ struct CloudPlanMoment: Equatable {
 
   var detail: String {
     let hours = cloudHours(includedMilli)
-    var line = "\(hours) hours\(diskGb.map { " and \(cloudGb($0)) of disk" } ?? "") a month. Renews \(cloudDate(renewsAt))."
+    var line = computerLimit.map { "\(cloudComputersPhrase($0)) and \(hours) hours a month for the bigger sizes. Renews \(cloudDate(renewsAt))." }
+      ?? "\(hours) hours a month. Renews \(cloudDate(renewsAt))."
     if let replaced = replacedFreeMilli {
       line += " Your \(cloudHours(replaced)) unused free hours were replaced by \(cloudPlanLabel(planId))'s \(hours)."
     }
@@ -509,7 +550,7 @@ enum CloudPlanSeenStore {
       accountKey: accountKey,
       planId: planId,
       includedMilli: account.hours.includedMilli,
-      diskGb: account.disk?.limitGb,
+      computerLimit: account.computerLimit,
       renewsAt: account.billing?.periodEnd ?? 0,
       replacedFreeMilli: previousPlan == "free" && previousStart != periodStart && previousLeft > 0 ? previousLeft : nil
     ) : nil

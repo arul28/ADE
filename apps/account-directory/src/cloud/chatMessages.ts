@@ -229,12 +229,12 @@ async function readRow(env: CloudEnv, userId: string, machineKey: string, chatId
 /** What a send does to a live computer, from the routes that own wakes (`routes.ts`). */
 export type ChatWake = {
   /**
-   * Runs every check a start runs (block, hours, plan disk, the awake cap,
-   * the idle cleanup's claim, an image too old to drain), and records the
-   * use. A response when the send must not be stored; else what the wake
-   * will be. Nothing wakes yet.
+   * Runs every check a start runs (block, outside agents on the free plan,
+   * hours at the computer's size, the awake cap, the idle cleanup's claim,
+   * an image too old to drain), and records the use. A response when the
+   * send must not be stored; else what the wake will be. Nothing wakes yet.
    */
-  check: (computer: ComputerRow) => Promise<Response | { state: "awake" | "waking" }>;
+  check: (computer: ComputerRow, asker: { outsideAgent: boolean }) => Promise<Response | { state: "awake" | "waking" }>;
   /** After the row is stored: wakes it when asleep, then asks it to drain. Runs after the answer. */
   wakeAndDrain: (computer: ComputerRow) => Promise<void>;
   /** A launch that continues the chat on a new computer (`startServerLaunch` with the router's deps). */
@@ -459,6 +459,8 @@ type SendInput = {
   settings: CloudChatMessageSettings | null;
   /** The new computer's size, when the person picked one; used only by a launch. */
   sizeId?: CloudTierId | null;
+  /** Sent by an outside agent (`origin: "mcp"`). Left out: a person. */
+  outsideAgent?: boolean;
 };
 
 type InsertWhere = { instanceId: string | null; launchId: string | null; viaLaunch: boolean };
@@ -567,11 +569,12 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
   await keepDraftFiles(env, userId, attachments, now);
   if (!deps.wake) return fail("unavailable", "ADE Cloud can't wake computers right now. Try again soon.", 503);
 
-  const input: SendInput = { messageId, text, attachments, provider, modelId, settings, sizeId };
+  // `origin: "mcp"`: an outside agent (ADE MCP) sending; on the free plan it can't wake or start a computer.
+  const input: SendInput = { messageId, text, attachments, provider, modelId, settings, sizeId, outsideAgent: body.origin === "mcp" };
   const computer = await liveComputerOf(env, userId, chat);
   if (computer) {
     // Every refusal runs before the row is written: a refused send stores nothing.
-    const checked = await deps.wake.check(computer);
+    const checked = await deps.wake.check(computer, { outsideAgent: input.outsideAgent === true });
     if (checked instanceof Response) return checked;
     const inserted = await insertRow(env, keys, userId, chat, input, { instanceId: computer.instance_id, launchId: null, viaLaunch: false, copyAt: chat.kind }, now);
     // The chat moved to another machine since it was read: nothing is queued, and a send again reaches it there.
@@ -634,7 +637,8 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
       ...(input.attachments.length ? { attachments: input.attachments.map(({ launchId: _launchId, ...file }) => file) } : {}),
       messageId: input.messageId,
     },
-    madeBy: { kind: "person" },
+    // An outside agent's send makes the launch an outside agent's, so the free plan refuses it as a create.
+    madeBy: input.outsideAgent ? { kind: "agent", agent: "mcp" } : { kind: "person" },
     channel: "beta",
     continueChat: {
       machineKey: chat.machine_key,

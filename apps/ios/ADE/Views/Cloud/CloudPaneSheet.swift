@@ -256,6 +256,8 @@ final class CloudPaneStore: ObservableObject {
   var outOfHours: Bool { account?.outOfHours == true }
 
   var tiers: [CloudPhoneTier] { cloudPhoneTiers(account?.catalog) }
+  /// The hours left now, earned hours too (what the sizes card counts); nil before the account is read.
+  var hoursLeftMilli: Int? { account.map { $0.hours.leftMilli + max(0, $0.earnedHours?.leftMilli ?? 0) } }
 
   /// The phone may change things on this machine (a controlling device).
   var canWrite: Bool { syncService.canInvokeRemoteAction("cloud.write") }

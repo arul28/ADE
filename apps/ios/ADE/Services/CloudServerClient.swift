@@ -34,6 +34,7 @@ enum CloudRefusalCode {
     "needs_paid_plan", "disk_limit", "over_plan_limits", "git_credential_missing",
     "github_app_not_installed", "template_unset", "template_unavailable",
     "linear_needs_renewal", "plan_past_due", "too_many_messages", "message_taken",
+    "computer_limit", "outside_agent_free_plan",
   ]
 
   /// Refusals of the Linear, Jira and limits routes (`CLOUD_INTEGRATION_ERROR_CODES`,
@@ -401,6 +402,9 @@ struct CloudServerClient {
     /// The server refused the action and said why (`account_blocked`,
     /// `out_of_hours`, `too_many_awake`, …). `message` is the sentence to show.
     case refused(code: String, message: String)
+    /// A new computer past the plan's computers (`computer_limit`, 403):
+    /// what the limit card shows, with the server's sentence.
+    case computerLimit(CloudComputerLimit)
     case server(Int, message: String?)
     case transport
     case unreadable
@@ -769,6 +773,9 @@ func cloudServerFailure(status: Int, body: Data) -> CloudServerClient.Failure {
   let message = detail?.message.flatMap { nonEmptyTrimmed($0) }
   if status == 401 { return .unauthorized }
   if status == 404 { return .noAccess }
+  if code == CloudComputerLimit.code {
+    return .computerLimit(CloudComputerLimit(refusal: body, message: message))
+  }
   if let code, CloudRefusalCode.all.contains(code) || CloudRefusalCode.reads.contains(code) {
     return .refused(code: code, message: message ?? "ADE Cloud can't do that right now.")
   }

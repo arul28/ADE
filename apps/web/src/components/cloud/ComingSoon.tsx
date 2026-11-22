@@ -1,7 +1,7 @@
 import { Smartphone } from "lucide-react";
 import { AppleMark } from "../home/marks";
 import { cn } from "../../lib/cn";
-import { PRICING_PLANS, formatCents, formatCount } from "../../lib/cloudPricing";
+import { CLOUD_PHONE_ON_WEBSITE, PRICING_PLANS, formatCents, formatCount } from "../../lib/cloudPricing";
 
 /** "2.5¢ a minute" for the paid plans that sell extra iPhone minutes. */
 const EXTRA_PHONE_MINUTE_LINE = (() => {
@@ -11,7 +11,7 @@ const EXTRA_PHONE_MINUTE_LINE = (() => {
   return `${prices.join(" or ")} a minute past your plan`;
 })();
 
-const ITEMS = [
+const ALL_ITEMS = [
   {
     id: "ios",
     icon: Smartphone,
@@ -26,6 +26,9 @@ const ITEMS = [
   },
 ] as const;
 
+/** The ADE Cloud iPhone shows only once it is open to everyone (`CLOUD_PHONE_ON_WEBSITE`). */
+const ITEMS = ALL_ITEMS.filter((item) => item.id !== "ios" || CLOUD_PHONE_ON_WEBSITE);
+
 function SoonChip() {
   return (
     <span className="rounded-full border border-[color:var(--color-lamp)]/40 px-2 py-0.5 text-[11.5px] font-medium text-[color:var(--color-lamp)]">
@@ -34,7 +37,7 @@ function SoonChip() {
   );
 }
 
-/** The two ADE Cloud computers that are on the way. `compact` is one line each, for the home page. */
+/** The ADE Cloud computers that are on the way. `compact` is one line each, for the home page. */
 export function ComingSoon({ compact, className }: { compact?: boolean; className?: string }) {
   if (compact) {
     return (

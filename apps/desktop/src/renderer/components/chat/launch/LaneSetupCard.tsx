@@ -84,6 +84,8 @@ import {
   normalizeStatus,
   stepCardFrameClass,
 } from "./stepCardParts";
+import { CLOUD_COMPUTER_LIMIT_CODE } from "../../../../shared/adeCloud";
+import { openCloudComputerLimitCard } from "../../cloudLane/CloudComputerLimitCard";
 import { CloudSignInCodeField } from "./CloudSignInCodeField";
 
 /** A launch's own error text without Electron's wrapper; the raw text when the wrapper was all there was. */
@@ -574,6 +576,21 @@ export function LaneSetupCard({
           ))}
         </ul>
       )}
+
+      {failed && snapshot.cloud?.refusal?.code === CLOUD_COMPUTER_LIMIT_CODE ? (
+        // All the plan's cloud computers in use: the card offers the three ways out, then Retry starts this one.
+        <div className={cn("mt-1.5", metaSize)}>
+          <button
+            type="button"
+            className="kit-btn"
+            data-size="sm"
+            data-testid="lane-setup-computer-limit"
+            onClick={() => openCloudComputerLimitCard(snapshot.cloud?.refusal?.computerLimit ?? null)}
+          >
+            See your options
+          </button>
+        </div>
+      ) : null}
 
       {signIn ? (
         <Banner

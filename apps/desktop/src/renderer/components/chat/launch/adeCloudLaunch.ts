@@ -65,20 +65,19 @@ export function adeCloudLaunchProblem(input: {
   originUrl: string | null;
   account: CloudAccountState | null;
 }): string | null {
-  return cloudLaneStartBlock(input.account, { newLane: true })?.message
+  return cloudLaneStartBlock(input.account, { newLane: true, sizeId: input.args.cloud?.sizeId ?? null })?.message
     ?? cloudLaneLaunchStartRefusal({ args: input.args, originUrl: input.originUrl })?.message
     ?? null;
 }
 
 /**
  * Why new lanes can't start on ADE Cloud now, or null. A batch
- * asks before it starts any, so it never makes some lanes and fails the rest.
- * No plan limits how many computers an account has, so only hours and disk
- * can stop it. Unknown (no account read yet) is never a block: main still
- * refuses each.
+ * asks before it starts any, so it never makes some lanes and fails the rest:
+ * all the plan's computers in use, or no hours for a size that uses them.
+ * Unknown (no account read yet) is never a block: main still refuses each.
  */
-export function adeCloudCapacityProblem(account: CloudAccountState | null): string | null {
-  return cloudLaneStartBlock(account, { newLane: true })?.message ?? null;
+export function adeCloudCapacityProblem(account: CloudAccountState | null, sizeId: string | null = null): string | null {
+  return cloudLaneStartBlock(account, { newLane: true, sizeId })?.message ?? null;
 }
 
 /**

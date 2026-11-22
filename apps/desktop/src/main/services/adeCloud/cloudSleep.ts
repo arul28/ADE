@@ -16,13 +16,13 @@
 
 import { CLOUD_PLAN_PAST_DUE_SENTENCE, isCloudRefusalCode, type CloudAgentLimitsUpdate } from "../../../../../account-directory/src/cloud/contract";
 import { CloudApiError, type CloudApiClient } from "../../../shared/cloudApiClient";
+import { cloudAgentExtraDiskCentsOf } from "../../../shared/adeCloud/accountCalls";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   CLOUD_BACKSTOP_SLEEP_MINUTES,
   CLOUD_DEFAULT_AGENT_LIMITS,
   CLOUD_WAKE_PORT,
   CLOUD_WAKE_PORT_LABEL,
-  cloudAgentExtraDiskCentsOf,
   cloudShape,
   type CloudAgentLimits,
   type CloudWakeForUseResult,
@@ -200,7 +200,6 @@ function parseAgentLimits(raw: unknown): CloudAgentLimits {
     unattendedSpend: typeof value.unattendedSpend === "boolean" ? value.unattendedSpend : fallback.unattendedSpend,
     machinesPerDay: typeof perDay === "number" && Number.isInteger(perDay) && perDay >= 0 && perDay <= 100 ? perDay : fallback.machinesPerDay,
     maxShape: cloudShape(typeof value.maxShape === "string" ? value.maxShape : null)?.id ?? fallback.maxShape,
-    // Left out (limits saved before it) is the account's own extra-disk limit.
     extraDiskMonthCents: cloudAgentExtraDiskCentsOf(value.extraDiskMonthCents),
   };
 }

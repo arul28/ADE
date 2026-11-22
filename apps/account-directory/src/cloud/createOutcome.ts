@@ -29,7 +29,7 @@ export type CreateComputerExtras = {
   body: Record<string, unknown>;
   serverEnv?: Record<string, string>;
   onMade?: (instance: CloudInstance) => D1PreparedStatement[];
-  /** The disk this launch's repository's setup grew to before: a plain create starts there when the plan's disk holds it (`setupStartDiskGb`). */
+  /** The disk this launch's repository's setup grew to before: a plain create starts there, inside its size's disk (`setupStartDiskGb`). */
   setupDiskGb?: number | null;
 };
 

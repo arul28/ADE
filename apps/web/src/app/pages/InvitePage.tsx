@@ -9,7 +9,7 @@ import { Page } from "../../components/Page";
 import { Reveal } from "../../components/Reveal";
 import { Section } from "../../components/Section";
 import {
-  FREE_MONTHLY_HOURS,
+  FREE_OFFER,
   INVITE_ENTER_DAYS,
   INVITE_REWARD_HOURS,
   inviteAppLink,
@@ -66,8 +66,8 @@ export function InvitePage() {
           <Reveal delay={0.1}>
             <p className="mt-5 text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
               {invalid
-                ? `You can still get ADE, with ${FREE_MONTHLY_HOURS} free cloud hours every month.`
-                : `You both get ${INVITE_REWARD_HOURS} extra free cloud hours, on top of the ${FREE_MONTHLY_HOURS} free every month.`}
+                ? `You can still get ADE. ${FREE_OFFER} in the cloud come free.`
+                : `You both get ${INVITE_REWARD_HOURS} extra cloud hours for bigger computers. ${FREE_OFFER} come free.`}
             </p>
           </Reveal>
 

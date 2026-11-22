@@ -113,6 +113,14 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+/**
+ * An older app's `extraDiskMonthCents` (paid extra disk, no longer sold): whole
+ * cents from 0 to $1,000, or null. Kept as saved so a whole-value save doesn't drop it.
+ */
+export function cloudAgentExtraDiskCentsOf(raw: unknown): number | null {
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 && raw <= 100_000 ? raw : null;
+}
+
 function limitsUpdate(value: unknown): CloudAgentLimitsUpdate {
   const given = record(value);
   const limits = record(given.limits);
@@ -124,10 +132,8 @@ function limitsUpdate(value: unknown): CloudAgentLimitsUpdate {
   if (typeof limits.maxShape === "string" && LIMIT_SHAPES.has(limits.maxShape as CloudAgentLimitsValue["maxShape"])) {
     out.maxShape = limits.maxShape as CloudAgentLimitsValue["maxShape"];
   }
-  if (limits.extraDiskMonthCents === null) out.extraDiskMonthCents = null;
-  else if (typeof limits.extraDiskMonthCents === "number" && Number.isInteger(limits.extraDiskMonthCents) && limits.extraDiskMonthCents >= 0 && limits.extraDiskMonthCents <= 100_000) {
-    out.extraDiskMonthCents = limits.extraDiskMonthCents;
-  }
+  const extraDiskMonthCents = cloudAgentExtraDiskCentsOf(limits.extraDiskMonthCents);
+  if (limits.extraDiskMonthCents === null || extraDiskMonthCents != null) out.extraDiskMonthCents = extraDiskMonthCents;
   if (Object.keys(out).length === 0) throw new InvalidCall("ADE couldn't read the limits to save.");
   const ifRevision = given.ifRevision === null ? null : text(given.ifRevision, 200);
   return { limits: out, ...(given.ifRevision !== undefined ? { ifRevision } : {}) };

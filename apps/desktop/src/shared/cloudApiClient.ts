@@ -127,6 +127,8 @@ export class CloudApiError extends Error {
     readonly status: number,
     /** A refusal's own reason when the server gives one (a disk refusal's `CloudDiskRefusalReason`). */
     readonly reason: string | null = null,
+    /** The server's whole `error` object, for a refusal that carries more (`computer_limit`'s `CloudComputerLimitDetail`). */
+    readonly detail: Record<string, unknown> | null = null,
   ) {
     super(message);
     this.name = "CloudApiError";
@@ -214,6 +216,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
         typeof error?.code === "string" ? error.code : "http_error",
         response.status,
         typeof error?.reason === "string" ? error.reason : null,
+        error && typeof error === "object" ? error as Record<string, unknown> : null,
       );
     }
     return parsed as T;
@@ -279,11 +282,11 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** At most one every 15 minutes (`rate_limited`). */
     backup: (instanceId: string) =>
       request<{ id?: string | null; created?: number | null; sizeBytes?: number | null }>("POST", `${instancePath(instanceId)}/backups`, { body: {}, timeoutMs: BACKUP_TIMEOUT_MS }),
-    /** Every wake is use: it bills hours, and none is allowed at 0 hours. */
-    wake: (instanceId: string) =>
-      request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
+    /** Every wake is use: it bills hours, and none is allowed at 0 hours. `origin: "mcp"`: an outside agent asked (refused on the free plan). */
+    wake: (instanceId: string, origin?: "mcp") =>
+      request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: origin ? { origin } : {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** The server wakes a sleeping computer first. `computerIdle` is needed to grow the disk of a running one. */
-    resize: (instanceId: string, args: { cpu?: number; memory?: number; disk?: number; computerIdle?: boolean }) =>
+    resize: (instanceId: string, args: { cpu?: number; memory?: number; disk?: number; computerIdle?: boolean; origin?: "mcp" }) =>
       request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** `keepLane.onlyIfSaved`: only while it rests with every lane's work saved (409 otherwise, nothing deleted). */
     deleteComputer: (

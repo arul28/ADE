@@ -3,8 +3,9 @@ import UIKit
 
 // The ADE Cloud page's cards (`CloudDashboardScreen`), top to bottom: the
 // hero, the notices, lanes and computers, plans, sizes, invite friends, and
-// what agents may do. The sign-ins card is `CloudSignInsCard.swift`; the
-// words they share are `CloudPhoneFormat.swift`.
+// what agents may do. The plans card is `CloudPlansCard.swift`, the
+// sign-ins card `CloudSignInsCard.swift`; the words they share are
+// `CloudPhoneFormat.swift`.
 
 // MARK: - The page
 
@@ -42,7 +43,7 @@ struct CloudDashboardScreen: View {
           CloudLanesCard(store: store, pushes: pushes)
           CloudSavedLaneWorkCard(store: store)
           if let account = store.account, account.catalog != nil {
-            CloudPlansCard(account: account, newPlanId: moment?.planId)
+            CloudPlansCard(account: account, tiers: store.tiers, newPlanId: moment?.planId)
             CloudSizesCard(account: account, tiers: store.tiers)
           }
           if let referral = store.account?.referral {
@@ -163,26 +164,27 @@ struct CloudHero: View {
         }
         .accessibilityElement(children: .combine)
         hours(account)
+        // No disk: each size has its own disk maximum, and only one
+        // computer's nearly full disk is ever shown (on its own page).
         HStack(alignment: .top, spacing: 10) {
-          if let disk = account.disk {
-            CloudMiniMeter(
-              label: "Disk",
-              value: cloudGb(disk.usedGb),
-              of: disk.limitGb.map { "of \(cloudGb($0))" },
-              fraction: disk.limitGb.map { $0 > 0 ? disk.usedGb / $0 : 0 } ?? 0,
-              note: "All your computers together"
-            )
-          }
           if let computers = account.computers {
-            // No plan limits how many computers an account has: a count, with an empty meter.
+            // The plan's computer limit, asleep or not.
+            let limit = account.computerLimit
             CloudMiniMeter(
-              label: "Computers",
+              label: "Cloud computers",
               value: "\(computers.total)",
-              of: nil,
-              fraction: nil,
+              of: limit.map { "of \($0)" },
+              fraction: limit.map { Double(computers.total) / Double(max(1, $0)) },
               note: "\(computers.awake) awake now"
             )
           }
+          CloudMiniMeter(
+            label: "Small computers",
+            value: "Unlimited",
+            of: nil,
+            fraction: nil,
+            note: "They never use your hours"
+          )
         }
       }
       .padding(16)
@@ -220,7 +222,7 @@ struct CloudHero: View {
     let level = ADEUsagePressure.color(percentLeft: percentLeft, fallback: CloudBrandColor.violet)
     let calm = percentLeft > 20
     return VStack(alignment: .leading, spacing: 8) {
-      Text("Computer hours left this month")
+      Text("Hours left this month for bigger computers")
         .font(.system(size: 12))
         .foregroundStyle(CloudBrandColor.skyText2)
       HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -332,10 +334,20 @@ struct CloudNotices: View {
         if account.billing?.notice == "past_due" {
           ADESettingsNotice(message: "A payment didn't go through, so your plan follows the free plan's limits until it's paid.", tone: .crit)
         } else if account.outOfHours {
-          ADESettingsNotice(message: "You're out of hours. Your computers wait until your hours reset. Running work saves and stops.", tone: .warn)
+          ADESettingsNotice(message: "You're out of hours. Small computers keep working. Bigger sizes stop until your hours reset; running work on them saves first.", tone: .warn)
         }
-        if let disk = account.disk, let limit = disk.limitGb, limit > 0, disk.usedGb / limit >= 0.8 {
-          ADESettingsNotice(message: "Your disk is \(Int((disk.usedGb / limit * 100).rounded()))% full. Free some space before your lanes need more.", tone: .warn)
+        if account.atComputerLimit, let limit = account.computerLimit {
+          // Every computer of the plan is taken: a new lane would be refused.
+          ADESettingsNotice(message: "\(CloudComputerLimit.headline(limit: limit)) A new lane needs a computer of its own.", tone: .neutral, actionTitle: "Make room") {
+            CloudLaneActions.shared.showComputerLimit(CloudComputerLimit(
+              message: CloudComputerLimit.headline(limit: limit),
+              planId: account.currentPlanId,
+              limit: limit,
+              total: account.computers?.total,
+              lanes: [],
+              nextPlan: account.computers?.nextPlan
+            ))
+          }
         }
         if let cleanup = account.planCleanup, let message = cloudPlanCleanupMessage(cleanup) {
           ADESettingsNotice(message: message, tone: .warn)
@@ -507,212 +519,13 @@ struct CloudMachineRow: View {
   }
 }
 
-// MARK: Plans
-
-/// The plans side by side: what each includes, the current one on its own
-/// patch of dusk sky with a gold edge. No price, no button and no line on
-/// where to change a plan (App Store 3.1.1/3.1.3): the iPhone app states facts
-/// only. What an hour and disk are is said once, under the plans.
-struct CloudPlansCard: View {
-  let account: CloudPhoneAccount
-  /// A plan that just landed ("You're on Plus"): its card is marked New and glows.
-  var newPlanId: String? = nil
-
-  private struct Column: Identifiable {
-    let id: String
-    let label: String
-    let facts: CloudPhoneAccount.PlanFacts
-  }
-
-  private var columns: [Column] {
-    guard let plans = account.catalog?.plans else { return [] }
-    var out: [Column] = [
-      Column(id: "free", label: "Free", facts: plans.free),
-      Column(id: "plus", label: "Plus", facts: plans.plus ?? plans.paid),
-    ]
-    if let pro = plans.pro { out.append(Column(id: "pro", label: "Pro", facts: pro)) }
-    if let max = plans.max { out.append(Column(id: "max", label: "Max", facts: max)) }
-    return out
-  }
-
-  /// Only what's different from the hero's "Renews Dec 13".
-  private var statusLine: String? {
-    guard let billing = account.billing else { return nil }
-    if billing.cancelAtPeriodEnd == true { return "Your plan ends \(cloudDate(billing.periodEnd)). You're on Free after that." }
-    if let next = billing.nextPlanId, next != account.currentPlanId { return "You move to \(cloudPlanLabel(next)) on \(cloudDate(billing.periodEnd))." }
-    if billing.notice == "past_due" { return "Your last payment failed." }
-    return nil
-  }
-
-  var body: some View {
-    ADEKitCard(title: "Plans", symbol: "square.stack.3d.up", hint: statusLine) {
-      VStack(alignment: .leading, spacing: 12) {
-        // Two plans a row on a phone, all four side by side on an iPad.
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 8, alignment: .top)], alignment: .leading, spacing: 8) {
-          ForEach(columns) { column in
-            planColumn(column)
-          }
-        }
-        howItWorks
-      }
-    }
-  }
-
-  private var showsSimulatorMinutes: Bool { columns.contains { $0.facts.phoneMinutes != nil } }
-
-  /// The one place for the explanations: what every plan includes.
-  private var howItWorks: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      howRow("clock", "Hours run your cloud computers", "and renew every month: Linux computers your agents work on, one per lane, as many as you like. An hour is one hour of a Small computer; bigger sizes use hours faster.")
-      Divider().overlay(ADEKit.edge)
-      howRow("moon.stars", "Computers sleep on their own", "a few minutes after work stops, so your hours only go to real work.")
-      Divider().overlay(ADEKit.edge)
-      howRow("internaldrive", "Disk", "is what all your computers hold at one time, shared between them.")
-      if showsSimulatorMinutes {
-        Divider().overlay(ADEKit.edge)
-        howRow("iphone", "iOS Simulator minutes (soon):", "time on an iPhone simulator in the cloud, for agents to test your app.")
-      }
-    }
-    .background(ADEKit.track.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
-  }
-
-  private func howRow(_ symbol: String, _ lead: String, _ rest: String) -> some View {
-    HStack(alignment: .top, spacing: 10) {
-      Image(systemName: symbol)
-        .font(.system(size: 12, weight: .medium))
-        .foregroundStyle(CloudBrandColor.mark)
-        .frame(width: 26, height: 26)
-        .background(CloudBrandColor.violet.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-      (Text(lead).fontWeight(.semibold).foregroundColor(ADEColor.textSecondary) + Text(" \(rest)").foregroundColor(ADEColor.textMuted))
-        .font(.system(size: 12))
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-  }
-
-  private func planColumn(_ column: Column) -> some View {
-    let current = column.id == account.currentPlanId
-    let isNew = column.id == newPlanId
-    // The plan that starts at the period end: a move down, or Free after a cancel.
-    let next = !current && (account.billing?.nextPlanId == column.id || (account.billing?.cancelAtPeriodEnd == true && column.id == "free"))
-    let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-    // An account from before the new plans keeps its old hours and disk until its period ends.
-    // "then …" only when this plan carries on; a waiting move or cancel shows its own "From" column.
-    let staysOn = account.billing?.cancelAtPeriodEnd != true && (account.billing?.nextPlanId ?? column.id) == column.id
-    let end = account.billing?.periodEnd
-    return VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 5) {
-        Text(column.label)
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(current ? CloudBrandColor.skyText : ADEColor.textPrimary)
-        Spacer(minLength: 0)
-        if isNew {
-          planTag("New", gold: true)
-        } else if current {
-          planTag("Your plan", gold: true)
-        } else if next, let end {
-          planTag("From \(cloudDate(end))", gold: false)
-        }
-      }
-      VStack(alignment: .leading, spacing: 0) {
-        if current, let old = oldTermsHours(column), let end {
-          bigFact(cloudHours(old), staysOn ? "computer hours until \(cloudDate(end)), then \(cloudHours(column.facts.includedMilli))" : "computer hours until \(cloudDate(end))", current: current)
-        } else {
-          bigFact(cloudHours(column.facts.includedMilli), "computer hours a month", current: current)
-        }
-      }
-      VStack(alignment: .leading, spacing: 6) {
-        if current, let old = oldTermsDisk(column), let end {
-          fact("internaldrive", "\(cloudGb(old)) disk until \(cloudDate(end))\(staysOn ? ", then \(cloudGb(column.facts.diskGb))" : "")", current: current)
-        } else {
-          fact("internaldrive", "\(cloudGb(column.facts.diskGb)) disk", current: current)
-        }
-        if let minutes = column.facts.phoneMinutes {
-          fact("iphone", "\(minutes) iOS Simulator minutes, soon", current: current)
-        }
-        fact("bolt", column.id == "free" ? "Stops at the limit" : "Extra hours if on", current: current, quiet: column.id == "free")
-      }
-    }
-    .padding(12)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background {
-      if current {
-        CloudSky(moon: false, bank: false)
-      } else {
-        ADEKit.track.opacity(0.35)
-      }
-    }
-    .clipShape(shape)
-    .overlay(shape.strokeBorder(current || isNew ? CloudBrandColor.lamp.opacity(0.6) : ADEKit.edge, lineWidth: current || isNew ? 1 : 0.75))
-    .shadow(color: isNew ? CloudBrandColor.lamp.opacity(0.45) : (current ? CloudBrandColor.violet.opacity(0.3) : .clear), radius: isNew ? 14 : 10, y: current ? 6 : 0)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(column.label)\(current ? ", your plan" : "")\(isNew ? ", new" : ""): \(cloudHours(column.facts.includedMilli)) computer hours a month, \(cloudGb(column.facts.diskGb)) disk\(column.facts.phoneMinutes.map { ", \($0) iOS Simulator minutes, coming soon" } ?? "")")
-  }
-
-  private func planTag(_ text: String, gold: Bool) -> some View {
-    Text(text)
-      .font(.system(size: 10.5, weight: .medium))
-      .foregroundStyle(gold ? CloudBrandColor.lamp : ADEColor.textSecondary)
-      .lineLimit(1)
-      .padding(.horizontal, 7)
-      .frame(height: 19)
-      .background(gold ? CloudBrandColor.lamp.opacity(0.13) : Color.clear, in: Capsule())
-      .overlay(Capsule().strokeBorder(gold ? CloudBrandColor.lamp.opacity(0.45) : ADEKit.edge, lineWidth: 0.75))
-      .fixedSize()
-  }
-
-  private func bigFact(_ value: String, _ unit: String, current: Bool) -> some View {
-    VStack(alignment: .leading, spacing: 0) {
-      Text(value)
-        .font(.system(size: 26, weight: .semibold))
-        .tracking(-0.6)
-        .foregroundStyle(current ? CloudBrandColor.skyText : ADEColor.textPrimary)
-        .lineLimit(1)
-        .minimumScaleFactor(0.6)
-      Text(unit)
-        .font(.system(size: 11.5))
-        .foregroundStyle(current ? CloudBrandColor.skyText2 : ADEColor.textMuted)
-        .lineLimit(2)
-    }
-  }
-
-  private func fact(_ symbol: String, _ text: String, current: Bool, quiet: Bool = false) -> some View {
-    HStack(spacing: 7) {
-      Image(systemName: symbol)
-        .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(current ? CloudBrandColor.lamp : CloudBrandColor.mark)
-        .frame(width: 14)
-      Text(text)
-        .font(.system(size: 12))
-        .foregroundStyle(current ? CloudBrandColor.skyText2 : (quiet ? ADEColor.textMuted : ADEColor.textSecondary))
-        .lineLimit(2)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-  }
-
-  /// The paid plan's hours this period when they aren't the table's (old terms), else nil.
-  private func oldTermsHours(_ column: Column) -> Int? {
-    guard account.plan == "paid", account.billing?.notice != "past_due" else { return nil }
-    let included = account.hours.includedMilli
-    return included > 0 && included != column.facts.includedMilli ? included : nil
-  }
-
-  /// The paid plan's disk this period when it isn't the table's (old terms), else nil.
-  private func oldTermsDisk(_ column: Column) -> Double? {
-    guard account.plan == "paid", account.billing?.notice != "past_due", let limit = account.disk?.limitGb else { return nil }
-    return limit != column.facts.diskGb ? limit : nil
-  }
-
-}
-
 // MARK: Sizes
 
-/// The four sizes (`CloudSizeCards.tsx`), one row each, read at a glance: how
-/// fast it uses hours (big), CPU · memory · disk, "Full computer" where it is
-/// one, and the hours left at that size. The desktop screen every size has is
-/// said once in the hint (one line: the kit hint does not wrap); what a size runs and its rate in words are read out.
+/// The four sizes (`CloudSizeCards.tsx`), one row each, read at a glance:
+/// the hours left as time on that size (big; "Unlimited" on Small, which
+/// never uses hours), CPU · memory, and "Full computer" where it is one.
+/// Never a multiplier and never disk. The desktop screen every size has is
+/// said once in the hint (one line: the kit hint does not wrap); what a size runs is read out.
 struct CloudSizesCard: View {
   let account: CloudPhoneAccount
   let tiers: [CloudPhoneTier]
@@ -733,8 +546,7 @@ struct CloudSizesCard: View {
   }
 
   private func facts(_ tier: CloudPhoneTier) -> String {
-    (["\(tier.cpu) CPU", "\(cloudGbText(tier.memoryGb)) GB memory"] + (tier.diskMaxGb.map { ["\(cloudGbText($0)) GB disk"] } ?? []))
-      .joined(separator: " · ")
+    tier.specs.joined(separator: " · ")
   }
 
   private func row(_ tier: CloudPhoneTier) -> some View {
@@ -761,17 +573,19 @@ struct CloudSizesCard: View {
         Text(facts(tier))
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
-        (Text(tier.hoursLeftLabel(leftMilli)).fontWeight(.semibold).foregroundColor(ADEColor.textPrimary)
-          + Text(" left at this size").foregroundColor(ADEColor.textMuted))
+        Text(tier.usesHours ? "Uses your hours" : "Never uses your hours")
           .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textMuted)
       }
       Spacer(minLength: 8)
       VStack(alignment: .trailing, spacing: 0) {
-        Text("\(tier.rate.formatted(.number.precision(.fractionLength(0...1))))×")
-          .font(.system(size: 26, weight: .semibold))
+        Text(tier.hoursLeftLabel(leftMilli))
+          .font(.system(size: tier.usesHours ? 24 : 18, weight: .semibold))
           .monospacedDigit()
           .foregroundStyle(CloudBrandColor.mark)
-        Text("hours")
+          .lineLimit(1)
+          .minimumScaleFactor(0.7)
+        Text(tier.usesHours ? "left on it" : "this month")
           .font(.system(size: 11))
           .foregroundStyle(ADEColor.textMuted)
       }
@@ -780,7 +594,7 @@ struct CloudSizesCard: View {
     .padding(.vertical, 11)
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
-    .accessibilityHint("\(tier.runs). \(tier.rateLine).")
+    .accessibilityHint("\(tier.runs). \(tier.hoursLine(leftMilli: leftMilli)).")
   }
 }
 

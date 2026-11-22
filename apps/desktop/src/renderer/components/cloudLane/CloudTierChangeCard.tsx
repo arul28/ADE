@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
-import { cloudCatalogOf, cloudHoursLeftMilli, formatCloudHours, type CloudAccountState } from "../../../shared/adeCloud";
+import { capitalizeCloudPhrase, cloudCatalogOf, cloudHoursLeftMilli, formatCloudHours, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot, CloudLaneTierTiming } from "../../../shared/cloudLaneLife";
 import { cloudTierHoursAt, cloudTierRateLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { ipcErrorMessage } from "../../lib/format";
@@ -164,7 +164,7 @@ export function CloudTierChangeCard({
             {to.label}
           </span>
           <span className="adecl-tier-rate kit-num">
-            {from ? `${rateText(from)} to ` : ""}{rateText(to)}
+            {from ? `${capitalizeCloudPhrase(rateText(from))}, then ${rateText(to)}` : capitalizeCloudPhrase(rateText(to))}
           </span>
         </div>
       ) : null}

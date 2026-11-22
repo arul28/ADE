@@ -89,6 +89,8 @@ struct CloudNewComputerSizePick {
   let tiers: [CloudPhoneTier]
   let picked: String?
   let pick: (String?) -> Void
+  /// The account's hours left, so each size says how long they last on it.
+  var leftMilli: Int? = nil
 }
 
 /// The deleted-computer line's size chip: the size the next message's new
@@ -108,7 +110,7 @@ struct CloudNewComputerSizeMenu: View {
           } label: {
             Label {
               Text(tier.label)
-              Text("\(tier.specs.joined(separator: ", ")). \(tier.rateLine).")
+              Text("\(tier.specs.joined(separator: ", ")). \(tier.hoursLine(leftMilli: pick.leftMilli)).")
             } icon: {
               Image(systemName: tier.id == currentId ? "checkmark" : tier.symbol)
             }

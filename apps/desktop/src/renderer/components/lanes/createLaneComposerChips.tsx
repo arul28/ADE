@@ -5,6 +5,7 @@ import { usePortalContainer } from "../ui/portalContainer";
 import { Z_LAYERS } from "../ui/zLayers";
 import { formatBytes } from "../../lib/format";
 import type { LaneTemplate } from "../../../shared/types";
+import { capitalizeCloudPhrase } from "../../../shared/adeCloud";
 import { cloudTierRateLabel, cloudTierShapeLabel, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { ADE_CLOUD_NAME, CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import type { AdeCloudLaneChoice } from "./useAdeCloudLaneTarget";
@@ -364,9 +365,9 @@ export function LaneTemplateChip({
   );
 }
 
-/** "2 CPU · 4 GB · 1× hours" for a size row. */
+/** "4 CPU · 8 GB · Uses 1 hour an hour" for a size row. */
 function cloudTierDetail(tier: CloudTier): string {
-  return `${cloudTierShapeLabel(tier)} · ${cloudTierRateLabel(tier)}`;
+  return `${cloudTierShapeLabel(tier)} · ${capitalizeCloudPhrase(cloudTierRateLabel(tier))}`;
 }
 
 /**

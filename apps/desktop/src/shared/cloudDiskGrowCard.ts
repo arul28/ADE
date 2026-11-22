@@ -8,8 +8,7 @@
  */
 
 import type { AdeCardPayload, AdeCardRow } from "./adeCard";
-import { formatCloudCents } from "./adeCloud";
-import type { CloudDiskGrowExtra, CloudDiskLaneUse, CloudDiskLimitReason } from "./cloudDiskGrowRules";
+import type { CloudDiskRefusalReason } from "./adeCloud";
 
 const CLOUD_DISK_GROW_CARD_VARIANT = "cloud_disk_grow";
 const CLOUD_DISK_LIMIT_CARD_VARIANT = "cloud_disk_limit";
@@ -28,13 +27,10 @@ export function buildCloudDiskGrowCard(input: {
   phase: CloudDiskGrowCardPhase;
   /** Free space once back, in GB (one decimal). */
   freeGb?: number | null;
-  /** The paid extra disk the grow uses. */
-  extra?: CloudDiskGrowExtra | null;
   /** `failed`: why it didn't grow. */
   detail?: string | null;
 }): AdeCardPayload {
   const sizes = input.fromGb != null ? `${input.fromGb} GB → ${input.toGb} GB` : `To ${input.toGb} GB`;
-  const extra = input.extra ? `${input.extra.pastGb} GB of paid extra disk, about ${formatCloudCents(input.extra.monthCents)} a month` : null;
   const ask: AdeCardRow = { key: "ask", icon: "pass", text: `Asked ADE Cloud for a ${input.toGb} GB disk`, detail: input.reason };
   if (input.phase === "growing") {
     return {
@@ -42,13 +38,13 @@ export function buildCloudDiskGrowCard(input: {
       variant: CLOUD_DISK_GROW_CARD_VARIANT,
       state: "live",
       title: "Growing this computer's disk",
-      subtitle: `${sizes} · ${extra ?? "inside your plan's disk or approved by you"}`,
+      subtitle: `${sizes} · up to this size's disk maximum`,
       rows: [
         ask,
         { key: "restart", icon: "running", text: "Restart the computer and start ADE again" },
         { key: "continue", icon: "queued", text: "Continue this chat" },
       ],
-      fallbackText: `ADE is growing this computer's disk (${sizes}${extra ? `, ${extra}` : ""}). The computer restarts for a moment, then ADE continues this chat.`,
+      fallbackText: `ADE is growing this computer's disk (${sizes}). The computer restarts for a moment, then ADE continues this chat.`,
     };
   }
   if (input.phase === "grew") {
@@ -93,42 +89,26 @@ export function buildCloudDiskGrowCard(input: {
   };
 }
 
-const LIMIT_TITLES: Partial<Record<CloudDiskLimitReason, string>> = {
-  tier_limit: "This computer's disk can't grow more",
-  unavailable: "ADE couldn't grow this computer's disk",
-  // The agent limits, not the account, held an unattended agent's grow back.
-  agent_limit: "Agents can't add more disk alone",
-};
-
 /**
- * A grow that can't happen: the account is at its storage limit (the
- * computers that hold the disk, biggest first, so the person can pick one to
- * delete), or the size can't hold a bigger disk. `sentence` names no
- * computers: the card lists them itself.
+ * A grow that can't happen: the size can't hold a bigger disk
+ * (`tier_limit`), or ADE Cloud can't grow it now. `sentence` says why and the
+ * way out.
  */
 export function buildCloudDiskLimitCard(input: {
   cardId: string;
   toGb: number;
-  reason: CloudDiskLimitReason;
+  reason: CloudDiskRefusalReason;
   sentence: string;
-  lanes: readonly CloudDiskLaneUse[];
 }): AdeCardPayload {
-  const lanes = [...input.lanes].sort((a, b) => b.diskGb - a.diskGb).slice(0, 8);
-  const usedGb = input.lanes.reduce((sum, lane) => sum + lane.diskGb, 0);
-  const title = LIMIT_TITLES[input.reason] ?? "Your ADE Cloud storage is full";
+  const title = input.reason === "tier_limit" ? "This computer's disk can't grow more" : "ADE couldn't grow this computer's disk";
   return {
     cardId: input.cardId,
     variant: CLOUD_DISK_LIMIT_CARD_VARIANT,
     state: "terminal",
     title,
     subtitle: input.sentence,
-    ...(lanes.length ? { metrics: [{ label: "Used by your computers", value: `${usedGb} GB` }] } : {}),
-    // A refusal reads as one (amber), never as a passed card; the computers
-    // carry the same tone so the card lists them.
-    rows: [
-      { key: "ask", icon: "fail", text: `Asked ADE Cloud for a ${input.toGb} GB disk` },
-      ...lanes.map((lane, index): AdeCardRow => ({ key: `lane_${index}`, icon: "info", tone: "warning", text: lane.laneName, detail: `${lane.diskGb} GB` })),
-    ],
-    fallbackText: `${title}: ${input.sentence}${lanes.length ? ` Disk by computer: ${lanes.map((lane) => `${lane.laneName} ${lane.diskGb} GB`).join(", ")}.` : ""}`,
+    // A refusal reads as one (amber), never as a passed card.
+    rows: [{ key: "ask", icon: "fail", text: `Asked ADE Cloud for a ${input.toGb} GB disk` }],
+    fallbackText: `${title}: ${input.sentence}`,
   };
 }

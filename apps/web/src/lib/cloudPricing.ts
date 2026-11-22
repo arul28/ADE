@@ -1,9 +1,12 @@
 /**
  * ADE Cloud's prices and plan rules for the website (`/pricing`, the home
- * page teaser, the invite page). Every number comes from the account
- * directory's own source, the one the server bills with and the desktop
- * shows: `plans.ts` (plans, sizes, extra disk) and `contract.ts` (the free
- * plan's rules, invites, idle cleanup). Nothing here is typed by hand.
+ * page, the invite page). Every number comes from the account directory's
+ * own source, the one the server bills with and the desktop shows:
+ * `plans.ts` (plans, sizes, hours) and `contract.ts` (the offer's sentences,
+ * the free plan's rules, invites, idle cleanup). Nothing here is typed by
+ * hand. Pricing v2 (`docs/plans/pricing-v2-and-gravity.md`): Small computers
+ * never use hours, bigger ones use Medium-hours, each plan has a number of
+ * cloud computers, and no surface shows GB.
  *
  * Both files are plain data with no Worker code, so the site bundles only
  * the values it uses. `vercel.json`'s ignore step watches them too, so a
@@ -11,31 +14,63 @@
  */
 import {
   CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
+  CLOUD_HOUR_UNIT_SENTENCE,
   CLOUD_IDLE_CLEANUP_DAYS,
   CLOUD_REFERRAL_ENTER_DAYS,
   CLOUD_REFERRAL_REWARD_LIMIT,
   CLOUD_REFERRAL_REWARD_MILLI,
+  CLOUD_SMALL_FAIR_USE_SENTENCE,
+  CLOUD_SMALL_UNLIMITED_SENTENCE,
+  cloudComputersPhrase,
   type CloudPlanId,
   type CloudTierId,
 } from "../../../account-directory/src/cloud/contract";
-import { CLOUD_PLANS, DISK_ON_CREATE_GB, EXTRA_DISK_CENTS_PER_10GB_MONTH, cloudCatalog } from "../../../account-directory/src/cloud/plans";
+import { CLOUD_PLANS, cloudSizeForTier } from "../../../account-directory/src/cloud/plans";
 
-/** The disk each new computer takes from the plan's shared disk. */
-export const COMPUTER_START_DISK_GB = DISK_ON_CREATE_GB;
+export { CLOUD_HOUR_UNIT_SENTENCE, CLOUD_SMALL_FAIR_USE_SENTENCE, CLOUD_SMALL_UNLIMITED_SENTENCE, cloudComputersPhrase };
 
-/** Hours are kept in thousandths of a Small-hour. */
+/**
+ * The ADE Cloud iPhone (an iOS Simulator in the cloud, with iPhone minutes)
+ * is behind the server's `CLOUD_PHONE_ACCESS` switch, in beta for testers.
+ * The website shows it only once that switch is `all`: then set this to true
+ * and the "coming soon" card, its minutes line and the home page mention
+ * come back (`ComingSoon`, `CloudSection`).
+ */
+// Flip to true in the same release that sets the server's CLOUD_PHONE_ACCESS to `all`.
+export const CLOUD_PHONE_ON_WEBSITE = false;
+
+/** The rest of the offer, after `CLOUD_SMALL_UNLIMITED_SENTENCE`. */
+export const CLOUD_OFFER_REST_SENTENCE = "Bigger computers use hours, and each plan has a number of cloud computers.";
+
+/** The offer's two sentences apart, for a headline and its second line: "Unlimited Small computers." and "They never use your hours." */
+export const CLOUD_SMALL_UNLIMITED_PARTS: readonly [string, string] = (() => {
+  const at = CLOUD_SMALL_UNLIMITED_SENTENCE.indexOf(". ");
+  return at < 0
+    ? [CLOUD_SMALL_UNLIMITED_SENTENCE, ""]
+    : [CLOUD_SMALL_UNLIMITED_SENTENCE.slice(0, at + 1), CLOUD_SMALL_UNLIMITED_SENTENCE.slice(at + 2)];
+})();
+
+/** The offer's first sentence without its period, for a pill or a link: "Unlimited Small computers". */
+export const CLOUD_SMALL_UNLIMITED_SHORT = CLOUD_SMALL_UNLIMITED_PARTS[0].replace(/\.$/, "");
+
+/** Hours are kept in thousandths of a Medium-hour. */
 const hoursOf = (milli: number): number => Math.round(milli / 1000);
 
 export type PricingPlan = {
   id: CloudPlanId;
   name: string;
   priceUsd: number;
+  /** A month's hours for the sizes bigger than Small, in Medium-hours. */
   hours: number;
-  diskGb: number;
+  /** How many cloud computers the account may have, asleep or not. */
+  computerLimit: number;
+  /** Whether outside agents (ADE MCP) may start ADE Cloud work. */
+  outsideAgents: boolean;
+  /** ADE Cloud iPhone minutes a month; shown only with `CLOUD_PHONE_ON_WEBSITE`. */
   phoneMinutes: number;
-  /** What an hour past the plan's costs, or null on Free, where work stops. */
+  /** What an hour past the plan's costs, or null on Free, where work on the bigger sizes stops. */
   extraHourCents: number | null;
-  /** What a minute past the plan's iPhone minutes costs, or null on Free, where the phone stops. */
+  /** What a minute past the plan's iPhone minutes costs, or null on Free; shown only with `CLOUD_PHONE_ON_WEBSITE`. */
   extraPhoneMinuteCents: number | null;
   /** Days an unused computer is kept before ADE cleans it up. */
   idleDays: number;
@@ -43,7 +78,6 @@ export type PricingPlan = {
   pitch: string;
 };
 
-const PLAN_NAMES: Record<CloudPlanId, string> = { free: "Free", plus: "Plus", pro: "Pro", max: "Max" };
 const PLAN_PITCHES: Record<CloudPlanId, string> = {
   free: "Try your agents in the cloud.",
   plus: "A few lanes, most days.",
@@ -55,10 +89,11 @@ export const PRICING_PLANS: readonly PricingPlan[] = (["free", "plus", "pro", "m
   const plan = CLOUD_PLANS[id];
   return {
     id,
-    name: PLAN_NAMES[id],
+    name: plan.label,
     priceUsd: plan.priceUsd,
     hours: hoursOf(plan.includedMilli),
-    diskGb: plan.diskGb,
+    computerLimit: plan.computerLimit,
+    outsideAgents: plan.outsideAgents,
     phoneMinutes: plan.phoneMinutes,
     extraHourCents: plan.extraHourCents,
     extraPhoneMinuteCents: plan.extraPhoneMinuteCents,
@@ -67,8 +102,10 @@ export const PRICING_PLANS: readonly PricingPlan[] = (["free", "plus", "pro", "m
   };
 });
 
-
 export const FREE_PLAN = PRICING_PLANS[0]!;
+
+/** The most cloud computers any plan allows. */
+export const MOST_COMPUTERS = Math.max(...PRICING_PLANS.map((plan) => plan.computerLimit));
 
 /** Days an unused computer is kept on every paid plan. */
 export const PAID_IDLE_DAYS = CLOUD_IDLE_CLEANUP_DAYS.paid;
@@ -78,8 +115,7 @@ export type PricingSize = {
   label: string;
   cpu: number;
   memoryGb: number;
-  diskMaxGb: number;
-  /** Small-hours one hour awake uses: 1, 2, 5, 8. */
+  /** Medium-hours one hour awake uses: 0 (Small never uses hours), 1, 2.5, 4. Never shown as a multiplier. */
   rate: number;
   /** A full computer: Docker and the Android emulator. */
   full: boolean;
@@ -93,24 +129,45 @@ const SIZE_USES: Record<CloudTierId, string> = {
   xlarge: "Docker, Android and heavy builds",
 };
 
-/** The four sizes people pick, Small first: the catalog the desktop reads. */
+/** The four sizes people pick, Small first: the sizes the server's catalog sends the desktop. */
 export const PRICING_SIZES: readonly PricingSize[] = (["small", "medium", "large", "xlarge"] as const).flatMap((id) => {
-  const size = cloudCatalog({ pro: true, max: true, extraDisk: true }).sizes.find((entry) => entry.tier === id);
+  const size = cloudSizeForTier(id);
   if (!size) return [];
   return [{
     id,
-    label: size.label ?? id,
+    label: size.label,
     cpu: size.cpu,
     memoryGb: size.memoryGb,
-    diskMaxGb: size.diskMaxGb ?? 0,
     rate: size.multiplierMilli / 1000,
     full: size.type === "vm",
     use: SIZE_USES[id],
   }];
 });
 
-/** "$2" for each 10 GB of disk past the plan's, a month. */
-export const EXTRA_DISK_USD_PER_10GB_MONTH = EXTRA_DISK_CENTS_PER_10GB_MONTH / 100;
+export const SMALL_SIZE = PRICING_SIZES.find((size) => size.rate === 0) ?? PRICING_SIZES[0]!;
+/** The sizes that use hours, smallest first. */
+export const HOURLY_SIZES: readonly PricingSize[] = PRICING_SIZES.filter((size) => size.rate > 0);
+
+/** How many hours `hours` of the plan last on `size`, whole hours; null for Small, which never uses them. */
+export function hoursOnSize(hours: number, size: PricingSize): number | null {
+  return size.rate > 0 ? Math.floor(hours / size.rate) : null;
+}
+
+/** "a Medium", "an X-Large". */
+const withArticle = (label: string): string => `${/^[AEIOUX]/i.test(label) ? "an" : "a"} ${label}`;
+
+/**
+ * A plan's hours as time on each size that uses them, never a multiplier:
+ * "50 hours on a Medium · 20 on a Large · 12 on an X-Large" (or joined by
+ * `separator`, such as ", " in a sentence).
+ */
+export function hoursOnSizesLine(hours: number, separator = " · "): string {
+  return HOURLY_SIZES.map((size, index) => {
+    const count = hoursOnSize(hours, size) ?? 0;
+    const unit = index === 0 ? ` ${count === 1 ? "hour" : "hours"}` : "";
+    return `${formatCount(count)}${unit} on ${withArticle(size.label)}`;
+  }).join(separator);
+}
 
 export const FREE_RULES = {
   /** A GitHub account must be this many days old (a card with no charge skips the wait). */
@@ -143,27 +200,23 @@ export type PlanCost = {
   extraHours: number;
   /** Hours of the plan left unused. */
   spareHours: number;
-  /** GB past the plan's shared disk that the computers need, bought as extra disk. */
-  extraDiskGb: number;
 };
 
 /**
- * What a month of `hours` costs on each plan that can run it, cheapest
- * first. Free can run it only inside its own hours (work stops there); a
- * paid plan runs past its hours with extra hours turned on.
+ * What a month of `hours` (Medium-hours: Small computers use none) on
+ * `computers` cloud computers costs on each plan that can run it, cheapest
+ * first. A plan runs it only if it has that many computers. Free can run it
+ * only inside its own hours (work on the bigger sizes stops there); a paid
+ * plan runs past its hours with extra hours turned on.
  */
-export function planCostsFor(hours: number, diskGb = 0): PlanCost[] {
+export function planCostsFor(hours: number, computers = 1): PlanCost[] {
   const needed = Math.max(0, hours);
   return PRICING_PLANS.flatMap((plan): PlanCost[] => {
+    if (computers > plan.computerLimit) return [];
     const extraHours = Math.max(0, needed - plan.hours);
-    // Free can buy neither: past its hours or its disk, it doesn't run the month.
     if (extraHours > 0 && plan.extraHourCents == null) return [];
-    const extraDiskGb = Math.max(0, diskGb - plan.diskGb);
-    if (extraDiskGb > 0 && plan.extraHourCents == null) return [];
-    // Extra disk bills by the GB, at its price for each 10 GB.
-    const extraDiskUsd = (extraDiskGb / 10) * EXTRA_DISK_USD_PER_10GB_MONTH;
-    const costUsd = plan.priceUsd + (extraHours * (plan.extraHourCents ?? 0)) / 100 + extraDiskUsd;
-    return [{ plan, costUsd, extraHours, spareHours: Math.max(0, plan.hours - needed), extraDiskGb }];
+    const costUsd = plan.priceUsd + (extraHours * (plan.extraHourCents ?? 0)) / 100;
+    return [{ plan, costUsd, extraHours, spareHours: Math.max(0, plan.hours - needed) }];
   }).sort((a, b) => a.costUsd - b.costUsd || b.spareHours - a.spareHours);
 }
 
@@ -174,14 +227,14 @@ export const formatUsd = (usd: number): string => {
 };
 
 /**
- * The plan the finder suggests for a month of `hours`, and the other plan
- * worth naming. A plan that covers the month with its own hours wins over a
- * cheaper one that runs on extra hours, unless it costs more than $5 or 30%
- * more: a person rarely wants a bill that grows with every hour to save a
- * dollar or two.
+ * The plan the finder suggests for a month of `hours` on `computers`
+ * computers, and the other plan worth naming. A plan that covers the month
+ * with its own hours wins over a cheaper one that runs on extra hours, unless
+ * it costs more than $5 or 30% more: a person rarely wants a bill that grows
+ * with every hour to save a dollar or two.
  */
-export function suggestPlan(hours: number, diskGb = 0): { pick: PlanCost; other: PlanCost | null } | null {
-  const costs = planCostsFor(hours, diskGb);
+export function suggestPlan(hours: number, computers = 1): { pick: PlanCost; other: PlanCost | null } | null {
+  const costs = planCostsFor(hours, computers);
   const cheapest = costs[0];
   if (!cheapest) return null;
   const covered = costs.find((cost) => cost.extraHours === 0) ?? null;
@@ -192,22 +245,7 @@ export function suggestPlan(hours: number, diskGb = 0): { pick: PlanCost; other:
     : { pick: cheapest, other: covered };
 }
 
-/** What one included hour costs on a paid plan, in cents: "1.7¢". Null on Free. */
-export function centsPerIncludedHour(plan: PricingPlan): string | null {
-  if (plan.priceUsd === 0 || plan.hours === 0) return null;
-  return `${Number(((plan.priceUsd * 100) / plan.hours).toFixed(1))}¢`;
-}
-
-/**
- * A month of the plan's hours as a day of work: "3 hours a day" while one
- * computer could do it, then "7 agents, day and night".
- */
-export function planDayLine(plan: PricingPlan): string {
-  const perDay = plan.hours / FINDER_DAYS_A_MONTH;
-  if (perDay <= 24) {
-    const rounded = Math.max(1, Math.round(perDay));
-    return `${rounded} ${rounded === 1 ? "hour" : "hours"} a day`;
-  }
-  const agents = Math.round(perDay / 24);
-  return `${agents} ${agents === 1 ? "agent" : "agents"}, day and night`;
+/** "Plus, Pro and Max". */
+export function listNames(names: readonly string[]): string {
+  return names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names.join("");
 }

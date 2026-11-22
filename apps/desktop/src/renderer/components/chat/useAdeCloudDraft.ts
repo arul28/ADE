@@ -11,7 +11,8 @@ import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock } from "../../../share
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import type { AgentChatFileRef, AgentChatProvider, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
-import { cloudTierHoursAt, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTierHoursAt, cloudTiers, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { adeCloudDoBlock, useAdeCloudAccess, useAdeCloudEnabled } from "../../state/cloudAccess";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -34,8 +35,13 @@ const NO_MACHINES: readonly CloudMachine[] = [];
 import { ADE_CLOUD_MACHINE_ID } from "../../../shared/adeCloudMachine";
 export { ADE_CLOUD_MACHINE_ID };
 
-/** What can open from the label above the box: the plan row, the Free up space flow, the ADE Cloud page, or GitHub's settings. */
-export type AdeCloudTrayAction = "upgrade" | "free-space" | "settings" | "github";
+/**
+ * What can open from the label above the box: the plan row, the Free up space
+ * flow, the ADE Cloud page, GitHub's settings, or the computer limit card
+ * (all the plan's cloud computers in use: free one up, delete a lane, or a
+ * bigger plan).
+ */
+export type AdeCloudTrayAction = "upgrade" | "free-space" | "settings" | "github" | "computer-limit";
 
 /**
  * The label above the prompt box while ADE Cloud is picked and Send can't go:
@@ -57,15 +63,15 @@ export type AdeCloudTrayNotice = {
  */
 export function adeCloudAccountBlock(
   account: CloudAccountState | null,
-  options: { newLane: boolean },
+  options: { newLane: boolean; sizeId?: string | null },
 ): AdeCloudTrayNotice | null {
   // One wording with `cloud.status` and the launch's early refusal.
   const block = cloudLaneStartBlock(account, options);
   if (!account || !block) return null;
   const upgrade: AdeCloudTrayAction[] = account.rules === "free" ? ["upgrade"] : [];
-  const actions: AdeCloudTrayAction[] = block.code === "out_of_hours"
-    ? (upgrade.length ? upgrade : ["settings"])
-    : [...upgrade, "free-space"];
+  const actions: AdeCloudTrayAction[] = block.code === "computer_limit"
+    ? ["computer-limit"]
+    : upgrade.length ? upgrade : ["settings"];
   return { tone: "blocked", message: block.message, short: block.short, actions };
 }
 
@@ -75,13 +81,25 @@ export function adeCloudAccountBlock(
  * flow already open, or GitHub's settings.
  */
 export function adeCloudTrayActionRoute(action: AdeCloudTrayAction): string {
-  return action === "upgrade"
+  return action === "upgrade" || action === "computer-limit"
     ? adeCloudSettingsRoute(ADE_CLOUD_PLAN_ANCHOR)
     : action === "free-space"
       ? adeCloudSettingsRoute(ADE_CLOUD_FREE_SPACE_ANCHOR)
       : action === "github"
         ? settingsRouteFor("integrations.github")
         : settingsRouteFor("integrations.ade-cloud");
+}
+
+/**
+ * Runs a tray action: the computer limit card opens in place (the account
+ * read gives its facts); every other action opens its Settings route.
+ */
+export function runAdeCloudTrayAction(action: AdeCloudTrayAction, navigate: (route: string) => void): void {
+  if (action === "computer-limit") {
+    openCloudComputerLimitCard();
+    return;
+  }
+  navigate(adeCloudTrayActionRoute(action));
 }
 
 /** Keeps one array identity while its signature does not change, so memos downstream hold. */
@@ -149,6 +167,8 @@ export function useAdeCloudDraft({
   const runOnLine = useMemo(() => {
     const tier = tiers.find((entry) => entry.id === tierId) ?? null;
     if (!account || !tier) return null;
+    // Small never uses hours: it stays unlimited, also at 0 hours left (`cloudTierHoursAt` says so).
+    if (!cloudTierUsesHours(tier)) return `${tier.label} · ${cloudTierHoursAt(tier, 0).toLowerCase()}`;
     if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `${tier.label} · no hours left`;
     return `${tier.label} · ${cloudTierHoursAt(tier, hoursLeftMilli ?? 0)} left at this size`;
   }, [account, hoursLeftMilli, tierId, tiers]);
@@ -391,7 +411,8 @@ export function useAdeCloudComposer(input: {
     if (draft.doBlock) {
       return { tone: "blocked", message: draft.doBlock, short: "ADE Cloud can't start work now.", actions: [] };
     }
-    const accountBlock = adeCloudAccountBlock(draft.account, { newLane });
+    // A new lane's size decides whether hours matter (Small never uses them).
+    const accountBlock = adeCloudAccountBlock(draft.account, { newLane, sizeId: newLane ? draft.tierId : null });
     if (accountBlock) return accountBlock;
     // Antigravity runs on the sign-in the account carries from a computer of
     // the person's own. Known not carried, say how; on the web, also while
@@ -487,7 +508,7 @@ export function useAdeCloudComposer(input: {
         connections: input.connections,
       }
     : null;
-  const openSettings = useCallback((action: AdeCloudTrayAction) => navigate(adeCloudTrayActionRoute(action)), [navigate]);
+  const openSettings = useCallback((action: AdeCloudTrayAction) => runAdeCloudTrayAction(action, navigate), [navigate]);
 
   /** A blocked Send: ask GitHub again when its refusal is what holds Send. */
   const recheckSendBlock = useCallback(() => {

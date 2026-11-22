@@ -2,6 +2,7 @@ import { useCallback, useRef, useState, type ReactNode } from "react";
 import { ArrowClockwise, ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, PlugsConnected, Sun, Trash, UserMinus } from "@phosphor-icons/react";
 import {
   CLOUD_SHAPES,
+  capitalizeCloudPhrase,
   cloudCatalogOf,
   cloudHoursRate,
   cloudMachineKindOf,
@@ -34,6 +35,8 @@ export type CloudBoxPending = CloudMachineActionKind | "remove" | "copy" | "move
 export type CloudBoxActionError = {
   message: string;
   blocker: CloudMachineActionResult["blocker"];
+  /** At the plan's computer limit: the refusal's computers, for the limit card. */
+  computerLimit?: CloudMachineActionResult["computerLimit"];
 };
 
 /** One box's context in the list: its ADE row (if it has one) and what runs on it. */
@@ -201,7 +204,7 @@ export function useCloudBoxActions(args: {
         : toastTitle(action, ctx.name);
       showToast({ tone: "success", title, message: result.message, replayMask: { title: true } });
     } else {
-      setError(instanceId, { message: result.message, blocker: result.blocker });
+      setError(instanceId, { message: result.message, blocker: result.blocker, computerLimit: result.computerLimit ?? null });
     }
     refresh();
     return result;
@@ -358,7 +361,7 @@ export function useCloudBoxActions(args: {
     const rate = ctx.box.hoursRate != null ? formatCloudHoursRate(ctx.box.hoursRate) : null;
     const ok = await confirmDialog({
       title: `Copy ${ctx.name}?`,
-      message: `ADE makes a new computer with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It uses ${rate} while awake` : ""}. A big disk takes a few minutes.`,
+      message: `ADE makes a new computer with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It ${rate} while awake` : ""}. A big disk takes a few minutes.`,
       confirmLabel: "Copy",
     });
     if (!ok) return;
@@ -582,7 +585,7 @@ function CloudResizeDialog({
         ) : null}
         <div role="radiogroup" aria-label="Size" className="ade-cx-cloud-shapes">
           {CLOUD_SHAPES.map((shape) => {
-            const rate = formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog));
+            const rate = capitalizeCloudPhrase(formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog)));
             const isCurrent = shape.id === current;
             return (
               <button

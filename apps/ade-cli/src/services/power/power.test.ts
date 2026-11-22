@@ -1116,21 +1116,9 @@ describe("cloud disk grow an agent or the Android emulator asks for", () => {
     vi.restoreAllMocks();
   });
 
-  // An X-Large computer with an 8 GB disk and 2.7 GB free asks for 7.2 GB free: a 16 GB disk. Plus has 30 GB at one
-  // time; `usedGb` is all the account's computers now. Extra disk is $2 for 10 GB a month, the monthly limit $10:
-  // from 26 GB used the grow goes 4 GB past the plan, about 80¢ a month. The approval answers yes, no, or the agent
-  // limits' refusal (decided in `cloud.grow_disk`'s approval, `cloudAgentActions.test.ts`). `usedAfterAsk`: another
-  // computer took more of the plan's disk while the approval waited, so the grow now costs more.
-  it.each([
-    ["inside the plan's disk: it grows with no card", { usedGb: 8, extra: "off" }, "yes", { asked: 0, grows: true, state: "grown" }],
-    ["past the plan with extra disk on: the person's yes on a card, then it grows", { usedGb: 26, extra: "on" }, "yes", { asked: 1, grows: true, state: "grown" }],
-    ["past the plan with extra disk on, and the person says no: nothing grows", { usedGb: 26, extra: "on" }, "no", { asked: 1, grows: false, state: "declined" }],
-    ["past the plan with extra disk turned down: no card, the computers holding the disk named", { usedGb: 26, extra: "asked" }, "yes", { asked: 0, grows: false, state: "limit" }],
-    ["past the agents' extra disk: nothing grows, the computers holding the disk named", { usedGb: 26, extra: "on" }, "agent_limit", { asked: 1, grows: false, state: "limit", reason: "agent_limit" }],
-    ["the cost rises while the approval waits: asked again at the new cost, then it grows", { usedGb: 26, extra: "on", usedAfterAsk: 28 }, "yes", { asked: 2, grows: true, state: "grown" }],
-    ["the account's extra disk never turned on: no card, nothing grows", { usedGb: 26, extra: "off" }, "yes", { asked: 0, grows: false, state: "limit", reason: "needs_approval" }],
-    ["past the account's own monthly limit: no card, nothing grows", { usedGb: 78, extra: "on" }, "yes", { asked: 0, grows: false, state: "limit", reason: "monthly_limit" }],
-  ] as Array<[string, { usedGb: number; extra: "off" | "on" | "asked"; usedAfterAsk?: number }, "yes" | "no" | "agent_limit", { asked: number; grows: boolean; state: string; reason?: string }]>)("%s", async (_label, account, answer, expected) => {
+  // An X-Large computer with an 8 GB disk and 2.7 GB free asks for 7.2 GB free: a 16 GB disk. No plan limits disk:
+  // up to the size's disk maximum it grows with nothing to ask, however much the account's computers use.
+  it("grows to the smallest step that frees what was asked, with nothing to ask", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-disk-fit-"));
     try {
       const statfs = vi.spyOn(fs, "statfsSync").mockReturnValue(disk(2.7, 8));
@@ -1141,14 +1129,9 @@ describe("cloud disk grow an agent or the Android emulator asks for", () => {
           plan: "paid",
           rules: "paid",
           planId: "plus",
-          disk: { usedGb: approveExtra.mock.calls.length && account.usedAfterAsk != null ? account.usedAfterAsk : account.usedGb, limitGb: 30 },
-          extraDisk: { available: true, state: account.extra, monthlyLimitCents: 1000, usedCents: 0 },
-          catalog: { ...cloudCatalogOf(null), extraDiskCentsPer10GbMonth: 200 },
+          disk: { usedGb: 78, limitGb: null },
+          catalog: cloudCatalogOf(null),
         }),
-        listInstances: async () => [
-          { id: "i-1", name: null, resources: { cpu: 4, memory: 16, disk: 8 }, metadata: { ade_lane_name: "android-lane" } },
-          { id: "i-2", name: "web box", resources: { cpu: 2, memory: 4, disk: 18 }, metadata: {} },
-        ],
         resizeInstance: async (_id: string, resources: { disk?: number }) => {
           resized.push(resources.disk ?? 0);
           // The bigger disk lands (here without the restart that would end the brain).
@@ -1158,21 +1141,12 @@ describe("cloud disk grow an agent or the Android emulator asks for", () => {
         patchMetadata: async () => undefined,
         setInstanceMetadata: async () => undefined,
       };
-      const approveExtra = vi.fn(async (_fit: { toGb: number; monthCents: number }) =>
-        answer === "agent_limit" ? { reason: "agent_limit" as const, sentence: "Past what agents may use alone." } : answer === "yes");
       const grower = createCloudDiskGrower({ instanceId: "i-1", client: async () => client as never, path: home, adeHome: home });
 
-      const result = await grower.growToFit({ needFreeBytes: 7.2 * GB, reason: "Android emulator first boot", origin: "android", stillIdle: () => true, approveExtra });
+      const result = await grower.growToFit({ needFreeBytes: 7.2 * GB, reason: "Android emulator first boot", origin: "android", stillIdle: () => true });
 
-      expect(result.state).toBe(expected.state);
-      expect(approveExtra).toHaveBeenCalledTimes(expected.asked);
-      // A second ask is at the cost the account has now, not the first one's.
-      if (expected.asked === 2) expect(approveExtra.mock.calls[1]![0].monthCents).toBeGreaterThan(approveExtra.mock.calls[0]![0].monthCents);
-      expect(resized).toEqual(expected.grows ? [16] : []);
-      if (result.state === "limit") {
-        expect(result.lanes).toEqual([{ laneName: "android-lane", diskGb: 8 }, { laneName: "web box", diskGb: 18 }]);
-        if (expected.reason) expect(result.reason).toBe(expected.reason);
-      }
+      expect(result.state).toBe("grown");
+      expect(resized).toEqual([16]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

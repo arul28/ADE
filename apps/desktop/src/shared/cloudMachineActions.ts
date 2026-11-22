@@ -8,22 +8,27 @@
  */
 
 import type { CloudInstance } from "../../../account-directory/src/cloud/contract";
-import { cloudShape, type CloudMachineActionArgs, type CloudMachineActionResult } from "./adeCloud";
+import { cloudShape, readCloudComputerLimitDetail, type CloudMachineActionArgs, type CloudMachineActionResult } from "./adeCloud";
 import { cloudResourcesOfInstance } from "./cloudMachineOfInstance";
 
 /** The calls each side makes for an action. `wake` and `resize` return the computer's status after the call. */
 export type CloudMachineLifecycleOps = {
   computer(instanceId: string): Promise<CloudInstance>;
   sleep(instanceId: string): Promise<unknown>;
-  wake(instanceId: string): Promise<string>;
-  /** No `cpu`/`memory`: the size stays as the server has it (a disk-only grow). */
-  resize(instanceId: string, resources: { cpu?: number; memory?: number; disk?: number }, computerIdle: boolean): Promise<string>;
+  /** `origin: "mcp"`: an outside agent asked (the start body's mark). */
+  wake(instanceId: string, origin?: "mcp"): Promise<string>;
+  /** No `cpu`/`memory`: the size stays as the server has it (a disk-only grow). `origin: "mcp"` as for `wake`. */
+  resize(instanceId: string, resources: { cpu?: number; memory?: number; disk?: number }, computerIdle: boolean, origin?: "mcp"): Promise<string>;
   backup(instanceId: string): Promise<unknown>;
   update(instanceId: string): Promise<unknown>;
 };
 
-/** A refusal from the server: its sentence, its error code, and a disk refusal's reason. */
-export type CloudMachineRefusal = { message: string; code: string | null; reason: string | null };
+/**
+ * A refusal from the server: its sentence, its error code, a disk refusal's
+ * reason, and the rest of the server's `error` (a `computer_limit` refusal's
+ * `CloudComputerLimitDetail` sits flat on it).
+ */
+export type CloudMachineRefusal = { message: string; code: string | null; reason: string | null; detail?: unknown };
 
 /** The sentence and the way out for a refused action: plans and hours, the backup window, a disk refusal's reason. */
 export function cloudMachineRefusal(
@@ -38,10 +43,14 @@ export function cloudMachineRefusal(
       message: "ADE Cloud takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
     };
   }
-  if (code === "out_of_hours" || code === "over_plan_disk" || code === "over_plan_limits") {
+  if (code === "out_of_hours" || code === "over_plan_limits") {
     return { ok: false, blocker: code, message };
   }
-  // A disk refusal keeps its reason, so a notice can offer the way out (extra disk, a bigger size).
+  // All the plan's computers in use: the card offers the three ways out (free one up, delete a lane, a bigger plan).
+  if (code === "computer_limit") {
+    return { ok: false, blocker: "computer_limit", message, computerLimit: readCloudComputerLimitDetail(refused.detail) };
+  }
+  // A disk refusal keeps its reason, so a notice can offer the way out (a bigger size).
   const reason = code === "disk_limit" || code === "needs_paid_plan"
     ? refused.reason ?? (code === "needs_paid_plan" ? "plan_disk" : null)
     : null;
@@ -65,7 +74,7 @@ export async function runCloudMachineLifecycleAction(
       await ops.sleep(instanceId);
       return { ok: true, blocker: null, message: "Asleep. It uses no hours until it wakes." };
     case "wake": {
-      const status = await ops.wake(instanceId);
+      const status = await ops.wake(instanceId, args.origin === "mcp" ? "mcp" : undefined);
       return {
         ok: true,
         blocker: null,
@@ -79,6 +88,7 @@ export async function runCloudMachineLifecycleAction(
       await ops.update(instanceId);
       return { ok: true, blocker: null, message: "Updating. It restarts and is back in a few minutes." };
     case "resize": {
+      const origin = args.origin === "mcp" ? "mcp" : undefined;
       const shape = args.shape === undefined ? null : cloudShape(args.shape);
       const disk = typeof args.disk === "number" && Number.isInteger(args.disk) && args.disk > 0 ? args.disk : null;
       if ((args.shape !== undefined && !shape) || (!shape && disk == null)) return { ok: false, blocker: null, message: "Pick a size." };
@@ -91,7 +101,7 @@ export async function runCloudMachineLifecycleAction(
         if (!growDisk) return { ok: true, blocker: null, message: "The disk is already that size." };
         // Same size, bigger disk: the server restarts the computer for it.
         // No size in the request: the server keeps the one it has, never an older read of it.
-        const status = await ops.resize(instanceId, { disk }, computerIdle);
+        const status = await ops.resize(instanceId, { disk }, computerIdle, origin);
         return {
           ok: true,
           blocker: null,
@@ -107,6 +117,7 @@ export async function runCloudMachineLifecycleAction(
         instanceId,
         { cpu: shape.cpu, memory: shape.memoryGb, ...(growDisk ? { disk } : {}) },
         computerIdle,
+        origin,
       );
       return {
         ok: true,

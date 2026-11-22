@@ -1,5 +1,5 @@
 import { ArrowUpRight, Check, Smartphone } from "lucide-react";
-import { FREE_PLAN, PRICING_PLANS, formatCount } from "../../lib/cloudPricing";
+import { CLOUD_PHONE_ON_WEBSITE, CLOUD_SMALL_UNLIMITED_SENTENCE, PRICING_PLANS, formatCount } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
 import { MARKETING_CTA_POSITIONS } from "../../lib/marketingAnalytics";
 import { PLAN_CTAS, planHref } from "../../lib/planLinks";
@@ -24,7 +24,7 @@ export function CloudSection() {
           <h2 id="ade-cloud-title" className="mt-5 font-display text-white" style={{ fontSize: "clamp(30px, 3.4vw, 46px)", lineHeight: 1.1 }}>
             Cloud computers for your agents.
             <br className="hidden md:block" />{" "}
-            <span className="text-white/45">{formatCount(FREE_PLAN.hours)} free hours a month, then from 1¢ an hour.</span>
+            <span className="text-white/45">{CLOUD_SMALL_UNLIMITED_SENTENCE}</span>
           </h2>
         </div>
 
@@ -33,9 +33,11 @@ export function CloudSection() {
 
         <p className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-[14px] text-white/55">
           <span className="text-white/80">Coming soon</span>
-          <span className="inline-flex items-center gap-2">
-            <Smartphone className="h-4 w-4" /> iOS Simulator in the cloud
-          </span>
+          {CLOUD_PHONE_ON_WEBSITE ? (
+            <span className="inline-flex items-center gap-2">
+              <Smartphone className="h-4 w-4" /> iOS Simulator in the cloud
+            </span>
+          ) : null}
           <span className="inline-flex items-center gap-2">
             <AppleMark className="h-4 w-4" /> Mac computers in the cloud
           </span>
@@ -46,7 +48,7 @@ export function CloudSection() {
   );
 }
 
-/** The four plans in one row; each opens the web app's ADE Cloud settings at that plan. */
+/** The four plans in one row (cloud computers, then hours for the sizes bigger than Small); each opens the web app's ADE Cloud settings at that plan. */
 function Plans() {
   return (
     <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -72,7 +74,10 @@ function Plans() {
               <span className="text-[13px] text-white/45">a month</span>
             </p>
             <p className="mt-2 text-[14px] text-white/70">
-              <span className="font-mono text-white tabular-nums">{formatCount(plan.hours)}</span> hours
+              <span className="font-mono text-white tabular-nums">{formatCount(plan.computerLimit)}</span> cloud computers
+            </p>
+            <p className="mt-0.5 text-[14px] text-white/70">
+              <span className="font-mono text-white tabular-nums">{formatCount(plan.hours)}</span> hours for bigger ones
             </p>
             {free && (
               <p className="mt-3 inline-flex items-center gap-1.5 text-[13px] text-[#ffc861]">

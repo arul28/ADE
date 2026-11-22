@@ -665,7 +665,7 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
     return refuse();
   }
   // `cloud limits` reads what agents may do alone; a preset or a value flag
-  // (`--extra-disk`, `--per-day`) sets it, which is full access.
+  // (`--per-day`, `--max-shape`, `--unattended`) sets it, which is full access.
   if (command === "cloud" && sub === "limits" && args.slice(2).some((word) => !CLOUD_LIMITS_READ_FLAGS.has(word))) return refuse();
   // The account's lanes, chats, CLI copies, backups and jobs: only their list
   // and read forms. Delete, free, start, keep and cancel are full access.

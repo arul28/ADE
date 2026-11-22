@@ -2,7 +2,7 @@ import { CaretDown, Check, GearSix, Info, SlidersHorizontal, Warning } from "@ph
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
-import { cloudTierFacts, cloudTierHoursAt, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTierFacts, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
@@ -111,10 +111,12 @@ export function CloudSizeButton({
               const facts = cloudTierFacts(tier);
               // One line per size (B14-14); what it runs is in the row's hover
               // text, and in its description for the keyboard and screen readers.
-              const shape = `${tier.cpu} CPU · ${tier.memoryGb} GB${tier.diskMaxGb != null ? ` · ${tier.diskMaxGb} GB disk` : ""}`;
+              const shape = `${tier.cpu} CPU · ${tier.memoryGb} GB`;
               const runs = facts.full ? `Full computer: ${facts.runs}` : facts.runs;
-              const hoursAt = hoursLeftMilli != null ? cloudTierHoursAt(tier, hoursLeftMilli) : null;
-              const about = `${facts.specs.join(", ")}. ${runs}. ${facts.rateLine}.${hoursAt ? ` Your hours last ${hoursAt} here.` : ""}`;
+              // Hours as time at this size (Small reads "Unlimited", never a multiplier); a bigger size waits for the account.
+              const usesHours = cloudTierUsesHours(tier);
+              const hoursAt = usesHours && hoursLeftMilli == null ? null : cloudTierHoursAt(tier, hoursLeftMilli ?? 0);
+              const about = `${facts.specs.join(", ")}. ${runs}. ${facts.rateLine}.${usesHours && hoursAt ? ` Your hours last ${hoursAt} here.` : ""}`;
               const aboutId = `${idBase}-${tier.id}`;
               return (
                 <DropdownMenu.RadioItem
@@ -130,9 +132,8 @@ export function CloudSizeButton({
                   <span className="shrink-0 text-[11.5px] font-medium">{tier.label}</span>
                   {tier.id === defaultTier ? <span className="shrink-0 text-[9.5px] text-muted-fg/55">Default</span> : null}
                   <span className="min-w-0 flex-1 truncate text-[10.5px] tabular-nums text-muted-fg/60">{shape}</span>
-                  <span className="shrink-0 text-[11px] font-medium tabular-nums text-fg/80">{facts.rate}×</span>
                   {hoursAt ? (
-                    <span className="w-[52px] shrink-0 text-right text-[10px] tabular-nums text-muted-fg/60">{hoursAt}</span>
+                    <span className="w-[56px] shrink-0 text-right text-[10.5px] font-medium tabular-nums text-fg/80">{hoursAt}</span>
                   ) : null}
                   <span className="flex w-3 shrink-0 justify-end">
                     <DropdownMenu.ItemIndicator>
@@ -170,6 +171,7 @@ export const TRAY_ACTION_LABEL: Record<AdeCloudTrayAction, string> = {
   "free-space": "Free up space",
   settings: "Open settings",
   github: "Connect GitHub",
+  "computer-limit": "See your options",
 };
 
 /**

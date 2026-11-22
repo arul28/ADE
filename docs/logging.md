@@ -829,8 +829,10 @@ client version and for work nobody watches
   `agent` (the computer was made by an agent's chat, or an agent deleted it)
   or `system` (the computer's own disk grower, the idle cleanup); `tier` is
   `small`, `medium`, `large`, `xlarge` or `other`. A refusal adds `refusal`
-  (`out_of_hours`, `awake_cap`, `plan_disk`, `needs_approval`,
-  `extra_off`, `monthly_limit`, `tier_limit`, `owner_limit`, `over_plan_disk`) and
+  (`out_of_hours`, `awake_cap`, `computer_limit`, `outside_agent_free`,
+  `tier_limit`, `owner_limit`, `over_plan_limits`; before Pricing v2 also
+  `plan_disk`, `needs_approval`, `extra_off`, `monthly_limit` and
+  `over_plan_disk`) and
   `refused_action` (`create`, `move`, `copy`, `tier_change`, `grow`, `wake`).
   The uuid comes from the account, the action, a key (the instance id, hashed
   and never sent) and a time bucket: one per minute for an action, one per
@@ -877,7 +879,11 @@ client version and for work nobody watches
   `cloud.phone_check_read_failed`, `cloud.phone_allowance_check_failed`,
   `cloud.phone_stop_due_failed`, `cloud.phone_stops_failed`,
   `cloud.nomac_webhook_failed`, `cloud.phone_nomac_credit`,
-  `cloud.extra_phone_item_failed`, `cloud.block_phone_stop_failed`.
+  `cloud.extra_phone_item_failed`, `cloud.block_phone_stop_failed`,
+  `cloud.phone_beta_claim_failed` (a new account's tester-email claim
+  failed; the email keeps waiting), `cloud.phone_beta_pending_check_failed`
+  (the owner check's hourly Clerk lookup of waiting tester emails got no
+  answer: the count waiting and the fetch error, no email).
 - **`ade_cloud_safety`** (`blocks.ts`, `safety.ts`, `costReport.ts`,
   `chats.ts`): `step` is `first_chat` (the account's first saved cloud chat,
   once), `free_cap_50`, `free_cap_80`, `free_cap_100` (free use passed that
@@ -918,9 +924,13 @@ Server log lines (Worker logs only, `logCloud`) for plans and cost:
 `cloud.owner_limit_unset` (once a day while no limit is set),
 `cloud.owner_limit_reached`, `cloud.owner_cost_step` (the month's estimate
 passed another $50 below the limit: step, estimate, limit; one owner email),
-`cloud.extra_disk_capped` (a day of extra disk
-billed only up to the person's monthly limit), and
-`cloud.analytics_capture_failed`.
+`cloud.computer_limit_reached` (a create, copy or launch refused at the
+plan's computer limit: plan, limit, total), `cloud.phone_beta_claimed` (an
+iPhone tester email the owner added before it signed up reached its account:
+at the account's first read, or `retried: true` with a count from the owner
+check's hourly Clerk lookup), and
+`cloud.analytics_capture_failed`. Before Pricing v2 there was also
+`cloud.extra_disk_capped`.
 
 #### ADE with no computer: log events
 

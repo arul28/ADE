@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { cloudCatalogOf } from "../../../shared/adeCloud";
+import { CLOUD_COMPUTER_LIMIT_CODE, CLOUD_OUTSIDE_AGENT_FREE_CODE, cloudCatalogOf, readCloudComputerLimitDetail } from "../../../shared/adeCloud";
 import { isChatLaunchCloudStageId } from "../../../shared/chatLaunch";
 import { cloudTier, type CloudTier } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
@@ -8,6 +8,7 @@ import { cloudLaunchAppArgs, cloudLaunchLaneFields } from "../../../shared/cloud
 import { createCloudApiClient, CloudApiError } from "../../../shared/cloudApiClient";
 import type {
   AgentChatFileRef,
+  ChatLaunchCloudRefusal,
   ChatLaunchCloudStageId,
   ChatLaunchSnapshot,
   ChatLaunchStage,
@@ -280,7 +281,14 @@ export function createCloudLaneComputerStages(
           continue;
         }
         // The server's own sentence (hours, computers, disk, a private repository) is the one to show.
-        if (error instanceof CloudApiError && error.status >= 400 && error.status < 500) throw new LaunchStepError(error.message);
+        if (error instanceof CloudApiError && error.status >= 400 && error.status < 500) {
+          // All the plan's computers in use: the card offers the three ways out (`CloudComputerLimitDetail`).
+          // An outside agent on Free: the agent's tool passes the server's sentence on as its error.
+          const refusal: ChatLaunchCloudRefusal | null = error.code === CLOUD_COMPUTER_LIMIT_CODE
+            ? { code: CLOUD_COMPUTER_LIMIT_CODE, computerLimit: readCloudComputerLimitDetail(error.detail) }
+            : error.code === CLOUD_OUTSIDE_AGENT_FREE_CODE ? { code: CLOUD_OUTSIDE_AGENT_FREE_CODE } : null;
+          throw new LaunchStepError(error.message, refusal);
+        }
         throw error;
       }
     }

@@ -155,8 +155,8 @@ async function webMachineAction(api: CloudApiClient, args: CloudMachineActionArg
     const result = await runCloudMachineLifecycleAction({
       computer: (id) => api.computer(id),
       sleep: (id) => api.sleep(id),
-      wake: async (id) => (await api.wake(id)).status,
-      resize: async (id, resources, computerIdle) => (await api.resize(id, { ...resources, ...(computerIdle ? { computerIdle: true } : {}) })).status,
+      wake: async (id, origin) => (await api.wake(id, origin)).status,
+      resize: async (id, resources, computerIdle, origin) => (await api.resize(id, { ...resources, ...(computerIdle ? { computerIdle: true } : {}), ...(origin ? { origin } : {}) })).status,
       backup: (id) => api.backup(id),
       update: (id) => api.update(id),
     }, instanceId, args);
@@ -171,6 +171,7 @@ async function webMachineAction(api: CloudApiClient, args: CloudMachineActionArg
       message,
       code: error instanceof CloudApiError ? error.code : null,
       reason: error instanceof CloudApiError ? error.reason : null,
+      detail: error instanceof CloudApiError ? error.detail : null,
     });
   }
 }
@@ -517,7 +518,6 @@ export function createWebCloudNamespace(
     openBillingPortal: () => billing.openBillingPortal(),
     openFreeUnlock: () => billing.openFreeUnlock(),
     setExtraHours: (enabled) => billing.setExtraHours(enabled),
-    setExtraDisk: (choice) => billing.setExtraDisk(choice),
     setExtraPhoneMinutes: (choice) => billing.setExtraPhoneMinutes(choice),
     pickPlanCleanup: (input) => billing.pickPlanCleanup(input),
   };

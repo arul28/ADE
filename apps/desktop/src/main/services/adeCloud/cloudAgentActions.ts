@@ -33,13 +33,9 @@
  * (`lane_launch`), which makes the lane's own computer within the agent limits.
  *
  * A disk grow (`grow_disk`) on the computer the agent runs on is the one
- * spend an agent makes alone, unattended too: inside the plan's disk it only
- * restarts the computer, and ADE continues the chat after it. Paid extra disk
- * past the plan follows the agent limits like hours: a watched chat asks the
- * person with a card; with nobody watching ADE answers, yes inside the
- * agents' extra disk (`extraDiskMonthCents`, by default the account's own
- * monthly extra-disk limit), with a line saying what it costs, else no and a
- * card naming the computers that hold the disk.
+ * change an agent makes alone, unattended too: up to its size's disk maximum
+ * it only restarts the computer, and ADE continues the chat after it. Past the size's maximum the
+ * answer names it, and the agent asks for a bigger size.
  */
 
 import { AdeExpectedError } from "../../../shared/expectedError";
@@ -50,8 +46,13 @@ import {
   CLOUD_MACHINE_DEFAULT_NAME,
   CLOUD_MADE_BY_CHAT_METADATA,
   CLOUD_OUT_OF_HOURS_MESSAGE,
+  CLOUD_OUTSIDE_AGENT_FREE_CODE,
+  CLOUD_OUTSIDE_AGENT_FREE_MESSAGE,
   CLOUD_SHAPES,
   cloudCatalogOf,
+  cloudHoursRate,
+  cloudInstanceType,
+  cloudOutsideAgentsAllowed,
   cloudMachineKindOf,
   cloudShapeFor,
   cloudKindLabel,
@@ -61,11 +62,6 @@ import {
   cloudShapeWithin,
   cloudUnattendedHoursBlock,
   cloudLimitsPresetOf,
-  cloudAgentExtraDiskCentsOf,
-  cloudAgentExtraDiskLooser,
-  cloudAgentExtraDiskRefusal,
-  describeCloudAgentExtraDisk,
-  formatCloudCents,
   CLOUD_DEFAULT_AGENT_LIMITS,
   CLOUD_LIMITS_PRESETS,
   type CloudAccountState,
@@ -97,7 +93,7 @@ import type { CloudMoveResult } from "./cloudMachineCopy";
 import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
 import type { CloudDiskGrowAnswer, CloudDiskGrowHost } from "./cloudDiskGrowHost";
-import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierOfShape, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTierId } from "../../../shared/cloudTiers";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchStatus, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import type { ChatLaunchArgs } from "../../../shared/types";
 import { CLOUD_AUTO_SIZE } from "../../../../../account-directory/src/cloud/contract";
@@ -316,11 +312,29 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     return null;
   });
 
-  /** Refuses before a card goes up for something the server would only refuse. */
-  const hoursCheck = async (): Promise<CloudAccountState | null> => {
+  /**
+   * Refuses before a card goes up for something the server would only refuse.
+   * `shape`: the size the work ends on; a Small one never uses hours, so it
+   * goes on at 0 hours (Pricing v2).
+   */
+  const hoursCheck = async (target?: { kind: CloudMachineKind; shape: CloudShapeId | null }): Promise<CloudAccountState | null> => {
     const account = await readAccount();
-    if (cloudOutOfHours(account)) throw new Error(CLOUD_OUT_OF_HOURS_MESSAGE);
+    const free = target?.shape ? cloudHoursRate(target.kind, target.shape, cloudCatalogOf(account)) === 0 : false;
+    if (cloudOutOfHours(account) && !free) throw new Error(CLOUD_OUT_OF_HOURS_MESSAGE);
     return account;
+  };
+
+  /**
+   * Outside agents (ADE MCP) may start ADE Cloud work on paid plans only
+   * (Pricing v2). An early answer from the account as last read, with the
+   * server's own sentence; the server refuses anyway
+   * (`outside_agent_free_plan`) and its sentence reaches the agent the same
+   * way. Reads (`ade cloud status`, lists, follows) never come here.
+   */
+  const outsideAgentCheck = async (approval: CloudApproval, known?: CloudAccountState | null): Promise<void> => {
+    if (approval.by !== "agent" || approval.viaAdeMcp !== true) return;
+    const account = known !== undefined ? known : await readAccount();
+    if (!cloudOutsideAgentsAllowed(account)) throw new CloudDeclined(CLOUD_OUTSIDE_AGENT_FREE_MESSAGE);
   };
 
   /**
@@ -330,17 +344,17 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
    * composer show. An account it couldn't read goes on: the server decides,
    * and an unattended agent is still refused for unknown hours in `approve()`.
    */
-  const newComputerCheck = async (): Promise<CloudAccountState | null> => {
+  const newComputerCheck = async (sizeId: string | null = null): Promise<CloudAccountState | null> => {
     const account = await readAccount();
-    const block = cloudLaneStartBlock(account, { newLane: true });
+    const block = cloudLaneStartBlock(account, { newLane: true, sizeId });
     if (block) throw new Error(block.message);
     return account;
   };
 
   /** A retry's account check: the hours only, as its replacement's disk is checked by the server once the failed computer is gone. */
-  const retryCheck = async (): Promise<CloudAccountState | null> => {
+  const retryCheck = async (sizeId: string | null = null): Promise<CloudAccountState | null> => {
     const account = await readAccount();
-    const block = cloudLaneStartBlock(account, { newLane: false });
+    const block = cloudLaneStartBlock(account, { newLane: false, sizeId });
     if (block) throw new Error(block.message);
     return account;
   };
@@ -368,8 +382,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
    * agent's daily limit then, so a make that failed costs no slot) and whether
    * the yes came from what the person lets unattended agents do (a full-auto
    * chat or an automation, within the agent limits); throws
-   * `CloudDeclined` (with why) when not. `limitRefusal`: the sentence of
-   * `card.unattendedRule` when it said no (nothing else is checked then).
+   * `CloudDeclined` (with why) when not.
    */
   const approve = async (
     approval: CloudApproval,
@@ -402,16 +415,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       makesComputer?: boolean;
       /** Where the person can do it instead, when the caller has no chat to ask in. */
       personPlace?: string;
-      /**
-       * A rule of the agent limits the caller answers itself (a disk grow's
-       * paid extra disk, `cloudAgentExtraDiskRefusal`), checked first for an
-       * agent nobody watches: its sentence comes back as `limitRefusal`, with
-       * no notice and no other check.
-       */
-      unattendedRule?: (limits: CloudAgentLimits) => string | null;
-      /** What the spend costs, said in the notice of an unattended yes. */
-      cost?: string;
-      /** False: it spends money, not hours (paid extra disk), so the hours check doesn't apply. */
+      /** False: it uses no hours (a Small lane), so the hours check doesn't apply. */
       usesHours?: false;
       /**
        * A second yes on the card (a lane delete's "Keep for later"): the
@@ -420,8 +424,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
        */
       alternative?: { label: string };
     },
-  ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null; limitRefusal: string | null; choice: "confirm" | "alternative" }> => {
-    const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null, limitRefusal: null, choice: "confirm" as const };
+  ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null; choice: "confirm" | "alternative" }> => {
+    const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null, choice: "confirm" as const };
     const noChatToAsk = () => new CloudDeclined(`${card.title} uses hours or deletes something, so it needs your yes, and ADE has no chat to ask you in. ${card.personPlace ?? "Run it from an ADE chat, or do it in ADE: Settings › ADE Cloud, the lane's row."}`);
     if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
@@ -486,6 +490,15 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       }
       // What the person chose agents may do alone (Settings › Integrations › ADE Cloud).
       const costs = card.action === "spend" || card.newMachine === true;
+      // An outside agent on the Free plan starts no ADE Cloud work: the server's sentence, passed on as it is.
+      if (viaAdeMcp && costs) {
+        try {
+          await outsideAgentCheck(approval);
+        } catch (error) {
+          notice(`ADE said no to "${card.title}" in ${where}: ${CLOUD_OUTSIDE_AGENT_FREE_MESSAGE}`);
+          throw error;
+        }
+      }
       const limits = costs ? await deps.limits.read().catch((error: unknown): CloudAgentLimits => {
         logger.warn?.("cloud.agent_limits_read_failed", { error: getErrorMessage(error) });
         return { ...CLOUD_DEFAULT_AGENT_LIMITS, fallback: true };
@@ -494,12 +507,6 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         notice(`ADE said no to "${card.title}" in ${where}: ${why}`);
         throw new CloudDeclined(`${card.title}: declined. ${why} ${change}`.trim());
       };
-      const ruled = limits && card.unattendedRule ? card.unattendedRule(limits) : null;
-      if (ruled) {
-        // No line here: the caller answers it (a disk grow's card names what holds the disk).
-        logger.info?.("cloud.unattended_answer", { message: `"${card.title}" declined by the agent limits in ${where}` });
-        return { ...nothing, unattended: true, maker, limitRefusal: ruled };
-      }
       if (limits && !limits.unattendedSpend) refuse("your settings say unattended agents ask before anything that uses hours.");
       if (limits && card.shape && !cloudShapeWithin(card.shape, limits.maxShape)) {
         const max = cloudShapeById(limits.maxShape);
@@ -529,7 +536,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
           );
         }
       }
-      notice(`ADE approved "${card.title}" for ${where}, within what you let agents do.${card.cost ? ` ${card.cost}` : ""}`);
+      notice(`ADE approved "${card.title}" for ${where}, within what you let agents do.`);
       if (!card.newMachine) return { ...nothing, unattended: true, maker };
       reservedHere += 1;
       let held = true;
@@ -538,7 +545,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         held = false;
         reservedHere -= 1;
       };
-      return { counted: () => { release(); countMadeHere(); }, release, unattended: true, maker, limitRefusal: null, choice: "confirm" as const };
+      return { counted: () => { release(); countMadeHere(); }, release, unattended: true, maker, choice: "confirm" as const };
     }
     if (!chatSessionId || !approvals) {
       throw noChatToAsk();
@@ -705,13 +712,15 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const shapeId = shapeArg(args) ?? "2x4";
       const shape = cloudShapeById(shapeId);
       const name = text(args, "name") ?? CLOUD_MACHINE_DEFAULT_NAME;
-      const account = await newComputerCheck();
-      if (cannotMake()) throw new Error(NO_DESKTOP);
       const approval = readApproval(args);
+      // The lane size of this shape (the sizes are the server's; a Small one never uses hours).
+      const account = await newComputerCheck(cloudTierOfShape({ type: cloudInstanceType(kind), cpu: shape.cpu, memoryGb: shape.memoryGb }, cloudTiers(cloudCatalogOf(null)))?.id ?? null);
+      await outsideAgentCheck(approval, account);
+      if (cannotMake()) throw new Error(NO_DESKTOP);
       const yes = await approve(approval, {
         action: "spend",
         title: `Make "${name}" on ADE Cloud`,
-        body: `A ${shape.label}${kind === "vm" ? " full computer" : " computer"} (${shape.cpu} CPU, ${shape.memoryGb} GB). It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.`,
+        body: `A ${shape.label}${kind === "vm" ? " full computer" : " computer"} (${shape.cpu} CPU, ${shape.memoryGb} GB). ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}`,
         confirm: "Make it",
         newMachine: true,
         makesComputer: true,
@@ -733,8 +742,13 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
 
     /** A wake uses hours like opening one of its lanes; the server refuses it at 0 hours. */
     async wake(rawArgs?: unknown) {
-      const { box } = await resolveMachine(text(record(rawArgs), "machine"));
-      return await runAction(box, { instanceId: box.instanceId, action: "wake" });
+      const args = record(rawArgs);
+      const { box, all } = await resolveMachine(text(args, "machine"));
+      const approval = readApproval(args);
+      await outsideAgentCheck(approval, all.account);
+      // An outside agent's wake says so, and the server refuses it on the free plan.
+      const viaAdeMcp = approval.by === "agent" && approval.viaAdeMcp === true;
+      return await runAction(box, { instanceId: box.instanceId, action: "wake", ...(viaAdeMcp ? { origin: "mcp" as const } : {}) });
     },
 
     async resize(rawArgs?: unknown) {
@@ -743,16 +757,19 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const shapeId = shapeArg(args);
       if (!shapeId) throw new Error("Pass the new size (--shape 4x8).");
       const shape = cloudShapeById(shapeId);
-      const account = await hoursCheck();
-      await approve(readApproval(args), {
+      const account = await hoursCheck({ kind: cloudMachineKindOf(box.type), shape: shapeId });
+      const approval = readApproval(args);
+      await approve(approval, {
         action: "spend",
         title: `Resize "${box.name ?? box.instanceId}" to ${shape.label}`,
-        body: `It restarts to change size: files stay, running chats, terminals and processes stop. It then uses ${describeCloudHoursUse(cloudMachineKindOf(box.type), shape.id, cloudCatalogOf(account))}.`,
+        body: `It restarts to change size: files stay, running chats, terminals and processes stop. ${describeCloudHoursUse(cloudMachineKindOf(box.type), shape.id, cloudCatalogOf(account))}`,
         confirm: "Resize",
         shape: shapeId,
         tierChange: true,
       });
-      return await runAction(box, { instanceId: box.instanceId, action: "resize", shape: shapeId });
+      // An outside agent's resize says so too (it may wake an asleep computer): the server refuses it on the free plan.
+      const viaAdeMcp = approval.by === "agent" && approval.viaAdeMcp === true;
+      return await runAction(box, { instanceId: box.instanceId, action: "resize", shape: shapeId, ...(viaAdeMcp ? { origin: "mcp" as const } : {}) });
     },
 
     async copy(rawArgs?: unknown) {
@@ -760,14 +777,14 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const { box } = await resolveMachine(text(args, "machine"));
       const name = text(args, "name") ?? `${box.name ?? box.instanceId} copy`;
       const shapeId = shapeArg(args);
-      await newComputerCheck();
+      const approval = readApproval(args);
+      await outsideAgentCheck(approval, await newComputerCheck(cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(null)))?.id ?? null));
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const rate = box.hoursRate != null ? formatCloudHoursRate(box.hoursRate) : null;
-      const approval = readApproval(args);
       const yes = await approve(approval, {
         action: "spend",
         title: `Copy "${box.name ?? box.instanceId}" into a new machine`,
-        body: `"${name}" gets the same files (repos, lanes, installed dependencies) and signs in as a new computer${rate ? `, and uses ${rate}` : ""}. A big disk takes a few minutes to copy.`,
+        body: `"${name}" gets the same files (repos, lanes, installed dependencies) and signs in as a new computer${rate ? `, and ${rate} while awake` : ""}. A big disk takes a few minutes to copy.`,
         confirm: "Copy it",
         newMachine: true,
         makesComputer: true,
@@ -793,10 +810,10 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Push the lane's branch, then start a lane on ADE Cloud on it with the size the work needs (ade lanes create --machine cloud --size ${to === "vm" ? "large" : "small"} --existing-branch <branch> --name "<name>"), and start a chat there (ade chat create --machine <its computer> --lane <its lane id> --provider <p> --model <id> --prompt "<the task>"). This machine stays and sleeps when idle; offer to delete it from the new chat.`);
       }
       const shapeId = shapeArg(args);
-      await hoursCheck();
+      const approval = readApproval(args);
+      await outsideAgentCheck(approval, await hoursCheck({ kind: to, shape: shapeId ?? box.shapeId }));
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const name = box.name ?? box.instanceId;
-      const approval = readApproval(args);
       const yes = await approve(approval, {
         action: "delete",
         title: `Move "${name}" to a ${cloudKindLabel(to)}`,
@@ -897,19 +914,28 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // `cloud.status` and the composer show.
       const problem = saved ? null : cloudLaneLaunchStartRefusal({ args: launch, originUrl: startArgs.originUrl })?.message ?? null;
       if (problem) throw new AdeExpectedError(problem, "user");
-      const account = saved ? await retryCheck() : await newComputerCheck();
-      const tier = cloudTier(cloudCatalogOf(account), startSize);
+      const account = saved ? await retryCheck(startSize) : await newComputerCheck(startSize);
+      await outsideAgentCheck(approval, account);
+      const catalog = cloudCatalogOf(account);
+      const tier = cloudTier(catalog, startSize);
       if (!tier) throw new Error("ADE Cloud doesn't offer that size right now. Pick another one.");
       const kind: CloudMachineKind = tier.type === "vm" ? "vm" : "box";
       const shape = cloudShapeFor({ cpu: tier.cpu, memoryGb: tier.memoryGb });
+      // The size a default Small may move to, in the catalog's own words (Medium uses hours, Small none).
+      const moveUpTier = mayMoveUp ? cloudTier(catalog, CLOUD_AUTO_SIZE.to) : null;
+      const moveUpRate = moveUpTier ? cloudTierRateLabel(moveUpTier) : null;
       const yes = await approve(approval, {
         action: "spend",
         title: "Start a lane on ADE Cloud",
-        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.` : ""}${mayMoveUp ? ` If this repository's setup needs more than ${CLOUD_AUTO_SIZE.fromMemoryGb} GB, ADE uses ${CLOUD_AUTO_SIZE.toLabel} (${CLOUD_AUTO_SIZE.toHoursRate} hours) instead and remembers that.` : ""}`,
+        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` ${describeCloudHoursUse(kind, shape.id, catalog)}` : ""}${mayMoveUp ? ` If this repository's setup needs more than ${CLOUD_AUTO_SIZE.fromMemoryGb} GB, ADE uses ${moveUpTier?.label ?? CLOUD_AUTO_SIZE.toLabel}${moveUpRate ? ` (it ${moveUpRate})` : ""} instead and remembers that.` : ""}`,
         confirm: "Start it",
         newMachine: true,
         shape: shape?.id ?? null,
         personPlace: CLOUD_LANE_PERSON_PLACE,
+        // A Small lane never uses hours: an unattended agent may start one at 0 hours (Pricing v2).
+        // A default Small too: it starts Small, and the server moves it up to Medium only with
+        // the hours for it (launches.ts `startSizeOf`), so it is not blocked on hours here.
+        ...(tier.multiplierMilli === 0 ? { usesHours: false as const } : {}),
       });
       // An agent nobody watches stays within the agent limits as they are now: a default Small
       // moves up only when they allow Medium. A retry too (they may have been lowered since the
@@ -922,6 +948,11 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         const started = await host.start({ ...startArgs, madeByAgent: yes.maker });
         // A retry counts once it is on its way again, as a first start counts once made.
         if (started.created || (replaces && started.status.launch.phase !== "failed")) yes.counted();
+        // The server refused an outside agent (`outside_agent_free_plan`) already: its sentence is the tool's error, word for word.
+        const refused = started.status.launch.cloud?.refusal;
+        if (approval.by === "agent" && approval.viaAdeMcp && refused?.code === CLOUD_OUTSIDE_AGENT_FREE_CODE) {
+          throw new CloudDeclined(started.status.launch.error ?? CLOUD_OUTSIDE_AGENT_FREE_MESSAGE);
+        }
         return started.status;
       } finally {
         yes.release();
@@ -1014,11 +1045,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     /**
      * Grows the disk of the ADE Cloud computer this runs on, to fit
      * `needFreeGb` more free space or to `toGb` (`ade cloud resize --free`).
-     * Inside the plan's disk it grows with no card, for unattended chats too;
-     * past it, into the extra disk the person turned on, a watched chat's
-     * person says yes on a card first, and with nobody watching the agent
-     * limits answer (`extraDiskMonthCents`). At the account's limit, or past
-     * the agents', the chat gets a card naming the computers that hold the disk. A grow restarts
+     * Up to the size's disk maximum it grows with no card, for unattended
+     * chats too. A grow restarts
      * the computer: the call waits for that, and ADE continues the chat after
      * it with a note that the disk grew.
      */
@@ -1055,33 +1083,11 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         reason: clipReason(reason),
         origin: "agent",
         chat: chatSessionId ? { chatSessionId, projectRoot: deps.projectRoot ?? null } : null,
-        // Paid extra disk, like hours: a watched chat asks the person on a card; with nobody
-        // watching (full-auto, an automation, ADE MCP) the agent limits answer, and past
-        // them the grower answers `limit` with the computers that hold the disk.
-        approveExtra: async (fit) => {
-          try {
-            const yes = await approve(approval, {
-              action: "spend",
-              title: `Grow this computer's disk to ${fit.toGb} GB with extra disk`,
-              body: `${fit.sentence} Reason: ${clipReason(reason)}`,
-              confirm: "Grow it",
-              personPlace: "Grow it from the lane's row in Settings › ADE Cloud.",
-              unattendedRule: (limits) => cloudAgentExtraDiskRefusal(limits, fit),
-              usesHours: false,
-              cost: `It uses paid extra disk: your computers are then ${fit.pastGb} GB past your plan, about ${formatCloudCents(fit.monthCents)} a month.`,
-            });
-            return yes.limitRefusal ? { reason: "agent_limit", sentence: yes.limitRefusal } : true;
-          } catch (error) {
-            if (error instanceof CloudDeclined) return false;
-            throw error;
-          }
-        },
       });
       logger.info?.("cloud.disk_grow_asked", { state: answer.state, by: approval.by });
       const outcome = answer.state === "grown" || answer.state === "growing" ? "completed"
-        : answer.state === "declined" ? "denied"
-          : answer.state === "limit" ? (answer.reason === "agent_limit" ? "denied" : "rejected")
-            : answer.state === "fits" ? null : "failed";
+        : answer.state === "limit" ? "rejected"
+          : answer.state === "fits" ? null : "failed";
       if (outcome) captureCloudLaneAnalytics(deps.analytics, "api", "cloud_disk_grow", outcome);
       return answer;
     },
@@ -1225,24 +1231,16 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       }
       const maxShape = typeof args.maxShape === "string" ? shapeArg({ shape: args.maxShape }) : null;
       if (maxShape) next.maxShape = maxShape;
-      // Null is "up to the account's own extra-disk limit"; left out keeps it as it is.
-      if ("extraDiskMonthCents" in args) {
-        const raw = args.extraDiskMonthCents;
-        const cents = cloudAgentExtraDiskCentsOf(raw);
-        if (raw != null && cents == null) throw new Error("Extra disk for agents is a whole number of cents a month from 0 to 100000, or null for your extra-disk limit.");
-        next.extraDiskMonthCents = cents;
-      }
       const was = current;
       const looser = (next.unattendedSpend && !was.unattendedSpend)
         || next.machinesPerDay > was.machinesPerDay
-        || !cloudShapeWithin(next.maxShape, was.maxShape)
-        || cloudAgentExtraDiskLooser(next.extraDiskMonthCents, was.extraDiskMonthCents);
+        || !cloudShapeWithin(next.maxShape, was.maxShape);
       if (looser) {
         const max = cloudShapeById(next.maxShape);
         await approve(readApproval(args), {
           action: "person_only",
           title: "Let agents use more on ADE Cloud",
-          body: `Unattended agents could then ${next.unattendedSpend ? `start ${next.machinesPerDay} new computer${next.machinesPerDay === 1 ? "" : "s"} a day, up to ${max.label}, and use paid extra disk ${describeCloudAgentExtraDisk(next.extraDiskMonthCents)}` : "use nothing"}.`,
+          body: `Unattended agents could then ${next.unattendedSpend ? `start ${next.machinesPerDay} new computer${next.machinesPerDay === 1 ? "" : "s"} a day, up to ${max.label}` : "use nothing"}.`,
           confirm: "Allow it",
         });
       }

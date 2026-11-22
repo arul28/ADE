@@ -11,7 +11,7 @@ import {
 } from "../../lib/marketingAnalytics";
 import { CopyButton } from "../CopyButton";
 import { cn } from "../../lib/cn";
-import { FREE_PLAN, formatCount } from "../../lib/cloudPricing";
+import { CLOUD_SMALL_UNLIMITED_SHORT } from "../../lib/cloudPricing";
 import { useInstallDialog } from "../install/InstallDialogProvider";
 import { AppleMark, WindowsMark } from "./marks";
 import { guessPlatform } from "./SiteNav";
@@ -44,7 +44,7 @@ export function Hero() {
               <span className="font-semibold text-white">ADE Cloud: agents on cloud computers</span>
               <span className="hidden h-3.5 w-px bg-white/20 sm:block" aria-hidden />
               <span className="text-[color:var(--color-lamp)]">
-                {formatCount(FREE_PLAN.hours)} hours free every month
+                {CLOUD_SMALL_UNLIMITED_SHORT} on the free plan
               </span>
             </span>
             <ArrowRight className="h-4 w-4 shrink-0 text-white/70 transition-transform group-hover:translate-x-0.5 group-hover:text-white" />

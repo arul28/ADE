@@ -50,12 +50,11 @@ export type ToolMachines = {
   read: "pending" | "ok" | "failed";
   /**
    * The ADE Cloud iPhone on this account, as the chat's brain reads it: `on`
-   * (in the beta; its chip is in `machines`), `soon` (everyone else),
-   * `update` (the chat's machine runs an ADE from before the cloud iPhone, so
-   * it can't drive one until it updates), or null before the read or when the
-   * brain can't say.
+   * (its chip is in `machines`), `off`, `update` (the chat's machine runs an
+   * ADE from before the cloud iPhone, so it can't drive one until it
+   * updates), or null before the read or when the brain can't say.
    */
-  cloudIphone: "on" | "soon" | "off" | "update" | null;
+  cloudIphone: "on" | "off" | "update" | null;
   /**
    * The ADE Cloud iPhone's read lost its link and runs again when the link is
    * back. Until then nobody knows whether a Mac can run the iPhone, so no tile
@@ -151,7 +150,8 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     const pinKey = runtimePinKey;
     const failed = cloudIphoneRetry.begin();
     void api.status(pinRef.current).then(
-      (status) => { if (!cancelled) setCloudIphoneRead({ pinKey, access: status.access, linkLost: false }); },
+      // Access is on or off; an older server's `soon` reads as off.
+      (status) => { if (!cancelled) setCloudIphoneRead({ pinKey, access: status.access === "on" ? "on" : "off", linkLost: false }); },
       (error: unknown) => {
         // An older brain answers that it has no `cloud_phone` domain: the
         // panes say to update that machine. Anything else (signed out) shows nothing.

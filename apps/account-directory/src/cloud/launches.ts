@@ -40,7 +40,21 @@ import {
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { WAKE_PORT, cloudSizeForTier, type CloudSize } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
-import { LAUNCH_COMPUTER_DELETED, deleteComputer, logCloud, ownedComputer, parseJsonColumn, readSetting, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
+import {
+  LAUNCH_COMPUTER_DELETED,
+  deleteComputer,
+  isOutOfHoursFor,
+  listComputers,
+  liveUsedMilli,
+  loadAccount,
+  logCloud,
+  ownedComputer,
+  parseJsonColumn,
+  readSetting,
+  reportCloudFailure,
+  type CloudEnv,
+  type ComputerRow,
+} from "./store";
 import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./createOutcome";
 import { launchChannel, readUpdateChannel, readUpdateTargets } from "./updates";
 import { markKeepLaneStatement } from "./lanesWithoutComputer";
@@ -465,9 +479,11 @@ function setupKeyOf(request: CloudServerLaunchRequest | null): string {
 /**
  * The size a launch starts at: Medium for a default-size Small whose
  * repository's setup (same account, origin and lane template) needed Medium
- * within `CLOUD_AUTO_SIZE_MEMORY_MS`; otherwise the size it asked for. A
- * remembered size that can't be read starts at the size asked for, and the
- * launch's setup moves it up again if it needs to.
+ * within `CLOUD_AUTO_SIZE_MEMORY_MS`; otherwise the size it asked for. Medium
+ * uses hours, so an account out of hours for it stays at Small (its create
+ * would be refused `out_of_hours`; Small may still run). A remembered size
+ * that can't be read starts at the size asked for, and the launch's setup
+ * moves it up again if it needs to.
  */
 async function startSizeOf(env: CloudEnv, userId: string, parsed: CloudServerLaunchRequest, now: number): Promise<{ sizeId: CloudTierId; remembered: boolean }> {
   if (parsed.sizeChoice !== "default" || parsed.sizeId !== CLOUD_AUTO_SIZE.from) return { sizeId: parsed.sizeId, remembered: false };
@@ -475,7 +491,12 @@ async function startSizeOf(env: CloudEnv, userId: string, parsed: CloudServerLau
     const row = await env.DB.prepare(`
       select size_id from cloud_repo_sizes where user_id = ? and project_origin = ? and setup_key = ? and recorded_at > ?
     `).bind(userId, parsed.project.origin, setupKeyOf(parsed), now - CLOUD_AUTO_SIZE_MEMORY_MS).first<{ size_id: string }>();
-    if (row?.size_id === CLOUD_AUTO_SIZE.to) return { sizeId: CLOUD_AUTO_SIZE.to, remembered: true };
+    if (row?.size_id === CLOUD_AUTO_SIZE.to) {
+      const medium = cloudSizeForTier(CLOUD_AUTO_SIZE.to)!;
+      const account = await loadAccount(env, userId, now);
+      const liveUsed = liveUsedMilli(account, await listComputers(env, userId), now);
+      if (!isOutOfHoursFor(account, liveUsed, medium.multiplierMilli)) return { sizeId: CLOUD_AUTO_SIZE.to, remembered: true };
+    }
   } catch (error) {
     reportCloudFailure("cloud.launch_repo_size_read_failed", { message: error instanceof Error ? error.message : "unknown" });
   }

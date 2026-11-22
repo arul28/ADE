@@ -644,19 +644,6 @@ export function registerCloudIpc(args: {
     return account;
   });
 
-  // Account-level: extra disk is the account's, shared by all its computers, so no pin.
-  ipcMain.handle(IPC.cloudSetExtraDisk, async (event, arg: { enabled?: unknown; monthlyLimitUsd?: unknown }): Promise<CloudAccountState | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetExtraDisk)) return null;
-    const limit = arg?.monthlyLimitUsd;
-    const choice = arg?.enabled === true
-      ? { enabled: true as const, monthlyLimitUsd: typeof limit === "number" && Number.isInteger(limit) ? limit : 0 }
-      : { enabled: false as const };
-    const account = await billingCall(async () => (await requireCloudProvider(credentials)).setExtraDisk(choice));
-    logger.info("cloud.extra_disk_set", { enabled: choice.enabled });
-    sendToAllWindows(IPC.cloudStatusChanged);
-    return account;
-  });
-
   // Account-level: extra iPhone minutes are the account's phone, so no pin. An
   // older server has no such route: it says so in a plain sentence.
   ipcMain.handle(IPC.cloudSetExtraPhoneMinutes, async (event, arg: { enabled?: unknown; monthlyLimitUsd?: unknown }): Promise<CloudAccountState | null> => {

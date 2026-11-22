@@ -23,8 +23,13 @@ import { resolveToolsRootLayout } from "../../../../../ade-cli/src/services/tool
 const CLOUD_DISK_MEASURE_EVERY_MS = 6 * 60 * 60_000;
 /** One `du` or `docker` call gives up after this long. */
 const COMMAND_TIMEOUT_MS = 90_000;
-/** Deepest folder under a project root searched for `node_modules`. */
-const NODE_MODULES_DEPTH = 5;
+/**
+ * Deepest folder under a project root searched for `node_modules`. A lane's
+ * workspace packages sit at `.ade/worktrees/<lane>/apps/<pkg>/node_modules`,
+ * six levels down; at 5 a monorepo's package dependencies were missed and
+ * showed as "System and other". `-prune` keeps the walk out of each one found.
+ */
+const NODE_MODULES_DEPTH = 8;
 /** Parts smaller than this are folded into "Other". */
 const MIN_PART_GB = 0.05;
 

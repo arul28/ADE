@@ -53,7 +53,7 @@ export function WorkToolPanelBar({
   tile: CatalogCardView;
   mode: PanelBarMode;
   machines: readonly ToolMachine[];
-  /** The account's ADE Cloud iPhone (`useToolMachines`): "soon" shows its coming-soon note on the iPhone's row. */
+  /** The account's ADE Cloud iPhone (`useToolMachines`): shown only when it is on; "update" says to update the chat's machine. */
   cloudIphone: ToolMachines["cloudIphone"];
   /** A machine can be picked here: kept for this chat, or for this view only (`viewOnly`). */
   canChoose: boolean;
@@ -119,7 +119,6 @@ export function WorkToolPanelBar({
       tile={tile}
       kind={kind}
       machines={machines}
-      cloudIphoneSoon={cloudIphone === "soon"}
       cloudIphoneNeedsUpdate={cloudIphone === "update"}
       asking={mode === "agent"}
       canChoose={canChoose}
@@ -188,7 +187,6 @@ function MachineRow({
   tile,
   kind,
   machines,
-  cloudIphoneSoon,
   cloudIphoneNeedsUpdate,
   asking,
   canChoose,
@@ -200,7 +198,6 @@ function MachineRow({
   tile: CatalogCardView;
   kind: DeviceKind;
   machines: readonly ToolMachine[];
-  cloudIphoneSoon: boolean;
   /** The chat's machine runs an ADE from before the cloud iPhone: the row says to update it. */
   cloudIphoneNeedsUpdate: boolean;
   /** The agent is using it: a pick asks the agent instead of switching. */
@@ -256,12 +253,6 @@ function MachineRow({
             </button>
           );
         })}
-        {kind === "ios" && cloudIphoneSoon ? (
-          <span className="inline-flex h-6 shrink-0 items-center gap-1 px-1.5 font-sans text-[11.5px] text-muted-fg/70" title="ADE Cloud: a simulator that runs on no machine of yours. Coming soon.">
-            <CloudArrowUp size={12} weight="bold" aria-label="ADE Cloud, coming soon" />
-            <span className="hidden @[480px]:inline">ADE Cloud soon</span>
-          </span>
-        ) : null}
         {kind === "ios" && cloudIphoneNeedsUpdate ? (
           <span className="inline-flex h-6 shrink-0 items-center gap-1 px-1.5 font-sans text-[11.5px] text-muted-fg/70" title={cloudIphoneUpdateLine(machines)}>
             <CloudArrowUp size={12} weight="bold" aria-label={cloudIphoneUpdateLine(machines)} />

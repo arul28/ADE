@@ -1,6 +1,6 @@
 import { Fragment, useState, type ReactNode } from "react";
-import { ADE_MACHINE, CAPY_CHECKED_ON, CHECKED_ON, NO_CLOUD, RIVALS, adeMonthlyUsd } from "../../lib/cloudCompetitors";
-import { FREE_PLAN, PRICING_PLANS, formatCount, formatUsd, planCostsFor } from "../../lib/cloudPricing";
+import { ADE_MEDIUM, ADE_SMALL, CAPY_CHECKED_ON, CHECKED_ON, NO_CLOUD, RIVALS, adeMediumMonthly, adeSmallMonthly } from "../../lib/cloudCompetitors";
+import { CLOUD_SMALL_FAIR_USE_SENTENCE, CLOUD_SMALL_UNLIMITED_SENTENCE, FREE_PLAN, PRICING_PLANS, cloudComputersPhrase, formatCount, formatUsd } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
 
 /*
@@ -33,7 +33,8 @@ export function CloudSources() {
       Prices from each vendor's own pricing page on {CHECKED_ON}, except Capy's on {CAPY_CHECKED_ON}, for the computer only;
       model use is extra, except that Capy's plans include some model usage and its credits pay for tokens. Values marked ≈ are our
       arithmetic from that page. Free hours count only hours that come back every month, so one-time credits (Replicas, Superconductor)
-      count as none. Apps with a cloud but no published price are left out. Apps from{" "}
+      count as none. Apps with a cloud but no published price are left out. ADE Cloud: {CLOUD_SMALL_UNLIMITED_SENTENCE} Each plan has a
+      number of cloud computers ({FREE_PLAN.name} has {cloudComputersPhrase(FREE_PLAN.computerLimit)}). {CLOUD_SMALL_FAIR_USE_SENTENCE} Apps from{" "}
       <a href="https://ademark.dev" target="_blank" rel="noreferrer" className="underline decoration-white/25 underline-offset-2 hover:text-white/75">
         ademark.dev
       </a>
@@ -87,7 +88,7 @@ function CompactBarRow({ bar, max }: { bar: Bar; max: number }) {
       <div className="h-2.5 overflow-hidden rounded-full bg-white/[0.05]">
         <div
           className={cn("h-full rounded-full transition-[width] duration-500 ease-out", bar.ade ? "bg-[#ffc861]" : "bg-white/[0.24]")}
-          style={{ width: `${bar.value ? Math.max(2, (bar.value / max) * 100) : 0}%` }}
+          style={{ width: `${bar.value ? Math.min(100, Math.max(2, (bar.value / max) * 100)) : bar.ade ? 2 : 0}%` }}
         />
       </div>
     </div>
@@ -136,13 +137,18 @@ function BarRow({ bar, max }: { bar: Bar; max: number }) {
 
 const WORKLOADS = [100, 300, 1000];
 
+/** An ADE row's bill: its value and label, and the plan it runs on. */
+function adeBillBar(id: string, size: { label: string; machine: string }, cost: ReturnType<typeof adeMediumMonthly>): Bar[] {
+  if (!cost) return [];
+  return [{ id, name: `ADE Cloud ${size.label}`, sub: `${size.machine} · ${cost.plan.name} plan`, logo: ADE_LOGO, value: cost.costUsd, label: formatUsd(cost.costUsd), ade: true }];
+}
+
 /** 1. A month's bill for the hours picked, on each vendor's cheapest plan that runs them. */
 function BillChart({ className }: { className?: string }) {
   const [hours, setHours] = useState(300);
-  const adeBill = adeMonthlyUsd(hours);
-  const adePlan = planCostsFor(hours)[0]?.plan;
   const bars = sortBars([
-    { id: "ade", name: "ADE Cloud", sub: `${ADE_MACHINE} · ${adePlan?.name ?? ""} plan`, logo: ADE_LOGO, value: adeBill, label: formatUsd(adeBill), ade: true },
+    ...adeBillBar("ade-small", ADE_SMALL, adeSmallMonthly(hours)),
+    ...adeBillBar("ade-medium", ADE_MEDIUM, adeMediumMonthly(hours)),
     ...RIVALS.flatMap((rival): Bar[] => {
       const value = rival.monthlyUsd?.(hours);
       if (value == null) return [];
@@ -208,11 +214,12 @@ function BillChart({ className }: { className?: string }) {
   );
 }
 
-/** 2. Cloud hours a month that cost nothing, most first; the apps with none share one line. */
+/** 2. Cloud hours a month that cost nothing, most first; the apps with none share one line. ADE's Small has no end. */
 function FreeHoursChart() {
   const bars = sortBars(
     [
-      { id: "ade", name: "ADE Cloud", sub: "No card", logo: ADE_LOGO, value: FREE_PLAN.hours, label: `${FREE_PLAN.hours} h`, ade: true },
+      { id: "ade-small", name: `ADE Cloud ${ADE_SMALL.label}`, sub: "No card", logo: ADE_LOGO, value: Number.POSITIVE_INFINITY, label: "Unlimited", ade: true },
+      { id: "ade-medium", name: `ADE Cloud ${ADE_MEDIUM.label}`, sub: "No card", logo: ADE_LOGO, value: FREE_PLAN.hours, label: `${formatCount(FREE_PLAN.hours)} h`, ade: true },
       ...RIVALS.filter((rival) => rival.freeHours).map((rival): Bar => ({
         id: rival.id,
         name: rival.name,
@@ -227,10 +234,12 @@ function FreeHoursChart() {
     true,
   );
   const none = RIVALS.filter((rival) => rival.freeHours === 0);
+  // "Unlimited" fills the track; every number is drawn against a track a third longer than the most, so none looks unlimited.
+  const max = (Math.max(...bars.map((entry) => entry.value).filter(Number.isFinite)) * 4) / 3;
   return (
     <Chart title="Free hours" metric="Every month. Higher is better.">
       {bars.map((bar) => (
-        <CompactBarRow key={bar.id} bar={bar} max={Math.max(...bars.map((entry) => entry.value))} />
+        <CompactBarRow key={bar.id} bar={bar} max={max} />
       ))}
       {none.length > 0 && (
         <div className="mt-2 border-t border-white/[0.06] pt-4">
@@ -249,13 +258,14 @@ function FreeHoursChart() {
   );
 }
 
-/** 3. What one cloud hour costs, cheapest first; each row says what kind of rate it is. */
+/** 3. What one cloud hour costs, cheapest first; each row says what kind of rate it is. ADE's Small costs nothing an hour. */
 function PerHourChart({ className }: { className?: string }) {
-  const cents = (value: number) => `${value < 10 ? value.toFixed(1) : Math.round(value)}¢`;
+  const cents = (value: number) => (value === 0 ? "0¢" : `${value < 10 ? value.toFixed(1) : Math.round(value)}¢`);
   const bars = sortBars([
+    { id: "ade-small", name: `ADE ${ADE_SMALL.label}`, sub: `Every plan · ${ADE_SMALL.machine}`, logo: ADE_LOGO, value: 0, label: cents(0), ade: true },
     ...PRICING_PLANS.filter((plan) => plan.priceUsd > 0).map((plan): Bar => {
       const value = (plan.priceUsd * 100) / plan.hours;
-      return { id: `ade-${plan.id}`, name: `ADE ${plan.name}`, sub: `$${plan.priceUsd} plan average · ${ADE_MACHINE}`, logo: ADE_LOGO, value, label: cents(value), ade: true };
+      return { id: `ade-${plan.id}`, name: `ADE ${plan.name} · ${ADE_MEDIUM.label}`, sub: `$${plan.priceUsd} plan average · ${ADE_MEDIUM.machine}`, logo: ADE_LOGO, value, label: cents(value), ade: true };
     }),
     ...RIVALS.map((rival): Bar => ({
       id: rival.id,

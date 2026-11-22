@@ -2,11 +2,11 @@
  * Grows a cloud computer's disk before ADE's storage guard has to stop work
  * on it. A grow restarts the computer, so it runs only when nothing runs
  * there: at the idle point once the disk is near full, and at once (the next
- * keep-awake check) once the guard would soon stop turns. The server enforces
- * the plan's disk at one time, extra disk and each size's limit; what it
- * refuses turns into a plain sentence on the computer's card and in the
- * chat's refusal. The card reads the exact reason; builds before plans read
- * the older key.
+ * keep-awake check) once the guard would soon stop turns. There is no plan or
+ * account disk: the server holds a disk only to its size's own maximum
+ * (`tier_limit`); what it refuses turns into a plain sentence on the
+ * computer's card and in the chat's refusal. The card reads the exact reason;
+ * builds before plans read the older key.
  *
  * A lane launch's setup that fills the disk (every size starts with the same
  * small disk, and a big repository's install outgrows it) asks for a step at
@@ -15,11 +15,10 @@
  * size's limit, inside every rule the server checks.
  *
  * An agent (`ade cloud resize --free`) and the Android emulator's first start
- * ask for room through `growToFit` (`cloudDiskGrowHost.ts`): inside the
- * plan's disk it grows with nothing to ask, past it into extra disk only with
- * a yes (the person's, or the agent limits' for a caller nobody watches), and
- * at the account's limit or the agents' it names the computers that hold the
- * disk. Its chat hears of the grow before the restart and again once
+ * ask for room through `growToFit` (`cloudDiskGrowHost.ts`): up to the size's
+ * maximum it grows with nothing to ask; past it the answer is `limit`
+ * (`tier_limit`: move the lane to a bigger size). Its chat hears of the grow
+ * before the restart and again once
  * the computer is back (`afterRestart`).
  *
  * The lines come from this computer's own disk (`diskPressureThresholdsForSize`):
@@ -36,19 +35,13 @@ import {
   cloudDiskFullLegacyReason,
   cloudDiskGrowFit,
   cloudDiskGrowRefusedWayOut,
-  cloudDiskLanesSentence,
-  cloudDiskLimitNamesLanes,
   type CloudAccountState,
-  type CloudDiskGrowFit,
-  type CloudDiskLaneUse,
-  type CloudDiskLimitReason,
+  type CloudDiskRefusalReason,
 } from "../../../../desktop/src/shared/adeCloud";
-import { CLOUD_LANE_NAME_METADATA } from "../../../../desktop/src/shared/cloudLaneLaunch";
 import type {
   CloudDiskGrowAnswer,
   CloudDiskGrowAsk,
   CloudDiskGrowChat,
-  CloudDiskGrowExtra,
 } from "../../../../desktop/src/main/services/adeCloud/cloudDiskGrowHost";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import type {
@@ -81,7 +74,7 @@ import {
  * this (its line is a fixed number of bytes), and the grow still comes here.
  */
 const NEAR_FULL = 0.85;
-/** A refused grow is asked again only this often: a plan, extra disk or the account's disk changes rarely. */
+/** A refused grow is asked again only this often: a computer's size changes rarely. */
 const REFUSED_RETRY_MS = 60 * 60_000;
 /** A grow that failed for another reason (out of hours, the server or network) waits this long before the next try. */
 const FAILED_RETRY_MS = 5 * 60_000;
@@ -146,7 +139,7 @@ type GrowStep =
   | { state: "growing"; toGb: number }
   /** The account's disk changed under the ask (another computer's grow won the reservation): ask again shortly. */
   | { state: "changed" }
-  | { state: "refused"; reason: CloudDiskLimitReason; wayOut: string; diskGb: number; lanes: CloudDiskLaneUse[] }
+  | { state: "refused"; reason: CloudDiskRefusalReason; wayOut: string; diskGb: number }
   | { state: "busy" }
   /** The note that a grow is under way couldn't be written (a full disk): no grow without it. */
   | { state: "unsaved" }
@@ -419,15 +412,15 @@ export function createCloudDiskGrower(deps: {
       }
       if (error.code === "needs_paid_plan" || error.code === "disk_limit") {
         refusedAt = now();
-        // A server before plans sends no reason: its two codes map onto the nearest exact one.
-        // A reason this build doesn't know still reads as a refusal (the way out says "It can't grow right now").
-        const reason = (error.detail.reason ?? (error.code === "needs_paid_plan" ? "plan_disk" : "account_limit")) as CloudDiskLimitReason;
-        const wayOut = cloudDiskGrowRefusedWayOut(null, catalog, reason) ?? "It can't grow right now.";
+        // The server names its reason (the size's maximum, `tier_limit`, or `unavailable`).
+        // A reason this build doesn't know still reads as a refusal with a way out.
+        const reason = (error.detail.reason ?? "tier_limit") as CloudDiskRefusalReason;
+        const wayOut = cloudDiskGrowRefusedWayOut(null, reason) ?? "It can't grow right now.";
         writeState({ v: 1, state: "refused", reason, wayOut, at: now(), instanceId: deps.instanceId });
         // The card says "full" once the guard stops heavy work; the chat's refusal says it at once.
         if (isUrgentDiskPressure(disk.pressure)) await setNotice(client, reason);
         deps.logger?.info("cloud.disk_grow_refused", { code: error.code, reason });
-        return { state: "refused", reason, wayOut, diskGb, lanes: error.detail.lanes ?? [] };
+        return { state: "refused", reason, wayOut, diskGb };
       }
       // Refused for another reason (out of hours, the computer busy): the caller holds the next try back a little.
       writeState(null);
@@ -490,21 +483,6 @@ export function createCloudDiskGrower(deps: {
     signal.addEventListener("abort", onAbort, { once: true });
     check();
   });
-
-  /** The account's computers and their disks, for an at-the-limit answer; empty when they can't be read. */
-  const lanesOf = async (client: CloudProvider): Promise<CloudDiskLaneUse[]> => {
-    try {
-      return (await client.listInstances()).flatMap((instance) => {
-        const diskGb = instance.resources?.disk ?? 0;
-        if (!(diskGb > 0)) return [];
-        const laneName = instance.metadata?.[CLOUD_LANE_NAME_METADATA]?.trim() || instance.name?.trim() || instance.id;
-        return [{ laneName, diskGb }];
-      });
-    } catch (error) {
-      deps.logger?.warn("cloud.disk_lanes_read_failed", { error: error instanceof Error ? error.message : String(error) });
-      return [];
-    }
-  };
 
   /** The last boot's grow, when it named chats to tell once the computer is back (read before anything rewrites the file). */
   const toldBeforeRestart = previous?.state === "growing" && previous.chats?.length && now() - previous.at < AFTER_RESTART_NOTICE_MS
@@ -591,11 +569,9 @@ export function createCloudDiskGrower(deps: {
     /**
      * Room asked for by an agent (`cloud.grow_disk`) or the Android
      * emulator's first start: grows to the smallest step that frees
-     * `needFreeBytes` (or to `toGb`). Inside the plan's disk it grows with
-     * nothing to ask; past it, into extra disk the person turned on, only
-     * after `approveExtra` says yes; at the account's limit, or past what the
-     * agent limits let an unattended agent use, it answers `limit` with the
-     * computers that hold the disk. A running chat turn
+     * `needFreeBytes` (or to `toGb`). Up to the size's own disk maximum it
+     * grows with nothing to ask; past it, it answers `limit` (`tier_limit`).
+     * A running chat turn
      * doesn't hold it back (ADE continues it after the restart); what
      * `stillIdle` says would be cut does. Once asked for, it waits for the
      * restart, which ends this brain: the asking turn is cut there and
@@ -603,8 +579,8 @@ export function createCloudDiskGrower(deps: {
      */
     async growToFit(ask: CloudDiskGrowAsk & {
       stillIdle: () => boolean | Promise<boolean>;
-      /** Once the grow is asked for, before the restart: the chat's card goes up under `cardId`. `extra`: the paid extra disk it uses. */
-      onGrowing?: (grow: { fromGb: number; toGb: number; cardId: string; extra: CloudDiskGrowExtra | null }) => void | Promise<void>;
+      /** Once the grow is asked for, before the restart: the chat's card goes up under `cardId`. */
+      onGrowing?: (grow: { fromGb: number; toGb: number; cardId: string }) => void | Promise<void>;
     }): Promise<CloudDiskGrowAnswer> {
       const signal = ask.signal ?? new AbortController().signal;
       const disk = measure();
@@ -658,7 +634,7 @@ export function createCloudDiskGrower(deps: {
           return { state: "fits", diskGb: fromGb, freeGb: gbOneDecimal(disk.space.freeBytes), message: `This computer's disk is already ${fromGb} GB, so nothing grew.` };
         }
         const computer = { type: instance.type, cpu: instance.resources.cpu, memoryGb: instance.resources.memory, diskGb: fromGb };
-        /** What to grow for, from a fresh reading of the free space: other work writes while an approval waits. */
+        /** What to grow for, from a fresh reading of the free space: other work writes while a grow waits. */
         const want = (): { toGb: number } | { shortMb: number } => {
           if (ask.toGb != null) return { toGb: ask.toGb };
           const free = (measure() ?? disk).space.freeBytes;
@@ -668,72 +644,38 @@ export function createCloudDiskGrower(deps: {
           deps.logger?.warn("cloud.disk_catalog_read_failed", { error: error instanceof Error ? error.message : String(error) });
           return null;
         });
-        const limitAnswer = async (toGb: number, reason: CloudDiskLimitReason, sentence: string, known: CloudDiskLaneUse[] = []): Promise<CloudDiskGrowAnswer> => {
-          const lanes = !cloudDiskLimitNamesLanes(reason) ? [] : known.length ? known : await lanesOf(client);
-          const named = cloudDiskLanesSentence(lanes);
-          deps.logger?.info("cloud.disk_grow_to_fit_limit", { origin: ask.origin, reason, fromGb, toGb, lanes: lanes.length });
-          return { state: "limit", fromGb, toGb, reason, sentence, message: named ? `${sentence} ${named}` : sentence, lanes };
+        const limitAnswer = (toGb: number, reason: CloudDiskRefusalReason, message: string): CloudDiskGrowAnswer => {
+          deps.logger?.info("cloud.disk_grow_to_fit_limit", { origin: ask.origin, reason, fromGb, toGb });
+          return { state: "limit", fromGb, toGb, reason, message };
         };
-        /** The most extra disk a month that was approved for this ask, in cents; null: none. */
-        let approvedCents: number | null = null;
-        type GrowFit = Exclude<CloudDiskGrowFit, { kind: "limit" }>;
-        /**
-         * The fit on a fresh read of the account, asked of `approveExtra` when it
-         * needs paid extra disk not approved yet (or more of it). An approval may
-         * wait minutes on a card, so the fit is read again after one. An answer
-         * when it can't grow; else the fit to grow to.
-         */
-        const settle = async (): Promise<CloudDiskGrowAnswer | GrowFit> => {
-          let lastToGb = fromGb;
-          for (let round = 0; round < 3; round += 1) {
-            const fit = cloudDiskGrowFit(computer, await readAccount(), want());
-            lastToGb = fit.toGb;
-            if (fit.kind === "limit") return await limitAnswer(fit.toGb, fit.reason, fit.sentence);
-            if (fit.kind === "plan" || (approvedCents != null && fit.monthCents <= approvedCents)) return fit;
-            // A yes in the last round could not be used: never ask for it.
-            if (round === 2) break;
-            const yes = ask.approveExtra
-              ? await ask.approveExtra(fit).catch((error: unknown) => {
-                deps.logger?.warn("cloud.disk_grow_approve_failed", { origin: ask.origin, error: error instanceof Error ? error.message : String(error) });
-                return false;
-              })
-              : false;
-            deps.logger?.info("cloud.disk_grow_to_fit_extra", { origin: ask.origin, approved: yes === true, refused: typeof yes === "object" ? yes.reason : null, pastGb: fit.pastGb });
-            // Past what the agent limits allow: the same answer as the account's limit, naming what holds the disk.
-            if (typeof yes === "object") return await limitAnswer(fit.toGb, yes.reason, yes.sentence);
-            if (!yes) {
-              return { state: "declined", fromGb, toGb: fit.toGb, message: `A ${fit.toGb} GB disk goes ${fit.pastGb} GB past your plan's disk into paid extra disk, and that wasn't approved, so nothing grew.` };
-            }
-            approvedCents = fit.monthCents;
-          }
-          return { state: "declined", fromGb, toGb: lastToGb, message: "The cost of extra disk kept changing while ADE asked to grow this disk, so nothing grew. Try again in a moment." };
+        /** The size to grow to, on a fresh read of the account and the free space; an answer when it can't grow. */
+        const fitNow = async (): Promise<CloudDiskGrowAnswer | number> => {
+          const fit = cloudDiskGrowFit(computer, await readAccount(), want());
+          return fit.kind === "limit" ? limitAnswer(fit.toGb, fit.reason, fit.sentence) : fit.toGb;
         };
-        const first = await settle();
-        if ("state" in first) return first;
-        let fit: GrowFit = first;
+        const first = await fitNow();
+        if (typeof first !== "number") return first;
+        let toGb = first;
         const cardId = `cloud-disk-grow:${deps.instanceId}:${now()}`;
         const note = { origin: ask.origin, reason: ask.reason.slice(0, 200), ...(ask.chat ? { chats: [ask.chat], cardId } : {}) };
-        const onAsking = (toGb: number) => {
-          const extra = fit.kind === "extra" ? { pastGb: fit.pastGb, monthCents: fit.monthCents } : null;
-          return ask.onGrowing?.({ fromGb, toGb, cardId, extra });
-        };
+        const onAsking = (askedGb: number) => ask.onGrowing?.({ fromGb, toGb: askedGb, cardId });
         if (signal.aborted) return { state: "unavailable", message: "Cancelled before the disk grew." };
-        let step = await growOneStep(ask.stillIdle, disk, signal, onAsking, { toGb: fit.toGb, note });
+        let step = await growOneStep(ask.stillIdle, disk, signal, onAsking, { toGb, note });
         // Two of the account's computers growing at once: the one that lost the reservation asks again, on the fit read again.
         for (const waitMs of SETUP_GROW_RACE_RETRY_MS) {
           if (step.state !== "changed" || signal.aborted) break;
           await new Promise((resolve) => setTimeout(resolve, waitMs + Math.floor(Math.random() * 1_000)).unref?.());
-          const again = await settle();
-          if ("state" in again) return again;
-          fit = again;
-          step = await growOneStep(ask.stillIdle, disk, signal, onAsking, { toGb: fit.toGb, note });
+          const again = await fitNow();
+          if (typeof again !== "number") return again;
+          toGb = again;
+          step = await growOneStep(ask.stillIdle, disk, signal, onAsking, { toGb, note });
         }
-        deps.logger?.info("cloud.disk_grow_to_fit", { origin: ask.origin, step: step.state, fromGb, toGb: fit.toGb, extra: fit.kind === "extra" });
+        deps.logger?.info("cloud.disk_grow_to_fit", { origin: ask.origin, step: step.state, fromGb, toGb });
         switch (step.state) {
           case "growing":
             return await awaitGrowth(disk.space.totalBytes, fromGb, step.toGb, false);
           case "refused":
-            return await limitAnswer(fit.toGb, step.reason, `This computer's disk can't grow to ${fit.toGb} GB: ${step.wayOut}`, step.lanes);
+            return limitAnswer(toGb, step.reason, `This computer's disk can't grow to ${toGb} GB: ${step.wayOut}`);
           case "busy":
             return { state: "busy", message: "Something the restart would cut runs on this computer (a command in a terminal, a lane's setup, a copy or a move, or a chat waiting on a person's answer). The grow restarts the computer, so ADE didn't grow it. Try again once that's done." };
           case "changed":

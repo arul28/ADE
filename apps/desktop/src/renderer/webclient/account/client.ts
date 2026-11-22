@@ -67,7 +67,6 @@ const CLOUD_BILLING_PATHS: ReadonlySet<string> = new Set([
   CLOUD_PATHS.billingPortal,
   CLOUD_PATHS.billingFreeUnlock,
   CLOUD_PATHS.billingExtraHours,
-  CLOUD_PATHS.billingExtraDisk,
   CLOUD_PATHS.billingPlanCleanup,
 ]);
 const REMOVAL_TIMEOUT_MESSAGE =

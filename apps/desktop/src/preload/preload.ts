@@ -14517,7 +14517,6 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan, ...(cleanup ? { cleanup } : {}) } : undefined),
     pickPlanCleanup: (input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState | null> =>
       ipcRenderer.invoke(IPC.cloudPickPlanCleanup, input),
-    setExtraDisk: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraDisk, choice),
     setExtraPhoneMinutes: (choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraPhoneMinutes, choice),
     redeemInvite: (code: string): Promise<CloudInviteRedeemOutcome> => ipcRenderer.invoke(IPC.cloudRedeemInvite, { code }),
     openBillingPortal: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenBillingPortal),

@@ -371,8 +371,8 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       const lifecycle = await runCloudMachineLifecycleAction({
         computer: (id) => client.getInstance(id),
         sleep: (id) => client.sleepInstance(id),
-        wake: (id) => client.startInstance(id),
-        resize: (id, resources, computerIdle) => client.resizeInstance(id, resources, computerIdle ? { computerIdle: true } : undefined),
+        wake: (id, origin) => client.startInstance(id, origin ? { origin } : undefined),
+        resize: (id, resources, computerIdle, origin) => client.resizeInstance(id, resources, computerIdle || origin ? { ...(computerIdle ? { computerIdle: true } : {}), ...(origin ? { origin } : {}) } : undefined),
         backup: (id) => client.createBackup(id),
         update: (id) => client.updateInstance(id),
       }, instanceId, args);
@@ -420,6 +420,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         message: getErrorMessage(error),
         code: error instanceof CloudProviderError ? error.code : null,
         reason: error instanceof CloudProviderError ? error.detail.reason : null,
+        detail: error instanceof CloudProviderError ? error.detail.computerLimit ?? null : null,
       });
     }
   }

@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import {
   CLOUD_PLAN_LABELS,
   formatCloudDate,
-  formatCloudGb,
   type CloudPlanCleanup,
   type CloudPlanCleanupComputer,
   type CloudPlanCleanupPick,
@@ -21,9 +20,9 @@ export function planCleanupPickSentence(push: boolean, count: number): string {
 }
 
 /**
- * The question before a cheaper plan's disk is passed (the owner's rules of
- * 2026-11-13): ADE never removes a computer on its own. Only disk counts:
- * there is no limit on how many computers. Two paths:
+ * The question before a cheaper plan's computer limit is passed (the owner's
+ * rules of 2026-11-13, Pricing v2): ADE never removes a computer on its own.
+ * Only the number of computers counts, asleep or not. Two paths:
  * - "I'll clean up myself": nothing changes. A downgrade is not made; the
  *   person sees which computers deleting would be enough, deletes them, and
  *   comes back.
@@ -62,11 +61,13 @@ export function CloudPlanLimitsDialog({
   const [error, setError] = useState<string | null>(null);
 
   const chosen = choices.filter((computer) => picked.has(computer.instanceId));
-  const freedGb = chosen.reduce((total, computer) => total + computer.diskGb, 0);
-  const afterGb = Math.max(0, cleanup.usedGb - freedGb);
-  const shownGb = path === "ade" ? afterGb : cleanup.usedGb;
-  const fits = afterGb <= cleanup.limitGb;
   const count = chosen.length;
+  // Only the number of computers counts. The server sends both; an answer without them reads as the suggested pick fitting.
+  const total = cleanup.computerCount ?? choices.length;
+  const limit = cleanup.computerLimit ?? Math.max(0, total - cleanup.computers.length);
+  const after = Math.max(0, total - count);
+  const shown = path === "ade" ? after : total;
+  const fits = after <= limit;
   const many = count === 1 ? "computer" : "computers";
 
   const toggle = (id: string) => setPicked((current) => {
@@ -112,7 +113,7 @@ export function CloudPlanLimitsDialog({
   const startLine = mode === "resolve"
     ? cleanup.startsAt != null
       ? `You move to ${plan} on ${formatCloudDate(cleanup.startsAt)}. ADE deletes nothing on its own.`
-      : "ADE can't make a new computer until their disk fits. It deletes nothing on its own."
+      : "ADE can't make a new computer until you have fewer. It deletes nothing on its own."
     : null;
 
   return (
@@ -123,12 +124,12 @@ export function CloudPlanLimitsDialog({
       icon
       onOpenChange={(open) => { if (!open && !busy) onClose(); }}
       dismissible={!busy}
-      title={`Your computers hold more disk than ${plan} has`}
+      title={`You have more cloud computers than ${plan} allows`}
       description={startLine ? `${cleanup.sentence} ${startLine}` : cleanup.sentence}
       footerStart={path === "ade"
         ? (
           <span className="adecd-sheet-total" data-tone={fits ? undefined : "warn"}>
-            {count === 0 ? `Pick computers to ${verb}` : fits ? `${count} ${many}, ${formatCloudGb(freedGb)}` : `Still over ${plan}: pick more computers`}
+            {count === 0 ? `Pick computers to ${verb}` : fits ? `${count} ${many} to ${verb}` : `Still over ${plan}: pick more computers`}
           </span>
         )
         : undefined}
@@ -138,7 +139,7 @@ export function CloudPlanLimitsDialog({
         <div aria-live="polite">
           <div className="adecd-limits-list-head">{path === "ade" ? `Left after ADE frees the ${count === 1 ? "computer" : "computers"} you pick` : "Now"}</div>
           <div className="adecd-limits-fit">
-            <FitCell label="Disk" fits={shownGb <= cleanup.limitGb} value={formatCloudGb(shownGb)} limit={formatCloudGb(cleanup.limitGb)} />
+            <FitCell label="Cloud computers" fits={shown <= limit} value={String(shown)} limit={String(limit)} />
           </div>
         </div>
 
@@ -156,8 +157,8 @@ export function CloudPlanLimitsDialog({
             onPick={() => setPath("self")}
             title="I'll clean up myself"
             hint={mode === "downgrade"
-              ? `You stay on ${currentPlanLabel}. Delete computers until their disk fits, then move to ${plan} again.`
-              : "Delete computers until their disk fits. ADE frees nothing on its own."}
+              ? `You stay on ${currentPlanLabel}. Free up or delete computers until you have ${limit} or fewer, then move to ${plan} again.`
+              : "Free up or delete computers until you have few enough. ADE frees nothing on its own."}
           />
         </div>
 
@@ -226,7 +227,6 @@ function ComputerFacts({ computer }: { computer: CloudPlanCleanupComputer }) {
         <b>{name}</b>
         <small>{computer.branch ?? "No lane"}{computer.createdAt != null ? `, made ${formatCloudDate(computer.createdAt)}` : ""}</small>
       </span>
-      <span className="kit-num">{formatCloudGb(computer.diskGb)}</span>
     </>
   );
 }

@@ -52,7 +52,7 @@ import { readBoundedBody } from "../sinkUtils";
 import { CLOUD_PHONE_IDLE_SECONDS, CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { sendCloudEmail } from "./email";
 import { fail, json, readJson } from "./http";
-import { PHONE_EXTRA, accountRules, loadAccount, logCloud, planIdOf, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
+import { PHONE_EXTRA, accountRules, loadAccount, logCloud, phoneBetaAddStatement, planIdOf, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
 
 const NOMAC_ORIGIN = "https://nomac.app";
 const NOMAC_SIMULATOR_BASE = `${NOMAC_ORIGIN}/api/v1/simulator`;
@@ -337,7 +337,8 @@ async function phoneAccess(env: CloudEnv, userId: string): Promise<CloudPhoneAcc
   if (setting === "off") return "off";
   if (setting === "all") return "on";
   const row = await env.DB.prepare("select 1 as on_list from cloud_phone_beta where user_id = ?").bind(userId).first<{ on_list: number }>();
-  return row ? "on" : "soon";
+  // Not on the list: hidden everywhere (Pricing v2). `soon` is never sent any more.
+  return row ? "on" : "off";
 }
 
 /** The plan's minutes: none on a free plan the free-plan checks hold, as with free hours. */
@@ -630,8 +631,12 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
     return json({ ok: true, stopped: true });
   }
 
-  if (access === "off") return fail("phone_unavailable", "The ADE Cloud iPhone isn't available right now.", 503);
-  if (access === "soon") return fail("phone_not_on_account", "The ADE Cloud iPhone is coming soon. It isn't on this account yet.", 403);
+  if (access !== "on") {
+    // Set up, but this account isn't on the beta list: the one answer that isn't "try again".
+    return env.NOMAC_API_KEY?.trim() && phoneAccessSetting(env) === "beta"
+      ? fail("phone_not_on_account", "The ADE Cloud iPhone isn't on this account.", 403)
+      : fail("phone_unavailable", "The ADE Cloud iPhone isn't available right now.", 503);
+  }
   // A start is use of the free plan: one free plan per computer and per GitHub account, as a computer's start
   // settles them (`routes.ts`), only once the account may use the phone at all.
   if (path === CLOUD_PATHS.phone && request.method === "POST") {
@@ -921,7 +926,11 @@ export const OWNER_PHONE_BETA_PATH = "/cloud/owner/phone-beta";
 
 const CLERK_USERS_URL = "https://api.clerk.com/v1/users";
 
-/** The Clerk user ids with this address, or null when Clerk can't be asked. */
+/**
+ * The Clerk user ids that have this address verified, or null when Clerk
+ * can't be asked. Verified only, as `readClerkUser`: an address someone
+ * added but never proved is not theirs, so it must not put them on the list.
+ */
 async function clerkUserIdsFor(env: Pick<CloudEnv, "CLERK_SECRET_KEY">, email: string): Promise<string[] | null> {
   const secretKey = env.CLERK_SECRET_KEY?.trim();
   if (!secretKey) return null;
@@ -931,23 +940,79 @@ async function clerkUserIdsFor(env: Pick<CloudEnv, "CLERK_SECRET_KEY">, email: s
   });
   if (!response.ok) return null;
   const users = await response.json().catch(() => null) as unknown;
-  return Array.isArray(users) ? users.flatMap((user) => typeof (user as { id?: unknown })?.id === "string" ? [(user as { id: string }).id] : []) : null;
+  if (!Array.isArray(users)) return null;
+  const wanted = email.trim().toLowerCase();
+  return users.flatMap((user) => {
+    const { id, email_addresses: addresses } = (user ?? {}) as { id?: unknown; email_addresses?: unknown };
+    const verified = Array.isArray(addresses) && addresses.some((address: { email_address?: unknown; verification?: { status?: unknown } | null } | null) =>
+      typeof address?.email_address === "string" && address.email_address.trim().toLowerCase() === wanted && address.verification?.status === "verified");
+    return typeof id === "string" && verified ? [id] : [];
+  });
+}
+
+/** How many waiting tester emails one run asks Clerk about, and how long one waits before it is asked again. */
+const PENDING_BETA_BATCH = 10;
+const PENDING_BETA_RECHECK_MS = 60 * 60_000;
+
+/**
+ * The owner check's retry for waiting tester emails (`cloud_phone_beta_pending`):
+ * an account's own claim (`claimPhoneBetaInvite` in `store.ts`) runs once,
+ * when its row is made, so a Clerk read that failed then, or an address
+ * verified later, would leave the email waiting for good. Each email is asked
+ * again about once an hour, at most `PENDING_BETA_BATCH` a run, oldest asked
+ * first; an empty table costs one read. Clerk not answering stops the run,
+ * and that batch is asked again next hour.
+ */
+export async function resolvePendingPhoneBeta(env: CloudEnv, now: number): Promise<void> {
+  // No Clerk key (a development Worker): nothing can be looked up.
+  if (!env.CLERK_SECRET_KEY?.trim()) return;
+  const due = await env.DB.prepare(`
+    select email from cloud_phone_beta_pending where coalesce(checked_at, 0) < ? order by coalesce(checked_at, 0), added_at limit ?
+  `).bind(now - PENDING_BETA_RECHECK_MS, PENDING_BETA_BATCH).all<{ email: string }>();
+  for (const { email } of due.results ?? []) {
+    let failure: string | null = null;
+    const found = await clerkUserIdsFor(env, email).catch((error: unknown) => {
+      failure = error instanceof Error ? error.message : "unknown";
+      return null;
+    });
+    if (found == null) {
+      // The whole batch waits its hour, so a Clerk outage is reported once a run, never once a minute.
+      const emails = (due.results ?? []).map((row) => row.email);
+      await env.DB.prepare("update cloud_phone_beta_pending set checked_at = ? where email in (select value from json_each(?))").bind(now, JSON.stringify(emails)).run();
+      reportCloudFailure("cloud.phone_beta_pending_check_failed", { waiting: emails.length, message: failure ?? "Clerk did not answer" });
+      return;
+    }
+    if (!found.length) {
+      await env.DB.prepare("update cloud_phone_beta_pending set checked_at = ? where email = ?").bind(now, email).run();
+      continue;
+    }
+    await env.DB.batch([
+      ...found.map((userId) => phoneBetaAddStatement(env.DB, userId, email, now, { whilePending: true })),
+      env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(email),
+    ]);
+    logCloud("cloud.phone_beta_claimed", { count: found.length, retried: true });
+  }
 }
 
 /**
  * `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled? }` adds (or with
- * `enabled: false` removes) an account; `{}` lists the list. `safety.ts`
- * checked the owner's token before this runs. An email is looked up in Clerk
- * once; the list keeps the user id (and the address the owner typed, for the
- * owner's own reading). With `CLOUD_PHONE_ACCESS=all` the list no longer
- * matters.
+ * `enabled: false` removes) an account; `{}` lists the list and the emails
+ * still waiting. `safety.ts` checked the owner's token before this runs. An
+ * email is looked up in Clerk once; the list keeps the user id (and the
+ * address the owner typed, for the owner's own reading). An email no ADE
+ * account has yet waits (`pending: true`, `cloud_phone_beta_pending`) until
+ * an account with it first appears (`claimPhoneBetaInvite` in `store.ts`), or
+ * the owner check finds it in Clerk (`resolvePendingPhoneBeta`).
+ * Removing an email removes a waiting one too. With `CLOUD_PHONE_ACCESS=all`
+ * the list no longer matters.
  */
 export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, unknown>, now: number): Promise<Response> {
   const typedEmail = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const typedUserId = typeof body.userId === "string" ? body.userId.trim() : "";
   if (!typedEmail && !typedUserId) {
     const rows = await env.DB.prepare("select user_id, email, added_at from cloud_phone_beta order by added_at").all<{ user_id: string; email: string | null; added_at: number }>();
-    return json({ ok: true, access: phoneAccessSetting(env), users: rows.results ?? [] });
+    const pending = await env.DB.prepare("select email, added_at from cloud_phone_beta_pending order by added_at").all<{ email: string; added_at: number }>();
+    return json({ ok: true, access: phoneAccessSetting(env), users: rows.results ?? [], pending: pending.results ?? [] });
   }
   if (typedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail)) return fail("bad_request", "That email isn't valid.", 400);
   if (typedUserId && !/^[A-Za-z0-9_-]{1,100}$/.test(typedUserId)) return fail("bad_request", "That userId isn't valid.", 400);
@@ -955,9 +1020,22 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
   if (!userIds.length) {
     const found = await clerkUserIdsFor(env, typedEmail);
     if (found == null) return fail("unavailable", "Clerk could not be asked for that email. Try again, or pass userId.", 503);
-    if (!found.length) return fail("not_found", "No ADE account has that email.", 404);
+    if (!found.length) {
+      // No ADE account has it yet: the email waits for the account that signs up with it.
+      if (body.enabled === false) {
+        const removed = await env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(typedEmail).run();
+        if ((removed.meta?.changes ?? 0) === 0) return fail("not_found", "No ADE account or waiting tester has that email.", 404);
+        logCloud("cloud.phone_beta_pending_removed");
+        return json({ ok: true, removed: [], pending: true });
+      }
+      await env.DB.prepare("insert into cloud_phone_beta_pending (email, added_at) values (?, ?) on conflict(email) do nothing").bind(typedEmail, now).run();
+      logCloud("cloud.phone_beta_pending_added");
+      return json({ ok: true, added: [], pending: true });
+    }
     userIds = found;
   }
+  // The account exists now: no email of it needs to wait.
+  if (typedEmail) await env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(typedEmail).run();
   if (body.enabled === false) {
     for (const userId of userIds) {
       await env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId).run();
@@ -968,8 +1046,7 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
     return json({ ok: true, removed: userIds });
   }
   for (const userId of userIds) {
-    await env.DB.prepare("insert into cloud_phone_beta (user_id, email, added_at) values (?, ?, ?) on conflict(user_id) do update set email = coalesce(excluded.email, cloud_phone_beta.email)")
-      .bind(userId, typedEmail || null, now).run();
+    await phoneBetaAddStatement(env.DB, userId, typedEmail || null, now).run();
   }
   logCloud("cloud.phone_beta_added", { count: userIds.length });
   return json({ ok: true, added: userIds });

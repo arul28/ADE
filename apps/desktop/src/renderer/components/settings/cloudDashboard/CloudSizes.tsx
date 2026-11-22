@@ -1,14 +1,14 @@
 import { useMemo } from "react";
 import { Cpu } from "@phosphor-icons/react";
-import { cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../../shared/adeCloud";
+import { CLOUD_SMALL_UNLIMITED_SENTENCE, cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../../shared/adeCloud";
 import { cloudTiers } from "../../../../shared/cloudTiers";
 import { pickCloudDefaultTier } from "../../../lib/cloudDefaultTier";
 import { useRootAppStore } from "../../../state/appStore";
 import { CloudSizeCards } from "./CloudSizeCards";
 
 /**
- * The four sizes, side by side: CPU, memory, how far the disk can grow, what
- * each runs, how fast it uses hours, and how long the hours left last there.
+ * The four sizes, side by side: CPU, memory, what each runs, and how long
+ * the hours left last there (Small: unlimited, it never uses hours).
  * Picking one makes it the size new cloud lanes start on (an account setting).
  */
 export function CloudSizes({ account }: { account: CloudAccountState }) {
@@ -22,7 +22,7 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
       <header className="kit-card-head">
         <Cpu size={14} />
         Sizes
-        <span className="adecd-head-note">New cloud lanes start on {current?.label ?? "Small"}; each can change size later. Every size has a desktop screen the agent can use.</span>
+        <span className="adecd-head-note">New cloud lanes start on {current?.label ?? "Small"}; each can change size later. Every size has a desktop screen the agent can use. {CLOUD_SMALL_UNLIMITED_SENTENCE}</span>
       </header>
       <div className="kit-card-body">
         <CloudSizeCards

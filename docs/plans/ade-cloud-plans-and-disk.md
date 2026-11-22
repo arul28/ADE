@@ -6,6 +6,10 @@ behind them. The current numbers (plans, hours, disk, sizes, prices) live in
 [docs/features/ade-cloud/README.md](../features/ade-cloud/README.md)
 ("Plans, hours and sizes") shows them. Users never see the provider's name.
 
+**Next:** [pricing-v2-and-gravity.md](./pricing-v2-and-gravity.md) replaces
+these numbers (free Small computers, computers per plan, no GB shown) and
+keeps the principles below.
+
 ## Principles
 
 - A person thinks about one thing: how fast a computer uses hours.

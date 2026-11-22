@@ -1,4 +1,5 @@
 import {
+  capitalizeCloudPhrase,
   cloudCatalogOf,
   cloudHoursLeftMilli,
   formatCloudHours,
@@ -87,7 +88,7 @@ export type CloudLaneStatusLine = { key: string; text: string; tone: CloudLaneSt
 export type CloudLaneStatusModel = {
   /** "Awake · up 42m", "Asleep", "Waking…", or null while the menu doesn't know. */
   stateText: string;
-  /** "Medium · 4 CPU · 8 GB · 2× hours", or null before the list read names its size. */
+  /** "Medium · 4 CPU · 8 GB · Uses 1 hour an hour", or null before the list read names its size. */
   sizeText: string | null;
   /** "Disk 7.2 / 12 GB" with its headroom tone, or null when it was never measured. */
   disk: { text: string; tone: CloudLaneStatusTone } | null;
@@ -115,7 +116,8 @@ export function cloudLaneStatusModel(input: {
   let sizeText: string | null = null;
   if (box?.resources) {
     const tier = cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account)));
-    const rate = tier ? cloudTierRateLabel(tier) : box.hoursRate != null ? formatCloudHoursRate(box.hoursRate) : null;
+    const phrase = tier ? cloudTierRateLabel(tier) : box.hoursRate != null ? formatCloudHoursRate(box.hoursRate) : null;
+    const rate = phrase ? capitalizeCloudPhrase(phrase) : null;
     sizeText = [tier?.label, `${box.resources.cpu} CPU`, `${box.resources.memoryGb} GB`, rate].filter(Boolean).join(" · ");
   }
 

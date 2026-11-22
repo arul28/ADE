@@ -54,6 +54,34 @@ session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
    computer, guard it with a clear message (as Cursor Cloud launch does), never
    by letting the call misroute.
 
+## Account-wide features live on the account server
+
+Claude Code does not load `AGENTS.md`, so this is a copy of its **Account-wide
+features live on the account server** section. Keep the two the same.
+
+Some things belong to the person, not to a machine: the plan, ADE Cloud hours
+and iPhone minutes, billing, usage counted against a plan, consents and
+opt-ins, and services ADE pays for or a partner sponsors (hosted models, ads,
+sponsored recommendations). They live on the account server
+(`apps/account-directory`, or the Worker that owns that data) and work the
+same for an ADE Cloud lane, the person's own computers, the web client and the
+phone.
+
+1. **The server decides.** It holds the outside service's keys, stores the
+   state, counts the usage and refuses. Desktop, CLI, web and phone read the
+   answer and show it. None of them decides it, counts it, or keeps a copy it
+   treats as the truth.
+2. **One answer everywhere.** Two machines must never disagree. A consent
+   given on the phone holds on the laptop and on a cloud lane at once. Store it
+   per account, never in `.ade/`, localStorage or one machine's settings.
+3. **Machine work stays on the machine.** Running a chat, a terminal or Git
+   still goes to the lane's machine by its pin (**Built for remote machines**).
+   The account call takes no pin; a cloud lane's computer calls the same
+   server with the account token.
+4. **Partner keys are Worker secrets.** Never ship a partner's key in the
+   desktop app, the CLI or the iPhone app, even when the partner's SDK puts
+   it in the client.
+
 ## Main checkout
 
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Main

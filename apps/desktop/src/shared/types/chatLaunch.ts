@@ -4,6 +4,7 @@ import type { LaneJiraIssue } from "./jira";
 import type { LaneGitHubIssue, LaneLinearIssue } from "./lanes";
 import type { LaneStart } from "../laneStart";
 import type { OpenProjectBinding } from "./core";
+import type { CLOUD_COMPUTER_LIMIT_CODE, CLOUD_OUTSIDE_AGENT_FREE_CODE, CloudComputerLimitDetail } from "../../../../account-directory/src/cloud/contract";
 
 /**
  * A chat (or CLI session) launched into a lane that does not exist yet.
@@ -131,6 +132,17 @@ export type ChatLaunchQueuedMessage = {
 };
 
 /**
+ * Why ADE Cloud refused a launch, when the card or the agent answers it
+ * itself: `computer_limit` (all the plan's cloud computers in use) carries
+ * what the limit card shows; `outside_agent_free_plan` is an outside agent on
+ * the free plan.
+ */
+export type ChatLaunchCloudRefusal = {
+  code: typeof CLOUD_COMPUTER_LIMIT_CODE | typeof CLOUD_OUTSIDE_AGENT_FREE_CODE;
+  computerLimit?: CloudComputerLimitDetail | null;
+};
+
+/**
  * An ADE Cloud launch's computer, on its snapshot. Absent for a launch that
  * runs on a machine that already exists.
  */
@@ -145,6 +157,8 @@ export type ChatLaunchCloudState = {
   projectOrigin: string;
   /** The ADE Cloud computer, once the create answered. */
   instanceId: string | null;
+  /** Set on a failed launch the server refused with a code the card answers itself (`computer_limit`); absent otherwise. */
+  refusal?: ChatLaunchCloudRefusal | null;
   /** The computer's ADE account machine key, once it joined. */
   machineKey: string | null;
   /**

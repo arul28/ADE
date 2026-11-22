@@ -182,7 +182,7 @@ Done 2026-11-18: migrations 0047 and 0048 applied by the main deploy; the three 
 4. Stripe: create the meter and price; add it to existing paid subscriptions.
 5. NoMac: the raised phone limit is in place; credit covers a week of
    expected use.
-6. Flip `CLOUD_PHONE_ACCESS=all`. Watch the cost report and the
+6. Flip `CLOUD_PHONE_ACCESS=all`, and in the same release set `CLOUD_PHONE_ON_WEBSITE = true` in `apps/web/src/lib/cloudPricing.ts` so the website shows it. Watch the cost report and the
    `cloud_phone_*` events the first day; `CLOUD_PHONES_PAUSED=1` stops new
    phones at once if needed.
 

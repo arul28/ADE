@@ -344,6 +344,10 @@ final class AccountCloudStore: ObservableObject {
       // An older computer the server can't update on wake: today's path.
       if code == "update_needed" { return .routeMissing }
       return .refused(message)
+    } catch CloudServerClient.Failure.computerLimit(let limit) {
+      // The lane needs a new computer and the plan's are all taken.
+      CloudLaneActions.shared.showComputerLimit(limit)
+      return .refused(limit.headline)
     } catch {
       return .failed(cloudServerFailureMessage(error))
     }

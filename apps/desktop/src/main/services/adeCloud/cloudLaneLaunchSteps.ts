@@ -1,4 +1,5 @@
 import type { CloudAgentMaker } from "../../../shared/adeCloud";
+import type { ChatLaunchCloudRefusal } from "../../../shared/types";
 import { githubRepoOf } from "../../../shared/cloudLaneLaunch";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { requireNormalizedUuid } from "../../../shared/uuid";
@@ -139,8 +140,16 @@ export class LaunchCancelled extends Error {
   constructor() { super("Launch cancelled."); }
 }
 
-/** A failure whose message is already the plain sentence to show. */
-export class LaunchStepError extends Error {}
+/**
+ * A failure whose message is already the plain sentence to show. `refusal`:
+ * the server's refusal code when the card offers a way out of its own (the
+ * computer limit card).
+ */
+export class LaunchStepError extends Error {
+  constructor(message: string, readonly refusal: ChatLaunchCloudRefusal | null = null) {
+    super(message);
+  }
+}
 
 export const requireLaunchId = (value: unknown): string => requireNormalizedUuid(value, "launchId must be a UUID.");
 

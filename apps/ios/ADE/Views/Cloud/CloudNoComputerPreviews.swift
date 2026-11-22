@@ -238,10 +238,10 @@ private struct CloudChatFixture: View {
 
   /// The four sizes, as a signed-in account's catalog lists them.
   private static let tiers: [CloudPhoneTier] = [
-    CloudPhoneTier(id: "small", label: "Small", type: "default", cpu: 2, memoryGb: 4, multiplierMilli: 1000, diskMaxGb: 12),
-    CloudPhoneTier(id: "medium", label: "Medium", type: "default", cpu: 4, memoryGb: 8, multiplierMilli: 2000, diskMaxGb: 20),
-    CloudPhoneTier(id: "large", label: "Large", type: "vm", cpu: 4, memoryGb: 8, multiplierMilli: 5000, diskMaxGb: 50),
-    CloudPhoneTier(id: "xlarge", label: "X-Large", type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 8000, diskMaxGb: 100),
+    CloudPhoneTier(id: "small", label: "Small", type: "default", cpu: 2, memoryGb: 4, multiplierMilli: 0, diskMaxGb: 12),
+    CloudPhoneTier(id: "medium", label: "Medium", type: "default", cpu: 4, memoryGb: 8, multiplierMilli: 1000, diskMaxGb: 20),
+    CloudPhoneTier(id: "large", label: "Large", type: "vm", cpu: 4, memoryGb: 8, multiplierMilli: 2500, diskMaxGb: 50),
+    CloudPhoneTier(id: "xlarge", label: "X-Large", type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 4000, diskMaxGb: 100),
   ]
 
   /// The deleted line's size menu, on the real store, as `CloudLaneStateLines` passes it.

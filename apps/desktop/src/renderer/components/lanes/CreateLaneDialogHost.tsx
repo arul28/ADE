@@ -790,7 +790,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       defaultTier: adeCloud.defaultTier,
       onChooseTier: adeCloudFixed && onChooseAdeCloudTier ? onChooseAdeCloudTier : adeCloud.chooseTier,
       onSetDefaultTier: adeCloud.setDefaultTier,
-      problem: adeCloudOnLane ? cloudLaneStartBlock(adeCloud.account, { newLane: true })?.message ?? null : null,
+      problem: adeCloudOnLane
+        ? cloudLaneStartBlock(adeCloud.account, { newLane: true, sizeId: adeCloudFixed && adeCloudTierId ? adeCloudTierId : adeCloud.tierId })?.message ?? null
+        : null,
     };
   }, [
     adeCloud.account,

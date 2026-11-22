@@ -2,16 +2,15 @@ import { carryLaunchMessagesForComputer, expireChatMessages } from "./chatMessag
 import { runLinearRenewalCron } from "./linearRenewal";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
-import { checkExtraDiskLimits, reportExtraDiskDays, type ExtraDiskOverLimit } from "./billing";
 import { reportExtraPhoneMinutes } from "./phoneBilling";
-import { runPhoneChecks, stopPhonesDue } from "./phones";
+import { resolvePendingPhoneBeta, runPhoneChecks, stopPhonesDue } from "./phones";
 import { sendCloudEmail } from "./email";
 import { laneFactsStatement } from "./lanesWithoutComputer";
 import { markRestedWithBackups } from "./laneBackups";
 import { sweepLeftovers } from "./storageSweeps";
 import type { CloudHoursState, CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
-import { AWAKE_COMPUTER_CAP, cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
+import { AWAKE_COMPUTER_CAP, cloudSizeFor, usesHours, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
 import { runPlanLimitChecks } from "./planCleanup";
 import { enforceBlocksInTick } from "./safety";
@@ -21,10 +20,9 @@ import { runCloudAutoUpdates, updateBootStatements } from "./updates";
 import {
   PENDING_TIMEOUT_MS,
   adoptionStatements,
-  countedDiskGb,
   deleteComputer,
   diskDayStatement,
-  freePlanOverDisk,
+  hasNoFreePlan,
   freeShareSql,
   goneFromProviderStatements,
   groupByUser,
@@ -291,14 +289,20 @@ async function accountsOf(env: CloudEnv, byUser: Map<string, unknown>): Promise<
   return accounts.results ?? [];
 }
 
-/** Period rolls, the 80/95/zero warnings, and the 0-hours stop. Answers the accounts whose computers may not wake. */
+/**
+ * Period rolls, the 80/95/zero warnings, and the 0-hours stop. At 0 hours
+ * only the computers whose size uses hours stop and lose their timed wakes:
+ * a Small computer keeps working (Pricing v2), except on an account with no
+ * free plan (`hasNoFreePlan`), which runs nothing once it is out. Answers the
+ * accounts with computers that may not wake.
+ */
 async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number): Promise<Set<string>> {
   const byUser = groupByUser(computers);
   if (byUser.size === 0) return new Set();
   const accounts = await accountsOf(env, byUser);
   let rolls = 0;
-  /** Accounts whose computers may not wake now (0 hours, or the free plan above its disk), and why. */
-  const blockedWhy = new Map<string, WakeBlock>();
+  /** Accounts with computers that may not wake now (0 hours), why, and the Small ones that still may. */
+  const blockedWhy = new Map<string, { reason: WakeBlock; keep: string[] }>();
   await Promise.all(accounts.map(async (row) => {
     // Most accounts roll at once on the 1st: a tick does its share and leaves the rest due.
     if (row.deleted_at == null && row.period_end <= now && ++rolls > PERIOD_ROLLS_PER_TICK) return;
@@ -318,14 +322,15 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
       }
       const used = liveUsedMilli(account, owned, now);
       const state = hoursState(account, used);
-      await warnHours(env, account, state, used, now);
-      // Disk nobody pays for (the free plan above its disk) stops the computers as 0 hours does.
-      const blocked = state === "zero" ? "out_of_hours"
-        : freePlanOverDisk(account, countedDiskGb(owned)) ? "over_plan_disk"
-        : null;
-      if (blocked) {
-        blockedWhy.set(account.user_id, blocked);
-        await stopAll(env, provider, owned, now, blocked);
+      const runsNothing = hasNoFreePlan(account);
+      await warnHours(env, account, state, used, now, runsNothing);
+      if (state === "zero") {
+        const stopped = runsNothing ? owned : owned.filter((computer) => usesHours(computer.multiplier_milli));
+        blockedWhy.set(account.user_id, {
+          reason: "out_of_hours",
+          keep: owned.filter((computer) => !stopped.includes(computer)).map((computer) => computer.instance_id),
+        });
+        await stopAll(env, provider, stopped, now, "out_of_hours");
       }
     } catch (error) {
       // One account's failure must not cost every other account its tick.
@@ -339,31 +344,57 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
   return new Set(blockedWhy.keys());
 }
 
+/**
+ * The hours emails. Small computers never use hours, so the text says the
+ * bigger sizes stop and Small keeps going (`small`); an account with no free
+ * plan, which runs nothing once it is out, reads the plain text (`all`).
+ */
 const HOURS_WARNINGS: Record<Exclude<CloudHoursState, "none">, {
   column: "warned_zero_at" | "warned_95_at" | "warned_80_at";
   subject: string;
-  text: string;
+  text: { all: string; small: string };
 }> = {
-  zero: { column: "warned_zero_at", subject: "You're out of ADE Cloud hours", text: "Your ADE Cloud computers have stopped. You can add hours, or wait for your hours to reset." },
-  warn95: { column: "warned_95_at", subject: "You've used 95% of your ADE Cloud hours", text: "You're almost out. When your hours run out, your computers stop until you add hours or they reset." },
-  warn80: { column: "warned_80_at", subject: "You've used 80% of your ADE Cloud hours", text: "Your computers keep working for now. When your hours run out, they stop until you add hours or they reset." },
+  zero: {
+    column: "warned_zero_at",
+    subject: "You're out of ADE Cloud hours",
+    text: {
+      all: "Your ADE Cloud computers have stopped. You can add hours, or wait for your hours to reset.",
+      small: "Your computers bigger than Small have stopped. Small computers never use hours, so they keep working. You can add hours, or wait for your hours to reset.",
+    },
+  },
+  warn95: {
+    column: "warned_95_at",
+    subject: "You've used 95% of your ADE Cloud hours",
+    text: {
+      all: "You're almost out. When your hours run out, your computers stop until you add hours or they reset.",
+      small: "You're almost out. When your hours run out, your computers bigger than Small stop until you add hours or they reset. Small computers keep working.",
+    },
+  },
+  warn80: {
+    column: "warned_80_at",
+    subject: "You've used 80% of your ADE Cloud hours",
+    text: {
+      all: "Your computers keep working for now. When your hours run out, they stop until you add hours or they reset.",
+      small: "Your computers keep working for now. When your hours run out, the ones bigger than Small stop until you add hours or they reset. Small computers keep working.",
+    },
+  },
 };
 
-async function warnHours(env: CloudEnv, account: AccountRow, state: CloudHoursState, used: number, now: number): Promise<void> {
+async function warnHours(env: CloudEnv, account: AccountRow, state: CloudHoursState, used: number, now: number, allStop: boolean): Promise<void> {
   if (state === "none") return;
   const warning = HOURS_WARNINGS[state];
   if (account[warning.column] != null) return;
   await env.DB.prepare(`update cloud_accounts set ${warning.column} = ?, updated_at = ? where user_id = ?`).bind(now, now, account.user_id).run();
   // Of everything the period may use (plan and earned hours), as the warning itself counts.
   const percent = state === "zero" ? 100 : allowancePercentUsed(account, used);
-  await sendCloudEmail(env, { userId: account.user_id, subject: warning.subject, text: warning.text, percentUsed: percent });
+  await sendCloudEmail(env, { userId: account.user_id, subject: warning.subject, text: allStop ? warning.text.all : warning.text.small, percentUsed: percent });
 }
 
 /**
  * Asks each awake computer to interrupt its work and save it (its chats and
  * each lane's backup, `prepare-stop`), then stops it; a sleeper just stops.
- * For an account whose wakes are refused (0 hours, or disk the free plan
- * doesn't cover). A computer whose prepare-stop reported current backups
+ * For the computers whose wakes are refused at 0 hours: the sizes that use
+ * hours, or every one on an account with no free plan. A computer whose prepare-stop reported current backups
  * rests with them (`markRestedWithBackups`), so a cleanup can delete it later
  * with no wake. Nothing wakes it again for free.
  */
@@ -487,12 +518,6 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
   } catch (error) {
     reportCloudFailure("cloud.move_end_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
-  // Finished days of extra disk, every ten minutes, so a failed send is retried inside Stripe's dedupe window.
-  try {
-    await reportExtraDiskDays(env, now);
-  } catch (error) {
-    reportCloudFailure("cloud.disk_report_failed", { message: error instanceof Error ? error.message : "unknown" });
-  }
   // The ADE Cloud iPhone: live phones read again and the minutes warnings, then extra minutes to Stripe.
   // Separate, so a failed check never holds back billing (or the other way round).
   try {
@@ -504,6 +529,12 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
     await reportExtraPhoneMinutes(env, now);
   } catch (error) {
     reportCloudFailure("cloud.phone_checks_failed", { step: "meter", message: error instanceof Error ? error.message : "unknown" });
+  }
+  // Tester emails the owner added before their account had them: asked of Clerk again, each about hourly.
+  try {
+    await resolvePendingPhoneBeta(env, now);
+  } catch (error) {
+    reportCloudFailure("cloud.phone_checks_failed", { step: "beta_pending", message: error instanceof Error ? error.message : "unknown" });
   }
   // A cheaper plan's limits: an account over the plan in force is told once (new computers are refused). Nothing is freed here.
   try {
@@ -545,9 +576,8 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
 /**
  * Ends the moves that are over: the source was deleted (the move worked) or
  * the new computer was (it failed). A source still there after
- * `MOVE_GRACE_MS` counts toward the disk again, with the new computer: the
- * plan's limits hold, extra disk is billed from today's row, and the owner's
- * report lists a paid account over its disk.
+ * `MOVE_GRACE_MS` counts again, with the new computer: toward the computer
+ * limit (`accountComputerCountSql`) and today's disk row.
  */
 async function endMoves(env: CloudEnv, now: number): Promise<void> {
   const rows = await env.DB.prepare(`
@@ -604,11 +634,7 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
     }
   };
   await step("disk_baseline", () => writeDiskBaseline(env, computers, now));
-  let overLimit: ExtraDiskOverLimit[] = [];
-  await step("extra_disk_limits", async () => {
-    overLimit = await checkExtraDiskLimits(env, now);
-  });
-  await step("cost_report", () => runDailyCostReport(env, yesterday, overLimit));
+  await step("cost_report", () => runDailyCostReport(env, yesterday));
   await step("analytics", () => captureDailyAnalytics(env, waitUntil, computers, yesterday));
   await writeSetting(env, "last_daily_day", today, now);
 }

@@ -1563,7 +1563,10 @@ struct WorkSessionDestinationView: View {
       // Optional on mobile: an older host has no restart, and the item hides.
       showsRestartAgent: syncService.supportsChatRemoteAction("chat.restartSession", sessionId: session.id),
       tools: personalChat ? [] : chatToolMenuItems,
-      showsCloudIphone: !personalChat && syncService.supportsChatRemoteAction("cloudPhone.status", sessionId: sessionId),
+      // Only while the account has the ADE Cloud iPhone on (the account
+      // server's answer): anyone else sees no button at all.
+      showsCloudIphone: !personalChat && AccountCloudStore.shared.account?.phoneOn == true
+        && syncService.supportsChatRemoteAction("cloudPhone.status", sessionId: sessionId),
       hasPullRequest: showsLaneActions && !personalChat && duoHasPullRequest,
       canCreatePullRequest: showsLaneActions && !personalChat && !duoHasPullRequest
         && canCreatePullRequestForHeaderLane,

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
 import {
-  CLOUD_DISK_WARN_SHARE,
   CLOUD_FREE_GITHUB_BANNER_ID,
   CLOUD_FREE_REFUSED_BANNER_ID,
   CLOUD_PLAN_LABELS,
+  CLOUD_SMALL_UNLIMITED_SENTENCE,
   cloudAccountBanner,
+  cloudAccountComputers,
   cloudEarnedHoursOf,
   cloudFreePlanOf,
   cloudCatalogOf,
@@ -264,14 +265,11 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     }
   };
 
-  // Over a plan's limits, the plan notice says it all: its "can't wake" and the
-  // disk share would only repeat it in two more banners.
-  const accountBanner = cloudAccountBanner(account);
-  const overPlan = account.planCleanup != null || accountBanner?.id === "cloud-over-plan-disk";
   // The free plan's GitHub hold: the hero's line and the plan card's notice say it, with what to do.
-  const banner = (account.planCleanup != null && accountBanner?.id === "cloud-over-plan-disk") || accountBanner?.id === CLOUD_FREE_GITHUB_BANNER_ID || accountBanner?.id === CLOUD_FREE_REFUSED_BANNER_ID ? null : accountBanner;
-  const diskLimit = account.disk.limitGb ?? 0;
-  const diskShare = diskLimit > 0 ? account.disk.usedGb / diskLimit : 0;
+  const accountBanner = cloudAccountBanner(account);
+  const banner = accountBanner?.id === CLOUD_FREE_GITHUB_BANNER_ID || accountBanner?.id === CLOUD_FREE_REFUSED_BANNER_ID ? null : accountBanner;
+  // The plan's computer limit, asleep or not.
+  const computers = cloudAccountComputers(account);
   // "You're on Plus", while this session shows it (cloudPlanMoment.ts).
   const moment = useCloudPlanMomentState();
   const openBillingPortal = async () => {
@@ -326,19 +324,6 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
       ) : null}
       <PlanNotices account={account} onChanged={refresh} />
       <CloudIdleCleanupNotices account={account} now={now} onChanged={refresh} />
-      {!overPlan && diskShare >= CLOUD_DISK_WARN_SHARE ? (
-        <Banner
-          layout="inline"
-          model={{
-            id: "cloud-disk-full",
-            tone: "warning",
-            title: `Your disk is ${Math.round(diskShare * 100)}% full`,
-            detail: "Free some space before your lanes need more.",
-            actions: [{ label: "Free up space", onClick: () => setFreeing(true) }],
-            report: false,
-          }}
-        />
-      ) : null}
 
       {otherJobs.length ? (
         <div className="adecd-jobs" aria-label="Size changes">
@@ -351,7 +336,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           <Desktop size={14} />
           Lanes and computers
           <span className="kit-card-head-count">{lanes.length}</span>
-          <span className="adecd-head-note">{account.computers.total} {account.computers.total === 1 ? "computer" : "computers"} · {account.computers.awake} awake</span>
+          <span className="adecd-head-note">{`${computers.total} of ${computers.limit} computers`} · {account.computers.awake} awake</span>
         </header>
         <div className="kit-card-body" data-flush="true" ref={tableRef}>
           {inside ? (
@@ -419,9 +404,11 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 }
 
 /**
- * The dusk sky at the top: the logo and the plan, the three numbers that
- * matter (hours, disk, computers) and the city of the account's lanes. The
- * numbers are said once on the page; nothing below repeats them.
+ * The dusk sky at the top: the logo and the plan, the numbers that matter
+ * (hours for bigger computers, computers of the plan's limit) and the city of
+ * the account's lanes. The numbers are said once on the page; nothing below
+ * repeats them. No account disk: only a computer's own disk
+ * shows, on its row, when it is nearly full.
  */
 function CloudHero({
   account,
@@ -451,8 +438,7 @@ function CloudHero({
   const earned = cloudEarnedHoursOf(account).leftMilli;
   const hoursPct = hours.includedMilli > 0 ? (hours.leftMilli / hours.includedMilli) * 100 : 0;
   const forecast = hoursForecast(account, now);
-  const diskUsed = account.disk.usedGb;
-  const diskLimit = account.disk.limitGb ?? 0;
+  const computers = cloudAccountComputers(account);
   // The free plan refused on this computer (another account used its free hours): one sentence from the server.
   const freePlan = cloudFreePlanOf(account);
   const blockedSentence = freePlan.state === "refused" ? freePlan.sentence ?? null : null;
@@ -479,7 +465,7 @@ function CloudHero({
       <div className="adecd-hero-body">
         <div className="adecd-hero-stats">
           <div className="adecd-hours">
-            <span className="adecd-label" title="Hours on your Linux computers in the cloud">Computer hours left this month</span>
+            <span className="adecd-label" title={`${CLOUD_SMALL_UNLIMITED_SENTENCE} One hour is one hour on a Medium; bigger sizes use more.`}>Hours left for bigger computers</span>
             <div className="adecd-hours-num">
               <b className="kit-num" data-face="ui">{formatCloudHours(hours.leftMilli)}</b>
               {/* Free hours held (GitHub rules, or another account used them here): the plan's hours, on hold, never "of 0 h". */}
@@ -499,11 +485,11 @@ function CloudHero({
             <div className="adecd-hero-chips">
               {earned > 0 ? <span className="adecd-hero-chip" data-tone="lamp" title="Earned from invites. They never expire.">+{formatCloudHours(earned)} h earned</span> : null}
               {account.extraHours.available ? (
-                <span className="adecd-hero-chip" title={account.extraHours.enabled ? "Linux work keeps going past your plan's hours, billed after use." : "Linux work stops when your hours run out."}>
+                <span className="adecd-hero-chip" title={account.extraHours.enabled ? "Bigger computers keep going past your plan's hours, billed after use." : "Bigger computers stop when your hours run out. Small computers keep working."}>
                   <i data-on={account.extraHours.enabled || undefined} />
                   {account.extraHours.enabled
-                    ? `Extra Linux hours on${account.extraHours.usedMilli > 0 ? `, ${formatCloudHours(account.extraHours.usedMilli)} h used` : ""}`
-                    : "Extra Linux hours off"}
+                    ? `Extra hours on${account.extraHours.usedMilli > 0 ? `, ${formatCloudHours(account.extraHours.usedMilli)} h used` : ""}`
+                    : "Extra hours off"}
                 </span>
               ) : null}
               {account.phone && account.phone.access === "on" && account.phone.minutes ? (
@@ -515,9 +501,16 @@ function CloudHero({
             </div>
           </div>
           <div className="adecd-minis">
-            <MiniMeter label="Disk" value={formatCloudGb(diskUsed)} of={diskLimit > 0 ? `of ${formatCloudGb(diskLimit)}` : null} pct={percentOf(diskUsed, diskLimit)} title="All your computers together" />
-            {/* No plan limits how many computers an account has: a count, with no meter. */}
-            <MiniMeter label="Computers" value={String(account.computers.total)} of={null} pct={null} note={`${account.computers.awake} awake now`} />
+            {/* Computers of the plan's limit, asleep or not. */}
+            <MiniMeter
+              label="Cloud computers"
+              value={String(computers.total)}
+              of={`of ${computers.limit}`}
+              pct={percentOf(computers.total, computers.limit)}
+              note={`${account.computers.awake} awake now · asleep ones count too`}
+              title="Every cloud computer counts toward your plan, asleep or not."
+            />
+            <MiniMeter label="Small computers" value="Unlimited" of={null} pct={null} note="They never use your hours" title={CLOUD_SMALL_UNLIMITED_SENTENCE} />
           </div>
         </div>
         <div className="adecd-hero-city" title={lanes.length ? "Height is disk. Lit windows are awake." : undefined}>
@@ -720,7 +713,7 @@ function LaneActions({
     <>
       {job ? <CloudLaneJobCard job={job} account={account} variant="panel" /> : null}
       {lane.without ? <CloudLaneWithoutComputerNotice lane={lane.without} account={account} /> : null}
-      {lane.noLane ? <span className="adecd-actions-note">Made before each lane had its own computer. Its disk still counts toward your plan.</span> : null}
+      {lane.noLane ? <span className="adecd-actions-note">Made before each lane had its own computer. It still counts as one of your plan's computers.</span> : null}
     </>
   );
 }
@@ -886,10 +879,10 @@ function PlanNotices({ account, onChanged }: { account: CloudAccountState; onCha
           model={{
             id: "cloud-plan-cleanup",
             tone: "warning",
-            title: `Your computers hold more disk than ${plan} has`,
+            title: `You have more cloud computers than ${plan} allows`,
             detail: `${cleanup.sentence} ${cleanup.startsAt != null
               ? `You move to ${plan} on ${formatCloudDate(cleanup.startsAt)}. ADE deletes nothing on its own.`
-              : `ADE can't make a new computer${cloudAccountBanner(account)?.id === "cloud-over-plan-disk" ? " or wake one" : ""} until their disk fits. It deletes nothing on its own.`}`,
+              : "ADE can't make a new computer until you have fewer. It deletes nothing on its own."}`,
             actions: [{ label: "Choose what goes", variant: "primary", onClick: () => setAsking(true) }],
             report: false,
           }}

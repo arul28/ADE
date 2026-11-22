@@ -1,6 +1,7 @@
 import {
   CLOUD_MACHINE_DEFAULT_NAME,
   CLOUD_PLAN_LABELS,
+  capitalizeCloudPhrase,
   cloudCatalogOf,
   cloudHoursLeftMilli,
   cloudPlanIdOf,
@@ -21,6 +22,9 @@ import { formatAgo } from "../../../lib/format";
  * computer list and the lanes without a computer). Nothing here wakes a
  * computer: disk parts and work come from the computer's own last report.
  */
+
+/** A size's rate as a label beside its name: "Uses 2.5 hours an hour". */
+const rateLabelOf = (phrase: string | null): string | null => (phrase ? capitalizeCloudPhrase(phrase) : null);
 
 /** A lane not used for this long gets the "not used for a long time" mark. */
 const CLOUD_LANE_OLD_MS = 14 * 86_400_000;
@@ -96,7 +100,7 @@ export function dashLanes(input: {
         name: machine.lane?.laneName ?? noLaneName(machine),
         tier,
         tierRank: tier ? cloudTierRank(tier.id) : 1,
-        rateLabel: tier ? cloudTierRateLabel(tier) : machine.hoursRate != null ? formatCloudHoursRate(machine.hoursRate) : null,
+        rateLabel: rateLabelOf(tier ? cloudTierRateLabel(tier) : machine.hoursRate != null ? formatCloudHoursRate(machine.hoursRate) : null),
         diskGb: machine.resources?.diskGb ?? 0,
         state: stateOf(machine),
         lastActiveAt,
@@ -121,7 +125,7 @@ export function dashLanes(input: {
         name: lane.laneName,
         tier,
         tierRank: tier ? cloudTierRank(tier.id) : 1,
-        rateLabel: tier ? cloudTierRateLabel(tier) : null,
+        rateLabel: rateLabelOf(tier ? cloudTierRateLabel(tier) : null),
         diskGb: 0,
         state: "none",
         lastActiveAt: null,

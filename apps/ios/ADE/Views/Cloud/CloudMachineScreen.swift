@@ -174,12 +174,10 @@ struct CloudMachineFacts: View {
         }
         if let tier {
           fact("Size", "\(tier.label)\(tier.full ? ", full computer" : "") · \(tier.cpu) CPU · \(cloudGbText(tier.memoryGb)) GB")
-          fact("Uses", cloudHoursRate(tier.rate))
+          fact("Hours", tier.hoursLine(leftMilli: store.hoursLeftMilli))
         } else if let size = machine.size {
           fact("Size", size)
-          if let rate = machine.hoursRate { fact("Uses", cloudHoursRate(rate)) }
         }
-        if let resources = machine.resources { fact("Disk", cloudGb(resources.diskGb)) }
         let lastRun = cloudLastRun(machine, now: store.now)
         if !lastRun.isEmpty { fact("Last run", lastRun) }
         if machine.pastDue == true { fact("State", "Suspended") }
@@ -196,7 +194,7 @@ struct CloudMachineFacts: View {
         ADESettingsNotice(message: memory, tone: .warn)
       }
       if machine.noLane {
-        Text("Made before each lane had its own computer. It still counts toward your computers and disk.")
+        Text("Made before each lane had its own computer. It still counts toward your cloud computers.")
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -367,9 +365,9 @@ struct CloudMachineSizeCard: View {
         Button("Cancel", role: .cancel) {}
       } message: { tier in
         if tier.type == current.type {
-          Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(tier.rateLine).")
+          Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(tier.label): \(tier.hoursLine(leftMilli: store.hoursLeftMilli)).")
         } else {
-          Text("ADE copies its files to a new computer and deletes this one. Its lane and chats come along. It takes a few minutes and uses hours on both while it copies. \(tier.rateLine).")
+          Text("ADE copies its files to a new computer and deletes this one. Its lane and chats come along. It takes a few minutes and uses hours on both while it copies. \(tier.label): \(tier.hoursLine(leftMilli: store.hoursLeftMilli)).")
         }
       }
     }
@@ -414,7 +412,7 @@ struct CloudMachineSizeCard: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 8)
-        Text(cloudHoursRate(tier.rate))
+        Text(store.hoursLeftMilli.map { tier.hoursLeftLabel($0) } ?? (tier.usesHours ? "Uses hours" : "Unlimited"))
           .font(.system(size: 13, weight: .semibold))
           .monospacedDigit()
           .foregroundStyle(CloudBrandColor.mark)
@@ -428,9 +426,9 @@ struct CloudMachineSizeCard: View {
     .disabled(isCurrent || (!sameKind && store.movesUnsupported) || busy)
     .accessibilityHint(
       isCurrent ? "Its size now."
-        : sameKind ? "\(tier.rateLine). It restarts on the new size."
+        : sameKind ? "\(tier.hoursLine(leftMilli: store.hoursLeftMilli)). It restarts on the new size."
         : store.movesUnsupported ? cloudPhoneKindChangeReason(to: tier)
-        : "\(tier.rateLine). ADE moves it to a new computer."
+        : "\(tier.hoursLine(leftMilli: store.hoursLeftMilli)). ADE moves it to a new computer."
     )
   }
 }
@@ -864,6 +862,18 @@ final class CloudLaneActions: ObservableObject {
   /// Hosts on screen, the frontmost last.
   @Published private(set) var hosts: [UUID] = []
   private var deletePresenter: UUID?
+  /// The computer-limit card (`computer_limit`), on the host frontmost when it was asked.
+  @Published private(set) var computerLimit: CloudComputerLimit?
+  private var limitPresenter: UUID?
+  /// Computers the limit card is freeing now (it takes minutes; the card may
+  /// close meanwhile). Only `freeUp` (CloudComputerLimitSheet.swift) writes it,
+  /// through `markFreeing`.
+  @Published private(set) var freeing: Set<String> = []
+
+  /// Marks a computer the limit card is freeing (`on`), or done with.
+  func markFreeing(_ instanceId: String, _ on: Bool) {
+    if on { freeing.insert(instanceId) } else { freeing.remove(instanceId) }
+  }
 
   /// Asks before deleting a cloud lane. `fromMenu`: a context menu is still
   /// closing, and a sheet presented into that is dropped.
@@ -887,6 +897,20 @@ final class CloudLaneActions: ObservableObject {
       try? await Task.sleep(for: .milliseconds(450))
       show()
     }
+  }
+
+  /// Every cloud computer of the plan is taken (a refused new lane, chat or
+  /// message): one card with the ways out. A second refusal replaces it.
+  func showComputerLimit(_ limit: CloudComputerLimit) {
+    limitPresenter = hosts.last
+    computerLimit = limit
+  }
+
+  func computerLimit(for host: UUID) -> CloudComputerLimit? { limitPresenter == host ? computerLimit : nil }
+
+  func closeComputerLimit() {
+    computerLimit = nil
+    limitPresenter = nil
   }
 
   func deleteTarget(for host: UUID) -> CloudLaneDeleteTarget? { deletePresenter == host ? deleteTarget : nil }
@@ -920,6 +944,7 @@ final class CloudLaneActions: ObservableObject {
 
   func detach(_ host: UUID) {
     hosts.removeAll { $0 == host }
+    if limitPresenter == host { closeComputerLimit() }
     // A host gone from screen leaves no sheet waiting to reopen.
     manageTargets[host] = nil
   }
@@ -942,6 +967,12 @@ private struct CloudLaneActionsHost: ViewModifier {
         set: { if $0 == nil { actions.closeDelete() } }
       )) { target in
         CloudLaneDeleteSheet(target: target)
+      }
+      .sheet(item: Binding(
+        get: { actions.computerLimit(for: id) },
+        set: { if $0 == nil { actions.closeComputerLimit() } }
+      )) { limit in
+        CloudComputerLimitSheet(limit: limit)
       }
       .adeToast(Binding(
         get: { actions.hosts.last == id ? actions.toast : nil },

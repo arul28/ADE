@@ -1230,7 +1230,6 @@ export const IPC = {
   cloudSetAgentLimits: "ade.cloud.setAgentLimits",
   cloudSetExtraHours: "ade.cloud.setExtraHours",
   cloudOpenCheckout: "ade.cloud.openCheckout",
-  cloudSetExtraDisk: "ade.cloud.setExtraDisk",
   cloudSetExtraPhoneMinutes: "ade.cloud.setExtraPhoneMinutes",
   cloudPickPlanCleanup: "ade.cloud.pickPlanCleanup",
   /** Enters a friend's invite (a link or a code) for this account (`CloudInviteRedeemOutcome`). Account level: no pin. */

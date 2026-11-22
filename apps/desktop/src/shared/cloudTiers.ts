@@ -31,7 +31,7 @@ export type CloudTier = {
   type: "default" | "vm";
   cpu: number;
   memoryGb: number;
-  /** Hours of a Small computer this size uses per hour awake, in thousandths (the catalog's). */
+  /** Hours of the plan (Medium-hours) this size uses per hour awake, in thousandths (the catalog's). 0 for Small. */
   multiplierMilli: number;
   /** How far the disk may grow at this size, or null from an older server that does not say. */
   diskMaxGb: number | null;
@@ -114,9 +114,35 @@ export function cloudTierRank(id: CloudTierId): number {
   return CLOUD_TIER_IDS.indexOf(id) + 1;
 }
 
-/** The size's hours rate from the catalog: "1× hours". */
+/** The size's hours rate from the catalog, in words: "uses no hours" (Small), "uses 2.5 hours an hour" (`formatCloudHoursRate`). */
 export function cloudTierRateLabel(tier: Pick<CloudTier, "multiplierMilli">): string {
   return formatCloudHoursRate(tier.multiplierMilli / 1000);
+}
+
+/** Whether this size uses the plan's hours: every size but Small. */
+export function cloudTierUsesHours(tier: Pick<CloudTier, "multiplierMilli">): boolean {
+  return tier.multiplierMilli > 0;
+}
+
+/** "a Medium", "an X-Large". */
+function withArticle(label: string): string {
+  return `${/^[aeiouxAEIOUX]/.test(label) ? "an" : "a"} ${label}`;
+}
+
+/**
+ * A month's hours as time on each size that uses them, never as a
+ * multiplier: "50 hours on a Medium · 20 on a Large · 12 on an X-Large".
+ * Every number is the catalog's (`includedMilli` and each size's rate).
+ * Empty when no size uses hours.
+ */
+export function cloudHoursOnSizesLine(includedMilli: number, tiers: readonly CloudTier[]): string {
+  return tiers
+    .filter(cloudTierUsesHours)
+    .map((tier, index) => {
+      const hours = cloudTierHoursAt(tier, includedMilli).replace(/ h$/, "");
+      return index === 0 ? `${hours} ${hours === "1" ? "hour" : "hours"} on ${withArticle(tier.label)}` : `${hours} on ${withArticle(tier.label)}`;
+    })
+    .join(" · ");
 }
 
 /** "2 CPU · 4 GB" for a size row. */
@@ -133,15 +159,15 @@ export function cloudTierShapeLabel(tier: Pick<CloudTier, "cpu" | "memoryGb">): 
  * computer (Large, X-Large) adds Docker and the Android emulator.
  */
 export type CloudTierFacts = {
-  /** "2 CPU", "4 GB memory", "Up to 12 GB disk" (the disk only when the server says). */
+  /** "2 CPU", "4 GB memory". No disk: it shows only when one computer's disk is nearly full. */
   specs: string[];
   /** One plain line on what it runs. */
   runs: string;
   /** True for a full computer: Docker and the Android emulator. */
   full: boolean;
-  /** "1 hour of work uses 1 hour", "… uses 5 hours". */
+  /** "Never uses your hours" (Small), "1 hour of work uses 2.5 hours of your plan". */
   rateLine: string;
-  /** Hours of a Small computer per hour awake. */
+  /** Hours of the plan per hour awake (Medium-hours); 0 for Small. */
   rate: number;
 };
 
@@ -159,24 +185,25 @@ export function cloudTierFacts(tier: CloudTier): CloudTierFacts {
     specs: [
       `${tier.cpu} CPU`,
       `${tier.memoryGb} GB memory`,
-      ...(tier.diskMaxGb != null ? [`Up to ${tier.diskMaxGb} GB disk`] : []),
       // Every size: the template ships the lane screen's packages for each kind.
       "A desktop screen the agent can use",
     ],
     runs: TIER_RUNS[tier.id],
     full: tier.type === "vm",
-    rateLine: `1 hour of work uses ${hours(rate)}`,
+    rateLine: rate > 0 ? `1 hour of work uses ${hours(rate)} of your plan` : "Never uses your hours",
     rate,
   };
 }
 
 /**
  * "41 h", "7.5 h": how long `leftMilli` hours last at this size, rounded down,
- * to a tenth under 10 h and to whole hours from 10 up. Every surface that
- * shows this number uses it, and adds its own words.
+ * to a tenth under 10 h and to whole hours from 10 up. "Unlimited" for Small,
+ * which never uses hours. Every surface that shows this number uses it, and
+ * adds its own words.
  */
 export function cloudTierHoursAt(tier: Pick<CloudTier, "multiplierMilli">, leftMilli: number): string {
-  const hours = tier.multiplierMilli > 0 ? Math.max(0, leftMilli) / tier.multiplierMilli : 0;
+  if (!cloudTierUsesHours(tier)) return "Unlimited";
+  const hours = Math.max(0, leftMilli) / tier.multiplierMilli;
   const shown = hours >= 10 ? Math.floor(hours) : Math.floor(hours * 10) / 10;
   return `${shown} h`;
 }
