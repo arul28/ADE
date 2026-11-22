@@ -739,9 +739,11 @@ export type CloudAccountState = {
   /**
    * How many computers the account has (asleep or not) and how many are
    * awake. `limit` is the plan's computer limit (`CloudPlanFacts.computerLimit`);
-   * servers before Pricing v2 sent the hidden awake cap.
+   * servers before Pricing v2 sent the hidden awake cap. `nextPlan` is the
+   * plan the limit card offers (the next one up that is sold), null on Max;
+   * the same object a `computer_limit` refusal carries.
    */
-  computers: { total: number; awake: number; limit?: number };
+  computers: { total: number; awake: number; limit?: number; nextPlan?: CloudNextPlan | null };
   /**
    * Hours the meter settled over the last `days` whole UTC days, for the
    * "your hours last until" estimate. Older servers leave it out.
@@ -1198,6 +1200,9 @@ export type CloudComputerLimitLane = {
   hasLane?: boolean;
 };
 
+/** The next plan up, as the limit card offers it. Never Free. */
+export type CloudNextPlan = { planId: CloudPaidPlanId; computerLimit: number; priceUsd: number };
+
 export type CloudComputerLimitDetail = {
   planId: CloudPlanId;
   /** The plan's computer limit, and how many the account has (asleep or not). */
@@ -1206,7 +1211,7 @@ export type CloudComputerLimitDetail = {
   /** The account's computers, least recently used first, for "free up" and "delete". */
   lanes: CloudComputerLimitLane[];
   /** The next plan up and its limit, or null on Max (or while it isn't sold). */
-  nextPlan: { planId: CloudPlanId; computerLimit: number; priceUsd: number } | null;
+  nextPlan: CloudNextPlan | null;
 };
 
 /** The card's sentence, also the refusal's `message`. */
