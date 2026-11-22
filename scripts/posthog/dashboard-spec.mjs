@@ -266,6 +266,8 @@ const eventNode = (event, customName, options = {}) => ({
 // download_for_windows only open the install dialog, so they are left out.
 const DOWNLOAD_CTA_LABELS = Object.freeze([
   "download_for_ios", "download_mac_arm64", "download_mac_x64", "download_windows_x64",
+  "download_linux_x64_deb", "download_linux_arm64_deb",
+  "download_linux_x64_appimage", "download_linux_arm64_appimage",
 ]);
 
 const eventProperty = (key, value, operator = "exact") => ({
