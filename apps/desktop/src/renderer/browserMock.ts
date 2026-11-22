@@ -3267,6 +3267,8 @@ function setBrowserMockDemoChatRunning(sessionId: string, running: boolean): voi
  * computer paired like any machine, under its generated internal name, so the
  * surfaces that list machines can show "ADE Cloud" instead.
  */
+// Read once: the app routes away from the first URL and drops its query.
+const BROWSER_MOCK_CLOUD_LANE_MACHINE = browserMockFlag("mockCloudLaneMachine");
 const MOCK_CLOUD_LANE_ORIGIN = "git@github.com:acme-labs/browser-preview.git";
 
 /** The lane and chat the cloud computer of `?mockCloudLaneMachine=1` reports. */
@@ -3281,7 +3283,7 @@ function mockCloudLaneRows(): { lanes: any[]; sessions: any[] } {
 }
 
 function mockCloudLaneTargets(): any[] {
-  if (!browserMockFlag("mockCloudLaneMachine")) return [];
+  if (!BROWSER_MOCK_CLOUD_LANE_MACHINE) return [];
   const target = (id: string, name: string, hostname: string) => ({
     id,
     name,
@@ -5249,7 +5251,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   const BROWSER_MOCK_RECENT_PROJECTS: any[] = [
     { rootPath: "/Users/ada/ADE", displayName: "ADE", lastOpenedAt: browserMockAgo(4 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/acme-shop.git", pinned: true },
     // `?mockCloudLaneMachine=1`: this preview's own project has an origin, so other machines' copies of it are listed.
-    ...(browserMockFlag("mockCloudLaneMachine")
+    ...(BROWSER_MOCK_CLOUD_LANE_MACHINE
       ? [{ rootPath: "/tmp/mock", displayName: "Browser Preview", lastOpenedAt: browserMockAgo(60_000), exists: true, kind: "local", gitOriginUrl: MOCK_CLOUD_LANE_ORIGIN }]
       : []),
     browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "ade", "ADE", "/Users/admin/ADE", 2 * 3_600_000, "https://github.com/acme-labs/acme-shop"),

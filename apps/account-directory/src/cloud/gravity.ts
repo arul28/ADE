@@ -476,16 +476,22 @@ function pickOfIndex(raw: unknown): CloudSponsoredPick | null {
     const action = typeof entry.action === "string" ? entry.action : null;
     return entry.text ?? entry.command ?? entry.user_action ?? entry.description ?? (action && file ? `${action}: ${file}` : action ?? file);
   };
-  // A command keeps its exact spacing; one too long to show whole is left out, never cut.
+  // A command keeps its exact spacing, without control, zero-width or
+  // direction marks; one too long to show whole is never cut.
   const stepOf = (step: unknown): string => {
     const value = stepText(step);
     if (typeof value !== "string") return "";
-    const clean = value.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim();
+    const clean = value.replace(/[\u0000-\u0008\u000b-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, "").trim();
     return clean.length <= 500 ? clean : "";
   };
-  const steps = Array.isArray(install?.steps)
-    ? install.steps.flatMap((step) => stepOf(step) || []).slice(0, 8)
-    : [];
+  // The steps in order up to the first that can't be shown whole: "Use it"
+  // never puts a sequence with a hole in it in the prompt box.
+  const steps: string[] = [];
+  for (const step of Array.isArray(install?.steps) ? install.steps.slice(0, 8) : []) {
+    const text = stepOf(step);
+    if (!text) break;
+    steps.push(text);
+  }
   return {
     id: plainText(answer.search_id, 80) || crypto.randomUUID(),
     name,

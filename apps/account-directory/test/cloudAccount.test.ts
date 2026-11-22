@@ -4970,7 +4970,7 @@ describe("sponsored cards", () => {
   type GravityCall = { url: string; body: Row };
   let gravityCalls: GravityCall[];
   const AD = { adText: "Serverless Postgres that scales to zero.", title: "Neon", brandName: "Neon", cta: "Try Neon", url: "https://neon.tech", clickUrl: "https://api.trygravity.ai/track/click?p=1", impUrl: "https://api.trygravity.ai/ack?p=1", favicon: "https://icons.example/neon.ico" };
-  const PICK = { search_id: "s1", recommendation: { name: "Neon", description: "Serverless Postgres", category: "database", click_url: "https://index.trygravity.com/go/abc", website_url: "https://neon.tech", sponsored: true }, install: { steps: [{ text: "npm i @neondatabase/serverless" }] } };
+  const PICK = { search_id: "s1", recommendation: { name: "Neon", description: "Serverless Postgres", category: "database", click_url: "https://index.trygravity.com/go/abc", website_url: "https://neon.tech", sponsored: true }, install: { steps: [{ text: "npm i @neondatabase/serverless" }, { command: "npx\u200b neonctl init" }, { text: "x".repeat(501) }, { text: "rm -rf ./db" }] } };
   const DEVICE = { type: "desktop", os: "macos", osVersion: "15.1", ua: "ADE/1.2.133" };
   const adBody = (overrides: Row = {}) => ({ instanceId: INSTANCE, chatId: "chat-1", turnId: "turn-1", messages: [{ role: "user", content: "set up a database" }, { role: "assistant", content: "Use Postgres." }], device: DEVICE, ...overrides });
   const send = (caller: string, path: string, body: unknown) => harness.send(caller, "POST", path, body, { "cf-connecting-ip": "203.0.113.7" });
@@ -5061,7 +5061,7 @@ describe("sponsored cards", () => {
     // The person opens the chat from home; the agent's search comes from the computer, elsewhere.
     expect(await (await send(OWNER, "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE })).json()).toEqual({ ok: true });
     const answer = await harness.send(OWNER, "POST", "/cloud/sponsored/index", { instanceId: INSTANCE, chatId: "chat-1", need: "a hosted Postgres for this app" }, { "cf-connecting-ip": "198.51.100.9" });
-    expect(await answer.json()).toMatchObject({ pick: { name: "Neon", url: PICK.recommendation.click_url, sponsored: true, installSteps: ["npm i @neondatabase/serverless"] } });
+    expect(await answer.json()).toMatchObject({ pick: { name: "Neon", url: PICK.recommendation.click_url, sponsored: true, installSteps: ["npm i @neondatabase/serverless", "npx neonctl init"] } });
     expect(gravityCalls).toHaveLength(1);
     expect(gravityCalls[0]!.body).toMatchObject({ query: "a hosted Postgres for this app", user_ip: "203.0.113.7", user_agent: "ADE/1.2.133" });
 

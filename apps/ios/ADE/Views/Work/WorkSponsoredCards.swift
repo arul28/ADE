@@ -1,3 +1,4 @@
+import OSLog
 import SwiftUI
 import UIKit
 
@@ -134,6 +135,7 @@ struct WorkSponsoredReplySlot: View {
       do {
         return try await client.sponsoredAd(instanceId: instanceId, chatId: sessionId, turn: turn, device: .current)
       } catch {
+        cloudSponsoredLog.notice("sponsored ad ask failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
         return .unavailable
       }
     }

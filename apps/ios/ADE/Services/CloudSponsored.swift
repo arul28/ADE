@@ -1,5 +1,8 @@
 import Foundation
+import OSLog
 import UIKit
+
+let cloudSponsoredLog = Logger(subsystem: "com.ade.ios", category: "cloud-sponsored")
 
 // Sponsored cards in ADE Cloud chats (Gravity, `apps/account-directory/src/cloud/gravity.ts`).
 //
@@ -194,11 +197,14 @@ func cloudSaveSponsoredConsent(_ consent: String) async -> Result<CloudSponsored
   guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
     return .failure(CloudSponsoredSaveFailure(message: "Sign in to ADE, then try again."))
   }
+  // The answer belongs to the account that gave it: one signed in since doesn't take it.
+  let generation = AccountCloudStore.shared.generation
   do {
     let state = try await client.setSponsoredConsent(consent)
-    AccountCloudStore.shared.noteSponsored(state)
+    AccountCloudStore.shared.noteSponsored(state, generation: generation)
     return .success(state)
   } catch {
+    cloudSponsoredLog.notice("sponsored consent save failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     return .failure(CloudSponsoredSaveFailure(message: "ADE couldn't save that. Try again."))
   }
 }
@@ -313,11 +319,12 @@ final class CloudSponsoredStore: ObservableObject {
   private var viewedAds: Set<String> = []
   private var lastSeenAt: [String: Date] = [:]
   private var observers: [NSObjectProtocol] = []
-  /// No cookies, no cache: a view link is one plain GET.
+  /// No cookies, no cache, no redirects: a view link is one plain GET to
+  /// Gravity's own host, and a redirect elsewhere is never followed.
   private lazy var viewSession: URLSession = {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.timeoutIntervalForRequest = 10
-    return URLSession(configuration: configuration)
+    return URLSession(configuration: configuration, delegate: CloudSponsoredNoRedirects(), delegateQueue: nil)
   }()
 
   private init() {
@@ -393,12 +400,25 @@ final class CloudSponsoredStore: ObservableObject {
   }
 
   /// Gravity's view link, once per card per run, only on Gravity's own host.
+  /// Not delivered (offline, Gravity down): the next time half the card is
+  /// on screen sends it again.
   func noteViewed(_ ad: CloudSponsoredAd) {
     guard appActive, let url = cloudGravityURL(ad.impUrl), viewedAds.insert(ad.id).inserted else { return }
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
     let session = viewSession
-    Task.detached { _ = try? await session.data(for: request) }
+    let adId = ad.id
+    Task { @MainActor in
+      do {
+        let (_, response) = try await session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status > 0 && status < 500 { return }
+        cloudSponsoredLog.notice("sponsored view not delivered status=\(status, privacy: .public)")
+      } catch {
+        cloudSponsoredLog.notice("sponsored view not delivered error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      }
+      CloudSponsoredStore.shared.viewedAds.remove(adId)
+    }
   }
 
   /// Someone is watching this computer's chat or terminal: the Index may
@@ -408,8 +428,17 @@ final class CloudSponsoredStore: ObservableObject {
     let now = Date()
     if let last = lastSeenAt[instanceId], now.timeIntervalSince(last) < Self.seenEvery { return }
     lastSeenAt[instanceId] = now
-    guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else { return }
-    try? await client.sponsoredSeen(instanceId: instanceId, device: .current)
+    guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
+      lastSeenAt[instanceId] = nil
+      return
+    }
+    do {
+      try await client.sponsoredSeen(instanceId: instanceId, device: .current)
+    } catch {
+      // Not said: the next look tries again instead of waiting out the interval.
+      if lastSeenAt[instanceId] == now { lastSeenAt[instanceId] = nil }
+      cloudSponsoredLog.notice("sponsored seen failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    }
   }
 
   static var seenInterval: TimeInterval { seenEvery }
@@ -434,4 +463,17 @@ final class CloudSponsoredStore: ObservableObject {
     answers[turnKey] = Task { CloudSponsoredAdAnswer(ad: ad, reason: nil) }
   }
   #endif
+}
+
+/// Refuses every redirect: the view link's GET ends at Gravity's own host.
+private final class CloudSponsoredNoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+  func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    willPerformHTTPRedirection response: HTTPURLResponse,
+    newRequest request: URLRequest,
+    completionHandler: @escaping @Sendable (URLRequest?) -> Void
+  ) {
+    completionHandler(nil)
+  }
 }

@@ -25,6 +25,9 @@ struct CloudComputerLimit: Equatable, Identifiable {
     let lastAwakeAt: Double?
     /// False for a computer that holds no lane: it can only be deleted.
     var hasLane = true
+    /// The server said whether it holds a lane (it reads the lane's own rows);
+    /// the account's list, which can lag a new lane, never overrides it.
+    var serverNamedLane = false
     var id: String { instanceId }
   }
 
@@ -94,7 +97,8 @@ struct CloudComputerLimit: Equatable, Identifiable {
         laneName: row.laneName.flatMap { nonEmptyTrimmed($0) } ?? "Computer \(id.prefix(6))",
         awake: row.awake ?? false,
         lastAwakeAt: row.lastAwakeAt,
-        hasLane: row.hasLane ?? true
+        hasLane: row.hasLane ?? true,
+        serverNamedLane: row.hasLane != nil
       )
     }
     self.init(
@@ -179,7 +183,12 @@ extension CloudLaneActions {
       }
       let account = AccountService.shared
       if let machineKey, let row = account.machines.first(where: { $0.machineKey.caseInsensitiveCompare(machineKey) == .orderedSame }) {
-        try? await account.removeMachineFromAccount(row)
+        do {
+          try await account.removeMachineFromAccount(row)
+        } catch {
+          // The computer is gone; its stale row on the account goes with the next machines read.
+          CrashReporting.capture(error, context: ["area": "cloud_limit_remove_machine"])
+        }
       }
       sync.refreshCloudServerIfStale(force: true)
       ADEHaptics.success()
@@ -227,9 +236,10 @@ struct CloudComputerLimitSheet: View {
   /// The account's computers, least recently used first.
   private var lanes: [CloudComputerLimit.Lane] {
     if !limit.lanes.isEmpty {
-      // The refusal names them; the account's list says which hold no lane.
+      // The refusal names them; when it doesn't say which hold no lane, the account's list does.
       return limit.lanes.map { lane in
-        guard let instance = syncService.cloudServerInstances.first(where: { $0.id == lane.instanceId }) else { return lane }
+        guard !lane.serverNamedLane,
+              let instance = syncService.cloudServerInstances.first(where: { $0.id == lane.instanceId }) else { return lane }
         var known = lane
         known.hasLane = lane.hasLane && instance.laneId != nil
         return known
@@ -326,7 +336,7 @@ struct CloudComputerLimitSheet: View {
     tile(.free, symbol: "arrow.3.trianglepath", title: "Free up a computer", line: "Keep the lane and its chats; it gets a new computer later.")
     tile(.delete, symbol: "trash", title: "Delete a lane", line: "The lane and its computer go. ADE checks its work is on GitHub.")
     if let next = nextPlan {
-      tile(.move, symbol: "arrow.up.circle", title: "Move to \(cloudPlanLabel(next.planId))", line: "\(plural(next.computerLimit, "computer")). Small stays unlimited.")
+      tile(.move, symbol: "arrow.up.circle", title: "The \(cloudPlanLabel(next.planId)) plan", line: "\(plural(next.computerLimit, "computer")). Small stays unlimited.")
     }
   }
 
@@ -439,7 +449,7 @@ struct CloudComputerLimitSheet: View {
         }
         fact("Small computers stay unlimited and never use your hours")
       }
-      what("plans are changed in ADE on a computer. On \(label) you can have \(plural(next.computerLimit, "cloud computer")), and your new lane can start.")
+      what("on \(label) you can have \(plural(next.computerLimit, "cloud computer")), and your new lane can start.")
     }
   }
 

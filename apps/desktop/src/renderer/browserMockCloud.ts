@@ -80,9 +80,12 @@ const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgra
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
+// The first URL's query: the app routes away from it and drops the query.
+const INITIAL_SEARCH = typeof window === "undefined" ? "" : window.location.search;
+
 function param(name: string): string | null {
   try {
-    return new URLSearchParams(window.location.search).get(name);
+    return new URLSearchParams(INITIAL_SEARCH).get(name);
   } catch {
     return null;
   }

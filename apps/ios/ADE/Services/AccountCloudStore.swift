@@ -97,6 +97,12 @@ final class AccountCloudStore: ObservableObject {
 
   /// Bumped on an account change: an answer to the last account's read lands nowhere.
   private var accountGeneration = 0
+  /// Consent answers saved this run: an account read that started before one
+  /// keeps the saved answer instead of putting back the old one.
+  private var sponsoredSaves = 0
+
+  /// Which account the store holds now: a write that started under another one doesn't land.
+  var generation: Int { accountGeneration }
   /// The last read of the kept lanes (`refreshLanesWithoutComputer`, or the account read).
   private var lanesReadAt: Date?
   /// Bumped by each kept-lane read as it starts (and by an account change).
@@ -134,6 +140,7 @@ final class AccountCloudStore: ObservableObject {
   /// A read that fails keeps the last answer.
   func refresh(client: CloudServerClient, owner: AccountPairingAuthorization) async {
     let generation = accountGeneration
+    let saves = sponsoredSaves
     async let accessRead = readAccess(client)
     async let accountRead = readAccount(client)
     lanesReadSeq &+= 1
@@ -142,7 +149,10 @@ final class AccountCloudStore: ObservableObject {
     let (nextAccess, nextAccount, nextLanes) = await (accessRead, accountRead, lanesRead)
     guard generation == accountGeneration, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
     if let nextAccess, nextAccess != access { access = nextAccess }
-    if let nextAccount, nextAccount != account { account = nextAccount }
+    if var nextAccount {
+      if saves != sponsoredSaves { nextAccount.sponsored = account?.sponsored }
+      if nextAccount != account { account = nextAccount }
+    }
     applyLanesRead(nextLanes, seq: lanesSeq)
   }
 
@@ -666,7 +676,9 @@ final class AccountCloudStore: ObservableObject {
   /// (`PUT /cloud/sponsored/consent`): every chat and Settings read it at
   /// once, with no second account read. Nil (the switch no longer reaches
   /// the account) turns them off.
-  func noteSponsored(_ state: CloudSponsoredState?) {
+  func noteSponsored(_ state: CloudSponsoredState?, generation: Int) {
+    guard generation == accountGeneration else { return }
+    sponsoredSaves &+= 1
     guard var next = account, next.sponsored != state else { return }
     next.sponsored = state
     account = next
