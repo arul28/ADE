@@ -364,7 +364,11 @@ function textOf(call: Call, value: unknown): string {
       ? `ADE Cloud iPhone · on${minutes}\n${phone}\n${recentLines(value.recent)}capabilities: ${Array.isArray(value.capabilities) ? value.capabilities.join(", ") : ""}\n${cloudPhoneAbilityLines(value, isRecord(value.phone) && value.phone.state !== "ended")}`
       : `ADE Cloud iPhone · ${asString(value.reason) ?? "not available"}\n`;
   }
-  if (action === "screenshot") return `Saved ${asString(value.path)} (${value.bytes} bytes). Link for 7 days: ${asString(value.link)}\n`;
+  if (action === "screenshot") {
+    // Some cloud phones answer no link (the file is the screenshot): no line for one.
+    const link = asString(value.link);
+    return `Saved ${asString(value.path)} (${value.bytes} bytes).${link ? ` Link for 7 days: ${link}` : ""}\n`;
+  }
   if (action === "start") {
     const phone = isRecord(value.phone) ? value.phone : null;
     const minutes = isRecord(value.minutes) ? ` · ${value.minutes.left} of ${value.minutes.included} min left` : "";
