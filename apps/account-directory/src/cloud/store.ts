@@ -38,12 +38,18 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   CLOUD_CREATES_PAUSED?: string;
   /** Secret. The bearer of the owner's block and unblock routes (`safety.ts`). Unset: those routes answer 503. */
   CLOUD_OWNER_TOKEN?: string;
-  /** Secret. NoMac's account key (`nmk_…`) for the ADE Cloud iPhone (`phones.ts`). Unset: the phone answers `off`. */
+  /** Secret. NoMac's account key (`nmk_…`) for the ADE Cloud iPhone (`phoneNomac.ts`). Unset: the phone answers `off`. */
   NOMAC_API_KEY?: string;
   /** Secret. NoMac's embed secret (`nme_…`): signs each view link for its account alone. Unset: the link alone is the permission. */
   NOMAC_EMBED_SECRET?: string;
   /** Secret. Signs NoMac's webhook deliveries (`/cloud/nomac/webhook`). Unset: the webhook answers 503 and the ten-minute check settles phones alone. */
   NOMAC_WEBHOOK_SECRET?: string;
+  /** Secret. ADE's Revyl partner key for the ADE Cloud iPhone on Revyl (`phoneRevyl.ts`). Unset: no phone starts on Revyl. */
+  REVYL_PARTNER_API_KEY?: string;
+  /** Who runs new phones: `nomac` (default) or `revyl`; the owner's per-account choice on the beta list wins (`phones.ts`). */
+  CLOUD_PHONE_PROVIDER?: string;
+  /** The owner's switch for Revyl: `on` lets new phones start there (with the key set). Unset or anything else: NoMac only (`revylEnabled`). */
+  CLOUD_PHONE_REVYL?: string;
   /** Who may use the ADE Cloud iPhone: `beta` (default, the owner's list), `all`, or `off` (`phones.ts`). */
   CLOUD_PHONE_ACCESS?: string;
   /** `1`: no new ADE Cloud iPhones (running ones finish). */
@@ -267,6 +273,9 @@ export type AccountRow = {
   phone_warned_80_at?: number | null;
   phone_warned_zero_at?: number | null;
   phone_warned_period_start?: number | null;
+  /** A phone start whose answer was lost: the provider and when (migration 0057, `heldToUnsureStart`). */
+  phone_start_unsure?: string | null;
+  phone_start_unsure_at?: number | null;
   /** When the ADE account was created (Clerk), for the invite code's 30-day window. */
   account_created_at: number | null;
   /** Unused since Pricing v2 (Cloud 7's old plan terms, migration 0033): every new period writes 0. */
@@ -1323,12 +1332,14 @@ export async function loadAccount(env: CloudEnv, userId: string, now: number): P
  * address the owner typed) when one is given and the one it had otherwise.
  * Shared by the owner's add, a waiting email's claim and its hourly retry.
  * `whilePending`: a claim adds only while that waiting email is still there,
- * in the same write, so an owner's remove during the Clerk lookup holds.
+ * in the same write, so an owner's remove during the Clerk lookup holds, and
+ * takes the provider lock the owner gave the waiting email.
  */
 export function phoneBetaAddStatement(db: D1Database, userId: string, email: string | null, now: number, { whilePending = false }: { whilePending?: boolean } = {}): D1PreparedStatement {
   const upsert = "on conflict(user_id) do update set email = coalesce(excluded.email, cloud_phone_beta.email)";
   return whilePending
-    ? db.prepare(`insert into cloud_phone_beta (user_id, email, added_at) select ?, ?, ? where exists (select 1 from cloud_phone_beta_pending where email = ?) ${upsert}`)
+    // The waiting email's provider comes along (`both` too; an older lock on the row stays when it has none).
+    ? db.prepare(`insert into cloud_phone_beta (user_id, email, added_at, provider) select ?, ?, ?, provider from cloud_phone_beta_pending where email = ? ${upsert}, provider = coalesce(excluded.provider, cloud_phone_beta.provider)`)
       .bind(userId, email, now, email)
     : db.prepare(`insert into cloud_phone_beta (user_id, email, added_at) values (?, ?, ?) ${upsert}`).bind(userId, email, now);
 }
@@ -1341,7 +1352,7 @@ export function phoneBetaAddStatement(db: D1Database, userId: string, email: str
  * once, and only while some email waits, so an account read never asks Clerk.
  * Best effort: a failure leaves the email waiting and reports it; the owner
  * check asks Clerk again for each waiting email (`resolvePendingPhoneBeta` in
- * `phones.ts`), so a failed read or an address verified later still lands.
+ * `phoneBeta.ts`), so a failed read or an address verified later still lands.
  */
 async function claimPhoneBetaInvite(env: CloudEnv, userId: string, now: number): Promise<void> {
   try {

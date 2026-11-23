@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import { CLOUD_PHONE_BUILD_TIMEOUT_MS, CLOUD_PHONE_CALL_TIMEOUT_MS, CLOUD_PHONE_IDLE_SECONDS, CLOUD_PHONE_MAX_MINUTES } from "../../desktop/src/shared/cloudPhone";
+import { CLOUD_PHONE_ABILITIES, CLOUD_PHONE_ABILITY_WORDS, cloudPhoneAbilitiesOf } from "../../account-directory/src/cloud/contract";
 import {
   CLI_COMMAND_ALIASES,
   CliToolError,
@@ -73,7 +74,7 @@ function readArgs(tokens: string[], valueFlags: ReadonlySet<string>, root: () =>
 const VALUE_FLAGS = [
   "--label", "--id", "--find", "--out", "--caption", "--path", "--project", "--scheme", "--target", "--configuration",
   "--bundle-id", "--app", "--grep", "--since", "--wait-for", "--timeout-ms", "--hold-ms", "--duration-ms", "--device",
-  "--only", "--env", "--value", "--url",
+  "--only", "--env", "--value", "--url", "--needs", "--seconds",
 ] as const;
 type ValueFlag = (typeof VALUE_FLAGS)[number];
 const VALUE_FLAG_SET: ReadonlySet<string> = new Set(VALUE_FLAGS);
@@ -100,7 +101,14 @@ function point(args: Args, verb: string): string {
   return `@${x},${y}`;
 }
 
-type Call = { action: string; args: JsonObject; timeoutMs: number; label: string };
+type Call = {
+  action: string;
+  args: JsonObject;
+  timeoutMs: number;
+  label: string;
+  /** The answer as text, when this verb reads it its own way (`foreground` reads `look`'s first line). */
+  format?: (value: Record<string, unknown>) => string;
+};
 
 /** The chat and lane this command runs for, so a capture is theirs in the proof drawer. */
 function proofOwners(): JsonObject {
@@ -162,13 +170,16 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
   status: () => ({ action: "getStatus", args: {}, timeoutMs: 20_000, label: "cloud iPhone status" }),
   start: (args) => {
     const device = flag(args, "--device");
-    return { action: "start", args: device ? { device } : {}, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "start the cloud iPhone" };
+    const needs = (flag(args, "--needs") ?? "").split(/[,\s]+/).filter(Boolean);
+    return { action: "start", args: { ...(device ? { device } : {}), ...(needs.length ? { needs } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "start the cloud iPhone" };
   },
   stop: () => ({ action: "stop", args: {}, timeoutMs: 30_000, label: "stop the cloud iPhone" }),
   snapshot: (args) => {
     const find = flag(args, "--find");
     return { action: "look", args: { ...(find ? { find } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "read the screen" };
   },
+  // Which app is in front: the screen text's first line names it.
+  foreground: () => ({ action: "look", args: {}, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "the app in front", format: foregroundText }),
   "tap-element": (args, verb) => {
     const hold = Number(flag(args, "--hold-ms"));
     return act([Number.isFinite(hold) && hold > 0 ? `hold ${target(args, verb)} ${Math.min(10, Math.max(0.1, hold / 1000))}` : `tap ${target(args, verb)}`], "tap");
@@ -262,6 +273,10 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
   },
   test: testsCall,
   tests: testsCall,
+  perf: (args) => {
+    const seconds = Number(flag(args, "--seconds"));
+    return { action: "perf", args: Number.isFinite(seconds) && seconds > 0 ? { seconds } : {}, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "performance" };
+  },
   act: (args) => {
     const steps = args.words.filter((step) => step.trim());
     if (!steps.length) throw new CliUsageError("ade apple act \"<step>\" [\"<step>\" …], e.g. ade apple act 'fill #email a@b.c' 'tap \"Sign In\"' 'wait \"Welcome\" 10'");
@@ -269,15 +284,59 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
   },
   control: (args) => {
     const action = args.words[0];
-    if (!action) throw new CliUsageError("ade apple control <action> [value] [--app <bundle id>]: launch, terminate, uninstall, open_url, grant, revoke, location, push, appearance, locale, timezone, text_size, status_bar, storekit.");
+    if (!action) throw new CliUsageError("ade apple control <action> [value] [--app <bundle id>]: launch, terminate, uninstall, open_url, grant, revoke, location, push, appearance, locale, timezone, text_size, status_bar, storekit, shake, orientation (ade apple status says which this phone does).");
     const value = flag(args, "--value") ?? (args.words.length > 1 ? args.words.slice(1).join(" ") : undefined);
     const app = flag(args, "--app") ?? flag(args, "--bundle-id");
     return { action: "control", args: { action, ...(value !== undefined ? { value } : {}), ...(app ? { app } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: `control ${action}` };
   },
 };
 
-/** `show` answers here, with no call: the phone shows in the chat's tools pane. */
+/** `show` never gets here: `runCli` opens the chat's tools pane on this machine, which shows the chat's device. */
 const SHOW_VERB = "show";
+
+/** `foreground`: the app `look`'s first line names. */
+function foregroundText(value: Record<string, unknown>): string {
+  const first = (asString(value.text) ?? "").split("\n").find((line) => line.trim()) ?? "";
+  const app = /^app "([^"]+)"/.exec(first)?.[1] ?? null;
+  return app ? `${app} is in front.\n` : `In front: ${first || "nothing could be read"}\n`;
+}
+
+/**
+ * What this cloud iPhone (or with none running, a new one) can and can't do
+ * beyond the basics, in words, each with its name for `start --needs`.
+ */
+export function cloudPhoneAbilityLines(value: { abilities?: unknown; lacks?: unknown }, running: boolean): string {
+  if (!Array.isArray(value.abilities)) return ""; // an older account server says nothing about abilities
+  const can = cloudPhoneAbilitiesOf(value.abilities);
+  const cannot = Array.isArray(value.lacks) ? cloudPhoneAbilitiesOf(value.lacks) : CLOUD_PHONE_ABILITIES.filter((ability) => !can.includes(ability));
+  const words = (list: readonly (typeof CLOUD_PHONE_ABILITIES)[number][]) => list.map((ability) => (CLOUD_PHONE_ABILITY_WORDS[ability] === ability ? ability : `${CLOUD_PHONE_ABILITY_WORDS[ability]} (${ability})`)).join("; ");
+  const subject = running ? "This cloud iPhone" : "A new cloud iPhone";
+  return `${can.length ? `${subject} can also: ${words(can)}\n` : ""}${cannot.length ? `${subject} can't: ${words(cannot)}\n` : ""}${!running && can.length ? "A command that needs one starts a phone that has it; or ade apple start --needs <name>,<name>.\n" : ""}`;
+}
+
+/** How a phone of `recent` ended, as a person reads it. */
+const ENDED_WORDS: Readonly<Record<string, string>> = {
+  stopped: "stopped",
+  stop_at: "stopped: the minutes ran out",
+  idle: "stopped by itself: no input for 5 minutes",
+  on_its_own: "stopped by itself (no input for 5 minutes, or its time limit)",
+  time_limit: "stopped by itself: its time limit",
+  gone: "ended",
+};
+
+const clock = (ms: unknown): string => (typeof ms === "number" ? new Date(ms).toISOString().slice(0, 16).replace("T", " ") : "?");
+
+/** `recent` of a status: one line per phone this period, newest first. */
+function recentLines(recent: unknown): string {
+  if (!Array.isArray(recent) || !recent.length) return "";
+  const lines = recent.filter(isRecord).map((use) => {
+    const ended = asString(use.ended);
+    const how = ended ? (ENDED_WORDS[ended] ?? `ended (${ended})`) : "running now";
+    const span = `${clock(use.startedAt)}${typeof use.endedAt === "number" ? ` to ${clock(use.endedAt).slice(11)}` : ""} UTC`;
+    return `  ${span} · ${use.minutes} min · ${how}`;
+  });
+  return `This period's phones (newest first; a phone counts until it stops, its last idle minutes too):\n${lines.join("\n")}\n`;
+}
 
 /** One `ade apple` verb as a `cloud_phone` call. */
 function callFor(verb: string, tokens: string[], root: () => string): Call {
@@ -291,13 +350,18 @@ function callFor(verb: string, tokens: string[], root: () => string): Call {
   return handler(readArgs(tokens, VALUE_FLAG_SET, root), verb);
 }
 
-function textOf(action: string, value: unknown): string {
+function textOf(call: Call, value: unknown): string {
+  const action = call.action;
   if (!isRecord(value)) return `${String(value ?? "")}\n`;
+  if (call.format) return call.format(value);
   if (action === "getStatus") {
     const minutes = isRecord(value.minutes) ? ` · ${value.minutes.left} of ${value.minutes.included} min left this period` : "";
-    const phone = isRecord(value.phone) ? `phone: ${asString(value.phone.state)} (${asString(value.phone.device)})` : "phone: off (ade apple start, or any command, starts it)";
+    const idle = `${CLOUD_PHONE_IDLE_SECONDS / 60} minutes`;
+    const phone = isRecord(value.phone)
+      ? `phone: ${asString(value.phone.state)} (${asString(value.phone.device)}). It counts minutes until it stops: ade apple stop when done, or it stops by itself after ${idle} with no input (those ${idle} count too).`
+      : "phone: off. Any ade apple command starts it, reads like snapshot too, and it counts minutes from then until it stops.";
     return value.access === "on"
-      ? `ADE Cloud iPhone · on${minutes}\n${phone}\ncapabilities: ${Array.isArray(value.capabilities) ? value.capabilities.join(", ") : ""}\n`
+      ? `ADE Cloud iPhone · on${minutes}\n${phone}\n${recentLines(value.recent)}capabilities: ${Array.isArray(value.capabilities) ? value.capabilities.join(", ") : ""}\n${cloudPhoneAbilityLines(value, isRecord(value.phone) && value.phone.state !== "ended")}`
       : `ADE Cloud iPhone · ${asString(value.reason) ?? "not available"}\n`;
   }
   if (action === "screenshot") return `Saved ${asString(value.path)} (${value.bytes} bytes). Link for 7 days: ${asString(value.link)}\n`;
@@ -305,10 +369,13 @@ function textOf(action: string, value: unknown): string {
     const phone = isRecord(value.phone) ? value.phone : null;
     const minutes = isRecord(value.minutes) ? ` · ${value.minutes.left} of ${value.minutes.included} min left` : "";
     return `ADE Cloud iPhone ${asString(phone?.state) ?? "ready"} (${asString(phone?.device) ?? "iphone"})${minutes}\n`
-      + `It stops by itself after ${CLOUD_PHONE_IDLE_SECONDS / 60} minutes with no command or input, and after ${CLOUD_PHONE_MAX_MINUTES / 60} hours at most; the next command starts a new one.\n`;
+      + cloudPhoneAbilityLines({ abilities: value.abilities }, true)
+      + `It counts minutes until it stops. Run ade apple stop when you are done: by itself it stops only after ${CLOUD_PHONE_IDLE_SECONDS / 60} minutes with no command or input (those minutes count too), or after ${CLOUD_PHONE_MAX_MINUTES / 60} hours. The next command starts a new one.\n`;
   }
   if (action === "stop") return value.stopped ? "Stopped the ADE Cloud iPhone.\n" : "The ADE Cloud iPhone was not running.\n";
-  const text = asString(value.text) ?? "";
+  // A recording saved on the brain's machine (Revyl's has no download link): say where.
+  const saved = action === "record" ? asString(value.path) : null;
+  const text = `${asString(value.text) ?? ""}${saved ? `\nSaved ${saved}` : ""}`;
   const notice = asString(value.stopNotice);
   return `${text}${text.endsWith("\n") ? "" : "\n"}${notice ? `! ${notice}\n` : ""}`;
 }
@@ -337,10 +404,6 @@ function buildRoot(options: GlobalOptions): string {
 export async function runCloudIphoneCommand(parsed: ParsedCli, command: string[]): Promise<{ output: string; exitCode: number }> {
   const options: GlobalOptions = { ...parsed.options, machine: null, allMachines: false, machineProject: null, machineWorkCopy: null };
   const verb = (command[0] ?? "status").toLowerCase();
-  if (verb === SHOW_VERB) {
-    const text = "The ADE Cloud iPhone shows in this chat's tools pane: open the iPhone tool there and pick ADE Cloud.\n";
-    return { output: options.text ? text : formatOutput({ ok: true, note: text.trim() }, options, undefined), exitCode: 0 };
-  }
   const call = callFor(verb, command.slice(1), () => buildRoot(parsed.options));
   const plan: CliPlan & { kind: "execute" } = {
     kind: "execute",
@@ -356,7 +419,27 @@ export async function runCloudIphoneCommand(parsed: ParsedCli, command: string[]
     : null;
   const failed = isRecord(value) && value.failed === true;
   if (!options.text) return { output: formatOutput(value, options, undefined), exitCode: failed ? 1 : 0 };
-  return { output: `${textOf(call.action, value)}${filed ? `${filed}\n` : ""}`, exitCode: failed ? 1 : 0 };
+  return { output: `${textOf(call, value)}${filed ? `${filed}\n` : ""}`, exitCode: failed ? 1 : 0 };
+}
+
+/**
+ * The end of `ade apple --help` when the command goes to the cloud iPhone:
+ * the verbs it takes, and what this phone can and can't do (a status read,
+ * which never starts a phone). The rest of the help is the Mac's.
+ */
+export async function cloudIphoneHelpTail(parsed: ParsedCli): Promise<string> {
+  const verbs = `On the ADE Cloud iPhone (this chat's device), ade apple takes: ${[...Object.keys(VERBS), SHOW_VERB].join(", ")}.\n`;
+  const options: GlobalOptions = { ...parsed.options, machine: null, allMachines: false, machineProject: null, machineWorkCopy: null, timeoutMs: 20_000 };
+  const plan: CliPlan & { kind: "execute" } = {
+    kind: "execute",
+    label: "ade apple status (ADE Cloud iPhone)",
+    steps: [actionStep("result", "cloud_phone", "getStatus", {})],
+    needsLiveRuntime: "the ADE Cloud iPhone",
+    shapeResult: (values) => values.result,
+  };
+  const status = await executePlan(plan, options).then(unwrapActionEnvelope).catch(() => null);
+  const running = isRecord(status) && isRecord(status.phone) && status.phone.state !== "ended";
+  return `\n${verbs}${isRecord(status) && status.access === "on" ? cloudPhoneAbilityLines(status, running) : ""}`;
 }
 
 /**

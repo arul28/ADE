@@ -2006,6 +2006,37 @@ includes this long session and swings 50-80 MB between runs.
   viewer (the stop's 1 s grace timer died with the page); it now stops on
   `pagehide`. A renderer crash still leaves it to the next viewer's stop.
 
+### ADE Cloud iPhone on Revyl: the viewer page (2026-11-22)
+
+Measured 2026-11-22 on the Mac Studio (M4 Max), not the baseline machine,
+branch `ade/cloud-phone-providers` on `c5b1cc00f1`, other agents running. One
+live Revyl iPhone showing a still home screen. ADE's viewer page
+(`/cloud/phone/viewer`) draws Revyl's WebRTC video. Two versions of the page
+were compared, run in turns, two runs each:
+- **copy**: a hidden `<video>`, copied into a `<canvas>` on every video frame;
+- **direct**: the `<video>` shown as it is, with a clear canvas over it for
+  touches. Direct is what ships.
+
+| Row | How | Copy | Direct (ships) | Ceiling |
+|---|---|---:|---:|---:|
+| Desktop pane: offscreen view host, all of its Electron processes, still screen | `ps` %CPU, 4 samples × 2 runs, real `cloudPhoneViewHost` in a bare Electron | 14.5–15.4% (one run 12.6–21.2%) | 11.3–12.1% (one run 8.9–9.5%, after an 18% first sample) | 15% |
+| Desktop pane: same, Electron's own count (`app.getAppMetrics`) idle / tapping / hidden | 20 s / 10 s / 10 s windows | 1.2–1.4% / 1.5–1.7% / 1.1–1.3% | 0.9–1.0% / 1.1% / 0.8–0.9% | — |
+| Desktop pane: offscreen renderer RSS | `ps` | 380–411 MB | about the same | 450 MB |
+| iPhone app (Simulator, `WorkSandboxedWebView`): WebKit WebContent CPU, still screen | `top -pid`, 3 × 5 s, 2 runs | 17.7–19.2% | 1.5–1.9% | 5% |
+| iPhone app (Simulator): WebKit GPU process CPU, still screen | same | 66.5–74.4% | 20.2–24.4% | 30% |
+
+- Electron's own count leaves out the work of decoding and capturing a frame,
+  so the `ps` row is the one the ceiling applies to.
+- The Simulator draws WebKit in software, so its GPU process number is
+  higher than a real iPhone's, which decodes the video in hardware. The
+  comparison between the two versions still holds.
+- The desktop host sends the pane a JPEG only when the page paints:
+  2–4 frames a second on a still screen, the same for both versions.
+- No poll, timer or loop in the page. Typing waits 25 ms to send keys
+  together. A hidden pane stops sending frames.
+- The NoMac numbers (its own page, measured on Windows) are in
+  `docs/features/apple-device/ade-cloud-iphone.md`.
+
 ### Focus attention inference (2026-10-15)
 
 Service measurement on the baseline MacBook Pro, Node 22.23.2: four representative

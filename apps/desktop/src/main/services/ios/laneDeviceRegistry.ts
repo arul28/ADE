@@ -62,6 +62,7 @@ import {
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { deleteAppleSimulator } from "./simulatorPower";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 
 /**
  * One simulator per lane, many per machine.
@@ -570,7 +571,11 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     if (isRemoteWorkLaneId(laneId)) {
       const projectRoot = deps.projectRoot?.trim();
       const copy = projectRoot ? findRemoteWorkCopyForLane(projectRoot, laneId) : null;
-      return copy?.machineName ? `${copy.machineName} chat` : "chat on another machine";
+      // Each chat of that machine has its own name: the chat's id (as the
+      // other machine's Work list knows it) tells two of them apart.
+      const chat = copy ? parseForeignCallerSessionId(copy.owner)?.chatSessionId?.slice(0, 8) ?? null : null;
+      const who = copy?.machineName ? `${copy.machineName} chat` : "chat on another machine";
+      return chat ? `${who} ${chat}` : who;
     }
     const injected = deps.resolveLaneName?.(laneId);
     if (injected) return injected;
@@ -978,14 +983,14 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     const installed = (await deps.listInstalledSimulators()).filter((sim) => sim.isAvailable);
     const ownership = new Map(ownershipFor(installed).map((info) => [info.udid, info]));
     const preferredType = lastDeviceType();
-    const rank = (sim: AppleInstalledSimulator): number => {
-      return (sim.state.toLowerCase() === "shutdown" ? 0 : 2)
-        + (preferredType && sim.deviceTypeIdentifier === preferredType ? 0 : 1);
-    };
+    const rank = (sim: AppleInstalledSimulator): number => (preferredType && sim.deviceTypeIdentifier === preferredType ? 0 : 1);
     const candidates = installed
       .filter((sim) => {
         const info = ownership.get(sim.udid);
         if (!info || heldNow(sim.udid)) return false;
+        // A booted one no lane holds is someone's at this Mac (Simulator,
+        // Xcode, a script): never borrowed out from under them.
+        if (sim.state.toLowerCase() !== "shutdown") return false;
         return info.ownership === "unknown" && !info.looksLikeAde;
       })
       .sort((a, b) => rank(a) - rank(b));

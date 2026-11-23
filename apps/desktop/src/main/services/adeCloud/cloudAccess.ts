@@ -423,6 +423,7 @@ function serverProviderFor(deps: CloudAccessDeps): CloudProvider {
     fetch: deps.fetch,
     logger: deps.logger,
     account: accessKey(deps),
+    signedInAccount: () => accessKey(deps),
   });
 }
 

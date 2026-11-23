@@ -11,7 +11,7 @@ const EXTRA_PHONE_MINUTE_LINE = (() => {
   return `${prices.join(" or ")} a minute past your plan`;
 })();
 
-const ALL_ITEMS = [
+const ITEMS = [
   {
     id: "ios",
     icon: Smartphone,
@@ -25,9 +25,6 @@ const ALL_ITEMS = [
     body: "A whole macOS computer for a task, for Xcode builds and Mac apps, with no Mac of your own awake.",
   },
 ] as const;
-
-/** The ADE Cloud iPhone shows only once it is open to everyone (`CLOUD_PHONE_ON_WEBSITE`). */
-const ITEMS = ALL_ITEMS.filter((item) => item.id !== "ios" || CLOUD_PHONE_ON_WEBSITE);
 
 function SoonChip() {
   return (
@@ -72,7 +69,8 @@ export function ComingSoon({ compact, className }: { compact?: boolean; classNam
           </div>
           <h3 className="mt-5 text-[18px] font-semibold text-white">{item.title}</h3>
           <p className="mt-2 max-w-[30rem] text-[14.5px] leading-[1.6] text-white/60">{item.body}</p>
-          {item.id === "ios" ? (
+          {/* Its minutes show only once it is open to everyone (`CLOUD_PHONE_ON_WEBSITE`): the numbers may still change. */}
+          {item.id === "ios" && CLOUD_PHONE_ON_WEBSITE ? (
             <p className="mt-4 text-[13px] text-white/45">
               Plans will include minutes on a phone in the cloud:{" "}
               {PRICING_PLANS.map((plan) => `${formatCount(plan.phoneMinutes)} on ${plan.name}`).join(", ")}.

@@ -14,7 +14,7 @@
 export type CloudPhoneViewDeviceFamily = "iphone" | "ipad";
 
 export type CloudPhoneViewOpenArgs = {
-  /** The NoMac control-view link. It carries a viewer token, so never log it. */
+  /** The control-view link (NoMac's page or ADE's viewer page). It carries a viewer token, so never log it. */
   url: string;
   deviceFamily: CloudPhoneViewDeviceFamily;
   /** The phone's screen in points (`CLOUD_PHONE_MODELS[device].points`): what input coordinates are in. Left out: the family's default. */

@@ -81,18 +81,33 @@
   //
   // SECRETS — NOMAC_API_KEY, NOMAC_EMBED_SECRET, NOMAC_WEBHOOK_SECRET (ADE Cloud iPhone)
   // NoMac's account key (`nmk_…`) runs the account's iOS Simulator
-  // (src/cloud/phones.ts); required, and only this Worker holds it. The
+  // (src/cloud/phoneNomac.ts); required, and only this Worker holds it. The
   // optional embed secret (`nme_…`) signs each view link for the account.
   // Set both out of band, here and with `--env production`. Apply
   // migrations/0047_cloud_phone_beta.sql before the Worker that reads it
-  // deploys. Unset NOMAC_API_KEY, the phone reads `off` and answers "not set
-  // up"; without the embed secret a view link is its own permission. The
+  // deploys. With no provider key set (this one or REVYL_PARTNER_API_KEY),
+  // the phone reads `off` and answers "not set up"; without the embed secret a view link is its own permission. The
   // webhook secret is the one NoMac shows once when the webhook to
   // /cloud/nomac/webhook is made. Apply migrations/0048_cloud_phone_usage.sql
   // first too. Vars (here and under env.production): CLOUD_PHONE_ACCESS
   // (`beta` by default, `all` at launch, `off`), CLOUD_PHONES_PAUSED (`1`
   // stops new phones), STRIPE_PHONE_MINUTE_PRICE_ID and
   // STRIPE_PHONE_METER_EVENT (scripts/stripe-setup.mjs prints both).
+  //
+  // SECRET — REVYL_PARTNER_API_KEY (ADE Cloud iPhone on Revyl)
+  // Revyl's partner key: makes one Revyl workspace per account and mints short
+  // session credentials, kept in memory only (src/cloud/phoneRevyl.ts). Set
+  // out of band, here and with `--env production`; apply
+  // migrations/0057_cloud_phone_provider.sql first. Var CLOUD_PHONE_REVYL is
+  // the owner's switch: only `on` lets a new phone start on Revyl; unset (the
+  // default), no new phone is Revyl's (a tester locked to Revyl can't start
+  // one), and a Revyl phone already running is still read, billed and
+  // stopped. A beta row's provider locks that tester to one provider; with
+  // none (`both`), the router starts the phone on var CLOUD_PHONE_PROVIDER
+  // (`nomac` or `revyl`; NoMac when unset), on the other when that one
+  // refuses, and on the one that has an ability the start needs (phoneRoute.ts
+  // `routeOf`). With neither provider able to start phones, the phone reads
+  // `off`.
   //
   // SECRET — GRAVITY_API_KEY (sponsored cards and the Index, src/cloud/gravity.ts)
   // Gravity's publisher key (trygravity.com): ads, Index searches and the
@@ -322,6 +337,9 @@
         "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1UdF4HPWulQjqSYPydFHhXGd",
         "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
         "CLOUD_PHONE_ACCESS": "beta",
+        // Revyl may start phones (owner's yes, 2026-11-23). Who gets it is the
+        // beta list's per-email provider: a `nomac` lock never reaches Revyl.
+        "CLOUD_PHONE_REVYL": "on",
         // Sponsored cards and the Index (src/cloud/gravity.ts): the ceiling of
         // the instant `gravity_ads` setting, which starts off (no row reads
         // off). The owner flips that setting; `off` here is the hard off.

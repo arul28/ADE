@@ -75,7 +75,7 @@ import { deleteBackupsForLane, deleteBackupsWithComputer, markRestedWithBackups,
 import { prepareStopBackupReportId } from "./cron";
 import { freeCapRefuses } from "./costReport";
 import { ACCOUNT_BLOCKED_MESSAGE, accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
-import { extraPhoneOffered, handleNomacWebhook, isNomacWebhookRequest, routePhone } from "./phones";
+import { extraPhoneOffered, handleNomacWebhook, handlePhoneViewer, isNomacWebhookRequest, isPhoneViewerRequest, routePhone } from "./phones";
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
 import { INSTANCE_LIST_TTL_S, listInstancesCached } from "./instanceListCache";
 import { boundedDisplayText } from "../displayText";
@@ -2040,6 +2040,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   // NoMac's webhook: its own signature is the proof, never an account token.
   if (isNomacWebhookRequest(path, request.method)) return handleNomacWebhook(request, env, Date.now(), waitUntil);
+  // The phone viewer page is static: the view link's `#` part (never sent here) names the phone.
+  if (isPhoneViewerRequest(path, request.method)) return handlePhoneViewer();
   // The provider's status webhook: its Standard Webhooks signature is the proof, never an account token.
   if (isAgent37WebhookRequest(path, request.method)) return handleAgent37Webhook(request, env, Date.now(), { provider: providerFor(env), waitUntil });
   // The new computer's join has no account token yet: its one-time code is the proof.

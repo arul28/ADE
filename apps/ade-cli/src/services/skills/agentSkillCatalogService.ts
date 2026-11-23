@@ -5,6 +5,7 @@ import { parseYaml } from "../../../../desktop/src/main/services/shared/lazyPack
 import { isPathEscapeError, readFileWithinRootSecure } from "../../../../desktop/src/main/services/shared/utils";
 
 import {
+  adeAccessWithheldAgentSkills,
   adeWithheldAgentSkills,
   getAgentSkillRootsWithSource,
   type AgentSkillRootSource,
@@ -221,8 +222,8 @@ function catalogFor({ cwd, includeUser, env, onError }: CatalogOptions): Catalog
 }
 
 /** The catalog minus skills this account may not see (`adeWithheldAgentSkills`), however they got here. */
-function visibleCatalogFor(options: CatalogOptions): CatalogSkill[] {
-  const withheld = new Set(adeWithheldAgentSkills());
+function visibleCatalogFor(options: CatalogOptions, withheldNames: readonly string[] = adeWithheldAgentSkills()): CatalogSkill[] {
+  const withheld = new Set(withheldNames);
   return catalogFor(options).filter((skill) => !withheld.has(skill.entry.name));
 }
 
@@ -236,7 +237,8 @@ export function readAgentSkill(
 ): { entry: AgentSkillEntry; body: string; content: string } | null {
   const nameKey = normalizedSkillName(name);
   if (!nameKey) return null;
-  const skill = visibleCatalogFor(options)
+  // Asked for by name: only the access rules hold a skill back, not this host's platform.
+  const skill = visibleCatalogFor(options, adeAccessWithheldAgentSkills())
     .find((candidate) => normalizedSkillName(candidate.entry.name) === nameKey);
   if (!skill) return null;
   return { entry: { ...skill.entry }, body: skill.body, content: skill.content };

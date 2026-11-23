@@ -333,6 +333,9 @@ export function captureCloudSafety(env: AnalyticsEnv, waitUntil: CloudWaitUntil,
  * - `started`: a new phone started (`extra`: on extra minutes, the plan's were used up).
  * - `ended`: NoMac said a phone ended (`reason`: `stopped`, `idle`, `time_limit`, `spend_cap`, ...; `billedMinutes`).
  * - `refused`: a start was refused (`reason`: `phone_minutes_out`, `phone_extra_limit`, `phone_free_held`, `paused`).
+ * - `provider` and `route` (on `started`): who runs it, and why it went there
+ *   (`lock`: the owner set this account to one; `default`; `need`: only it can
+ *   do what the start asked; `failover`: the first refused). Internal only.
  */
 export type CloudPhoneEvent = {
   step: "started" | "ended" | "refused";
@@ -342,6 +345,8 @@ export type CloudPhoneEvent = {
   minutesLeft?: number;
   extra?: boolean;
   billedMinutes?: number;
+  provider?: string;
+  route?: string;
 };
 
 /** One `ade_cloud_phone` per account, step and phone (hashed into the uuid, never sent); a refusal one per reason and hour. */
@@ -363,6 +368,8 @@ export function captureCloudPhone(env: CloudEnv, waitUntil: CloudWaitUntil, user
         ...(event.minutesLeft != null ? { minutes_left: event.minutesLeft } : {}),
         ...(event.extra != null ? { extra: event.extra } : {}),
         ...(event.billedMinutes != null ? { billed_minutes: event.billedMinutes } : {}),
+        ...(event.provider ? { provider: event.provider } : {}),
+        ...(event.route ? { route: event.route } : {}),
         $geoip_disable: true,
       },
     });

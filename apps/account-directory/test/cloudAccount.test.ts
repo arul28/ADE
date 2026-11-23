@@ -4057,6 +4057,118 @@ describe("ADE Cloud iPhone minutes", () => {
     expect(account()).toEqual(after);
   });
 
+  /**
+   * The providers' networks for a start: NoMac answers as `nomac` says (and runs `during` mid-start); Revyl
+   * refuses its first call (503). Answers which providers were asked to start a phone, in order.
+   */
+  function phoneStartNetwork(nomac: "ok" | "refused" | "down" | "timeout", during?: () => Promise<void>): string[] {
+    const asked: string[] = [];
+    const inner = harness.net.fetchStub;
+    const at = (ms: number) => new Date(ms).toISOString();
+    const session = { id: "ses_new", state: "ready", label: `ade:${OWNER}`, device: "iphone", created_at: at(clock), ready_at: at(clock) };
+    const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const method = init?.method ?? "GET";
+      if (url.startsWith("https://backend.revyl.ai/")) {
+        if (!asked.includes("revyl")) asked.push("revyl");
+        return reply(503, { error: { code: "unavailable", message: "busy" } });
+      }
+      if (url === "https://nomac.app/api/v1/simulator/sessions" && method === "POST") {
+        asked.push("nomac");
+        await during?.();
+        if (nomac === "timeout") throw new DOMException("The operation timed out.", "TimeoutError");
+        if (nomac === "refused") return reply(401, { error: { code: "invalid_api_key", message: "API key is malformed" } });
+        if (nomac === "down") return reply(500, { error: { code: "internal", message: "oops" } });
+        return reply(201, { session, reused: false });
+      }
+      if (url.endsWith("/simulator/sessions/ses_new/token")) return reply(200, { token: "nmp_test", expires_at: at(clock + HOUR) });
+      if (url.endsWith("/simulator/sessions/ses_new")) return reply(200, { session });
+      return inner(input, init);
+    });
+    return asked;
+  }
+
+  /** A paid account on the beta list (`lock`: its provider; `none`: not on it), both providers set up. */
+  function seedPhoneTester(lock: "nomac" | "revyl" | "both" | "none", revylSwitch: "on" | "off"): void {
+    seedPhoneAccount();
+    harness.env.CLOUD_PHONE_ACCESS = "beta";
+    harness.env.REVYL_PARTNER_API_KEY = "rvl_test";
+    harness.env.CLOUD_PHONE_REVYL = revylSwitch;
+    if (lock !== "none") harness.insert("cloud_phone_beta", { user_id: OWNER, email: "tester@example.com", added_at: clock, provider: lock === "both" ? null : lock });
+  }
+
+  const startPhone = (needs?: string[]) => harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac", "revyl"], ...(needs ? { needs } : {}) });
+
+  it.each([
+    { name: "the router starts on NoMac first", lock: "both", revyl: "on", nomac: "ok", needs: undefined, status: 200, code: null, asked: ["nomac"], phones: 1 },
+    { name: "a definite NoMac refusal hands the start to Revyl", lock: "both", revyl: "on", nomac: "refused", needs: undefined, status: 503, code: "phone_unavailable", asked: ["nomac", "revyl"], phones: 0 },
+    { name: "a NoMac 5xx may hide a phone it made: no second start", lock: "both", revyl: "on", nomac: "down", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
+    { name: "a NoMac timeout may hide a phone it made: no second start", lock: "both", revyl: "on", nomac: "timeout", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
+    { name: "a NoMac lock never falls back to Revyl", lock: "nomac", revyl: "on", nomac: "refused", needs: undefined, status: 400, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
+    { name: "a Revyl lock with Revyl switched off starts nothing", lock: "revyl", revyl: "off", nomac: "ok", needs: undefined, status: 503, code: "phone_unavailable", asked: [], phones: 0 },
+    { name: "a need only Revyl has goes to Revyl alone", lock: "both", revyl: "on", nomac: "ok", needs: ["perf"], status: 503, code: "phone_unavailable", asked: ["revyl"], phones: 0 },
+    { name: "a lock that lacks the need is refused", lock: "nomac", revyl: "on", nomac: "ok", needs: ["perf"], status: 409, code: "phone_cant", asked: [], phones: 0 },
+    { name: "a need no startable provider has is refused", lock: "both", revyl: "off", nomac: "ok", needs: ["perf"], status: 409, code: "phone_cant", asked: [], phones: 0 },
+    { name: "an account off the beta list starts nothing", lock: "none", revyl: "on", nomac: "ok", needs: undefined, status: 403, code: "phone_not_on_account", asked: [], phones: 0 },
+  ] as const)("which provider starts the phone: $name", async ({ lock, revyl, nomac, needs, status, code, asked, phones }) => {
+    seedPhoneTester(lock, revyl);
+    const calls = phoneStartNetwork(nomac);
+    const response = await startPhone(needs ? [...needs] : undefined);
+    expect(response.status).toBe(status);
+    if (code) expect((await response.json() as { error: { code: string } }).error.code).toBe(code);
+    expect(calls).toEqual(asked);
+    expect(harness.rows("select phone_id from cloud_phones where user_id = ?", OWNER)).toHaveLength(phones);
+  });
+
+  it("a second start while one runs for the account is told to try again, and then gets the same phone", async () => {
+    seedPhoneTester("both", "on");
+    let during: Response | null = null;
+    const calls = phoneStartNetwork("ok", async () => {
+      during ??= await startPhone();
+    });
+    expect((await startPhone()).status).toBe(200);
+    expect(during!.status).toBe(409);
+    expect((await during!.json() as { error: { code: string } }).error.code).toBe("phone_starting");
+    const again = await startPhone();
+    expect(again.status).toBe(200);
+    expect((await again.json() as { phone: { id: string } }).phone.id).toBe("ses_new");
+    expect(calls).toEqual(["nomac"]);
+    expect(harness.rows("select phone_id from cloud_phones where user_id = ?", OWNER)).toHaveLength(1);
+  });
+
+  it("a start whose answer was lost keeps the next starts on that provider until one finds its phone", async () => {
+    seedPhoneTester("both", "on");
+    const calls = phoneStartNetwork("timeout");
+    expect((await startPhone()).status).toBe(502);
+    // Only Revyl has `perf`, but NoMac may be bringing a phone up: no second phone elsewhere.
+    const elsewhere = await startPhone(["perf"]);
+    expect(elsewhere.status).toBe(503);
+    expect((await elsewhere.json() as { error: { code: string } }).error.code).toBe("phone_unavailable");
+    expect(calls).toEqual(["nomac"]);
+    // A plain start goes back to NoMac alone; once it answers, the route is free again.
+    calls.length = 0;
+    phoneStartNetwork("ok");
+    expect((await startPhone()).status).toBe(200);
+    expect(harness.rows("select phone_start_unsure from cloud_accounts where user_id = ?", OWNER)).toEqual([{ phone_start_unsure: null }]);
+  });
+
+  it("a live phone its provider can't answer for blocks a new start, even one that would go elsewhere", async () => {
+    seedPhoneTester("both", "on");
+    seedPhone("ses_live", 0, clock - 60_000, "live");
+    const calls = phoneStartNetwork("ok");
+    const answering = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input instanceof Request ? input.url : input).endsWith("/simulator/sessions/ses_live")
+        ? new Response(JSON.stringify({ error: { code: "internal", message: "oops" } }), { status: 500 })
+        : answering(input, init));
+    const response = await startPhone(["perf"]);
+    expect(response.status).toBe(503);
+    expect((await response.json() as { error: { code: string } }).error.code).toBe("phone_unavailable");
+    expect(calls).toEqual([]);
+    expect(harness.rows("select phone_id from cloud_phones where user_id = ? and state = 'live'", OWNER)).toEqual([{ phone_id: "ses_live" }]);
+  });
+
   it("holds a running phone to what the account may still use, and the minute tick stops it then", async () => {
     seedPhoneAccount({ phone_extra_limit_cents: null });
     seedPhone("ses_used", 290);

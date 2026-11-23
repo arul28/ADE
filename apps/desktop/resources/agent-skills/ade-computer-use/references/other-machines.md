@@ -76,7 +76,7 @@ drive a device; other agents hand it work.
 
 ## ADE Cloud iPhone
 
-`ios@cloud` is an iPhone at NoMac that runs for the ADE account, so it works
+`ios@cloud` is an iPhone in the cloud that runs for the ADE account, so it works
 from any machine. `ade devices` lists it only when the account has it.
 
 ```bash

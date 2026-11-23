@@ -1,8 +1,10 @@
 /**
  * The ADE Cloud iPhone's picture, rendered on this desktop.
  *
- * NoMac gives a control-view link whose page paints the running phone into one
- * canvas and accepts mouse input. That page is a normal web page, so this host
+ * The account server gives a control-view link whose page paints the running
+ * phone into one canvas and accepts mouse input: NoMac's page, or ADE's own
+ * viewer page for a Revyl phone (`/cloud/phone/viewer`, the same canvas,
+ * "Home" button and "not running" text). That page is a normal web page, so this host
  * keeps one OFFSCREEN `BrowserWindow` per open view: the page paints at 30 Hz
  * even when idle, and each painted frame is cropped to the canvas and sent to
  * the renderer that asked. Nothing is ever shown, focused or logged with its
@@ -15,7 +17,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { BrowserWindow, type NativeImage, type Rectangle, type WebContents } from "electron";
+import { app, BrowserWindow, type NativeImage, type Rectangle, type WebContents } from "electron";
 
 import { IPC } from "../../../shared/ipc";
 import type {
@@ -30,6 +32,9 @@ import type {
 } from "../../../shared/types/cloudPhoneView";
 import type { Logger } from "../logging/logger";
 import { CLOUD_PHONE_MODELS } from "../../../shared/cloudPhone";
+import { DEFAULT_ADE_ACCOUNT_DIRECTORY_URL, DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL } from "../../../shared/accountDirectory";
+import { isLoopbackHost } from "../../../shared/passwordFillTarget";
+import { CLOUD_PATHS } from "../../../../../account-directory/src/cloud/contract";
 
 type Point = { width: number; height: number };
 
@@ -84,10 +89,15 @@ export type CloudPhoneViewHost = {
   closeAll: () => void;
 };
 
-/** Only this origin is a control view. Everything else is refused before a window is made. */
+/**
+ * Only these pages are a control view; everything else is refused before a
+ * window is made: NoMac's view page, and ADE's own viewer page (Revyl's phone),
+ * served by ADE's account server (a local one only in a development build).
+ */
 const CONTROL_VIEW_PREFIX = "https://nomac.app/simulator-use/view/";
 const CONTROL_VIEW_PATH = "/simulator-use/view/";
 const NOMAC_HOST = "nomac.app";
+const ADE_VIEWER_ORIGINS = new Set([DEFAULT_ADE_ACCOUNT_DIRECTORY_URL, DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL].map((raw) => new URL(raw).origin));
 
 /** 1.5× the page's 402×874 layout, so the texture is sharp on a 3D body. */
 const WINDOW_SIZE: Record<CloudPhoneViewDeviceFamily, Point> = {
@@ -172,13 +182,21 @@ function buttonScript(label: string): string {
   })()`;
 }
 
+/** ADE's own viewer page on ADE's account server (a local server only in a development build). */
+function isAdeViewerPage(url: URL): boolean {
+  if (url.pathname !== CLOUD_PATHS.phoneViewer || url.username || url.password) return false;
+  if (url.protocol === "https:" && ADE_VIEWER_ORIGINS.has(url.origin)) return true;
+  return !app.isPackaged && url.protocol === "http:" && isLoopbackHost(url.hostname);
+}
+
 /** The control link, normalized, or null when it is anything else. Never log the result. */
 function readControlViewUrl(raw: string): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
-  if (!trimmed.startsWith(CONTROL_VIEW_PREFIX)) return null;
   try {
     const url = new URL(trimmed);
+    if (isAdeViewerPage(url)) return url.toString();
+    if (!trimmed.startsWith(CONTROL_VIEW_PREFIX)) return null;
     return url.protocol === "https:" && url.hostname === NOMAC_HOST && url.pathname.startsWith(CONTROL_VIEW_PATH)
       ? url.toString()
       : null;
@@ -187,11 +205,11 @@ function readControlViewUrl(raw: string): string | null {
   }
 }
 
-/** A page the viewer may navigate to: the control site only. */
-function isNomacPage(raw: string): boolean {
+/** A page the viewer may navigate to: the control site, or ADE's viewer page. */
+function isControlPage(raw: string): boolean {
   try {
     const url = new URL(raw);
-    return url.protocol === "https:" && url.hostname === NOMAC_HOST;
+    return (url.protocol === "https:" && url.hostname === NOMAC_HOST) || isAdeViewerPage(url);
   } catch {
     return false;
   }
@@ -474,7 +492,7 @@ export function createCloudPhoneViewHost(args: { logger: Logger }): CloudPhoneVi
 
   const open = (openArgs: CloudPhoneViewOpenArgs & { sender: WebContents }): { viewId: string } => {
     const url = readControlViewUrl(openArgs.url);
-    if (!url) throw new Error("That link isn't a NoMac control-view link.");
+    if (!url) throw new Error("That link isn't an ADE Cloud iPhone view link.");
     if (openArgs.deviceFamily !== "iphone" && openArgs.deviceFamily !== "ipad") {
       throw new Error("That device type can't be shown here.");
     }
@@ -530,10 +548,10 @@ export function createCloudPhoneViewHost(args: { logger: Logger }): CloudPhoneVi
     }
     contents.setWindowOpenHandler(() => ({ action: "deny" }));
     contents.on("will-navigate", (event, next) => {
-      if (!isNomacPage(next)) event.preventDefault();
+      if (!isControlPage(next)) event.preventDefault();
     });
     contents.on("will-redirect", (event, next) => {
-      if (!isNomacPage(next)) event.preventDefault();
+      if (!isControlPage(next)) event.preventDefault();
     });
     contents.on("paint", (_details, _dirty, image) => handlePaint(view, image));
     contents.on("did-finish-load", () => {

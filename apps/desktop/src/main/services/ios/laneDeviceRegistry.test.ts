@@ -627,7 +627,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it("lends a chat on another machine one of the person's own free simulators, never an ADE or held one, and makes one only when none is free", async () => {
+  it("lends a chat on another machine one of the person's own free simulators, never an ADE, held or booted one, and makes one only when none is free", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-apple-borrow-"));
     const dataRoot = path.join(root, "devices");
     const projectRoot = path.join(root, "project");
@@ -663,12 +663,11 @@ describe("laneDeviceRegistry device lifecycle", () => {
     });
 
     try {
-      // A shut-down one first: a booted one may be in use.
+      // Only a shut-down one: a booted one is in use by someone at the Mac.
       expect(await registry.ensure({ laneId: remoteWorkLaneIdFor("remote:mac:chat-1") })).toMatchObject({ udid: "users-free", origin: "attached" });
-      expect(await registry.ensure({ laneId: remoteWorkLaneIdFor("remote:mac:chat-2") })).toMatchObject({ udid: "users-booted", origin: "attached" });
       expect(run).not.toHaveBeenCalled();
-      // Nothing of the person's is free now: ADE makes one.
-      expect(await registry.ensure({ laneId: remoteWorkLaneIdFor("remote:mac:chat-3") })).toMatchObject({ udid: "made-udid", origin: "created" });
+      // Nothing of the person's is free now (the booted one never is): ADE makes one.
+      expect(await registry.ensure({ laneId: remoteWorkLaneIdFor("remote:mac:chat-2") })).toMatchObject({ udid: "made-udid", origin: "created" });
       expect(run.mock.calls.filter((call) => call[1][1] === "create")).toHaveLength(1);
       expect(store.rows["lane-1"]).toMatchObject({ udid: "held" });
       expect(readAppleDeviceMarker(dataRoot, KEPT)?.keptAt).toBe("2026-10-02T00:00:00.000Z");

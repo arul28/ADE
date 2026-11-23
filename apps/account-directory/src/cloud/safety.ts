@@ -5,7 +5,8 @@ import { constantTimeEqual } from "../githubApp/seal";
 import { sha256Hex } from "../sinkUtils";
 import { fail, json, readJson } from "./http";
 import { OWNER_ACCOUNT_PATH, OWNER_SETTINGS_PATH, handleOwnerAccount, handleOwnerSettings } from "./ownerAccounts";
-import { OWNER_PHONE_BETA_PATH, handleOwnerPhoneBeta, stopAccountPhones } from "./phones";
+import { OWNER_PHONE_BETA_PATH, handleOwnerPhoneBeta } from "./phoneBeta";
+import { stopAccountPhones } from "./phones";
 import { CloudProviderError, TRY_AGAIN_CODE, type CloudProvider } from "./provider";
 import {
   isPendingId,
@@ -37,7 +38,7 @@ import {
  * The owner routes take `Authorization: Bearer <CLOUD_OWNER_TOKEN>`:
  * - `POST /cloud/owner/block`   `{ userId?, githubUserId?, cardFingerprint?, reason }`
  * - `POST /cloud/owner/unblock` `{ userId?, githubUserId?, cardFingerprint? }`
- * - `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled? }`: the ADE Cloud iPhone's beta list (`phones.ts`)
+ * - `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled? }`: the ADE Cloud iPhone's beta list (`phoneBeta.ts`)
  * - `POST /cloud/owner/account` and `/cloud/owner/settings`: the account test tool and the instant switches (`ownerAccounts.ts`)
  */
 
@@ -326,7 +327,7 @@ export async function handleCloudOwnerRequest(request: Request, env: CloudEnv, p
   }
   const body = await readJson(request);
   if (!body) return fail("bad_request", "That request could not be read.", 400);
-  // The ADE Cloud iPhone's beta list (`phones.ts`).
+  // The ADE Cloud iPhone's beta list (`phoneBeta.ts`).
   if (path === OWNER_PHONE_BETA_PATH) return handleOwnerPhoneBeta(env, body, deps.now);
   // The account test tool and the instant switches (`ownerAccounts.ts`).
   if (path === OWNER_ACCOUNT_PATH) return handleOwnerAccount(env, body, deps.now);

@@ -153,7 +153,7 @@ front. Use `relaunch` or `terminate` for an app that is already there.
 
 ## ADE Cloud iPhone (any machine)
 
-`ios@cloud` is the account's iPhone at NoMac, not a simulator on any machine,
+`ios@cloud` is the account's iPhone in the cloud, not a simulator on any machine,
 so Windows and Linux use it too. `ade devices` lists it only when the account
 has it; otherwise `use ios@cloud` says why: not on this account yet, or this
 machine's ADE is too old for it (then the person updates ADE; don't look for
@@ -163,12 +163,21 @@ that is listed.
 
 ```bash
 "$ADE_CLI_PATH" devices use ios@cloud   # this chat's iPhone
-"$ADE_CLI_PATH" apple status --text     # access, minutes left, capabilities
+"$ADE_CLI_PATH" apple status --text     # access, minutes left, what this phone can and can't do
 ```
+
+Cloud iPhones differ in a few abilities (app tests, uninstall, StoreKit,
+locale, time zone, status bar, launch env values; or perf, shake, rotate).
+`status` and `ade apple --help` list what yours can. A command that needs one
+starts a phone that has it; to pick ahead, `ade apple start --needs perf,shake`.
+A running phone never changes: if it lacks what you need, the refusal says to
+`ade apple stop` and run the command again. `ade apple perf` reads the
+launched app's CPU, memory and frame rate for about 5 seconds; `control shake`
+and `control orientation landscape|portrait` where the phone has them.
 
 For one command, `ade apple … --machine cloud`. What differs:
 
-- `launch` and `test` pack this checkout as it is (uncommitted changes too,
+- `launch` and `test` (on a phone that runs tests: `status` says) pack this checkout as it is (uncommitted changes too,
   git-ignored files left out), upload it, and build it with Xcode there
   (Xcode projects only). For an app built elsewhere, install its Simulator
   `.app` instead: `ade apple install --app <path>` (`--no-launch` installs
@@ -176,20 +185,30 @@ For one command, `ade apple … --machine cloud`. What differs:
   `npx eas-cli build -p ios --profile <a profile with "ios": {"simulator": true}>`,
   then unpack the archive it gives. React Native and Flutter
   (`--simulator`) build one only on a Mac.
-- `screenshot` files to the proof drawer (`--no-proof` skips it); a
-  recording's MP4 link lasts 7 days.
+- `screenshot` files to the proof drawer (`--no-proof` skips it). `record stop`
+  answers an MP4 link that lasts 7 days, or the video as a file on this
+  machine (its `path`, filed to the proof drawer too).
 - Verbs with no cloud answer (iPad windows, the Duo, leases, device settings)
-  are refused with a sentence. `act` takes the same words as the screen.
-- It spends the plan's iPhone minutes while it runs, building included.
-  `ade cloud status` has them (`iphone`: left, reset day, extra minutes) and
-  every plan's (`plans`). It stops at 0 unless extra minutes are on (paid
-  plans), after 5 minutes with no input, and after 2 hours. `ade apple stop`
-  when you are done. Only the person changes the plan or extra minutes, in
+  are refused with a sentence, and that command exits 1: in a chain
+  (`a && b`) a refusal stops the rest, so run a verb you are unsure of on its
+  own. `foreground` answers from the screen text. `act` takes the same words
+  as the screen. `show` opens the chat's tools pane on this machine, as it
+  does for a Mac's simulator.
+- It spends the plan's iPhone minutes from the first command (a read like
+  `snapshot` starts it too) until it stops, building included. A phone left
+  alone stops by itself only after 5 minutes with no input, and those 5
+  minutes count: a few separate short visits cost far more than one batch.
+  `ade apple status --text` lists this period's phones with their minutes and
+  how each ended. `ade cloud status` has the totals (`iphone`: left, reset
+  day, extra minutes) and every plan's (`plans`). It stops at 0 unless extra
+  minutes are on (paid plans), and after 2 hours. `ade apple stop` as soon as
+  you are done. Only the person changes the plan or extra minutes, in
   Settings › ADE Cloud. A full-auto chat or an automation uses it only when the
   person lets agents spend (the agent limits, as for hours).
 
 Working fast on it (measured: `snapshot` about 1 s, a step 2–3 s, a fresh
-phone 8–13 s, an app's first launch 6–10 s):
+phone 8–13 s, an app's first launch 6–10 s, though the first launch right
+after a fresh phone starts can take about a minute while it settles):
 
 - Read with `snapshot` (text, about 1 s), not `screenshot`. Take a screenshot
   only for proof or for what text can't show.

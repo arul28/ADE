@@ -14,12 +14,14 @@ import {
   CLOUD_COMPUTER_HEADER,
   CLOUD_COMPUTER_PLATFORM_HEADER,
   CLOUD_PATHS,
+  CLOUD_PHONE_PROVIDERS,
   type CloudCheckoutResult,
   type CloudInviteRedeemResult,
   type CloudLaneWithoutComputer,
   type CloudCopyRecord,
   type CloudFreeRecord,
   type CloudMoveRecord,
+  type CloudPhoneCallRequest,
   type CloudPhoneStart,
   type CloudPhoneState,
   type CloudPhoneView,
@@ -79,6 +81,8 @@ export type CloudServerProviderDeps = {
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
   /** The account this client is made for (`CloudProvider.account`, `cloudAccessKey`). */
   account: string;
+  /** The account signed in now (`cloudAccessKey`): every call checks its token is still `account`'s. */
+  signedInAccount?: () => string;
 };
 
 export type CloudDeleteContext = {
@@ -156,6 +160,20 @@ function statusOf(body: unknown, fallback: string): string {
 export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudProvider {
   const fetcher: FetchLike = deps.fetch ?? ((input, init) => fetch(input, init));
 
+  /**
+   * The signed-in token, only while it is still this client's account: after a switch (even one while the
+   * token was read) a call never goes out with another account's token, so it can't start, spend or drive there.
+   */
+  async function accountToken(): Promise<string> {
+    const token = await deps.accessToken();
+    // Signed out is a state the person fixes, not a defect.
+    if (!token) throw markExpected(new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401), "user");
+    if (deps.signedInAccount && deps.signedInAccount() !== deps.account) {
+      throw markExpected(new CloudProviderError("The ADE account changed. Try again.", "no_account", 409), "user");
+    }
+    return token;
+  }
+
   async function request(
     method: string,
     path: string,
@@ -163,9 +181,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
   ): Promise<unknown> {
     const base = deps.baseUrl()?.replace(/\/+$/, "");
     if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
-    const token = await deps.accessToken();
-    // Signed out is a state the person fixes, not a defect.
-    if (!token) throw markExpected(new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401), "user");
+    const token = await accountToken();
     // Cached after the first read: one OS probe per process. Not on the access
     // check, which every signed-in account polls: the id goes only to an
     // account ADE Cloud lets in.
@@ -558,7 +574,8 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     },
 
     async phoneStart(input): Promise<CloudPhoneStart> {
-      return await request("POST", CLOUD_PATHS.phone, { body: { ...(input.device ? { device: input.device } : {}), ...(input.attach ? { attach: true } : {}) } }) as CloudPhoneStart;
+      // `providers`: the phones this brain can drive; a server picks Revyl only for a brain that names it.
+      return await request("POST", CLOUD_PATHS.phone, { body: { ...(input.device ? { device: input.device } : {}), ...(input.attach ? { attach: true } : {}), ...(input.needs?.length ? { needs: input.needs } : {}), providers: CLOUD_PHONE_PROVIDERS } }) as CloudPhoneStart;
     },
 
     async phoneView(input): Promise<CloudPhoneView> {
@@ -568,6 +585,29 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     async phoneStop(): Promise<{ stopped: boolean }> {
       const answer = record(await request("DELETE", CLOUD_PATHS.phone));
       return { stopped: answer?.stopped === true };
+    },
+
+    async phoneCall(input: CloudPhoneCallRequest, options?: { timeoutMs?: number }): Promise<{ status: number; type: string | null; body: Buffer }> {
+      const base = deps.baseUrl()?.replace(/\/+$/, "");
+      if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
+      const token = await accountToken();
+      let response: Response;
+      try {
+        response = await fetcher(`${base}${CLOUD_PATHS.phoneCall}`, {
+          method: "POST",
+          headers: { accept: "*/*", authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify(input),
+          signal: AbortSignal.timeout(options?.timeoutMs ?? 150_000),
+          redirect: "error",
+        });
+        // Bytes as they are: a screenshot's PNG, a recording's video, or JSON.
+        return { status: response.status, type: response.headers.get("content-type"), body: Buffer.from(await response.arrayBuffer()) };
+      } catch (error) {
+        throw markExpected(
+          new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0),
+          "network",
+        );
+      }
     },
   };
 }

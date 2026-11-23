@@ -1,5 +1,5 @@
 import { ArrowUpRight, Check, Smartphone } from "lucide-react";
-import { ADS_FREE_PLAN_SENTENCE, CLOUD_PHONE_ON_WEBSITE, CLOUD_SMALL_UNLIMITED_SENTENCE, PRICING_PLANS, formatCount } from "../../lib/cloudPricing";
+import { ADS_FREE_PLAN_SENTENCE, CLOUD_SMALL_UNLIMITED_SENTENCE, PRICING_PLANS, formatCount } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
 import { MARKETING_CTA_POSITIONS } from "../../lib/marketingAnalytics";
 import { PLAN_CTAS, planHref } from "../../lib/planLinks";
@@ -34,11 +34,9 @@ export function CloudSection() {
         <p className="mt-5 text-[13px] leading-relaxed text-white/45">{ADS_FREE_PLAN_SENTENCE}</p>
         <p className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-[14px] text-white/55">
           <span className="text-white/80">Coming soon</span>
-          {CLOUD_PHONE_ON_WEBSITE ? (
-            <span className="inline-flex items-center gap-2">
-              <Smartphone className="h-4 w-4" /> iOS Simulator in the cloud
-            </span>
-          ) : null}
+          <span className="inline-flex items-center gap-2">
+            <Smartphone className="h-4 w-4" /> iOS Simulator in the cloud
+          </span>
           <span className="inline-flex items-center gap-2">
             <AppleMark className="h-4 w-4" /> Mac computers in the cloud
           </span>
@@ -81,6 +79,7 @@ function Plans() {
               <span className="font-mono text-white tabular-nums">{formatCount(plan.hours)}</span> hours for bigger ones
             </p>
             <p className="mt-0.5 text-[14px] text-white/70">{plan.adSupported ? "Ad-supported" : "No ads"}</p>
+            <p className="mt-0.5 text-[14px] text-white/45">iOS Simulator: coming soon</p>
             {free && (
               <p className="mt-3 inline-flex items-center gap-1.5 text-[13px] text-[#ffc861]">
                 <Check className="h-3.5 w-3.5" strokeWidth={2.5} /> No credit card needed
