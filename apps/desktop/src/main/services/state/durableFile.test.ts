@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isMainThread } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { injectFsFault } from "../../../test/faultInjection";
 import {
@@ -177,7 +178,8 @@ describe("durableFile", () => {
       expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
     });
 
-    it.skipIf(process.platform === "win32")("keeps a requested mode even when the umask would narrow it", () => {
+    // The umask setter throws in a Vitest worker thread (ERR_WORKER_UNSUPPORTED_OPERATION).
+    it.skipIf(process.platform === "win32" || !isMainThread)("keeps a requested mode even when the umask would narrow it", () => {
       // The open's mode passes through the umask: a 0o400 umask turns an open
       // 0o600 into a write-only file, so the descriptor needs the chmod too.
       const previous = process.umask(0o400);

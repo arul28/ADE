@@ -293,7 +293,9 @@ describe("writeGlobalState", () => {
     writeGlobalState(filePath, state);
 
     expect(readGlobalState(filePath)).toEqual(state);
-    expect(fs.readdirSync(dir).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+    // The shared writer's temp shape is `.name.tmp-<pid>-<hex>`, so assert the
+    // directory holds only the state file instead of matching a suffix.
+    expect(fs.readdirSync(dir).filter((entry) => entry !== path.basename(filePath))).toEqual([]);
   });
 });
 

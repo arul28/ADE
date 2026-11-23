@@ -856,7 +856,13 @@ function writeFileByDescriptor(
   const mode = typeof options === "object" && options != null && typeof options.mode === "number"
     ? options.mode
     : 0o666;
-  const fd = openWriteNoFollow(filePath, nonAsarFs.constants.O_WRONLY | nonAsarFs.constants.O_CREAT | nonAsarFs.constants.O_TRUNC, mode);
+  // The kept mode goes to the open too: an empty temp must never be readable
+  // by others, not even between create and the fchmod below.
+  const fd = openWriteNoFollow(
+    filePath,
+    nonAsarFs.constants.O_WRONLY | nonAsarFs.constants.O_CREAT | nonAsarFs.constants.O_TRUNC,
+    exactMode ?? mode,
+  );
   try {
     // The open's mode passes through the umask; a kept mode must come out
     // exactly as it was, and before any bytes land so a secret file is never
