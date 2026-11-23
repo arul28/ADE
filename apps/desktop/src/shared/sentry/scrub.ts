@@ -59,9 +59,22 @@ const RELAY_KEY_PATH = /\/(host|connect|prewarm|machines)\/[^\s/?#"']+/g;
 const RELAY_HOOK_PATH = /\/hooks\/(?!(?:register|events|ack|subscribe)(?:[/?#\s"']|$))[^\s/?#"']+\/[^\s/?#"']+/g;
 const URL_WITH_PATH = /\b(?:https?|wss?):\/\/[^\s"'<>]+/gi;
 
+/**
+ * ADE's loopback proof/media server mints a 32-byte token as the first path
+ * segment — 43 base64url characters — and that token is the whole credential.
+ * Anchoring at a path or URL start and the exact length keeps 40-character
+ * commit SHAs and 32/40/64-character machine keys out of the rule.
+ */
+const MEDIA_TOKEN_PATH = /^\/([A-Za-z0-9_-]{43})(?=[/?#]|$)/;
+const MEDIA_TOKEN_PATH_IN_URL = /^([a-z][a-z0-9+.-]*:\/\/[^/?#]+)\/([A-Za-z0-9_-]{43})(?=[/?#]|$)/i;
+
 /** Redacts relay path secrets in a bare path (`/host/<key>`), as a route or `url.path` holds it. */
 export function scrubRelayPath(input: string): string {
-  return input.replace(RELAY_KEY_PATH, "/$1/[key]").replace(RELAY_HOOK_PATH, "/hooks/[id]/[token]");
+  return input
+    .replace(RELAY_KEY_PATH, "/$1/[key]")
+    .replace(RELAY_HOOK_PATH, "/hooks/[id]/[token]")
+    .replace(MEDIA_TOKEN_PATH, "/[token]")
+    .replace(MEDIA_TOKEN_PATH_IN_URL, "$1/[token]");
 }
 
 /**

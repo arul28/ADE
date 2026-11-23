@@ -1349,7 +1349,7 @@ async function routeRequest(request: Request, env: PushRelayEnv): Promise<Respon
   const ipLimit = positiveIntEnv(env.IP_RATE_LIMIT_PER_MIN, DEFAULT_IP_RATE_LIMIT_PER_MIN);
   const ipGate = checkIpRateInMemory(ip, ipLimit, RATE_WINDOW_SECONDS);
   if (!ipGate.allowed) {
-    logEvent("rate_limited", { scope: "ip", ip, count: ipGate.count, limit: ipLimit, path: url.pathname });
+    logEvent("rate_limited", { scope: "ip", ip, count: ipGate.count, limit: ipLimit, path: scrubString(url.pathname) });
     return withAllowedAccountCors(rateLimitedResponse());
   }
 
