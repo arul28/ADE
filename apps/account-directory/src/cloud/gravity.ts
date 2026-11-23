@@ -115,12 +115,30 @@ export async function gravitySwitches(env: GravityEnv, settings?: CloudSettings)
   return { mode, live: mode !== "off" && read.gravity_live === "on" && env.GRAVITY_LIVE?.trim() === "1" };
 }
 
+async function isTester(env: GravityEnv, userId: string): Promise<boolean> {
+  return Boolean(await env.DB.prepare("select 1 as listed from cloud_sponsored_testers where user_id = ?").bind(userId).first<{ listed: number }>());
+}
+
 /** Whether the switch reaches this account: `all`, or `testers` and it is one. Plan and country aside. */
 async function switchReaches(env: GravityEnv, account: AccountRow, mode: Mode): Promise<boolean> {
   if (mode === "off") return false;
-  if (mode === "all") return true;
-  const row = await env.DB.prepare("select 1 as listed from cloud_sponsored_testers where user_id = ?").bind(account.user_id).first<{ listed: number }>();
-  return Boolean(row);
+  return mode === "all" || isTester(env, account.user_id);
+}
+
+/** Whether a country is outside `GRAVITY_COUNTRIES`. An unknown one (no Cloudflare data) is inside. */
+function outsideCountryList(env: GravityEnv, country: string | null): boolean {
+  return Boolean(country) && !countriesOf(env).includes(country!);
+}
+
+/**
+ * Whether the caller is outside the countries cards are shown in. While ads
+ * are Gravity's test ads, a tester is inside from anywhere: test ads pay
+ * nobody, and the owner tests from wherever they are. (The Index has no test
+ * mode, so it checks the list itself.)
+ */
+async function outsideCountries(env: GravityEnv, account: AccountRow, country: string | null, switches: Switches): Promise<boolean> {
+  if (!outsideCountryList(env, country)) return false;
+  return switches.live || !(await isTester(env, account.user_id));
 }
 
 function countriesOf(env: GravityEnv): string[] {
@@ -143,11 +161,11 @@ export function requestCountry(request: Request): string | null {
  * request's; an unknown one (no Cloudflare data) passes, so local runs work.
  */
 async function blockedReason(env: GravityEnv, account: AccountRow, country: string | null, switches?: Switches): Promise<CloudSponsoredNoAdReason | null> {
-  const { mode } = switches ?? (await gravitySwitches(env));
-  if (!(await switchReaches(env, account, mode))) return "off";
+  const read = switches ?? (await gravitySwitches(env));
+  if (!(await switchReaches(env, account, read.mode))) return "off";
   // Paid plans have no ads, a `past_due` one included; the test tool's plan counts as the plan.
   if (shownPlanIdOf(account) !== "free") return "plan";
-  if (country && !countriesOf(env).includes(country)) return "country";
+  if (await outsideCountries(env, account, country, read)) return "country";
   return null;
 }
 
@@ -167,9 +185,9 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
   const reason = await blockedReason(env, account, country, switches);
   if (reason === "off") return undefined;
   const consent = await readConsent(env, account.user_id);
-  const answer = consent && settings.free_small_needs_ads === "on" && consent.consent === "declined"
-    && consent.decided_at < (await settingChangedAt(env, "free_small_needs_ads") ?? 0)
-    // A no from before Small needed cards was a different deal: asked again.
+  const answer = consent && consent.consent === "declined"
+    && consent.decided_at < (await settingChangedAt(env, "gravity_ads") ?? 0)
+    // A no from before the ad switch last changed (when Small began to need cards) is asked again.
     ? null
     : consent?.consent ?? null;
   return {
@@ -177,23 +195,23 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
     consent: answer,
     test: !switches.live,
     // Only Free (or acting as it) has the deal; a paid account's Small is unlimited either way.
-    ...(settings.free_small_needs_ads === "on" && shownPlanIdOf(account) === "free" ? { smallNeedsCards: true } : {}),
+    ...(shownPlanIdOf(account) === "free" ? { smallNeedsCards: true } : {}),
   };
 }
 
-/* ---- Free's Small computers (the `free_small_needs_ads` setting) ---- */
+/* ---- Free's Small computers: unlimited with sponsored cards ---- */
 
 /**
  * Whether the account's Small computers use no hours now. Always, unless the
- * `free_small_needs_ads` setting is on, the account is on Free (or acts as
- * it, `shownPlanIdOf`) and the ad switch reaches it: then only while it said
- * yes to sponsored cards. An account never asked (outside Gravity's
- * countries, or it hasn't opened a cloud chat yet) uses hours on Small too.
+ * account is on Free (or acts as it, `shownPlanIdOf`) and the ad switch
+ * reaches it: then only while it said yes to sponsored cards. One switch is
+ * the deal: where ads reach Free, Small is unlimited with cards and uses
+ * hours without; ads off is Small unlimited for everyone. An account never
+ * asked (outside Gravity's countries, or no cloud chat yet) uses hours too.
  */
 export async function smallUsesNoHours(env: GravityEnv, account: AccountRow, settings?: CloudSettings): Promise<boolean> {
-  const read = settings ?? (await readCloudSettings(env));
-  if (read.free_small_needs_ads !== "on" || shownPlanIdOf(account) !== "free") return true;
-  const { mode } = await gravitySwitches(env, read);
+  if (shownPlanIdOf(account) !== "free") return true;
+  const { mode } = await gravitySwitches(env, settings ?? (await readCloudSettings(env)));
   if (!(await switchReaches(env, account, mode))) return true;
   return (await readConsent(env, account.user_id))?.consent === "granted";
 }
@@ -250,7 +268,6 @@ const SMALL_SYNC_BUDGET_MS = 20_000;
 export async function syncAllSmallRates(env: GravityEnv, now: number, { force = false }: { force?: boolean } = {}): Promise<number> {
   const settings = await readCloudSettings(env);
   const { mode } = await gravitySwitches(env, settings);
-  const ruleOn = settings.free_small_needs_ads === "on" ? 1 : 0;
   const started = Date.now();
   let changed = 0;
   for (;;) {
@@ -258,13 +275,12 @@ export async function syncAllSmallRates(env: GravityEnv, now: number, { force = 
       select distinct c.user_id from cloud_computers c join cloud_accounts a on a.user_id = c.user_id
       where c.deleted_at is null and c.type = 'default' and c.cpu = ? and c.memory_gb = ?
         and c.multiplier_milli != (case when
-          ? = 0
-          or coalesce(case when a.test_plan in ('free', 'plus', 'pro', 'max') then a.test_plan end, case when a.plan = 'paid' then 'paid' else 'free' end) != 'free'
+          coalesce(case when a.test_plan in ('free', 'plus', 'pro', 'max') then a.test_plan end, case when a.plan = 'paid' then 'paid' else 'free' end) != 'free'
           or not (? = 'all' or (? = 'testers' and exists (select 1 from cloud_sponsored_testers t where t.user_id = a.user_id)))
           or exists (select 1 from cloud_sponsored_consent s where s.user_id = a.user_id and s.consent = 'granted')
         then 0 else ? end)
       limit ?
-    `).bind(SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, ruleOn, mode, mode, SMALL_NO_CARDS_RATE_MILLI, SMALL_SYNC_PAGE).all<{ user_id: string }>();
+    `).bind(SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, mode, mode, SMALL_NO_CARDS_RATE_MILLI, SMALL_SYNC_PAGE).all<{ user_id: string }>();
     const page = users.results ?? [];
     let pageChanged = 0;
     for (const { user_id: userId } of page) {
@@ -434,11 +450,12 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   const consent = CLOUD_SPONSORED_CONSENTS.find((entry) => entry === body.consent);
   if (!consent) return badRequest("Say granted or declined.");
   const account = await loadAccount(env, userId, now);
-  if ((await blockedReason(env, account, null)) === "off") return notFound();
-  // A yes keeps Free's Small unlimited (`free_small_needs_ads`), for cards
-  // Gravity shows only in its countries: from anywhere else it is refused.
+  const switches = await gravitySwitches(env);
+  if ((await blockedReason(env, account, null, switches)) === "off") return notFound();
+  // A yes keeps Free's Small unlimited, for cards Gravity shows only in its
+  // countries: from anywhere else it is refused (a tester's test ads aside).
   const country = requestCountry(request);
-  if (consent === "granted" && country && !countriesOf(env).includes(country)) {
+  if (consent === "granted" && (await outsideCountries(env, account, country, switches))) {
     return fail("unavailable", "Sponsored cards aren't shown in your country yet, so they can't be turned on.", 403);
   }
   let emailHash: string | null = null;
@@ -457,7 +474,7 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   // A no keeps nothing of where the person watched from: their address and device go too.
   if (consent === "declined") await env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(userId).run();
   logCloud("cloud.sponsored.consent", { consent });
-  // Small's hours follow the answer at once (`free_small_needs_ads`).
+  // Small's hours follow the answer at once (`smallUsesNoHours`).
   await syncSmallRates(env, account, now);
   const state = await sponsoredAccountState(env, account, country);
   return json(state ?? { ads: false, consent, test: !(await gravitySwitches(env)).live });
@@ -571,6 +588,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   if (!copy || copy.parent_chat_id) return none("not_cloud");
   // One request per finished reply: a second ask (a reload, a second screen) reads the first answer.
   const stored = await readTurn(env, userId, chatId, turnId, now);
+  // A real ad saved before ads went back to test ads still keeps to the countries, tester or not.
+  if (stored?.ad && !stored.ad.test && outsideCountryList(env, requestCountry(request))) return none("country");
   if (stored) return json(stored);
   const messages = readMessages(body.messages, 2);
   if (!messages.length) return none("no_fill");
@@ -687,8 +706,10 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   const switches = await gravitySwitches(env);
   const blocked = await blockedReason(env, account, viewer?.country ?? null, switches);
   if (blocked) return none(blocked);
-  // Gravity's Index has no test mode, so before go-live only the testers' searches reach it.
+  // Gravity's Index has no test mode, so before go-live only the testers' searches reach it,
+  // and a tester abroad gets none: its picks are real recommendations.
   if (!switches.live && switches.mode !== "testers") return none("off");
+  if (outsideCountryList(env, viewer?.country ?? null)) return none("country");
   const consent = await readConsent(env, userId);
   if (consent?.consent !== "granted") return none("consent");
   if (!viewer?.ip || now - viewer.seen_at > SPONSORED_VIEWER_FRESH_MS) return none("nobody_watching");

@@ -41,19 +41,13 @@ export { CLOUD_HOUR_UNIT_SENTENCE, CLOUD_SMALL_FAIR_USE_SENTENCE, CLOUD_SMALL_UN
 export const CLOUD_PHONE_ON_WEBSITE = false;
 
 /**
- * The website's privacy policy and Terms sections about Gravity's sponsored
- * suggestions (`PrivacyPage`, `TermsPage`) show only once ads are live.
+ * Ads are on for everyone. The website's privacy policy and Terms sections
+ * about Gravity's sponsored suggestions (`PrivacyPage`, `TermsPage`) show, and
+ * the pricing page's Free card says Small is unlimited only with sponsored
+ * cards on (the server ties that rule to the ad switch).
  */
-// Flip to true in the same release that turns on the server's GRAVITY_ADS switch.
+// Flip to true in the same release that sets the server's `gravity_ads` switch to `all`.
 export const GRAVITY_ADS_ON_WEBSITE = false;
-
-/**
- * Free's Small computers are unlimited only while sponsored cards are on
- * (the server's `free_small_needs_ads` switch). With this on, the pricing
- * page's Free card says so, with a line on what happens without them.
- */
-// Flip to true in the release that turns on the server's `free_small_needs_ads` switch for everyone.
-export const FREE_SMALL_NEEDS_ADS_ON_WEBSITE = false;
 
 /** The Free plan's ad line, on the pricing page and the home page. */
 export const ADS_FREE_PLAN_SENTENCE =

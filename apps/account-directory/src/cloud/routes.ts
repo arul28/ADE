@@ -436,7 +436,7 @@ async function getAccountContext(env: CloudEnv, userId: string, now: number): Pr
   const account = await loadAccount(env, userId, now);
   const computers = await listComputers(env, userId);
   const liveUsed = liveUsedMilli(account, computers, now);
-  // A Small that uses hours on Free (no sponsored cards, `free_small_needs_ads`) stops at 0 like any other size.
+  // A Small that uses hours on Free (no sponsored cards, `smallUsesNoHours`) stops at 0 like any other size.
   const smallFree = await smallUsesNoHours(env, account);
   return {
     account,
@@ -530,7 +530,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
   const pendingId = newPendingId();
   const cutoff = args.now - PENDING_TIMEOUT_MS;
   const count = accountComputerCountSql("?", { moveFrom: args.moveFromInstanceId, cutoff });
-  // Free's Small uses hours while the account shows no sponsored cards (`free_small_needs_ads`).
+  // Free's Small uses hours while the account shows no sponsored cards (`gravity.ts` `smallUsesNoHours`).
   const rate = args.size.tier === "small" ? rateMilliFor(args.size, await smallUsesNoHours(env, account)) : args.size.multiplierMilli;
   const result = await env.DB.prepare(`
     insert into cloud_computers (instance_id, user_id, request_id, type, cpu, memory_gb, disk_gb, multiplier_milli, template_version, name, status, status_changed_at, last_awake_at, created_at, moving_from, channel,
