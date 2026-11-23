@@ -4559,6 +4559,9 @@ final class SyncService: ObservableObject {
   /// roster held the main thread for seconds (ADE-IOS-32). The same timestamps
   /// come back on the next refresh, so a lookup answers almost all of them.
   private var parsedIso8601Cache: [String: Date?] = [:]
+  /// The generation before the last rollover: a scan wider than one
+  /// generation still finds the dates it parsed last time here.
+  private var previousParsedIso8601Cache: [String: Date?] = [:]
   @Published private(set) var workspaceSnapshotRevision = 0
   private var accountConnectSuccessClearTask: Task<Void, Never>?
   // All-projects chat roster (mobile hub). `rosterProjects` is the machine-wide
@@ -27653,9 +27656,19 @@ extension SyncService {
   private func parseIso8601(_ raw: String) -> Date? {
     guard !raw.isEmpty else { return nil }
     if let cached = parsedIso8601Cache[raw] { return cached }
-    let date = iso8601WithFractionalSecondsFormatter.date(from: raw) ?? iso8601Formatter.date(from: raw)
-    // Bounded: a long session sees new timestamps all day.
-    if parsedIso8601Cache.count >= 8192 { parsedIso8601Cache.removeAll(keepingCapacity: true) }
+    let date: Date?
+    if let previous = previousParsedIso8601Cache[raw] {
+      date = previous
+    } else {
+      date = iso8601WithFractionalSecondsFormatter.date(from: raw) ?? iso8601Formatter.date(from: raw)
+    }
+    // Bounded at two generations of 8192: a long session sees new timestamps
+    // all day. Rolling over instead of clearing keeps a roster wider than one
+    // generation from re-parsing every date on each scan.
+    if parsedIso8601Cache.count >= 8192 {
+      previousParsedIso8601Cache = parsedIso8601Cache
+      parsedIso8601Cache.removeAll(keepingCapacity: true)
+    }
     parsedIso8601Cache[raw] = .some(date)
     return date
   }

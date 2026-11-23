@@ -16,8 +16,9 @@ import CoreGraphics
 ///
 /// A held re-ask may still have been a real change (a thumbnail landing in
 /// the same turn), so the turn's end reports it and the cell asks once more,
-/// outside the nested passes. That happens once per configuration, so a row
-/// that never settles cannot keep asking every turn.
+/// outside the nested passes. Once that has happened, a held re-ask asks
+/// again only after a turn that measured without hitting the cap (the row
+/// settled), so a row that never settles cannot keep asking every turn.
 struct WorkChatTranscriptCellTurnMeasures {
   private static let maxPerTurn = 3
 
@@ -57,11 +58,17 @@ struct WorkChatTranscriptCellTurnMeasures {
 
   /// Ends the turn. True when a re-ask was held and the cell should ask once more.
   mutating func endTurn() -> Bool {
+    let measured = count > 0
     count = 0
     height = nil
-    let remeasure = heldThisTurn && !remeasuredSinceConfigure
-    heldThisTurn = false
-    if remeasure { remeasuredSinceConfigure = true }
-    return remeasure
+    defer { heldThisTurn = false }
+    guard heldThisTurn else {
+      // A turn that measured within the cap settled: a later change may ask again.
+      if measured { remeasuredSinceConfigure = false }
+      return false
+    }
+    guard !remeasuredSinceConfigure else { return false }
+    remeasuredSinceConfigure = true
+    return true
   }
 }
