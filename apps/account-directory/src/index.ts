@@ -230,9 +230,9 @@ export default Sentry.withSentry(sentryOptions, {
         // The day-2 getting-started email: minute 4 of every ten, up to 20
         // due rows. One indexed read when none is due; nothing on other ticks.
         settle("welcome_emails", () => runWelcomeEmails(env, event.scheduledTime)),
-        // Sponsored cards (`cloud/gravity.ts`): minute 23 of each hour deletes
-        // where people watched from (IP, user agent, device) and reply answers
-        // a day old, for every account. Nothing on other ticks.
+        // Sponsored cards (`cloud/gravity.ts`): minutes 23 and 53 delete where
+        // people watched from (IP, user agent, device) and reply answers a day
+        // old, for every account. Nothing on other ticks.
         settle("cloud_sponsored_prune", () => pruneSponsored(env, event.scheduledTime)),
         // The server launcher's records past their week (and a draft's day),
         // with their files. One indexed read when none is due.

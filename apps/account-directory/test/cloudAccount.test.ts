@@ -5075,13 +5075,13 @@ describe("sponsored cards", () => {
     expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "declined", test: true });
   });
 
-  it("forgets where people watched from a day after their last look, every hour, for every account", async () => {
+  it("forgets where people watched from a day after their last look, twice an hour, for every account", async () => {
     const DAY = 24 * 60 * 60_000;
     const viewer = (user: string, instance: string, seenAt: number) => harness.insert("cloud_sponsored_viewers", { user_id: user, instance_id: instance, ip: "203.0.113.7", ua: "ADE/1", device_type: "desktop", os: "macos", seen_at: seenAt });
     viewer(OWNER, INSTANCE, NOW - DAY - 60_000);
     viewer(OTHER, "other00001", NOW - DAY - 60_000);
     viewer(OWNER, "recent0001", NOW);
-    // NOW is 12:00 UTC. Only minute 23 of an hour prunes; the rest of the hour makes no query.
+    // NOW is 12:00 UTC. Only minutes 23 and 53 prune; the rest of the hour makes no query.
     await pruneSponsored(harness.env as never, NOW + 22 * 60_000);
     expect(harness.rows("select instance_id from cloud_sponsored_viewers")).toHaveLength(3);
     await pruneSponsored(harness.env as never, NOW + 23 * 60_000);

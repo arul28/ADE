@@ -600,14 +600,15 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
 /* ---- The owner's report ---- */
 
 /**
- * The hourly clean-up (minute 23 of each hour, every account, whatever the
+ * The clean-up, twice an hour (minutes 23 and 53, every account, whatever the
  * switch): a reply's answer older than a day, and where a person watched from
  * (IP address, user agent, device, OS) once that is a day old, a computer
- * since deleted included. So nothing outlives a day by more than an hour.
- * Every other tick makes no query.
+ * since deleted included. Nothing outlives a day by more than 30 minutes, or
+ * an hour when one run fails. Every other tick makes no query.
  */
 export async function pruneSponsored(env: GravityEnv, scheduledTime: number): Promise<void> {
-  if (new Date(scheduledTime).getUTCMinutes() !== 23) return;
+  const minute = new Date(scheduledTime).getUTCMinutes();
+  if (minute !== 23 && minute !== 53) return;
   const now = scheduledTime;
   await env.DB.batch([
     env.DB.prepare("delete from cloud_sponsored_turns where created_at < ?").bind(now - TURN_TTL_MS),

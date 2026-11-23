@@ -710,8 +710,8 @@ card, whatever the plan.
   Gravity's live allowance (`GRAVITY_DAILY_LIMIT`), each taken in one
   conditional write before the request (`cloud_sponsored_days`). The daily cost
   report prints the counts and Gravity's revenue against the day's free-plan
-  cost. Minute 23 of every hour prunes answers and viewer rows (IP, user
-  agent, device) older than a day, for every account, whatever the switch.
+  cost. Minutes 23 and 53 of every hour prune answers and viewer rows (IP,
+  user agent, device) older than a day, for every account, whatever the switch.
 - **iPhone tracking (ATT):** the iPhone app shows Apple's App Tracking
   Transparency prompt once, right before its first card ask, and sends its
   answer as `device.tracking` (`seen` too, kept on the viewer row, migration

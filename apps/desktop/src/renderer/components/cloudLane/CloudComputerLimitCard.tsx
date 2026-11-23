@@ -182,7 +182,9 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
             <p className="adecl-limit-what">
               {deleteLane.hasLane === false
                 ? "This computer has no lane, so only the computer goes."
-                : "The lane, its computer and its chats are deleted. ADE asks first if any work isn't on GitHub."}
+                : keepChats
+                  ? "The lane and its computer are deleted; its chats stay in Work. ADE asks first if any work isn't on GitHub."
+                  : "The lane, its computer and its chats are deleted. ADE asks first if any work isn't on GitHub."}
             </p>
             {deleteLane.hasLane !== false ? <KeepChatsCheckbox checked={keepChats} onChange={setKeepChats} /> : null}
           </>
@@ -236,7 +238,7 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
         <>
           <div className="adecl-limit-ways" data-count={next ? 3 : 2}>
             <WayButton way="free" picked={way} onPick={setWay} icon={<Recycle size={14} />} title="Free up a computer" line="The lane and its chats stay" />
-            <WayButton way="delete" picked={way} onPick={setWay} icon={<Trash size={14} />} title="Delete lane and computer" line="Its chats go too" />
+            <WayButton way="delete" picked={way} onPick={setWay} icon={<Trash size={14} />} title="Delete lane and computer" line="Its chats go too, unless you keep them" />
             {next ? (
               <WayButton
                 way="move"

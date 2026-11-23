@@ -367,6 +367,9 @@ final class CloudSponsoredStore: ObservableObject {
   /// The tracking answer each computer's viewer row last got: a changed
   /// answer (tracking turned off in Settings) is said at once, not after the interval.
   private var lastSeenTracking: [String: String] = [:]
+  /// The seen request in flight per computer: the next one waits for it, so
+  /// an older answer can never land after a newer one.
+  private var seenInFlight: [String: Task<Void, Never>] = [:]
   /// Account changes this run: an ask that spans one publishes nothing.
   private var resetCount = 0
   private var observers: [NSObjectProtocol] = []
@@ -490,6 +493,17 @@ final class CloudSponsoredStore: ObservableObject {
     if let last = lastSeenAt[instanceId], now.timeIntervalSince(last) < Self.seenEvery, lastSeenTracking[instanceId] == tracking { return }
     lastSeenAt[instanceId] = now
     lastSeenTracking[instanceId] = tracking
+    let previous = seenInFlight[instanceId]
+    let send = Task { @MainActor [self] in
+      await previous?.value
+      await sendSeen(instanceId: instanceId, at: now)
+    }
+    seenInFlight[instanceId] = send
+    await send.value
+    if seenInFlight[instanceId] == send { seenInFlight[instanceId] = nil }
+  }
+
+  private func sendSeen(instanceId: String, at now: Date) async {
     guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
       lastSeenAt[instanceId] = nil
       lastSeenTracking[instanceId] = nil
@@ -528,6 +542,7 @@ final class CloudSponsoredStore: ObservableObject {
     holder = nil
     lastSeenAt = [:]
     lastSeenTracking = [:]
+    seenInFlight = [:]
   }
 
   #if DEBUG
