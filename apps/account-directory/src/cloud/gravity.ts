@@ -588,6 +588,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   if (!copy || copy.parent_chat_id) return none("not_cloud");
   // One request per finished reply: a second ask (a reload, a second screen) reads the first answer.
   const stored = await readTurn(env, userId, chatId, turnId, now);
+  // A real ad saved before ads went back to test ads still keeps to the countries, tester or not.
+  if (stored?.ad && !stored.ad.test && outsideCountryList(env, requestCountry(request))) return none("country");
   if (stored) return json(stored);
   const messages = readMessages(body.messages, 2);
   if (!messages.length) return none("no_fill");

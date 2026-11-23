@@ -547,7 +547,9 @@ function SizesPanel() {
             ) : (
               <div className="relative mt-5 rounded-[10px] bg-[rgba(255,210,122,0.08)] px-3 py-2">
                 <p className="font-display text-[26px] leading-none text-[color:var(--color-lamp)]">Unlimited</p>
-                <p className="mt-1 text-[12.5px] text-white/55">Never uses your hours, on every plan</p>
+                <p className="mt-1 text-[12.5px] text-white/55">
+                  {GRAVITY_ADS_ON_WEBSITE ? "Never uses your hours on paid plans, or on Free with sponsored cards" : "Never uses your hours, on every plan"}
+                </p>
               </div>
             )}
             <div className="relative mt-5 flex gap-1 text-[12.5px] text-white/75">
@@ -609,7 +611,7 @@ function ExtraHoursCard() {
           ))}
         </ul>
       )}
-      <p className="mt-5 text-[13.5px] text-white/45">On Free, bigger computers pause until next month instead. Small computers keep working.</p>
+      <p className="mt-5 text-[13.5px] text-white/45">On Free, bigger computers pause until next month instead. Small computers keep working{GRAVITY_ADS_ON_WEBSITE ? " with sponsored cards" : ""}.</p>
     </DetailCard>
   );
 }
@@ -723,7 +725,7 @@ function FaqSection() {
           </FaqItem>
           <FaqItem question="What happens when my hours run out?">
             On Free, your {listNames(HOURLY_SIZES.map((size) => size.label))} computers stop until next month, or until
-            you pick a paid plan; {SMALL_SIZE.label} computers keep working. On a paid plan, turn on extra hours in
+            you pick a paid plan; {SMALL_SIZE.label} computers keep working{GRAVITY_ADS_ON_WEBSITE ? " with sponsored cards" : ""}. On a paid plan, turn on extra hours in
             Settings and your agents keep working: each extra hour costs {extraHourList()}. With extra hours off, work
             on the bigger sizes stops at your plan's hours.
           </FaqItem>
