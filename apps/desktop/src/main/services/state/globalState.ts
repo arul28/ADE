@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import type {
   AppWelcomeVideoState,
   AutoUpdatePreferences,
@@ -21,6 +20,7 @@ import { projectRefStateKey } from "../../../shared/projectIdentity";
 import type { SavedWindowRepositoryTabs } from "../../../shared/windowRepositoryTabs";
 import { sanitizePortableGitRemote } from "../../../shared/crossMachineHandoff";
 import type { MainWindowState } from "./mainWindowState";
+import { writeFileAtomic } from "./durableFile";
 
 export type RecentProjectRemote = RecentProjectRemoteRef;
 
@@ -210,8 +210,6 @@ export function readGlobalStateForUpdate(filePath: string): GlobalState {
 }
 
 export function writeGlobalState(filePath: string, state: GlobalState): void {
-  let tempPath: string | null = null;
-  let fd: number | null = null;
   try {
     const serialized = `${JSON.stringify(state, null, 2)}\n`;
     // The file already holds this state (the window restores the tabs it
@@ -221,33 +219,12 @@ export function writeGlobalState(filePath: string, state: GlobalState): void {
     } catch {
       // Missing or unreadable: write it.
     }
-    const dir = path.dirname(filePath);
-    fs.mkdirSync(dir, { recursive: true });
-    tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
-    fd = fs.openSync(tempPath, "w");
-    fs.writeFileSync(fd, serialized, "utf8");
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fd = null;
-    fs.renameSync(tempPath, filePath);
-    tempPath = null;
-    try {
-      const dirFd = fs.openSync(dir, "r");
-      try {
-        fs.fsyncSync(dirFd);
-      } finally {
-        fs.closeSync(dirFd);
-      }
-    } catch {
-      // Directory fsync is best effort across filesystems/platforms.
-    }
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    // One atomic writer for the whole app: it keeps the replaced file's
+    // permission bits (this hand-rolled save widened a 0o600 state file under
+    // the process umask) and syncs the temp file and its directory.
+    writeFileAtomic(filePath, serialized, { fsync: true });
   } catch {
-    if (fd != null) {
-      try { fs.closeSync(fd); } catch {}
-    }
-    if (tempPath) {
-      try { fs.unlinkSync(tempPath); } catch {}
-    }
     // Non-fatal; global state is a convenience.
   }
 }

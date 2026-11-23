@@ -911,6 +911,26 @@ describe("fileService", () => {
       service.writeWorkspaceText({ workspaceId: "workspace-1", path: "docs/notes.md", text: "# new\n" });
       expect(fs.readFileSync(path.join(rootPath, "docs", "notes.md"), "utf8")).toBe("# new\n");
 
+      // A replace is a new inode: an edited script keeps its executable bit
+      // and a .env keeps its owner-only bits. A new file keeps the default.
+      if (process.platform !== "win32") {
+        const script = path.join(rootPath, "docs", "script.sh");
+        fs.writeFileSync(script, "#!/bin/sh\n", "utf8");
+        fs.chmodSync(script, 0o755);
+        service.writeWorkspaceText({ workspaceId: "workspace-1", path: "docs/script.sh", text: "#!/bin/sh\necho hi\n" });
+        expect(fs.statSync(script).mode & 0o777).toBe(0o755);
+
+        const secret = path.join(rootPath, "docs", ".env");
+        fs.writeFileSync(secret, "A=1\n", "utf8");
+        fs.chmodSync(secret, 0o600);
+        service.writeWorkspaceText({ workspaceId: "workspace-1", path: "docs/.env", text: "A=2\n" });
+        expect(fs.statSync(secret).mode & 0o777).toBe(0o600);
+
+        const fresh = path.join(rootPath, "docs", "fresh.md");
+        service.writeWorkspaceText({ workspaceId: "workspace-1", path: "docs/fresh.md", text: "new\n" });
+        expect(fs.statSync(fresh).mode & 0o777).toBe(0o666 & ~process.umask());
+      }
+
       // Chunked upload: each chunk lands at the byte it names, the receipt
       // hashes the whole file, and a chunk at the wrong byte (a retry sent
       // twice) is refused instead of corrupting it.

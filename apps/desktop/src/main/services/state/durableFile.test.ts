@@ -177,6 +177,19 @@ describe("durableFile", () => {
       expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
     });
 
+    it.skipIf(process.platform === "win32")("keeps a requested mode even when the umask would narrow it", () => {
+      // The open's mode passes through the umask: a 0o400 umask turns an open
+      // 0o600 into a write-only file, so the descriptor needs the chmod too.
+      const previous = process.umask(0o400);
+      try {
+        writeFileAtomic(filePath, "secret", { mode: 0o600 });
+      } finally {
+        process.umask(previous);
+      }
+      expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
+      expect(tempLeftovers()).toEqual([]);
+    });
+
     it("never removes the destination before the replacement is in place", () => {
       // The pre-unlink some writers use as "the Windows fix" opens a window in
       // which the file simply does not exist, and a concurrent reader that
