@@ -22,6 +22,7 @@ import {
   normalizeAcpRpcError,
   normalizeAcpRpcId,
   normalizeAcpSessionNotification,
+  type AcpAvailableCommand,
   type AcpContentBlock,
   type AcpSessionConfigOption,
   type AcpSessionUpdate,
@@ -211,6 +212,16 @@ describe("dialect capability declarations", () => {
     // Grok corrupts binary reads proxied through the text file system, and ADE
     // does not serve file reads for any ACP provider today.
     expect(acpDialectFor(providerId).advertiseFsCapability).toBe(false);
+  });
+
+  it("shows Antigravity plugin commands and hides only logout", () => {
+    // ADE runs agy against the user's own ~/.gemini, so plugins installed for
+    // the Antigravity app load and their skills arrive as available commands.
+    const dialect = acpDialectFor("antigravity");
+    const command = (name: string): AcpAvailableCommand => ({ name, description: name });
+    expect(dialect.includeSlashCommand(command("gdocs"))).toBe(true);
+    expect(dialect.includeSlashCommand(command("antislop"))).toBe(true);
+    expect(dialect.includeSlashCommand(command("logout"))).toBe(false);
   });
 
   it("qwen owns one process per session because 0.24.0 has no session/close", () => {
@@ -1995,3 +2006,66 @@ describe("MCP injection", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // The run | degrade matrix
 // ─────────────────────────────────────────────────────────────────────────────
+
+describe("turn outcome resume", () => {
+  const resumeFailure = {
+    kind: "provider_error" as const,
+    message: "Requested entity was not found.",
+    code: "NOT_FOUND",
+    retryable: true,
+    resetAt: null,
+    resumeWith: "continue",
+  };
+
+  it("resends the resume prompt once and merges the turn's usage", async () => {
+    let checks = 0;
+    const dialect: AcpDialect = {
+      ...acpDialectFor("antigravity"),
+      turnOutcome: async () => async () => (++checks === 1 ? resumeFailure : null),
+    };
+    const harness = makeHarness(dialect);
+    const session = await withDeadline("open", harness.open());
+    const prompts: string[] = [];
+    harness.agent.on(ACP_METHOD.sessionPrompt, (params) => {
+      const blocks = (params as { prompt?: Array<{ type: string; text?: string }> }).prompt ?? [];
+      prompts.push(blocks.map((block) => (block.type === "text" ? block.text ?? "" : "")).join(""));
+      return { result: { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 2 } } };
+    });
+
+    const result = await withDeadline("turn", session.prompt({
+      turnId: "t1",
+      blocks: [textPromptBlock("go")],
+    }));
+
+    expect(prompts).toEqual(["go", "continue"]);
+    expect(result.failure).toBeNull();
+    expect(result.usage).toMatchObject({ inputTokens: 20, outputTokens: 4 });
+  });
+
+  it("fails the turn after one resume when the resumed prompt fails too", async () => {
+    let checks = 0;
+    const dialect: AcpDialect = {
+      ...acpDialectFor("antigravity"),
+      turnOutcome: async () => async () => (++checks <= 2 ? resumeFailure : null),
+    };
+    const harness = makeHarness(dialect);
+    const session = await withDeadline("open", harness.open());
+    let prompts = 0;
+    harness.agent.on(ACP_METHOD.sessionPrompt, () => {
+      prompts += 1;
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    const result = await withDeadline("turn", session.prompt({
+      turnId: "t1",
+      blocks: [textPromptBlock("go")],
+    }));
+
+    expect(prompts).toBe(2);
+    expect(result.failure).toMatchObject({
+      message: resumeFailure.message,
+      code: resumeFailure.code,
+      retryable: true,
+    });
+  });
+});

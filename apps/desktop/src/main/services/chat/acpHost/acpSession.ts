@@ -88,6 +88,7 @@ import {
   type AcpMcpServer,
   type AcpNewSessionResponse,
   type AcpPromptResponse,
+  type AcpPromptUsage,
   type AcpSessionConfigOption,
   type AcpStopReason,
 } from "./acpProtocolTypes";
@@ -684,9 +685,43 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
           publishSupervision(supervision.endTurn(turnId));
         }
 
-        const failure = outcomeCheck && !interrupted
+        let failure = outcomeCheck && !interrupted
           ? await outcomeCheck(response).catch(() => null)
           : null;
+        // One resume on the same native session. Antigravity reports a
+        // transient edge 404 after the model answered; the agent's own
+        // `continue` prompt gets the turn back without the user retyping.
+        if (
+          failure?.resumeWith !== undefined
+          && !interrupted
+          && !cancelRequested
+          && isInterrupted?.() !== true
+        ) {
+          try {
+            permissionBridge.setTurnId(turnId);
+            turnPhase = "prompting";
+            const resumed = await connection.request<AcpPromptResponse>(
+              ACP_METHOD.sessionPrompt,
+              { sessionId, prompt: [textPromptBlock(failure.resumeWith)] },
+              { timeoutMs: ACP_PROMPT_NO_TIMEOUT },
+            );
+            turnPhase = "answered";
+            interrupted = cancelRequested || resumed?.stopReason === "cancelled" || isInterrupted?.() === true;
+            // The resumed prompt's tokens belong to the same turn.
+            response = {
+              ...resumed,
+              usage: mergeAcpPromptUsage(response?.usage, resumed?.usage),
+            };
+            failure = outcomeCheck && !interrupted
+              ? await outcomeCheck(resumed).catch(() => null)
+              : null;
+          } finally {
+            if (turnPhase === "prompting") turnPhase = "idle";
+            permissionBridge.cancelAll("the turn ended");
+            permissionBridge.setTurnId(null);
+            publishSupervision(supervision.endTurn(turnId));
+          }
+        }
         await waitForSettledUsage();
         const usage = readPromptUsage(dialect, response);
         const local = localUsage
@@ -828,6 +863,33 @@ function filterMcpServers(
     agentSupportsHttp: mcpCapabilities?.http === true,
     agentSupportsSse: mcpCapabilities?.sse === true,
   });
+}
+
+/** Both prompts of a resumed turn, field by field; the later `_meta` wins. */
+function mergeAcpPromptUsage(
+  first: AcpPromptUsage | null | undefined,
+  second: AcpPromptUsage | null | undefined,
+): AcpPromptUsage | null {
+  if (!first) return second ?? null;
+  if (!second) return first;
+  const sum = (a: number | null | undefined, b: number | null | undefined): number | undefined => {
+    const left = typeof a === "number" && Number.isFinite(a) ? a : undefined;
+    const right = typeof b === "number" && Number.isFinite(b) ? b : undefined;
+    return left === undefined ? right : right === undefined ? left : left + right;
+  };
+  return {
+    totalTokens: sum(first.totalTokens, second.totalTokens),
+    inputTokens: sum(first.inputTokens, second.inputTokens),
+    outputTokens: sum(first.outputTokens, second.outputTokens),
+    thoughtTokens: sum(first.thoughtTokens, second.thoughtTokens) ?? null,
+    cachedReadTokens: sum(first.cachedReadTokens, second.cachedReadTokens) ?? null,
+    cachedWriteTokens: sum(first.cachedWriteTokens, second.cachedWriteTokens) ?? null,
+    ...(second._meta !== undefined
+      ? { _meta: second._meta }
+      : first._meta !== undefined
+        ? { _meta: first._meta }
+        : {}),
+  };
 }
 
 function readPromptUsage(dialect: AcpDialect, response: AcpPromptResponse | null): AcpUsageSample | null {

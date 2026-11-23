@@ -27,10 +27,14 @@ import { antigravityCliDir } from "../../../ai/antigravityAuth";
 
 /** CORTEX_STEP_TYPE_ERROR_MESSAGE in the native trajectory. */
 const ERROR_STEP_TYPE = 17;
+/** CORTEX_STEP_TYPE_PLANNER_RESPONSE: the agent's reply. */
+const PLANNER_RESPONSE_STEP_TYPE = 15;
 /** The error text leads the payload; a Go stack trace follows it. */
 const MAX_ERROR_PAYLOAD_BYTES = 16_384;
 /** The Go harness's rendering of a Google API error. */
 const API_ERROR = /Error (\d{3}), Message: (.+?), Status: ([A-Z_]+)/s;
+/** Antigravity 1.5's Google-account rendering: `NOT_FOUND (code 404): ...`. */
+const STATUS_ERROR = /(?<![A-Z_])([A-Z_]+) \(code (\d{3})\): (\P{Cc}+)/u;
 const QUOTA_EXHAUSTED = /\breason:QUOTA_EXHAUSTED\b/;
 const RESET_TIMESTAMP = /\bquotaResetTimeStamp:([^\s\]]+)/;
 const GO_DURATION = "((?:\\d+(?:\\.\\d+)?(?:ns|us|µs|μs|ms|h|m|s))+)(?=[\\s\\]])";
@@ -52,7 +56,21 @@ const GO_DURATION_UNIT_MS: Record<string, number> = {
 const NATIVE_SESSION_ID = /^[\w-]+$/;
 const ERROR_MESSAGE_LIMIT = 600;
 
-type LastStep = { type: number; payload: Uint8Array | null };
+type LastStep = {
+  type: number;
+  payload: Uint8Array | null;
+  /** A planner response appeared after the turn started: the model answered. */
+  reachedModel: boolean;
+};
+
+/** `[matched, httpStatus, message, status]`, the shape both error renderings share. */
+function apiErrorOf(text: string): [string, string, string, string] | null {
+  const go = API_ERROR.exec(text);
+  if (go) return [go[0], go[1] ?? "", go[2] ?? "", go[3] ?? ""];
+  const status = STATUS_ERROR.exec(text);
+  if (!status) return null;
+  return [status[0], status[2] ?? "", status[3] ?? "", status[1] ?? ""];
+}
 
 function antigravityConversationDb(sessionId: string, cliDir = antigravityCliDir()): string | null {
   if (!NATIVE_SESSION_ID.test(sessionId)) return null;
@@ -99,7 +117,14 @@ function lastStepAfter(index: number) {
       )
       .get<{ type?: unknown; payload?: unknown }>(MAX_ERROR_PAYLOAD_BYTES, index);
     if (typeof row?.type !== "number") return undefined;
-    return { type: row.type, payload: row.payload instanceof Uint8Array ? row.payload : null };
+    const reachedModel = db
+      .prepare("SELECT 1 FROM steps WHERE idx > ? AND step_type = ? LIMIT 1")
+      .get(index, PLANNER_RESPONSE_STEP_TYPE) !== undefined;
+    return {
+      type: row.type,
+      payload: row.payload instanceof Uint8Array ? row.payload : null,
+      reachedModel,
+    };
   };
 }
 
@@ -137,7 +162,7 @@ function antigravityTurnFailure(
   // The agent maps only an exhausted quota to `refusal`.
   if (errorText === undefined && stopReason !== "refusal") return null;
   const text = errorText ?? "";
-  const apiError = API_ERROR.exec(text);
+  const apiError = apiErrorOf(text);
   if (stopReason === "refusal" || QUOTA_EXHAUSTED.test(text)) {
     return {
       kind: "usage_limit",
@@ -158,12 +183,16 @@ function antigravityTurnFailure(
   }
   const [, httpStatus, message, status] = apiError;
   const rateLimited = httpStatus === "429" || status === "RESOURCE_EXHAUSTED";
+  // A 404 after the model answered is a transient edge error; before it, the
+  // model itself is unknown or unentitled and a resume would only fail again.
+  const transientNotFound = httpStatus === "404" && step?.reachedModel === true;
   return {
     kind: rateLimited ? "usage_limit" : "provider_error",
     message: bounded(message ?? "") || "Antigravity stopped this turn because of an error.",
     code: status ?? null,
-    retryable: rateLimited || Number(httpStatus) >= 500,
+    retryable: rateLimited || transientNotFound || Number(httpStatus) >= 500,
     resetAt: resetAtFrom(text, nowMs),
+    ...(transientNotFound ? { resumeWith: "continue" } : {}),
   };
 }
 
