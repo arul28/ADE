@@ -212,10 +212,10 @@ export function writeFileAtomic(
     fd = mode != null
       ? fs.openSync(tempPath, "wx", mode)
       : fs.openSync(tempPath, "wx");
-    // The open's mode passes through the umask; a kept mode must come out
-    // exactly as it was. A filesystem without POSIX bits keeps its default
-    // rather than losing the write.
-    if (opts.mode == null && mode != null) {
+    // The open's mode passes through the umask; a requested or kept mode must
+    // come out exactly as it was. A filesystem without POSIX bits keeps its
+    // default rather than losing the write.
+    if (mode != null) {
       try {
         fs.fchmodSync(fd, mode);
       } catch {

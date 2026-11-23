@@ -13,7 +13,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, terminateProcessTree } from "./processExecution";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 import { containsSecretToken, redactSecretTokens } from "../../../shared/secretTokenShapes";
-import { writeFileAtomic } from "../state/durableFile";
+import { existingFileMode, writeFileAtomic } from "../state/durableFile";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -851,12 +851,29 @@ function writeFileByDescriptor(
   filePath: string,
   data: string | NodeJS.ArrayBufferView,
   options?: fs.WriteFileOptions | BufferEncoding,
+  exactMode?: number,
 ): void {
   const mode = typeof options === "object" && options != null && typeof options.mode === "number"
     ? options.mode
     : 0o666;
-  const fd = openWriteNoFollow(filePath, nonAsarFs.constants.O_WRONLY | nonAsarFs.constants.O_CREAT | nonAsarFs.constants.O_TRUNC, mode);
+  // The kept mode goes to the open too: an empty temp must never be readable
+  // by others, not even between create and the fchmod below.
+  const fd = openWriteNoFollow(
+    filePath,
+    nonAsarFs.constants.O_WRONLY | nonAsarFs.constants.O_CREAT | nonAsarFs.constants.O_TRUNC,
+    exactMode ?? mode,
+  );
   try {
+    // The open's mode passes through the umask; a kept mode must come out
+    // exactly as it was, and before any bytes land so a secret file is never
+    // briefly readable.
+    if (exactMode != null) {
+      try {
+        nonAsarFs.fchmodSync(fd, exactMode);
+      } catch {
+        // Filesystems without POSIX bits keep the open's mode.
+      }
+    }
     nonAsarFs.writeFileSync(fd, data, options as fs.WriteFileOptions | BufferEncoding | undefined);
   } finally {
     nonAsarFs.closeSync(fd);
@@ -965,7 +982,14 @@ export function secureWriteAtomicWithinRoot(root: string, candidate: string, tex
     initialTarget.parentPath,
     `.${path.basename(initialTarget.targetPath) || "tmp"}.${randomUUID()}.tmp`,
   );
-  writeFileByDescriptor(tmpPath, text, typeof text === "string" ? "utf8" : undefined);
+  // A rename replaces the target inode, so an edited 0755 script or 0600 .env
+  // would otherwise take the umask's default bits. A new file keeps today's.
+  writeFileByDescriptor(
+    tmpPath,
+    text,
+    typeof text === "string" ? "utf8" : undefined,
+    existingFileMode(initialTarget.targetPath),
+  );
   try {
     const { targetPath } = prepareMutationTargetWithinRoot(root, candidate);
     nonAsarFs.renameSync(tmpPath, targetPath);

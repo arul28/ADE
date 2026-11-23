@@ -51,10 +51,53 @@ export function ensureDirMode700(dirPath: string): void {
   }
 }
 
+/**
+ * A crash right after the rename used to leave a zero-length credential file:
+ * the bytes were never synced before the name moved. The refresh token in it
+ * is spent the moment it was written, so that loss signs the machine out.
+ */
+function syncFileData(fd: number): void {
+  try {
+    fs.fsyncSync(fd);
+  } catch {
+    // Some filesystems do not support fsync; the rename still stands.
+  }
+}
+
+/** Persist the rename itself. Windows has no directory handle to flush. */
+function syncParentDirectory(dirPath: string): void {
+  if (process.platform === "win32") return;
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(dirPath, "r");
+    fs.fsyncSync(fd);
+  } catch {
+    // Directory fsync is unavailable on some filesystems.
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* best effort */ }
+    }
+  }
+}
+
 export function writeFileAtomic(filePath: string, contents: string | Buffer): void {
   ensureDirMode700(path.dirname(filePath));
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, contents, { mode: 0o600 });
+  const fd = fs.openSync(tmpPath, "w", 0o600);
+  try {
+    fs.writeFileSync(fd, contents);
+    syncFileData(fd);
+  } catch (error) {
+    try { fs.closeSync(fd); } catch { /* preserve the write error */ }
+    try { fs.rmSync(tmpPath, { force: true }); } catch { /* preserve the write error */ }
+    throw error;
+  }
+  try {
+    fs.closeSync(fd);
+  } catch (error) {
+    try { fs.rmSync(tmpPath, { force: true }); } catch { /* preserve the close error */ }
+    throw error;
+  }
   ensureMode600(tmpPath);
   try {
     renameRetryingOnWindows(tmpPath, filePath);
@@ -63,6 +106,7 @@ export function writeFileAtomic(filePath: string, contents: string | Buffer): vo
     throw error;
   }
   ensureMode600(filePath);
+  syncParentDirectory(path.dirname(filePath));
 }
 
 /**
