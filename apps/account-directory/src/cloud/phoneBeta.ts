@@ -136,9 +136,10 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
     }
     userIds = found;
   }
-  // The account exists now: no email of it needs to wait.
-  if (typedEmail) await env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(typedEmail).run();
+  const pendingDelete = typedEmail ? [env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(typedEmail)] : [];
   if (body.enabled === false) {
+    // The account exists now: no email of it needs to wait.
+    if (pendingDelete.length) await env.DB.batch(pendingDelete);
     for (const userId of userIds) {
       await env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId).run();
       // Off the list is off now: a running phone stops (under `all`, the list doesn't matter).
@@ -147,14 +148,18 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
     logCloud("cloud.phone_beta_removed", { count: userIds.length });
     return json({ ok: true, removed: userIds });
   }
-  for (const userId of userIds) {
-    // The grant and its provider in one write: a start in between never sees one without the other.
-    // A provider change reaches the next phone; the live one keeps its own.
-    await env.DB.batch([
+  // The grants, their provider and the waiting email's end in one write: a start in between never sees a
+  // grant without its provider, and a failed write leaves the email waiting for its retry. The provider:
+  // the one typed, else the waiting email's (as its own claim would carry it), else the row's own.
+  // A provider change reaches the next phone; the live one keeps its own.
+  await env.DB.batch([
+    ...userIds.flatMap((userId) => [
       phoneBetaAddStatement(env.DB, userId, typedEmail || null, now),
+      ...(typedEmail ? [phoneBetaAddStatement(env.DB, userId, typedEmail, now, { whilePending: true })] : []),
       ...(provider !== undefined ? [env.DB.prepare("update cloud_phone_beta set provider = ? where user_id = ?").bind(provider, userId)] : []),
-    ]);
-  }
+    ]),
+    ...pendingDelete,
+  ]);
   logCloud("cloud.phone_beta_added", { count: userIds.length, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });
   return json({ ok: true, added: userIds, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });
 }

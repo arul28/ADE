@@ -4137,6 +4137,22 @@ describe("ADE Cloud iPhone minutes", () => {
     expect(harness.rows("select phone_id from cloud_phones where user_id = ?", OWNER)).toHaveLength(1);
   });
 
+  it("a start whose answer was lost keeps the next starts on that provider until one finds its phone", async () => {
+    seedPhoneTester("both", "on");
+    const calls = phoneStartNetwork("timeout");
+    expect((await startPhone()).status).toBe(502);
+    // Only Revyl has `perf`, but NoMac may be bringing a phone up: no second phone elsewhere.
+    const elsewhere = await startPhone(["perf"]);
+    expect(elsewhere.status).toBe(503);
+    expect((await elsewhere.json() as { error: { code: string } }).error.code).toBe("phone_unavailable");
+    expect(calls).toEqual(["nomac"]);
+    // A plain start goes back to NoMac alone; once it answers, the route is free again.
+    calls.length = 0;
+    phoneStartNetwork("ok");
+    expect((await startPhone()).status).toBe(200);
+    expect(harness.rows("select phone_start_unsure from cloud_accounts where user_id = ?", OWNER)).toEqual([{ phone_start_unsure: null }]);
+  });
+
   it("a live phone its provider can't answer for blocks a new start, even one that would go elsewhere", async () => {
     seedPhoneTester("both", "on");
     seedPhone("ses_live", 0, clock - 60_000, "live");

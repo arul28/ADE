@@ -22,8 +22,13 @@ alter table cloud_phone_beta add column provider text;
 alter table cloud_phone_beta_pending add column provider text;
 
 -- One phone start per account at a time, across providers and machines: the
--- start's time while it runs (null when none is), lapsing after 2 minutes.
+-- start's time while it runs (null when none is), lapsing after 8 minutes.
 alter table cloud_accounts add column phone_start_claim integer;
+-- A start whose answer was lost (a timeout, a 5xx): the provider that may have
+-- made a phone, and when. The next starts go to that provider alone (it finds
+-- the phone) for 15 minutes, or until one succeeds.
+alter table cloud_accounts add column phone_start_unsure text;
+alter table cloud_accounts add column phone_start_unsure_at integer;
 
 -- An account's Revyl workspace: Revyl made it for ADE's partner key under
 -- `external_id` (never an email), and `app_id` is the app its builds go to.

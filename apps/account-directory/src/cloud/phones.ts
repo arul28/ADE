@@ -70,7 +70,7 @@ import { readBoundedBody, sha256Hex } from "../sinkUtils";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
 import { forgetRevylAccount } from "./phoneRevyl";
-import { PHONE_PROVIDERS, abilityWords, clientDrives, lockOf, nextAbilities, routeOf, startOnRoute } from "./phoneRoute";
+import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, lockOf, nextAbilities, routeOf, startOnRoute } from "./phoneRoute";
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { sendCloudEmail } from "./email";
@@ -504,8 +504,11 @@ export async function stopPhonesDue(env: CloudEnv, now: number): Promise<void> {
     .bind(now, STOPS_PER_TICK).all<{ phone_id: string; user_id: string }>();
   for (const row of due.results ?? []) {
     try {
-      // A deleted account's phone (its start ended after the deletion and its stop failed): stopped until it is.
+      // A deleted account's phone (its start ended after the deletion and its stop failed): its Revyl
+      // workspace, kept under the same key, is disconnected first (that stops its phones; a failure is
+      // tried again next tick), then the phone is stopped until it is.
       if (isDeletedAccount(row.user_id)) {
+        await forgetRevylAccount(env, row.user_id);
         await stopPhone(env, row.user_id, row.phone_id, now, "account_deleted");
         continue;
       }
@@ -686,8 +689,13 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       return fail("phone_unavailable", "Your ADE Cloud iPhone isn't answering right now. Try again in a moment, or stop it first.", 503);
     }
     const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
-    const route = routeOf(env, lock, drives, needs);
-    if (route instanceof Response) return route;
+    const routed = routeOf(env, lock, drives, needs);
+    if (routed instanceof Response) return routed;
+    const route = heldToUnsureStart(routed, context.account, now);
+    if (route instanceof Response) {
+      logCloud("cloud.phone_start_refused", { userId, code: "phone_start_unsure", provider: context.account.phone_start_unsure ?? null });
+      return route;
+    }
     // One start per account at a time, across providers and machines: two starts that both saw no live phone
     // would each make one (and bill both). The other is told to try again, and then finds this phone.
     const startingElsewhere = (): Response => fail("phone_starting", "Your ADE Cloud iPhone is starting. Try again in a moment.", 409);
@@ -706,12 +714,19 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
         const { provider: gone, started: { session: orphan } } = begun;
         const stopped = await PHONE_PROVIDERS[gone].stop(env, userId, orphan.id, { provider: gone, ref: orphan.ref ?? null, device: orphan.device ?? null })
           .catch((): { ok: false } => ({ ok: false }));
-        reportCloudFailure("cloud.phone_start_account_gone", { userId, phoneId: orphan.id, provider: gone, stopped: stopped.ok }, "cloud-phone");
-        // A stop that failed is kept under the deleted account's key, due now: the minute tick stops it until it ends.
-        if (!stopped.ok) {
-          await env.DB.prepare(`insert into cloud_phones (phone_id, user_id, device, state, created_at, updated_at, provider, provider_ref, stop_at)
-            values (?, ?, ?, 'live', ?, ?, ?, ?, ?) on conflict(phone_id) do nothing`)
-            .bind(orphan.id, `${CLOUD_DELETED_ACCOUNT_PREFIX}${await sha256Hex(userId)}`, orphan.device ?? null, now, now, gone, orphan.ref ?? null, now).run();
+        // A Revyl workspace this start made after the deletion cleaned up: disconnected too.
+        const forgotten = await forgetRevylAccount(env, userId).then(() => true, () => false);
+        reportCloudFailure("cloud.phone_start_account_gone", { userId, phoneId: orphan.id, provider: gone, stopped: stopped.ok, forgotten }, "cloud-phone");
+        // What failed is kept under the deleted account's key, due now, with the workspace it needs:
+        // the minute tick disconnects and stops it until both are done (`stopPhonesDue`).
+        if (!stopped.ok || !forgotten) {
+          const hashed = `${CLOUD_DELETED_ACCOUNT_PREFIX}${await sha256Hex(userId)}`;
+          await env.DB.batch([
+            env.DB.prepare(`insert into cloud_phones (phone_id, user_id, device, state, created_at, updated_at, provider, provider_ref, stop_at)
+              values (?, ?, ?, 'live', ?, ?, ?, ?, ?) on conflict(phone_id) do nothing`)
+              .bind(orphan.id, hashed, orphan.device ?? null, now, now, gone, orphan.ref ?? null, now),
+            env.DB.prepare("update cloud_phone_revyl set user_id = ? where user_id = ?").bind(hashed, userId),
+          ]);
         }
         return fail("not_found", "This ADE account no longer exists.", 404);
       }

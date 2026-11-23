@@ -324,9 +324,15 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   }
 
   /** The app's first screen, after it launched. */
+  /** The screen after a launch. The app already runs: a screen that can't be read is a note, not a failure. */
   async function settledScreen(phone: CloudPhoneHeld): Promise<string> {
     await sleep(LAUNCH_SETTLE_MS);
-    return screenText(await readScreen(phone));
+    try {
+      return screenText(await readScreen(phone));
+    } catch (error) {
+      if (error instanceof CloudPhoneGoneError) throw error;
+      return `The screen couldn't be read just now (${error instanceof Error ? error.message : "no answer"}). Run ade apple snapshot to look again.`;
+    }
   }
 
   /** Uploads the packed project as a build's source: the key Revyl stored it under. */

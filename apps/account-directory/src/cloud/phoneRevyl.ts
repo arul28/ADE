@@ -317,7 +317,9 @@ async function startRevylPhone(env: CloudEnv, userId: string, device: CloudPhone
     const { code } = revylErrorOf(started);
     reportCloudFailure(`cloud.phone_start_failed.revyl_${code.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40)}`, { userId, status: started.status, code }, "cloud-phone");
     if (started.status === 429) return fail("phone_busy", "Too many phones started in a row. Wait a minute, then try again.", 429);
-    return fail("phone_unavailable", started.status >= 500 ? "The ADE Cloud iPhone isn't answering right now. Try again in a moment." : `The ADE Cloud iPhone refused that: ${withoutPhoneProviderNames(revylErrorOf(started).message)}`, started.status >= 500 ? 502 : 400);
+    // A 5xx, a timeout, or a success with no session id may have made a phone: unknown (502), never a refusal.
+    const unknown = started.status >= 500 || started.status < 300;
+    return fail("phone_unavailable", unknown ? "The ADE Cloud iPhone isn't answering right now. Try again in a moment." : `The ADE Cloud iPhone refused that: ${withoutPhoneProviderNames(revylErrorOf(started).message)}`, unknown ? 502 : 400);
   }
   const read = await readRevylPhone(env, userId, sessionId, named);
   return {

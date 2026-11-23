@@ -91,7 +91,8 @@ function providerFailure(event: string, answer: NomacAnswer, userId: string): Re
   }
   if (code === "insufficient_credit" || code === "credit") {
     reportCloudFailure("cloud.phone_nomac_credit", { status: answer.status });
-    return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. ADE has been told.", 503);
+    // A 5xx may still hide a phone it made (502); a 4xx refusal made none.
+    return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. ADE has been told.", answer.status >= 500 ? 502 : 503);
   }
   return fail("phone_unavailable", answer.status >= 500 || answer.status === 503
     ? "The ADE Cloud iPhone isn't answering right now. Try again in a moment."
@@ -157,6 +158,8 @@ export const NOMAC_PHONE: PhoneProviderServer = {
       // A retry of this start reaches the same phone; a start after that phone (a stop, then start) is a new one.
     }, `ade-phone-${userId}-${lastPhoneId ?? "first"}-${Math.floor(now / 10_000)}`);
     const session = sessionOf(answer.body?.session);
+    // A success it couldn't read may have made a phone: answered as unknown (502), never as a refusal.
+    if (answer.status < 400 && !session) return providerFailure("cloud.phone_start_failed", { status: 502, body: null }, userId);
     if (answer.status >= 400 || !session) return providerFailure("cloud.phone_start_failed", answer, userId);
     return { session, reused: answer.body?.reused === true };
   },

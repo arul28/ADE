@@ -71,7 +71,12 @@ export type PhoneProviderServer = {
   ownsTimeLimit: boolean;
   /** The Sentry event a refused stop is reported as, before the provider's code. */
   stopFailedEvent: string;
-  /** Starts the account's phone, or answers the one already running there. */
+  /**
+   * Starts the account's phone, or answers the one already running there. A
+   * refusal answers 502 (or 504) whenever the provider may have made a phone
+   * anyway: a 5xx or a timeout to the start itself, or a success it couldn't
+   * read. Any other status says no phone was made (`definitelyRefused`).
+   */
   start(env: CloudEnv, input: { userId: string; label: string; device: CloudPhoneDevice | undefined; minutes: number; lastPhoneId: string | null; now: number }): Promise<{ session: PhoneSession; reused: boolean } | Response>;
   /** One phone as the provider answers it now, or null when it can't be read. */
   read(env: CloudEnv, userId: string, phoneId: string, where: PhoneWhere): Promise<PhoneRead | null>;

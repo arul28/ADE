@@ -528,6 +528,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     if (!starting) {
       const starter = (async () => {
         const client = await provider();
+        // Signed out or switched while this waited: the start is never sent under another account.
+        if (accountOf(client) !== account) throw new CloudPhoneError("The ADE account changed while the cloud iPhone started. Try again.", "no_account");
         // Another machine's start for this account is in flight: asked again until it holds the live phone.
         const startOnce = async (): Promise<CloudPhoneStart> => {
           const by = Date.now() + START_BUSY_WAIT_MS;

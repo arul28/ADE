@@ -90,6 +90,27 @@ export function nextAbilities(env: CloudEnv, lock: CloudPhoneProvider | null): C
   return CLOUD_PHONE_ABILITIES.filter((ability) => providers.some((provider) => CLOUD_PHONE_PROVIDER_ABILITIES[provider].includes(ability)));
 }
 
+/**
+ * How long a start whose answer was lost (`definitelyRefused` false) holds the
+ * account's next starts to its provider. Its phone may be coming up there with
+ * no row: a start on that provider finds it (each answers the account's running
+ * phone) and saves it; one elsewhere would bill a second. Past this, a phone
+ * nobody drove has ended on its idle limit (a start's few minutes plus
+ * `CLOUD_PHONE_IDLE_SECONDS`).
+ */
+const UNSURE_START_MS = 15 * 60_000;
+
+/** The account's lost start (migration 0057): the provider and when. */
+type UnsureStart = { phone_start_unsure?: string | null; phone_start_unsure_at?: number | null };
+
+/** The route held to the provider a lost start may have made a phone at, or refused when it can't go there. */
+export function heldToUnsureStart(route: PhoneRoute, account: UnsureStart, now: number): PhoneRoute | Response {
+  const unsure = account.phone_start_unsure;
+  if (!isCloudPhoneProvider(unsure) || (account.phone_start_unsure_at ?? 0) <= now - UNSURE_START_MS) return route;
+  if (route.order.includes(unsure)) return { ...route, order: [unsure] };
+  return fail("phone_unavailable", "Your last ADE Cloud iPhone start didn't finish answering, and that phone may still be coming up. Try again in a few minutes.", 503);
+}
+
 type StartInput = Parameters<PhoneProviderServer["start"]>[1];
 
 /**
@@ -115,10 +136,19 @@ export async function startOnRoute(env: CloudEnv, route: PhoneRoute, userId: str
       reportCloudFailure("cloud.phone_start_threw", { userId, provider, message: error instanceof Error ? error.message : "unknown" }, "cloud-phone");
       return fail("phone_unavailable", "The ADE Cloud iPhone isn't answering right now. Try again in a moment.", 502);
     });
-    if (!(started instanceof Response)) return { started, provider, reason: index === 0 ? route.reason : "failover" };
+    if (!(started instanceof Response)) {
+      // The phone is known now (saved by the caller): a lost start before it no longer holds the route.
+      await env.DB.prepare("update cloud_accounts set phone_start_unsure = null, phone_start_unsure_at = null where user_id = ? and phone_start_unsure is not null").bind(userId).run();
+      return { started, provider, reason: index === 0 ? route.reason : "failover" };
+    }
     refused = started;
+    if (!definitelyRefused(started)) {
+      // It may have made a phone: the next starts go there alone until one finds it (`heldToUnsureStart`).
+      await env.DB.prepare("update cloud_accounts set phone_start_unsure = ?, phone_start_unsure_at = ? where user_id = ?").bind(provider, input.now, userId).run();
+      break;
+    }
     const next = route.order[index + 1];
-    if (!next || !definitelyRefused(started)) break;
+    if (!next) break;
     logCloud("cloud.phone_start_failover", { userId, from: provider, to: next, status: started.status });
   }
   return refused ?? fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);

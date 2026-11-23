@@ -566,7 +566,11 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   token is empty, and the brain calls it through `POST /cloud/phone/call`.
   409 `phone_lacks` when the live phone lacks a need, `phone_cant` when no
   allowed phone has it, `phone_starting` while another start of the account
-  runs; `DELETE /cloud/phone` stops it.
+  runs. 503 `phone_unavailable` while a live phone can't be read, and while a
+  start whose answer was lost (a timeout, a 5xx) may still be bringing a phone
+  up at a provider this start can't use: for 15 minutes the next starts go to
+  that provider alone, which finds the phone (`heldToUnsureStart`).
+  `DELETE /cloud/phone` stops it.
 - `POST /cloud/phone/view` `{ control? }` answers a view link for it: NoMac's
   page (signed for the account when `NOMAC_EMBED_SECRET` is set), or for a
   Revyl phone `GET /cloud/phone/viewer` (no sign-in; the page is static) with
