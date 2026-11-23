@@ -232,6 +232,26 @@ function finish(flow: Flow, phase: "succeeded" | "failed" | "cancelled", message
   logger?.info("antigravity.sign_in_finished", { method: flow.method, phase });
 }
 
+/**
+ * `agy acp --login` ended without a code. A signal (POSIX) or an NTSTATUS
+ * crash code (Windows) means the runtime died; a plain non-zero exit is the
+ * CLI's own refusal.
+ */
+class AntigravityLoginExitError extends Error {
+  constructor(
+    readonly exitCode: number | null,
+    readonly signal: NodeJS.Signals | null,
+  ) {
+    super(`antigravity login exited (${signal ?? exitCode})`);
+    this.name = "AntigravityLoginExitError";
+  }
+
+  get crashed(): boolean {
+    return this.signal !== null
+      || (this.exitCode !== null && (this.exitCode >>> 0) >= 0xc0000000);
+  }
+}
+
 /** The user-facing sentence for a failed sign-in or verify. Never echoes a URL or code. */
 function failureSentence(method: AntigravityAuthMethod, error: unknown): string {
   const text = error instanceof AcpRpcError
@@ -248,6 +268,15 @@ function failureSentence(method: AntigravityAuthMethod, error: unknown): string 
   if (method === "gemini-api-key") return "Antigravity did not accept the Gemini API key. Check the key saved on this page.";
   if (method === "agent-platform") {
     return "Antigravity could not use Agent Platform. Set an API key, or a project and location with Application Default Credentials on this machine.";
+  }
+  // The runtime died (a crash or a killed process) or closed its input before
+  // the code was written. Blaming the Google account would send the person to
+  // fix a login that was never asked. Same sentence as the ACP branch above.
+  if (error instanceof AntigravityLoginExitError && error.crashed) {
+    return "Antigravity stopped before the sign-in finished. Start sign-in again.";
+  }
+  if ((error as NodeJS.ErrnoException | null)?.code === "EPIPE") {
+    return "Antigravity stopped before the sign-in finished. Start sign-in again.";
   }
   return "Google sign-in failed. Start sign-in again.";
 }
@@ -375,7 +404,9 @@ function runTerminalLogin(flow: Flow, executable: AcpExecutableResolution): Prom
       if (flow.done) return resolve();
       if (code === 0) return resolve();
       // Only a fixed sentence leaves this function; the output may hold the link.
-      reject(new Error(/invalid_grant/i.test(tail) ? "invalid_grant" : `antigravity login exited (${signal ?? code})`));
+      reject(/invalid_grant/i.test(tail)
+        ? new Error("invalid_grant")
+        : new AntigravityLoginExitError(code, signal));
     });
   });
 }
@@ -412,6 +443,7 @@ async function runFlow(flow: Flow): Promise<void> {
     logger?.warn("antigravity.sign_in_failed", {
       method: flow.method,
       code: error instanceof AcpRpcError ? error.code : null,
+      signal: error instanceof AntigravityLoginExitError ? error.signal : null,
     });
     finish(flow, "failed", failureSentence(flow.method, error));
   }
