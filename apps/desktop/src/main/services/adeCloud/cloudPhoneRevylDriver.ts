@@ -324,13 +324,17 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   }
 
   /** The app's first screen, after it launched. */
-  /** The screen after a launch. The app already runs: a screen that can't be read is a note, not a failure. */
+  /**
+   * The screen after a launch. The app already launched: a screen that can't
+   * be read is a note, never a failure (a gone phone too: a retry would build
+   * and install all over again on a new one).
+   */
   async function settledScreen(phone: CloudPhoneHeld): Promise<string> {
     await sleep(LAUNCH_SETTLE_MS);
     try {
       return screenText(await readScreen(phone));
     } catch (error) {
-      if (error instanceof CloudPhoneGoneError) throw error;
+      if (error instanceof CloudPhoneGoneError) return "The cloud iPhone stopped right after the launch.";
       return `The screen couldn't be read just now (${error instanceof Error ? error.message : "no answer"}). Run ade apple snapshot to look again.`;
     }
   }

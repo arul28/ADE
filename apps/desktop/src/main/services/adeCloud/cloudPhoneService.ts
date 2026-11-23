@@ -863,7 +863,12 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
           if (!bundleId) {
             return { ...joinAnswers([installed.answer, textAnswer("Installed, but not launched: ADE could not tell the app's bundle id. Launch it with ade apple relaunch --bundle-id <id>.")]), bundleId };
           }
-          return { ...joinAnswers([installed.answer, await driver.control(phone, { action: "launch", app: bundleId })]), bundleId };
+          // The install is done: a phone gone at the launch is told, never answered by installing all over again.
+          const launched = await driver.control(phone, { action: "launch", app: bundleId }).catch((error: unknown) => {
+            if (!(error instanceof CloudPhoneGoneError)) throw error;
+            return textAnswer("Installed, but the cloud iPhone stopped before the app launched. A new phone won't have it: run the install again.", true);
+          });
+          return { ...joinAnswers([installed.answer, launched]), bundleId };
         });
       } finally {
         fs.rmSync(packed.file, { force: true });

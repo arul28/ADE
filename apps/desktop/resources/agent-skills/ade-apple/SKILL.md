@@ -185,8 +185,9 @@ For one command, `ade apple … --machine cloud`. What differs:
   `npx eas-cli build -p ios --profile <a profile with "ios": {"simulator": true}>`,
   then unpack the archive it gives. React Native and Flutter
   (`--simulator`) build one only on a Mac.
-- `screenshot` files to the proof drawer (`--no-proof` skips it); a
-  recording's MP4 link lasts 7 days.
+- `screenshot` files to the proof drawer (`--no-proof` skips it). `record stop`
+  answers an MP4 link that lasts 7 days, or the video as a file on this
+  machine (its `path`, filed to the proof drawer too).
 - Verbs with no cloud answer (iPad windows, the Duo, leases, device settings)
   are refused with a sentence, and that command exits 1: in a chain
   (`a && b`) a refusal stops the rest, so run a verb you are unsure of on its
