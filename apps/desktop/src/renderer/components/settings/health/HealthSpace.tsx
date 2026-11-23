@@ -127,14 +127,26 @@ export function HealthSpace({ data }: { data: HealthData }) {
       ...(runMaintenanceNow
         ? {
             runMaintenance: runMaintenanceNow,
+            // The run finishes in the background, often after the dialog
+            // closed: its result is a toast, and the page re-reads what it freed.
             onMaintenanceDone: (report: MaintenanceRunReport) => {
               const outcome = maintenanceOutcome(report, platform);
-              if (outcome.failed) notify(outcome.message, "warning");
+              notify(outcome.message, outcome.failed ? "warning" : "success");
+              refreshAfterChange();
+            },
+            onMaintenanceFailed: ({ stillRunning }) => {
+              notify(
+                stillRunning
+                  ? "ADE's tidy-up is taking a while; it may still finish in the background"
+                  : "ADE's tidy-up didn't finish; it runs again on its own every day",
+                "warning",
+              );
+              refreshAfterChange();
             },
           }
         : {}),
     };
-  }, [notify, plan, platform, runMaintenanceNow]);
+  }, [notify, plan, platform, refreshAfterChange, runMaintenanceNow]);
 
   const canCleanUp = Boolean(plan && (plan.fsTargets.length > 0 || runMaintenanceNow));
 

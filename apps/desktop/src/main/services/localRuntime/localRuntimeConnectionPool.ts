@@ -19,6 +19,7 @@ import { runningAppImagePath } from "../native/runningAppImage";
 import type { ServiceManagerResult } from "../../../../../ade-cli/src/serviceManager/common";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
+import { actionWaitsWhileRunning } from "../../../shared/adeActionAccess";
 import { signalChildProcessTree } from "../shared/utils";
 import { terminateProcessTreeAsync } from "../shared/processExecution";
 import {
@@ -2774,6 +2775,10 @@ export class LocalRuntimeConnectionPool {
       const tConnect = Date.now();
       const actionCallOptions = {
         timeoutMs: localRuntimeActionTimeoutMs(request.domain, request.action),
+        // Past that budget the brain is asked whether it still runs work (not
+        // a replay-safe read), and the call waits while it does
+        // (`shared/runningRequests.ts`).
+        ...(actionWaitsWhileRunning(request.domain, request.action) ? { waitWhileRunning: true } : {}),
       };
       let value: unknown = undefined;
       let callError: Error | null = null;

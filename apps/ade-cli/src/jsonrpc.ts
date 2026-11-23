@@ -9,6 +9,11 @@ import {
 } from "../../desktop/src/shared/codedError";
 import { carryExpected, expectedErrorKind, type ExpectedErrorKind } from "../../desktop/src/shared/expectedError";
 import { brainStackFrames } from "../../desktop/src/shared/runtimeActionReplyError";
+import {
+  readRequestStatusIds,
+  REQUEST_STATUS_METHOD,
+  type RequestStatusReply,
+} from "../../desktop/src/shared/runningRequests";
 
 export type JsonRpcId = string | number | null;
 
@@ -552,15 +557,85 @@ function takeNextPayload(buffer: Buffer): ParsedPayload {
   };
 }
 
+/**
+ * The request ids one connection has received and not answered yet, counted so
+ * a client that reuses an id while the first is out still reads as running.
+ */
+class InFlightRequests {
+  private readonly counts = new Map<string | number, number>();
+
+  /** Registers each request (not notification) in `message`; returns what to release. */
+  track(message: unknown): Array<string | number> {
+    const ids: Array<string | number> = [];
+    for (const entry of Array.isArray(message) ? message : [message]) {
+      const id = entry && typeof entry === "object" ? (entry as { id?: unknown }).id : undefined;
+      if (typeof id !== "string" && typeof id !== "number") continue;
+      this.counts.set(id, (this.counts.get(id) ?? 0) + 1);
+      ids.push(id);
+    }
+    return ids;
+  }
+
+  release(ids: Array<string | number>): void {
+    for (const id of ids) {
+      const count = (this.counts.get(id) ?? 0) - 1;
+      if (count > 0) this.counts.set(id, count);
+      else this.counts.delete(id);
+    }
+  }
+
+  has(id: unknown): boolean {
+    return (typeof id === "string" || typeof id === "number") && this.counts.has(id);
+  }
+
+  clear(): void {
+    this.counts.clear();
+  }
+}
+
+/**
+ * `ade/requests/status` (`shared/runningRequests.ts`): which of the asked ids
+ * this connection is still working on. Answered here, not by the handler, so
+ * it sees every method and needs no project or session. It only names ids the
+ * same connection sent, so it needs no auth of its own. Only a single request
+ * is answered; inside a batch it reaches the handler, which does not know it
+ * (clients never batch it).
+ */
+function requestStatusResponse(message: unknown, inFlight: InFlightRequests): JsonRpcResponse | null {
+  if (!message || typeof message !== "object" || Array.isArray(message)) return null;
+  const request = message as { id?: unknown; method?: unknown; params?: unknown };
+  if (request.method !== REQUEST_STATUS_METHOD) return null;
+  if (typeof request.id !== "string" && typeof request.id !== "number") return null;
+  const result: RequestStatusReply = {
+    running: readRequestStatusIds(request.params).filter((id): id is string | number => inFlight.has(id)),
+  };
+  return { jsonrpc: "2.0", id: request.id, result };
+}
+
+/**
+ * Runs `answer` with `message`'s requests counted as in flight. They are
+ * released only after the reply is written: a status check that reads an id
+ * as gone must find its reply already on the connection ahead of it.
+ */
+async function whileInFlight(inFlight: InFlightRequests, message: unknown, answer: () => Promise<void>): Promise<void> {
+  const tracked = inFlight.track(message);
+  try {
+    await answer();
+  } finally {
+    inFlight.release(tracked);
+  }
+}
+
 async function dispatchPayload(args: {
   payloadText: string;
   handler: JsonRpcHandler;
   transport: TransportMode;
   writeFn: (data: string) => void;
+  inFlight: InFlightRequests;
   onError?: JsonRpcServerErrorReporter;
   onInternalError?: JsonRpcInternalErrorReporter;
 }): Promise<void> {
-  const { payloadText, handler, transport, writeFn, onError, onInternalError } = args;
+  const { payloadText, handler, transport, writeFn, inFlight, onError, onInternalError } = args;
   const trimmed = payloadText.trim();
   if (!trimmed.length) return;
 
@@ -605,20 +680,30 @@ async function dispatchPayload(args: {
       return;
     }
 
-    const results = (
-      await Promise.all(parsed.map((entry) => handleSingleMessage(entry, handler, onError, onInternalError)))
-    ).filter((entry): entry is JsonRpcResponse => entry != null);
+    await whileInFlight(inFlight, parsed, async () => {
+      const results = (
+        await Promise.all(parsed.map((entry) => handleSingleMessage(entry, handler, onError, onInternalError)))
+      ).filter((entry): entry is JsonRpcResponse => entry != null);
 
-    if (results.length) {
-      writeMessage(results, transport, writeFn);
-    }
+      if (results.length) {
+        writeMessage(results, transport, writeFn);
+      }
+    });
     return;
   }
 
-  const response = await handleSingleMessage(parsed, handler, onError, onInternalError);
-  if (response) {
-    writeMessage(response, transport, writeFn);
+  const statusResponse = requestStatusResponse(parsed, inFlight);
+  if (statusResponse) {
+    writeMessage(statusResponse, transport, writeFn);
+    return;
   }
+
+  await whileInFlight(inFlight, parsed, async () => {
+    const response = await handleSingleMessage(parsed, handler, onError, onInternalError);
+    if (response) {
+      writeMessage(response, transport, writeFn);
+    }
+  });
 }
 
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
@@ -658,6 +743,7 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
   let draining = false;
   let responseTransport: TransportMode | null = null;
   const activeDispatches = new Set<Promise<void>>();
+  const inFlight = new InFlightRequests();
   const idleWaiters = new Set<() => void>();
   const writeFn = (data: string): void => {
     if (stopped) return;
@@ -698,6 +784,7 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
       handler,
       transport: args.transport,
       writeFn,
+      inFlight,
       onError: reportError,
       ...(options?.onInternalError ? { onInternalError: options.onInternalError } : {}),
     })
@@ -797,6 +884,7 @@ export function startJsonRpcServer(handler: JsonRpcHandler, transport: JsonRpcTr
   const stop = (() => {
     skippedDroppable.clear();
     activeDispatches.clear();
+    inFlight.clear();
     resolveIdleWaiters();
     closeTransport();
   }) as JsonRpcServerHandle;
