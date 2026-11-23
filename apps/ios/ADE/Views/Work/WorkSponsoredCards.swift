@@ -104,7 +104,7 @@ struct WorkSponsoredReplySlot: View {
       if store.holder == sessionId {
         switch showing {
         case .consent:
-          WorkSponsoredConsentCard()
+          WorkSponsoredConsentCard(smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true)
         case .ad(let ad):
           WorkSponsoredAdCard(ad: ad, test: sponsored?.test == true, slot: slot) {
             store.hide(turnKey: turnKey)
@@ -219,7 +219,10 @@ private func workSponsoredOpen(_ value: String?) {
 }
 
 /// The one-time question, under the first finished reply of a Free cloud chat.
+/// While the server's `smallNeedsCards` rule is on, a no has Free's Small
+/// computers use hours, so the card says that up front.
 struct WorkSponsoredConsentCard: View {
+  var smallNeedsCards = false
   @State private var busy = false
   @State private var error: String?
 
@@ -228,11 +231,14 @@ struct WorkSponsoredConsentCard: View {
       Text("ADE Cloud Free")
         .font(.system(size: 11.5))
         .foregroundStyle(ADEColor.textMuted)
-      Text("Free cloud chats are ad-supported")
+      Text(smallNeedsCards ? "Keep Small computers unlimited" : "Free cloud chats are ad-supported")
         .font(.system(size: 13.5, weight: .semibold))
         .foregroundStyle(ADEColor.textPrimary)
         .fixedSize(horizontal: false, vertical: true)
-      Text("A Free chat on ADE Cloud can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool. To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older. You can change this in Settings › ADE Cloud.")
+      Text((smallNeedsCards
+        ? "Free shows one sponsored card under a finished reply in ADE Cloud chats. Without them, Small computers use your hours, half an hour for each hour awake. An agent may also recommend a sponsored tool."
+        : "A Free chat on ADE Cloud can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool.")
+        + " To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older. You can change this in Settings › ADE Cloud.")
         .font(.system(size: 12.5))
         .foregroundStyle(ADEColor.textSecondary)
         .lineSpacing(1.5)
@@ -245,6 +251,10 @@ struct WorkSponsoredConsentCard: View {
         }
         VStack(alignment: .leading, spacing: 8) {
           HStack(spacing: 8) { answers }
+          howItWorks
+        }
+        VStack(alignment: .leading, spacing: 8) {
+          answers
           howItWorks
         }
       }
@@ -263,7 +273,7 @@ struct WorkSponsoredConsentCard: View {
   private var answers: some View {
     WorkSponsoredCTA(title: "Show sponsored cards") { answer(CloudSponsoredState.granted) }
       .disabled(busy)
-    WorkSponsoredCTA(title: "No thanks") { answer(CloudSponsoredState.declined) }
+    WorkSponsoredCTA(title: smallNeedsCards ? "No thanks, use my hours" : "No thanks") { answer(CloudSponsoredState.declined) }
       .disabled(busy)
   }
 

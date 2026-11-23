@@ -179,13 +179,24 @@ struct CloudHero: View {
               note: "\(computers.awake) awake now"
             )
           }
-          CloudMiniMeter(
-            label: "Small computers",
-            value: "Unlimited",
-            of: nil,
-            fraction: nil,
-            note: "They never use your hours"
-          )
+          // Small is unlimited unless the account's catalog rates it (Free, sponsored cards off).
+          if let small = cloudSmallTierUsingHours(account) {
+            CloudMiniMeter(
+              label: "Small computers",
+              value: small.hoursLeftLabel(account.hours.leftMilli + max(0, account.earnedHours?.leftMilli ?? 0)),
+              of: nil,
+              fraction: nil,
+              note: account.sponsored?.smallUsesHoursWithoutCards == true ? "Left at this size. Sponsored cards make it unlimited." : "Left at this size"
+            )
+          } else {
+            CloudMiniMeter(
+              label: "Small computers",
+              value: "Unlimited",
+              of: nil,
+              fraction: nil,
+              note: "They never use your hours"
+            )
+          }
         }
       }
       .padding(16)
@@ -223,7 +234,7 @@ struct CloudHero: View {
     let level = ADEUsagePressure.color(percentLeft: percentLeft, fallback: CloudBrandColor.violet)
     let calm = percentLeft > 20
     return VStack(alignment: .leading, spacing: 8) {
-      Text("Hours left this month for bigger computers")
+      Text(cloudSmallTierUsingHours(account) != nil ? "Hours left this month" : "Hours left this month for bigger computers")
         .font(.system(size: 12))
         .foregroundStyle(CloudBrandColor.skyText2)
       HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -335,7 +346,9 @@ struct CloudNotices: View {
         if account.billing?.notice == "past_due" {
           ADESettingsNotice(message: "A payment didn't go through, so your plan follows the free plan's limits until it's paid.", tone: .crit)
         } else if account.outOfHours {
-          ADESettingsNotice(message: "You're out of hours. Small computers keep working. Bigger sizes stop until your hours reset; running work on them saves first.", tone: .warn)
+          ADESettingsNotice(message: cloudSmallTierUsingHours(account) != nil
+            ? "You're out of hours. Your computers stop until your hours reset; running work on them saves first."
+            : "You're out of hours. Small computers keep working. Bigger sizes stop until your hours reset; running work on them saves first.", tone: .warn)
         }
         if account.atComputerLimit, let limit = account.computerLimit {
           // Every computer of the plan is taken: a new lane would be refused.
@@ -524,7 +537,7 @@ struct CloudMachineRow: View {
 
 /// The four sizes (`CloudSizeCards.tsx`), one row each, read at a glance:
 /// the hours left as time on that size (big; "Unlimited" on Small, which
-/// never uses hours), CPU · memory, and "Full computer" where it is one.
+/// never uses hours unless the catalog rates it), CPU · memory, and "Full computer" where it is one.
 /// Never a multiplier and never disk. The desktop screen every size has is
 /// said once in the hint (one line: the kit hint does not wrap); what a size runs is read out.
 struct CloudSizesCard: View {

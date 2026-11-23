@@ -13,6 +13,7 @@ import {
   cloudComputerLimitReached,
   cloudFreePlanOf,
   cloudOutOfHours,
+  cloudSmallUsesHours,
   computerLimitSentence,
   type CloudAccountState,
   type CloudAgentMaker,
@@ -108,8 +109,9 @@ export function cloudLaunchAppArgs(launch: Omit<ChatLaunchArgs, "cloud" | "prior
  * and the early refusal of `cloud.lane_launch` and `cloud.create`.
  * `newLane: false` (a send to a lane that exists) skips the computer limit.
  *
- * Small computers never use hours, so out of hours stops only a size known
- * to use them (`sizeId`); a caller that doesn't pass the size gets no hours
+ * Out of hours stops only a size the catalog rates above 0 (`sizeId`):
+ * every size but Small, and Small too on Free with sponsored cards off while
+ * the server's `smallNeedsCards` rule is on; a caller that doesn't pass the size gets no hours
  * block (only a held free plan's) and the server decides. A new lane past
  * the plan's computers is `computer_limit` (the limit card's three ways out).
  *
@@ -141,7 +143,7 @@ export function cloudLaneStartBlock(
     // The free plan's GitHub rules hold its hours: their sentence says why and what to do.
     return {
       code: "out_of_hours",
-      message: why ?? `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.`,
+      message: why ?? (cloudSmallUsesHours(catalog) ? CLOUD_OUT_OF_HOURS_MESSAGE : `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.`),
       short: why ? "Free hours wait on GitHub." : "Out of hours for this size.",
     };
   }

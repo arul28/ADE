@@ -3076,6 +3076,12 @@ export type CloudSponsoredState = {
   consent: CloudSponsoredConsent | null;
   /** Gravity's test ads: nothing is paid or counted. True until go-live. */
   test: boolean;
+  /**
+   * Free's Small computers are unlimited only while sponsored cards are on:
+   * a no (or no answer) has them use hours, at half a Medium-hour an hour.
+   * Absent while that rule is off. The question and Settings say so.
+   */
+  smallNeedsCards?: boolean;
 };
 export type CloudSponsoredConsent = "granted" | "declined";
 export const CLOUD_SPONSORED_CONSENTS: readonly CloudSponsoredConsent[] = ["granted", "declined"];

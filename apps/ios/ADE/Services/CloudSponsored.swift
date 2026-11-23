@@ -27,17 +27,22 @@ struct CloudSponsoredState: Decodable, Equatable {
   let consent: String?
   /// Gravity's test ads: nothing is paid or counted.
   let test: Bool
+  /// Free's Small computers are unlimited only while sponsored cards are on:
+  /// a no (or no answer) has them use hours, at half a Medium-hour an hour.
+  /// Nil while the server's rule is off. The question and Settings say so.
+  let smallNeedsCards: Bool?
 
   static let granted = "granted"
   static let declined = "declined"
 
-  init(ads: Bool, consent: String?, test: Bool) {
+  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil) {
     self.ads = ads
     self.consent = consent
     self.test = test
+    self.smallNeedsCards = smallNeedsCards
   }
 
-  private enum CodingKeys: String, CodingKey { case ads, consent, test }
+  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -45,9 +50,12 @@ struct CloudSponsoredState: Decodable, Equatable {
     let raw = c.lenient(String.self, forKey: .consent)
     consent = raw == Self.granted || raw == Self.declined ? raw : nil
     test = c.lenient(Bool.self, forKey: .test) ?? false
+    smallNeedsCards = c.lenient(Bool.self, forKey: .smallNeedsCards)
   }
 
   var granted: Bool { consent == Self.granted }
+  /// The server's rule is on: a no has Free's Small computers use hours.
+  var smallUsesHoursWithoutCards: Bool { smallNeedsCards == true }
 }
 
 /// One card (`CloudSponsoredAd`). A card whose click link isn't Gravity's
@@ -236,6 +244,11 @@ func cloudSaveSponsoredConsent(_ consent: String) async -> Result<CloudSponsored
     // A no deletes the account's viewer rows on the server.
     if !state.granted { CloudSponsoredStore.shared.forgetSeen() }
     AccountCloudStore.shared.noteSponsored(state, generation: generation)
+    // While Free's Small needs cards, the answer also moved Small's rate in the
+    // account's catalog: read the account again so Small's hours show it.
+    if state.smallNeedsCards == true, generation == AccountCloudStore.shared.generation {
+      SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+    }
     return .success(state)
   } catch {
     cloudSponsoredLog.notice("sponsored consent save failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")

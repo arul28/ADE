@@ -501,7 +501,8 @@ struct CloudComputerLimitSheet: View {
         if let hours = planFacts(next.planId)?.includedMilli, hours > 0 {
           fact("\(cloudHours(hours)) hours a month for bigger computers")
         }
-        fact("Small computers stay unlimited")
+        // A paid plan's Small never uses hours; a Free account's may now (sponsored cards off).
+        fact(account.flatMap(cloudSmallTierUsingHours) != nil ? "Unlimited Small computers" : "Small computers stay unlimited")
       }
     }
   }

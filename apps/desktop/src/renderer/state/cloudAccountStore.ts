@@ -81,7 +81,12 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredConsent): 
   const next = await set(consent);
   if (!next) throw new Error("ADE couldn't reach your account. Try again in a moment.");
   // Another account signed in meanwhile: this answer was the old account's.
-  if (current === generation) noteCloudSponsoredState(next);
+  if (current !== generation) return;
+  noteCloudSponsoredState(next);
+  // While Free's Small needs cards, the answer also moved Small's rate in the
+  // account's catalog: read the account again so Small's hours show it. (Lazy:
+  // the shared list's module imports this one.)
+  if (next.smallNeedsCards) void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines());
 }
 
 /** Whether the shared computer list is watched; while it is, this store does not read on its own. */

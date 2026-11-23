@@ -14,6 +14,7 @@ import {
   applyCloudPlanChange,
   boughtPlanIdOf,
   groupByUser,
+  hasAccountTest,
   isPaidDowngrade,
   paidPlanOf,
   extraActive,
@@ -241,6 +242,11 @@ export async function createCheckoutUrl(
   const plan = requested ?? "plus";
   const { planPrice } = billingConfig(env, plan);
   const account = await loadAccount(env, userId, now);
+  // The apps show the test plan (`ownerAccounts.ts`), so a change picked from
+  // them could charge something other than what it says: none while a test runs.
+  if (hasAccountTest(account)) {
+    throw new CloudBillingError("plan_test", "This account is acting as another plan for a test. Reset the test before changing plans.", 409);
+  }
   if (account.plan === "paid") {
     // A build that knows one paid plan names none: it only ever buys, never switches.
     if (!requested) throw new CloudBillingError("already_paid", "You already have a paid plan.", 409);

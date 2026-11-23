@@ -74,6 +74,7 @@ export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, 
       paneVisible={paneVisible}
       consent={sponsored.consent}
       test={sponsored.test}
+      smallNeedsCards={sponsored.smallNeedsCards === true}
     />
   );
 }
@@ -86,11 +87,13 @@ function SponsoredReplySlotOn({
   paneVisible,
   consent,
   test,
+  smallNeedsCards,
 }: Omit<SponsoredReplySlotProps, "instanceId" | "sessionId"> & {
   instanceId: string;
   sessionId: string;
   consent: CloudSponsoredConsent | null;
   test: boolean;
+  smallNeedsCards: boolean;
 }) {
   const visible = useDocumentVisible() && paneVisible;
   // The scan runs only between turns; while one streams there is no card.
@@ -162,13 +165,17 @@ function SponsoredReplySlotOn({
   return (
     <div ref={regionRef} className="w-full max-w-[var(--chat-content-width,52rem)]">
       <div aria-hidden className="h-px w-full" />
-      {holds && showing === "consent" ? <SponsoredConsentCard /> : null}
+      {holds && showing === "consent" ? <SponsoredConsentCard smallNeedsCards={smallNeedsCards} /> : null}
       {holds && showing === "ad" && ad ? <SponsoredAdCard ad={ad.ad} test={test} onHide={hide} /> : null}
     </div>
   );
 }
 
-function SponsoredConsentCard() {
+/**
+ * The one-time question. While the server's `smallNeedsCards` rule is on, a
+ * no has Free's Small computers use hours, so the card says that up front.
+ */
+function SponsoredConsentCard({ smallNeedsCards }: { smallNeedsCards: boolean }) {
   const [busy, setBusy] = useState(false);
   const answer = (consent: CloudSponsoredConsent) => {
     setBusy(true);
@@ -181,10 +188,12 @@ function SponsoredConsentCard() {
       <div className="ade-sponsored-head">
         <span className="ade-sponsored-label">ADE Cloud Free</span>
       </div>
-      <p className="ade-sponsored-title">Free cloud chats are ad-supported</p>
+      <p className="ade-sponsored-title">{smallNeedsCards ? "Keep Small computers unlimited" : "Free cloud chats are ad-supported"}</p>
       <p className="ade-sponsored-text">
-        A Free chat on ADE Cloud can show one sponsored card under a finished reply, and an agent may recommend a
-        sponsored tool. To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the
+        {smallNeedsCards
+          ? "Free shows one sponsored card under a finished reply in ADE Cloud chats. Without them, Small computers use your hours, half an hour for each hour awake. An agent may also recommend a sponsored tool."
+          : "A Free chat on ADE Cloud can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool."}{" "}
+        To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the
         agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards
         are for people 18 or older. You can change this in Settings › ADE Cloud.
       </p>
@@ -193,7 +202,7 @@ function SponsoredConsentCard() {
           Show sponsored cards
         </Button>
         <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("declined")}>
-          No thanks
+          {smallNeedsCards ? "No thanks, use my hours" : "No thanks"}
         </Button>
         <button type="button" className="ade-sponsored-link" onClick={() => openExternalUrl("https://ade-app.dev/privacy#sponsored")}>
           How it works

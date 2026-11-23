@@ -931,7 +931,7 @@ const CLERK_USERS_URL = "https://api.clerk.com/v1/users";
  * can't be asked. Verified only, as `readClerkUser`: an address someone
  * added but never proved is not theirs, so it must not put them on the list.
  */
-async function clerkUserIdsFor(env: Pick<CloudEnv, "CLERK_SECRET_KEY">, email: string): Promise<string[] | null> {
+export async function clerkUserIdsFor(env: Pick<CloudEnv, "CLERK_SECRET_KEY">, email: string): Promise<string[] | null> {
   const secretKey = env.CLERK_SECRET_KEY?.trim();
   if (!secretKey) return null;
   const response = await fetch(`${CLERK_USERS_URL}?email_address=${encodeURIComponent(email)}&limit=10`, {

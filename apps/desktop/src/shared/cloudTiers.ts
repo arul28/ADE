@@ -31,7 +31,7 @@ export type CloudTier = {
   type: "default" | "vm";
   cpu: number;
   memoryGb: number;
-  /** Hours of the plan (Medium-hours) this size uses per hour awake, in thousandths (the catalog's). 0 for Small. */
+  /** Hours of the plan (Medium-hours) this size uses per hour awake, in thousandths (the account's catalog). 0 for Small, unless Free's Small uses hours (sponsored cards off). */
   multiplierMilli: number;
   /** How far the disk may grow at this size, or null from an older server that does not say. */
   diskMaxGb: number | null;
@@ -119,7 +119,7 @@ export function cloudTierRateLabel(tier: Pick<CloudTier, "multiplierMilli">): st
   return formatCloudHoursRate(tier.multiplierMilli / 1000);
 }
 
-/** Whether this size uses the plan's hours: every size but Small. */
+/** Whether this size uses the plan's hours: every size but Small, and Small too when the account's catalog rates it (Free, sponsored cards off). */
 export function cloudTierUsesHours(tier: Pick<CloudTier, "multiplierMilli">): boolean {
   return tier.multiplierMilli > 0;
 }
@@ -133,11 +133,12 @@ function withArticle(label: string): string {
  * A month's hours as time on each size that uses them, never as a
  * multiplier: "50 hours on a Medium · 20 on a Large · 12 on an X-Large".
  * Every number is the catalog's (`includedMilli` and each size's rate).
- * Empty when no size uses hours.
+ * Empty when no size uses hours. A plan's line, so never Small: a plan's
+ * Small is unlimited, even when this account's Free Small uses hours.
  */
 export function cloudHoursOnSizesLine(includedMilli: number, tiers: readonly CloudTier[]): string {
   return tiers
-    .filter(cloudTierUsesHours)
+    .filter((tier) => tier.id !== "small" && cloudTierUsesHours(tier))
     .map((tier, index) => {
       const hours = cloudTierHoursAt(tier, includedMilli).replace(/ h$/, "");
       return index === 0 ? `${hours} ${hours === "1" ? "hour" : "hours"} on ${withArticle(tier.label)}` : `${hours} on ${withArticle(tier.label)}`;
