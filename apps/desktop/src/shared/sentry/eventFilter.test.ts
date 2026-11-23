@@ -9,7 +9,7 @@ import {
 import { codedError } from "../codedError";
 import { AdeExpectedError } from "../expectedError";
 import { isExpectedOutcome } from "./expectedFailure";
-import { scrubFreeTextThenCut, scrubOutputTail } from "./scrub";
+import { scrubFreeTextThenCut, scrubOutputTail, scrubRelayPath, scrubString } from "./scrub";
 
 type TestEvent = Record<string, any>;
 
@@ -57,6 +57,18 @@ describe("createSentryEventHooks", () => {
       message: "GET https://hooks.ade-app.dev/hooks/[id]/[token]",
       data: { authorization: "[redacted]" },
     });
+  });
+
+  it("redacts the media server's path token in URLs and span paths", () => {
+    const token = "A".repeat(43);
+    expect(scrubString(`http://127.0.0.1:5555/${token}/project/x`)).toBe(
+      "http://127.0.0.1:5555/[token]/project/x",
+    );
+    expect(scrubRelayPath(`/${token}/project/x`)).toBe("/[token]/project/x");
+    // A 40-character commit SHA and a short ordinary segment are not tokens.
+    expect(scrubRelayPath(`/${"a".repeat(40)}/x`)).toBe(`/${"a".repeat(40)}/x`);
+    // File paths are not URLs and stay whole.
+    expect(scrubString("src/host/tunnel.ts")).toBe("src/host/tunnel.ts");
   });
 
   it("scrubs spans and breadcrumbs, which never pass beforeSend", () => {
