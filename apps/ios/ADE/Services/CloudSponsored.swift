@@ -244,6 +244,11 @@ func cloudSaveSponsoredConsent(_ consent: String) async -> Result<CloudSponsored
     // A no deletes the account's viewer rows on the server.
     if !state.granted { CloudSponsoredStore.shared.forgetSeen() }
     AccountCloudStore.shared.noteSponsored(state, generation: generation)
+    // While Free's Small needs cards, the answer also moved Small's rate in the
+    // account's catalog: read the account again so Small's hours show it.
+    if state.smallNeedsCards == true, generation == AccountCloudStore.shared.generation {
+      SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+    }
     return .success(state)
   } catch {
     cloudSponsoredLog.notice("sponsored consent save failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
