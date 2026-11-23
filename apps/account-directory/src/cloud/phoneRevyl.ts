@@ -544,8 +544,22 @@ async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string
     // One build at a time per phone (Revyl's runners bill by the hour): claimed in this write, so two starts can't both run.
     // Only a claim that never got Revyl's answer (no job) lapses; a build Revyl took, or may have, holds it until
     // it ends or the phone does (an accepted build waits for a runner with no bound).
-    const claimed = await env.DB.prepare("update cloud_phones set build_started_at = ?, build_job = null where phone_id = ? and user_id = ? and (build_started_at is null or (build_job is null and build_started_at <= ?))")
+    const claim = () => env.DB.prepare("update cloud_phones set build_started_at = ?, build_job = null where phone_id = ? and user_id = ? and (build_started_at is null or (build_job is null and build_started_at <= ?))")
       .bind(now, phone.id, userId, now - BUILD_TIMEOUT_SECONDS * 1000).run();
+    let claimed = await claim();
+    if ((claimed.meta?.changes ?? 0) !== 1) {
+      // The held build may have ended with nobody following it (ADE closed, a status read failed): asked once,
+      // an ended one frees the claim. An unknown outcome (`unknown`) stays held.
+      const held = await env.DB.prepare("select build_job from cloud_phones where phone_id = ? and user_id = ?").bind(phone.id, userId).first<{ build_job: string | null }>();
+      const job = held?.build_job;
+      if (job && UUID.test(job)) {
+        const status = await workspaceJson(env, workspace, "GET", `/apps/remote/${encodeURIComponent(job)}/status`);
+        if (status.status === 200 && BUILD_ENDED.has(String(status.body?.status ?? "").toLowerCase())) {
+          await env.DB.prepare("update cloud_phones set build_started_at = null, build_job = null where phone_id = ? and user_id = ? and build_job = ?").bind(phone.id, userId, job).run();
+          claimed = await claim();
+        }
+      }
+    }
     if ((claimed.meta?.changes ?? 0) !== 1) {
       return fail("phone_busy", "A build is already running on your ADE Cloud iPhone. Wait for it to finish, or stop the phone and start a new one.", 409);
     }
