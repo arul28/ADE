@@ -94,8 +94,9 @@ no cards to show there, so Small keeps using hours.
 Cards go only to viewers in `GRAVITY_COUNTRIES` (default `US,CA`), read from
 Cloudflare's `cf.country` for the viewer's own connection; where the ADE Cloud
 computer runs does not matter. While ads are test ads (`gravity_live` off), an
-account on the testers list skips that check, so the owner can test from
-anywhere. Real ads keep it for everyone.
+account on the testers list skips that check for cards, so the owner can test
+from anywhere. Real ads keep it for everyone, and so does the Index: it has no
+test mode, so a tester abroad gets no Index picks.
 
 Small's rate is changed on the computer's row (the time so far is charged at
 the old rate), at once after a yes or no, a test change or a switch flip, and

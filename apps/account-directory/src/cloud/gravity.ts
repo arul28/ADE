@@ -125,14 +125,19 @@ async function switchReaches(env: GravityEnv, account: AccountRow, mode: Mode): 
   return mode === "all" || isTester(env, account.user_id);
 }
 
+/** Whether a country is outside `GRAVITY_COUNTRIES`. An unknown one (no Cloudflare data) is inside. */
+function outsideCountryList(env: GravityEnv, country: string | null): boolean {
+  return Boolean(country) && !countriesOf(env).includes(country!);
+}
+
 /**
- * Whether the caller is outside the countries cards are shown in
- * (`GRAVITY_COUNTRIES`). An unknown country (no Cloudflare data) is inside.
- * While ads are Gravity's test ads, a tester is inside from anywhere: test
- * ads pay nobody, and the owner tests from wherever they are.
+ * Whether the caller is outside the countries cards are shown in. While ads
+ * are Gravity's test ads, a tester is inside from anywhere: test ads pay
+ * nobody, and the owner tests from wherever they are. (The Index has no test
+ * mode, so it checks the list itself.)
  */
 async function outsideCountries(env: GravityEnv, account: AccountRow, country: string | null, switches: Switches): Promise<boolean> {
-  if (!country || countriesOf(env).includes(country)) return false;
+  if (!outsideCountryList(env, country)) return false;
   return switches.live || !(await isTester(env, account.user_id));
 }
 
@@ -699,8 +704,10 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   const switches = await gravitySwitches(env);
   const blocked = await blockedReason(env, account, viewer?.country ?? null, switches);
   if (blocked) return none(blocked);
-  // Gravity's Index has no test mode, so before go-live only the testers' searches reach it.
+  // Gravity's Index has no test mode, so before go-live only the testers' searches reach it,
+  // and a tester abroad gets none: its picks are real recommendations.
   if (!switches.live && switches.mode !== "testers") return none("off");
+  if (outsideCountryList(env, viewer?.country ?? null)) return none("country");
   const consent = await readConsent(env, userId);
   if (consent?.consent !== "granted") return none("consent");
   if (!viewer?.ip || now - viewer.seen_at > SPONSORED_VIEWER_FRESH_MS) return none("nobody_watching");

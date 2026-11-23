@@ -5255,10 +5255,16 @@ describe("sponsored cards", () => {
     harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
     const abroad = async () => ((await (await fromBrazil("GET", "/cloud/account")).json()) as CloudAccountState).sponsored?.ads;
     expect(await abroad()).toBe(true);
+    // Its yes from abroad counts too, and frees Small; with real ads it is refused.
+    expect((await fromBrazil("PUT", "/cloud/sponsored/consent", { consent: "granted" })).status).toBe(200);
+    expect(computer(harness).multiplier_milli).toBe(0);
+    expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     goLive();
     expect(await abroad()).toBe(false);
+    expect((await fromBrazil("PUT", "/cloud/sponsored/consent", { consent: "granted" })).status).toBe(403);
     setting("gravity_live", "off");
     harness.exec("delete from cloud_sponsored_testers where user_id = ?", OWNER);
+    expect(computer(harness).multiplier_milli).toBe(500);
     const declined = await accountState();
     expect([declined.sponsored?.smallNeedsCards, declined.catalog.sizes.find((size) => size.tier === "small")?.multiplierMilli]).toEqual([true, 500]);
     clock += HOUR;
@@ -5310,7 +5316,16 @@ describe("sponsored cards", () => {
     expect(await (await send(OWNER, "/cloud/sponsored/index", { instanceId: INSTANCE, chatId: "chat-child", need: "a hosted Postgres for this app" })).json()).toEqual({ pick: null, reason: "not_cloud" });
     expect(gravityCalls).toHaveLength(1);
 
+    // A tester watching from outside the countries gets no search before go-live either: Index picks are real.
+    setting("gravity_live", "off");
+    setting("gravity_ads", "testers");
+    harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
+    harness.exec("update cloud_sponsored_viewers set country = 'BR' where user_id = ?", OWNER);
+    expect(await (await index()).json()).toEqual({ pick: null, reason: "country" });
+    expect(gravityCalls).toHaveLength(1);
+
     // Ten minutes after the person last looked, nobody is watching.
+    harness.exec("update cloud_sponsored_viewers set country = null where user_id = ?", OWNER);
     clock = NOW + 11 * 60_000;
     expect(await (await index()).json()).toEqual({ pick: null, reason: "nobody_watching" });
     expect(gravityCalls).toHaveLength(1);

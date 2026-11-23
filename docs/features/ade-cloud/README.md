@@ -727,7 +727,8 @@ card, whatever the plan.
   last changed is asked again.
 - **Testers abroad:** while ads are test ads (`gravity_live` off), an account
   on the testers list gets cards from any country; everyone else still needs
-  `GRAVITY_COUNTRIES`. Real ads keep the country check for everyone.
+  `GRAVITY_COUNTRIES`. Real ads keep the country check for everyone, and so
+  does the Index: it has no test mode, so its picks are always real.
 - **Testing:** the account test tool flips these switches and has an account
   act as any plan, instantly, without touching Stripe
   ([account-test-tool.md](account-test-tool.md)).
