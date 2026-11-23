@@ -2067,6 +2067,8 @@ type CodexResumeFailureError = Error & {
   resumeFailureClassification: ResumeFailureClassification;
   /** The app-server's structured error `data`, carried past the rewrite of its message. */
   data?: unknown;
+  /** The resume request itself hit its deadline: the process never answered. */
+  codexRequestTimeout?: true;
 };
 
 function isCodexResumeFailureError(error: unknown): error is CodexResumeFailureError {
@@ -2915,6 +2917,16 @@ type CodexRequestOptions = {
 function isCodexRequestTimeoutError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /^Codex request '.+' timed out after \d+ms\.$/.test(message);
+}
+
+/**
+ * A Codex app-server request hit its deadline, also when the raw timeout was
+ * wrapped in the resume failure ADE reports (`thread/resume`). The process
+ * stayed "ready" without answering, so nothing on it can be trusted.
+ */
+function isCodexAppServerUnresponsiveError(error: unknown): boolean {
+  return isCodexRequestTimeoutError(error)
+    || (isCodexResumeFailureError(error) && error.codexRequestTimeout === true);
 }
 
 function rejectPendingCodexRequests(
@@ -6285,6 +6297,8 @@ type PreparedSendMessage = {
   laneDirectiveKey?: string | null;
   /** The epoch directives this turn's prompt carries, marked delivered after the run. */
   epochDirectiveKeys?: EpochDirectiveKeys;
+  /** The epoch directives this prompt revokes; their delivery keys are forgotten after the run. */
+  revokedEpochDirectives?: EpochDirective[];
   providerSlashCommand?: boolean;
   forceClaudeUserMessage?: boolean;
   onDispatched?: () => void;
@@ -10085,6 +10099,26 @@ function composeLaunchDirectives(baseText: string, directives: Array<string | nu
     .filter((directive) => directive.length > 0);
   if (filtered.length === 0) return baseText;
   return `${filtered.join("\n\n")}\n\nUser request:\n${baseText}`;
+}
+
+/**
+ * The turn text that retracts an epoch directive whose capability is gone.
+ * These directives ride the conversation (for Codex, as user-turn items), so
+ * omitting the block later does not remove what the agent was already told;
+ * it keeps following the old instruction. One short correction says it is
+ * void, once, on the first turn after the change.
+ */
+function buildEpochDirectiveRevocation(kind: EpochDirective): string {
+  switch (kind) {
+    case "computerUse":
+      return "ADE computer use is not available in this session now. Earlier computer-use instructions no longer apply.";
+    case "laneScreen":
+      return "This lane has no private screen now. Earlier lane-screen instructions no longer apply.";
+    case "laneDevices":
+      return "ADE: the lane device last announced is no longer bound. Earlier <ade-lane-tools> instructions no longer apply: this lane has no Apple device or Android emulator. Create one with `ade apple start` or `ade android device-create` if this chat needs it.";
+    case "laneGuidance":
+      return "ADE's guidance for this session changed. Earlier guidance no longer applies.";
+  }
 }
 
 /**
@@ -30538,6 +30572,13 @@ export function createAgentChatService(args: {
        *   defers forever.
        */
       deadCodexRuntime?: "turn_imminent" | "settle";
+      /**
+       * Codex: a request on this app-server hit its deadline without an answer
+       * (turn/start, thread/start or thread/resume), so the process is
+       * presumed stuck. It is stopped and forgotten regardless of how many
+       * chats still sit on it; each recovers as from a crash.
+       */
+      codexAppServerUnresponsive?: boolean;
     },
   ): void => {
     runtimeTeardownEpochs.set(managed, runtimeTeardownEpoch(managed) + 1);
@@ -30607,7 +30648,7 @@ export function createAgentChatService(args: {
         && !managed.deleted;
       runtime.suppressExitError = true;
       clearCodexNoFirstEventWatchdog(managed);
-      if (!releaseCodexRuntimeHost(managed, runtime)) {
+      if (!releaseCodexRuntimeHost(managed, runtime, { unresponsive: options?.codexAppServerUnresponsive === true })) {
         try { runtime.reader.close(); } catch { /* ignore */ }
         runtime.killTimer = terminateChildProcessTree(
           runtime.process,
@@ -47493,8 +47534,16 @@ export function createAgentChatService(args: {
    * the chat's running turn is interrupted and its threads unsubscribed, so
    * nothing of it keeps running unseen; a process that cannot answer that is
    * presumed stuck and stopped, and every chat on it recovers as from a crash.
+   * `unresponsive` says a request already hit its deadline with no answer:
+   * the process is presumed stuck at once, so it is stopped and forgotten
+   * even when other chats are still attached (they recover as from a crash),
+   * without waiting out the release requests on a server known to be silent.
    */
-  const releaseCodexRuntimeHost = (managed: ManagedChatSession | null, runtime: CodexRuntime): boolean => {
+  const releaseCodexRuntimeHost = (
+    managed: ManagedChatSession | null,
+    runtime: CodexRuntime,
+    options?: { unresponsive?: boolean },
+  ): boolean => {
     const seat = codexHostByRuntime.get(runtime);
     if (!seat) return false;
     codexHostByRuntime.delete(runtime);
@@ -47502,8 +47551,13 @@ export function createAgentChatService(args: {
     const ownThreadId = managed?.session.threadId ?? null;
     const turnId = runtime.activeTurnId ?? runtime.startedTurnId ?? null;
     const threadIds = [ownThreadId, ...runtime.codexSubagentThreads.keys()].filter((id): id is string => Boolean(id));
+    const remaining = host.detach(client, threadIds);
+    if (options?.unresponsive) {
+      host.kill();
+      return true;
+    }
     // A process that already exited holds nothing to release.
-    if (host.detach(client, threadIds) === 0 || !threadIds.length || host.isGone()) return true;
+    if (remaining === 0 || !threadIds.length || host.isGone()) return true;
     const release = (async () => {
       if (ownThreadId && turnId) {
         await host.request("turn/interrupt", { threadId: ownThreadId, turnId }, CODEX_SHARED_RELEASE_TIMEOUT_MS)
@@ -59725,10 +59779,10 @@ export function createAgentChatService(args: {
     // on whether the capability set had changed since the agent was last told.
     // It is now epoch-scoped like the lane directive, and re-sent whenever the
     // available backends change, so a changed capability set is re-announced
-    // rather than repeated. A transition to NO available backend emits no
-    // directive at all (there is nothing to say), so a capability that is lost
-    // entirely is not revoked mid-session — the agent simply stops being told
-    // it is available on the next turn that re-announces.
+    // rather than repeated. A transition to NO available backend has no new
+    // directive to send; one short revocation says the old block is void (the
+    // turn text is conversation history, so omitting it later is not a
+    // retraction).
     const computerUseDirective = personalSession ? null : currentComputerUseDirective();
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
@@ -59745,6 +59799,9 @@ export function createAgentChatService(args: {
       && effectiveCursorRuntime(managed, runtime) === "cloud";
     // The lane's Android emulator goes in the same block (one hint names both
     // devices); an Apple-only lane keeps its text and key exactly.
+    // A lookup that throws returns null like "no device", but it says nothing
+    // about the device: a failed read must not revoke a hint that is still true.
+    let laneDeviceLookupFailed = false;
     const laneDevices = personalSession || cursorCloudTurn
       ? null
       : resolveLaneDeviceDirective({
@@ -59752,16 +59809,22 @@ export function createAgentChatService(args: {
           appleLookup: laneAppleDeviceLookup,
           androidLookup: laneAndroidDeviceLookup,
           shell: laneDirectiveShell,
-          onAppleLookupError: (error) => logger.warn("agent_chat.lane_apple_device_lookup_failed", {
-            sessionId,
-            laneId: executionContext.laneId,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-          onAndroidLookupError: (error) => logger.warn("agent_chat.lane_android_device_lookup_failed", {
-            sessionId,
-            laneId: executionContext.laneId,
-            error: error instanceof Error ? error.message : String(error),
-          }),
+          onAppleLookupError: (error) => {
+            laneDeviceLookupFailed = true;
+            logger.warn("agent_chat.lane_apple_device_lookup_failed", {
+              sessionId,
+              laneId: executionContext.laneId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
+          onAndroidLookupError: (error) => {
+            laneDeviceLookupFailed = true;
+            logger.warn("agent_chat.lane_android_device_lookup_failed", {
+              sessionId,
+              laneId: executionContext.laneId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
         });
     const shouldInjectLaneDevicesDirective = laneDevices != null
       && managed.deliveredDirectiveKeys.laneDevices !== laneDevices.key;
@@ -59775,6 +59838,29 @@ export function createAgentChatService(args: {
       : null;
     const shouldInjectLaneScreenDirective = laneScreenDirectiveKey != null
       && managed.deliveredDirectiveKeys.laneScreen !== laneScreenDirectiveKey;
+    // A Devin Cloud turn runs on a Devin VM: every directive below describes
+    // this machine (its worktree path, the `ade` CLI, computer use) and none of
+    // it exists there. Its only framing is the branch pin `runAcpTurn` adds.
+    const devinCloudPrompt = isDevinCloudAcpSession(managed.session);
+    // An epoch directive the provider thread already holds whose capability is
+    // gone now. The old block is conversation history, so leaving it out of
+    // this turn does not retract it; the revocation text says it is void.
+    const revokedEpochDirectives: EpochDirective[] = [];
+    if (!personalSession && !cursorCloudTurn && !providerSlashCommand && !devinCloudPrompt) {
+      if (computerUseDirectiveKey == null && managed.deliveredDirectiveKeys.computerUse != null) {
+        revokedEpochDirectives.push("computerUse");
+      }
+      if (
+        laneDevices == null
+        && !laneDeviceLookupFailed
+        && managed.deliveredDirectiveKeys.laneDevices != null
+      ) {
+        revokedEpochDirectives.push("laneDevices");
+      }
+      if (laneScreenDirectiveKey == null && managed.deliveredDirectiveKeys.laneScreen != null) {
+        revokedEpochDirectives.push("laneScreen");
+      }
+    }
     const expandedSlashCommandPrompt = providerSlashCommand && !personalSession
       ? expandAdeSlashCommand(managed, trimmed)
       : null;
@@ -59788,10 +59874,6 @@ export function createAgentChatService(args: {
     const slashCommandPromptWithMentions = expandedSlashCommandPrompt != null
       ? carryChatMentionBlocks(trimmed, expandedSlashCommandPrompt)
       : null;
-    // A Devin Cloud turn runs on a Devin VM: every directive below describes
-    // this machine (its worktree path, the `ade` CLI, computer use) and none of
-    // it exists there. Its only framing is the branch pin `runAcpTurn` adds.
-    const devinCloudPrompt = isDevinCloudAcpSession(managed.session);
     const promptText = devinCloudPrompt
       ? trimmed
       : providerSlashCommand && !personalSession
@@ -59827,6 +59909,7 @@ export function createAgentChatService(args: {
             ? laneScreenDirective
             : null,
           shouldInjectLaneDevicesDirective ? laneDevices.directive : null,
+          ...revokedEpochDirectives.map(buildEpochDirectiveRevocation),
           contextAttachmentPrompt || null,
         ]);
     const codexGoalTitleSeed = managed.session.provider === "codex" && isCodexGoalSlashInput(trimmed)
@@ -59886,6 +59969,7 @@ export function createAgentChatService(args: {
             ...(shouldInjectLaneDevicesDirective ? { laneDevices: laneDevices.key } : {}),
             ...(shouldInjectLaneScreenDirective ? { laneScreen: laneScreenDirectiveKey } : {}),
           },
+      revokedEpochDirectives,
       providerSlashCommand: personalSession ? false : providerSlashCommand === true,
       forceClaudeUserMessage: managed.session.provider === "claude" && (providerSlashCommand == null || personalSession) && slashCommand != null,
       ...(runtime ? { runtime } : {}),
@@ -59937,8 +60021,8 @@ export function createAgentChatService(args: {
       managed.runtime.agentMessagePhaseByItemId.clear();
       managed.runtime.recentNotificationKeys.clear();
       managed.runtime.reconciledItemSignaturesByTurn.clear();
-      if (isCodexRequestTimeoutError(error)) {
-        teardownRuntime(managed, "handle_close");
+      if (isCodexAppServerUnresponsiveError(error)) {
+        teardownRuntime(managed, "handle_close", { codexAppServerUnresponsive: true });
       }
     }
     if (managed.runtime?.kind === "opencode" && !isBusyError) {
@@ -60230,6 +60314,10 @@ export function createAgentChatService(args: {
         code: "provider_thread_resume_failed" as const,
         resumeFailureClassification: classification,
         data: asRecord(error)?.data,
+        // The message rewrite above hides the raw timeout shape from
+        // `isCodexRequestTimeoutError`; keep the fact, so the caller can retire
+        // an app-server that never answered instead of reusing it.
+        ...(isCodexRequestTimeoutError(error) ? { codexRequestTimeout: true as const } : {}),
       },
     );
   };
@@ -66118,6 +66206,7 @@ export function createAgentChatService(args: {
       reasoningEffort,
       laneDirectiveKey,
       epochDirectiveKeys,
+      revokedEpochDirectives,
       providerSlashCommand,
       forceClaudeUserMessage,
       steerId,
@@ -66191,6 +66280,10 @@ export function createAgentChatService(args: {
         && managed.directiveDispatchGeneration !== (managed.directiveEpochGeneration ?? 0)
       ) return;
       Object.assign(managed.deliveredDirectiveKeys, epochDirectiveKeys);
+      // A revocation this turn delivered is done: forgetting the old key now
+      // keeps it from being repeated (and only now, after the run, so a failed
+      // send leaves the key and retries the revocation next turn).
+      for (const kind of revokedEpochDirectives ?? []) delete managed.deliveredDirectiveKeys[kind];
     };
 
     const sessionPresetTiers = sessionPresetReasoningTiers(managed);
