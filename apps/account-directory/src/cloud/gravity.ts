@@ -176,7 +176,8 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
     ads: reason == null,
     consent: answer,
     test: !switches.live,
-    ...(settings.free_small_needs_ads === "on" ? { smallNeedsCards: true } : {}),
+    // Only Free (or acting as it) has the deal; a paid account's Small is unlimited either way.
+    ...(settings.free_small_needs_ads === "on" && shownPlanIdOf(account) === "free" ? { smallNeedsCards: true } : {}),
   };
 }
 
@@ -220,8 +221,11 @@ export async function syncSmallRates(env: GravityEnv, account: AccountRow, now: 
     if (rate === computer.multiplier_milli) continue;
     // The new rate first, held to the row as read; then the stretch so far is
     // charged at the old rate (bound now) and a new one starts.
+    // A rate that uses hours is never written over a yes saved meanwhile (a no
+    // and a yes racing): the yes's own sync, or the next tick, has the say.
     const guard = statusGuard(computer);
-    statements.push(env.DB.prepare(`update cloud_computers set multiplier_milli = ? where instance_id = ? and multiplier_milli = ? and ${guard.sql}`)
+    const yesSince = smallFree ? "" : ` and not exists (select 1 from cloud_sponsored_consent where user_id = cloud_computers.user_id and consent = 'granted')`;
+    statements.push(env.DB.prepare(`update cloud_computers set multiplier_milli = ? where instance_id = ? and multiplier_milli = ? and ${guard.sql}${yesSince}`)
       .bind(rate, computer.instance_id, computer.multiplier_milli, ...guard.binds));
     if (computer.awake_since != null && computer.awake_since <= now) statements.push(...restartStretchStatements(env, computer, now));
     changed += 1;

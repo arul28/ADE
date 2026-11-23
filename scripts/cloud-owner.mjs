@@ -30,6 +30,21 @@ Switches:
 Environment: CLOUD_OWNER_TOKEN (required), ADE_ACCOUNT_ORIGIN (default https://account.ade-app.dev).`;
 
 const origin = (process.env.ADE_ACCOUNT_ORIGIN || "https://account.ade-app.dev").replace(/\/+$/, "");
+// The owner token goes only over HTTPS, or plain HTTP to this machine (a local Worker).
+{
+  let url;
+  try {
+    url = new URL(origin);
+  } catch {
+    console.error(`ADE_ACCOUNT_ORIGIN is not a URL: ${origin}`);
+    process.exit(1);
+  }
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    console.error("ADE_ACCOUNT_ORIGIN must be https://, or http:// to localhost, so the owner token is never sent in the clear.");
+    process.exit(1);
+  }
+}
 const token = process.env.CLOUD_OWNER_TOKEN?.trim();
 
 function fail(message) {
@@ -37,7 +52,15 @@ function fail(message) {
   process.exit(1);
 }
 
-function readOptions(args) {
+/** The options each command takes; any other is refused before a request goes. */
+const COMMAND_OPTIONS = {
+  "act-as": ["days", "note"],
+  limits: ["computers", "hours", "days", "note"],
+  set: ["note"],
+};
+
+function readOptions(command, args) {
+  const allowed = COMMAND_OPTIONS[command] ?? [];
   const options = {};
   const rest = [];
   for (let index = 0; index < args.length; index += 1) {
@@ -46,8 +69,9 @@ function readOptions(args) {
       rest.push(arg);
       continue;
     }
+    if (!allowed.includes(arg.slice(2))) fail(`${command ?? "This command"} takes no ${arg}.\n\n${USAGE}`);
     const value = args[index + 1];
-    if (value === undefined) fail(`${arg} needs a value.\n\n${USAGE}`);
+    if (value === undefined || value.startsWith("--")) fail(`${arg} needs a value.\n\n${USAGE}`);
     options[arg.slice(2)] = value;
     index += 1;
   }
@@ -112,7 +136,7 @@ function printSettings({ settings, ceilings, inForce }) {
 }
 
 const [command, ...args] = process.argv.slice(2);
-const { options, rest } = readOptions(args);
+const { options, rest } = readOptions(command, args);
 const test = () => ({ ...(options.days ? { days: whole("days", options.days) } : {}), ...(options.note ? { note: options.note } : {}) });
 
 switch (command) {

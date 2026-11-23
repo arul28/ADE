@@ -219,8 +219,19 @@ export default Sentry.withSentry(sentryOptions, {
         settle("cloud_wakes", () => runCloudWakes(env)),
         // ADE Cloud: reads the provider list once, meters hours, stops computers
         // at 0 hours, and runs the daily and ten-minute checks. No computers, no
-        // provider calls.
-        settle("cloud_account", () => runCloudMinuteCron(env, { waitUntil: (promise) => ctx.waitUntil(promise) })),
+        // provider calls. First, each on its own, the two sweeps that re-rate
+        // Small computers, so the hours check reads their stretches after them
+        // (a re-rate during it would count one stretch twice):
+        // - the account test tool (`cloud/ownerAccounts.ts`): tests whose time
+        //   is up end. One indexed read when none is due.
+        // - Free's Small computers (`cloud/gravity.ts`): a page of accounts whose
+        //   Small runs at the wrong rate after a switch flipped. One read when
+        //   none is wrong.
+        settle("cloud_account", async () => {
+          await settle("cloud_account_tests", () => expireAccountTests(env, event.scheduledTime));
+          await settle("cloud_small_rates", () => syncAllSmallRates(env, Date.now()));
+          await runCloudMinuteCron(env, { waitUntil: (promise) => ctx.waitUntil(promise) });
+        }),
         // ADE Cloud extra hours: reports whole hours to the Stripe meter. One
         // indexed read when no account has extra hours on.
         settle("cloud_extra_hours", () => reportExtraHours(env)),
@@ -235,13 +246,6 @@ export default Sentry.withSentry(sentryOptions, {
         // people watched from (IP, user agent, device) and reply answers a day
         // old, for every account. Nothing on other ticks.
         settle("cloud_sponsored_prune", () => pruneSponsored(env, event.scheduledTime)),
-        // The account test tool (`cloud/ownerAccounts.ts`): tests whose time
-        // is up end. One indexed read when none is due.
-        settle("cloud_account_tests", () => expireAccountTests(env, event.scheduledTime)),
-        // Free's Small computers (`cloud/gravity.ts`): a page of accounts whose
-        // Small runs at the wrong rate after a switch flipped. One read when
-        // none is wrong.
-        settle("cloud_small_rates", () => syncAllSmallRates(env, event.scheduledTime)),
         // The server launcher's records past their week (and a draft's day),
         // with their files. One indexed read when none is due.
         settle("cloud_launches", () => expireCloudLaunches(env)),
