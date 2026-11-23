@@ -4316,6 +4316,20 @@ describe("prService.getStatus superseded cancelled checks", () => {
       cancelledRowRemains: false,
     },
     {
+      // A re-run inside one workflow run keeps `run_number`, so the lineage
+      // rule cannot see it; the newest row per name must decide for both the
+      // rollup and the Checks list.
+      name: "does not fail a head whose same-name check was re-run in the same workflow run",
+      checkRuns: [
+        cancelledCheck(2401, "build", 950),
+        passedCheck(2402, "build", 950),
+        passedCheck(2403, "test", 950),
+      ],
+      workflowRuns: [{ workflow_id: 1, event: "pull_request", run_number: 41, check_suite_id: 950 }],
+      expectedStatus: "passing",
+      cancelledRowRemains: false,
+    },
+    {
       name: "keeps a cancelled check that belongs to the newest run of its lineage",
       checkRuns: [cancelledCheck(2001, "check", 910), passedCheck(2002, "build", 910)],
       workflowRuns: [{ workflow_id: 1, event: "pull_request", run_number: 41, check_suite_id: 910 }],
@@ -4351,9 +4365,9 @@ describe("prService.getStatus superseded cancelled checks", () => {
       ],
       requiredContexts: ["required-job"],
       expectedStatus: "failing",
-      // The rollup knows branch protection and keeps the row; the Checks list
-      // has no required-context knowledge and applies the plain lineage rule.
-      cancelledRowRemains: false,
+      // The Checks list resolves the same branch protection the rollup does,
+      // so it keeps the row too instead of showing an all-green tab.
+      cancelledRowRemains: true,
     },
     {
       name: "keeps the first rollup when the workflow runs read fails",
