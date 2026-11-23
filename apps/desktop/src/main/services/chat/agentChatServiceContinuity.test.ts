@@ -961,6 +961,47 @@ describe("explicit provider-thread continuity recovery", () => {
     }
   });
 
+  it("retires an app-server that never answers thread/resume on an explicit retry", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "unknown",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    mockState.codexResponseOverrides.set("thread/resume", { thread: { id: "thread-1" } });
+    // The app-server answers initialize but never answers the retry's resume.
+    mockState.delayedCodexMethods.add("thread/resume");
+    vi.useFakeTimers();
+    const { service } = createService();
+    try {
+      const firstRetry = service.recoverContinuity({ sessionId: session.id, mode: "retry_original" });
+      firstRetry.catch(() => {});
+      await waitForFakeTimerCondition(
+        () => mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume"),
+        "the app-server to receive thread/resume",
+      );
+      await vi.advanceTimersByTimeAsync(30_001);
+      await expect(firstRetry).resolves.toMatchObject({ ok: false, mode: "retry_original" });
+      const initializesBefore = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "initialize").length;
+      expect(initializesBefore).toBe(1);
+
+      // The wedged process must not be handed back to the next "Try again".
+      mockState.delayedCodexMethods.clear();
+      const secondRetry = service.recoverContinuity({ sessionId: session.id, mode: "retry_original" });
+      await expect(secondRetry).resolves.toMatchObject({ ok: true, mode: "retry_original", threadId: "thread-1" });
+      expect(mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "initialize").length).toBe(initializesBefore + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("leaves required recovery untouched when disk pressure blocks history reconstruction", async () => {
     const session = await createPersistedCodexThread();
     const continuityRecovery = {

@@ -30575,8 +30575,10 @@ export function createAgentChatService(args: {
       /**
        * Codex: a request on this app-server hit its deadline without an answer
        * (turn/start, thread/start or thread/resume), so the process is
-       * presumed stuck. It is stopped and forgotten regardless of how many
-       * chats still sit on it; each recovers as from a crash.
+       * presumed stuck. A private one, or the last chat on a shared one, is
+       * stopped; a shared one other chats are still using is retired from the
+       * pool instead. The chat's thread pointer is kept, so its delivered
+       * epoch directives are kept too: the resumed thread still holds them.
        */
       codexAppServerUnresponsive?: boolean;
     },
@@ -30636,8 +30638,13 @@ export function createAgentChatService(args: {
     // next send resumes that thread (a failed resume throws rather than opening
     // a new one). The resumed thread already holds the lane and computer-use
     // directives; forgetting them re-sent ~10k chars on every idle restart.
+    // A process retired for silence is the same case: the pointer survives, so
+    // the old thread still holds its directives and must keep their keys, or a
+    // capability that disappeared is never revoked (`revokedEpochDirectives`).
     const preserveDeliveredDirectives = preserveProviderResumeState
-      || (managed.runtime.kind === "codex" && reasonAllowsPreservation && Boolean(managed.session.threadId));
+      || (managed.runtime.kind === "codex"
+        && (reasonAllowsPreservation || options?.codexAppServerUnresponsive === true)
+        && Boolean(managed.session.threadId));
     if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
       failOpenCodexCompactions(managed, runtime, "teardown");
@@ -47535,9 +47542,12 @@ export function createAgentChatService(args: {
    * nothing of it keeps running unseen; a process that cannot answer that is
    * presumed stuck and stopped, and every chat on it recovers as from a crash.
    * `unresponsive` says a request already hit its deadline with no answer:
-   * the process is presumed stuck at once, so it is stopped and forgotten
-   * even when other chats are still attached (they recover as from a crash),
-   * without waiting out the release requests on a server known to be silent.
+   * the process is presumed stuck, so on a private one (or the last chat on a
+   * shared one) it is stopped at once, without waiting out the release
+   * requests on a server known to be silent. A shared process other chats are
+   * still using is not stopped: one chat's deadline can be a slow machine, and
+   * killing it would fail their live turns. It is retired from the pool
+   * instead, so no new chat joins it, and stops with its last chat.
    */
   const releaseCodexRuntimeHost = (
     managed: ManagedChatSession | null,
@@ -47553,7 +47563,8 @@ export function createAgentChatService(args: {
     const threadIds = [ownThreadId, ...runtime.codexSubagentThreads.keys()].filter((id): id is string => Boolean(id));
     const remaining = host.detach(client, threadIds);
     if (options?.unresponsive) {
-      host.kill();
+      // `detach` already stopped a private process and the last chat's one.
+      if (remaining > 0) host.poison();
       return true;
     }
     // A process that already exited holds nothing to release.
@@ -59801,7 +59812,11 @@ export function createAgentChatService(args: {
     // devices); an Apple-only lane keeps its text and key exactly.
     // A lookup that throws returns null like "no device", but it says nothing
     // about the device: a failed read must not revoke a hint that is still true.
-    let laneDeviceLookupFailed = false;
+    // The two reads are tracked apart: a failed Apple read cannot explain an
+    // Android-only hint (nor the reverse), so the other platform's authoritative
+    // null still revokes it.
+    let laneAppleLookupFailed = false;
+    let laneAndroidLookupFailed = false;
     const laneDevices = personalSession || cursorCloudTurn
       ? null
       : resolveLaneDeviceDirective({
@@ -59810,7 +59825,7 @@ export function createAgentChatService(args: {
           androidLookup: laneAndroidDeviceLookup,
           shell: laneDirectiveShell,
           onAppleLookupError: (error) => {
-            laneDeviceLookupFailed = true;
+            laneAppleLookupFailed = true;
             logger.warn("agent_chat.lane_apple_device_lookup_failed", {
               sessionId,
               laneId: executionContext.laneId,
@@ -59818,7 +59833,7 @@ export function createAgentChatService(args: {
             });
           },
           onAndroidLookupError: (error) => {
-            laneDeviceLookupFailed = true;
+            laneAndroidLookupFailed = true;
             logger.warn("agent_chat.lane_android_device_lookup_failed", {
               sessionId,
               laneId: executionContext.laneId,
@@ -59850,12 +59865,24 @@ export function createAgentChatService(args: {
       if (computerUseDirectiveKey == null && managed.deliveredDirectiveKeys.computerUse != null) {
         revokedEpochDirectives.push("computerUse");
       }
-      if (
-        laneDevices == null
-        && !laneDeviceLookupFailed
-        && managed.deliveredDirectiveKeys.laneDevices != null
-      ) {
-        revokedEpochDirectives.push("laneDevices");
+      if (laneDevices == null) {
+        // The delivered hint names the Apple device, the emulator or both, and
+        // its key says which. Only a failed read for a platform the hint names
+        // can hide a still-bound device in it; a failure for the other one
+        // leaves the delivered content fully explained by the reads that did
+        // answer, so the hint is revoked.
+        const deliveredLaneDeviceKey = managed.deliveredDirectiveKeys.laneDevices ?? null;
+        const deliveredHadApple = deliveredLaneDeviceKey != null
+          && !deliveredLaneDeviceKey.startsWith("android:");
+        const deliveredHadAndroid = deliveredLaneDeviceKey != null
+          && (deliveredLaneDeviceKey.startsWith("android:") || deliveredLaneDeviceKey.includes("|android:"));
+        if (
+          deliveredLaneDeviceKey != null
+          && !(deliveredHadApple && laneAppleLookupFailed)
+          && !(deliveredHadAndroid && laneAndroidLookupFailed)
+        ) {
+          revokedEpochDirectives.push("laneDevices");
+        }
       }
       if (laneScreenDirectiveKey == null && managed.deliveredDirectiveKeys.laneScreen != null) {
         revokedEpochDirectives.push("laneScreen");
@@ -71682,6 +71709,13 @@ export function createAgentChatService(args: {
         } catch (error) {
           const classifiedError = codexResumeFailureError(managed, originalThreadId, error);
           const classification = classifiedError.resumeFailureClassification;
+          // The retry met an app-server that never answered, exactly as a send
+          // does (`emitManagedSendFailure`). Retire it here too: otherwise the
+          // pool hands the same silent process back, and every "Try again"
+          // waits out the same deadline without the process ever changing.
+          if (isCodexAppServerUnresponsiveError(classifiedError) && managed.runtime?.kind === "codex") {
+            teardownRuntime(managed, "handle_close", { codexAppServerUnresponsive: true });
+          }
           if (!managed.session.continuityRecovery) {
             managed.session.continuityRecovery = {
               state: "required",

@@ -124,6 +124,26 @@ describe("codexAppServerPool", () => {
     expect(terminate).not.toHaveBeenCalled();
   });
 
+  it("retires a poisoned shared process without stopping it, and stops it with its last chat", async () => {
+    const { proc, pool, host, terminate } = setup();
+    const leaving = chat("chat-leaving", ["thread-leaving"]);
+    const staying = chat("chat-staying", ["thread-staying"]);
+    host.attach(leaving.client);
+    host.attach(staying.client);
+
+    expect(host.detach(leaving.client, ["thread-leaving"])).toBe(1);
+    host.poison();
+    // No new chat joins the retired process...
+    const replacement = fakeAppServer();
+    expect(pool.acquire({ key: "same-launch", spawn: () => replacement })).not.toBe(host);
+    // ...but the chat still on it keeps its process (and its turn) alive.
+    expect(terminate).not.toHaveBeenCalled();
+    expect(staying.exits).toEqual([]);
+    // The last chat leaving stops it, as it does for any shared process.
+    expect(host.detach(staying.client, ["thread-staying"])).toBe(0);
+    expect(terminate).toHaveBeenCalledWith(proc, null);
+  });
+
   it("unloads a thread a departed chat's request created, tells every chat when the process dies, and stops it with the last chat", async () => {
     const { proc, host, terminate } = setup();
     const leaving = chat("chat-leaving");

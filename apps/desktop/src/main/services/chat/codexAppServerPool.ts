@@ -72,6 +72,12 @@ export type CodexAppServerHost = {
    */
   detach(client: CodexAppServerClient, releasedThreadIds?: readonly string[]): number;
   clientCount(): number;
+  /**
+   * Removes this host from the shared pool so no new chat joins it, without
+   * touching the chats already on it. The process is not stopped: it stays
+   * until its last chat detaches, which stops it as usual.
+   */
+  poison(): void;
   /** True once the process has exited or failed to start. */
   isGone(): boolean;
   /**
@@ -411,6 +417,12 @@ export function createCodexAppServerPool(args: {
         return clients.length;
       },
       clientCount: () => clients.length,
+      poison: () => {
+        // Removing the pool entry is all: a live process must not be stopped
+        // under the chats still attached to it (their turns would fail), and
+        // `detach` stops it once its last client leaves.
+        forgetShared();
+      },
       isGone: () => gone,
       stderrTail: () => stderrTail,
       kill: () => {
