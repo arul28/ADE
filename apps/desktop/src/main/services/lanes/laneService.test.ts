@@ -258,6 +258,79 @@ describe("laneService automatic lane identity", () => {
     }
   });
 
+  it("completes the rename when git moved the branch but could not rewrite config", async () => {
+    const repoRoot = makeTempRepoRoot("ade-auto-lane-identity-config-lock-");
+    const db = await openFreshKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-auto-identity-lock", repoRoot });
+      db.run("update lanes set name = ?, branch_ref = ? where id = ?", [
+        "Naming Auto Created Lanes",
+        "ade/1a2b3c4d",
+        "lane-child",
+      ]);
+      // git moves the ref and HEAD first, then fails to rewrite branch.<name>
+      // behind a held .git/config.lock. The worktree is on the new name already.
+      let moved = false;
+      const newBranch = "ade/naming-auto-created-lanes";
+      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+        if (args[0] === "branch" && args[1] === "--show-current") {
+          return { exitCode: 0, stdout: `${moved ? newBranch : "ade/1a2b3c4d"}\n`, stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args.includes("@{upstream}")) return { exitCode: 1, stdout: "", stderr: "" };
+        if (args[0] === "remote" && args[1] === "get-url") return { exitCode: 2, stdout: "", stderr: "" };
+        if (args[0] === "check-ref-format") return { exitCode: 0, stdout: "", stderr: "" };
+        if (args[0] === "show-ref") {
+          return args.includes(`refs/heads/${newBranch}`)
+            ? { exitCode: 0, stdout: "", stderr: "" }
+            : { exitCode: 1, stdout: "", stderr: "" };
+        }
+        if (args[0] === "for-each-ref") {
+          return {
+            exitCode: 0,
+            stdout: moved ? `refs/heads/main\nrefs/heads/${newBranch}\n` : "refs/heads/main\nrefs/heads/ade/1a2b3c4d\n",
+            stderr: "",
+          };
+        }
+        if (args[0] === "config") return { exitCode: 1, stdout: "", stderr: "" };
+        if (args[0] === "branch" && args[1] === "-m") {
+          moved = true;
+          return {
+            exitCode: 128,
+            stdout: "",
+            stderr: "fatal: branch is renamed, but update of config-file failed",
+          };
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-auto-identity-lock",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const result = await service.applyAutoLaneIdentity({
+        laneId: "lane-child",
+        expectedLaneName: "Naming Auto Created Lanes",
+        temporaryBranch: "ade/1a2b3c4d",
+        laneTitle: "Naming Auto Created Lanes",
+        branchFragment: "naming-auto-created-lanes",
+      });
+
+      expect(result).toMatchObject({
+        branchRenameOutcome: "renamed",
+        branchRef: newBranch,
+      });
+      expect(db.get("select branch_ref from lanes where id = ?", ["lane-child"])).toMatchObject({
+        branch_ref: newBranch,
+      });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("skips a detached merged PR head branch even when git refs are gone", async () => {
     const repoRoot = makeTempRepoRoot("ade-auto-lane-identity-pr-");
     const db = await openFreshKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
