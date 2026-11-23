@@ -23,22 +23,37 @@ function makeProjectRoot(prefix: string): string {
 }
 
 describe("deviceRegistryService", () => {
-  it("advertises real Hyper-V LAN adapters and filters host-only virtual networks", () => {
+  it("advertises real LAN adapters and filters host-only, hotspot and VPN addresses", () => {
+    // The MAC backstop is Windows-only, so pin the platform for every host.
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     const networkInterfaces = vi.spyOn(os, "networkInterfaces").mockReturnValue({
       "vEthernet (WSL)": [{ address: "172.25.0.1", family: "IPv4", internal: false, netmask: "255.255.0.0", mac: "00:00:00:00:00:01", cidr: "172.25.0.1/16" }],
       "vEthernet (Default Switch)": [{ address: "172.26.0.1", family: "IPv4", internal: false, netmask: "255.255.0.0", mac: "00:00:00:00:00:02", cidr: "172.26.0.1/16" }],
       docker0: [{ address: "172.17.0.1", family: "IPv4", internal: false, netmask: "255.255.0.0", mac: "00:00:00:00:00:03", cidr: "172.17.0.1/16" }],
+      // Windows hotspot / Wi-Fi Direct adapters: ICS gateway, reach tethered devices only.
+      "Local Area Connection* 2": [{ address: "192.168.137.1", family: "IPv4", internal: false, netmask: "255.255.255.0", mac: "00:00:00:00:00:07", cidr: "192.168.137.1/24" }],
+      "LAN-Verbindung* 10": [{ address: "192.168.137.2", family: "IPv4", internal: false, netmask: "255.255.255.0", mac: "00:00:00:00:00:08", cidr: "192.168.137.2/24" }],
+      // RFC 2544 tunnels (Tailscale userspace, Clash/Mihomo Wintun) are never a LAN.
+      utun40: [{ address: "198.19.2.2", family: "IPv4", internal: false, netmask: "255.255.0.0", mac: "00:00:00:00:00:09", cidr: "198.19.2.2/16" }],
+      "VirtualBox Host-Only Network": [{ address: "192.168.56.1", family: "IPv4", internal: false, netmask: "255.255.0.0", mac: "0a:00:27:00:00:0a", cidr: "192.168.56.1/24" }],
+      "VMware Network Adapter VMnet8": [{ address: "192.168.159.1", family: "IPv4", internal: false, netmask: "255.255.255.0", mac: "00:50:56:c0:00:08", cidr: "192.168.159.1/24" }],
+      // A user-renamed VirtualBox adapter: only its MAC identifies it.
+      "Lab Only": [{ address: "192.168.56.2", family: "IPv4", internal: false, netmask: "255.255.0.0", mac: "0a:00:27:00:00:0b", cidr: "192.168.56.2/24" }],
       "vEthernet (External)": [{ address: "192.168.1.25", family: "IPv4", internal: false, netmask: "255.255.255.0", mac: "00:00:00:00:00:04", cidr: "192.168.1.25/24" }],
       en0: [{ address: "192.168.1.30", family: "IPv4", internal: false, netmask: "255.255.255.0", mac: "00:00:00:00:00:05", cidr: "192.168.1.30/24" }],
       tailscale0: [{ address: "100.70.0.4", family: "IPv4", internal: false, netmask: "255.255.255.255", mac: "00:00:00:00:00:06", cidr: "100.70.0.4/32" }],
     } as unknown as ReturnType<typeof os.networkInterfaces>);
 
-    const defaults = localSyncDeviceDefaults();
-    networkInterfaces.mockRestore();
-
-    expect(defaults.ipAddresses).toEqual(["192.168.1.25", "192.168.1.30"]);
-    expect(defaults.lastHost).toBe("192.168.1.25");
-    expect(defaults.tailscaleIp).toBe("100.70.0.4");
+    try {
+      const defaults = localSyncDeviceDefaults();
+      expect(defaults.ipAddresses).toEqual(["192.168.1.25", "192.168.1.30"]);
+      expect(defaults.lastHost).toBe("192.168.1.25");
+      expect(defaults.tailscaleIp).toBe("100.70.0.4");
+    } finally {
+      networkInterfaces.mockRestore();
+      if (platform) Object.defineProperty(process, "platform", platform);
+    }
   });
 
   it("keeps a stable local device identity across restarts and bootstraps the cluster brain", async () => {
