@@ -273,7 +273,8 @@ struct CloudPhoneTier: Identifiable, Equatable {
   let multiplierMilli: Int
   let diskMaxGb: Double?
 
-  /// Small on a Pricing v2 server: it never uses hours (`multiplierMilli` 0).
+  /// Small on a Pricing v2 server: it never uses hours (`multiplierMilli` 0),
+  /// unless the account's catalog rates it (Free, sponsored cards off).
   var usesHours: Bool { multiplierMilli > 0 }
   var full: Bool { type == "vm" }
   /// "a Medium", "an X-Large".
@@ -410,8 +411,10 @@ func cloudSizeArticle(_ label: String) -> String {
 /// A plan's hours as time on each size that uses them, never a multiplier:
 /// "50 hours on a Medium · 20 on a Large · 12 on an X-Large" (whole hours,
 /// rounded down). Nil when no size uses hours or the catalog has none.
+/// A plan's line, so never Small: a plan's Small is unlimited, even when
+/// this account's Free Small uses hours (sponsored cards off).
 func cloudHoursOnSizes(_ milli: Int, tiers: [CloudPhoneTier]) -> String? {
-  let sized = tiers.filter(\.usesHours)
+  let sized = tiers.filter { $0.id != "small" && $0.usesHours }
   guard !sized.isEmpty else { return nil }
   let parts = sized.enumerated().map { index, tier -> String in
     let hours = Int((Double(max(0, milli)) / Double(tier.multiplierMilli)).rounded(.down))
@@ -419,6 +422,15 @@ func cloudHoursOnSizes(_ milli: Int, tiers: [CloudPhoneTier]) -> String? {
     return index == 0 ? "\(count) \(hours == 1 ? "hour" : "hours") on \(tier.withArticle)" : "\(count) on \(tier.withArticle)"
   }
   return parts.joined(separator: " · ")
+}
+
+/// This account's Small size when it uses hours, or nil when Small is
+/// unlimited (`cloudSmallRateMilli`). Small uses hours only on Free with
+/// sponsored cards off while the server's `smallNeedsCards` rule is on: the
+/// account's catalog then rates it above 0. Read the catalog, never assume 0.
+func cloudSmallTierUsingHours(_ account: CloudPhoneAccount) -> CloudPhoneTier? {
+  guard let small = cloudPhoneTiers(account.catalog).first(where: { $0.id == "small" }), small.usesHours else { return nil }
+  return small
 }
 
 /// The offer, as every surface says it (`CLOUD_SMALL_UNLIMITED_SENTENCE`). Never "0 hours".

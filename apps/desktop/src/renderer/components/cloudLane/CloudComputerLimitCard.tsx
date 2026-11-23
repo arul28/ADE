@@ -6,6 +6,7 @@ import {
   cloudComputerLimitDetailOf,
   cloudComputerLimitTitle,
   cloudComputerLimitUpgradeLabel,
+  cloudSmallUsesHours,
   formatCloudHours,
   type CloudAccountState,
   type CloudComputerLimitDetail,
@@ -207,7 +208,8 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
         <ul className="adecl-limit-facts">
           <li>{plural(next.computerLimit, "cloud computer")}{detail ? `, ${next.computerLimit - detail.limit} more than now` : ""}</li>
           {nextHours != null ? <li>{formatCloudHours(nextHours)} hours a month for bigger computers</li> : null}
-          <li>Small computers stay unlimited</li>
+          {/* A paid plan's Small never uses hours; a Free account's may now (sponsored cards off). */}
+          <li>{account && cloudSmallUsesHours(cloudCatalogOf(account)) ? "Unlimited Small computers" : "Small computers stay unlimited"}</li>
         </ul>
         <p className="adecl-limit-what">
           <b>What happens:</b>{" "}

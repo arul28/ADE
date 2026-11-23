@@ -423,6 +423,9 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                       ? "On. A Free chat on ADE Cloud can show one sponsored card under a finished reply. Gravity, our ad partner, picks it from your last message and the reply."
                       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."}
                 </small>
+                {sponsoredToggle.smallNeedsCards ? (
+                  <small className="adecd-addon-state">Small computers use your hours while sponsored cards are off.</small>
+                ) : null}
               </div>
             ) : null}
             {extraHours.available ? (

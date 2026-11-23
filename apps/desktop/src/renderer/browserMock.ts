@@ -3106,7 +3106,7 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
 }
 
 /**
- * `?mockSponsored=ask|on` with `?mockCloudLaneMachine=1`: the ADE Cloud chat
+ * `?mockSponsored=ask|on|small` with `?mockCloudLaneMachine=1`: the ADE Cloud chat
  * ends on a finished reply, so a sponsored card (or the one-time question)
  * shows under it (`SponsoredReplySlot`). `?mockSponsored=pick` instead shows
  * the agent's Index pick card (`SponsoredPickCard`) with made-up demo facts:

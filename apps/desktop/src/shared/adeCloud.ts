@@ -26,7 +26,7 @@ import type {
   CloudSustainedCpuReport,
   CloudTimedWakesCancelled,
 } from "../../../account-directory/src/cloud/contract";
-import { CLOUD_INVITE_REFUSAL_REASONS, CLOUD_PLAN_SENTENCE_NAMES, formatCloudCents } from "../../../account-directory/src/cloud/contract";
+import { CLOUD_INVITE_REFUSAL_REASONS, CLOUD_PLAN_SENTENCE_NAMES, CLOUD_SMALL_UNLIMITED_SENTENCE, formatCloudCents } from "../../../account-directory/src/cloud/contract";
 import { cloudCatalog } from "../../../account-directory/src/cloud/plans";
 import type {
   CloudEarnedHours,
@@ -293,6 +293,35 @@ export function describeCloudHoursUse(kind: CloudMachineKind, shape: CloudShapeI
   const rate = cloudHoursRate(kind, shape, catalog);
   if (!(rate > 0)) return "Small computers never use your hours.";
   return `It uses about ${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"} of your plan for each hour it's awake, and none while it sleeps.`;
+}
+
+/**
+ * Small's hours rate on this account's catalog, in thousandths of a
+ * Medium-hour. 0 (unlimited) except on Free while the server's
+ * `smallNeedsCards` rule is on and sponsored cards are off: then the catalog
+ * rates it above 0. Read it from the account's catalog, never assume 0.
+ */
+export function cloudSmallRateMilli(catalog: Pick<CloudCatalog, "sizes">): number {
+  const small = catalog.sizes.find((size) => size.tier === "small")
+    ?? catalog.sizes.find((size) => size.type === "default" && size.cpu === 2 && size.memoryGb === 4);
+  return Math.max(0, small?.multiplierMilli ?? 0);
+}
+
+/** Whether this account's Small computers use its hours (`cloudSmallRateMilli` above 0). */
+export function cloudSmallUsesHours(catalog: Pick<CloudCatalog, "sizes">): boolean {
+  return cloudSmallRateMilli(catalog) > 0;
+}
+
+/**
+ * Small's line for this account: "Unlimited Small computers. They never use
+ * your hours." or, when its Small uses hours, "Small computers use half an
+ * hour of your hours for each hour awake."
+ */
+export function cloudSmallHoursSentence(catalog: Pick<CloudCatalog, "sizes">): string {
+  const rate = cloudSmallRateMilli(catalog) / 1000;
+  if (!(rate > 0)) return CLOUD_SMALL_UNLIMITED_SENTENCE;
+  const amount = rate === 0.5 ? "half an hour" : `${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"}`;
+  return `Small computers use ${amount} of your hours for each hour awake.`;
 }
 
 /** Android needs a full computer of Medium or bigger. */
@@ -984,8 +1013,11 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
     return { id: CLOUD_FREE_REFUSED_BANNER_ID, tone: "warning", title: "No free hours on this account", detail: freePlan.sentence };
   }
   if (account.hours.state === "zero") {
-    // Small computers never use hours, so they keep working: only the bigger sizes stop.
-    const bigger = `Medium, Large and X-Large computers are stopped until ${resetDate}. Small computers keep working.`;
+    // Small computers usually never use hours, so they keep working: only the bigger sizes stop.
+    // A Free account whose Small uses hours (sponsored cards off) stops every size.
+    const bigger = cloudSmallUsesHours(catalog)
+      ? `Your cloud computers are stopped until ${resetDate}. Turn on sponsored cards in Settings › ADE Cloud to keep Small computers unlimited.`
+      : `Medium, Large and X-Large computers are stopped until ${resetDate}. Small computers keep working.`;
     const plans = cloudCatalogHasMax(catalog)
       ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
       : cloudCatalogHasPro(catalog)

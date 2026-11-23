@@ -431,6 +431,12 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   if (!consent) return badRequest("Say granted or declined.");
   const account = await loadAccount(env, userId, now);
   if ((await blockedReason(env, account, null)) === "off") return notFound();
+  // A yes keeps Free's Small unlimited (`free_small_needs_ads`), for cards
+  // Gravity shows only in its countries: from anywhere else it is refused.
+  const country = requestCountry(request);
+  if (consent === "granted" && country && !countriesOf(env).includes(country)) {
+    return fail("unavailable", "Sponsored cards aren't shown in your country yet, so they can't be turned on.", 403);
+  }
   let emailHash: string | null = null;
   if (consent === "granted") {
     const email = await readClerkUser(env, userId).then((user) => user?.email ?? null).catch((error: unknown) => {
@@ -449,7 +455,7 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   logCloud("cloud.sponsored.consent", { consent });
   // Small's hours follow the answer at once (`free_small_needs_ads`).
   await syncSmallRates(env, account, now);
-  const state = await sponsoredAccountState(env, account, requestCountry(request));
+  const state = await sponsoredAccountState(env, account, country);
   return json(state ?? { ads: false, consent, test: !(await gravitySwitches(env)).live });
 }
 

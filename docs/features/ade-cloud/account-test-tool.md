@@ -86,7 +86,9 @@ reaches runs Small computers without hours only while it said yes to
 sponsored cards. A no, or no answer yet (outside Gravity's countries, or never
 asked), has Small use half a Medium-hour an hour. Accounts the ad switch
 doesn't reach are untouched, so with `gravity_ads=testers` only the testers
-see the rule. A no given before the rule turned on is asked again.
+see the rule. A no given before the rule turned on is asked again. A yes from
+outside Gravity's countries is refused (403): there are no cards to show
+there, so Small keeps using hours.
 
 Small's rate is changed on the computer's row (the time so far is charged at
 the old rate), at once after a yes or no, a test change or a switch flip, and

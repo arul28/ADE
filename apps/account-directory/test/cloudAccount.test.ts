@@ -5127,6 +5127,15 @@ describe("sponsored cards", () => {
 
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     expect(computer(harness).multiplier_milli).toBe(500);
+    // A yes from where Gravity shows no cards would be unlimited Small for nothing: refused.
+    const fromFrance = new Request("https://directory.test/cloud/sponsored/consent", {
+      method: "PUT",
+      headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json" },
+      body: JSON.stringify({ consent: "granted" }),
+    });
+    Object.defineProperty(fromFrance, "cf", { value: { country: "FR" } });
+    expect((await handleCloudRequest(fromFrance, harness.env)).status).toBe(403);
+    expect(computer(harness).multiplier_milli).toBe(500);
     const declined = await accountState();
     expect([declined.sponsored?.smallNeedsCards, declined.catalog.sizes.find((size) => size.tier === "small")?.multiplierMilli]).toEqual([true, 500]);
     clock += HOUR;

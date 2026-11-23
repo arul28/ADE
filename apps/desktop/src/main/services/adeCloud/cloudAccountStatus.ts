@@ -1,7 +1,8 @@
 import {
   CLOUD_HOUR_UNIT_SENTENCE,
   CLOUD_PLAN_LABELS,
-  CLOUD_SMALL_UNLIMITED_SENTENCE,
+  cloudSmallHoursSentence,
+  cloudSmallUsesHours,
   cloudAccountComputers,
   cloudCatalogOf,
   cloudPlanComputerLimitOf,
@@ -151,7 +152,7 @@ export type CloudAccountStatus = {
     extraIphoneMinuteCents: number | null;
     current: boolean;
   }>;
-  /** "Unlimited Small computers. They never use your hours." */
+  /** "Unlimited Small computers. They never use your hours.", or what Small uses when this account's catalog rates it. */
   smallComputers: string;
   /** How many computers the account has (asleep or not), how many are awake, and the plan's limit. */
   computers: { inUse: number; awake: number; limit: number } | null;
@@ -299,7 +300,7 @@ export function buildCloudAccountStatus(input: {
           state: account.hours.state,
           resetsAt: new Date(account.billing.periodEnd).toISOString(),
           extraHours: { available: part.extraHours?.available === true, enabled: part.extraHours?.enabled === true },
-          unit: `${CLOUD_HOUR_UNIT_SENTENCE} Small computers never use hours.`,
+          unit: cloudSmallUsesHours(catalog) ? `${CLOUD_HOUR_UNIT_SENTENCE} ${cloudSmallHoursSentence(catalog)}` : `${CLOUD_HOUR_UNIT_SENTENCE} Small computers never use hours.`,
         }
       : null,
     iphone: phone
@@ -311,7 +312,8 @@ export function buildCloudAccountStatus(input: {
         }
       : null,
     plans: plansOf(catalog, account ? cloudPlanIdOf(account) : null, phone != null),
-    smallComputers: CLOUD_SMALL_UNLIMITED_SENTENCE,
+    // Free with sponsored cards off (the server's `smallNeedsCards` rule): Small uses hours, as the catalog rates it.
+    smallComputers: cloudSmallHoursSentence(catalog),
     computers: part.computers && account ? { inUse: part.computers.total, awake: part.computers.awake, limit: cloudAccountComputers(account).limit } : null,
     lanes,
     sizes: tiers.map((tier) => ({

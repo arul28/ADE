@@ -273,7 +273,15 @@ struct CloudSponsoredCard: View {
           .fixedSize(horizontal: false, vertical: true)
           .padding(.horizontal, ADEKit.inset)
           .padding(.top, -4)
-          .padding(.bottom, 12)
+          .padding(.bottom, sponsored.smallUsesHoursWithoutCards ? 4 : 12)
+        if sponsored.smallUsesHoursWithoutCards {
+          Text("Small computers use your hours while sponsored cards are off.")
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, ADEKit.inset)
+            .padding(.bottom, 12)
+        }
         if let error {
           Text(error)
             .font(.system(size: 12))

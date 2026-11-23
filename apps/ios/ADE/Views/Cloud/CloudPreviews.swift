@@ -14,7 +14,7 @@ import SwiftUI
 enum CloudPreviews {
   static let names: Set<String> = [
     "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
-    "duo-cloud-sponsored-consent", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings",
+    "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings",
   ]
 
   @MainActor static func view(_ name: String) -> AnyView? {
@@ -47,8 +47,15 @@ enum CloudPreviews {
     let store = CloudPaneStore(syncService: sync, fixtureList: list, limits: limits, signIns: signInsFixture(), now: fixtureNow)
     if name.hasPrefix("duo-cloud-sponsored-") {
       // A Free account the switch reaches: the question unanswered, or answered yes.
+      // `duo-cloud-sponsored-small`: unanswered while the server's `smallNeedsCards` rule is on.
       var account = list.account
-      account?.sponsored = CloudSponsoredState(ads: true, consent: name == "duo-cloud-sponsored-consent" ? nil : CloudSponsoredState.granted, test: true)
+      let unanswered = name == "duo-cloud-sponsored-consent" || name == "duo-cloud-sponsored-small"
+      account?.sponsored = CloudSponsoredState(
+        ads: true,
+        consent: unanswered ? nil : CloudSponsoredState.granted,
+        test: true,
+        smallNeedsCards: name == "duo-cloud-sponsored-small" ? true : nil
+      )
       AccountCloudStore.shared.seedPreview(access: nil, account: account)
       if name == "duo-cloud-sponsored-settings" {
         return AnyView(NavigationStack {
