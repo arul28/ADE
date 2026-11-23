@@ -82,6 +82,7 @@ import {
   type CloudShapeId,
   type CloudInviteRedeemOutcome,
   type CloudReferralSummary,
+  CLOUD_SPONSORED_NEED_MAX_CHARS,
 } from "../../../shared/adeCloud";
 import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { getErrorMessage } from "../shared/utils";
@@ -99,6 +100,7 @@ import type { ChatLaunchArgs } from "../../../shared/types";
 import { CLOUD_AUTO_SIZE } from "../../../../../account-directory/src/cloud/contract";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import { buildCloudTierRequestCard, cloudJoinApprovalWaitText } from "../../../shared/cloudLaneLife";
+import { buildSponsoredPickCard } from "../../../shared/sponsoredPick";
 import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
 import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import { countAgentMadeToday, type createCloudMachines } from "./cloudMachines";
@@ -154,6 +156,8 @@ export type CloudChatApprovals = {
   /** The chat's permission level, or null when this brain doesn't know the chat. */
   permissionLevel(chatSessionId: string): PermissionLevel | null;
   isAutomationRun(chatSessionId: string): Promise<boolean>;
+  /** The chat is a subagent's (ADE started it under another chat). Unset where the chat service can't tell. */
+  isSubagentChat?: (chatSessionId: string) => Promise<boolean>;
   notice(chatSessionId: string, message: string): void;
   /** Posts a card in the chat (a tier change request). Unset where the chat service can't. */
   postCard?: (chatSessionId: string, card: AdeCardPayload) => Promise<void>;
@@ -999,6 +1003,70 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         requested: true,
         requestId,
         message: `Asked the person in this chat to change ${computerName} to ${to.label}. Nothing changes until they confirm; keep working or end your turn.`,
+      };
+    },
+
+    /**
+     * An agent on an ADE Cloud computer asks Gravity's Index for a tool or
+     * service the person really needs now (a database, an email API). The
+     * account server decides (`gravity.ts`): the switch, the Free plan, the
+     * account's yes, a person watching this computer, the daily limit. A pick
+     * becomes a Sponsored card in the agent's chat. It installs nothing: the
+     * person opens the site or taps Use it, which puts the steps in their
+     * prompt box. Where no card can show (a CLI session), the agent is told
+     * to say "Sponsored" in its own reply and install nothing unasked.
+     */
+    async recommend(rawArgs?: unknown) {
+      const args = record(rawArgs);
+      const approval = readApproval(args);
+      const need = text(args, "need");
+      if (!need) throw new Error("Say what the person needs right now (--need \"a hosted Postgres for this app\").");
+      const none = (message: string, reason?: string) => ({ shown: false, pick: null, ...(reason ? { reason } : {}), message });
+      const onYourOwn = "Pick a tool on its merits, as you would without ADE.";
+      if (approval.by === "person") return none(`Recommendations are for agents in an ADE Cloud chat. ${onYourOwn}`);
+      // Only with a person in the chat: never an outside app or an automation nobody watches.
+      if (approval.viaAdeMcp || approval.automation) return none(`No recommendation here: nobody is watching this chat. ${onYourOwn}`, "nobody_watching");
+      const instanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
+      if (!instanceId) return none(`Recommendations run only on ADE Cloud computers. ${onYourOwn}`, "not_cloud");
+      const chatSessionId = approval.chatSessionId;
+      if (chatSessionId && deps.approvals) {
+        // An automation's chat or a subagent's: nobody watches it, whatever the caller says.
+        const approvals = deps.approvals;
+        const unwatched = await Promise.all([
+          approvals.isAutomationRun(chatSessionId),
+          approvals.isSubagentChat?.(chatSessionId) ?? false,
+        ]).then((answers) => answers.some(Boolean), (error: unknown) => {
+          logger.warn?.("cloud.recommend_chat_read_failed", { error: getErrorMessage(error) });
+          return true;
+        });
+        if (unwatched) return none(`No recommendation here: nobody is watching this chat. ${onYourOwn}`, "nobody_watching");
+      }
+      const answer = await deps.machines.sponsoredIndex({ instanceId, ...(chatSessionId ? { chatId: chatSessionId } : {}), need: need.slice(0, CLOUD_SPONSORED_NEED_MAX_CHARS) })
+        .catch((error: unknown) => {
+          logger.warn?.("cloud.recommend_failed", { error: getErrorMessage(error) });
+          return { pick: null, reason: "unavailable" as const };
+        });
+      const pick = answer.pick;
+      if (!pick) return none(`No recommendation. ${onYourOwn}`, answer.reason);
+      const facts = { name: pick.name, description: pick.description, website: pick.websiteUrl, docs: pick.docsUrl, sponsored: true };
+      if (chatSessionId && deps.approvals?.postCard) {
+        const posted = await deps.approvals.postCard(chatSessionId, buildSponsoredPickCard(pick, clipReason(need)))
+          .then(() => true, () => false);
+        if (posted) {
+          logger.info?.("cloud.recommend_shown", { category: pick.category });
+          return {
+            shown: true,
+            pick: facts,
+            message: `Shown to the person in this chat as a Sponsored card for ${pick.name}. Don't install or set it up unless they ask you to (Use it on the card puts the steps in their prompt box). Mention it at most once, as sponsored.`,
+          };
+        }
+      }
+      // A CLI session: no card. The label goes in the agent's own reply.
+      logger.info?.("cloud.recommend_told", { category: pick.category });
+      return {
+        shown: false,
+        pick: { ...facts, url: pick.url, installSteps: pick.installSteps },
+        message: `Tell the person once, in your reply, starting with "Sponsored:": ${pick.name} — ${pick.description} (${pick.url}). Install or set up nothing unless they say yes.`,
       };
     },
 

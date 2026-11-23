@@ -10,6 +10,7 @@ import { deleteSavedChatsForLaneEverywhere, routeSavedChats } from "./chats";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
+import { routeSponsored } from "./gravity";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, rememberLaunchSetupDisk, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
@@ -1799,7 +1800,7 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
       const pick = readPlanCleanupPick(body);
       if (!pick) return badRequest("Name the computers to free and whether to push their work first.");
       await pickPlanCleanup(env, userId, body.planId, pick, now);
-      return json(await buildAccountState(env, userId, now));
+      return json(await buildAccountState(env, userId, now, request));
     }
     if (typeof body.enabled !== "boolean") return badRequest(UNREADABLE_REQUEST_MESSAGE);
     if (path === CLOUD_PATHS.billingExtraPhone) {
@@ -1814,10 +1815,10 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
         if (limit == null) return badRequest(`${LIMIT_SENTENCE}, or none.`);
         await setExtraPhoneMinutes(env, userId, { enabled: true, monthlyLimitCents: limit * 100 }, now);
       }
-      return json(await buildAccountState(env, userId, now));
+      return json(await buildAccountState(env, userId, now, request));
     }
     await setExtraHours(env, userId, body.enabled, now);
-    return json(await buildAccountState(env, userId, now));
+    return json(await buildAccountState(env, userId, now, request));
   } catch (error) {
     if (error instanceof CloudBillingError) return fail(error.code, error.message, error.status);
     throw error;
@@ -2064,7 +2065,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   // A blocked account reads what ADE Cloud keeps for it (GET only, `CLOUD_BLOCKED_READ_ROUTES`) and does nothing.
   if (blocked && !blockedMayRead(request.method, path)) return accountBlocked();
   if (blocked && path === CLOUD_PATHS.account) {
-    return json({ ...(await buildAccountState(env, caller.userId, Date.now())), blocked: true });
+    return json({ ...(await buildAccountState(env, caller.userId, Date.now(), request)), blocked: true });
   }
   if (isCloudWakeRequest(url)) {
     // Scheduled work is refused at 0 hours; a timed wake would break the stop.
@@ -2098,7 +2099,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     await settleFreePlanGithub(env, account, ctx);
   }
   if (path === CLOUD_PATHS.account) {
-    return request.method === "GET" ? json(await buildAccountState(env, caller.userId, now)) : notFound();
+    return request.method === "GET" ? json(await buildAccountState(env, caller.userId, now, request)) : notFound();
   }
   // The ADE Cloud iPhone: no computer, so no provider (`phones.ts`).
   const phone = await routePhone(request, path, env, caller.userId, now, waitUntil);
@@ -2107,6 +2108,12 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (referrals) return referrals;
   const billing = await routeBilling(request, url, path, env, caller.userId, ctx);
   if (billing) return billing;
+  // Sponsored cards and the Index (`gravity.ts`): rows and Gravity only, no provider.
+  if (path.startsWith("/cloud/sponsored/")) {
+    if (!await takeRequest(env, caller.userId, "sponsored", now)) return tooManyRequests();
+    const sponsored = await routeSponsored(request, path, env, caller.userId, now);
+    if (sponsored) return sponsored;
+  }
   // ADE without a computer: rows and R2 only; a send wakes or launches through the provider.
   const writeBucket = writeBucketOf(path, request.method);
   if (writeBucket && !await takeRequest(env, caller.userId, writeBucket, now)) return tooManyRequests();

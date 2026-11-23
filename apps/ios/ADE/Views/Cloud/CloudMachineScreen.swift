@@ -865,8 +865,9 @@ final class CloudLaneActions: ObservableObject {
   /// The computer-limit card (`computer_limit`), on the host frontmost when it was asked.
   @Published private(set) var computerLimit: CloudComputerLimit?
   private var limitPresenter: UUID?
-  /// Computers the limit card is freeing now (it takes minutes; the card may
-  /// close meanwhile). Only `freeUp` (CloudComputerLimitSheet.swift) writes it,
+  /// Computers the limit card is freeing or deleting now (a free takes
+  /// minutes; the card may close meanwhile). Only `freeUp` and
+  /// `deleteComputerWithoutLane` (CloudComputerLimitSheet.swift) write it,
   /// through `markFreeing`.
   @Published private(set) var freeing: Set<String> = []
 
@@ -1037,7 +1038,8 @@ enum CloudLaneComputerDelete {
     // this phone's copy drops it either way.
     await account.loadMachines()
     // The chats go after the computer, so a last saved part can't bring one back.
-    var chatsLeft = false
+    // No machine key: its saved chats can't be named, so none were deleted.
+    var chatsLeft = accountMachineKey == nil
     if let machineKey = accountMachineKey {
       if let onlyChats {
         // A move: the chats it left (Done, archived, another surface) stay

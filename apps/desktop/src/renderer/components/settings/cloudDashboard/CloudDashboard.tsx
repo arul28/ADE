@@ -178,7 +178,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
   const cityItems = useMemo<CityItem[]>(() => lanes.map((lane) => ({
     key: lane.key,
     name: lane.name,
-    sub: lane.state === "none" ? "no computer now" : lane.noLane ? `${formatCloudGb(lane.diskGb)}, no lane` : formatCloudGb(lane.diskGb),
+    // No GB on the page (Pricing v2): the label names the size; height still draws the disk.
+    sub: lane.state === "none" ? "no computer now" : lane.noLane ? "no lane" : lane.tier?.label ?? "",
     aria: laneAria(lane, now),
     detail: laneDetail(lane, now),
     size: lane.diskGb,
@@ -521,7 +522,7 @@ function CloudHero({
                 selectedKey={selectedKey}
                 onSelect={onSelect}
                 onOpen={onOpen}
-                label="Your cloud lanes as a city: height is disk, lit windows are awake. Arrow keys move, Enter looks inside."
+                label="Your cloud lanes as a city: lit windows are awake. Arrow keys move, Enter looks inside."
                 compact
                 maxLabels={3}
                 stars={false}
@@ -570,7 +571,7 @@ function EmptyPlot() {
 
 function laneAria(lane: DashLane, now: number): string {
   if (lane.state === "none") return `${lane.name}, no computer now`;
-  return [lane.name, lane.idle ? idleRowTag(lane.idle, now).label.toLowerCase() : null, lane.noLane ? "no lane" : null, lane.tier?.label, formatCloudGb(lane.diskGb), STATE_LABEL[lane.state], lastRunText(lane, now), lane.old ? "not used for a long time" : null, lane.safe ? "safe to delete" : null]
+  return [lane.name, lane.idle ? idleRowTag(lane.idle, now).label.toLowerCase() : null, lane.noLane ? "no lane" : null, lane.tier?.label, STATE_LABEL[lane.state], lastRunText(lane, now), lane.old ? "not used for a long time" : null, lane.safe ? "safe to delete" : null]
     .filter(Boolean)
     .join(", ");
 }
@@ -578,7 +579,7 @@ function laneAria(lane: DashLane, now: number): string {
 function laneDetail(lane: DashLane, now: number): string[] {
   if (lane.state === "none") return ["No computer. ADE makes one when you next send."];
   return [
-    [lane.tier?.label, lane.rateLabel, formatCloudGb(lane.diskGb)].filter(Boolean).join(", "),
+    [lane.tier?.label, lane.rateLabel].filter(Boolean).join(", "),
     `${STATE_LABEL[lane.state]}, ${lastRunText(lane, now).toLowerCase()}`,
     ...(lane.idle ? [idleRowTag(lane.idle, now).title] : []),
     ...(lane.noLane ? ["No lane on this computer"] : []),
@@ -647,7 +648,7 @@ function LaneTable({
       onKeyDown={onKeyDown}
     >
       <div className="adecd-tr adecd-th" aria-hidden="true">
-        <span>Lane</span><span>Size</span><span>Disk</span><span>State</span><span>Last run</span><span />
+        <span>Lane</span><span>Size</span><span>State</span><span>Last run</span><span />
       </div>
       {lanes.map((lane) => {
         const open = lane.key === selectedKey;
@@ -675,7 +676,6 @@ function LaneTable({
                   : null}
               </span>
               <span className="adecd-tsize">{lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}</span>
-              <span className="kit-num">{lane.state === "none" ? "—" : formatCloudGb(lane.diskGb)}</span>
               {status ? (
                 <span className="adecd-state" data-state={status.state} title={status.title ?? undefined}><i />{status.label}</span>
               ) : (

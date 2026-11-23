@@ -26,6 +26,9 @@ import {
   type CloudPhoneState,
   type CloudPhoneView,
   type CloudReferralSummary,
+  readCloudSponsoredPick,
+  type CloudSponsoredIndexAnswer,
+  type CloudSponsoredIndexRequest,
 } from "../../../../../account-directory/src/cloud/contract";
 import {
   CLOUD_ACCESS_REFUSED,
@@ -495,6 +498,13 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async setExtraPhoneMinutes(choice): Promise<CloudAccountState> {
       return await request("POST", CLOUD_PATHS.billingExtraPhone, { body: choice }) as CloudAccountState;
+    },
+
+    async sponsoredIndex(input: CloudSponsoredIndexRequest): Promise<CloudSponsoredIndexAnswer> {
+      const body = record(await request("POST", CLOUD_PATHS.sponsoredIndex, { body: input, timeoutMs: 15_000 }));
+      const pick = readCloudSponsoredPick(body?.pick);
+      // The reason is only a word for the agent's message; any string the server sends is shown as is.
+      return pick ? { pick } : { pick: null, ...(typeof body?.reason === "string" ? { reason: body.reason as CloudSponsoredIndexAnswer["reason"] } : {}) };
     },
 
     async readReferral(): Promise<CloudReferralSummary> {

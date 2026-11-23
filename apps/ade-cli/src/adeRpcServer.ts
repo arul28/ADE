@@ -4243,6 +4243,8 @@ const CLOUD_APPROVED_ACTIONS = new Set([
   "grow_disk",
   // The card goes to the stamped chat, never one the caller names.
   "tier_request",
+  // A Sponsored pick goes to the stamped chat too; an unwatched caller gets none.
+  "recommend",
   // A launch's approval link and starting chat go only to who started it.
   "lane_launch_status",
   // The account's lanes, chats, copies, backups and jobs: each delete asks in the stamped chat.

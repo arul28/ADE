@@ -217,6 +217,8 @@ import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
 import { CloudTierRequestCard } from "../cloudLane/CloudLaneChatCards";
 import { CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudLaneLife";
+import { SPONSORED_PICK_CARD_VARIANT } from "../../../shared/sponsoredPick";
+import { SponsoredPickCard } from "./sponsored/SponsoredPickCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { spawnCompletionNoticeOf, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import { isQuietNoticeEvent, type QuietNoticeSibling, type SystemNoticeEvent } from "./quietNoticeLines";
@@ -4794,6 +4796,10 @@ function renderEvent(
     if (event.variant === CLOUD_TIER_REQUEST_CARD_VARIANT) {
       return <CloudTierRequestCard card={event} sessionId={options?.sessionId ?? null} />;
     }
+    // An agent's Sponsored recommendation from Gravity's Index: inert until the person acts.
+    if (event.variant === SPONSORED_PICK_CARD_VARIANT) {
+      return <SponsoredPickCard card={event} />;
+    }
     // An MCP App: the page a server ships with a tool, run in the scene
     // sandbox. Where this build cannot host one (the web client) the card
     // falls through to its fallback text, which says where apps do run.
@@ -6411,6 +6417,7 @@ function AgentChatMessageListMain({
   onCancelQueuedMessage,
   onRestoreCancelledQueue,
   onStopSubagent,
+  trailing = null,
   turnDiffSummaries,
   sessionEnded = false,
   sessionProvider = null,
@@ -6503,6 +6510,8 @@ function AgentChatMessageListMain({
   onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
   /** Stop one running Claude subagent / background task by provider task id. */
   onStopSubagent?: (taskId: string) => void;
+  /** One row under the last turn (a sponsored card on an ADE Cloud Free chat); the pane memoizes it. */
+  trailing?: React.ReactNode;
   turnDiffSummaries?: TurnDiffSummary[];
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
@@ -9731,6 +9740,7 @@ function AgentChatMessageListMain({
                 <div style={{ height: bottomSpacerHeight }} aria-hidden />
               </div>
               {trailingProof}
+              {trailing}
               {streamingIndicator}
               {turnDivider}
             </div>
@@ -9739,6 +9749,7 @@ function AgentChatMessageListMain({
             <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">
               {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
               {trailingProof}
+              {trailing}
               {streamingIndicator}
               {turnDivider}
             </div>

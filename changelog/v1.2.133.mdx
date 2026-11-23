@@ -1,0 +1,41 @@
+---
+title: "v1.2.133"
+description: "Release notes for ADE v1.2.133 - November 23, 2026"
+---
+
+ADE 1.2.133 brings ADE Cloud's new plans with unlimited Small computers, free models you can chat with without a paid plan, account or key, and moving an ADE Cloud lane to your own computer.
+
+## New
+
+- ADE Cloud's new plans: Small computers are unlimited on every plan, each plan has a number of cloud computers, and disk is no longer counted in GB (#2446).
+- Chat with free models with no paid AI plan, account or key (#2436).
+- Move an ADE Cloud lane to your own computer, even while its cloud computer sleeps (#2441).
+- When all your cloud computers are in use, a card shows three ways to make room: free up a computer, delete a lane, or the next plan (#2450).
+- The `ade` CLI shows the whole ADE Cloud account: lanes, saved chats, CLI copies, backups and server jobs (#2434).
+- The Lanes tab has a Computer filter again (#2432).
+- The website offers the Linux desktop app in the install dialog (#2158).
+
+## Improved
+
+- Typing never wakes a sleeping cloud computer, the chat header shows its cloud status, and a failed send can be retried (#2438).
+- A lane whose cloud computer was deleted looks like an asleep one (#2435).
+- A feature tip waits until no agent works in the project (#2443).
+- A quick reply shows at once after a send (#2428).
+- The screen driver no longer asks macOS for Input Monitoring at start (#2444).
+
+## Fixed
+
+- A Claude pass ends only when Claude refuses it (#2445).
+- A lane moved to your own machine no longer shows as a deleted ADE Cloud computer (#2447).
+- An edit made just before Quit stays in the saved draft (#2442).
+- The phone and the Mac agree on the project after another device switches it, and live Sentry issues are fixed (#2429).
+- On Windows, a failed update names what blocked it, and the update card says so at once (#2439).
+- Pricing shows thousands with a separator, and lanes are named Main checkout everywhere (#2450).
+
+## iOS
+
+- A send to an asleep ADE Cloud chat looks like any send, and older messages load from the saved copy (#2440).
+- A new ADE Cloud chat opens on the normal launch page and shows without a restart (#2430).
+- The iPhone warns before a send would wake a cloud computer (#2445).
+- On an unfolded Duo, Work cards show their lane again (#2448).
+- The computer-limit sheet shows the same three ways to make room as the desktop (#2450).

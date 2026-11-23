@@ -1,5 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
-import type { CloudAccountState, CloudMachinesResult } from "../../shared/adeCloud";
+import type { CloudAccountState, CloudMachinesResult, CloudSponsoredConsent, CloudSponsoredState } from "../../shared/adeCloud";
 import { useAdeCloudEnabled } from "./cloudAccess";
 
 /**
@@ -62,6 +62,26 @@ function take(result: CloudMachinesResult | null | undefined): void {
 /** A read of the computer list answered (from `useCloudMachines`): its account is the newest. */
 export function noteCloudAccountRead(result: CloudMachinesResult | null | undefined): void {
   take(result);
+}
+
+/**
+ * The account's sponsored answer changed (the server's reply to it): every
+ * surface reading this store sees it at once, before the next list read.
+ */
+export function noteCloudSponsoredState(next: CloudSponsoredState | null | undefined): void {
+  if (!account || !next) return;
+  publish({ ...account, sponsored: next });
+}
+
+/** Saves the account's answer on the server, then every surface here sees it. Throws when it couldn't save. */
+export async function setCloudSponsoredConsent(consent: CloudSponsoredConsent): Promise<void> {
+  const set = window.ade?.cloud?.setSponsoredConsent;
+  if (!set) throw new Error("ADE can't save that here.");
+  const current = generation;
+  const next = await set(consent);
+  if (!next) throw new Error("ADE couldn't reach your account. Try again in a moment.");
+  // Another account signed in meanwhile: this answer was the old account's.
+  if (current === generation) noteCloudSponsoredState(next);
 }
 
 /** Whether the shared computer list is watched; while it is, this store does not read on its own. */

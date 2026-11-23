@@ -1,3 +1,4 @@
+import { requestCountry, sponsoredAccountState } from "./gravity";
 import { timedWakesCancelledOf } from "./accountNotices";
 import type { CloudAccountState } from "./contract";
 import { RECENT_USE_DAYS, recentUsedMilli } from "./diskUsage";
@@ -61,7 +62,7 @@ async function recentlyDeletedInstanceIds(env: CloudEnv, userId: string, now: nu
   return (rows.results ?? []).map((row) => row.instance_id);
 }
 
-export async function buildAccountState(env: CloudEnv, userId: string, now: number): Promise<CloudAccountState> {
+export async function buildAccountState(env: CloudEnv, userId: string, now: number, request?: Request): Promise<CloudAccountState> {
   const account = await loadAccount(env, userId, now);
   const [computers, deletedInstanceIds, recentMilli, growth] = await Promise.all([
     listComputers(env, userId),
@@ -88,7 +89,13 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   const offers = cloudOffers(env);
   // The idle cleanup's warnings, and computers it kept because their work couldn't be saved.
   const due = idleCleanupEntries(account, computers, live, now);
+  // Sponsored cards (`gravity.ts`): left out while the switch doesn't reach the account. A read that fails never costs the account read.
+  const sponsored = await sponsoredAccountState(env, account, request ? requestCountry(request) : null).catch((error: unknown) => {
+    reportCloudFailure("cloud.sponsored.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+    return undefined;
+  });
   return {
+    ...(sponsored ? { sponsored } : {}),
     plan: account.plan,
     rules,
     planId: boughtPlanIdOf(account),

@@ -246,9 +246,9 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
  * makes a new computer. The ADE Cloud page and Manage lane both call this.
  * Resolves true when the computer was freed.
  */
-export async function freeCloudLaneWithConfirm(input: { instanceId: string; laneName: string; onDone?: () => void }): Promise<boolean> {
+export async function freeCloudLaneWithConfirm(input: { instanceId: string; laneName: string; onDone?: () => void; /** The caller already said what happens and the person confirmed (the limit card). */ confirmed?: boolean }): Promise<boolean> {
   const { instanceId, laneName } = input;
-  const ok = await confirmDialog({
+  const ok = input.confirmed === true || await confirmDialog({
     title: `Free the computer of ${laneName}?`,
     message: "ADE pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.",
     icon: <CloudMark size={16} brand />,

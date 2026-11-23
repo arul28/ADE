@@ -565,6 +565,7 @@ ade chat launch-status <id> --machine cloud        # an ADE Cloud lane launch: s
 ade chat launch-cancel <id> --machine cloud        # stop it before the chat starts and delete its computer
 ade cloud work-state --json                       # ADE Cloud: the lanes of this cloud computer with uncommitted or unpushed work; pushes nothing
 ade cloud push-work --check --json                # the same check; without --check it commits and pushes every lane (ADE's server runs it before a free)
+ade cloud recommend --need "a hosted Postgres"   # ADE Cloud Free: a Sponsored pick from Gravity's Index for a real need; a chat gets a card that installs nothing, a CLI gets text to repeat once as "Sponsored:"
 ade cloud resize --request --size large --reason "…"  # ask the person to change this computer's size: a card in the chat, nothing changes; an agent with nobody there cannot resize
 ade cloud resize --free 8 --reason "…"            # grow the disk of the ADE Cloud computer this runs on to fit 8 GB more free (or --disk <GB>): up to its size's disk maximum with no card; restarts the computer, and the chat continues after it
 ade cloud prepare-stop --json                     # ADE Cloud, run by the server before a stop: interrupts running turns and CLIs, saves the chats, then copies and Git summaries; prints interruptedChats, interruptedClis, stillRunning, chatsUploaded, chatsNotUploaded, sessionsSaved, gitSaved, timedOut

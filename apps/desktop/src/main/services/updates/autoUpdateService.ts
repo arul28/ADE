@@ -166,6 +166,31 @@ function resolveNativeUpdater(): NativeUpdaterLike | null {
 }
 
 /**
+ * electron-updater starts the new AppImage with `child_process.spawn`, which
+ * hands it every descriptor this app has open: the connections to the old
+ * version's GPU, network and crash-reporter processes, and files inside the old
+ * mount. Those processes then never see their app quit, and they keep the old,
+ * already deleted AppImage mounted (about 290 MB) until ADE quits again.
+ * bash closes every descriptor past stdio, then becomes the new AppImage.
+ * (Electron's `app.relaunch` cannot do it: its relauncher is the old binary,
+ * which runs from the old mount that goes away as this app exits.) The
+ * AppImage's own launcher is a bash script, so bash is always there.
+ */
+const CLOSE_INHERITED_FILES_THEN_EXEC =
+  'for fd in /proc/$$/fd/*; do fd=${fd##*/}; if [ "$fd" -gt 2 ]; then eval "exec $fd>&-"; fi; done 2>/dev/null; exec "$@"';
+
+function relaunchAppImageWithoutInheritedFiles(updater: AutoUpdaterLike): void {
+  if (process.platform !== "linux" || !process.env.APPIMAGE) return;
+  const appImageUpdater = updater as AutoUpdaterLike & {
+    spawnLog?: (command: string, args?: string[], env?: NodeJS.ProcessEnv) => Promise<boolean>;
+  };
+  const spawnLog = appImageUpdater.spawnLog?.bind(updater);
+  if (!spawnLog) return;
+  appImageUpdater.spawnLog = (command, args = [], env) =>
+    spawnLog("/usr/bin/env", ["bash", "-c", CLOSE_INHERITED_FILES_THEN_EXEC, "bash", command, ...args], env);
+}
+
+/**
  * electron-updater's `autoUpdater`, loaded at its first real use.
  *
  * Requiring electron-updater, and the platform updater its `autoUpdater`
@@ -187,6 +212,7 @@ function lazyElectronAutoUpdater(logger?: Pick<Logger, "warn">): AutoUpdaterLike
     if (real) return real;
     // Resolved through require so the module stays external and loads here.
     const loaded = (require("electron-updater") as { autoUpdater: AppUpdater }).autoUpdater as unknown as AutoUpdaterLike;
+    relaunchAppImageWithoutInheritedFiles(loaded);
     real = loaded;
     for (const apply of replay.splice(0)) apply(loaded);
     written.clear();

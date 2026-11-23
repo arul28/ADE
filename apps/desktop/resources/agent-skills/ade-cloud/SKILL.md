@@ -137,6 +137,22 @@ Without it, the account has none: don't offer it. With it,
 - It stops after 5 minutes with no input and after 2 hours. `ade apple stop`
   when done.
 
+## 7. Recommendations (ADE Cloud Free)
+
+On an ADE Cloud computer, when the person needs a tool or service right now
+that the project doesn't have yet (a hosted database, an email API, auth),
+you may ask once: `ade cloud recommend --need "<the need, in a sentence>"`.
+The pick comes from Gravity's Index, ADE's ad partner, and the server
+decides whether there is one (Free plan, the person said yes to sponsored
+cards, they are watching).
+
+- Follow the answer's `message`. A pick shows as a Sponsored card in your
+  chat. With no card (a CLI session), say it once in your reply, starting
+  with "Sponsored:".
+- Install, sign up for or set up the pick only when the person asks.
+- Never call it to fill a gap, for something already chosen or set up, more
+  than once per need, or to praise a pick. No pick: choose on the merits.
+
 ## Never
 
 - Make a computer: `ade cloud create` (a standard or a full computer), `ade cloud copy` or `ade cloud move`. Start a lane with the size it needs instead. ADE refuses an agent's make unless the person says yes on its card.

@@ -538,7 +538,7 @@ driven from any machine with `ade apple` (`src/cloud/phones.ts` for the rows,
 minutes, access and routes; one provider record each in `phoneNomac.ts` and
 `phoneRevyl.ts` behind `phoneProvider.ts`; Revyl's viewer page in
 `phoneViewerPage.ts`; the owner's beta list in `phoneBeta.ts`; migrations `0047_cloud_phone_beta.sql`,
-`0048_cloud_phone_usage.sql` and `0054_cloud_phone_provider.sql`, shapes in
+`0048_cloud_phone_usage.sql` and `0056_cloud_phone_provider.sql`, shapes in
 `contract.ts`). Revyl starts phones only with the owner's switch
 `CLOUD_PHONE_REVYL=on` (off by default: every new phone is NoMac's). With it
 on, the provider per account is the beta row's `provider`, else the var
@@ -619,7 +619,7 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   account key stays in this Worker; a brain gets a token for one phone (2 hours)
   that cannot start, list or stop phones. Apply
   `0047_cloud_phone_beta.sql`, `0048_cloud_phone_usage.sql` and
-  `0054_cloud_phone_provider.sql` before the Worker that reads them deploys.
+  `0056_cloud_phone_provider.sql` before the Worker that reads them deploys.
 - The owner adds accounts with `POST /cloud/owner/phone-beta`, below.
 
 ### Payments

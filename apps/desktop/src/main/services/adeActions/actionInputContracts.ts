@@ -270,6 +270,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { size: \"small\" | \"medium\" | \"large\" | \"xlarge\", reason: string, machine?: string (default: the cloud computer this runs on) }",
       example: "ade cloud resize --request --size large --reason \"Android needs a full computer\"",
     },
+    recommend: {
+      description: "On an ADE Cloud computer, ask Gravity's Index (ADE's ad partner) for a tool or service the person needs right now, such as a hosted database or an email API. Call it only for a real, current need the person has, never to fill a gap or for something already set up. The account server decides whether there is a pick (ADE Cloud Free, the person's yes to sponsored cards, someone watching). A pick shows in your chat as a Sponsored card; it installs nothing. Answers { shown, pick, message }: follow `message`. Install or set up the pick only if the person asks. With no card (a CLI session), say it once in your reply, starting with \"Sponsored:\".",
+      input: "object { need: string (what the person needs, in a sentence) }",
+      example: "ade cloud recommend --need \"a hosted Postgres for this app's orders\"",
+    },
     clear_caches: {
       description: "On the ADE Cloud computer this runs on, delete what is rebuilt on next use (package and tool caches, Docker's build cache), then measure the disk again and send it to ADE's server. Never a repository, dependencies, an image or an emulator. An agent's call asks the person with a card in its chat first; with nobody watching (full-auto, an automation, ADE MCP) the answer is no. Answers { freedGb }.",
       input: "object { machine?: string (the instance id of the computer this runs on, the default: a call that names another machine is refused) }",

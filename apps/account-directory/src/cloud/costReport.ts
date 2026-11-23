@@ -4,6 +4,7 @@ import { blockCommand, sendOwnerAlert } from "./blocks";
 import type { CloudPlanId } from "./contract";
 import { sendCloudEmail } from "./email";
 import { idleCleanupReportLine } from "./idleCleanup";
+import { sponsoredReportLines } from "./gravity";
 import {
   CLOUD_PLANS,
   DISK_COST_MICROS_PER_GB_DAY,
@@ -408,8 +409,23 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     reportCloudFailure("cloud.safety_report_failed", { message: error instanceof Error ? error.message : "unknown" });
     return { lines: [] as string[], active: false };
   });
+  // Sponsored cards and the Index (`gravity.ts`): ADE's counts and what Gravity paid, against free use. Best effort.
+  // The day's free use as it was counted then, so an account that changed plan since counts on the right side.
+  // A failed read never costs the report: the comparison then says the cost is unknown.
+  const freeDay = await env.DB.prepare(`
+    select (select coalesce(sum(free_cost_micros), 0) from cloud_computer_days where day = ?) as compute,
+      (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day = ? and free = 1) as gb_days
+  `).bind(day, day).first<{ compute: number; gb_days: number }>().catch((error: unknown) => {
+    reportCloudFailure("cloud.sponsored_free_cost_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return undefined;
+  });
+  const freeDayCost = freeDay === undefined ? null : (freeDay?.compute ?? 0) + (freeDay?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
+  const sponsored = await sponsoredReportLines(env, day, freeDayCost).catch((error: unknown) => {
+    reportCloudFailure("cloud.sponsored_report_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return [] as string[];
+  });
   logCloud("cloud.daily_cost_report", { day, accounts: rows.length, dayCostMicros: dayCost, dayIncomeMicros: dayIncome, alarms: alarms.length });
-  if (rows.length === 0 && alarms.length === 0 && !safety.active) return;
+  if (rows.length === 0 && alarms.length === 0 && !safety.active && sponsored.length === 0) return;
 
   const worst = [...rows].sort((a, b) => (b.costMicros - b.incomeMicros) - (a.costMicros - a.incomeMicros)).slice(0, WORST_ACCOUNTS);
   const margin = (cost: number, income: number) => income > 0 ? `${Math.round(((income - cost) / income) * 100)}%` : "none";
@@ -422,6 +438,7 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
       : `Free-use cap: $${owner.limitUsd}, ${Math.round((owner.freeCostMtdMicros / (owner.limitUsd * 1_000_000)) * 100)}% used${owner.reached ? " (reached: free accounts get no new computers or disk growth; paid accounts are not affected)" : ""}.`,
     ...(idleLine ? [idleLine] : []),
     ...safety.lines,
+    ...sponsored,
     "",
     alarms.length ? "Alarms:" : "No alarms.",
     ...alarms,

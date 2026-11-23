@@ -91,14 +91,14 @@ export function readCloudComputerLimitDetail(value: unknown): CloudComputerLimit
   return { planId, limit: raw.limit, total: raw.total, lanes, nextPlan: readCloudNextPlan(raw.nextPlan) };
 }
 
-/** "You're using all 2 of your cloud computers.": the limit card's title. */
+/** "All 2 of your cloud computers are in use": the limit card's title. */
 export function cloudComputerLimitTitle(detail: Pick<CloudComputerLimitDetail, "limit">): string {
-  return `You're using all ${detail.limit} of your cloud computers.`;
+  return detail.limit === 1 ? "Your one cloud computer is in use" : `All ${detail.limit} of your cloud computers are in use`;
 }
 
-/** The limit card's third way out: "Move to Plus for 3 computers." */
+/** The limit card's third way out: "Move to Plus". */
 export function cloudComputerLimitUpgradeLabel(nextPlan: CloudNextPlan): string {
-  return `Move to ${CLOUD_PLAN_SENTENCE_NAMES[nextPlan.planId]} for ${nextPlan.computerLimit} computers`;
+  return `Move to ${CLOUD_PLAN_SENTENCE_NAMES[nextPlan.planId]}`;
 }
 
 /**

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.133] - 2026-11-23
+
+### Desktop and web
+
+- ADE Cloud Pricing v2: unlimited Small computers, computers per plan, no GB; computer-limit card with three ways to make room (#2446, #2450).
+- Free models with no paid plan, account or key (#2436).
+- ADE Cloud: move a lane to your computer; typing never wakes a sleeping computer; deleted-computer lanes look asleep; account views in the CLI (#2441, #2438, #2435, #2447, #2434).
+- Lanes Computer filter; feature tips wait for idle agents; quick replies show at once; draft edits survive Quit; Claude pass ends only on refusal (#2432, #2443, #2428, #2442, #2445).
+- Windows update failures name their blocker; screen driver skips Input Monitoring at start; phone and Mac agree after a project switch (#2439, #2444, #2429).
+
+### iOS
+
+- Asleep cloud chat sends, new cloud chat launch page, wake warning, unfolded Duo lane cards, computer-limit sheet (#2440, #2430, #2445, #2448, #2450).
+
 ## [1.2.132] - 2026-11-19
 
 ### Desktop and web
@@ -2899,7 +2913,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.132...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.133...HEAD
+[1.2.133]: https://github.com/arul28/ADE/compare/v1.2.132...v1.2.133
 [1.2.132]: https://github.com/arul28/ADE/compare/v1.2.131...v1.2.132
 [1.2.131]: https://github.com/arul28/ADE/compare/v1.2.130...v1.2.131
 [1.2.130]: https://github.com/arul28/ADE/compare/v1.2.129...v1.2.130

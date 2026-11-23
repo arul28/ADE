@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { ClockCounterClockwise, DownloadSimple, GitBranch, Trash } from "@phosphor-icons/react";
 import type { CloudLaneBackup } from "../../../../../account-directory/src/cloud/contract";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import { fetchAccountStatus, subscribeAccountStatus } from "../../lib/account";
 import { ipcErrorMessage } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
@@ -196,7 +197,7 @@ function newestPerLane(list: readonly CloudLaneBackup[]): CloudLaneBackup[] {
 export function CloudLaneSavedWork({ laneId, laneName, className }: { laneId: string; laneName?: string | null; className?: string }) {
   const backup = newestPerLane(useLaneBackups().filter((entry) => entry.laneId === laneId))[0] ?? null;
   if (!backup) return null;
-  return <LaneSavedWorkLine backup={backup} name={laneName ?? backup.laneName ?? "this lane"} className={className} />;
+  return <LaneSavedWorkLine backup={backup} name={laneName ?? savedLaneName(backup) ?? "this lane"} className={className} />;
 }
 
 function LaneSavedWorkLine({ backup, name, className }: { backup: CloudLaneBackup; name: string; className?: string }) {
@@ -209,6 +210,16 @@ function LaneSavedWorkLine({ backup, name, className }: { backup: CloudLaneBacku
       </div>
     </div>
   );
+}
+
+/**
+ * A saved lane's name as every screen says it. A backup carries no lane type,
+ * and a computer's main checkout is saved under its stored name "Primary".
+ */
+function savedLaneName(backup: Pick<CloudLaneBackup, "laneName">): string | null {
+  const name = backup.laneName?.trim();
+  if (!name) return null;
+  return laneDisplayName({ name, laneType: name.toLowerCase() === "primary" ? "primary" : null });
 }
 
 /**
@@ -237,7 +248,7 @@ export function CloudSavedLaneWorkCard({ shownLaneIds }: { shownLaneIds: Readonl
 }
 
 function SavedWorkRow({ backup }: { backup: CloudLaneBackup }) {
-  const name = backup.laneName ?? backup.branchRef ?? "Lane";
+  const name = savedLaneName(backup) ?? backup.branchRef ?? "Lane";
   const actions = useSavedWorkActions(backup, name);
   return (
     <div className="adecl-saved-row" data-cloud-lane-saved-work={backup.laneId}>

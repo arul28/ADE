@@ -4862,6 +4862,7 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
           requestChatInput: (input) => agentChatService.requestChatInput(input),
           permissionLevel: (chatSessionId) => agentChatService.getPermissionCeiling?.({ actor: { kind: "agent", chatSessionId } }) ?? null,
           isAutomationRun: async (chatSessionId) => Boolean((await agentChatService.getSessionSummary(chatSessionId).catch(() => null))?.automationRunId),
+          isSubagentChat: async (chatSessionId) => Boolean((await agentChatService.getSessionSummary(chatSessionId))?.orchestrationParentSessionId),
           ...(typeof agentChatService.emitAdeCard === "function"
             ? { postCard: (chatSessionId: string, card: AdeCardPayload) => agentChatService.emitAdeCard({ sessionId: chatSessionId, card }) }
             : {}),

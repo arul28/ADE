@@ -100,6 +100,8 @@
   <string>Discover ADE hosts on your local network and reconnect without rescanning.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>ADE uses the microphone to dictate prompts. Audio is transcribed on your device and is never uploaded.</string>
+  <key>NSUserTrackingUsageDescription</key>
+  <string>Sponsored cards in ADE Cloud chats can use your account's hashed email to show more useful ones. Cards still show if you say no.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>ADE transcribes your dictated prompts on device so you can speak instead of type. Speech is processed locally.</string>
   <key>UIApplicationSceneManifest</key>
