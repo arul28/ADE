@@ -94,6 +94,31 @@ describe("projectIconResolver", () => {
     writeFile(possessiveRoot, "index.html", '<link rel="icon\'s" href="/brand/logo.svg">');
     writeFile(possessiveRoot, "public/brand/logo.svg", "<svg>brand</svg>");
     expect(resolveProjectIconPath(possessiveRoot)).toBeNull();
+
+    // A matched link whose href cannot be used (missing file, remote URL) must
+    // not mask a later usable icon link in the same file.
+    const maskedRoot = makeProjectRoot();
+    writeFile(
+      maskedRoot,
+      "index.html",
+      [
+        '<link rel="icon shortcut" href="/brand/missing.png">',
+        '<link rel="icon" href="https://cdn.example.com/icon.png">',
+        '<link rel="shortcut icon" href="/brand/logo.svg">',
+      ].join("\n"),
+    );
+    const maskedIconPath = writeFile(maskedRoot, "public/brand/logo.svg", "<svg>brand</svg>");
+    expect(resolveProjectIconPath(maskedRoot)).toBe(maskedIconPath);
+
+    // The same fallback across head-config link objects.
+    const maskedObjectRoot = makeProjectRoot();
+    writeFile(
+      maskedObjectRoot,
+      "app/routes/__root.tsx",
+      'export const Route = { head: () => ({ links: [{ rel: "icon shortcut", href: "/brand/missing.png" }, { rel: "icon", href: "/brand/logo.svg" }] }) };',
+    );
+    const maskedObjectIconPath = writeFile(maskedObjectRoot, "public/brand/logo.svg", "<svg>brand</svg>");
+    expect(resolveProjectIconPath(maskedObjectRoot)).toBe(maskedObjectIconPath);
   });
 
   it("detects nested app icons in monorepos", () => {
