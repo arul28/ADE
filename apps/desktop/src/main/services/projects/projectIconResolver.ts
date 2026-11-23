@@ -76,19 +76,30 @@ const IOS_ASSET_CATALOG_CANDIDATE_DIRS = [
 
 const IOS_ASSET_ICONSET_EXTENSIONS = new Set([".appiconset", ".imageset"]);
 
-const LINK_ICON_HTML_RE =
-  /<link\b(?=[^>]*\brel=["'](?:icon|shortcut icon)["'])(?=[^>]*\bhref=["']([^"'?]+))[^>]*>/i;
-const LINK_ICON_OBJ_RE =
-  /(?=[^}]*\brel\s*:\s*["'](?:icon|shortcut icon)["'])(?=[^}]*\bhref\s*:\s*["']([^"'?]+))[^}]*/i;
+// `rel` is an unordered, whitespace-separated token list; any `icon` token marks an icon link.
+const ICON_REL_VALUE = String.raw`(?:"(?:[^"]*[\t\n\f\r ])?icon(?=[\t\n\f\r "])|'(?:[^']*[\t\n\f\r ])?icon(?=[\t\n\f\r ']))`;
+const LINK_ICON_HTML_RE = new RegExp(
+  String.raw`<link\b(?=[^>]*\brel=${ICON_REL_VALUE})(?=[^>]*\bhref=["']([^"'?]+))[^>]*>`,
+  "gi",
+);
+const LINK_ICON_OBJ_RE = new RegExp(
+  String.raw`(?=[^}]*\brel\s*:\s*${ICON_REL_VALUE})(?=[^}]*\bhref\s*:\s*["']([^"'?]+))[^}]*`,
+  "gi",
+);
 
 type ProjectIconOverride = string | null | undefined;
 
-function extractIconHref(source: string): string | null {
-  const htmlMatch = source.match(LINK_ICON_HTML_RE);
-  if (htmlMatch?.[1]) return htmlMatch[1];
-  const objMatch = source.match(LINK_ICON_OBJ_RE);
-  if (objMatch?.[1]) return objMatch[1];
-  return null;
+function extractIconHrefs(source: string): string[] {
+  // Every icon link in order, so one unusable href (a missing file, a CDN URL,
+  // a `data:` URL) does not mask a later usable icon in the same file.
+  const hrefs: string[] = [];
+  for (const match of source.matchAll(LINK_ICON_HTML_RE)) {
+    if (match[1]) hrefs.push(match[1]);
+  }
+  for (const match of source.matchAll(LINK_ICON_OBJ_RE)) {
+    if (match[1]) hrefs.push(match[1]);
+  }
+  return hrefs;
 }
 
 function isLocalIconHref(href: string): boolean {
@@ -810,11 +821,12 @@ export function resolveProjectIconPath(
     } catch {
       continue;
     }
-    const href = extractIconHref(source);
-    if (!href || !isLocalIconHref(href)) continue;
-    const existing = findExistingFile(root, resolveIconHref(root, href));
-    if (existing && isSupportedIconPath(existing) && isInlineableIconFile(existing)) {
-      return cacheValue(existing);
+    for (const href of extractIconHrefs(source)) {
+      if (!isLocalIconHref(href)) continue;
+      const existing = findExistingFile(root, resolveIconHref(root, href));
+      if (existing && isSupportedIconPath(existing) && isInlineableIconFile(existing)) {
+        return cacheValue(existing);
+      }
     }
   }
 
