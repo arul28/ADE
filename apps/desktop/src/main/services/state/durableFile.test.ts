@@ -369,17 +369,13 @@ describe("durableFile", () => {
   });
 
   describe("cleanupAbandonedTempFiles", () => {
-    it.skipIf(!symlinksSupported)("removes only matching old regular files and never follows symlinks", () => {
+    it("removes only matching old regular files", () => {
       const oldTemp = path.join(root, ".state.json.tmp-123-old");
       const youngTemp = path.join(root, ".state.json.tmp-123-young");
       const nonMatching = path.join(root, "state.json.tmp-123-old");
-      const outside = path.join(root, "outside.txt");
-      const symlink = path.join(root, ".state.json.tmp-123-link");
       fs.writeFileSync(oldTemp, "old");
       fs.writeFileSync(youngTemp, "young");
       fs.writeFileSync(nonMatching, "keep");
-      fs.writeFileSync(outside, "outside");
-      fs.symlinkSync(outside, symlink);
       const old = new Date(Date.now() - 10_000);
       fs.utimesSync(oldTemp, old, old);
 
@@ -387,6 +383,16 @@ describe("durableFile", () => {
       expect(fs.existsSync(oldTemp)).toBe(false);
       expect(fs.existsSync(youngTemp)).toBe(true);
       expect(fs.existsSync(nonMatching)).toBe(true);
+    });
+
+    // Windows refuses a file symlink without Developer Mode or an elevated token.
+    it.skipIf(!symlinksSupported)("never follows a symlink", () => {
+      const outside = path.join(root, "outside.txt");
+      const symlink = path.join(root, ".state.json.tmp-123-link");
+      fs.writeFileSync(outside, "outside");
+      fs.symlinkSync(outside, symlink);
+
+      expect(cleanupAbandonedTempFiles(root, { maxAgeMs: 1_000 })).toBe(0);
       expect(fs.lstatSync(symlink).isSymbolicLink()).toBe(true);
       expect(fs.readFileSync(outside, "utf8")).toBe("outside");
     });

@@ -82,19 +82,20 @@ describe("providerContextRevealRoots", () => {
 });
 
 describe("resolveProviderContextRevealTarget", () => {
-  it.skipIf(!symlinksSupported)("shows a skill link where the provider sees it, even when its target is outside every root", () => {
+  it("shows a skill link where the provider sees it, even when its target is outside every root", () => {
     const dotfiles = write(path.join(tempRoot, "dotfiles", "lint", "SKILL.md"));
     const link = path.join(home, ".claude", "skills", "lint");
     fs.mkdirSync(path.dirname(link), { recursive: true });
-    fs.symlinkSync(path.dirname(dotfiles), link);
+    // A directory link works on Windows without Developer Mode as a junction.
+    fs.symlinkSync(path.resolve(path.dirname(dotfiles)), link, process.platform === "win32" ? "junction" : "dir");
     expect(() => resolveWithinAllowedDirs(roots(), link)).toThrow(/outside allowed directories/);
     expect(resolveProviderContextRevealTarget(roots(), link)).toBe(link);
   });
 
-  it.skipIf(!symlinksSupported)("refuses a path that passes through a symlinked folder", () => {
+  it("refuses a path that passes through a symlinked folder", () => {
     write(path.join(home, ".ssh", "id_ed25519"));
     const linkedDir = path.join(project, "keys");
-    fs.symlinkSync(path.join(home, ".ssh"), linkedDir);
+    fs.symlinkSync(path.resolve(home, ".ssh"), linkedDir, process.platform === "win32" ? "junction" : "dir");
     const through = path.join(linkedDir, "id_ed25519");
     expect(fs.realpathSync(through)).toBe(path.join(home, ".ssh", "id_ed25519"));
     expect(() => resolveProviderContextRevealTarget(roots(), through)).toThrow(/outside allowed directories/);
