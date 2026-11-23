@@ -18,7 +18,7 @@ Accounts (an email, or a Clerk user id that starts with user_):
                                          its own computer limit, monthly hours and iPhone minutes
                                          this period (none: clear them; no option: clear all three)
   phone <account> <nomac|revyl|both|off> on the ADE Cloud iPhone's beta list with that provider
-                                         (both: NoMac first, then Revyl), or off it; not a test
+                                         (both: the default provider first, then the other), or off it; not a test
   tester <account> <on|off>              on the sponsored testers list (ads switch "testers")
   reset <account>                        back to the real plan: every test field cleared
 

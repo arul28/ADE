@@ -992,7 +992,12 @@ type TestFields = Pick<AccountRow, "test_plan" | "test_computers" | "test_hours_
 
 /** Whether the account test tool has anything in force on this account (`ownerAccounts.ts`). */
 export function hasAccountTest(account: Partial<TestFields>): boolean {
-  return testPlanOf(account) != null || account.test_computers != null || account.test_hours_milli != null || account.test_phone_minutes != null;
+  return hasComputerTest(account) || account.test_phone_minutes != null;
+}
+
+/** Whether a test changes the account's plan, computers or hours: what the plan cleanup reads (iPhone minutes don't touch computers). */
+export function hasComputerTest(account: Partial<TestFields>): boolean {
+  return testPlanOf(account) != null || account.test_computers != null || account.test_hours_milli != null;
 }
 
 /** The plan the account test tool has the account act as, or null (`ownerAccounts.ts`). */

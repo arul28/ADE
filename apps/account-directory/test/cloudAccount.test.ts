@@ -4018,11 +4018,12 @@ describe("ADE Cloud iPhone minutes", () => {
       after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 12 },
     },
     {
-      name: "a test's iPhone minutes (the account test tool) never change what is billed: past the plan's minutes",
-      seed: () => { seedPhoneAccount({ test_phone_minutes: 1000 }); seedPhone("ses_a", 312); },
-      act: async () => {},
-      reports: [[`ade-phone:cus_1:${PERIOD}:from-0`, 12]],
-      after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 12 },
+      // The apps show the test's 1000 as included; billing past the plan's 300 would charge for those.
+      name: "under a test's iPhone minutes (the account test tool) extra minutes can't be turned on, so nothing past the plan is billed",
+      seed: () => { seedPhoneAccount({ test_phone_minutes: 1000, phone_extra_enabled: 0 }); seedPhone("ses_a", 312); },
+      act: () => expect(setExtraPhoneMinutes(harness.env, OWNER, { enabled: true, monthlyLimitCents: null }, clock)).rejects.toMatchObject({ code: "plan_test", status: 409 }),
+      reports: [],
+      after: { phone_extra_enabled: 0, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 0 },
     },
     {
       name: "a lower limit stops further use but keeps the minutes already used owed",

@@ -371,12 +371,13 @@ export function phoneUsageOf(env: CloudEnv, account: AccountRow, rows: readonly 
   // What the limits count (a test's minutes) and what billing counts (the plan's) part only under a test.
   const included = phoneMinutesForLimits(account);
   const used = phoneMinutesUsed(rows, now, settledOnly);
-  const available = extraPhoneOffered(env) && accountRules(account) === "paid";
-  const enabled = phoneExtraOn(env, account);
+  // A test's minutes are the whole limit: no extra minutes are offered or used past them.
+  const underTest = account.test_phone_minutes != null;
+  const available = !underTest && extraPhoneOffered(env) && accountRules(account) === "paid";
+  const enabled = !underTest && phoneExtraOn(env, account);
   const limitCents = account.phone_extra_limit_cents ?? null;
   const billableMinutes = billableExtraMinutes({ used, included: includedPhoneMinutes(account), enabled, limitCents, owed: inPeriod(account, account.phone_extra_owed_minutes) });
-  // A test's minutes are the whole limit: no extra minutes past them.
-  const leftMinutes = enabled && account.test_phone_minutes == null ? Math.max(0, extraLimitMinutes(limitCents) - Math.max(0, used - included)) : 0;
+  const leftMinutes = enabled ? Math.max(0, extraLimitMinutes(limitCents) - Math.max(0, used - included)) : 0;
   const state: CloudPhoneMinutesState = included > 0 && used >= included ? "zero" : included > 0 && used >= included * 0.8 ? "warn80" : "none";
   return {
     included,

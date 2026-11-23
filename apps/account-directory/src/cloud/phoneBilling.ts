@@ -88,6 +88,10 @@ export async function setExtraPhoneMinutes(
   if (account.stripe_status === "past_due") {
     throw new CloudBillingError("needs_paid_plan", "Extra iPhone minutes change once your last payment goes through.", 403);
   }
+  // Billing counts past the plan's minutes, the apps past a test's: the two would disagree on what is extra.
+  if (choice.enabled && account.test_phone_minutes != null) {
+    throw new CloudBillingError("plan_test", "This account has test iPhone minutes. Reset the test before turning on extra minutes.", 409);
+  }
   // An ended period still tracked is billed first, at its own settings, so this choice starts clean on the
   // current one: its running phone stops, then its minutes go out. Until they have, the choice waits.
   if (tracksEndedPeriod(account)) {

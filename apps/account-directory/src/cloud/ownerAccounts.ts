@@ -2,7 +2,7 @@ import { gravitySwitches, smallUsesNoHours, syncAllSmallRates, syncSmallRates, t
 import { fail, json } from "./http";
 import { CLOUD_PHONE_PROVIDERS } from "./contract";
 import { clerkUserIdsFor, handleOwnerPhoneBeta } from "./phoneBeta";
-import { includedPhoneMinutes, periodPhones, phoneAccess, phoneExtraOn, phoneUsageOf } from "./phones";
+import { enforcePhoneAllowance, includedPhoneMinutes, periodPhones, phoneAccess, phoneExtraOn, phoneUsageOf } from "./phones";
 import { CLOUD_PLANS, isPaidPlanId } from "./plans";
 import {
   CLOUD_SETTINGS,
@@ -22,6 +22,7 @@ import {
   includedMilliOf,
   loadAccount,
   logCloud,
+  reportCloudFailure,
   shownPlanIdOf,
   testPlanOf,
   type AccountRow,
@@ -244,22 +245,27 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
   const testChanged = statements.length > 0;
   // The beta list keeps its own rules (a removal stops a running phone): its route does it.
   if (phoneChoice !== undefined) {
-    const listed = await handleOwnerPhoneBeta(env, phoneChoice === "off" ? { userId: who.userId, enabled: false } : { userId: who.userId, provider: phoneChoice }, now);
+    // The email too: the list keeps the address, and a removal drops its waiting invite (else the invite sweep adds it back).
+    const ref = { userId: who.userId, ...(who.email ? { email: who.email } : {}) };
+    const listed = await handleOwnerPhoneBeta(env, phoneChoice === "off" ? { ...ref, enabled: false } : { ...ref, provider: phoneChoice }, now);
     if (!listed.ok) return listed;
-    statements.push(ownerLogStatement(env, now, "account_phone", who.userId, { phone: phoneChoice }));
+    // Logged at once: the list changed already, whatever happens to the test's write below.
+    await ownerLogStatement(env, now, "account_phone", who.userId, { phone: phoneChoice }).run();
   }
-  if (statements.length) {
-    if (testChanged) statements.push(ownerLogStatement(env, now, reset ? "account_reset" : "account_test", who.userId, {
+  if (testChanged) {
+    statements.push(ownerLogStatement(env, now, reset ? "account_reset" : "account_test", who.userId, {
       ...(reset ? {} : { ...change, ...(Object.keys(change).length ? { days } : {}) }),
       ...(tester === undefined ? {} : { tester }),
       ...(note ? { note } : {}),
     }));
     await env.DB.batch(statements);
-    account = await loadAccount(env, who.userId, now);
     // Small's hours follow the plan and the testers list at once.
-    await syncSmallRates(env, account, now);
+    await syncSmallRates(env, await loadAccount(env, who.userId, now), now);
+    // A running phone is held to the new minutes at once: a lower test stops it sooner, a higher one lets it run on.
+    if (reset || change.phoneMinutes !== undefined) await holdPhoneToAllowance(env, who.userId, now);
     logCloud("cloud.owner_account_changed", { userId: who.userId, reset, tester: tester ?? null, plan: change.plan ?? null });
   }
+  if (testChanged || phoneChoice !== undefined) account = await loadAccount(env, who.userId, now);
   return json({ ok: true, account: await describeAccount(env, account, who.email, now) });
 }
 
@@ -285,14 +291,24 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
   });
 }
 
+/** The account's running phone, held to its minutes now (`enforcePhoneAllowance`); a failure waits for the ten-minute check. */
+async function holdPhoneToAllowance(env: CloudEnv, userId: string, now: number): Promise<void> {
+  try {
+    await enforcePhoneAllowance(env, userId, now);
+  } catch (error) {
+    reportCloudFailure("cloud.owner_phone_enforce_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+  }
+}
+
 /**
  * The minute tick: tests whose time is up end, and the account's Small
  * computers go back to the rate of its real plan. One indexed read when none is due.
  */
 export async function expireAccountTests(env: CloudEnv, now: number): Promise<number> {
-  const due = await env.DB.prepare("select user_id from cloud_accounts where test_until is not null and test_until <= ? limit 50").bind(now).all<{ user_id: string }>();
+  const due = await env.DB.prepare("select user_id, test_phone_minutes from cloud_accounts where test_until is not null and test_until <= ? limit 50")
+    .bind(now).all<{ user_id: string; test_phone_minutes: number | null }>();
   let ended = 0;
-  for (const { user_id: userId } of due.results ?? []) {
+  for (const { user_id: userId, test_phone_minutes: testPhoneMinutes } of due.results ?? []) {
     const cleared = await env.DB.prepare(`update cloud_accounts set test_plan = null, test_computers = null, test_hours_milli = null, test_phone_minutes = null, test_until = null, test_note = null,
       updated_at = ? where user_id = ? and test_until is not null and test_until <= ?`).bind(now, userId, now).run();
     if ((cleared.meta.changes ?? 0) !== 1) continue;
@@ -300,6 +316,7 @@ export async function expireAccountTests(env: CloudEnv, now: number): Promise<nu
     ended += 1;
     const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
     if (account) await syncSmallRates(env, account, now);
+    if (testPhoneMinutes != null) await holdPhoneToAllowance(env, userId, now);
   }
   if (ended) logCloud("cloud.account_tests_ended", { count: ended });
   return ended;
