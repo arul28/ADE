@@ -81,6 +81,11 @@ phone.
 4. **Partner keys are Worker secrets.** Never ship a partner's key in the
    desktop app, the CLI or the iPhone app, even when the partner's SDK puts
    it in the client.
+5. **Test as any plan with the account test tool.** To act as another plan,
+   change an account's limits, add a sponsored tester or flip a server switch
+   (ads, the Free rule), use `scripts/cloud-owner.mjs` through
+   `ade secrets exec --env CLOUD_OWNER_TOKEN`. It is instant and never
+   touches Stripe. Guide: `docs/features/ade-cloud/account-test-tool.md`.
 
 ## Main checkout
 

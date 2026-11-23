@@ -1,4 +1,4 @@
-import { requestCountry, sponsoredAccountState } from "./gravity";
+import { requestCountry, smallUsesNoHours, sponsoredAccountState } from "./gravity";
 import { timedWakesCancelledOf } from "./accountNotices";
 import type { CloudAccountState } from "./contract";
 import { RECENT_USE_DAYS, recentUsedMilli } from "./diskUsage";
@@ -10,8 +10,6 @@ import { cloudCatalog, isMeteredStatus, nextPlanOffer } from "./plans";
 import { readSummaryRow, referralSummary } from "./referrals";
 import { phoneAccountState } from "./phones";
 import {
-  accountRules,
-  boughtPlanIdOf,
   cloudOffers,
   computerLimitOf,
   computerLimitPlanOf,
@@ -22,11 +20,14 @@ import {
   extraActive,
   extraUsedMilli,
   hoursState,
+  includedMilliOf,
   listComputers,
   liveUsedMilli,
   loadAccount,
   percentUsed,
   reportCloudFailure,
+  shownPlanIdOf,
+  shownRulesOf,
   type AccountRow,
   type CloudEnv,
 } from "./store";
@@ -83,7 +84,10 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     return undefined;
   });
   const live = liveUsedMilli(account, computers, now);
-  const rules = accountRules(account);
+  // What the person sees follows the account test tool's plan (`ownerAccounts.ts`); billing below stays the real plan.
+  const rules = shownRulesOf(account);
+  const shownPlan = shownPlanIdOf(account);
+  const included = includedMilliOf(account);
   // The same total the wake rule and the limits use: a move's source stays out while the move runs.
   const diskUsed = countedDiskGb(computers);
   const offers = cloudOffers(env);
@@ -96,13 +100,13 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   });
   return {
     ...(sponsored ? { sponsored } : {}),
-    plan: account.plan,
+    plan: shownPlan === "free" ? "free" : "paid",
     rules,
-    planId: boughtPlanIdOf(account),
+    planId: shownPlan,
     hours: {
-      includedMilli: account.included_milli,
+      includedMilli: included,
       usedMilli: live,
-      leftMilli: Math.max(0, account.included_milli - live),
+      leftMilli: Math.max(0, included - live),
       percentUsed: percentUsed(account, live),
       state: hoursState(account, live),
     },
@@ -136,7 +140,8 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     recentUse: { days: RECENT_USE_DAYS, usedMilli: recentMilli },
     dueForDeletion: due,
     deletedInstanceIds,
-    catalog: cloudCatalog(offers, boughtPlanIdOf(account)),
+    // Small's rate is the account's own: half a Medium-hour on Free with no sponsored cards (`free_small_needs_ads`).
+    catalog: cloudCatalog(offers, shownPlan, { smallUsesHours: !(await smallUsesNoHours(env, account)) }),
     billing: {
       periodStart: account.period_start,
       periodEnd: account.period_end,

@@ -3,7 +3,8 @@ import { createComputerSettled, forkComputerSettled, handleCloudRequest, isCloud
 import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/automations";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
-import { pruneSponsored } from "./cloud/gravity";
+import { pruneSponsored, syncAllSmallRates } from "./cloud/gravity";
+import { expireAccountTests } from "./cloud/ownerAccounts";
 import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
 import { runProjectComputerDeletes } from "./cloud/projectComputers";
 import { runCloudMoves } from "./cloud/moves";
@@ -234,6 +235,13 @@ export default Sentry.withSentry(sentryOptions, {
         // people watched from (IP, user agent, device) and reply answers a day
         // old, for every account. Nothing on other ticks.
         settle("cloud_sponsored_prune", () => pruneSponsored(env, event.scheduledTime)),
+        // The account test tool (`cloud/ownerAccounts.ts`): tests whose time
+        // is up end. One indexed read when none is due.
+        settle("cloud_account_tests", () => expireAccountTests(env, event.scheduledTime)),
+        // Free's Small computers (`cloud/gravity.ts`): at minutes 8, 23, 38
+        // and 53, accounts whose Small runs at the wrong rate after a switch
+        // flipped. One read when none is wrong.
+        settle("cloud_small_rates", () => syncAllSmallRates(env, event.scheduledTime)),
         // The server launcher's records past their week (and a draft's day),
         // with their files. One indexed read when none is due.
         settle("cloud_launches", () => expireCloudLaunches(env)),
