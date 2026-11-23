@@ -108,8 +108,14 @@ export type PhoneRow = {
   provider_ref: string | null;
 };
 
-/** A start's claim on its account (`phone_start_claim`) lapses after this: a start that died holding it. */
-const PHONE_START_CLAIM_MS = 2 * 60_000;
+/**
+ * A start's claim on its account (`phone_start_claim`) lapses after this: a
+ * start that died holding it. Longer than the slowest start's own timeouts
+ * (Revyl's: its workspace, active sessions, `start_device`'s two minutes and
+ * the read, about five minutes; then a failover to NoMac), so a slow start
+ * still holds it while it runs.
+ */
+const PHONE_START_CLAIM_MS = 8 * 60_000;
 
 /* ---- The providers ---- */
 
@@ -673,6 +679,12 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       return fail(refusal.code, refusal.message, 402, { minutes: minutesOf(context.usage) });
     }
     // What this phone may use: the plan's minutes left, then extra minutes, and never more than one phone's longest.
+    // A live phone its provider couldn't answer for now may still be running: a start now could add a
+    // second billed phone (at another provider, or one that can do what this one needs). Ask again, or stop it.
+    if (context.liveRowId) {
+      logCloud("cloud.phone_start_refused", { userId, code: "phone_unreadable", phoneId: context.liveRowId });
+      return fail("phone_unavailable", "Your ADE Cloud iPhone isn't answering right now. Try again in a moment, or stop it first.", 503);
+    }
     const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
     const route = routeOf(env, lock, drives, needs);
     if (route instanceof Response) return route;
@@ -685,9 +697,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     let begun: Awaited<ReturnType<typeof startOnRoute>>;
     try {
       // A start that finished between this request's read and its claim: its phone is the answer next time.
-      // (A live row this request couldn't read, `liveRowId`, goes on as before: its provider answers that phone.)
-      const another = await env.DB.prepare("select 1 from cloud_phones where user_id = ? and state = 'live' and phone_id != ? limit 1")
-        .bind(userId, context.liveRowId ?? "").first();
+      const another = await env.DB.prepare("select 1 from cloud_phones where user_id = ? and state = 'live' limit 1").bind(userId).first();
       if (another) return startingElsewhere();
       begun = await startOnRoute(env, route, userId, { userId, label: context.label, device, minutes, lastPhoneId: context.lastPhoneId, now });
       // The account was deleted while the provider started it: no row comes back under the person's id,

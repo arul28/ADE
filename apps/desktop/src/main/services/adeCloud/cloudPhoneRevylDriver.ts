@@ -191,7 +191,8 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     }
     if (!parsed || typeof parsed !== "object") throw unreadable();
     const screen = screenOf(parsed, phone.points);
-    if (screen.width && screen.height && !phone.points) phone.points = { width: screen.width, height: screen.height };
+    // The size a read reports is the size now (a rotation swaps it): later gestures aim by it.
+    if (screen.width && screen.height) phone.points = { width: screen.width, height: screen.height };
     return screen;
   }
 
@@ -275,8 +276,10 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       case "scroll": {
         const direction = (rest[0]?.word ?? "").toLowerCase();
         if (!DIRECTIONS.has(direction)) return `${verb} is up, down, left or right`;
-        const width = phone.points?.width || 400;
-        const height = phone.points?.height || 870;
+        // No known size (the phone just turned): one read learns it.
+        const size = phone.points ?? await readScreen(phone, cmd).catch(() => null);
+        const width = size?.width || 400;
+        const height = size?.height || 870;
         let at: { x: number; y: number } = { x: Math.round(width / 2), y: Math.round(height / 2) };
         if (rest[1]) {
           const found = await locate(phone, readTarget(rest[1]), cmd);
@@ -558,7 +561,10 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
         case "orientation": {
           const turn = (value ?? "").toLowerCase();
           if (!ORIENTATIONS.has(turn)) return textAnswer("orientation is portrait or landscape.", true);
-          return done(await act(phone, "set_orientation", { orientation: turn }, command()), `The phone is ${turn}`);
+          const turned = await act(phone, "set_orientation", { orientation: turn }, command());
+          // The screen's width and height swap: the next gesture reads them again.
+          phone.points = null;
+          return done(turned, `The phone is ${turn}`);
         }
         default:
           return textAnswer(`${action} isn't a cloud iPhone control (launch, terminate, open_url, location, push, appearance, text_size, grant, revoke, reset_permissions, shake, orientation).`, true);

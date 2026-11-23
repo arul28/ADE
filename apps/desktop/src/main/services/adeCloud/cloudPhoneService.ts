@@ -112,9 +112,12 @@ const UPLOAD_LIMIT_BYTES = 2 * 1024 ** 3;
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
 /** A held phone read ready this recently is used without reading it again. */
 const READY_TRUST_MS = 20_000;
-/** A start refused `phone_starting` (another machine's start in flight) is asked again this often, for this long. */
+/**
+ * A start refused `phone_starting` (another machine's start in flight) is
+ * asked again this often, for this long: a slow cloud start runs for minutes.
+ */
 const START_BUSY_POLL_MS = 2_000;
-const START_BUSY_WAIT_MS = 60_000;
+const START_BUSY_WAIT_MS = 5 * 60_000;
 /** NoMac's own list of what never goes up (`simulator-use` sync): build output, dependencies, version control, keys. */
 const SKIP_DIRS = new Set([".git", ".hg", ".svn", "DerivedData", "build", ".build", "node_modules", "Pods", "xcuserdata", ".swiftpm", ".expo", ".gradle", ".ade"]);
 const isSecretFile = (name: string): boolean =>

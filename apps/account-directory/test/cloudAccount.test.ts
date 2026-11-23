@@ -4137,6 +4137,22 @@ describe("ADE Cloud iPhone minutes", () => {
     expect(harness.rows("select phone_id from cloud_phones where user_id = ?", OWNER)).toHaveLength(1);
   });
 
+  it("a live phone its provider can't answer for blocks a new start, even one that would go elsewhere", async () => {
+    seedPhoneTester("both", "on");
+    seedPhone("ses_live", 0, clock - 60_000, "live");
+    const calls = phoneStartNetwork("ok");
+    const answering = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input instanceof Request ? input.url : input).endsWith("/simulator/sessions/ses_live")
+        ? new Response(JSON.stringify({ error: { code: "internal", message: "oops" } }), { status: 500 })
+        : answering(input, init));
+    const response = await startPhone(["perf"]);
+    expect(response.status).toBe(503);
+    expect((await response.json() as { error: { code: string } }).error.code).toBe("phone_unavailable");
+    expect(calls).toEqual([]);
+    expect(harness.rows("select phone_id from cloud_phones where user_id = ? and state = 'live'", OWNER)).toEqual([{ phone_id: "ses_live" }]);
+  });
+
   it("holds a running phone to what the account may still use, and the minute tick stops it then", async () => {
     seedPhoneAccount({ phone_extra_limit_cents: null });
     seedPhone("ses_used", 290);
