@@ -3,7 +3,8 @@ import { createComputerSettled, forkComputerSettled, handleCloudRequest, isCloud
 import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/automations";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
-import { pruneSponsored } from "./cloud/gravity";
+import { pruneSponsored, syncAllSmallRates } from "./cloud/gravity";
+import { expireAccountTests } from "./cloud/ownerAccounts";
 import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
 import { runProjectComputerDeletes } from "./cloud/projectComputers";
 import { runCloudMoves } from "./cloud/moves";
@@ -218,8 +219,19 @@ export default Sentry.withSentry(sentryOptions, {
         settle("cloud_wakes", () => runCloudWakes(env)),
         // ADE Cloud: reads the provider list once, meters hours, stops computers
         // at 0 hours, and runs the daily and ten-minute checks. No computers, no
-        // provider calls.
-        settle("cloud_account", () => runCloudMinuteCron(env, { waitUntil: (promise) => ctx.waitUntil(promise) })),
+        // provider calls. First, each on its own, the two sweeps that re-rate
+        // Small computers, so the hours check reads their stretches after them
+        // (a re-rate during it would count one stretch twice):
+        // - the account test tool (`cloud/ownerAccounts.ts`): tests whose time
+        //   is up end. One indexed read when none is due.
+        // - Free's Small computers (`cloud/gravity.ts`): a page of accounts whose
+        //   Small runs at the wrong rate after a switch flipped. One read when
+        //   none is wrong.
+        settle("cloud_account", async () => {
+          await settle("cloud_account_tests", () => expireAccountTests(env, event.scheduledTime));
+          await settle("cloud_small_rates", () => syncAllSmallRates(env, Date.now()));
+          await runCloudMinuteCron(env, { waitUntil: (promise) => ctx.waitUntil(promise) });
+        }),
         // ADE Cloud extra hours: reports whole hours to the Stripe meter. One
         // indexed read when no account has extra hours on.
         settle("cloud_extra_hours", () => reportExtraHours(env)),

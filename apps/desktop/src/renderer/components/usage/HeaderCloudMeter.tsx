@@ -6,6 +6,7 @@ import {
   cloudHoursLeftMilli,
   cloudPlanLabelOf,
   cloudReferralOf,
+  cloudSmallUsesHours,
   formatCloudDate,
   formatCloudHours,
   type CloudAccountState,
@@ -101,6 +102,8 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
   const pct = hoursLeftPct(state);
   const hours = hoursOf(state);
   const computers = cloudAccountComputers(state);
+  // Free with sponsored cards off (the server's rule on): Small uses hours too, so the hours are for every size.
+  const smallUsesHours = cloudSmallUsesHours(cloudCatalogOf(state));
   // The invite card shows only with a referral; with no rewards left there is nothing to invite to.
   const canInvite = (cloudReferralOf(state)?.rewardsLeft ?? 0) > 0;
   const open = (anchor?: string) => {
@@ -117,12 +120,12 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
       </div>
       <div className="flex items-baseline gap-1.5">
         <span className={cn("text-[20px] font-medium leading-6 text-fg", USAGE_NUMERIC_CLASS)}>{formatCloudHours(hours.leftMilli)} h</span>
-        <span className={cn("text-muted-fg", USAGE_TEXT.micro)}>left of {formatCloudHours(hours.totalMilli)} h for bigger computers</span>
+        <span className={cn("text-muted-fg", USAGE_TEXT.micro)}>left of {formatCloudHours(hours.totalMilli)} h{smallUsesHours ? "" : " for bigger computers"}</span>
       </div>
       <div className="kit-meter" data-level={usageLeftLevel(pct)}><span style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: usageLeftLevel(pct) == null ? BRAND_FILL : undefined }} /></div>
       <div className={cn("flex flex-wrap gap-x-3 gap-y-1 text-muted-fg", USAGE_TEXT.micro)}>
         <span>{`${computers.total} of ${computers.limit} computers`}, {state.computers.awake} awake</span>
-        <span>Small computers unlimited</span>
+        <span>{smallUsesHours ? "Small computers use hours" : "Small computers unlimited"}</span>
         {hours.earnedMilli > 0 ? <span>Includes {formatCloudHours(hours.earnedMilli)} h earned</span> : null}
         {state.extraHours.available ? <span>Extra hours {state.extraHours.enabled ? "on" : "off"}</span> : null}
       </div>

@@ -18,6 +18,7 @@ import {
   FINDER_DAYS_A_MONTH,
   FREE_PLAN,
   FREE_RULES,
+  FREE_SMALL_NEEDS_ADS_ON_WEBSITE,
   HOURLY_SIZES,
   INVITE_RULES,
   MOST_COMPUTERS,
@@ -167,6 +168,8 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
   const cheapest = plan.id === CHEAPEST_PAID?.id;
   const lit = free || cheapest;
   const tone = free ? "lamp" : cheapest ? "violet" : "quiet";
+  // Free's Small is unlimited only with sponsored cards on (the server's `free_small_needs_ads`).
+  const smallNeedsAds = free && FREE_SMALL_NEEDS_ADS_ON_WEBSITE;
   return (
     <div
       className={cn(
@@ -205,7 +208,11 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
       </div>
       <ul className="mt-5 flex flex-1 flex-col gap-3 text-[14px]">
         <PlanLine icon={Server} label="Cloud computers" value={formatCount(plan.computerLimit)} />
-        <PlanLine icon={Cpu} label="Small computers" value="Unlimited" />
+        {smallNeedsAds ? (
+          <PlanLine icon={Cpu} label="Unlimited Small computers, with sponsored cards" />
+        ) : (
+          <PlanLine icon={Cpu} label="Small computers" value="Unlimited" />
+        )}
         <PlanLine icon={Zap} label="Extra hours" value={plan.extraHourCents == null ? "None" : `${formatCents(plan.extraHourCents)} each`} />
         <PlanLine icon={Bot} label="Outside agents" value={plan.outsideAgents ? "Yes" : "No"} />
         <PlanLine icon={Megaphone} label="Ads" value={plan.adSupported ? "Ad-supported" : "No ads"} />
@@ -221,18 +228,30 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
       >
         {PLAN_CTAS[plan.id].label}
       </PlanButton>
+      {smallNeedsAds ? (
+        <p className="mt-3 text-[12px] leading-[1.5] text-white/45">
+          Without sponsored cards, Small computers use your {formatCount(plan.hours)} hours too.
+        </p>
+      ) : null}
     </div>
   );
 }
 
-function PlanLine({ icon: Icon, label, value }: { icon: ComponentType<{ className?: string }>; label: string; value: string }) {
+/** A plan line: a label and its value, or (no value) one line said in full that may wrap. */
+function PlanLine({ icon: Icon, label, value }: { icon: ComponentType<{ className?: string }>; label: string; value?: string }) {
   return (
     <li className="flex items-center gap-3">
       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-[10px] bg-white/[0.06] ring-1 ring-white/[0.08]">
         <Icon className="h-4 w-4 text-white/70" />
       </span>
-      <span className="flex-1 whitespace-nowrap text-white/55">{label}</span>
-      <span className="whitespace-nowrap font-semibold text-white">{value}</span>
+      {value == null ? (
+        <span className="flex-1 font-semibold leading-[1.35] text-white">{label}</span>
+      ) : (
+        <>
+          <span className="flex-1 whitespace-nowrap text-white/55">{label}</span>
+          <span className="whitespace-nowrap font-semibold text-white">{value}</span>
+        </>
+      )}
     </li>
   );
 }

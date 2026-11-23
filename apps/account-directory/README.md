@@ -539,7 +539,7 @@ minutes, access and routes; one provider record each in `phoneNomac.ts` and
 `phoneRevyl.ts` behind `phoneProvider.ts`; which provider (lock, router,
 failover) in `phoneRoute.ts`; Revyl's viewer page in
 `phoneViewerPage.ts`; the owner's beta list in `phoneBeta.ts`; migrations `0047_cloud_phone_beta.sql`,
-`0048_cloud_phone_usage.sql` and `0056_cloud_phone_provider.sql`, shapes in
+`0048_cloud_phone_usage.sql` and `0057_cloud_phone_provider.sql`, shapes in
 `contract.ts`). The owner sets each beta email to `nomac` or `revyl` (a lock:
 only that provider, never a fallback; refused when it can't start or lacks
 what the command needs) or `both` (the router: `CLOUD_PHONE_PROVIDER` first,
@@ -629,7 +629,7 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   account key stays in this Worker; a brain gets a token for one phone (2 hours)
   that cannot start, list or stop phones. Apply
   `0047_cloud_phone_beta.sql`, `0048_cloud_phone_usage.sql` and
-  `0056_cloud_phone_provider.sql` before the Worker that reads them deploys.
+  `0057_cloud_phone_provider.sql` before the Worker that reads them deploys.
 - The owner adds accounts with `POST /cloud/owner/phone-beta`, below.
 
 ### Payments
@@ -695,6 +695,13 @@ least 30 days old, one free plan per GitHub account).
     `blocked: true`.
   - A blocked GitHub account on a new ADE account reads as `github_used`; a
     blocked card can't unlock free hours. Both alert the owner.
+- **The account test tool and instant switches.** `POST /cloud/owner/account`
+  `{ email | userId, plan?, computers?, hours?, days?, note?, tester?, reset? }`
+  and `POST /cloud/owner/settings` `{ key?, value?, note? }`
+  (`ownerAccounts.ts`, `settings.ts`, migration 0056; script
+  `scripts/cloud-owner.mjs`; guide `docs/features/ade-cloud/account-test-tool.md`).
+  A test plan changes limits, hours, cards and Small's rate, never billing,
+  and ends at `test_until` (minute tick). Every change goes to `cloud_owner_log`.
 - **The iPhone beta list.** `POST /cloud/owner/phone-beta` `{ "email": "…" }`
   or `{ "userId": "user_…" }` adds an account (an email is looked up in Clerk
   once; the row keeps the id, and the address for the owner's reading). An

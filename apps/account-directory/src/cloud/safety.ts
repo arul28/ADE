@@ -4,6 +4,7 @@ import { blockedUsersAmong, forgetNotBlocked, isCloudBlocked } from "./blocks";
 import { constantTimeEqual } from "../githubApp/seal";
 import { sha256Hex } from "../sinkUtils";
 import { fail, json, readJson } from "./http";
+import { OWNER_ACCOUNT_PATH, OWNER_SETTINGS_PATH, handleOwnerAccount, handleOwnerSettings } from "./ownerAccounts";
 import { OWNER_PHONE_BETA_PATH, handleOwnerPhoneBeta } from "./phoneBeta";
 import { stopAccountPhones } from "./phones";
 import { CloudProviderError, TRY_AGAIN_CODE, type CloudProvider } from "./provider";
@@ -38,6 +39,7 @@ import {
  * - `POST /cloud/owner/block`   `{ userId?, githubUserId?, cardFingerprint?, reason }`
  * - `POST /cloud/owner/unblock` `{ userId?, githubUserId?, cardFingerprint? }`
  * - `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled? }`: the ADE Cloud iPhone's beta list (`phoneBeta.ts`)
+ * - `POST /cloud/owner/account` and `/cloud/owner/settings`: the account test tool and the instant switches (`ownerAccounts.ts`)
  */
 
 const OWNER_BLOCK_PATH = "/cloud/owner/block";
@@ -280,7 +282,8 @@ export async function unblockAccount(env: CloudEnv, provider: CloudProvider | nu
 
 /* ---- The owner routes ---- */
 
-export const isCloudOwnerRequest = (path: string): boolean => path === OWNER_BLOCK_PATH || path === OWNER_UNBLOCK_PATH || path === OWNER_PHONE_BETA_PATH;
+export const isCloudOwnerRequest = (path: string): boolean =>
+  path === OWNER_BLOCK_PATH || path === OWNER_UNBLOCK_PATH || path === OWNER_PHONE_BETA_PATH || path === OWNER_ACCOUNT_PATH || path === OWNER_SETTINGS_PATH;
 
 /** Compares the bearer with `CLOUD_OWNER_TOKEN` in constant time (both hashed first, so length leaks nothing). */
 async function ownerTokenMatches(env: Pick<CloudEnv, "CLOUD_OWNER_TOKEN">, request: Request): Promise<boolean | null> {
@@ -326,6 +329,9 @@ export async function handleCloudOwnerRequest(request: Request, env: CloudEnv, p
   if (!body) return fail("bad_request", "That request could not be read.", 400);
   // The ADE Cloud iPhone's beta list (`phoneBeta.ts`).
   if (path === OWNER_PHONE_BETA_PATH) return handleOwnerPhoneBeta(env, body, deps.now);
+  // The account test tool and the instant switches (`ownerAccounts.ts`).
+  if (path === OWNER_ACCOUNT_PATH) return handleOwnerAccount(env, body, deps.now);
+  if (path === OWNER_SETTINGS_PATH) return handleOwnerSettings(env, body, deps.now);
   const userId = textField(body.userId, 200);
   const githubUserId = typeof body.githubUserId === "number" && Number.isSafeInteger(body.githubUserId) && body.githubUserId > 0 ? body.githubUserId : null;
   const cardFingerprint = textField(body.cardFingerprint, 100);

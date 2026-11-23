@@ -682,11 +682,12 @@ move keeps the old disk.
 ### Sponsored cards and the Index (Free, behind a switch)
 
 Free is ad-supported through Gravity (`apps/account-directory/src/cloud/gravity.ts`,
-migrations `0054`, `0055`). The account server decides everything and holds the partner
-key (`GRAVITY_API_KEY`, a Worker secret): the switch `GRAVITY_ADS` (`off` |
-`testers` | `all`, production `off`; `testers` reads `cloud_sponsored_testers`),
-test ads until `GRAVITY_LIVE=1`, the plan (Free only, `past_due` included as
-paid), the country (`GRAVITY_COUNTRIES`, from Cloudflare), the account's answer
+migrations `0054`, `0055`, `0056`). The account server decides everything and holds the partner
+key (`GRAVITY_API_KEY`, a Worker secret): the instant switch `gravity_ads` (`off` |
+`testers` | `all`, starts `off`; `testers` reads `cloud_sponsored_testers`), held
+under the deploy variable `GRAVITY_ADS` (production `all`; `off` there is a hard
+off), test ads until the `gravity_live` switch is on under `GRAVITY_LIVE=1`, the
+plan (Free only, `past_due` included as paid, or the account test tool's plan), the country (`GRAVITY_COUNTRIES`, from Cloudflare), the account's answer
 (`cloud_sponsored_consent`, one per account, so every machine agrees), and that
 the chat runs on one of the account's own live ADE Cloud computers and is not a
 subagent's (`cloud_chat_copies`). Chats on the person's own machine never get a
@@ -718,6 +719,15 @@ card, whatever the plan.
   `0055`). The server sends Gravity the hashed email from an iOS device only
   when the answer is `authorized`; anything else, or nothing from an older app,
   still asks for the card without it. Desktop and web always send it.
+- **Small needs cards on Free** (the `free_small_needs_ads` switch, starts
+  off): a Free account the ad switch reaches runs Small without hours only
+  while it said yes. A no or no answer runs Small at half a Medium-hour an hour
+  (`SMALL_NO_CARDS_RATE_MILLI`, set on the computer row by `syncSmallRates`; the
+  account's catalog shows Small at that rate). A no from before the switch
+  turned on is asked again.
+- **Testing:** the account test tool flips these switches and has an account
+  act as any plan, instantly, without touching Stripe
+  ([account-test-tool.md](account-test-tool.md)).
 
 ## Referrals and the free plan
 

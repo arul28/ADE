@@ -102,7 +102,7 @@ export type PhoneRow = {
   /** When the account stops paying for this live phone (ms), or null: its NoMac limits are the stop. */
   stop_at: number | null;
   updated_at: number;
-  /** Who runs it (migration 0056): `nomac` for every phone before then. Text in D1: read it through `whereOfRow`. */
+  /** Who runs it (migration 0057): `nomac` for every phone before then. Text in D1: read it through `whereOfRow`. */
   provider: string;
   /** Revyl's workflow run for the phone, which its device calls name; null for NoMac. */
   provider_ref: string | null;

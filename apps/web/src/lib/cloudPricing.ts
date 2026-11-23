@@ -47,6 +47,14 @@ export const CLOUD_PHONE_ON_WEBSITE = false;
 // Flip to true in the same release that turns on the server's GRAVITY_ADS switch.
 export const GRAVITY_ADS_ON_WEBSITE = false;
 
+/**
+ * Free's Small computers are unlimited only while sponsored cards are on
+ * (the server's `free_small_needs_ads` switch). With this on, the pricing
+ * page's Free card says so, with a line on what happens without them.
+ */
+// Flip to true in the release that turns on the server's `free_small_needs_ads` switch for everyone.
+export const FREE_SMALL_NEEDS_ADS_ON_WEBSITE = false;
+
 /** The Free plan's ad line, on the pricing page and the home page. */
 export const ADS_FREE_PLAN_SENTENCE =
   "Free is ad-supported: an ADE Cloud chat on Free may show one sponsored card under a finished reply. Paid plans have no ads. Chats on your own computer never show ads.";

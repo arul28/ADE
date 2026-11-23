@@ -37,6 +37,7 @@ import {
   type CloudMachine,
   type CloudMachinesResult,
   type CloudPlanCleanup,
+  type CloudSponsoredConsent,
 } from "../shared/adeCloud";
 import { githubRepoOf, type CloudLaneMachine, type CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
 import type {
@@ -600,13 +601,22 @@ export function applyBrowserMockCloud(ade: any): void {
   const fix = fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
   let state = account(fix, machines, now);
-  // `&mockSponsored=ask` (the one-time question) or `on` (answered yes): sponsored
+  // `&mockSponsored=ask` (the one-time question), `on` (answered yes) or `small` (below): sponsored
   // cards, test ads only, whatever the scenario's plan (the server says when).
   // Pair with `mockCloudLaneMachine=1` so a chat runs on an ADE Cloud computer.
   const sponsoredParam = param("mockSponsored");
   // `pick`: answered yes, for the Index pick card demo.
   if (sponsoredParam === "ask" || sponsoredParam === "on" || sponsoredParam === "pick") {
     state = { ...state, sponsored: { ads: true, consent: sponsoredParam === "ask" ? null : "granted", test: true } };
+  }
+  // `small`: the server's `free_small_needs_ads` rule on and no answer yet, so
+  // Small uses hours (half a Medium-hour an hour) until the person says yes.
+  const smallRate = (consent: CloudSponsoredConsent | null) => ({
+    ...state.catalog,
+    sizes: state.catalog.sizes.map((size) => size.tier === "small" ? { ...size, multiplierMilli: consent === "granted" ? 0 : 500 } : size),
+  });
+  if (sponsoredParam === "small") {
+    state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true }, catalog: smallRate(null) };
   }
   // `upgraded`: this computer last saw the account on Free, a period ago, with 79.1 hours left
   // (once per tab, as a real checkout coming back is seen once).
@@ -666,6 +676,7 @@ export function applyBrowserMockCloud(ade: any): void {
     setSponsoredConsent: async (consent: "granted" | "declined") => {
       if (!state.sponsored) return null;
       state = { ...state, sponsored: { ...state.sponsored, consent } };
+      if (state.sponsored?.smallNeedsCards) state = { ...state, catalog: smallRate(consent) };
       for (const listener of statusListeners) listener();
       return state.sponsored ?? null;
     },

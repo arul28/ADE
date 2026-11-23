@@ -43,6 +43,16 @@ const CLOUD_SIZES: readonly CloudSize[] = [
   { id: "vm-xlarge", type: "vm", cpu: 4, memoryGb: 32, multiplierMilli: 7250, tier: null, label: "Full 4 CPU, 32 GB", diskMaxGb: 100 },
 ];
 
+/** Small's CPU and memory (`default` type): the one size Free may run without hours. */
+export const SMALL_SHAPE = { cpu: 2, memoryGb: 4 } as const;
+
+/**
+ * Small's rate on Free while the account shows no sponsored cards and the
+ * `free_small_needs_ads` setting is on (`gravity.ts` `smallUsesNoHours`):
+ * half a Medium-hour an hour, as Small costs half of a Medium (owner, 2026-11-23).
+ */
+export const SMALL_NO_CARDS_RATE_MILLI = 500;
+
 /** Whether a computer at this rate uses hours: every size but Small. */
 export const usesHours = (multiplierMilli: number): boolean => multiplierMilli > 0;
 
@@ -175,9 +185,13 @@ const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFact
  * `extraHourCents` at the top is for builds that know one price: the
  * account's own plan's, or Plus's for a free account.
  */
-export function cloudCatalog(offers: CloudOffers, planId: CloudPlanId = "free"): CloudCatalog {
+export function cloudCatalog(offers: CloudOffers, planId: CloudPlanId = "free", { smallUsesHours = false }: { smallUsesHours?: boolean } = {}): CloudCatalog {
   return {
-    sizes: CLOUD_SIZES.map(({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb }) => ({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb })),
+    sizes: CLOUD_SIZES.map(({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb }) => ({
+      type, cpu, memoryGb, tier, label, diskMaxGb,
+      // Free's Small with no sponsored cards uses hours (`free_small_needs_ads`): clients show and count it so.
+      multiplierMilli: tier === "small" && smallUsesHours ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli,
+    })),
     plans: {
       free: catalogPlan(CLOUD_PLANS.free),
       // `paid` is Plus, for builds that know only two plans.

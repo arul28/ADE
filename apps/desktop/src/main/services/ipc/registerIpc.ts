@@ -1046,7 +1046,7 @@ import {
   createBrowserLoginImportService,
   type BrowserLoginImportService,
 } from "../builtInBrowser/loginImport";
-import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
+import { ipcHandlerTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey, addRecentProjectsWithoutEviction } from "../state/globalState";
 import { discoverOnboardingProjects, listOnboardingProjectChats } from "../onboarding/onboardingDiscoveryClient";
 import { resolveOnboardingFolder } from "../onboarding/onboardingProjectDiscovery";
@@ -2604,7 +2604,7 @@ export function registerIpc({
             args: summarizeIpcArgs(redactIpcArgsForChannel(channel, args)),
           });
         }
-        const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel, args);
+        const IPC_TIMEOUT_MS = ipcHandlerTimeoutMs(channel, args);
         let didTimeout = false;
         let rejectTimedOut: (error: Error) => void = () => {};
         const timedOut = new Promise<never>((_, reject) => {

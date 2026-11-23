@@ -7,6 +7,7 @@ import {
   FREE_INCLUDED_MILLI,
   PAID_PLAN_RANK,
   computeCostMicrosFor,
+  isPaidPlanId,
   usesHours,
   type CloudOffers,
   freePeriodFor,
@@ -302,6 +303,17 @@ export type AccountRow = {
   wakes_cancelled_at: number | null;
   wakes_cancelled_count: number | null;
   wakes_cancelled_reason: string | null;
+  /**
+   * The account test tool (migration 0056, `ownerAccounts.ts`): the plan the
+   * account acts as and its own limits, for testing. Limits, the hours meter
+   * and sponsored cards read them; billing never does. Absent before the
+   * migration; all null for the real plan.
+   */
+  test_plan?: string | null;
+  test_computers?: number | null;
+  test_hours_milli?: number | null;
+  test_until?: number | null;
+  test_note?: string | null;
   deleted_at: number | null;
   created_at: number;
   updated_at: number;
@@ -955,9 +967,57 @@ export function paidPlanOf(account: Pick<AccountRow, "paid_plan">): CloudPaidPla
 /** Whether a move from one paid plan to another is a downgrade (it waits for the period end). */
 export const isPaidDowngrade = (from: CloudPaidPlanId, to: CloudPaidPlanId): boolean => PAID_PLAN_RANK[to] < PAID_PLAN_RANK[from];
 
-/** The plan whose limits are in force: `past_due` is the free plan until a paid invoice. */
+type TestFields = Pick<AccountRow, "test_plan" | "test_computers" | "test_hours_milli">;
+
+/** Whether the account test tool has anything in force on this account (`ownerAccounts.ts`). */
+export function hasAccountTest(account: Partial<TestFields>): boolean {
+  return testPlanOf(account) != null || account.test_computers != null || account.test_hours_milli != null;
+}
+
+/** The plan the account test tool has the account act as, or null (`ownerAccounts.ts`). */
+export function testPlanOf(account: Partial<TestFields>): CloudPlanId | null {
+  const plan = account.test_plan;
+  return plan === "free" || isPaidPlanId(plan) ? plan : null;
+}
+
+/**
+ * The plan whose limits are in force: `past_due` is the free plan until a
+ * paid invoice. The real plan: billing (iPhone minutes too) reads this. The
+ * account test tool's plan reaches only the paths that ask for it
+ * (`limitsPlanIdOf`, `shownPlanIdOf`).
+ */
 export function planIdOf(account: Pick<AccountRow, "plan" | "stripe_status" | "paid_plan">): CloudPlanId {
   return accountRules(account) === "free" ? "free" : paidPlanOf(account);
+}
+
+/** `planIdOf`, or the account test tool's plan: for limits only (outside agents), never billing. */
+export function limitsPlanIdOf(account: Pick<AccountRow, "plan" | "stripe_status" | "paid_plan"> & Partial<TestFields>): CloudPlanId {
+  return testPlanOf(account) ?? planIdOf(account);
+}
+
+/**
+ * The plan the person sees and its features follow (sponsored cards, the
+ * catalog): the bought plan, `past_due` included, or the test plan.
+ */
+export function shownPlanIdOf(account: Pick<AccountRow, "plan" | "paid_plan"> & Partial<TestFields>): CloudPlanId {
+  return testPlanOf(account) ?? boughtPlanIdOf(account);
+}
+
+/** Free or paid rules as the person sees them: a test plan's, else `accountRules`. Never for billing. */
+export function shownRulesOf(account: Pick<AccountRow, "plan" | "stripe_status"> & Partial<TestFields>): "free" | "paid" {
+  const test = testPlanOf(account);
+  return test ? (test === "free" ? "free" : "paid") : accountRules(account);
+}
+
+/**
+ * The plan's hours this period as the limits count them: the account test
+ * tool's hours, else a test plan's, else the period's own. Billing (extra
+ * hours, earned draws, the period roll) keeps `included_milli`.
+ */
+export function includedMilliOf(account: Pick<AccountRow, "included_milli"> & Partial<TestFields>): number {
+  if (account.test_hours_milli != null && account.test_hours_milli >= 0) return account.test_hours_milli;
+  const test = testPlanOf(account);
+  return test ? CLOUD_PLANS[test].includedMilli : account.included_milli;
 }
 
 /** The plan the person pays for, `past_due` included. */
@@ -983,13 +1043,14 @@ export function cloudOffers(env: Pick<CloudEnv, "STRIPE_PLAN_PRICE_ID" | "STRIPE
  * until then: the person paid for it. Going over the cheaper plan at the
  * switch is the downgrade's cleanup (`planCleanup.ts`).
  */
-export function computerLimitOf(account: Pick<AccountRow, "plan" | "paid_plan">): number {
+export function computerLimitOf(account: Pick<AccountRow, "plan" | "paid_plan"> & Partial<TestFields>): number {
+  if (account.test_computers != null && account.test_computers >= 0) return account.test_computers;
   return CLOUD_PLANS[computerLimitPlanOf(account)].computerLimit;
 }
 
-/** The plan whose computer limit holds now (`computerLimitOf`): the bought plan, until the period ends. */
-export function computerLimitPlanOf(account: Pick<AccountRow, "plan" | "paid_plan">): CloudPlanId {
-  return account.plan === "paid" ? paidPlanOf(account) : "free";
+/** The plan whose computer limit holds now (`computerLimitOf`): the bought plan, until the period ends, or the test plan. */
+export function computerLimitPlanOf(account: Pick<AccountRow, "plan" | "paid_plan"> & Partial<TestFields>): CloudPlanId {
+  return shownPlanIdOf(account);
 }
 
 /**
@@ -1176,6 +1237,20 @@ export function extraActive(account: AccountRow): boolean {
   return accountRules(account) === "paid" && account.extra_enabled === 1;
 }
 
+/** `extraActive` as the limits see it: a test Free plan has no extra hours. Never for billing. */
+export function extraActiveForLimits(account: AccountRow): boolean {
+  return extraActive(account) && testPlanOf(account) !== "free";
+}
+
+/**
+ * Earned hours left as the limits count them: `earnedLeftMilli` against the
+ * hours in force (`includedMilliOf`). The same as it with no test.
+ */
+export function earnedLeftForLimits(account: AccountRow, liveUsed: number): number {
+  const pastPlan = Math.max(0, liveUsed - includedMilliOf(account));
+  return earnedBalanceMilli(account) - Math.min(earnedBalanceMilli(account), Math.max(0, pastPlan - billedExtraMilli(account)));
+}
+
 /** Live hours used in thousandths: settled plus every running stretch. */
 export function liveUsedMilli(account: AccountRow, computers: ComputerRow[], now: number): number {
   return computers.reduce((sum, computer) => sum + liveMilli(computer, now), account.used_milli);
@@ -1183,7 +1258,7 @@ export function liveUsedMilli(account: AccountRow, computers: ComputerRow[], now
 
 /** Out once the plan's hours and every earned hour are used, unless extra hours are on. */
 export function isOutOfHours(account: AccountRow, liveUsed: number): boolean {
-  return !extraActive(account) && liveUsed >= account.included_milli && earnedLeftMilli(account, liveUsed) <= 0;
+  return !extraActiveForLimits(account) && liveUsed >= includedMilliOf(account) && earnedLeftForLimits(account, liveUsed) <= 0;
 }
 
 /**
@@ -1208,8 +1283,9 @@ export function isOutOfHoursFor(account: AccountRow, liveUsed: number, multiplie
 
 /** Whole percent of the included hours used; extra hours can pass 100. */
 export function percentUsed(account: AccountRow, liveUsed: number): number {
-  if (account.included_milli <= 0) return 100;
-  return Math.floor((liveUsed * 100) / account.included_milli);
+  const included = includedMilliOf(account);
+  if (included <= 0) return 100;
+  return Math.floor((liveUsed * 100) / included);
 }
 
 /**
@@ -1218,7 +1294,7 @@ export function percentUsed(account: AccountRow, liveUsed: number): number {
  * warnings read, so earned hours push them back.
  */
 export function allowancePercentUsed(account: AccountRow, liveUsed: number): number {
-  const allowance = account.included_milli + earnedBalanceMilli(account);
+  const allowance = includedMilliOf(account) + earnedBalanceMilli(account);
   if (allowance <= 0) return 100;
   return Math.floor((liveUsed * 100) / allowance);
 }

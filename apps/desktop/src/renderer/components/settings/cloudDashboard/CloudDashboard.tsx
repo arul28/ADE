@@ -4,13 +4,15 @@ import {
   CLOUD_FREE_GITHUB_BANNER_ID,
   CLOUD_FREE_REFUSED_BANNER_ID,
   CLOUD_PLAN_LABELS,
-  CLOUD_SMALL_UNLIMITED_SENTENCE,
   cloudAccountBanner,
   cloudAccountComputers,
   cloudEarnedHoursOf,
   cloudFreePlanOf,
   cloudCatalogOf,
+  cloudHoursLeftMilli,
   cloudPlanLabelOf,
+  cloudSmallHoursSentence,
+  cloudSmallRateMilli,
   formatCloudDate,
   formatCloudGb,
   formatCloudHours,
@@ -21,6 +23,7 @@ import {
   type CloudPlanCleanupPick,
 } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
+import { cloudTierHoursAt } from "../../../../shared/cloudTiers";
 import { resolveSettingsHash } from "../../../../shared/settingsManifest";
 import { useLocation } from "react-router-dom";
 import { formatAgo, ipcErrorMessage } from "../../../lib/format";
@@ -438,6 +441,9 @@ function CloudHero({
   const hours = account.hours;
   const earned = cloudEarnedHoursOf(account).leftMilli;
   const hoursPct = hours.includedMilli > 0 ? (hours.leftMilli / hours.includedMilli) * 100 : 0;
+  // Small is unlimited unless the account's catalog rates it (Free, sponsored cards off): then it shows its time left too.
+  const smallRateMilli = cloudSmallRateMilli(cloudCatalogOf(account));
+  const smallSentence = cloudSmallHoursSentence(cloudCatalogOf(account));
   const forecast = hoursForecast(account, now);
   const computers = cloudAccountComputers(account);
   // The free plan refused on this computer (another account used its free hours): one sentence from the server.
@@ -466,7 +472,7 @@ function CloudHero({
       <div className="adecd-hero-body">
         <div className="adecd-hero-stats">
           <div className="adecd-hours">
-            <span className="adecd-label" title={`${CLOUD_SMALL_UNLIMITED_SENTENCE} One hour is one hour on a Medium; bigger sizes use more.`}>Hours left for bigger computers</span>
+            <span className="adecd-label" title={`${smallSentence} One hour is one hour on a Medium; bigger sizes use more.`}>{smallRateMilli > 0 ? "Hours left" : "Hours left for bigger computers"}</span>
             <div className="adecd-hours-num">
               <b className="kit-num" data-face="ui">{formatCloudHours(hours.leftMilli)}</b>
               {/* Free hours held (GitHub rules, or another account used them here): the plan's hours, on hold, never "of 0 h". */}
@@ -511,7 +517,18 @@ function CloudHero({
               note={`${account.computers.awake} awake now · asleep ones count too`}
               title="Every cloud computer counts toward your plan, asleep or not."
             />
-            <MiniMeter label="Small computers" value="Unlimited" of={null} pct={null} note="They never use your hours" title={CLOUD_SMALL_UNLIMITED_SENTENCE} />
+            {smallRateMilli > 0 ? (
+              <MiniMeter
+                label="Small computers"
+                value={cloudTierHoursAt({ multiplierMilli: smallRateMilli }, cloudHoursLeftMilli(account))}
+                of={null}
+                pct={null}
+                note={account.sponsored?.smallNeedsCards ? "Left at this size. Sponsored cards make it unlimited." : "Left at this size"}
+                title={smallSentence}
+              />
+            ) : (
+              <MiniMeter label="Small computers" value="Unlimited" of={null} pct={null} note="They never use your hours" title={smallSentence} />
+            )}
           </div>
         </div>
         <div className="adecd-hero-city" title={lanes.length ? "Height is disk. Lit windows are awake." : undefined}>

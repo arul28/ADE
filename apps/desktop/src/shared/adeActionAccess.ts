@@ -952,3 +952,14 @@ export function isReplaySafeAdeAction(domain: string, action: string): boolean {
   if (REPLAY_SAFE_WRITES.has(key)) return true;
   return accessByAction.get(key) === "read" && !UNREPLAYED_READS.has(key);
 }
+
+/**
+ * Whether a runtime action's call waits while the brain still runs it
+ * (`shared/runningRequests.ts`). Work the caller needs the answer to does. A
+ * replay-safe read keeps its plain budget: it can simply be asked again, and
+ * its screen shows "couldn't load" with a retry instead of hanging on a read
+ * that is stuck over there.
+ */
+export function actionWaitsWhileRunning(domain: string, action: string): boolean {
+  return !isReplaySafeAdeAction(domain, action);
+}

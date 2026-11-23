@@ -37,8 +37,9 @@ import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import type { RemotePtyDataFilter } from "../pty/ptyDataSubscriptions";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
-import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { actionWaitsWhileRunning, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { probeRpcLiveness, type RpcLivenessClient } from "../../../shared/rpcLiveness";
+import { RUNNING_REQUEST_MAX_EXTENSION_MS } from "../../../shared/runningRequests";
 import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
 import {
   IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
@@ -244,7 +245,16 @@ class RemoteSyncCallTimeoutError extends Error {
   }
 }
 
-const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
+/**
+ * An action with no budget of its own: a read's whole budget, and when work
+ * first asks whether it still runs.
+ */
+const REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
+/**
+ * Work with no budget of its own, against an ADE from before the running
+ * check: the client default it always had, so it is not cut short.
+ */
+const REMOTE_ACTION_WITHOUT_CHECK_RPC_TIMEOUT_MS = 10 * 60_000;
 /** A project list read: a registry read on the other machine, as cheap as an event read. */
 const REMOTE_RUNTIME_PROJECT_LIST_TIMEOUT_MS = REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
@@ -483,16 +493,30 @@ const FOLLOW_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
 /** The other machine answered "still running": send the same call again. */
 class BackgroundJobStillRunning extends Error {}
 
+/**
+ * Work waits while the other machine still runs it
+ * (`shared/runningRequests.ts`); its budget is only when it first asks. So
+ * work with no budget of its own asks early (it used to end at the renderer's
+ * 30s IPC timer). A machine that went to sleep or a link that dropped leaves
+ * that check unanswered and fails about as soon as before, while real work
+ * goes on. A replay-safe read keeps a plain budget.
+ */
 function remoteRuntimeActionCallOptions(
   request: RemoteRuntimeActionRequest,
-): { timeoutMs?: number } | undefined {
-  const timeoutMs = LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS.get(
+): { timeoutMs: number; waitWhileRunning?: true; timeoutWithoutCheckMs?: number } {
+  const budgetMs = LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS.get(
     `${request.domain}.${request.action}`,
   );
-  if (timeoutMs !== undefined) return { timeoutMs };
-  return shouldRetryRemoteRuntimeAction(request)
-    ? { timeoutMs: RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS }
-    : undefined;
+  if (!actionWaitsWhileRunning(request.domain, request.action)) {
+    return { timeoutMs: budgetMs ?? REMOTE_ACTION_RPC_TIMEOUT_MS };
+  }
+  return budgetMs !== undefined
+    ? { timeoutMs: budgetMs, waitWhileRunning: true }
+    : {
+        timeoutMs: REMOTE_ACTION_RPC_TIMEOUT_MS,
+        waitWhileRunning: true,
+        timeoutWithoutCheckMs: REMOTE_ACTION_WITHOUT_CHECK_RPC_TIMEOUT_MS,
+      };
 }
 
 function normalizeForwardRemoteHost(value: string | null | undefined): string {
@@ -1086,7 +1110,11 @@ export class RemoteConnectionPool {
     );
     if (!runsJobs) return null;
     const jobId = randomUUID();
+    // How long a link that is down is waited out. A machine that keeps
+    // answering "still running" is followed past it, to the same bound a
+    // call that waits while it runs has (`shared/runningRequests.ts`).
     const deadline = Date.now() + (LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS.get(key) ?? FOLLOW_DEFAULT_BUDGET_MS);
+    const runningDeadline = deadline + RUNNING_REQUEST_MAX_EXTENSION_MS;
     // A person's Disconnect (or a removed machine) ends the follow: it must
     // not dial again behind their back. The connection's own redial after a
     // drop is not that — it bumps the disconnect generation — so this reads
@@ -1115,7 +1143,7 @@ export class RemoteConnectionPool {
         if (cancelled()) throw error;
         if (error instanceof BackgroundJobStillRunning) {
           failures = 0;
-          if (Date.now() > deadline) throw new RemoteActionOutcomeUnknownError(true);
+          if (Date.now() > runningDeadline) throw new RemoteActionOutcomeUnknownError(true);
           continue;
         }
         const lostLink = isRemoteRuntimeConnectionError(error)
@@ -1475,6 +1503,7 @@ export class RemoteConnectionPool {
     const conditionalKey = !follow && isReplaySafeAdeAction(request.domain, request.action)
       ? this.conditionalResults.key(entry.result.target.id, projectId, request)
       : null;
+    // A followed call answers "still running" by itself within FOLLOW_WAIT_MS.
     const callOptions = follow ? { timeoutMs: FOLLOW_CALL_RPC_TIMEOUT_MS } : remoteRuntimeActionCallOptions(request);
     // `etag`: the hash of the copy this side kept, so the host can answer "not modified".
     const callWith = (etag: string | null): Promise<unknown> => {
@@ -1495,9 +1524,7 @@ export class RemoteConnectionPool {
           ...(request.argsList ? { argsList: request.argsList } : {}),
         },
       };
-      return callOptions
-        ? entry.client.call("ade/actions/call", params, callOptions)
-        : entry.client.call("ade/actions/call", params);
+      return entry.client.call("ade/actions/call", params, callOptions);
     };
     let value: unknown;
     try {

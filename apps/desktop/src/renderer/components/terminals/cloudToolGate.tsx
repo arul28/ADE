@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Moon } from "@phosphor-icons/react";
-import { cloudCatalogOf, cloudOutOfHours, type CloudMachine } from "../../../shared/adeCloud";
+import { cloudCatalogOf, cloudOutOfHours, cloudSmallUsesHours, type CloudMachine } from "../../../shared/adeCloud";
 import { cloudTierOfMachine, cloudTiers, cloudTierUsesHours } from "../../../shared/cloudTiers";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { openCloudPlanSettings } from "../remoteTargets/openCloudPlanSettings";
@@ -143,7 +143,7 @@ export function CloudToolGate({
     return restingGate({
       id: "cloud-tool-out-of-hours",
       title: "Out of hours",
-      detail: `${name} needs ADE Cloud hours to wake at its size. They come back when your hours reset; a Small computer never uses them.`,
+      detail: `${name} needs ADE Cloud hours to wake at its size. They come back when your hours reset${cloudSmallUsesHours(cloudCatalogOf(account)) ? "." : "; a Small computer never uses them."}`,
       actions: [{ label: "Plans and hours", onClick: openCloudPlanSettings }],
     });
   }

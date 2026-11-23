@@ -10,7 +10,7 @@ import { deleteSavedChatsForLaneEverywhere, routeSavedChats } from "./chats";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
-import { routeSponsored } from "./gravity";
+import { rateMilliFor, routeSponsored, smallUsesNoHours } from "./gravity";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, rememberLaunchSetupDisk, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
@@ -84,6 +84,7 @@ import {
   AWAKE_COMPUTER_CAP,
   CLOUD_PLANS,
   DISK_STEP_GB,
+  SMALL_NO_CARDS_RATE_MILLI,
   WAKE_PORT,
   cloudSizeFor,
   isMeteredStatus,
@@ -102,6 +103,7 @@ import {
   computerLimitPlanOf,
   diskDayStatement,
   hasNoFreePlan,
+  limitsPlanIdOf,
   planIdOf,
   logCloud,
   nameMachineAfterComputerStatement,
@@ -174,13 +176,13 @@ const NOT_FOUND_MESSAGE = "ADE Cloud has no such computer.";
 const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
 /**
  * At 0 hours only the sizes that use hours are refused, so the sentence says
- * Small keeps working; an account with no free plan (`hasNoFreePlan`) runs
- * nothing, and hears the plain sentence.
+ * Small keeps working; an account with no free plan (`hasNoFreePlan`), or
+ * whose Small uses hours (`smallUsesNoHours`), hears the plain sentence.
  */
-const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">) => fail(
+const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">, smallFree = true) => fail(
   "out_of_hours",
-  account && !hasNoFreePlan(account)
-    ? "You're out of ADE Cloud hours for this period. Small computers never use hours, so they keep working."
+  account && smallFree && !hasNoFreePlan(account)
+    ? "You're out of ADE Cloud hours for this period. Small computers don't use hours, so they keep working."
     : "You're out of ADE Cloud hours for this period.",
   402,
 );
@@ -270,7 +272,7 @@ const isOutsideAgentMetadata = (metadata: Record<string, string>): boolean => me
 
 /** 403 `outside_agent_free_plan` with the sentence the agent passes on, on free-plan rules (`past_due` included); else null. */
 function outsideAgentRefusal(account: AccountRow, outsideAgent: boolean): Refused | null {
-  if (!outsideAgent || CLOUD_PLANS[planIdOf(account)].outsideAgents) return null;
+  if (!outsideAgent || CLOUD_PLANS[limitsPlanIdOf(account)].outsideAgents) return null;
   return { response: fail(CLOUD_OUTSIDE_AGENT_FREE_CODE, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, 403), refusal: "outside_agent_free" };
 }
 
@@ -428,14 +430,22 @@ async function getAccountContext(env: CloudEnv, userId: string, now: number): Pr
   account: AccountRow;
   computers: ComputerRow[];
   outOfHoursFor: (multiplierMilli: number) => Refused | null;
+  /** Small runs without hours for this account now (`smallUsesNoHours`). */
+  smallFree: boolean;
 }> {
   const account = await loadAccount(env, userId, now);
   const computers = await listComputers(env, userId);
   const liveUsed = liveUsedMilli(account, computers, now);
+  // A Small that uses hours on Free (no sponsored cards, `free_small_needs_ads`) stops at 0 like any other size.
+  const smallFree = await smallUsesNoHours(env, account);
   return {
     account,
     computers,
-    outOfHoursFor: (multiplierMilli) => (isOutOfHoursFor(account, liveUsed, multiplierMilli) ? { response: outOfHours(account), refusal: "out_of_hours" } : null),
+    smallFree,
+    outOfHoursFor: (multiplierMilli) => {
+      const rate = multiplierMilli === 0 && !smallFree ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli;
+      return isOutOfHoursFor(account, liveUsed, rate) ? { response: outOfHours(account, smallFree), refusal: "out_of_hours" } : null;
+    },
   };
 }
 
@@ -520,6 +530,8 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
   const pendingId = newPendingId();
   const cutoff = args.now - PENDING_TIMEOUT_MS;
   const count = accountComputerCountSql("?", { moveFrom: args.moveFromInstanceId, cutoff });
+  // Free's Small uses hours while the account shows no sponsored cards (`free_small_needs_ads`).
+  const rate = args.size.tier === "small" ? rateMilliFor(args.size, await smallUsesNoHours(env, account)) : args.size.multiplierMilli;
   const result = await env.DB.prepare(`
     insert into cloud_computers (instance_id, user_id, request_id, type, cpu, memory_gb, disk_gb, multiplier_milli, template_version, name, status, status_changed_at, last_awake_at, created_at, moving_from, channel,
       lane_id, lane_name, lane_project_origin, lane_branch)
@@ -530,7 +542,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
       and not exists (select 1 from cloud_computers where request_id = ? and user_id = ? and deleted_at is null)
       and not exists (select 1 from cloud_computers where deleted_at is null and moving_from is not null and (moving_from = ? or instance_id = ?))
   `).bind(
-    pendingId, account.user_id, args.requestId, args.size.type, args.size.cpu, args.size.memoryGb, args.diskGb, args.size.multiplierMilli,
+    pendingId, account.user_id, args.requestId, args.size.type, args.size.cpu, args.size.memoryGb, args.diskGb, rate,
     args.templateVersion, args.name, args.now, args.now, args.now, args.moveFromInstanceId, args.channel,
     args.lane.laneId, args.lane.laneName, args.lane.projectOrigin, args.lane.branch,
     account.user_id, cutoff, AWAKE_COMPUTER_CAP,
@@ -969,7 +981,7 @@ async function resizeAwake(
 async function handleResize(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  const { account, outOfHoursFor } = await getAccountContext(env, computer.user_id, now);
+  const { account, outOfHoursFor, smallFree } = await getAccountContext(env, computer.user_id, now);
   // The computer's own disk grower says so (`auto`), and an outside agent (`mcp`); anything else is a person or their agent.
   const origin: CloudActionOrigin = body.origin === "auto" ? "system" : body.origin === "mcp" ? "agent" : "person";
   const refusedAction: CloudRefusedAction = body.disk !== undefined ? "grow" : "tier_change";
@@ -1067,14 +1079,15 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     }
     const statements: D1PreparedStatement[] = [];
     // The time so far is charged at the old size; the new size starts its own stretch here.
-    if (size.multiplierMilli !== computer.multiplier_milli && computer.awake_since != null && computer.awake_since <= now) {
+    const rate = rateMilliFor(size, smallFree);
+    if (rate !== computer.multiplier_milli && computer.awake_since != null && computer.awake_since <= now) {
       statements.push(...restartStretchStatements(env, computer, now));
     }
-    computer.multiplier_milli = size.multiplierMilli;
+    computer.multiplier_milli = rate;
     statements.push(
       // A confirmed grow is no longer a reservation, so it counts as billed disk from here.
       env.DB.prepare(`update cloud_computers set cpu = ?, memory_gb = ?, disk_gb = ?, multiplier_milli = ?${nextDisk !== currentDisk ? ", disk_reserved_at = null, disk_confirmed_gb = null" : ""} where instance_id = ?`)
-        .bind(size.cpu, size.memoryGb, nextDisk, size.multiplierMilli, computer.instance_id),
+        .bind(size.cpu, size.memoryGb, nextDisk, rate, computer.instance_id),
       ...statusChangeStatements(env, computer, status, now, "resize"),
       ...launchStatements,
     );
