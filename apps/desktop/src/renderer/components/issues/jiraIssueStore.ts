@@ -16,6 +16,7 @@ import type {
 import type { IssueRef } from "../../../shared/issueRefs";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { jiraErrorMessage } from "../../../shared/jiraErrors";
+import { setBounded } from "../../../shared/boundedMap";
 import { makeJiraIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { jiraIssueToLaneIssue } from "../../../shared/laneJiraIssue";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
@@ -37,6 +38,7 @@ const LIST_STALE_MS = 60_000;
 const CONNECTION_STALE_MS = 60_000;
 const MAX_ISSUES = 80;
 const PAGE_SIZE = 50;
+const MAX_LISTS = 32;
 export const JIRA_CONNECTION_CHANGED_EVENT = "ade:jira-connection-changed";
 export const JIRA_PROJECT_BINDINGS_CHANGED_EVENT = "ade:jira-project-bindings-changed";
 
@@ -642,6 +644,18 @@ const lists = new Map<string, JiraIssueListEntry>();
 const listRequestVersions = new Map<string, number>();
 const EMPTY_LIST: JiraIssueListEntry = { issues: [], firstPageKeys: [], hasLoadedMore: false, nextCursor: null, fetchedAt: 0, status: "idle", error: null, promise: null, localChanges: {} };
 
+/**
+ * Keep only the newest listings. A closed pane's searches go with their rows;
+ * the listing a pane is showing is written last, so it is never the one dropped.
+ */
+function rememberList(key: string, entry: JiraIssueListEntry): void {
+  setBounded(lists, key, entry, MAX_LISTS);
+  // A response for a key that was just dropped must not resurrect it.
+  for (const versionKey of listRequestVersions.keys()) {
+    if (!lists.has(versionKey)) listRequestVersions.delete(versionKey);
+  }
+}
+
 function jiraListKey(projectRoot: string | null, filters: JiraIssueFilters, siteUrl = "", pin?: OpenProjectBinding | null): string {
   const projectKeys = [...(filters.projectKeys ?? [])].map((key) => key.toUpperCase()).sort().join(",");
   return JSON.stringify([jiraConnectionRevision, projectRoot ?? "", normalizeJiraSite(siteUrl), pin?.key ?? "", projectKeys, filters.state ?? "open", filters.assignee ?? "any", filters.query?.trim() ?? ""]);
@@ -766,7 +780,7 @@ export function loadJiraIssueList(
   }
   const read = window.ade?.jira?.listIssues;
   if (!read) {
-    lists.set(key, { ...current, status: "error", error: "Jira issue lists are not available in this ADE window.", promise: null });
+    rememberList(key, { ...current, status: "error", error: "Jira issue lists are not available in this ADE window.", promise: null });
     notify();
     return Promise.resolve();
   }
@@ -792,7 +806,7 @@ export function loadJiraIssueList(
         if (changedIssue) issueMap.set(changedKey, changedIssue);
         else issueMap.delete(changedKey);
       }
-      lists.set(key, {
+      rememberList(key, {
         ...latest,
         issues: [...issueMap.values()],
         firstPageKeys,
@@ -808,7 +822,7 @@ export function loadJiraIssueList(
     .catch((error: unknown) => {
       if (revisionAtStart !== jiraConnectionRevision || listRequestVersions.get(key) !== requestVersion) return;
       const latest = lists.get(key) ?? EMPTY_LIST;
-      lists.set(key, {
+      rememberList(key, {
         ...latest,
         status: "error",
         error: jiraErrorMessage(error, "Jira request failed."),
@@ -816,7 +830,7 @@ export function loadJiraIssueList(
       });
     })
     .finally(notify);
-  lists.set(key, { ...current, status: current.issues.length ? current.status : "loading", promise });
+  rememberList(key, { ...current, status: current.issues.length ? current.status : "loading", promise });
   notify();
   return promise;
 }
