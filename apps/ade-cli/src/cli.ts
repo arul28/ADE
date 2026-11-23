@@ -30401,6 +30401,10 @@ async function runServe(
   // child process froze it, which is most of the near misses that use no CPU.
   const { installSlowSyncSpawnMonitor } = await import("./services/runtime/slowSyncSpawnMonitor");
   installSlowSyncSpawnMonitor({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
+  // Windows only: network interface reads, which can wait seconds on the
+  // adapters, are served from a snapshot a worker refreshes.
+  const { installNetworkInterfacesSnapshot } = await import("./services/runtime/networkInterfacesSnapshot");
+  installNetworkInterfacesSnapshot();
   // Code that ran only while the brain started drops its compiled form at the
   // next quiet full collection (`brainCodeAging.ts`).
   const { scheduleBrainCodeAging } = await import("./services/runtime/brainCodeAging");

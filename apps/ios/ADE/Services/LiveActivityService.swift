@@ -663,10 +663,6 @@ final class LiveActivityService {
     private static let localRefreshInterval: TimeInterval = 120
 
     private func writeLocalContent(items: [AccountAttentionItem]) async {
-        let activities = Activity<ADEAgentRunsAttributes>.activities
-            .filter { $0.attributes.isAccountWide && $0.activityState == .active }
-        guard !activities.isEmpty else { return }
-
         let ownership = ADESharedContainer.readAccountDeviceOwnershipState()
         let state = ADEAgentRunsAttributes.ContentState.local(
             items: items,
@@ -685,6 +681,12 @@ final class LiveActivityService {
             Date().timeIntervalSince($0) >= Self.localRefreshInterval
         } ?? true
         guard hash != lastLocalContentHash || refreshDue else { return }
+        // Read after the dedupe: `activities` decodes every activity's content
+        // on this (main) thread, and running it on every feed tick, about once
+        // a second, held the main thread for 28 s once (ADE-IOS-2S).
+        let activities = Activity<ADEAgentRunsAttributes>.activities
+            .filter { $0.attributes.isAccountWide && $0.activityState == .active }
+        guard !activities.isEmpty else { return }
         lastLocalContentHash = hash
         lastLocalUpdateAt = Date()
 

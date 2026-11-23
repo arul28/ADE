@@ -1114,6 +1114,8 @@ const LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN = /^Remote ADE service method \S+
 // the brain's own hash of the folder; this pool caches it per folder, so a
 // brain that drops or re-keys the record leaves the pool sending a dead id on
 // every call (ADE-DESKTOP-2P and eight sibling issues, one Windows window).
+/** 0xC000026B: Windows would not start a process because the session is logging off. */
+const WINDOWS_STATUS_DLL_INIT_FAILED_LOGOFF = 0xC000026B;
 const UNKNOWN_PROJECT_ID_PATTERN = /Unknown projectId: (project_[0-9a-f]+)/;
 
 /** How often one folder may be registered again after the brain forgot its id. */
@@ -4435,12 +4437,19 @@ export class LocalRuntimeConnectionPool {
         // How it ended and the last thing it wrote: a brain that dies at boot
         // says why only there.
         const stderrTail = spawnedRuntimeStderrTails.get(child)?.trim();
-        throw new Error(
+        const exited = new Error(
           `Spawned ADE runtime PID ${child.pid ?? "unknown"} exited before becoming ready ` +
           `(${child.signalCode ? `signal ${child.signalCode}` : `exit code ${child.exitCode}`}).` +
           (lastError ? ` Last connection error: ${lastError.message}` : "") +
           (stderrTail ? ` Last output: ${stderrTail}` : ""),
         );
+        // Windows refused to start it because the person is signing out or
+        // shutting down (STATUS_DLL_INIT_FAILED_LOGOFF): nothing in the brain
+        // ran (ADE-DESKTOP-E8). Every other exit stays a report.
+        if (process.platform === "win32" && child.exitCode === WINDOWS_STATUS_DLL_INIT_FAILED_LOGOFF) {
+          throw markExpected(exited, "environment");
+        }
+        throw exited;
       }
       const remainingMs = Math.max(1, deadline - Date.now());
       const probeTimeoutMs = Math.min(LOCAL_RUNTIME_STARTUP_PROBE_TIMEOUT_MS, remainingMs);

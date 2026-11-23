@@ -264,6 +264,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // renderer's outcome known through setup and result delivery.
     case IPC.projectSwitchToPath:
       return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
+    // The account's project list from this computer's brain, read as the
+    // window opens: its 10 s read starts only once the brain is connected, and
+    // a Windows cold start takes longer than the 30 s default (ADE-DESKTOP-E0).
+    case IPC.projectAccountList:
+      return localRuntimeCallIpcTimeoutMs(10_000);
     // Awaits the user finishing Pi's own sign-in in a browser.
     case IPC.aiPiLoginStart:
       return PI_LOGIN_IPC_TIMEOUT_MS;

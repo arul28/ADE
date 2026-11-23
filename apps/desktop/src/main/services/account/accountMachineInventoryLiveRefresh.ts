@@ -24,6 +24,7 @@ import {
 import type { ProviderInstance } from "../../../shared/types/providerInstances";
 import type { ProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { getErrorMessage } from "../shared/utils";
+import { expectedErrorKind, markExpected, type ExpectedErrorKind } from "../../../shared/expectedError";
 
 export const MACHINE_INVENTORY_MAX_LIVE_MACHINES = 12;
 export const MACHINE_INVENTORY_RATE_FLOOR_MS = 30_000;
@@ -196,7 +197,7 @@ function machineLabel(machine: AdeAccountMachine): string {
   return machine.customName?.trim() || machine.name?.trim() || machine.machineKey;
 }
 
-type InventoryFailure = { attemptedAt: number; message: string };
+type InventoryFailure = { attemptedAt: number; message: string; expected: ExpectedErrorKind | null };
 
 export type AccountMachineInventoryFetcher = (
   machineKey: string,
@@ -245,7 +246,8 @@ export function createAccountMachineInventoryFetcher({
     }
     const priorFailure = failures.get(machineKey);
     if (priorFailure && currentTime - priorFailure.attemptedAt < MACHINE_INVENTORY_RATE_FLOOR_MS) {
-      throw new Error(priorFailure.message);
+      const repeated = new Error(priorFailure.message);
+      throw priorFailure.expected ? markExpected(repeated, priorFailure.expected) : repeated;
     }
     if (inFlight.size >= MACHINE_INVENTORY_MAX_LIVE_MACHINES && !inFlight.has(machineKey)) {
       throw new Error("Too many machine inventory reads are already in progress.");
@@ -256,11 +258,14 @@ export function createAccountMachineInventoryFetcher({
     let label = machineKey;
     try {
       const listed = await withDeadline(listMachines(), timeoutMs);
-      if (listed.state !== "ok") throw new Error("Details unavailable right now.");
+      // The states below are what the row shows (the account list not
+      // answering, a computer removed, asleep or not connected here), not
+      // faults (ADE-DESKTOP-4F).
+      if (listed.state !== "ok") throw markExpected(new Error("Details unavailable right now."), "network");
       const machine = listed.machines.find((entry) => entry.machineKey === machineKey);
-      if (!machine) throw new Error("That computer is no longer on your account.");
+      if (!machine) throw markExpected(new Error("That computer is no longer on your account."), "user");
       label = machineLabel(machine);
-      if (!machine.online) throw new Error("Details unavailable while offline.");
+      if (!machine.online) throw markExpected(new Error("Details unavailable while offline."), "environment");
 
       let detail: unknown;
       if (machineKey === boundedText(localMachineKey())) {
@@ -269,7 +274,7 @@ export function createAccountMachineInventoryFetcher({
       } else {
         const targetId = resolveTargetIdForMachineKey(machineKey);
         if (!targetId || (isTargetConnected && !isTargetConnected(targetId))) {
-          throw new Error("Details unavailable while this computer is disconnected.");
+          throw markExpected(new Error("Details unavailable while this computer is disconnected."), "environment");
         }
         detail = await withDeadline(
           callMachineMethod<unknown>(targetId, "account.getMachineInventory", { machineKey }, { timeoutMs }),
@@ -281,18 +286,21 @@ export function createAccountMachineInventoryFetcher({
       failures.delete(machineKey);
       return safe;
     } catch (error) {
-      const message = isMethodNotFound(error)
+      const tooOld = isMethodNotFound(error);
+      const message = tooOld
         ? "This computer's ADE is too old to share provider inventory."
         : error instanceof Error && error.message
           ? error.message
           : "Details unavailable right now.";
-      failures.set(machineKey, { attemptedAt, message });
+      const expected = tooOld ? "environment" : expectedErrorKind(error);
+      failures.set(machineKey, { attemptedAt, message, expected });
       logger?.debug?.("account.machine_inventory_refresh_failed", {
         machineKey,
         label,
         error: getErrorMessage(error),
       });
-      throw new Error(message);
+      const failure = new Error(message);
+      throw expected ? markExpected(failure, expected) : failure;
     } finally {
       inFlight.delete(machineKey);
     }

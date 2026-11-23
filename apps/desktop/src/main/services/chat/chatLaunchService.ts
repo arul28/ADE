@@ -43,6 +43,7 @@ import {
   deriveDeterministicLaneTitleFromPrompt,
 } from "../../../shared/laneNameFallback";
 import { requireNormalizedUuid } from "../../../shared/uuid";
+import { expectedErrorKind } from "../../../shared/expectedError";
 import { formatLaneBaseAge } from "../../../shared/defaultRemoteLaneBase";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
@@ -1342,14 +1343,22 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const failures: string[] = [];
     // Closed kinds for the log: the failure text holds paths and branch names.
     const failureKinds: string[] = [];
+    // A failure its throw site marked as an answer (a lane with a file Windows
+    // reserves, a folder not answering) is the person's to fix: it is shown
+    // on the launch, and logged as a warning, not as an ADE failure.
+    let unexpectedFailure = false;
+    const noteFailure = (what: "chat" | "lane", error: unknown) => {
+      failures.push(`${what}: ${getErrorMessage(error)}`);
+      failureKinds.push(`${what}:${cancelCleanupFailureKind(error)}`);
+      if (!expectedErrorKind(error)) unexpectedFailure = true;
+    };
     const sessionId = record.snapshot.sessionId;
     if (record.snapshot.sessionCreated && sessionId) {
       try {
         await deps.agentChatService.deleteSession({ sessionId });
         record.snapshot.sessionCreated = false;
       } catch (error) {
-        failures.push(`chat: ${getErrorMessage(error)}`);
-        failureKinds.push(`chat:${cancelCleanupFailureKind(error)}`);
+        noteFailure("chat", error);
       }
     }
     // A lane whose create inserted its row but never returned (restart
@@ -1369,13 +1378,13 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         });
         record.snapshot.laneCreated = false;
       } catch (error) {
-        failures.push(`lane: ${getErrorMessage(error)}`);
-        failureKinds.push(`lane:${cancelCleanupFailureKind(error)}`);
+        noteFailure("lane", error);
       }
     }
     if (failures.length) {
       const detail = { launchId: record.snapshot.launchId, failureKinds, final: opts.final };
-      if (opts.final) logger.error("chat_launch.cancel_cleanup_incomplete", detail);
+      if (opts.final && unexpectedFailure) logger.error("chat_launch.cancel_cleanup_incomplete", detail);
+      else if (opts.final) logger.warn("chat_launch.cancel_cleanup_incomplete", detail);
       else logger.warn("chat_launch.cancel_cleanup_deferred", detail);
     }
     return failures;

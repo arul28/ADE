@@ -2206,7 +2206,9 @@ export function registerIpc({
         // already-`${code}:`-prefixed rethrow must not drop meta.rootPath.
         const needsWrap = !error.message.startsWith(`${code}:`) || Boolean(rootPath && !parsed.rootPath);
         if (needsWrap) {
-          throw new Error(encodeCodedErrorMessage(code, parsed.message, rootPath ? { rootPath } : undefined));
+          // The throw site's expected mark goes with it: a re-encoded
+          // `project_not_git_repository` became an issue (ADE-DESKTOP-DW).
+          throw carryExpected(error, new Error(encodeCodedErrorMessage(code, parsed.message, rootPath ? { rootPath } : undefined)));
         }
       }
     }

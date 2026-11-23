@@ -98,6 +98,15 @@ async function cursorApiGet<T>(path: string, apiKey: string, query?: Record<stri
   }
   if (!response.ok) {
     const body = readErrorBody(text);
+    // A gateway between ADE and Cursor answering 502/503/504 sends an HTML
+    // page, not Cursor's JSON: that is Cursor being unreachable, not ADE, and
+    // the page is no message to show anyone.
+    if (!body.code && !body.message && (response.status === 502 || response.status === 503 || response.status === 504)) {
+      throw markExpected(
+        new CursorCloudApiError(`Cursor's API is not answering right now (HTTP ${response.status}). Try again in a moment.`, response.status, "network"),
+        "network",
+      );
+    }
     const code = body.code ?? "unknown";
     const message = body.message ?? (text || `Request failed with status ${response.status}`);
     const plain = response.status === 401 || response.status === 429;

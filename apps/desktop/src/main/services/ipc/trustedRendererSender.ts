@@ -40,10 +40,23 @@ function classifyRendererUrl(rawUrl: string, devServerUrl: string): boolean {
 
 export type AdeRendererSenderState = "trusted" | "gone" | "untrusted";
 
+/**
+ * The sending frame's URL, else its WebContents' URL. Null when neither can be
+ * read: the frame was disposed under the call (Electron throws "Render frame
+ * was disposed" from `url`), which is a window closing or reloading, not a
+ * page. Each read is tried on its own, so a disposed frame still falls back to
+ * the WebContents.
+ */
 function readSenderUrl(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">): string | null {
   try {
-    return event.senderFrame?.url
-      ?? (typeof event.sender.getURL === "function" ? event.sender.getURL() : null);
+    const frameUrl = event.senderFrame?.url;
+    if (frameUrl) return frameUrl;
+  } catch {
+    // Disposed frame; try the WebContents.
+  }
+  try {
+    const contentsUrl = typeof event.sender.getURL === "function" ? event.sender.getURL() : null;
+    return contentsUrl || null;
   } catch {
     return null;
   }
@@ -58,6 +71,14 @@ export function adeRendererSenderState(event: Pick<IpcMainInvokeEvent, "sender" 
   let win: Electron.BrowserWindow | null = null;
   try {
     if (typeof event.sender.isDestroyed === "function" && event.sender.isDestroyed()) return "gone";
+    // No URL at all: the frame that sent this was disposed before the call was
+    // handled. On quit, `destroyWindowsForExit` tears the ADE window down
+    // while its last polls and streams are still queued (ADE-DESKTOP-4C and
+    // -96 came right after the quit prompt's button; -CG, -1H, -E4, -E5 are
+    // the same burst of a window going away).
+    // A live page always has a URL, even `about:blank`, so this is teardown.
+    // Refused either way; only the report differs.
+    if (readSenderUrl(event) === null) return "gone";
     win = BrowserWindow.fromWebContents(event.sender);
     // No owning window: either ADE's own renderer still sending after its
     // window closed (on macOS the app outlives it; the closing page's polls

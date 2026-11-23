@@ -111,9 +111,12 @@ export async function bootstrapPairedRuntime(args: {
     ? args.pairedStore.getForReference(args.target.pairedMachine)
     : null;
   if (!credentials) {
-    throw new PairedRuntimeTransportUnavailableError(
+    // The person removed this machine from ADE (its pairing goes with it)
+    // while a project tab or recent still names it (ADE-DESKTOP-E3: Remove,
+    // then open that project). They pair it again; nothing is broken.
+    throw markExpected(new PairedRuntimeTransportUnavailableError(
       "The paired-machine credentials for this remote target were not found.",
-    );
+    ), "user");
   }
   const candidates = buildPairedEndpointCandidates({
     endpoints: credentials.endpoints,

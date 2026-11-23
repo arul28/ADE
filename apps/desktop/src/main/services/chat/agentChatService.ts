@@ -81007,7 +81007,7 @@ export function createAgentChatService(args: {
     laneId,
   }: AgentChatClaudeSessionInfoArgs): Promise<AgentChatClaudeSessionInfo | null> => {
     const normalizedSessionId = sessionId.trim();
-    if (!normalizedSessionId.length) throw new Error("sessionId is required.");
+    if (!normalizedSessionId.length) throw new AdeExpectedError("sessionId is required.", "user");
     const pointer = sessionService.getClaudeSessionPointer(normalizedSessionId);
     const laneFallback = await resolveClaudeSessionLaneFallback(laneId ?? pointer?.laneId ?? null);
     const info = await (await loadClaudeSdk()).getSessionInfo(normalizedSessionId, {
@@ -81093,7 +81093,7 @@ export function createAgentChatService(args: {
     includeSystemMessages,
   }: AgentChatClaudeSessionMessagesArgs): Promise<AgentChatClaudeSessionMessage[]> => {
     const normalizedSessionId = sessionId.trim();
-    if (!normalizedSessionId.length) throw new Error("sessionId is required.");
+    if (!normalizedSessionId.length) throw new AdeExpectedError("sessionId is required.", "user");
     const pointer = sessionService.getClaudeSessionPointer(normalizedSessionId);
     const laneFallback = await resolveClaudeSessionLaneFallback(laneId ?? pointer?.laneId ?? null);
     const normalizedLimit = typeof limit === "number" && Number.isFinite(limit) && limit > 0
@@ -81435,7 +81435,7 @@ export function createAgentChatService(args: {
     offset,
   }: AgentChatMainTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
     const normalizedSessionId = sessionId.trim();
-    if (!normalizedSessionId.length) throw new Error("sessionId is required.");
+    if (!normalizedSessionId.length) throw new AdeExpectedError("sessionId is required.", "user");
     const row = sessionService.get(normalizedSessionId);
     if (!row || !isChatToolType(row.toolType)) return null;
 
@@ -81656,8 +81656,8 @@ export function createAgentChatService(args: {
     const normalizedSessionId = sessionId.trim();
     const normalizedAgentId = agentId.trim();
     const normalizedTaskId = taskId?.trim() || null;
-    if (!normalizedSessionId.length) throw new Error("sessionId is required.");
-    if (!normalizedAgentId.length) throw new Error("agentId is required.");
+    if (!normalizedSessionId.length) throw new AdeExpectedError("sessionId is required.", "user");
+    if (!normalizedAgentId.length) throw new AdeExpectedError("agentId is required.", "user");
     const managed = managedSessions.get(normalizedSessionId);
     const runtimeKind = managed?.runtime?.kind ?? null;
     const provider = managed?.session.provider ?? null;
@@ -84355,7 +84355,7 @@ ${schedule.prompt}`
    */
   const deviceSourcesSession = (sessionId: unknown): ManagedChatSession => {
     const id = typeof sessionId === "string" ? sessionId.trim() : "";
-    if (!id) throw new Error("sessionId is required.");
+    if (!id) throw new AdeExpectedError("sessionId is required.", "user");
     if (agentCliActions.target(id, "keep a device choice for")) {
       throw new Error(
         "A device choice is kept for ADE chats; this session is an agent CLI in a terminal. "

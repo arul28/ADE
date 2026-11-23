@@ -25,6 +25,7 @@ import {
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../shared/types/sync";
 import { resolveAccountHelloPairing } from "../../../shared/accountDirectory";
+import { markExpected } from "../../../shared/expectedError";
 import {
   browserEndpointRequiresRelayAccess,
   browserDialCandidateRouteKind,
@@ -626,14 +627,16 @@ export class SyncConnection {
       cancelAttempt = () => fail(new StaleSocketAttemptError(), "Connection attempt superseded");
       this.pendingAttemptCancel = cancelAttempt;
       const openTimeout = setTimeout(() => {
-        fail(new Error(`Timed out opening ${endpoint}.`), "Transport open timeout");
+        fail(markExpected(new Error(`Timed out opening ${endpoint}.`), "network"), "Transport open timeout");
       }, openTimeoutMs);
 
       socket.onopen = () => {
         if (settled || !this.isCurrentSocket(socket, generation)) return;
         clearTimeout(openTimeout);
         helloTimeout = setTimeout(() => {
-          fail(new Error(`Timed out authenticating with ${endpoint}.`), "Authenticated hello timeout");
+          // The machine behind the relay did not answer (asleep, offline, or
+          // on a slow link); the client retries. ADE-WEB-C.
+          fail(markExpected(new Error(`Timed out authenticating with ${endpoint}.`), "network"), "Authenticated hello timeout");
         }, this.authenticatedHelloTimeoutMs);
         if (!useRelayReadyV2) {
           startHello();
@@ -821,14 +824,14 @@ export class SyncConnection {
       cancelAttempt = () => fail(new StaleSocketAttemptError(), "Connection attempt superseded");
       this.pendingAttemptCancel = cancelAttempt;
       const openTimeout = setTimeout(() => {
-        fail(new Error("Timed out opening the account machine connection."), "Account transport open timeout");
+        fail(markExpected(new Error("Timed out opening the account machine connection."), "network"), "Account transport open timeout");
       }, this.transportOpenTimeoutMs);
 
       socket.onopen = () => {
         if (settled || !this.isCurrentSocket(socket, generation)) return;
         clearTimeout(openTimeout);
         helloTimeout = setTimeout(() => {
-          fail(new Error("Timed out authenticating with the account machine."), "Account hello timeout");
+          fail(markExpected(new Error("Timed out authenticating with the account machine."), "network"), "Account hello timeout");
         }, this.authenticatedHelloTimeoutMs);
         if (!useRelayReadyV2) {
           startHello();

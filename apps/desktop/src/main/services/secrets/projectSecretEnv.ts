@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { securePrivatePath } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import type { PasswordSecretsExportResult } from "../../../shared/types/passwords";
+import { AdeExpectedError } from "../../../shared/expectedError";
 
 export type ParsedProjectSecretEnvEntry = {
   name: string;
@@ -54,11 +55,11 @@ function parseValue(rawValue: string, lineNumber: number): string {
   if (quote === "'" || quote === "\"" || quote === "`") {
     const closingIndex = findClosingQuote(value, quote);
     if (closingIndex < 0) {
-      throw new Error(`Invalid .env file: unterminated quoted value on line ${lineNumber}.`);
+      throw new AdeExpectedError(`Invalid .env file: unterminated quoted value on line ${lineNumber}.`, "user");
     }
     const trailing = value.slice(closingIndex + 1).trim();
     if (trailing && !trailing.startsWith("#")) {
-      throw new Error(`Invalid .env file: unexpected text after the value on line ${lineNumber}.`);
+      throw new AdeExpectedError(`Invalid .env file: unexpected text after the value on line ${lineNumber}.`, "user");
     }
     const inner = value.slice(1, closingIndex);
     return quote === "\"" ? decodeDoubleQuotedValue(inner) : inner;
@@ -69,7 +70,7 @@ function parseValue(rawValue: string, lineNumber: number): string {
 
 export function parseProjectSecretEnv(content: string): ParsedProjectSecretEnvEntry[] {
   if (Buffer.byteLength(content, "utf8") > MAX_ENV_FILE_BYTES) {
-    throw new Error("The selected .env file is larger than 1 MB.");
+    throw new AdeExpectedError("The selected .env file is larger than 1 MB.", "user");
   }
   const entries = new Map<string, string>();
   const lines = content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").split("\n");
@@ -80,11 +81,11 @@ export function parseProjectSecretEnv(content: string): ParsedProjectSecretEnvEn
     const statement = trimmed.startsWith("export ") ? trimmed.slice(7).trimStart() : trimmed;
     const equalsIndex = statement.indexOf("=");
     if (equalsIndex < 0) {
-      throw new Error(`Invalid .env file: expected NAME=VALUE on line ${lineNumber}.`);
+      throw new AdeExpectedError(`Invalid .env file: expected NAME=VALUE on line ${lineNumber}.`, "user");
     }
     const name = statement.slice(0, equalsIndex).trim();
     if (!ENV_NAME_PATTERN.test(name)) {
-      throw new Error(`Invalid .env file: '${name || "(empty)"}' is not a valid environment variable name on line ${lineNumber}.`);
+      throw new AdeExpectedError(`Invalid .env file: '${name || "(empty)"}' is not a valid environment variable name on line ${lineNumber}.`, "user");
     }
     let rawValue = statement.slice(equalsIndex + 1);
     const openingQuote = rawValue.trimStart()[0];
@@ -101,15 +102,15 @@ export function parseProjectSecretEnv(content: string): ParsedProjectSecretEnvEn
     }
     const value = parseValue(rawValue, lineNumber);
     if (!value.length) {
-      throw new Error(`Invalid .env file: '${name}' has an empty value on line ${lineNumber}.`);
+      throw new AdeExpectedError(`Invalid .env file: '${name}' has an empty value on line ${lineNumber}.`, "user");
     }
     entries.set(name, value);
     if (entries.size > MAX_ENV_ENTRIES) {
-      throw new Error(`The selected .env file contains more than ${MAX_ENV_ENTRIES} variables.`);
+      throw new AdeExpectedError(`The selected .env file contains more than ${MAX_ENV_ENTRIES} variables.`, "user");
     }
   }
   if (entries.size === 0) {
-    throw new Error("The selected .env file does not contain any variables.");
+    throw new AdeExpectedError("The selected .env file does not contain any variables.", "user");
   }
   return [...entries].map(([name, value]) => ({ name, value }));
 }

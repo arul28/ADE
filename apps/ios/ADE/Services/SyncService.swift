@@ -4552,6 +4552,13 @@ final class SyncService: ObservableObject {
     formatter.formatOptions = [.withInternetDateTime]
     return formatter
   }()
+  /// `parseIso8601` answers by raw text, nil included. The activity roster
+  /// parses up to six timestamps per session on every database change, for
+  /// every machine's sessions, and one `ISO8601DateFormatter` parse (two for a
+  /// timestamp without fractional seconds) costs tens of microseconds: a long
+  /// roster held the main thread for seconds (ADE-IOS-32). The same timestamps
+  /// come back on the next refresh, so a lookup answers almost all of them.
+  private var parsedIso8601Cache: [String: Date?] = [:]
   @Published private(set) var workspaceSnapshotRevision = 0
   private var accountConnectSuccessClearTask: Task<Void, Never>?
   // All-projects chat roster (mobile hub). `rosterProjects` is the machine-wide
@@ -27645,8 +27652,12 @@ extension SyncService {
 
   private func parseIso8601(_ raw: String) -> Date? {
     guard !raw.isEmpty else { return nil }
-    if let date = iso8601WithFractionalSecondsFormatter.date(from: raw) { return date }
-    return iso8601Formatter.date(from: raw)
+    if let cached = parsedIso8601Cache[raw] { return cached }
+    let date = iso8601WithFractionalSecondsFormatter.date(from: raw) ?? iso8601Formatter.date(from: raw)
+    // Bounded: a long session sees new timestamps all day.
+    if parsedIso8601Cache.count >= 8192 { parsedIso8601Cache.removeAll(keepingCapacity: true) }
+    parsedIso8601Cache[raw] = .some(date)
+    return date
   }
 }
 

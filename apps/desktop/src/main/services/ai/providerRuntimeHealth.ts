@@ -169,12 +169,20 @@ export function reportProviderRuntimeAuthFailure(
  * answer about the account, not a broken provider, so it leaves the health
  * as it was. Only what is left is `runtime-failed`.
  */
+/**
+ * A provider with no key for the service it was asked to use (Pi: "No API key
+ * found for TurboLLM. Use /login to log into a provider…"): the person's
+ * sign-in, not a broken runtime. Read here until the shared refusal table
+ * (`providerAccountRefusal.ts`) knows the words.
+ */
+const MISSING_API_KEY = /\bno api key (?:found|set|configured)\b/i;
+
 export function reportProviderRuntimeFailure(
   provider: ProviderRuntimeHealthProvider,
   message: string,
   detail?: ProviderRuntimeFailureDetail,
 ): void {
-  const refusal = classifyProviderAccountRefusal(message);
+  const refusal = classifyProviderAccountRefusal(message) ?? (MISSING_API_KEY.test(message) ? "auth" : null);
   if (refusal === "auth") {
     reportProviderRuntimeAuthFailure(provider, message);
     return;

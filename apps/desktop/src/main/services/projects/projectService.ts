@@ -22,6 +22,10 @@ export async function resolveRepoRoot(selectedPath: string, opts: { userChosen?:
   const res = await runGit(["rev-parse", "--show-toplevel"], { cwd: selectedPath, timeoutMs: 10_000 });
   if (res.exitCode !== 0) {
     const error = gitCommandError(res.stderr.trim() || res.stdout.trim() || "git rev-parse --show-toplevel failed");
+    // A folder the user picked that git cannot read within 10 s (a network
+    // share, a synced cloud folder, antivirus holding it on Windows): the
+    // machine's answer, shown to them; ADE-DESKTOP-DA.
+    if (opts.userChosen && res.timedOut) throw markExpected(error, "environment");
     // Exit 128 with no `.git` anywhere above the folder is git's "not a
     // repository" (in the user's own language, so the text is never matched):
     // the user picked a plain folder. A `.git` that git still refuses is a
