@@ -284,7 +284,13 @@ describe("laneService automatic lane identity", () => {
             ? { exitCode: 0, stdout: "", stderr: "" }
             : { exitCode: 1, stdout: "", stderr: "" };
         }
-        if (args[0] === "for-each-ref") return { exitCode: 0, stdout: "", stderr: "" };
+        if (args[0] === "for-each-ref") {
+          return {
+            exitCode: 0,
+            stdout: moved ? `refs/heads/main\nrefs/heads/${newBranch}\n` : "refs/heads/main\nrefs/heads/ade/1a2b3c4d\n",
+            stderr: "",
+          };
+        }
         if (args[0] === "config") return { exitCode: 1, stdout: "", stderr: "" };
         if (args[0] === "branch" && args[1] === "-m") {
           moved = true;

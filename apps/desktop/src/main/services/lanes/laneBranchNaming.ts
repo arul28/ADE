@@ -318,13 +318,16 @@ export function createLaneBranchNaming(deps: {
    * "fatal: branch is renamed, but update of config-file failed" after the
    * rename has already happened.
    */
-  const branchRenameLanded = async (cwd: string, to: string): Promise<boolean> => {
+  const branchRenameLanded = async (cwd: string, from: string, to: string): Promise<boolean> => {
     const current = await runGit(["branch", "--show-current"], { cwd, timeoutMs: 8_000 }).catch(() => null);
     if (!current || current.exitCode !== 0 || current.stdout.trim() !== to) return false;
     // `branch --show-current` also prints the name of an unborn branch, so the
-    // ref itself must exist; a HEAD that still points at the old name fails above.
-    const target = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${to}`], { cwd, timeoutMs: 8_000 }).catch(() => null);
-    return target?.exitCode === 0;
+    // new ref must exist and the old one must be gone. `for-each-ref` reports
+    // git's stored spelling, so a case-only rename still compares exactly.
+    const refs = await runGit(["for-each-ref", "--format=%(refname)", "refs/heads/"], { cwd, timeoutMs: 8_000 }).catch(() => null);
+    if (!refs || refs.exitCode !== 0) return false;
+    const names = refs.stdout.split(/\r?\n/).filter(Boolean);
+    return names.includes(`refs/heads/${to}`) && !names.includes(`refs/heads/${from}`);
   };
 
   /**
@@ -340,7 +343,7 @@ export function createLaneBranchNaming(deps: {
       cwd: lane.worktree_path,
       timeoutMs: 15_000,
     });
-    if (renamed.exitCode !== 0 && !(await branchRenameLanded(lane.worktree_path, to))) {
+    if (renamed.exitCode !== 0 && !(await branchRenameLanded(lane.worktree_path, from, to))) {
       logger.warn("lane.branch_rename_failed", {
         laneId: lane.id,
         from,
@@ -373,18 +376,20 @@ export function createLaneBranchNaming(deps: {
         cwd: lane.worktree_path,
         timeoutMs: 15_000,
       });
+      const rollbackLanded = rollback.exitCode === 0
+        || await branchRenameLanded(lane.worktree_path, to, from);
       logger.error("lane.branch_rename_persist_failed", {
         laneId: lane.id,
         from,
         to,
-        rollbackSucceeded: rollback.exitCode === 0,
+        rollbackSucceeded: rollbackLanded,
         // The Error itself, so `logBridge` lifts it into the Sentry event and
         // the issue groups by the real failure; `errorText` keeps the
         // sentence on disk, which `JSON.stringify` writes an Error without.
         error,
         errorText: error instanceof Error ? error.message : String(error),
       });
-      if (rollback.exitCode !== 0 && !(await branchRenameLanded(lane.worktree_path, from))) {
+      if (!rollbackLanded) {
         db.run("update lanes set branch_ref = ? where id = ? and project_id = ?", [to, lane.id, projectId]);
         deps.invalidateLaneListCache();
         const reconciledLane = getLaneRow(lane.id);
