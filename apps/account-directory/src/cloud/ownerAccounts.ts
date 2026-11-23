@@ -14,6 +14,9 @@ import {
   accountRules,
   boughtPlanIdOf,
   computerLimitOf,
+  earnedBalanceMilli,
+  extraActive,
+  hasAccountTest,
   includedMilliOf,
   loadAccount,
   logCloud,
@@ -112,7 +115,7 @@ async function describeAccount(env: CloudEnv, account: AccountRow, email: string
     env.DB.prepare("select at, action, detail from cloud_owner_log where user_id = ? order by at desc, id desc limit ?")
       .bind(account.user_id, LOG_ROWS).all<{ at: number; action: string; detail: string }>(),
   ]);
-  const testing = testPlanOf(account) != null || account.test_computers != null || account.test_hours_milli != null;
+  const testing = hasAccountTest(account);
   return {
     userId: account.user_id,
     email,
@@ -171,19 +174,29 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
   const tester = typeof body.tester === "boolean" ? body.tester : undefined;
   const reset = body.reset === true;
 
-  // Creates the row (on Free) for an account that never used ADE Cloud, as its first read would.
+  // A userId must name an account ADE Cloud knows (a typo makes no row); an
+  // email Clerk verified may create it (on Free), as its first read would.
+  if (!who.email && !(await env.DB.prepare("select 1 as known from cloud_accounts where user_id = ?").bind(who.userId).first())) {
+    return fail("not_found", "ADE Cloud has no account with that userId.", 404);
+  }
   let account = await loadAccount(env, who.userId, now);
   const statements: D1PreparedStatement[] = [];
   if (reset) {
     statements.push(env.DB.prepare(`update cloud_accounts set test_plan = null, test_computers = null, test_hours_milli = null,
       test_until = null, test_note = null, updated_at = ? where user_id = ?`).bind(now, who.userId));
-  } else if (Object.keys(change).length) {
+  } else if (Object.keys(change).length || (note && hasAccountTest(account))) {
     const next = {
       plan: change.plan !== undefined ? change.plan : account.test_plan ?? null,
       computers: change.computers !== undefined ? change.computers : account.test_computers ?? null,
       hoursMilli: change.hoursMilli !== undefined ? change.hoursMilli : account.test_hours_milli ?? null,
     };
     const any = next.plan != null || next.computers != null || next.hoursMilli != null;
+    // Billing counts the real hours: more test hours than that would draw real
+    // earned hours, or bill extra hours, for what the meter shows as included.
+    const raises = includedMilliOf({ ...account, test_plan: next.plan, test_hours_milli: next.hoursMilli }) > account.included_milli;
+    if (raises && (earnedBalanceMilli(account) > 0 || extraActive(account))) {
+      return fail("conflict", "This account has earned hours or extra hours on, so a test with more hours than its plan would use them for real. Test fewer hours, or use another account.", 409);
+    }
     statements.push(env.DB.prepare(`update cloud_accounts set test_plan = ?, test_computers = ?, test_hours_milli = ?,
       test_until = ?, test_note = ?, updated_at = ? where user_id = ?`)
       .bind(next.plan, next.computers, next.hoursMilli, any ? now + days * DAY_MS : null, any ? note ?? account.test_note ?? null : null, now, who.userId));
@@ -214,7 +227,7 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
     const note = typeof body.note === "string" && body.note.trim() ? body.note.trim().slice(0, MAX_NOTE) : null;
     await writeCloudSetting(env, key, body.value, note, now);
     logCloud("cloud.owner_setting_changed", { key, value: body.value });
-    // Small's hours follow these two at once for every account, not at the next sweep.
+    // Small's hours follow these two at once for every account; what a time budget leaves, the tick's sweep finishes.
     if (key === "free_small_needs_ads" || key === "gravity_ads") await syncAllSmallRates(env, now, { force: true });
   }
   const settings = await readCloudSettings(env);
@@ -235,12 +248,10 @@ export async function expireAccountTests(env: CloudEnv, now: number): Promise<nu
   const due = await env.DB.prepare("select user_id from cloud_accounts where test_until is not null and test_until <= ? limit 50").bind(now).all<{ user_id: string }>();
   let ended = 0;
   for (const { user_id: userId } of due.results ?? []) {
-    const cleared = await env.DB.batch([
-      env.DB.prepare(`update cloud_accounts set test_plan = null, test_computers = null, test_hours_milli = null, test_until = null, test_note = null,
-        updated_at = ? where user_id = ? and test_until is not null and test_until <= ?`).bind(now, userId, now),
-      ownerLogStatement(env, now, "account_test_ended", userId, {}),
-    ]);
-    if ((cleared[0]?.meta.changes ?? 0) !== 1) continue;
+    const cleared = await env.DB.prepare(`update cloud_accounts set test_plan = null, test_computers = null, test_hours_milli = null, test_until = null, test_note = null,
+      updated_at = ? where user_id = ? and test_until is not null and test_until <= ?`).bind(now, userId, now).run();
+    if ((cleared.meta.changes ?? 0) !== 1) continue;
+    await ownerLogStatement(env, now, "account_test_ended", userId, {}).run();
     ended += 1;
     const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
     if (account) await syncSmallRates(env, account, now);

@@ -37,7 +37,12 @@ Name an account by its verified email or its Clerk user id (`user_…`).
 
 `act-as` and `limits` take `--days N` (default 7, at most 90) and
 `--note "why"`. A test ends by itself when its days are up; the minute tick
-clears it.
+clears it. The testers list has no end date: take an account off it with
+`tester <account> off`.
+
+A userId names an account ADE Cloud already has (a typo is refused); an email
+Clerk verified may be one that never used ADE Cloud, which then starts on
+Free.
 
 ### What a test changes, and what it never does
 
@@ -49,8 +54,12 @@ owner's Pro account can act as Free for a week and keep paying for Pro, and a
 Free account acting as Max is never charged for Max.
 
 Things that still follow the real plan: idle cleanup's timing, plan cleanup
-after a real downgrade, and the iPhone's minutes (those join this tool from
-the cloud iPhone lane).
+after a real downgrade (it waits while a test runs), and the iPhone's minutes
+(those join this tool from the cloud iPhone lane).
+
+Billing counts the real plan's hours, so a test may not give more hours than
+that to an account with earned hours or extra hours on: those would be used
+for real. The tool refuses it (409); test fewer hours, or use another account.
 
 ## Switches
 
@@ -81,7 +90,11 @@ see the rule. A no given before the rule turned on is asked again.
 
 Small's rate is changed on the computer's row (the time so far is charged at
 the old rate), at once after a yes or no, a test change or a switch flip, and
-by the tick at minutes 8, 23, 38 and 53 as a safety net.
+by every minute tick for any account still on the wrong rate (a deploy
+variable's hard off, or what a flip's 20 seconds didn't reach).
+
+While it is on, the hours emails and the out-of-hours message stop saying
+Small keeps working to an account whose Small uses hours.
 
 ## Testing ads end to end
 

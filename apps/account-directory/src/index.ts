@@ -238,9 +238,9 @@ export default Sentry.withSentry(sentryOptions, {
         // The account test tool (`cloud/ownerAccounts.ts`): tests whose time
         // is up end. One indexed read when none is due.
         settle("cloud_account_tests", () => expireAccountTests(env, event.scheduledTime)),
-        // Free's Small computers (`cloud/gravity.ts`): at minutes 8, 23, 38
-        // and 53, accounts whose Small runs at the wrong rate after a switch
-        // flipped. One read when none is wrong.
+        // Free's Small computers (`cloud/gravity.ts`): a page of accounts whose
+        // Small runs at the wrong rate after a switch flipped. One read when
+        // none is wrong.
         settle("cloud_small_rates", () => syncAllSmallRates(env, event.scheduledTime)),
         // The server launcher's records past their week (and a draft's day),
         // with their files. One indexed read when none is due.

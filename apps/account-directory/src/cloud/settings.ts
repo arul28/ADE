@@ -57,9 +57,10 @@ export function heldUnder<K extends CloudSettingKey>(key: K, value: CloudSetting
 /** Writes one switch and its change log row in one batch. */
 export async function writeCloudSetting<K extends CloudSettingKey>(env: CloudDb, key: K, value: CloudSettingValue<K>, note: string | null, now: number): Promise<void> {
   await env.DB.batch([
+    // `updated_at` is when the value last changed (a re-ask keys on it): writing the same value again keeps it.
     env.DB.prepare(`
       insert into cloud_settings (key, value, updated_at) values (?, ?, ?)
-      on conflict (key) do update set value = excluded.value, updated_at = excluded.updated_at
+      on conflict (key) do update set value = excluded.value, updated_at = excluded.updated_at where cloud_settings.value <> excluded.value
     `).bind(key, value, now),
     ownerLogStatement(env, now, "setting", null, { key, value, note }),
   ]);

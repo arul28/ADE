@@ -5,6 +5,7 @@ import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
 import { reportExtraPhoneMinutes } from "./phoneBilling";
 import { resolvePendingPhoneBeta, runPhoneChecks, stopPhonesDue } from "./phones";
 import { sendCloudEmail } from "./email";
+import { smallUsesNoHours } from "./gravity";
 import { laneFactsStatement } from "./lanesWithoutComputer";
 import { markRestedWithBackups } from "./laneBackups";
 import { sweepLeftovers } from "./storageSweeps";
@@ -345,9 +346,10 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
 }
 
 /**
- * The hours emails. Small computers never use hours, so the text says the
+ * The hours emails. Small computers don't use hours, so the text says the
  * bigger sizes stop and Small keeps going (`small`); an account with no free
- * plan, which runs nothing once it is out, reads the plain text (`all`).
+ * plan, which runs nothing once it is out, or whose Small uses hours (Free
+ * without sponsored cards, `smallUsesNoHours`), reads the plain text (`all`).
  */
 const HOURS_WARNINGS: Record<Exclude<CloudHoursState, "none">, {
   column: "warned_zero_at" | "warned_95_at" | "warned_80_at";
@@ -359,7 +361,7 @@ const HOURS_WARNINGS: Record<Exclude<CloudHoursState, "none">, {
     subject: "You're out of ADE Cloud hours",
     text: {
       all: "Your ADE Cloud computers have stopped. You can add hours, or wait for your hours to reset.",
-      small: "Your computers bigger than Small have stopped. Small computers never use hours, so they keep working. You can add hours, or wait for your hours to reset.",
+      small: "Your computers bigger than Small have stopped. Small computers don't use hours, so they keep working. You can add hours, or wait for your hours to reset.",
     },
   },
   warn95: {
@@ -384,10 +386,11 @@ async function warnHours(env: CloudEnv, account: AccountRow, state: CloudHoursSt
   if (state === "none") return;
   const warning = HOURS_WARNINGS[state];
   if (account[warning.column] != null) return;
+  const stopsAll = allStop || !(await smallUsesNoHours(env, account));
   await env.DB.prepare(`update cloud_accounts set ${warning.column} = ?, updated_at = ? where user_id = ?`).bind(now, now, account.user_id).run();
   // Of everything the period may use (plan and earned hours), as the warning itself counts.
   const percent = state === "zero" ? 100 : allowancePercentUsed(account, used);
-  await sendCloudEmail(env, { userId: account.user_id, subject: warning.subject, text: allStop ? warning.text.all : warning.text.small, percentUsed: percent });
+  await sendCloudEmail(env, { userId: account.user_id, subject: warning.subject, text: stopsAll ? warning.text.all : warning.text.small, percentUsed: percent });
 }
 
 /**
@@ -730,7 +733,8 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
       const freeMs = row.free_ms ?? 0;
       const providerBillableMs = Math.max(0, entry.awakeMinutes * 60_000 - freeMs);
       // A resize changes the rate mid-day, so correct at the rate the day really ran at.
-      const providerMilli = meteredMs > 0 && meteredMilli > 0
+      // A day metered at 0 (Small without hours) stays 0, even if the rate changed late in it.
+      const providerMilli = meteredMs > 0
         ? Math.round((providerBillableMs * meteredMilli) / meteredMs)
         : hoursMilliFor(providerBillableMs, multiplier);
       const delta = providerMilli - meteredMilli;

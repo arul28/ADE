@@ -5104,6 +5104,11 @@ describe("sponsored cards", () => {
     expect([acting.planId, acting.rules, acting.hours.includedMilli, acting.computers.limit, acting.sponsored?.ads, acting.extraHours.available]).toEqual(["free", "free", 7000, 1, true, false]);
     // Stripe, the period and its hours are the real plan's.
     expect(billing()).toEqual(before);
+    // More hours than the real plan's would spend a real earned balance (or bill extra hours): refused.
+    harness.exec("update cloud_accounts set earned_granted_milli = 5000 where user_id = ?", OWNER);
+    expect((await owner("account", { userId: OWNER, hours: 1000 })).status).toBe(409);
+    expect((await accountState()).hours.includedMilli).toBe(7000);
+    harness.exec("update cloud_accounts set earned_granted_milli = 0 where user_id = ?", OWNER);
 
     // The test ends by itself: the tick clears it and the real plan is back.
     expect(await expireAccountTests(harness.env, NOW + 6 * DAY)).toBe(0);

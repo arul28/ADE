@@ -231,35 +231,45 @@ export async function syncSmallRates(env: GravityEnv, account: AccountRow, now: 
   return changed;
 }
 
-/** Accounts one sweep re-rates at most, so one tick stays short. */
+/** Accounts one page re-rates, and how long a forced sync keeps paging. */
 const SMALL_SYNC_PAGE = 100;
+const SMALL_SYNC_BUDGET_MS = 20_000;
 
 /**
- * The tick's safety net after a switch flip: the accounts with a Small
- * computer on the wrong rate (the rule of `smallUsesNoHours` in SQL), a page
- * at a time, at minutes 8, 23, 38 and 53. The owner route runs it at once
- * (`force`). Only wrong rows are picked, so the pages always move on.
+ * Accounts with a Small computer on the wrong rate (the rule of
+ * `smallUsesNoHours` in SQL), re-rated a page at a time. The minute tick runs
+ * one page (a single read when none is wrong), so a switch flip, a hard off
+ * in the deploy variable or a missing key reaches every account within
+ * minutes; the owner route pages on for up to 20 s (`force`). Only wrong rows
+ * are picked, so the pages always move on.
  */
 export async function syncAllSmallRates(env: GravityEnv, now: number, { force = false }: { force?: boolean } = {}): Promise<number> {
-  if (!force && new Date(now).getUTCMinutes() % 15 !== 8) return 0;
   const settings = await readCloudSettings(env);
   const { mode } = await gravitySwitches(env, settings);
   const ruleOn = settings.free_small_needs_ads === "on" ? 1 : 0;
-  const users = await env.DB.prepare(`
-    select distinct c.user_id from cloud_computers c join cloud_accounts a on a.user_id = c.user_id
-    where c.deleted_at is null and c.type = 'default' and c.cpu = ? and c.memory_gb = ?
-      and c.multiplier_milli != (case when
-        ? = 0
-        or coalesce(case when a.test_plan in ('free', 'plus', 'pro', 'max') then a.test_plan end, case when a.plan = 'paid' then 'paid' else 'free' end) != 'free'
-        or not (? = 'all' or (? = 'testers' and exists (select 1 from cloud_sponsored_testers t where t.user_id = a.user_id)))
-        or exists (select 1 from cloud_sponsored_consent s where s.user_id = a.user_id and s.consent = 'granted')
-      then 0 else ? end)
-    limit ?
-  `).bind(SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, ruleOn, mode, mode, SMALL_NO_CARDS_RATE_MILLI, SMALL_SYNC_PAGE).all<{ user_id: string }>();
+  const started = Date.now();
   let changed = 0;
-  for (const { user_id: userId } of users.results ?? []) {
-    const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
-    if (account) changed += await syncSmallRates(env, account, now, settings);
+  for (;;) {
+    const users = await env.DB.prepare(`
+      select distinct c.user_id from cloud_computers c join cloud_accounts a on a.user_id = c.user_id
+      where c.deleted_at is null and c.type = 'default' and c.cpu = ? and c.memory_gb = ?
+        and c.multiplier_milli != (case when
+          ? = 0
+          or coalesce(case when a.test_plan in ('free', 'plus', 'pro', 'max') then a.test_plan end, case when a.plan = 'paid' then 'paid' else 'free' end) != 'free'
+          or not (? = 'all' or (? = 'testers' and exists (select 1 from cloud_sponsored_testers t where t.user_id = a.user_id)))
+          or exists (select 1 from cloud_sponsored_consent s where s.user_id = a.user_id and s.consent = 'granted')
+        then 0 else ? end)
+      limit ?
+    `).bind(SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, ruleOn, mode, mode, SMALL_NO_CARDS_RATE_MILLI, SMALL_SYNC_PAGE).all<{ user_id: string }>();
+    const page = users.results ?? [];
+    let pageChanged = 0;
+    for (const { user_id: userId } of page) {
+      const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
+      if (account) pageChanged += await syncSmallRates(env, account, now, settings);
+    }
+    changed += pageChanged;
+    // One page a tick; a forced sync pages on while rows still move and the budget lasts.
+    if (!force || page.length < SMALL_SYNC_PAGE || pageChanged === 0 || Date.now() - started > SMALL_SYNC_BUDGET_MS) break;
   }
   return changed;
 }

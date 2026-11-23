@@ -103,6 +103,7 @@ import {
   computerLimitPlanOf,
   diskDayStatement,
   hasNoFreePlan,
+  limitsPlanIdOf,
   planIdOf,
   logCloud,
   nameMachineAfterComputerStatement,
@@ -175,13 +176,13 @@ const NOT_FOUND_MESSAGE = "ADE Cloud has no such computer.";
 const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
 /**
  * At 0 hours only the sizes that use hours are refused, so the sentence says
- * Small keeps working; an account with no free plan (`hasNoFreePlan`) runs
- * nothing, and hears the plain sentence.
+ * Small keeps working; an account with no free plan (`hasNoFreePlan`), or
+ * whose Small uses hours (`smallUsesNoHours`), hears the plain sentence.
  */
-const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">) => fail(
+const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">, smallFree = true) => fail(
   "out_of_hours",
-  account && !hasNoFreePlan(account)
-    ? "You're out of ADE Cloud hours for this period. Small computers never use hours, so they keep working."
+  account && smallFree && !hasNoFreePlan(account)
+    ? "You're out of ADE Cloud hours for this period. Small computers don't use hours, so they keep working."
     : "You're out of ADE Cloud hours for this period.",
   402,
 );
@@ -271,7 +272,7 @@ const isOutsideAgentMetadata = (metadata: Record<string, string>): boolean => me
 
 /** 403 `outside_agent_free_plan` with the sentence the agent passes on, on free-plan rules (`past_due` included); else null. */
 function outsideAgentRefusal(account: AccountRow, outsideAgent: boolean): Refused | null {
-  if (!outsideAgent || CLOUD_PLANS[planIdOf(account)].outsideAgents) return null;
+  if (!outsideAgent || CLOUD_PLANS[limitsPlanIdOf(account)].outsideAgents) return null;
   return { response: fail(CLOUD_OUTSIDE_AGENT_FREE_CODE, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, 403), refusal: "outside_agent_free" };
 }
 
@@ -443,7 +444,7 @@ async function getAccountContext(env: CloudEnv, userId: string, now: number): Pr
     smallFree,
     outOfHoursFor: (multiplierMilli) => {
       const rate = multiplierMilli === 0 && !smallFree ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli;
-      return isOutOfHoursFor(account, liveUsed, rate) ? { response: outOfHours(account), refusal: "out_of_hours" } : null;
+      return isOutOfHoursFor(account, liveUsed, rate) ? { response: outOfHours(account, smallFree), refusal: "out_of_hours" } : null;
     },
   };
 }
