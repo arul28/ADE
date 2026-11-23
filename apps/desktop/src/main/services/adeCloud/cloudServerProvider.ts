@@ -81,7 +81,7 @@ export type CloudServerProviderDeps = {
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
   /** The account this client is made for (`CloudProvider.account`, `cloudAccessKey`). */
   account: string;
-  /** The account signed in now (`cloudAccessKey`): a phone call checks its token is still `account`'s. */
+  /** The account signed in now (`cloudAccessKey`): every call checks its token is still `account`'s. */
   signedInAccount?: () => string;
 };
 
@@ -160,6 +160,20 @@ function statusOf(body: unknown, fallback: string): string {
 export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudProvider {
   const fetcher: FetchLike = deps.fetch ?? ((input, init) => fetch(input, init));
 
+  /**
+   * The signed-in token, only while it is still this client's account: after a switch (even one while the
+   * token was read) a call never goes out with another account's token, so it can't start, spend or drive there.
+   */
+  async function accountToken(): Promise<string> {
+    const token = await deps.accessToken();
+    // Signed out is a state the person fixes, not a defect.
+    if (!token) throw markExpected(new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401), "user");
+    if (deps.signedInAccount && deps.signedInAccount() !== deps.account) {
+      throw markExpected(new CloudProviderError("The ADE account changed. Try again.", "no_account", 409), "user");
+    }
+    return token;
+  }
+
   async function request(
     method: string,
     path: string,
@@ -167,9 +181,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
   ): Promise<unknown> {
     const base = deps.baseUrl()?.replace(/\/+$/, "");
     if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
-    const token = await deps.accessToken();
-    // Signed out is a state the person fixes, not a defect.
-    if (!token) throw markExpected(new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401), "user");
+    const token = await accountToken();
     // Cached after the first read: one OS probe per process. Not on the access
     // check, which every signed-in account polls: the id goes only to an
     // account ADE Cloud lets in.
@@ -578,12 +590,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     async phoneCall(input: CloudPhoneCallRequest, options?: { timeoutMs?: number }): Promise<{ status: number; type: string | null; body: Buffer }> {
       const base = deps.baseUrl()?.replace(/\/+$/, "");
       if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
-      const token = await deps.accessToken();
-      if (!token) throw markExpected(new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401), "user");
-      // A switch while the token was read: that token is another account's, never sent for this client's phone.
-      if (deps.signedInAccount && deps.signedInAccount() !== deps.account) {
-        throw markExpected(new CloudProviderError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account", 409), "user");
-      }
+      const token = await accountToken();
       let response: Response;
       try {
         response = await fetcher(`${base}${CLOUD_PATHS.phoneCall}`, {
