@@ -66,7 +66,7 @@ import {
   type CloudPhoneUse,
   type CloudPhoneView,
 } from "./contract";
-import { readBoundedBody } from "../sinkUtils";
+import { readBoundedBody, sha256Hex } from "../sinkUtils";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
 import { forgetRevylAccount } from "./phoneRevyl";
@@ -498,6 +498,11 @@ export async function stopPhonesDue(env: CloudEnv, now: number): Promise<void> {
     .bind(now, STOPS_PER_TICK).all<{ phone_id: string; user_id: string }>();
   for (const row of due.results ?? []) {
     try {
+      // A deleted account's phone (its start ended after the deletion and its stop failed): stopped until it is.
+      if (isDeletedAccount(row.user_id)) {
+        await stopPhone(env, row.user_id, row.phone_id, now, "account_deleted");
+        continue;
+      }
       // Held to what the account may use now: given more since (extra minutes back on), it gets a later stop_at and runs on.
       const outcome = await enforcePhoneAllowance(env, row.user_id, now);
       // NoMac couldn't read the phone (no live phone found): the row's own stop_at still stops it.
@@ -692,6 +697,12 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
         const stopped = await PHONE_PROVIDERS[gone].stop(env, userId, orphan.id, { provider: gone, ref: orphan.ref ?? null, device: orphan.device ?? null })
           .catch((): { ok: false } => ({ ok: false }));
         reportCloudFailure("cloud.phone_start_account_gone", { userId, phoneId: orphan.id, provider: gone, stopped: stopped.ok }, "cloud-phone");
+        // A stop that failed is kept under the deleted account's key, due now: the minute tick stops it until it ends.
+        if (!stopped.ok) {
+          await env.DB.prepare(`insert into cloud_phones (phone_id, user_id, device, state, created_at, updated_at, provider, provider_ref, stop_at)
+            values (?, ?, ?, 'live', ?, ?, ?, ?, ?) on conflict(phone_id) do nothing`)
+            .bind(orphan.id, `${CLOUD_DELETED_ACCOUNT_PREFIX}${await sha256Hex(userId)}`, orphan.device ?? null, now, now, gone, orphan.ref ?? null, now).run();
+        }
         return fail("not_found", "This ADE account no longer exists.", 404);
       }
     } finally {

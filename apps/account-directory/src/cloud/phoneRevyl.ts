@@ -542,20 +542,26 @@ async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string
       profile: "ade",
     };
     // One build at a time per phone (Revyl's runners bill by the hour): claimed in this write, so two starts can't both run.
-    const claimed = await env.DB.prepare("update cloud_phones set build_started_at = ?, build_job = null where phone_id = ? and user_id = ? and (build_started_at is null or build_started_at <= ?)")
+    // Only a claim that never got Revyl's answer (no job) lapses; a build Revyl took, or may have, holds it until
+    // it ends or the phone does (an accepted build waits for a runner with no bound).
+    const claimed = await env.DB.prepare("update cloud_phones set build_started_at = ?, build_job = null where phone_id = ? and user_id = ? and (build_started_at is null or (build_job is null and build_started_at <= ?))")
       .bind(now, phone.id, userId, now - BUILD_TIMEOUT_SECONDS * 1000).run();
-    if ((claimed.meta?.changes ?? 0) !== 1) return fail("phone_busy", "A build is already running on your ADE Cloud iPhone. Wait for it to finish.", 409);
+    if ((claimed.meta?.changes ?? 0) !== 1) {
+      return fail("phone_busy", "A build is already running on your ADE Cloud iPhone. Wait for it to finish, or stop the phone and start a new one.", 409);
+    }
     const answer = await workspaceJson(env, workspace, "POST", "/apps/remote", {
       body: { build_definition_hash: await sha256Hex(JSON.stringify(recipe)), git_branch_name: "ade", recipe, source: { key, type: "archive" }, timeout_seconds: BUILD_TIMEOUT_SECONDS },
       timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
     });
     const buildJob = typeof answer.body?.build_job_id === "string" ? answer.body.build_job_id : null;
     // A start Revyl refused runs nothing: the claim goes back. A 5xx or a timeout may hide a build Revyl took:
-    // the claim stays until it expires (BUILD_TIMEOUT_SECONDS), so a retry can't bill a second one.
+    // the claim holds (`unknown`) until the phone ends, so a retry can't bill a second one; a new phone builds again.
     if (answer.status < 300) {
-      await env.DB.prepare("update cloud_phones set build_job = ? where phone_id = ? and user_id = ? and build_started_at = ?").bind(buildJob, phone.id, userId, now).run();
+      await env.DB.prepare("update cloud_phones set build_job = ? where phone_id = ? and user_id = ? and build_started_at = ?").bind(buildJob ?? "unknown", phone.id, userId, now).run();
     } else if (answer.status < 500) {
       await env.DB.prepare("update cloud_phones set build_started_at = null where phone_id = ? and user_id = ? and build_started_at = ?").bind(phone.id, userId, now).run();
+    } else {
+      await env.DB.prepare("update cloud_phones set build_job = 'unknown' where phone_id = ? and user_id = ? and build_started_at = ?").bind(phone.id, userId, now).run();
     }
     logCloud("cloud.phone_revyl_build", { userId, status: answer.status });
     return json(answer.body ?? {}, answer.status);

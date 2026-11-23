@@ -81,6 +81,8 @@ export type CloudServerProviderDeps = {
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
   /** The account this client is made for (`CloudProvider.account`, `cloudAccessKey`). */
   account: string;
+  /** The account signed in now (`cloudAccessKey`): a phone call checks its token is still `account`'s. */
+  signedInAccount?: () => string;
 };
 
 export type CloudDeleteContext = {
@@ -578,6 +580,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
       const token = await deps.accessToken();
       if (!token) throw markExpected(new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401), "user");
+      // A switch while the token was read: that token is another account's, never sent for this client's phone.
+      if (deps.signedInAccount && deps.signedInAccount() !== deps.account) {
+        throw markExpected(new CloudProviderError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account", 409), "user");
+      }
       let response: Response;
       try {
         response = await fetcher(`${base}${CLOUD_PATHS.phoneCall}`, {
