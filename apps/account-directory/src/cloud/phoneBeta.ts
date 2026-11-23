@@ -1,8 +1,8 @@
 /**
  * The owner's beta list for the ADE Cloud iPhone (`cloud_phone_beta`): who may
  * use it while `CLOUD_PHONE_ACCESS` is `beta` (`phones.ts` reads the list),
- * the emails still waiting for an account (`cloud_phone_beta_pending`), and a
- * tester's own provider.
+ * the emails still waiting for an account (`cloud_phone_beta_pending`), and
+ * the provider a tester is locked to (`routeOf` in `phones.ts`).
  */
 
 import { CLOUD_PHONE_PROVIDERS, isCloudPhoneProvider } from "./contract";
@@ -86,9 +86,10 @@ export async function resolvePendingPhoneBeta(env: CloudEnv, now: number): Promi
 }
 
 /**
- * `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled? }` adds (or with
- * `enabled: false` removes) an account; `{}` lists the list and the emails
- * still waiting. `safety.ts` checked the owner's token before this runs. An
+ * `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled?, provider? }`
+ * adds (or with `enabled: false` removes) an account; `{}` lists the list and
+ * the emails still waiting. `provider`: `nomac` or `revyl` locks the account
+ * to that one; `both` (or null) lets the router pick; left out, it stays. `safety.ts` checked the owner's token before this runs. An
  * email is looked up in Clerk once; the list keeps the user id (and the
  * address the owner typed, for the owner's own reading). An email no ADE
  * account has yet waits (`pending: true`, `cloud_phone_beta_pending`) until
@@ -102,12 +103,13 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
   const typedUserId = typeof body.userId === "string" ? body.userId.trim() : "";
   if (!typedEmail && !typedUserId) {
     const rows = await env.DB.prepare("select user_id, email, added_at, provider from cloud_phone_beta order by added_at").all<{ user_id: string; email: string | null; added_at: number; provider: string | null }>();
-    const pending = await env.DB.prepare("select email, added_at from cloud_phone_beta_pending order by added_at").all<{ email: string; added_at: number }>();
-    return json({ ok: true, access: phoneAccessSetting(env), provider: providerSetting(env), users: rows.results ?? [], pending: pending.results ?? [] });
+    const pending = await env.DB.prepare("select email, added_at, provider from cloud_phone_beta_pending order by added_at").all<{ email: string; added_at: number; provider: string | null }>();
+    const shown = <T extends { provider: string | null }>(row: T) => ({ ...row, provider: row.provider ?? "both" });
+    return json({ ok: true, access: phoneAccessSetting(env), defaultProvider: providerSetting(env), users: (rows.results ?? []).map(shown), pending: (pending.results ?? []).map(shown) });
   }
-  // `provider`: this tester's phones run there (`nomac`, `revyl`); `null` goes back to the server's setting.
-  const provider = body.provider === null ? null : body.provider === undefined ? undefined : isCloudPhoneProvider(body.provider) ? body.provider : false;
-  if (provider === false) return fail("bad_request", `provider is ${CLOUD_PHONE_PROVIDERS.join(" or ")}, or null.`, 400);
+  // `provider`: the tester is locked to one (`nomac`, `revyl`); `both` or null: the router picks.
+  const provider = body.provider === null || body.provider === "both" ? null : body.provider === undefined ? undefined : isCloudPhoneProvider(body.provider) ? body.provider : false;
+  if (provider === false) return fail("bad_request", `provider is ${CLOUD_PHONE_PROVIDERS.join(", ")} or both.`, 400);
   if (typedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail)) return fail("bad_request", "That email isn't valid.", 400);
   if (typedUserId && !/^[A-Za-z0-9_-]{1,100}$/.test(typedUserId)) return fail("bad_request", "That userId isn't valid.", 400);
   let userIds = typedUserId ? [typedUserId] : [];
@@ -122,11 +124,13 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
         logCloud("cloud.phone_beta_pending_removed");
         return json({ ok: true, removed: [], pending: true });
       }
-      // A waiting email keeps no provider: set it once the account exists, not silently drop it.
-      if (provider !== undefined) return fail("bad_request", "No ADE account has that email yet, so it can't get a provider. Add it without one, then set the provider once the account exists.", 400);
-      await env.DB.prepare("insert into cloud_phone_beta_pending (email, added_at) values (?, ?) on conflict(email) do nothing").bind(typedEmail, now).run();
-      logCloud("cloud.phone_beta_pending_added");
-      return json({ ok: true, added: [], pending: true });
+      // A waiting email keeps its provider lock until its account appears (`phoneBetaAddStatement`).
+      await env.DB.prepare(provider === undefined
+        ? "insert into cloud_phone_beta_pending (email, added_at) values (?, ?) on conflict(email) do nothing"
+        : "insert into cloud_phone_beta_pending (email, added_at, provider) values (?, ?, ?) on conflict(email) do update set provider = excluded.provider")
+        .bind(...(provider === undefined ? [typedEmail, now] : [typedEmail, now, provider])).run();
+      logCloud("cloud.phone_beta_pending_added", provider !== undefined ? { provider: provider ?? "both" } : {});
+      return json({ ok: true, added: [], pending: true, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });
     }
     userIds = found;
   }
@@ -146,6 +150,6 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
     // A provider change reaches the next phone; the live one keeps its own.
     if (provider !== undefined) await env.DB.prepare("update cloud_phone_beta set provider = ? where user_id = ?").bind(provider, userId).run();
   }
-  logCloud("cloud.phone_beta_added", { count: userIds.length, ...(provider !== undefined ? { provider } : {}) });
-  return json({ ok: true, added: userIds, ...(provider !== undefined ? { provider } : {}) });
+  logCloud("cloud.phone_beta_added", { count: userIds.length, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });
+  return json({ ok: true, added: userIds, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });
 }

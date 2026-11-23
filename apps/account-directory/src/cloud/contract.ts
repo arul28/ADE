@@ -231,11 +231,13 @@ export const CLOUD_PATHS = {
   accountLanes: "/account/lanes",
   /**
    * The ADE Cloud iPhone (`phones.ts`): `GET` its `CloudPhoneState`; `POST`
-   * `{ device?, attach?, providers? }` starts the account's phone or answers
-   * its live one (`CloudPhoneStart`, a fresh token each time; with `attach` it
-   * never starts one and answers 409 `phone_not_running`); `providers` lists
-   * the `CloudPhoneProvider`s the client can drive (none listed: NoMac only, so
-   * an older brain never gets a Revyl phone); `DELETE` stops it. `/view` (`POST`)
+   * `{ device?, attach?, providers?, needs? }` starts the account's phone or
+   * answers its live one (`CloudPhoneStart`, a fresh token each time; with
+   * `attach` it never starts one and answers 409 `phone_not_running`);
+   * `providers` lists the `CloudPhoneProvider`s the client can drive (none
+   * listed: NoMac only, so an older brain never gets a Revyl phone); `needs`
+   * lists the `CloudPhoneAbility`s the phone must have (a live phone without
+   * one answers 409 `phone_lacks`); `DELETE` stops it. `/view` (`POST`)
    * hands out a view link for the live phone.
    */
   phone: "/cloud/phone",
@@ -2998,6 +3000,51 @@ export const CLOUD_PHONE_PROVIDERS = ["nomac", "revyl"] as const;
 export type CloudPhoneProvider = (typeof CLOUD_PHONE_PROVIDERS)[number];
 export const isCloudPhoneProvider = (value: unknown): value is CloudPhoneProvider => (CLOUD_PHONE_PROVIDERS as readonly unknown[]).includes(value);
 
+/**
+ * What a cloud iPhone can do beyond what every one does (its screen as text,
+ * steps, screenshots, builds, installs, controls, logs, recordings). Each
+ * provider has some of these; people and agents see only these names and
+ * never the provider's. The server routes a start that needs one to a
+ * provider that has it, and the brain refuses one the live phone lacks.
+ */
+export const CLOUD_PHONE_ABILITIES = ["tests", "perf", "uninstall", "storekit", "locale", "timezone", "statusBar", "launchEnv", "shake", "orientation"] as const;
+export type CloudPhoneAbility = (typeof CLOUD_PHONE_ABILITIES)[number];
+export const isCloudPhoneAbility = (value: unknown): value is CloudPhoneAbility => (CLOUD_PHONE_ABILITIES as readonly unknown[]).includes(value);
+
+/** Each provider's abilities. The one place that says what runs where. */
+export const CLOUD_PHONE_PROVIDER_ABILITIES: Readonly<Record<CloudPhoneProvider, readonly CloudPhoneAbility[]>> = {
+  nomac: ["tests", "uninstall", "storekit", "locale", "timezone", "statusBar", "launchEnv"],
+  revyl: ["perf", "shake", "orientation"],
+};
+
+/** Each ability as a person reads it after "can" / "can't": "This cloud iPhone can't run an app's tests." */
+export const CLOUD_PHONE_ABILITY_WORDS: Readonly<Record<CloudPhoneAbility, string>> = {
+  tests: "run an app's tests",
+  perf: "show the app's CPU, memory and frame rate",
+  uninstall: "uninstall an app",
+  storekit: "load a StoreKit file",
+  locale: "change the locale",
+  timezone: "change the time zone",
+  statusBar: "set the status bar",
+  launchEnv: "pass env values to an app it launches",
+  shake: "shake",
+  orientation: "rotate",
+};
+
+/**
+ * A provider's own words passed on to a person or an agent, without the
+ * provider's name: "NoMac's simulator" and "Revyl" read "the cloud iPhone".
+ */
+export function withoutPhoneProviderNames(text: string): string {
+  return text
+    .replace(/\b(?:NoMac|Revyl)(?:'s)?\s+(?:phones?|simulators?|devices?|sessions?|servers?|service)\b/gi, "the cloud iPhone")
+    .replace(/\b(?:NoMac|Revyl)\b/gi, "the cloud iPhone");
+}
+
+/** The abilities a list names (unknown names dropped, each once). */
+export const cloudPhoneAbilitiesOf = (value: unknown): CloudPhoneAbility[] =>
+  Array.isArray(value) ? [...new Set(value.filter(isCloudPhoneAbility))] : [];
+
 /** The phone models a cloud iPhone can be (ADE's names; each provider maps them to its own). */
 export const CLOUD_PHONE_DEVICES = ["iphone", "iphone-pro-max", "ipad"] as const;
 export type CloudPhoneDevice = (typeof CLOUD_PHONE_DEVICES)[number];
@@ -3046,6 +3093,11 @@ export type CloudPhoneState = {
    * so a person can see where the minutes went. Absent from an older server.
    */
   recent?: CloudPhoneUse[];
+  /**
+   * What the live phone can do beyond the basics, or with none running what
+   * a start can get (`needs` picks among them). Absent from an older server.
+   */
+  abilities?: CloudPhoneAbility[];
 };
 
 /** How many of the period's phones `CloudPhoneState.recent` lists. */

@@ -11,6 +11,7 @@
 
 import { CLOUD_PHONE_IDLE_SECONDS } from "../../../desktop/src/shared/cloudPhone";
 import type { CloudEnv } from "./store";
+import { withoutPhoneProviderNames } from "./contract";
 import { fail } from "./http";
 import { reportCloudFailure } from "./store";
 import {
@@ -94,7 +95,7 @@ function providerFailure(event: string, answer: NomacAnswer, userId: string): Re
   }
   return fail("phone_unavailable", answer.status >= 500 || answer.status === 503
     ? "The ADE Cloud iPhone isn't answering right now. Try again in a moment."
-    : `The ADE Cloud iPhone refused that: ${message}`, answer.status >= 500 ? 502 : 400);
+    : `The ADE Cloud iPhone refused that: ${withoutPhoneProviderNames(message)}`, answer.status >= 500 ? 502 : 400);
 }
 
 export function sessionOf(value: unknown): PhoneSession | null {

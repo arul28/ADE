@@ -7,6 +7,7 @@
 import {
   CLOUD_PHONE_DEVICES,
   isCloudPhoneDevice,
+  type CloudPhoneAbility,
   type CloudPhoneDevice,
   type CloudPhoneState,
   type CloudPhoneView,
@@ -31,6 +32,7 @@ export const CLOUD_PHONE_SPEND_ACTIONS = [
   "logs",
   "record",
   "runTests",
+  "perf",
 ] as const;
 
 /** What an agent may call on a cloud iPhone; `getStatus().capabilities` reports it. */
@@ -71,12 +73,36 @@ export const CLOUD_PHONE_BUILD_TIMEOUT_MS = 32 * 60_000;
 /** Any other phone call, which may first wait up to 6 minutes for a free phone. */
 export const CLOUD_PHONE_CALL_TIMEOUT_MS = 7 * 60_000;
 
-/** `cloud_phone.getStatus` as the tools pane reads it (`cloudPhoneService`). */
-export type CloudPhoneStatusView = CloudPhoneState & {
-  /** Every action an agent may call on this device (without the ones the live phone's provider can't do yet). */
+/**
+ * The action that needs each ability, where one does (`control` actions
+ * need theirs too: `CLOUD_PHONE_CONTROL_ABILITY`).
+ */
+export const CLOUD_PHONE_ACTION_ABILITY: Readonly<Partial<Record<(typeof CLOUD_PHONE_SPEND_ACTIONS)[number], CloudPhoneAbility>>> = {
+  runTests: "tests",
+  perf: "perf",
+};
+
+/** The `control` actions only some cloud iPhones do, and the ability each needs. */
+export const CLOUD_PHONE_CONTROL_ABILITY: Readonly<Record<string, CloudPhoneAbility>> = {
+  uninstall: "uninstall",
+  storekit: "storekit",
+  locale: "locale",
+  timezone: "timezone",
+  status_bar: "statusBar",
+  shake: "shake",
+  orientation: "orientation",
+};
+
+/**
+ * `cloud_phone.getStatus` as the tools pane and agents read it
+ * (`cloudPhoneService`). It never names who runs the phone.
+ */
+export type CloudPhoneStatusView = Omit<CloudPhoneState, "phone"> & {
+  phone: Omit<NonNullable<CloudPhoneState["phone"]>, "provider"> | null;
+  /** Every action an agent may call on this device (without the ones that need an ability the phone lacks). */
   capabilities: readonly string[];
-  /** `control` actions the live phone can't do yet (`locale`, `storekit`, …); empty with no phone or a provider that does them all. */
-  unsupportedControls?: readonly string[];
+  /** The abilities the phone (or with none running, a new one) doesn't have. */
+  lacks?: readonly CloudPhoneAbility[];
   supported: boolean;
   /** One line for a person or agent when it can't be used. */
   reason: string | null;

@@ -4676,6 +4676,7 @@ function cloudPhoneCallsFor(runtime: AdeRuntime): CloudPhoneService {
     control: guarded(service.control),
     logs: guarded(service.logs),
     runTests: guarded(service.runTests),
+    perf: guarded(service.perf),
     screenshot: guarded((args) => service.screenshot(args, proof)),
     record: guarded((args) => service.record(args, proof)),
   };

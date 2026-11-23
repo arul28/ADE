@@ -539,14 +539,15 @@ minutes, access and routes; one provider record each in `phoneNomac.ts` and
 `phoneRevyl.ts` behind `phoneProvider.ts`; Revyl's viewer page in
 `phoneViewerPage.ts`; the owner's beta list in `phoneBeta.ts`; migrations `0047_cloud_phone_beta.sql`,
 `0048_cloud_phone_usage.sql` and `0056_cloud_phone_provider.sql`, shapes in
-`contract.ts`). Revyl starts phones only with the owner's switch
-`CLOUD_PHONE_REVYL=on` (off by default: every new phone is NoMac's). With it
-on, the provider per account is the beta row's `provider`, else the var
-`CLOUD_PHONE_PROVIDER` (`nomac` or `revyl`), else NoMac, and Revyl only for a
-client that lists it in the start's `providers` (an older brain gets NoMac);
-each phone row keeps
-the provider it started on, and a Revyl phone is still read and stopped with
-the switch off. Who may use it is the
+`contract.ts`). The owner sets each beta email to `nomac` or `revyl` (a lock:
+only that provider, never a fallback; refused when it can't start or lacks
+what the command needs) or `both` (the router: `CLOUD_PHONE_PROVIDER` first,
+default NoMac, then the other, keeping providers that can start, that the
+client lists in the start's `providers`, and that have every ability in the
+start's `needs`; a failed start moves on). Revyl starts phones only with the
+owner's switch `CLOUD_PHONE_REVYL=on`. Each phone row keeps the provider it
+started on, and a Revyl phone is still read and stopped with the switch off.
+No answer names a provider; what differs is `abilities`. Who may use it is the
 var `CLOUD_PHONE_ACCESS`: `beta` (the default: only accounts the owner adds;
 everyone else reads `off`, and a start answers 403 `phone_not_on_account`),
 `all`, or `off`. `CLOUD_PHONES_PAUSED=1` refuses
@@ -555,10 +556,12 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
 
 - `GET /cloud/phone` answers `CloudPhoneState`: `access` (`on` or `off`; older
   servers sent `soon`),
-  the period's `minutes`, and the live `phone`. `POST /cloud/phone`
-  `{ device? }` starts the account's phone (or answers its live one) and mints
+  the period's `minutes`, the live `phone`, and `abilities` (the live phone's,
+  or what a new one could have). `POST /cloud/phone`
+  `{ device?, providers?, needs? }` starts the account's phone (or answers its live one) and mints
   a token for that phone (sent again, it answers the live phone with a fresh
-  token); `DELETE /cloud/phone` stops it.
+  token; 409 `phone_lacks` when the live phone lacks a need, `phone_cant`
+  when no allowed phone has it); `DELETE /cloud/phone` stops it.
 - `POST /cloud/phone/view` `{ control? }` answers a view link for it: NoMac's
   page (signed for the account when `NOMAC_EMBED_SECRET` is set), or for a
   Revyl phone `GET /cloud/phone/viewer` (no sign-in; the page is static) with

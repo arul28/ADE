@@ -15,9 +15,11 @@ alter table cloud_phones add column recording_ref text;
 alter table cloud_phones add column build_started_at integer;
 alter table cloud_phones add column build_job text;
 
--- The owner's per-account choice of provider for a tester on the beta list
--- (null: the server's `CLOUD_PHONE_PROVIDER`).
+-- The owner's lock of a tester on the beta list to one provider (`nomac` or
+-- `revyl`; null: both, through the router), and the same for an email still
+-- waiting for its account, which carries it over when the account appears.
 alter table cloud_phone_beta add column provider text;
+alter table cloud_phone_beta_pending add column provider text;
 
 -- An account's Revyl workspace: Revyl made it for ADE's partner key under
 -- `external_id` (never an email), and `app_id` is the app its builds go to.

@@ -1,5 +1,5 @@
 import { Fragment, useRef, useState, type ComponentType, type ReactNode } from "react";
-import { Bot, Check, ChevronDown, Clock, Megaphone, Cpu, Gift, MemoryStick, Recycle, Server, Timer, X, Zap } from "lucide-react";
+import { Bot, Check, ChevronDown, Clock, Megaphone, Cpu, Gift, MemoryStick, Recycle, Server, Smartphone, Timer, X, Zap } from "lucide-react";
 
 import { CloudLockup } from "../../components/cloud/CloudMark";
 import { ComingSoon } from "../../components/cloud/ComingSoon";
@@ -210,6 +210,7 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
         <PlanLine icon={Bot} label="Outside agents" value={plan.outsideAgents ? "Yes" : "No"} />
         <PlanLine icon={Megaphone} label="Ads" value={plan.adSupported ? "Ad-supported" : "No ads"} />
         <PlanLine icon={Timer} label="Unused kept" value={days(plan.idleDays)} />
+        <PlanLine icon={Smartphone} label="iOS Simulator" value="Coming soon" />
       </ul>
       <PlanButton
         cta={PLAN_CTAS[plan.id].cta}

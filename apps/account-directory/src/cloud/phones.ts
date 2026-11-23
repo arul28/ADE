@@ -47,12 +47,17 @@ import { CLOUD_PLANS, EXTRA_PHONE_MINUTE_CENTS } from "./plans";
 import {
   CLOUD_DELETED_ACCOUNT_PREFIX,
   CLOUD_PATHS,
+  CLOUD_PHONE_ABILITIES,
+  CLOUD_PHONE_ABILITY_WORDS,
   CLOUD_PHONE_DEVICES,
+  CLOUD_PHONE_PROVIDER_ABILITIES,
   CLOUD_PHONE_PROVIDERS,
   CLOUD_PHONE_RECENT_SHOWN,
+  cloudPhoneAbilitiesOf,
   isCloudPhoneDevice,
   isCloudPhoneProvider,
   type CloudAccountPhone,
+  type CloudPhoneAbility,
   type CloudPhoneAccess,
   type CloudPhoneDevice,
   type CloudPhoneMinutes,
@@ -99,7 +104,7 @@ export type PhoneRow = {
   /** When the account stops paying for this live phone (ms), or null: its NoMac limits are the stop. */
   stop_at: number | null;
   updated_at: number;
-  /** Who runs it (migration 0054): `nomac` for every phone before then. Text in D1: read it through `whereOfRow`. */
+  /** Who runs it (migration 0056): `nomac` for every phone before then. Text in D1: read it through `whereOfRow`. */
   provider: string;
   /** Revyl's workflow run for the phone, which its device calls name; null for NoMac. */
   provider_ref: string | null;
@@ -294,30 +299,80 @@ function clientDrives(value: unknown): (provider: CloudPhoneProvider) => boolean
   return (provider) => provider === "nomac" || listed.includes(provider);
 }
 
+/** The abilities a start needs (`needs` in its body): known names only. */
+const readNeeds = (value: unknown): CloudPhoneAbility[] => cloudPhoneAbilitiesOf(value);
+
+/** What `needs` the provider lacks. */
+const lackedBy = (provider: CloudPhoneProvider, needs: readonly CloudPhoneAbility[]): CloudPhoneAbility[] =>
+  needs.filter((need) => !CLOUD_PHONE_PROVIDER_ABILITIES[provider].includes(need));
+
+/** "run an app's tests and show the app's network requests". */
+const abilityWords = (abilities: readonly CloudPhoneAbility[]): string => {
+  const words = abilities.map((ability) => CLOUD_PHONE_ABILITY_WORDS[ability]);
+  return words.length > 1 ? `${words.slice(0, -1).join(", ")} and ${words.at(-1)}` : words[0] ?? "";
+};
+
+/** Why a start went where it did (logs, PostHog): see `CloudPhoneEvent.route`. */
+type PhoneRoute = { order: CloudPhoneProvider[]; reason: "lock" | "default" | "need" };
+
 /**
- * Who runs the account's next phone: the owner's choice for this tester,
- * else `CLOUD_PHONE_PROVIDER`, else NoMac; a choice that can't start phones
- * (no key, or Revyl's switch off) or that the client can't drive falls to
- * NoMac, and to Revyl only when Revyl is switched on and the client drives it.
+ * The providers the account's next phone may start on, in order.
+ *
+ * - **A lock:** the owner set this account to one provider
+ *   (`cloud_phone_beta.provider`). Only that one, never another quietly: a
+ *   tester always knows what they test. It can't start (Revyl's switch off),
+ *   this ADE can't drive it, or it lacks a need: the start is refused.
+ * - **The router**, for everyone else: the server's default
+ *   (`CLOUD_PHONE_PROVIDER`, NoMac when unset) first, then the other, each only
+ *   where it can start phones here and this client drives it. A start that
+ *   `needs` an ability goes only where it is; `startPhone` tries the next one
+ *   when the first refuses.
  */
-async function providerFor(env: CloudEnv, userId: string, drives: (provider: CloudPhoneProvider) => boolean): Promise<CloudPhoneProvider> {
-  const row = await env.DB.prepare("select provider from cloud_phone_beta where user_id = ?").bind(userId).first<{ provider: string | null }>();
-  const chosen = row?.provider;
-  const wanted: CloudPhoneProvider = isCloudPhoneProvider(chosen) ? chosen : providerSetting(env);
-  const usable = (provider: CloudPhoneProvider): boolean => PHONE_PROVIDERS[provider].canStart(env) && drives(provider);
-  if (usable(wanted)) return wanted;
-  return wanted === "nomac" && usable("revyl") ? "revyl" : "nomac";
+function routeOf(env: CloudEnv, lock: CloudPhoneProvider | null, drives: (provider: CloudPhoneProvider) => boolean, needs: readonly CloudPhoneAbility[]): PhoneRoute | Response {
+  const unavailable = (): Response => fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
+  if (lock) {
+    const lacked = lackedBy(lock, needs);
+    if (lacked.length) return fail("phone_cant", `Your ADE Cloud iPhone can't ${abilityWords(lacked)}.`, 409);
+    if (!PHONE_PROVIDERS[lock].canStart(env)) return unavailable();
+    if (!drives(lock)) return fail("phone_needs_update", "Update ADE to use your ADE Cloud iPhone.", 409);
+    return { order: [lock], reason: "lock" };
+  }
+  const preferred = providerSetting(env);
+  const usable = [preferred, ...CLOUD_PHONE_PROVIDERS.filter((provider) => provider !== preferred)]
+    .filter((provider) => PHONE_PROVIDERS[provider].canStart(env) && drives(provider));
+  const order = usable.filter((provider) => !lackedBy(provider, needs).length);
+  if (!order.length) {
+    if (!usable.length) return unavailable();
+    return fail("phone_cant", `No ADE Cloud iPhone can ${abilityWords(needs)}${needs.length > 1 ? " at once" : ""} right now.`, 409);
+  }
+  return { order, reason: order[0] === usable[0] ? "default" : "need" };
 }
 
-async function phoneAccess(env: CloudEnv, userId: string): Promise<CloudPhoneAccess> {
+/** The provider the owner locked this account to, from its beta row (`null`, `both` or no row: the router). */
+const lockOf = (provider: string | null | undefined): CloudPhoneProvider | null => (isCloudPhoneProvider(provider) ? provider : null);
+
+/**
+ * Who may use the phone, and the provider the owner locked the account to.
+ * One read of the beta row, which says both.
+ */
+async function phoneAccess(env: CloudEnv, userId: string): Promise<{ access: CloudPhoneAccess; lock: CloudPhoneProvider | null }> {
   // A key, not a start: a provider switched off for new phones (Revyl's) keeps its running ones usable.
-  if (!anyProviderKey(env)) return "off";
+  if (!anyProviderKey(env)) return { access: "off", lock: null };
   const setting = phoneAccessSetting(env);
-  if (setting === "off") return "off";
-  if (setting === "all") return "on";
-  const row = await env.DB.prepare("select 1 as on_list from cloud_phone_beta where user_id = ?").bind(userId).first<{ on_list: number }>();
-  // Not on the list: hidden everywhere (Pricing v2). `soon` is never sent any more.
-  return row ? "on" : "off";
+  if (setting === "off") return { access: "off", lock: null };
+  const row = await env.DB.prepare("select provider from cloud_phone_beta where user_id = ?").bind(userId).first<{ provider: string | null }>();
+  // Not on the list (under `beta`): hidden everywhere (Pricing v2). `soon` is never sent any more.
+  return { access: setting === "all" || row ? "on" : "off", lock: lockOf(row?.provider) };
+}
+
+/**
+ * What the account's next phone can do beyond the basics: its lock's, or
+ * every ability some provider that starts phones here has (a start's `needs`
+ * picks among them).
+ */
+function nextAbilities(env: CloudEnv, lock: CloudPhoneProvider | null): CloudPhoneAbility[] {
+  const providers = lock ? [lock] : CLOUD_PHONE_PROVIDERS.filter((provider) => PHONE_PROVIDERS[provider].canStart(env));
+  return CLOUD_PHONE_ABILITIES.filter((ability) => providers.some((provider) => CLOUD_PHONE_PROVIDER_ABILITIES[provider].includes(ability)));
 }
 
 /** The plan's minutes: none on a free plan the free-plan checks hold, as with free hours. */
@@ -394,7 +449,7 @@ const minutesOf = (usage: PhoneUsage): CloudPhoneMinutes => ({ included: usage.i
 
 /** `CloudAccountState.phone`, from D1 alone (no call to NoMac): the account read is polled. */
 export async function phoneAccountState(env: CloudEnv, account: AccountRow, now: number): Promise<CloudAccountPhone> {
-  const access = await phoneAccess(env, account.user_id);
+  const { access } = await phoneAccess(env, account.user_id);
   const usage = phoneUsageOf(env, account, await periodPhones(env, account.user_id, account.period_start), now);
   return {
     access,
@@ -478,7 +533,7 @@ async function stopReasonOf(env: CloudEnv, userId: string, context: PhoneContext
   if (startedBeforePeriod(context)) return "period_changed";
   // One phone's longest: Revyl's has no limit of its own, so this check is its stop.
   if (context.live && now >= context.live.createdAt + CLOUD_PHONE_MAX_MINUTES * 60_000) return "time_limit";
-  if ((await phoneAccess(env, userId)) !== "on") return "access_removed";
+  if ((await phoneAccess(env, userId)).access !== "on") return "access_removed";
   if (await isCloudBlocked(env, userId)) return "account_blocked";
   if (allowedMinutes(context.usage) <= 0) return "minutes_used";
   return null;
@@ -564,7 +619,7 @@ function startRefusal(context: PhoneContext): { code: string; message: string } 
  */
 export async function routePhone(request: Request, path: string, env: CloudEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
   if (path !== CLOUD_PATHS.phone && path !== CLOUD_PATHS.phoneView && path !== CLOUD_PATHS.phoneCall) return null;
-  const access = await phoneAccess(env, userId);
+  const { access, lock } = await phoneAccess(env, userId);
 
   if (path === CLOUD_PATHS.phone && request.method === "GET") {
     if (access !== "on") return json({ access, minutes: null, phone: null } satisfies CloudPhoneState);
@@ -575,6 +630,7 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
       minutes: minutesOf(context.usage),
       phone: context.live ? summaryOfSession(context.live.session, context.live.stopNotice) : null,
       recent: recentPhonesOf(context.rows, now),
+      abilities: context.live ? [...CLOUD_PHONE_PROVIDER_ABILITIES[context.live.where.provider]] : nextAbilities(env, lock),
     } satisfies CloudPhoneState);
   }
 
@@ -610,7 +666,7 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
   }
   const context = await phoneContext(env, userId, now);
   if (context instanceof Response) return context;
-  if (starting) return startPhone(request, env, userId, now, context, waitUntil);
+  if (starting) return startPhone(request, env, userId, now, context, lock, waitUntil);
   if (request.method !== "POST") return fail("not_found", "ADE Cloud has no such route.", 404);
 
   const live = context.live;
@@ -629,17 +685,19 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
 }
 
 /**
- * `POST /cloud/phone` `{ device?, attach?, providers? }`: starts the account's
- * phone or answers its live one. `providers` lists the providers the client
- * can drive (a brain from before Revyl sends none: NoMac only).
+ * `POST /cloud/phone` `{ device?, attach?, providers?, needs? }`: starts the
+ * account's phone or answers its live one. `providers` lists the providers
+ * the client can drive (a brain from before Revyl sends none: NoMac only);
+ * `needs`, the abilities the phone must have (`routeOf`).
  */
-async function startPhone(request: Request, env: CloudEnv, userId: string, now: number, context: PhoneContext, waitUntil?: CloudWaitUntil): Promise<Response> {
+async function startPhone(request: Request, env: CloudEnv, userId: string, now: number, context: PhoneContext, lock: CloudPhoneProvider | null, waitUntil?: CloudWaitUntil): Promise<Response> {
   const plan = planIdOf(context.account);
   const body = await readJson(request);
   if (!body) return fail("bad_request", "That request could not be read.", 400);
   const device = readDevice(body.device);
   if (device === null) return fail("bad_request", `device is one of ${CLOUD_PHONE_DEVICES.join(", ")}.`, 400);
   const drives = clientDrives(body.providers);
+  const needs = readNeeds(body.needs);
   // A phone from an earlier period ran under that period's terms: it ends, and a new one starts on this period's.
   // Not for `attach` (Keep on): the allowance check ends that phone on its own schedule.
   if (context.live && startedBeforePeriod(context) && body.attach !== true) {
@@ -655,6 +713,11 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
   // A plain start from that client, with such a phone live: it can't drive what it would get (an empty token).
   if (session && !drives(provider)) {
     return fail("phone_needs_update", "Your ADE Cloud iPhone is running somewhere this version of ADE can't drive. Update ADE, or stop the phone first.", 409);
+  }
+  // A running phone keeps its provider: one that can't do what this start needs is never swapped quietly.
+  const lacked = session && body.attach !== true ? lackedBy(provider, needs) : [];
+  if (lacked.length) {
+    return fail("phone_lacks", `Your running ADE Cloud iPhone can't ${abilityWords(lacked)}. Stop it first, then start a new one.`, 409);
   }
   if (session && device && session.device && session.device !== device) {
     return fail("phone_running", `Your ADE Cloud iPhone is already running as ${session.device}. Stop it first to start a ${device}.`, 409);
@@ -677,9 +740,25 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     }
     // What this phone may use: the plan's minutes left, then extra minutes, and never more than one phone's longest.
     const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
-    if (!anyProviderConfigured(env)) return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
-    provider = await providerFor(env, userId, drives);
-    const started = await PHONE_PROVIDERS[provider].start(env, { userId, label: context.label, device, minutes, lastPhoneId: context.lastPhoneId, now });
+    const route = routeOf(env, lock, drives, needs);
+    if (route instanceof Response) return route;
+    let reason: PhoneRoute["reason"] | "failover" = route.reason;
+    let started: Awaited<ReturnType<PhoneProviderServer["start"]>> | null = null;
+    // The first that starts: one that refuses (full, down, out of credit) hands the start to the next.
+    for (const [index, candidate] of route.order.entries()) {
+      provider = candidate;
+      started = await PHONE_PROVIDERS[candidate].start(env, { userId, label: context.label, device, minutes, lastPhoneId: context.lastPhoneId, now }).catch((error: unknown) => {
+        logCloud("cloud.phone_start_threw", { userId, provider: candidate, message: error instanceof Error ? error.message : "unknown" });
+        return fail("phone_unavailable", "The ADE Cloud iPhone isn't answering right now. Try again in a moment.", 502);
+      });
+      if (!(started instanceof Response)) break;
+      const next = route.order[index + 1];
+      if (next) {
+        logCloud("cloud.phone_start_failover", { userId, from: candidate, to: next, status: started.status });
+        reason = "failover";
+      }
+    }
+    if (!started) return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
     if (started instanceof Response) return started;
     ({ session, reused } = started);
     await savePhone(env, userId, session, now, accountRules(context.account) === "free");
@@ -687,7 +766,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     if (!PHONE_PROVIDERS[provider].ownsTimeLimit) {
       await env.DB.prepare("update cloud_phones set stop_at = coalesce(stop_at, ?), updated_at = ? where phone_id = ? and state = 'live'").bind(now + minutes * 60_000, now, session.id).run();
     }
-    logCloud("cloud.phone_started", { userId, phoneId: session.id, reused, device: session.device ?? "iphone", minutes, extra: context.usage.left === 0, provider });
+    logCloud("cloud.phone_started", { userId, phoneId: session.id, reused, device: session.device ?? "iphone", minutes, extra: context.usage.left === 0, provider, route: reason, ...(needs.length ? { needs } : {}) });
     if (!reused) {
       captureCloudPhone(env, waitUntil, userId, {
         step: "started",
@@ -695,6 +774,8 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
         device: session.device ?? "iphone",
         minutesLeft: context.usage.left,
         extra: context.usage.left === 0,
+        provider,
+        route: reason,
       }, session.id, now);
     }
   }
@@ -888,7 +969,7 @@ export async function runPhoneChecks(env: CloudEnv, now: number): Promise<void> 
     if (isDeletedAccount(userId)) continue;
     try {
       const account = await loadAccount(env, userId, now);
-      if ((await phoneAccess(env, userId)) !== "on") continue;
+      if ((await phoneAccess(env, userId)).access !== "on") continue;
       const usage = phoneUsageOf(env, account, await periodPhones(env, userId, account.period_start), now);
       await warnPhoneMinutes(env, account, usage, now);
     } catch (error) {

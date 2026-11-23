@@ -67,7 +67,7 @@ import {
   type ChatLocateReport,
 } from "./cliChatLocate";
 import { isDevicesCommand, runDevicesCommand, withChatDeviceChoice } from "./cliDevices";
-import { cloudMachineAppleCommand, runCloudIphoneCommand } from "./cliCloudIphone";
+import { cloudIphoneHelpTail, cloudMachineAppleCommand, runCloudIphoneCommand } from "./cliCloudIphone";
 import {
   isNoneValue,
   linearLookupNeeds,
@@ -43560,7 +43560,10 @@ async function runCli(
   const cloudCommand = cloudIphone ? chosen.command.slice(1) : cloudMachineAppleCommand(chosen.command);
   if (cloudCommand) {
     // Help first: `ade apple start --machine cloud --help` must not start (or stop) a phone.
-    if (hasHelpFlag(cloudCommand)) return await runParsedCli(extractMachineTargeting({ ...chosen, command: ["apple", ...cloudCommand] }));
+    if (hasHelpFlag(cloudCommand)) {
+      const help = await runParsedCli(extractMachineTargeting({ ...chosen, command: ["apple", ...cloudCommand] }));
+      return { ...help, output: `${help.output}${await cloudIphoneHelpTail(chosen)}` };
+    }
     await applyAccountProjectSelector(chosen.options);
     return await withShellScopeFor(chosen.options, async () => await runCloudIphoneCommand(chosen, cloudCommand));
   }

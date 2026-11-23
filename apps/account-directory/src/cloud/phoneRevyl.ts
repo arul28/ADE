@@ -17,7 +17,7 @@
  */
 
 import { CLOUD_PHONE_IDLE_SECONDS } from "../../../desktop/src/shared/cloudPhone";
-import { CLOUD_PATHS, type CloudPhoneDevice } from "./contract";
+import { CLOUD_PATHS, withoutPhoneProviderNames, type CloudPhoneDevice } from "./contract";
 import { fail, json } from "./http";
 import { LIVE_STATES, TOKEN_MINUTES, VIEW_MINUTES, stopRefused, type PhoneProviderServer, type PhoneRead, type PhoneWhere } from "./phoneProvider";
 import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
@@ -317,7 +317,7 @@ async function startRevylPhone(env: CloudEnv, userId: string, device: CloudPhone
     const { code } = revylErrorOf(started);
     reportCloudFailure(`cloud.phone_start_failed.revyl_${code.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40)}`, { userId, status: started.status, code }, "cloud-phone");
     if (started.status === 429) return fail("phone_busy", "Too many phones started in a row. Wait a minute, then try again.", 429);
-    return fail("phone_unavailable", started.status >= 500 ? "The ADE Cloud iPhone isn't answering right now. Try again in a moment." : `The ADE Cloud iPhone refused that: ${revylErrorOf(started).message}`, started.status >= 500 ? 502 : 400);
+    return fail("phone_unavailable", started.status >= 500 ? "The ADE Cloud iPhone isn't answering right now. Try again in a moment." : `The ADE Cloud iPhone refused that: ${withoutPhoneProviderNames(revylErrorOf(started).message)}`, started.status >= 500 ? 502 : 400);
   }
   const read = await readRevylPhone(env, userId, sessionId, named);
   return {
@@ -397,6 +397,7 @@ const PROXY_ACTIONS: Record<string, "GET" | "POST"> = {
   hierarchy: "GET",
   screenshot: "GET",
   device_logs: "GET",
+  performance_metrics: "GET",
   appearance: "GET",
   tap: "POST",
   double_tap: "POST",
@@ -417,6 +418,7 @@ const PROXY_ACTIONS: Record<string, "GET" | "POST"> = {
   set_appearance: "POST",
   set_font_size: "POST",
   set_orientation: "POST",
+  shake: "POST",
   start_screen_recording: "POST",
   stop_screen_recording: "POST",
 };

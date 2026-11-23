@@ -22,6 +22,7 @@ import {
   type DeviceKind,
 } from "../../desktop/src/shared/types/deviceSources";
 import { flagNamesOutsideFreeText } from "./cliMachineTargeting";
+import { cloudPhoneAbilityLines } from "./cliCloudIphone";
 import {
   CLI_COMMAND_ALIASES,
   CliToolError,
@@ -636,7 +637,9 @@ async function useDevice(options: GlobalOptions, typed: string): Promise<{ value
     if (status.access !== "on") throw new CliToolError(status.reason ?? ADE_CLOUD_IPHONE_UNAVAILABLE, { id });
     const sources = await chatDeviceAction(single, "setDeviceSource", { kind, source: { kind: "cloud" } });
     const minutes = status.minutes ? ` ${status.minutes.left} of your plan's ${status.minutes.included} minutes are left this period.` : "";
-    const text = `This chat's iPhone is the ADE Cloud iPhone from now on: every later ade apple command drives it with no other flag, and spends iPhone minutes while it runs.${minutes} ade devices use ios@here brings it back.`;
+    // What this cloud iPhone does beyond the basics: an agent learns it here, where it picked the phone.
+    const able = cloudPhoneAbilityLines(status, Boolean(status.phoneState && status.phoneState !== "ended")).trim().replace(/\n/g, " ");
+    const text = `This chat's iPhone is the ADE Cloud iPhone from now on: every later ade apple command drives it with no other flag, and spends iPhone minutes while it runs.${minutes}${able ? ` ${able}` : ""} ade devices use ios@here brings it back.`;
     // The JSON answer says it too: an agent reading JSON switched every later command without a word.
     return { value: { ok: true, id, sources, note: text }, text };
   }
@@ -721,7 +724,7 @@ export async function runDevicesCommand(parsed: ParsedCli): Promise<{ output: st
 /* ── the ADE Cloud iPhone ──────────────────────────────────────────────── */
 
 type CloudIphoneStatusRead =
-  | { ok: true; access: string; reason: string | null; minutes: { included: number; used: number; left: number } | null; phoneState: string | null }
+  | { ok: true; access: string; reason: string | null; minutes: { included: number; used: number; left: number } | null; phoneState: string | null; abilities: unknown; lacks: unknown }
   | { ok: false; error: string };
 
 /** `cloud_phone.getStatus` on this machine's brain (the account's cloud iPhone). */
@@ -740,7 +743,7 @@ export async function readCloudIphoneStatus(options: GlobalOptions): Promise<Clo
       ? { included: Number(value.minutes.included) || 0, used: Number(value.minutes.used) || 0, left: value.minutes.left }
       : null;
     const phone = isRecord(value.phone) ? value.phone : null;
-    return { ok: true, access: asString(value.access) ?? "off", reason: asString(value.reason), minutes, phoneState: asString(phone?.state) };
+    return { ok: true, access: asString(value.access) ?? "off", reason: asString(value.reason), minutes, phoneState: asString(phone?.state), abilities: value.abilities, lacks: value.lacks };
   } catch (error) {
     return { ok: false, error: errorText(error) };
   }

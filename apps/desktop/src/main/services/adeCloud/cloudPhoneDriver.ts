@@ -7,12 +7,15 @@
  * the proof drawer. A driver owns only how one provider's phone is driven:
  * NoMac (`cloudPhoneNomacDriver.ts`) or Revyl (`cloudPhoneRevylDriver.ts`).
  * Both answer the same calls in the same words, so an agent can't tell which
- * provider runs the phone, and a fix to the service reaches both.
+ * provider runs the phone, and a fix to the service reaches both. What one
+ * can do and the other can't is an ability (`CLOUD_PHONE_PROVIDER_ABILITIES`
+ * in the contract): the service checks it before it calls the driver.
  */
 
-import type {
-  CloudPhoneMinutes,
-  CloudPhoneProvider,
+import {
+  withoutPhoneProviderNames,
+  type CloudPhoneMinutes,
+  type CloudPhoneProvider,
 } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudProvider } from "./cloudProvider";
 import type { CloudPhoneRunEnd } from "./cloudPhoneRun";
@@ -62,9 +65,10 @@ export type CloudPhoneToolAnswer = {
 /** A `.tar.gz` on this machine, made by the service. */
 export type CloudPhonePacked = { file: string; size: number; sha256: string };
 
+/** What a person or an agent reads: never the provider's name (`withoutPhoneProviderNames`). */
 export class CloudPhoneError extends Error {
   constructor(message: string, readonly code: string) {
-    super(message);
+    super(withoutPhoneProviderNames(message));
     this.name = "CloudPhoneError";
   }
 }
@@ -120,13 +124,13 @@ export type CloudPhoneDriver = {
   logs(phone: CloudPhoneHeld, input: { app?: string; since?: string; grep?: string; waitFor?: string; crashes?: boolean }): Promise<CloudPhoneToolAnswer>;
   /** `start`, then `stop`: the stop answers the video. */
   record(phone: CloudPhoneHeld, action: "start" | "stop"): Promise<{ answer: CloudPhoneToolAnswer; video: { bytes: Buffer; extension: "mp4" | "mov" } | null }>;
-  /** Absent where the provider can't run an app's tests yet (`runTests` is left out of the status's capabilities). */
+  /** The `tests` ability: only where the provider has it. */
   test?(phone: CloudPhoneHeld, input: CloudPhoneRunInput & { only?: string }): Promise<CloudPhoneToolAnswer>;
-  /** `control` actions this provider's phone can't do yet, each as a person reads it ("Changing the locale"). */
-  unsupportedControls: Readonly<Record<string, string>>;
+  /** The `perf` ability: the app's CPU, memory and frame rate, sampled over a few seconds. */
+  perf?(phone: CloudPhoneHeld, input: { seconds?: number }): Promise<CloudPhoneToolAnswer>;
 };
 
-export const textAnswer = (text: string, failed = false): CloudPhoneToolAnswer => ({ text, failed, links: [], images: [], stopNotice: null });
+export const textAnswer = (text: string, failed = false): CloudPhoneToolAnswer => ({ text: withoutPhoneProviderNames(text), failed, links: [], images: [], stopNotice: null });
 
 /** Answers one after another as one: their text in order, failed when any failed, the latest stop notice. */
 export const joinAnswers = (answers: readonly CloudPhoneToolAnswer[]): CloudPhoneToolAnswer => ({

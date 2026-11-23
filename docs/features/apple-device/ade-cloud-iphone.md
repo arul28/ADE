@@ -3,7 +3,7 @@
 An iOS Simulator that runs in the cloud for the ADE account, not on a machine of
 the person's. Two providers can run it, NoMac (nomac.app) or Revyl
 (revyl.ai), behind one shape: the same commands, screen text, steps and pane
-for both (see **Providers**). Any machine drives it with the same `ade apple`
+for both, with a few abilities that differ (see **Providers**). Any machine drives it with the same `ade apple`
 commands it uses on a Mac's simulator: a Windows PC, a Linux box, a Mac, or an
 ADE Cloud computer. The Work tools pane shows it in 3D or flat on the desktop;
 ADE Web shows the same pane as a flat live view, and the ADE iPhone app shows it
@@ -125,15 +125,37 @@ computer's start does, once the account may use the phone at all
 NoMac and Revyl run the phone behind one shape, so either can be dropped, or
 both used, without changing anything an agent or a person sees.
 
-- **Which one.** Revyl is behind the owner's switch `CLOUD_PHONE_REVYL`:
-  until it is `on`, every new phone is NoMac's, whatever else is set. With it
-  on, the server reads the owner's choice on the beta list row (`provider`),
-  else `CLOUD_PHONE_PROVIDER` (`nomac` or `revyl`), else NoMac; a choice
-  that can't start phones falls to the other. Each phone row keeps its
-  `provider`, so a running phone finishes on the provider it started on, and
-  a Revyl phone is still read and stopped with the switch off. The phone is
-  `off` only when no provider can start one. Routing by price or load comes
-  later and goes in `providerFor` (`phones.ts`).
+- **Which one.** The owner sets each beta email to `nomac`, `revyl` or
+  `both` (`provider` on the beta list row; a pending email keeps its choice
+  when it signs in). `nomac` or `revyl` is a **lock**: that account only ever
+  gets that provider, never a quiet fallback. When it can't start (Revyl's
+  switch `CLOUD_PHONE_REVYL` is off, the provider refuses) the start fails
+  with 503; when it lacks what the command needs, 409 `phone_cant`; when the
+  client can't drive it, 409 `phone_needs_update`. `both` (or no row value)
+  is the **router**: one global order for every such account,
+  `CLOUD_PHONE_PROVIDER` first (default NoMac), then the other, keeping only
+  providers that can start, that this client can drive, and that have every
+  ability the command needs. A start that fails moves to the next one. The
+  route (`lock`, `default`, `need`, `failover`) and provider go in the
+  `cloud.phone_started` log line and PostHog's `ade_cloud_phone`. Each phone
+  row keeps its `provider`, so a running phone is never switched, and a Revyl
+  phone is still read and stopped with the switch off. `routeOf`
+  (`phones.ts`) owns the order.
+- **Abilities, not names.** Agents and people never see a provider's name:
+  every answer and error passes through `withoutPhoneProviderNames`. What
+  differs is listed as abilities (`CLOUD_PHONE_PROVIDER_ABILITIES` in
+  `contract.ts`): NoMac has `tests`, `uninstall`, `storekit`, `locale`,
+  `timezone`, `statusBar`, `launchEnv`; Revyl has `perf` (the launched app's
+  CPU, memory and frame rate, `ade apple perf`), `shake` and `orientation`
+  (`portrait`/`landscape`). `GET /cloud/phone` returns `abilities` (the live
+  phone's, or what a new one could have); the brain's status adds `lacks`
+  and leaves out `capabilities` it can't do. A command that needs an ability
+  sends `needs` with its start, so it gets a phone that has it; a held phone
+  without it answers "This cloud iPhone can't X. To get one that can, run
+  ade apple stop, then run this command again (or ade apple start --needs
+  X)." (409 `phone_lacks` from the server). `ade apple status`, `ade devices
+  use ios@cloud` and `ade apple --help` on the cloud iPhone print the
+  ability lines.
 - **What is shared.** The server owns minutes, `stop_at`, the minute tick, the
   allowance, the ten-minute checks, the beta list and deletion for both. The
   brain's `cloudPhoneService.ts` owns starting and waiting, argument checks,
@@ -461,14 +483,14 @@ to read with `snapshot`, batch steps in one `act`, and mind the idle stop.
   without the 3D body or the rail: Home, Screenshot and Record stay in the
   desktop app. Agents on the web still drive the phone with `ade apple`.
 - The ADE iPhone app's sheet has no Record (the desktop rail has it).
-- **On Revyl:** `ade apple test` (an app's tests), `uninstall`, StoreKit
-  files, locale, time zone and status bar overrides answer "isn't on this cloud
-  iPhone yet"; a launch's `env` values are not passed to the app. `status`
-  says so first: `runTests` is left out of `capabilities`, and the `control`
-  actions are listed as `unsupportedControls` ("not on this phone yet").
-- **Older brains get NoMac.** A brain names the phones it can drive
-  (`providers` on `POST /cloud/phone`); one from before Revyl names none, so
-  its account's next phone runs on NoMac even when the account is set to Revyl.
+- **Abilities differ by phone.** Revyl's phone has no app tests, uninstall,
+  StoreKit, locale, time zone or status bar overrides, and passes no launch
+  `env`; NoMac's has no perf, shake or orientation. See **Abilities, not
+  names**. Network capture is not offered: Revyl's `network_requests`
+  answered an empty list on every partner session we tried.
+- **Older brains.** A brain names the phones it can drive (`providers` on
+  `POST /cloud/phone`); one from before Revyl names none. A router account
+  then gets NoMac; a Revyl-locked account gets "Update ADE".
 - NoMac's beta allows 20 phones at once across all ADE accounts. Past that, a
   start waits in line and gives up with "No cloud iPhone was free" after 6
   minutes.

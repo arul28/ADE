@@ -100,12 +100,14 @@
   // out of band, here and with `--env production`; apply
   // migrations/0056_cloud_phone_provider.sql first. Var CLOUD_PHONE_REVYL is
   // the owner's switch: only `on` lets a new phone start on Revyl; unset (the
-  // default), every new phone is NoMac's, whatever a beta row or
-  // CLOUD_PHONE_PROVIDER says, and a Revyl phone already running is still
-  // read, billed and stopped. With it on, var CLOUD_PHONE_PROVIDER (`nomac`
-  // or `revyl`) picks the provider for accounts whose beta row names none
-  // (NoMac when unset). With neither provider able to start phones, the
-  // phone reads `off`.
+  // default), no new phone is Revyl's (a tester locked to Revyl can't start
+  // one), and a Revyl phone already running is still read, billed and
+  // stopped. A beta row's provider locks that tester to one provider; with
+  // none (`both`), the router starts the phone on var CLOUD_PHONE_PROVIDER
+  // (`nomac` or `revyl`; NoMac when unset), on the other when that one
+  // refuses, and on the one that has an ability the start needs (phones.ts
+  // `routeOf`). With neither provider able to start phones, the phone reads
+  // `off`.
   //
   // SECRET — GRAVITY_API_KEY (sponsored cards and the Index, src/cloud/gravity.ts)
   // Gravity's publisher key (trygravity.com): ads, Index searches and the

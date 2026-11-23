@@ -32,9 +32,10 @@ export { CLOUD_HOUR_UNIT_SENTENCE, CLOUD_SMALL_FAIR_USE_SENTENCE, CLOUD_SMALL_UN
 /**
  * The ADE Cloud iPhone (an iOS Simulator in the cloud, with iPhone minutes)
  * is behind the server's `CLOUD_PHONE_ACCESS` switch, in beta for testers.
- * The website shows it only once that switch is `all`: then set this to true
- * and the "coming soon" card, its minutes line and the home page mention
- * come back (`ComingSoon`, `CloudSection`).
+ * The website names it as coming soon everywhere (`ComingSoon`,
+ * `CloudSection`, the pricing page's plan cards) with no numbers; once that
+ * switch is `all`, set this to true and the coming-soon card's minutes line
+ * appears.
  */
 // Flip to true in the same release that sets the server's CLOUD_PHONE_ACCESS to `all`.
 export const CLOUD_PHONE_ON_WEBSITE = false;

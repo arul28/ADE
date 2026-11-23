@@ -45,21 +45,19 @@ const LAUNCH_SETTLE_MS = 1_500;
 const LOG_LINES = 200;
 
 /** Calls that only read, so a gateway error may be tried again. */
-const SAFE_TO_REPEAT = new Set(["proxy.hierarchy", "proxy.screenshot", "proxy.health", "proxy.device_logs", "build.status", "build.logs"]);
+const SAFE_TO_REPEAT = new Set(["proxy.hierarchy", "proxy.screenshot", "proxy.health", "proxy.device_logs", "proxy.performance_metrics", "build.status", "build.logs"]);
 /** `key` step names as Revyl's keys. */
 const KEYS: Record<string, string> = { return: "ENTER", enter: "ENTER", escape: "ESCAPE", delete: "BACKSPACE", backspace: "BACKSPACE", tab: "TAB", space: "SPACE" };
 /** `scroll down` shows what is below: the finger moves up. */
 const SCROLL_SWIPE: Record<string, string> = { down: "up", up: "down", left: "right", right: "left" };
 const DIRECTIONS = new Set(["up", "down", "left", "right"]);
 
-/** NoMac's `control` actions Revyl has no call for (the service refuses them, and status lists them). */
-const NO_CONTROL: Readonly<Record<string, string>> = {
-  uninstall: "Uninstalling an app",
-  storekit: "StoreKit testing",
-  locale: "Changing the locale",
-  timezone: "Changing the time zone",
-  status_bar: "Changing the status bar",
-};
+/** The `orientation` control's values (Revyl refuses its exact landscape sides on an iPhone). */
+const ORIENTATIONS = new Set(["portrait", "landscape"]);
+/** `perf` samples for this long by default. */
+const PERF_SECONDS = 5;
+/** One read of the performance capture takes this many samples at most (two a second). */
+const PERF_READ_LIMIT = 5_000;
 
 const parseJson = (raw: Raw): Record<string, unknown> | null => {
   try {
@@ -98,6 +96,26 @@ function sinceMs(value: string | undefined): number | null {
   const match = value ? /^(\d+)\s*([smh])$/i.exec(value.trim()) : null;
   if (!match) return null;
   return Number(match[1]) * ({ s: 1_000, m: 60_000, h: 3_600_000 } as const)[match[2]!.toLowerCase() as "s" | "m" | "h"];
+}
+
+/** The samples' summary: average and peak CPU, memory, and the frame rate. */
+function perfText(body: Record<string, unknown>, seconds: number): string {
+  const items = Array.isArray(body.items) ? body.items.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object") : [];
+  const nums = (read: (item: Record<string, unknown>) => unknown): number[] => items.map(read).map(Number).filter(Number.isFinite);
+  const cpu = nums((item) => (item.cpu as Record<string, unknown> | undefined)?.app_percent);
+  const rssMb = nums((item) => (item.memory_app as Record<string, unknown> | undefined)?.rss_kb).map((kb) => kb / 1024);
+  const fps = nums((item) => item.fps);
+  if (!items.length || (!cpu.length && !rssMb.length && !fps.length)) {
+    return `No samples in ${seconds} s. They come from the app ADE launched last while it runs: launch your app (ade apple relaunch --bundle-id <id>), then run this again.`;
+  }
+  const avg = (values: number[]): number => values.reduce((sum, value) => sum + value, 0) / values.length;
+  const lines = [
+    `${items.length} samples over ${seconds} s, for the app ADE launched last:`,
+    cpu.length ? `CPU: ${avg(cpu).toFixed(1)}% average, ${Math.max(...cpu).toFixed(1)}% peak` : null,
+    rssMb.length ? `Memory: ${avg(rssMb).toFixed(0)} MB average, ${Math.max(...rssMb).toFixed(0)} MB peak` : null,
+    fps.length ? `Frame rate: ${avg(fps).toFixed(1)} fps average, ${Math.min(...fps).toFixed(1)} fps lowest` : "Frame rate: none drawn (the screen didn't change)",
+  ];
+  return lines.filter(Boolean).join("\n");
 }
 
 export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDriver {
@@ -375,8 +393,6 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   }
 
   return {
-    unsupportedControls: NO_CONTROL,
-
     async read(phone) {
       const client = await ctx.client();
       const state = await client.phoneState!();
@@ -440,8 +456,8 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       if (!installed.bundleId) return textAnswer(`Built in ${built.seconds} s and installed. Launch it with ade apple relaunch --bundle-id <id>.`);
       const launched = await act(phone, "launch", { bundle_id: installed.bundleId });
       if (launched) return textAnswer(`Built in ${built.seconds} s and installed ${installed.bundleId}, but launching it failed: ${launched}.`, true);
-      const note = input.env ? "\nThe env values were not passed: this cloud iPhone can't set an app's environment yet." : "";
-      return textAnswer(`Built in ${built.seconds} s, installed ${installed.bundleId} and launched it.${note}\n\n${await settledScreen(phone)}`);
+      // env values never get here: they need the `launchEnv` ability, which the service checks.
+      return textAnswer(`Built in ${built.seconds} s, installed ${installed.bundleId} and launched it.\n\n${await settledScreen(phone)}`);
     },
 
     async install(phone, input) {
@@ -463,8 +479,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
           if (!id) return textAnswer("launch needs the app's bundle id (--app).", true);
           const failure = await act(phone, "launch", { bundle_id: id }, command());
           if (failure) return done(failure, `Launching ${id}`);
-          const note = value ? " Its launch arguments were not passed: this cloud iPhone can't pass them yet." : "";
-          return textAnswer(`Launched ${id}.${note}\n\n${await settledScreen(phone)}`);
+          return textAnswer(`Launched ${id}.\n\n${await settledScreen(phone)}`);
         }
         case "terminate": {
           const id = needApp();
@@ -512,8 +527,15 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
           const setting = action === "grant" ? "allow" : action === "revoke" ? "deny" : "reset";
           return done(await act(phone, "set_permissions", { bundle_id: id, permissions: Object.fromEntries(names.map((name) => [name, setting])) }, command()), `${names.join(", ")} ${setting === "allow" ? "allowed" : setting === "deny" ? "denied" : "reset"} for ${id}`);
         }
+        case "shake":
+          return done(await act(phone, "shake", {}, command()), "Shook the phone");
+        case "orientation": {
+          const turn = (value ?? "").toLowerCase();
+          if (!ORIENTATIONS.has(turn)) return textAnswer("orientation is portrait or landscape.", true);
+          return done(await act(phone, "set_orientation", { orientation: turn }, command()), `The phone is ${turn}`);
+        }
         default:
-          return textAnswer(`${action} isn't a cloud iPhone control (launch, terminate, open_url, location, push, appearance, text_size, grant, revoke, reset_permissions).`, true);
+          return textAnswer(`${action} isn't a cloud iPhone control (launch, terminate, open_url, location, push, appearance, text_size, grant, revoke, reset_permissions, shake, orientation).`, true);
       }
     },
 
@@ -549,6 +571,17 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
         }
         await sleep(1_000);
       }
+    },
+
+    async perf(phone, input) {
+      const seconds = input.seconds ?? PERF_SECONDS;
+      const cmd = command();
+      // The capture's cursor is an offset from the phone's start: read to its end, then what came in over `seconds`.
+      const first = await callJson(phone, "proxy.performance_metrics", undefined, { cmd, query: { limit: String(PERF_READ_LIMIT) } });
+      const cursor = typeof first.next_cursor === "string" ? first.next_cursor : null;
+      await sleep(seconds * 1_000);
+      const body = await callJson(phone, "proxy.performance_metrics", undefined, { query: { limit: String(PERF_READ_LIMIT), ...(cursor ? { cursor } : {}) } });
+      return textAnswer(perfText(body, seconds));
     },
 
     async record(phone, action) {

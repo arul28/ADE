@@ -163,8 +163,17 @@ that is listed.
 
 ```bash
 "$ADE_CLI_PATH" devices use ios@cloud   # this chat's iPhone
-"$ADE_CLI_PATH" apple status --text     # access, minutes left, capabilities, what this phone can't do yet
+"$ADE_CLI_PATH" apple status --text     # access, minutes left, what this phone can and can't do
 ```
+
+Cloud iPhones differ in a few abilities (app tests, uninstall, StoreKit,
+locale, time zone, status bar, launch env values; or perf, shake, rotate).
+`status` and `ade apple --help` list what yours can. A command that needs one
+starts a phone that has it; to pick ahead, `ade apple start --needs perf,shake`.
+A running phone never changes: if it lacks what you need, the refusal says to
+`ade apple stop` and run the command again. `ade apple perf` reads the
+launched app's CPU, memory and frame rate for about 5 seconds; `control shake`
+and `control orientation landscape|portrait` where the phone has them.
 
 For one command, `ade apple … --machine cloud`. What differs:
 

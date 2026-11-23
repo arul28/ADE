@@ -22,6 +22,7 @@ import {
   type CloudPhoneToolAnswer,
 } from "./cloudPhoneDriver";
 import type { CloudPhoneRunEnd } from "./cloudPhoneRun";
+import { withoutPhoneProviderNames } from "../../../../../account-directory/src/cloud/contract";
 
 const CALL_POLL_MS = 1_000;
 /** A tool call or a build job is given this long before ADE stops waiting. */
@@ -74,11 +75,11 @@ const NOMAC_TOOL_WORDS: ReadonlyArray<readonly [RegExp, string]> = [
   [/`?\btests_run\b`?/g, "`ade apple test`"],
 ];
 
-/** A NoMac answer's text in ADE's words. */
+/** A NoMac answer's text in ADE's words, without NoMac's name. */
 function inAdeWords(text: string): string {
   let out = text;
   for (const [pattern, words] of NOMAC_TOOL_WORDS) out = out.replace(pattern, words);
-  return out;
+  return withoutPhoneProviderNames(out);
 }
 
 function answerOf(body: Record<string, unknown> | null): CloudPhoneToolAnswer {
@@ -116,7 +117,7 @@ export function createNomacDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
   /** One call to the phone's NoMac session. A POST that must run once passes an `idempotencyKey` (`newKey()`, or one its retries share). */
   async function nomac(phone: CloudPhoneHeld, method: string, route: string, body?: unknown, idempotencyKey?: string): Promise<NomacAnswer> {
-    if (phone.provider !== "nomac") throw new CloudPhoneError("This cloud iPhone isn't on NoMac.", "wrong_provider");
+    if (phone.provider !== "nomac") throw new CloudPhoneError("This cloud iPhone takes its calls another way.", "wrong_provider");
     const response = await fetcher(`${phone.apiBase}/sessions/${encodeURIComponent(phone.phoneId)}${route}`, {
       method,
       headers: {
@@ -220,8 +221,6 @@ export function createNomacDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   }
 
   return {
-    unsupportedControls: {},
-
     async read(phone) {
       return readOf(await nomac(phone, "GET", ""));
     },

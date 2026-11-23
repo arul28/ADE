@@ -23,18 +23,25 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type {
-  CloudPhoneDevice,
-  CloudPhoneMinutes,
-  CloudPhoneProvider,
-  CloudPhoneStart,
-  CloudPhoneSummary,
-  CloudPhoneView,
+import {
+  CLOUD_PHONE_ABILITIES,
+  CLOUD_PHONE_ABILITY_WORDS,
+  CLOUD_PHONE_PROVIDER_ABILITIES,
+  cloudPhoneAbilitiesOf,
+  type CloudPhoneAbility,
+  type CloudPhoneDevice,
+  type CloudPhoneMinutes,
+  type CloudPhoneProvider,
+  type CloudPhoneStart,
+  type CloudPhoneSummary,
+  type CloudPhoneView,
 } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudProvider } from "./cloudProvider";
 import { CloudProviderError } from "./cloudProvider";
 import {
+  CLOUD_PHONE_ACTION_ABILITY,
   CLOUD_PHONE_AGENT_ACTIONS,
+  CLOUD_PHONE_CONTROL_ABILITY,
   CLOUD_PHONE_DEVICES,
   isCloudPhoneDevice,
   type CloudPhoneStatusView,
@@ -188,8 +195,21 @@ async function packProject(root: string): Promise<Packed & { count: number }> {
   return { ...packed, count: files.length };
 }
 
+/**
+ * The held phone can't do what a command needs: never swapped for another
+ * quietly (its app's state and minutes would go), the agent decides.
+ */
+const lacksSentence = (ability: CloudPhoneAbility): string =>
+  `This cloud iPhone can't ${CLOUD_PHONE_ABILITY_WORDS[ability]}. To get one that can, run ade apple stop, then run this command again (or ade apple start --needs ${ability}).`;
+
+/** A cloud iPhone's status without who runs it: agents and people see abilities, never a provider. */
+const withoutProvider = (phone: CloudPhoneSummary | null): CloudPhoneStatusView["phone"] => {
+  if (!phone) return null;
+  const { provider: _provider, ...rest } = phone;
+  return rest;
+};
+
 /** Sent for a `.ipa` or a device build: the cloud iPhone runs Simulator builds. */
-const TESTS_UNSUPPORTED = "Running an app's tests isn't on this cloud iPhone yet. Run them on a Mac (ios@<Mac>), or in CI.";
 const DEVICE_BUILD = "That is a device build (.ipa). The cloud iPhone needs a Simulator build: for Expo/EAS set \"simulator\": true; for Flutter run flutter build ios --simulator.";
 
 /** What a bundle's Info.plist says it is for: "iPhoneSimulator", "iPhoneOS", or null when it can't be told. */
@@ -356,6 +376,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     revyl: createRevylDriver(driverContext),
   };
   const driverOf = (phone: Held): CloudPhoneDriver => drivers[phone.provider];
+  const hasAbility = (phone: Held, ability: CloudPhoneAbility): boolean => CLOUD_PHONE_PROVIDER_ABILITIES[phone.provider].includes(ability);
 
   /**
    * The account signed in now. After a sign-out or a switch to another account
@@ -464,10 +485,16 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   }
 
   /** The account's ready phone, started when there is none; `chatSessionId` is the agent chat told of a new one. */
-  async function ensure({ device, chatSessionId = null }: { device?: CloudPhoneDevice; chatSessionId?: string | null } = {}): Promise<Held> {
+  async function ensure({ device, chatSessionId = null, needs = [] }: { device?: CloudPhoneDevice; chatSessionId?: string | null; needs?: readonly CloudPhoneAbility[] } = {}): Promise<Held> {
     const account = await currentAccount();
+    // The running phone can't do what is needed: said before any call (the server says the same of one started elsewhere).
+    const able = (phone: Held): Held => {
+      const lacked = needs.find((need) => !hasAbility(phone, need));
+      if (lacked) throw new CloudPhoneError(lacksSentence(lacked), "phone_lacks");
+      return phone;
+    };
     if (held && held.renewBy - Date.now() > TOKEN_REFRESH_MARGIN_MS && (!device || held.device === device)) {
-      if (Date.now() - held.checkedAt < READY_TRUST_MS) return held;
+      if (Date.now() - held.checkedAt < READY_TRUST_MS) return able(held);
       // A held phone may have stopped on its own (idle, its time limit): read it.
       const phone = held;
       const read = await readPhone(phone).catch(() => null);
@@ -478,7 +505,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         // Its first readiness read failed: the start is told now.
         // (A read is not use: NoMac's idle clock runs on, so lastActivityAt stays.)
         if (liveRun?.phoneId === phone.phoneId && liveRun.startLine) announceStart(liveRun);
-        return phone;
+        return able(phone);
       }
       if (held === phone) held = null;
       // It stopped on its own: the chat told of its start is told now.
@@ -489,7 +516,11 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     if (!starting) {
       const starter = (async () => {
         const client = await provider();
-        const start = await client.phoneStart!({ ...(device ? { device } : {}) });
+        const start = await client.phoneStart!({ ...(device ? { device } : {}), ...(needs.length ? { needs } : {}) }).catch((error: unknown) => {
+          // The account's running phone (started on another machine) lacks a need: the agent decides to stop it.
+          if (error instanceof CloudProviderError && error.code === "phone_lacks" && needs[0]) throw new CloudPhoneError(lacksSentence(needs[0]), "phone_lacks");
+          throw error;
+        });
         const previous = liveRun;
         const phone = hold(start, client, chatSessionId);
         deps.logger?.info?.("cloud_phone.held", { phoneId: phone.phoneId, reused: start.reused, minutesLeft: start.minutes.left });
@@ -508,7 +539,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     const phone = await starting.phone;
     // Signed out or switched while it started: never hand this phone to another account.
     if (phone.account !== (await currentAccount())) throw new CloudPhoneError("The ADE account changed while the cloud iPhone started. Try again.", "no_account");
-    return phone;
+    // Another caller's start (no needs) may have made this one: the server checked only that caller's needs.
+    return able(phone);
   }
 
 
@@ -517,16 +549,23 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
    * phone ended between the check and the command's first call (idle, its
    * limit): once more on a fresh one.
    */
-  async function withPhone<T>(chatSessionId: string | null, run: (phone: Held, driver: CloudPhoneDriver) => Promise<T>): Promise<T> {
-    const phone = await ensure({ chatSessionId });
+  async function withPhone<T>(chatSessionId: string | null, run: (phone: Held, driver: CloudPhoneDriver) => Promise<T>, need?: CloudPhoneAbility): Promise<T> {
+    const needs = need ? [need] : [];
+    const phone = await ensure({ chatSessionId, needs });
     try {
       return await run(phone, driverOf(phone));
     } catch (error) {
       if (!(error instanceof CloudPhoneGoneError)) throw error;
       if (held === phone) held = null;
-      const fresh = await ensure({ chatSessionId });
+      const fresh = await ensure({ chatSessionId, needs });
       return await run(fresh, driverOf(fresh));
     }
+  }
+
+  /** The driver's call for an ability the phone has (`ensure` checked it): absent only if the table and the driver disagree. */
+  function abilityCall<T>(method: T | undefined, ability: CloudPhoneAbility): T {
+    if (!method) throw new CloudPhoneError(lacksSentence(ability), "phone_lacks");
+    return method;
   }
 
   /** Files a capture to the calling project's proof drawer, owned by its chat and lane. Null when there is no drawer. */
@@ -593,20 +632,31 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       // Access is on or off (an older server's `soon` reads as off).
       const reason = state.access === "on" ? null : "The ADE Cloud iPhone isn't available right now.";
       const lastActivityAt = liveRun && state.phone?.id === liveRun.phoneId && state.phone.state !== "ended" ? liveRun.lastActivityAt : null;
-      // What the live phone's provider can't do yet is left out, not discovered by a failed call.
-      const driver = state.phone ? drivers[state.phone.provider ?? "nomac"] : null;
-      const capabilities = state.access !== "on" ? [] : CLOUD_PHONE_AGENT_ACTIONS.filter((action) => action !== "runTests" || !driver || driver.test);
-      return { ...state, capabilities, unsupportedControls: driver ? Object.keys(driver.unsupportedControls) : [], supported: state.access === "on", reason, lastActivityAt };
+      // What the phone can do: the server says, for the live phone or the next one (an
+      // older server: the live phone's provider, or with none running, NoMac's).
+      const abilities = state.abilities ? cloudPhoneAbilitiesOf(state.abilities) : [...CLOUD_PHONE_PROVIDER_ABILITIES[state.phone?.provider ?? "nomac"]];
+      const lacks = CLOUD_PHONE_ABILITIES.filter((ability) => !abilities.includes(ability));
+      // An action that needs an ability the phone lacks is left out, not discovered by a failed call.
+      const capabilities = state.access !== "on" ? [] : CLOUD_PHONE_AGENT_ACTIONS.filter((action) => {
+        const needed = (CLOUD_PHONE_ACTION_ABILITY as Record<string, CloudPhoneAbility | undefined>)[action];
+        return !needed || abilities.includes(needed);
+      });
+      return { ...state, phone: withoutProvider(state.phone), abilities, lacks: state.access === "on" ? lacks : [], capabilities, supported: state.access === "on", reason, lastActivityAt };
     },
 
-    async start(args: { device?: unknown } | null | undefined): Promise<{ phone: CloudPhoneSummary | null; minutes: CloudPhoneMinutes }> {
+    /** Starts the account's phone (or answers the live one); `needs`: abilities it must have (`CLOUD_PHONE_ABILITIES`). */
+    async start(args: { device?: unknown; needs?: unknown } | null | undefined): Promise<{ phone: CloudPhoneStatusView["phone"]; minutes: CloudPhoneMinutes; abilities: CloudPhoneAbility[] }> {
       const device = args?.device;
       if (device !== undefined && !isCloudPhoneDevice(device)) {
         throw new CloudPhoneError(`device is ${CLOUD_PHONE_DEVICES.join(", ")}.`, "bad_request");
       }
-      const phone = await ensure({ device, chatSessionId: cloudPhoneCallerChat(args) });
+      const asked = Array.isArray(args?.needs) ? args.needs : typeof args?.needs === "string" ? args.needs.split(/[,\s]+/).filter(Boolean) : [];
+      const needs = cloudPhoneAbilitiesOf(asked);
+      const unknown = asked.filter((name) => !needs.includes(name as CloudPhoneAbility));
+      if (unknown.length) throw new CloudPhoneError(`needs is a list of ${CLOUD_PHONE_ABILITIES.join(", ")}.`, "bad_request");
+      const phone = await ensure({ device, chatSessionId: cloudPhoneCallerChat(args), needs });
       const state = await (await provider()).phoneState!();
-      return { phone: state.phone, minutes: state.minutes ?? phone.minutes };
+      return { phone: withoutProvider(state.phone), minutes: state.minutes ?? phone.minutes, abilities: [...CLOUD_PHONE_PROVIDER_ABILITIES[phone.provider]] };
     },
 
     async stop(): Promise<{ stopped: boolean }> {
@@ -734,6 +784,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const env = textArg(args?.env, "env", 8_000);
       const packed = await packProject(root);
       try {
+        // env values need a phone that passes them to the app.
         const answer = await withPhone(chatSessionId, (phone, driver) => driver.run(phone, {
           project: packed,
           name: cloudPhoneProjectName(root),
@@ -742,7 +793,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
           ...(configuration ? { configuration } : {}),
           ...(env ? { env } : {}),
           ...(args?.clean === true ? { clean: true } : {}),
-        }));
+        }), env ? "launchEnv" : undefined);
         return { ...answer, files: packed.count, bytes: packed.size };
       } finally {
         fs.rmSync(packed.file, { force: true });
@@ -797,9 +848,9 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       if (!action) throw new CloudPhoneError("action is required (launch, terminate, open_url, location, push, appearance, …).", "bad_request");
       const value = textArg(args?.value, "value");
       const app = textArg(args?.app, "app", 300);
-      return withPhone(cloudPhoneCallerChat(args), (phone, driver) => Object.hasOwn(driver.unsupportedControls, action)
-        ? Promise.resolve(textAnswer(`${driver.unsupportedControls[action]} isn't on this cloud iPhone yet.`, true))
-        : driver.control(phone, { action, ...(value !== undefined ? { value } : {}), ...(app ? { app } : {}) }));
+      // A launch with arguments passes them as env values, which needs that ability.
+      const need = Object.hasOwn(CLOUD_PHONE_CONTROL_ABILITY, action) ? CLOUD_PHONE_CONTROL_ABILITY[action] : action === "launch" && value ? "launchEnv" : undefined;
+      return withPhone(cloudPhoneCallerChat(args), (phone, driver) => driver.control(phone, { action, ...(value !== undefined ? { value } : {}), ...(app ? { app } : {}) }), need);
     },
 
     async logs(args: { app?: unknown; since?: unknown; grep?: unknown; waitFor?: unknown; crashes?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer> {
@@ -842,16 +893,22 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const only = textArg(args?.only, "only", 2_000);
       const packed = await packProject(root);
       try {
-        return await withPhone(chatSessionId, (phone, driver) => !driver.test ? Promise.resolve(textAnswer(TESTS_UNSUPPORTED, true)) : driver.test(phone, {
+        return await withPhone(chatSessionId, (phone, driver) => abilityCall(driver.test, "tests").call(driver, phone, {
           project: packed,
           name: cloudPhoneProjectName(root),
           ...(sub ? { sub } : {}),
           ...(scheme ? { scheme } : {}),
           ...(only ? { only } : {}),
-        }));
+        }), "tests");
       } finally {
         fs.rmSync(packed.file, { force: true });
       }
+    },
+
+    /** The app's CPU, memory and frame rate over the next `seconds` (default 5, at most 30). */
+    async perf(args: { seconds?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer> {
+      const seconds = typeof args?.seconds === "number" && Number.isFinite(args.seconds) ? Math.min(30, Math.max(1, Math.round(args.seconds))) : undefined;
+      return withPhone(cloudPhoneCallerChat(args), (phone, driver) => abilityCall(driver.perf, "perf").call(driver, phone, seconds ? { seconds } : {}), "perf");
     },
 
     /** A link that shows the live phone (a control link by default), signed for this account. */

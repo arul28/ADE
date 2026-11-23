@@ -29,6 +29,7 @@ import type {
   CloudMoveRequest,
   CloudPaidPlanId,
   CloudPhoneCallRequest,
+  CloudPhoneAbility,
   CloudPhoneDevice,
   CloudPhoneStart,
   CloudPhoneState,
@@ -246,7 +247,7 @@ export type CloudProvider = {
   phoneState?(): Promise<CloudPhoneState>;
   /** Starts the account's phone, or answers its live one, with a token for that phone only. */
   /** `attach`: only the live phone's token; never starts one (`phone_not_running`). */
-  phoneStart?(input: { device?: CloudPhoneDevice; attach?: boolean }): Promise<CloudPhoneStart>;
+  phoneStart?(input: { device?: CloudPhoneDevice; attach?: boolean; needs?: readonly CloudPhoneAbility[] }): Promise<CloudPhoneStart>;
   /** A link that shows the live phone to this account alone. */
   phoneView?(input: { control: boolean }): Promise<CloudPhoneView>;
   phoneStop?(): Promise<{ stopped: boolean }>;
