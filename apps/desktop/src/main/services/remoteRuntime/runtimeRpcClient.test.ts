@@ -518,29 +518,47 @@ describe("RuntimeRpcClient waiting while the other end still runs a call", () =>
     }
   });
 
+  const methodNotFound = (id: number) => ({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+
   it.each([
     {
       name: "an older brain that does not know the check",
-      reply: (id: number) => ({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } }),
+      reply: methodNotFound,
       message: "(30000ms).",
+    },
+    {
+      // A remote write used to have the client's 10 minutes; an older machine keeps them.
+      name: "an older brain, for a call with a longer budget there",
+      timeoutWithoutCheckMs: 600_000,
+      reply: methodNotFound,
+      message: "(600000ms).",
     },
     {
       name: "a brain that no longer runs the call (its answer is not coming)",
       reply: (id: number) => ({ jsonrpc: "2.0", id, result: { running: [] } }),
       message: "it stopped working on it without an answer",
     },
-  ])("fails when asked and answered by $name", async ({ reply, message }) => {
+  ])("fails when asked and answered by $name", async ({ reply, message, timeoutWithoutCheckMs }) => {
     vi.useFakeTimers();
     try {
       const transport = new MockTransport();
       const client = new RuntimeRpcClient(transport);
-      const call = client.call("ade/actions/call", ACTION, { timeoutMs: 30_000, waitWhileRunning: true });
+      const call = client.call("ade/actions/call", ACTION, {
+        timeoutMs: 30_000,
+        waitWhileRunning: true,
+        ...(timeoutWithoutCheckMs ? { timeoutWithoutCheckMs } : {}),
+      });
       const outcome = call.then(() => "resolved", (error: Error) => error.message);
       await vi.advanceTimersByTimeAsync(30_000);
       const status = JSON.parse(transport.writes[1]!.trim()) as { id: number; method: string; params: { ids: number[] } };
       expect(status.method).toBe(REQUEST_STATUS_METHOD);
       expect(status.params.ids).toEqual([requestId(transport.writes[0]!)]);
       transport.emitData(reply(status.id));
+      if (timeoutWithoutCheckMs) {
+        await vi.advanceTimersByTimeAsync(timeoutWithoutCheckMs - 30_000 - 1_000);
+        await expect(Promise.race([outcome, Promise.resolve("pending")])).resolves.toBe("pending");
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
       await expect(outcome).resolves.toContain(message);
       expect(client.isClosed()).toBe(false);
     } finally {
