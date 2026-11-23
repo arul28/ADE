@@ -3,7 +3,7 @@
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatSessionSummary } from "../../../shared/types";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import { useAppStore } from "../../state/appStore";
@@ -140,6 +140,12 @@ function handOffs(): unknown[] {
 }
 
 describe("BrowserPage dock", () => {
+  // The first import pulls in the whole chat pane; load it once here, under its
+  // own ceiling, so a slow CI worker's cold import never counts against a test.
+  beforeAll(async () => {
+    await import("./BrowserPage");
+  }, 120_000);
+
   beforeEach(() => {
     TAB.url = "https://flights.example.test/";
     cleanup();
