@@ -4018,6 +4018,13 @@ describe("ADE Cloud iPhone minutes", () => {
       after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 12 },
     },
     {
+      name: "a test's iPhone minutes (the account test tool) never change what is billed: past the plan's minutes",
+      seed: () => { seedPhoneAccount({ test_phone_minutes: 1000 }); seedPhone("ses_a", 312); },
+      act: async () => {},
+      reports: [[`ade-phone:cus_1:${PERIOD}:from-0`, 12]],
+      after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 12 },
+    },
+    {
       name: "a lower limit stops further use but keeps the minutes already used owed",
       seed: () => { seedPhoneAccount({ phone_extra_limit_cents: null }); seedPhone("ses_a", 340); },
       // $0.50 allows 20 extra minutes; 40 were used under no limit.

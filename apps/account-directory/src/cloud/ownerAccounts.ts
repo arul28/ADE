@@ -1,6 +1,8 @@
 import { gravitySwitches, smallUsesNoHours, syncAllSmallRates, syncSmallRates, type GravityEnv } from "./gravity";
 import { fail, json } from "./http";
-import { clerkUserIdsFor } from "./phoneBeta";
+import { CLOUD_PHONE_PROVIDERS } from "./contract";
+import { clerkUserIdsFor, handleOwnerPhoneBeta } from "./phoneBeta";
+import { includedPhoneMinutes, periodPhones, phoneAccess, phoneExtraOn, phoneUsageOf } from "./phones";
 import { CLOUD_PLANS, isPaidPlanId } from "./plans";
 import {
   CLOUD_SETTINGS,
@@ -39,10 +41,14 @@ import {
  * touches billing: Stripe, extra hours, the period and its roll keep the real
  * plan. It ends by itself at `test_until` (`expireAccountTests`).
  *
- * - `POST /cloud/owner/account` `{ email | userId, plan?, computers?, hours?, days?, note?, tester?, reset? }`:
+ * - `POST /cloud/owner/account` `{ email | userId, plan?, computers?, hours?, phoneMinutes?, phone?, days?, note?, tester?, reset? }`:
  *   changes what is given, then answers the account as `show` does. Only an
- *   email or userId: just `show`. `plan: null` (and `computers`, `hours`)
- *   clears that one; `reset: true` clears every test field.
+ *   email or userId: just `show`. `plan: null` (and `computers`, `hours`,
+ *   `phoneMinutes`) clears that one; `reset: true` clears every test field.
+ *   `phone` (`nomac`, `revyl`, `both` or `off`) puts the account on the ADE
+ *   Cloud iPhone's beta list with that provider, or takes it off
+ *   (`phoneBeta.ts`): not a test, it stays until changed. A test plan leaves
+ *   the iPhone minutes the real plan's; `phoneMinutes` sets them.
  * - `POST /cloud/owner/settings` `{ key?, value?, note? }`: sets one switch,
  *   or with no key lists them all with their deploy ceilings.
  */
@@ -59,11 +65,17 @@ const LOG_ROWS = 10;
 /** The most hours or computers a test may give: well past Max, never a typo's billion. */
 const MAX_TEST_HOURS = 10_000;
 const MAX_TEST_COMPUTERS = 100;
+/** The most iPhone minutes a test may give in a period. */
+const MAX_TEST_PHONE_MINUTES = 10_000;
+/** `phone`: the beta list's providers, or off it. */
+const PHONE_CHOICES = [...CLOUD_PHONE_PROVIDERS, "both", "off"] as const;
+type PhoneChoice = (typeof PHONE_CHOICES)[number];
 
 type TestChange = {
   plan?: string | null;
   computers?: number | null;
   hoursMilli?: number | null;
+  phoneMinutes?: number | null;
 };
 
 /** The account the body names: one Clerk user for an email, or the userId as given. */
@@ -102,19 +114,26 @@ function readChange(body: Record<string, unknown>): TestChange | string {
   const hours = readCount(body.hours, MAX_TEST_HOURS);
   if (hours === false) return `hours is a whole number from 0 to ${MAX_TEST_HOURS}, or null.`;
   if (hours !== undefined) change.hoursMilli = hours == null ? null : hours * 1000;
+  const phoneMinutes = readCount(body.phoneMinutes, MAX_TEST_PHONE_MINUTES);
+  if (phoneMinutes === false) return `phoneMinutes is a whole number from 0 to ${MAX_TEST_PHONE_MINUTES}, or null.`;
+  if (phoneMinutes !== undefined) change.phoneMinutes = phoneMinutes;
   return change;
 }
 
 const hoursOf = (milli: number): number => Math.round(milli / 100) / 10;
 
 /** What the owner reads about an account: the real plan, the test, and what is in force. */
-async function describeAccount(env: CloudEnv, account: AccountRow, email: string | null) {
-  const [tester, consent, log] = await Promise.all([
+async function describeAccount(env: CloudEnv, account: AccountRow, email: string | null, now: number) {
+  const [tester, consent, log, phoneRow, phoneUse, phone] = await Promise.all([
     env.DB.prepare("select 1 as listed from cloud_sponsored_testers where user_id = ?").bind(account.user_id).first<{ listed: number }>(),
     env.DB.prepare("select consent, decided_at from cloud_sponsored_consent where user_id = ?").bind(account.user_id).first<{ consent: string; decided_at: number }>(),
     env.DB.prepare("select at, action, detail from cloud_owner_log where user_id = ? order by at desc, id desc limit ?")
       .bind(account.user_id, LOG_ROWS).all<{ at: number; action: string; detail: string }>(),
+    env.DB.prepare("select provider from cloud_phone_beta where user_id = ?").bind(account.user_id).first<{ provider: string | null }>(),
+    periodPhones(env, account.user_id, account.period_start),
+    phoneAccess(env, account.user_id),
   ]);
+  const phoneMinutes = phoneUsageOf(env, account, phoneUse, now);
   const testing = hasAccountTest(account);
   return {
     userId: account.user_id,
@@ -132,6 +151,7 @@ async function describeAccount(env: CloudEnv, account: AccountRow, email: string
         plan: testPlanOf(account),
         computers: account.test_computers ?? null,
         hours: account.test_hours_milli == null ? null : hoursOf(account.test_hours_milli),
+        phoneMinutes: account.test_phone_minutes ?? null,
         until: account.test_until ?? null,
         note: account.test_note ?? null,
       }
@@ -142,6 +162,15 @@ async function describeAccount(env: CloudEnv, account: AccountRow, email: string
       hours: hoursOf(includedMilliOf(account)),
       usedHours: hoursOf(account.used_milli),
       smallUsesHours: !(await smallUsesNoHours(env, account)),
+    },
+    phone: {
+      access: phone.access,
+      // On the beta list: its provider (`both`: the router); off it: null.
+      listed: phoneRow ? phoneRow.provider ?? "both" : null,
+      planMinutes: includedPhoneMinutes(account),
+      minutes: phoneMinutes.included,
+      usedMinutes: phoneMinutes.used,
+      extraOn: phoneMinutes.extra.enabled,
     },
     sponsored: {
       mode: (await gravitySwitches(env)).mode,
@@ -172,6 +201,10 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
   }
   const note = typeof body.note === "string" && body.note.trim() ? body.note.trim().slice(0, MAX_NOTE) : null;
   const tester = typeof body.tester === "boolean" ? body.tester : undefined;
+  if (body.phone !== undefined && !(PHONE_CHOICES as readonly unknown[]).includes(body.phone)) {
+    return fail("bad_request", `phone is one of ${PHONE_CHOICES.join(", ")}.`, 400);
+  }
+  const phoneChoice = body.phone as PhoneChoice | undefined;
   const reset = body.reset === true;
 
   // A userId must name an account ADE Cloud knows (a typo makes no row); an
@@ -183,28 +216,40 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
   const statements: D1PreparedStatement[] = [];
   if (reset) {
     statements.push(env.DB.prepare(`update cloud_accounts set test_plan = null, test_computers = null, test_hours_milli = null,
-      test_until = null, test_note = null, updated_at = ? where user_id = ?`).bind(now, who.userId));
+      test_phone_minutes = null, test_until = null, test_note = null, updated_at = ? where user_id = ?`).bind(now, who.userId));
   } else if (Object.keys(change).length || (note && hasAccountTest(account))) {
     const next = {
       plan: change.plan !== undefined ? change.plan : account.test_plan ?? null,
       computers: change.computers !== undefined ? change.computers : account.test_computers ?? null,
       hoursMilli: change.hoursMilli !== undefined ? change.hoursMilli : account.test_hours_milli ?? null,
+      phoneMinutes: change.phoneMinutes !== undefined ? change.phoneMinutes : account.test_phone_minutes ?? null,
     };
-    const any = next.plan != null || next.computers != null || next.hoursMilli != null;
+    const any = next.plan != null || next.computers != null || next.hoursMilli != null || next.phoneMinutes != null;
     // Billing counts the real hours: more test hours than that would draw real
     // earned hours, or bill extra hours, for what the meter shows as included.
     const raises = includedMilliOf({ ...account, test_plan: next.plan, test_hours_milli: next.hoursMilli }) > account.included_milli;
     if (raises && (earnedBalanceMilli(account) > 0 || extraActive(account))) {
       return fail("conflict", "This account has earned hours or extra hours on, so a test with more hours than its plan would use them for real. Test fewer hours, or use another account.", 409);
     }
-    statements.push(env.DB.prepare(`update cloud_accounts set test_plan = ?, test_computers = ?, test_hours_milli = ?,
+    // Extra minutes bill past the real plan's minutes, never a test's: the two would disagree on what is extra.
+    if (change.phoneMinutes != null && phoneExtraOn(env, account)) {
+      return fail("conflict", "This account has extra iPhone minutes on, which bill past its plan's minutes, not a test's. Turn extra minutes off first, or use another account.", 409);
+    }
+    statements.push(env.DB.prepare(`update cloud_accounts set test_plan = ?, test_computers = ?, test_hours_milli = ?, test_phone_minutes = ?,
       test_until = ?, test_note = ?, updated_at = ? where user_id = ?`)
-      .bind(next.plan, next.computers, next.hoursMilli, any ? now + days * DAY_MS : null, any ? note ?? account.test_note ?? null : null, now, who.userId));
+      .bind(next.plan, next.computers, next.hoursMilli, next.phoneMinutes, any ? now + days * DAY_MS : null, any ? note ?? account.test_note ?? null : null, now, who.userId));
   }
   if (tester === true) statements.push(env.DB.prepare("insert into cloud_sponsored_testers (user_id, added_at) values (?, ?) on conflict (user_id) do nothing").bind(who.userId, now));
   if (tester === false) statements.push(env.DB.prepare("delete from cloud_sponsored_testers where user_id = ?").bind(who.userId));
+  const testChanged = statements.length > 0;
+  // The beta list keeps its own rules (a removal stops a running phone): its route does it.
+  if (phoneChoice !== undefined) {
+    const listed = await handleOwnerPhoneBeta(env, phoneChoice === "off" ? { userId: who.userId, enabled: false } : { userId: who.userId, provider: phoneChoice }, now);
+    if (!listed.ok) return listed;
+    statements.push(ownerLogStatement(env, now, "account_phone", who.userId, { phone: phoneChoice }));
+  }
   if (statements.length) {
-    statements.push(ownerLogStatement(env, now, reset ? "account_reset" : "account_test", who.userId, {
+    if (testChanged) statements.push(ownerLogStatement(env, now, reset ? "account_reset" : "account_test", who.userId, {
       ...(reset ? {} : { ...change, ...(Object.keys(change).length ? { days } : {}) }),
       ...(tester === undefined ? {} : { tester }),
       ...(note ? { note } : {}),
@@ -215,7 +260,7 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
     await syncSmallRates(env, account, now);
     logCloud("cloud.owner_account_changed", { userId: who.userId, reset, tester: tester ?? null, plan: change.plan ?? null });
   }
-  return json({ ok: true, account: await describeAccount(env, account, who.email) });
+  return json({ ok: true, account: await describeAccount(env, account, who.email, now) });
 }
 
 /** `POST /cloud/owner/settings`. The owner token was checked before this runs (`safety.ts`). */
@@ -248,7 +293,7 @@ export async function expireAccountTests(env: CloudEnv, now: number): Promise<nu
   const due = await env.DB.prepare("select user_id from cloud_accounts where test_until is not null and test_until <= ? limit 50").bind(now).all<{ user_id: string }>();
   let ended = 0;
   for (const { user_id: userId } of due.results ?? []) {
-    const cleared = await env.DB.prepare(`update cloud_accounts set test_plan = null, test_computers = null, test_hours_milli = null, test_until = null, test_note = null,
+    const cleared = await env.DB.prepare(`update cloud_accounts set test_plan = null, test_computers = null, test_hours_milli = null, test_phone_minutes = null, test_until = null, test_note = null,
       updated_at = ? where user_id = ? and test_until is not null and test_until <= ?`).bind(now, userId, now).run();
     if ((cleared.meta.changes ?? 0) !== 1) continue;
     await ownerLogStatement(env, now, "account_test_ended", userId, {}).run();

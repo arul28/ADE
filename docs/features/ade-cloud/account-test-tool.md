@@ -31,7 +31,8 @@ Name an account by its verified email or its Clerk user id (`user_…`).
 |---|---|
 | `show <account>` | The real plan, the test, what is in force now, and the last changes |
 | `act-as <account> free\|plus\|pro\|max` | The account acts as that plan: computer limit, hours, outside agents, sponsored cards, Small's hours |
-| `limits <account> --computers N --hours N` | Its own computer limit and monthly hours, on top of the plan (`limits <account>` with no options clears them) |
+| `limits <account> --computers N --hours N --phone-minutes N` | Its own computer limit, monthly hours and ADE Cloud iPhone minutes this period, on top of the plan (`limits <account>` with no options clears all three) |
+| `phone <account> nomac\|revyl\|both\|off` | On the ADE Cloud iPhone's beta list with that provider (`both`: NoMac first, then Revyl when NoMac refuses or the command needs something only Revyl has), or off it. Not a test: it stays until changed, and `off` stops a running phone |
 | `tester <account> on\|off` | On or off the sponsored testers list |
 | `reset <account>` | Back to the real plan |
 
@@ -55,11 +56,16 @@ Free account acting as Max is never charged for Max.
 
 Things that still follow the real plan: idle cleanup's timing, plan cleanup
 after a real downgrade (it waits while a test runs), and the iPhone's minutes
-(those join this tool from the cloud iPhone lane).
+unless `--phone-minutes` sets them (`act-as` alone leaves them the real
+plan's). Test iPhone minutes are the whole limit: no extra minutes run past
+them.
 
 Billing counts the real plan's hours, so a test may not give more hours than
 that to an account with earned hours or extra hours on: those would be used
 for real. The tool refuses it (409); test fewer hours, or use another account.
+For the same reason it refuses test iPhone minutes on an account with extra
+iPhone minutes on: those bill past the real plan's minutes. Turning extra
+minutes on during a test bills minutes past the real plan's.
 
 ## Switches
 
