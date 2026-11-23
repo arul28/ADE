@@ -1803,6 +1803,43 @@ describe("laneService delete outside .ade/worktrees", () => {
     }
   });
 
+  it("repairs an external worktree whose .git pointer is gone instead of pruning Git's data for it", async () => {
+    const { db, service, worktreePath } = await setup({
+      projectId: "proj-delete-lost-pointer",
+      prefix: "ade-lane-delete-lost-pointer-",
+    });
+    try {
+      fs.writeFileSync(path.join(worktreePath, "work.txt"), "user work\n", "utf8");
+      stubGitForDelete({
+        worktreePath,
+        removeExitCode: 128,
+        removeStderr: `fatal: validation failed, cannot remove working tree: '${worktreePath}/.git' does not exist`,
+      });
+      const deleteGit = vi.mocked(runGit).getMockImplementation()!;
+      vi.mocked(runGit).mockImplementation(async (gitArgs: string[], opts?: any) => {
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "repair") {
+          fs.writeFileSync(path.join(worktreePath, ".git"), "gitdir: /repo/.git/worktrees/external\n", "utf8");
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        return deleteGit(gitArgs, opts);
+      });
+
+      await expect(service.delete({ laneId: "lane-external", deleteBranch: false })).rejects.toThrow(
+        /link is restored; delete the lane again/i,
+      );
+
+      const gitCalls = vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitArgs.filter((arg) => arg !== "-c" && !arg.includes("=")).slice(0, 2).join(" "));
+      expect(gitCalls).toContain("worktree repair");
+      // A prune would drop the checkout's index, HEAD log and submodule repositories.
+      expect(gitCalls).not.toContain("worktree prune");
+      expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toMatchObject({ id: "lane-external" });
+    } finally {
+      db.close();
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+    }
+  });
+
   /** A single registered checkout, in `git worktree list --porcelain` spelling. */
   function registeredWorktree(worktreePath: string): string {
     return [

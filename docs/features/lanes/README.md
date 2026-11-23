@@ -1069,7 +1069,13 @@ Rails checked before `git worktree remove`, for every lane:
   The desktop dialog can reveal it or delete that directory. The CLI
   reports the path. A symlink is reported and not deleted;
 - the dirty-state check and `--force` confirmation flow are unchanged for a
-  directory Git still recognizes.
+  directory Git still recognizes;
+- an external directory Git still registers but whose `.git` pointer file is
+  gone (`git worktree remove` refuses with "'.git' does not exist") is
+  repaired with `git worktree repair`, never pruned: Git's entry still holds
+  that checkout's index, HEAD log and submodule repositories. The delete
+  stops with "delete the lane again", and the next delete runs the usual
+  checks on the restored checkout.
 
 Residual cleanup is where the two cases part. Inside `.ade/worktrees` — the
 storage ADE owns — a failed or partial `git worktree remove` still falls back
