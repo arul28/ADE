@@ -762,6 +762,57 @@ describe("createAgentChatService", () => {
       expect(JSON.stringify(mockState.droidPromptCalls[1])).not.toContain(HINT_OPEN);
       service.forceDisposeAll();
     });
+
+    it("revokes the hint once when the bound Apple device is detached", async () => {
+      const fixture = installClaudeResponseFixture({ sdkSessionId: "sdk-apple-revoke", responseText: "ok" });
+      const device = laneDeviceLookup({ udid: "UDID-AAA", name: "iPhone 17 Pro" });
+      const { service } = createService({ lookupLaneAppleDevice: device.lookup });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "alpha-turn" });
+      await settleDirectiveBookkeeping();
+      // `ade apple device-detach`: the lane has no device any more, but the
+      // thread's first turn still says it does.
+      device.set(null);
+      await service.runSessionTurn({ sessionId: session.id, text: "beta-turn" });
+      await settleDirectiveBookkeeping();
+      await service.runSessionTurn({ sessionId: session.id, text: "gamma-turn" });
+
+      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
+      const first = prompts.find((text) => text.includes("alpha-turn")) ?? "";
+      const second = prompts.find((text) => text.includes("beta-turn")) ?? "";
+      const third = prompts.find((text) => text.includes("gamma-turn")) ?? "";
+      expect(first).toContain(HINT_OPEN);
+      // No hint block this time; the revocation names the tag only in prose.
+      expect(second).not.toContain(`${HINT_OPEN}\n`);
+      expect(second).not.toContain("iPhone 17 Pro (UDID-AAA)");
+      expect(second).toContain("Earlier <ade-lane-tools> instructions no longer apply");
+      // Said once: a later turn does not repeat the revocation.
+      expect(third).not.toContain("Earlier <ade-lane-tools> instructions no longer apply");
+      service.forceDisposeAll();
+    });
+
+    it("revokes a detached Android hint and names the platform", async () => {
+      const fixture = installClaudeResponseFixture({ sdkSessionId: "sdk-android-revoke", responseText: "ok" });
+      let androidDevice: { avdName: string } | null = { avdName: "Pixel_ADE" };
+      const lookup = vi.fn(() => androidDevice);
+      const { service } = createService({ lookupLaneAndroidDevice: lookup });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "alpha-turn" });
+      await settleDirectiveBookkeeping();
+      androidDevice = null;
+      await service.runSessionTurn({ sessionId: session.id, text: "beta-turn" });
+
+      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
+      const first = prompts.find((text) => text.includes("alpha-turn")) ?? "";
+      const second = prompts.find((text) => text.includes("beta-turn")) ?? "";
+      expect(first).toContain(HINT_OPEN);
+      expect(first).toContain("Pixel_ADE");
+      expect(second).toContain("Earlier <ade-lane-tools> instructions no longer apply");
+      expect(second).toContain("Android");
+      service.forceDisposeAll();
+    });
   });
 
   // --------------------------------------------------------------------------

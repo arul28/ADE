@@ -19,6 +19,7 @@ import {
   tmpRoot,
   waitFor,
   waitForEvent,
+  waitForFakeTimerCondition,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest";
@@ -923,6 +924,82 @@ describe("explicit provider-thread continuity recovery", () => {
 
     mockState.pendingCodexResponses.splice(0).forEach((respond) => respond());
     await expect(first).resolves.toEqual(expect.objectContaining({ ok: true, mode: "retry_original" }));
+  });
+
+  it("retires an app-server that never answers thread/resume instead of reusing it", async () => {
+    const session = await createPersistedCodexThread();
+    // The app-server answers initialize but never answers resume: a wedged
+    // process that stays "ready" from the outside.
+    mockState.delayedCodexMethods.add("thread/resume");
+    vi.useFakeTimers();
+    const { service } = createService();
+    try {
+      const firstSend = service.sendMessage({ sessionId: session.id, text: "Continue." }, { awaitDispatch: true });
+      firstSend.catch(() => {});
+      await waitForFakeTimerCondition(
+        () => mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume"),
+        "the app-server to receive thread/resume",
+      );
+      // The per-request deadline is the only signal the process gives.
+      await vi.advanceTimersByTimeAsync(30_001);
+      await expect(firstSend).rejects.toThrow(/Could not resume the original Codex thread/);
+      const initializesBefore = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "initialize").length;
+      expect(initializesBefore).toBe(1);
+
+      mockState.delayedCodexMethods.clear();
+      const secondSend = service.sendMessage({ sessionId: session.id, text: "Continue." }, { awaitDispatch: true });
+      secondSend.catch(() => {});
+      // The wedged process must be forgotten: the next send starts a fresh one.
+      await waitForFakeTimerCondition(
+        () => mockState.codexRequestPayloads.filter((payload) => payload.method === "initialize").length
+          > initializesBefore,
+        "a fresh app-server to be started",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retires an app-server that never answers thread/resume on an explicit retry", async () => {
+    const session = await createPersistedCodexThread();
+    writePersistedChatState(session.id, {
+      ...readPersistedChatState(session.id),
+      continuityRecovery: {
+        state: "required",
+        reason: "unknown",
+        provider: "codex",
+        originalThreadId: "thread-1",
+        at: new Date().toISOString(),
+      },
+    });
+    mockState.codexResponseOverrides.set("thread/resume", { thread: { id: "thread-1" } });
+    // The app-server answers initialize but never answers the retry's resume.
+    mockState.delayedCodexMethods.add("thread/resume");
+    vi.useFakeTimers();
+    const { service } = createService();
+    try {
+      const firstRetry = service.recoverContinuity({ sessionId: session.id, mode: "retry_original" });
+      firstRetry.catch(() => {});
+      await waitForFakeTimerCondition(
+        () => mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume"),
+        "the app-server to receive thread/resume",
+      );
+      await vi.advanceTimersByTimeAsync(30_001);
+      await expect(firstRetry).resolves.toMatchObject({ ok: false, mode: "retry_original" });
+      const initializesBefore = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "initialize").length;
+      expect(initializesBefore).toBe(1);
+
+      // The wedged process must not be handed back to the next "Try again".
+      mockState.delayedCodexMethods.clear();
+      const secondRetry = service.recoverContinuity({ sessionId: session.id, mode: "retry_original" });
+      await expect(secondRetry).resolves.toMatchObject({ ok: true, mode: "retry_original", threadId: "thread-1" });
+      expect(mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "initialize").length).toBe(initializesBefore + 1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("leaves required recovery untouched when disk pressure blocks history reconstruction", async () => {
