@@ -7,6 +7,7 @@ import type { MaintenanceRunReport, StorageCleanupPreview, StorageCleanupTarget 
 import { type AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createStorageInsightsService } from "./storageInsightsService";
+import { createTestDirectoryLink } from "../../../test/symlinks";
 import { classifyDbTable, deriveSyncBookkeepingAction, mapDbBreakdown } from "./storageDbBreakdown";
 import { isMaintenanceReport, readMaintenanceJournal } from "./storageMaintenanceJournal";
 import { ADE_LAYOUT_DEFINITIONS } from "../../../shared/adeLayout";
@@ -320,9 +321,9 @@ describe("storageInsightsService", () => {
     writeSized(path.join(outside, "large.bin"), 1024 * 1024);
     const linkPath = path.join(projectRoot, ".ade", "cache", "linked-data");
     fs.mkdirSync(path.dirname(linkPath), { recursive: true });
-    fs.symlinkSync(outside, linkPath);
+    createTestDirectoryLink(outside, linkPath);
     const linkedParent = path.join(projectRoot, ".ade", "cache", "linked-parent");
-    fs.symlinkSync(outside, linkedParent);
+    createTestDirectoryLink(outside, linkedParent);
     const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
 
     const snapshot = await service.getSnapshot();

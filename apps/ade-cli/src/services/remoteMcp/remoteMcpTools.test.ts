@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildCliPlan } from "../../cli";
 import { findTypedTool, TYPED_TOOLS, withToolImage, type TypedTool } from "./remoteMcpTools";
+import { symlinksSupported } from "../../test/symlinks";
 
 /** One value for every input a tool declares, so each flag it can emit is emitted. */
 /** Inputs a tool refuses together: the test fills the other side. */
@@ -43,7 +44,7 @@ describe("ADE MCP typed tools", () => {
 // another computer: only an image inside the project's proof folders may
 // leave, judged on the file a link resolves to.
 describe("ADE MCP pictures", () => {
-  it("sends only a picture inside the proof folders, links resolved", async () => {
+  function mcpPictureFixture() {
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-outside-"));
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-project-"));
     const cache = path.join(root, ".ade", "cache");
@@ -55,30 +56,37 @@ describe("ADE MCP pictures", () => {
     fs.writeFileSync(path.join(root, "loose.png"), png);
     fs.writeFileSync(path.join(artifacts, "notes.json"), "{}");
     fs.writeFileSync(path.join(outside, "secret.png"), png);
-    // Windows may refuse an unprivileged symlink; everywhere else it must work.
-    const link = (target: string, at: string): string[] => {
-      try {
-        fs.symlinkSync(target, at);
-        return [path.relative(root, at)];
-      } catch (error) {
-        if (process.platform !== "win32") throw error;
-        return [];
-      }
-    };
-    const linked = [
-      ...link(path.join(artifacts, "notes.json"), path.join(cache, "named-like.png")),
-      ...link(path.join(outside, "secret.png"), path.join(cache, "escape.png")),
-    ];
     const tool = findTypedTool("proof_review");
     if (!tool) throw new Error("proof_review is not a typed tool");
     const answer = { content: [{ type: "text", text: "result" }] };
     const attach = async (file: string) => (await withToolImage(tool, { media: "image", path: file }, answer, root)).content;
+    return { outside, root, cache, artifacts, png, attach };
+  }
+
+  it("sends only a picture inside the proof folders", async () => {
+    const { outside, root, cache, png, attach } = mcpPictureFixture();
     try {
       const sent = await attach(path.join(cache, "sheet.png"));
       expect(sent).toHaveLength(2);
       expect(sent[1]).toMatchObject({ type: "image", mimeType: "image/png", data: png.toString("base64") });
-      for (const refused of ["loose.png", ...linked]) {
-        const content = await attach(path.join(root, refused));
+      const loose = await attach(path.join(root, "loose.png"));
+      expect(loose.some((block) => block.type === "image")).toBe(false);
+      expect(loose.at(-1)?.text).toMatch(/^No picture attached: /);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  // Windows refuses a file symlink without Developer Mode or an elevated token.
+  it.skipIf(!symlinksSupported)("refuses a picture whose name is inside the proof folders but whose link points outside", async () => {
+    const { outside, root, cache, artifacts, attach } = mcpPictureFixture();
+    // A link to a non-image inside the store, and one to an outside image.
+    fs.symlinkSync(path.join(artifacts, "notes.json"), path.join(cache, "named-like.png"));
+    fs.symlinkSync(path.join(outside, "secret.png"), path.join(cache, "escape.png"));
+    try {
+      for (const refused of ["named-like.png", "escape.png"]) {
+        const content = await attach(path.join(cache, refused));
         expect(content.some((block) => block.type === "image"), refused).toBe(false);
         expect(content.at(-1)?.text, refused).toMatch(/^No picture attached: /);
       }

@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupLegacyAdeSkills } from "./legacySkillCleanupService";
+import { createTestDirectoryLink } from "../../../test/symlinks";
 
 function writeSkill(root: string, name: string, body: string): void {
   const dir = path.join(root, name);
@@ -199,7 +200,7 @@ describe("cleanupLegacyAdeSkills", () => {
       fs.mkdirSync(userOwned, { recursive: true });
       fs.writeFileSync(path.join(userOwned, "SKILL.md"), "# user owned");
       fs.mkdirSync(path.dirname(skillDir), { recursive: true });
-      fs.symlinkSync(userOwned, skillDir, "dir");
+      createTestDirectoryLink(userOwned, skillDir);
     }],
     ["unsupported filesystem entry", (skillDir: string) => {
       fs.mkdirSync(skillDir, { recursive: true });

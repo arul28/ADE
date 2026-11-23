@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectNoJargon } from "../../../test/jargonGuard";
+import { symlinksSupported } from "../../../test/symlinks";
 import { boundServiceOutputLogs } from "../../../../../ade-cli/src/services/runtime/runtimeLogMaintenance";
 import { createAgentChatService } from "../chat/agentChatService";
 import { readThreadPointerLedger } from "../chat/threadPointerLedger";
@@ -379,7 +380,7 @@ describe("disk-full incident integration matrix", () => {
     verified.close();
   });
 
-  it("never follows a symlink farm during snapshot, cleanup preview, or compression listing", async () => {
+  it.skipIf(!symlinksSupported)("never follows a symlink farm during snapshot, cleanup preview, or compression listing", async () => {
     const projectRoot = tempRoot("symlink-project");
     const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "outside-symlink-"));
     roots.push(externalRoot);

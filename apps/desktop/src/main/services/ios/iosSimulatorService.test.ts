@@ -4,6 +4,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import type { ChildProcess, spawn as nodeSpawn } from "node:child_process";
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { createTestDirectoryLink } from "../../../test/symlinks";
 import {
   __testSetIosSimulatorHelperFactory,
   __testSetIosSimulatorProcessHooks,
@@ -1987,7 +1988,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     const outside = path.join(parent, "outside");
     fs.mkdirSync(projectRoot, { recursive: true });
     fs.mkdirSync(outside, { recursive: true });
-    fs.symlinkSync(outside, path.join(projectRoot, "escape"));
+    createTestDirectoryLink(outside, path.join(projectRoot, "escape"));
     const { run } = simulatorRunMock();
     const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
     const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
@@ -2000,7 +2001,7 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       // A build root that is itself reached through a symlink still works. This
       // is the normal case on macOS, where `/tmp` is a link to `/private/tmp`.
       const linkedRoot = path.join(parent, "linked-repo");
-      fs.symlinkSync(projectRoot, linkedRoot);
+      createTestDirectoryLink(projectRoot, linkedRoot);
       const linkedService = createIosSimulatorService({ projectRoot: linkedRoot, logger: noopLogger });
       try {
         const shot = await linkedService.screenshot({ projectRoot: linkedRoot, outPath: "proof/shot.png" });

@@ -27,6 +27,7 @@ import {
   writeTestTranscriptEnvelopes,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { symlinksSupported } from "../../../test/symlinks";
 
 describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
@@ -1577,7 +1578,7 @@ describe("createAgentChatService", () => {
       ]);
     });
 
-    it("does not hydrate transcript symlinks that resolve outside ADE", async () => {
+    it.skipIf(!symlinksSupported)("does not hydrate transcript symlinks that resolve outside ADE", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",

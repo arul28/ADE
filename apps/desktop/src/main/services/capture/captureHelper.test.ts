@@ -75,6 +75,28 @@ function fakeChild(): FakeChild {
 /** Mirrors `GRACEFUL_SHUTDOWN_MS` in the supervisor. */
 const GRACE_MS = 500;
 
+/**
+ * `node:fs` is mocked in this file, so the shared `symlinksSupported` probe
+ * would inspect the mock and report false everywhere. Probe the builtin
+ * module instead.
+ */
+const captureFileSymlinksSupported = (() => {
+  if (process.platform !== "win32") return true;
+  const realFs = process.getBuiltinModule("node:fs");
+  const realOs = process.getBuiltinModule("node:os");
+  const realPath = process.getBuiltinModule("node:path");
+  const root = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "ade-capture-symlink-probe-"));
+  try {
+    realFs.writeFileSync(realPath.join(root, "target"), "");
+    realFs.symlinkSync(realPath.join(root, "target"), realPath.join(root, "link"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    realFs.rmSync(root, { recursive: true, force: true });
+  }
+})();
+
 const logger = {
   debug: vi.fn(),
   info: vi.fn(),
@@ -111,6 +133,55 @@ function createHelper(overrides: Partial<{
     chordCooldownMs: 0,
   });
   return { helper, onShot, onFailure };
+}
+
+/**
+ * Real directories for the capture-jail cases. The mocked `node:fs` cannot
+ * tell a link from a directory, so these cases drive the REAL filesystem: a
+ * real symlink, a real `fs.realpathSync`.
+ */
+async function captureJailFixture() {
+  const realFs = await vi.importActual<typeof NodeFs>("node:fs");
+  const realOs = await vi.importActual<typeof NodeOs>("node:os");
+  const realPath = await vi.importActual<typeof NodePath>("node:path");
+
+  const root = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "ade-capture-symlink-"));
+  const outsideDir = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "ade-capture-secret-"));
+  const secret = realPath.join(outsideDir, "secret.png");
+  realFs.writeFileSync(secret, "SECRETBYTES");
+  const honest = realPath.join(root, "capture-2.png");
+  realFs.writeFileSync(honest, "PNGBYTES");
+
+  // Real fs for everything the delivery path touches, so nothing about the
+  // escape is simulated.
+  realpathSyncMock.mockImplementation((filePath: unknown) => realFs.realpathSync(filePath as string));
+  statSyncMock.mockImplementation((filePath: unknown) => realFs.statSync(filePath as string));
+  readFileSyncMock.mockImplementation((filePath: unknown) => realFs.readFileSync(filePath as string));
+  return { realFs, realPath, root, outsideDir, secret, honest };
+}
+
+/** Ask the helper for one capture and report how the delivery was handled. */
+async function deliverCaptured(outputDirectory: string, capturedPath: string) {
+  const child = fakeChild();
+  spawnMock.mockReturnValue(child);
+  const onShot = vi.fn();
+  const onFailure = vi.fn();
+  const helper = new CaptureHelper({
+    executablePath: "/tmp/ade-capture-helper",
+    outputDirectory,
+    logger,
+    onShot,
+    onFailure,
+    platform: process.platform,
+    chordCooldownMs: 0,
+  });
+  helper.updateSettings({ enabled: true });
+  child.emit("spawn");
+  child.stdout.write('{"type":"chord"}\n');
+  await new Promise((resolve) => setImmediate(resolve));
+  child.stdout.write(JSON.stringify({ type: "captured", path: capturedPath }) + "\n");
+  await new Promise((resolve) => setImmediate(resolve));
+  return { onShot, onFailure };
 }
 
 describe("CaptureHelper", () => {
@@ -228,46 +299,12 @@ describe("CaptureHelper", () => {
    * `fs.realpathSync` — because a mocked one would only prove the test's own
    * idea of what a symlink is.
    */
-  it("refuses a symlink inside the capture directory that points outside it", async () => {
-    const realFs = await vi.importActual<typeof NodeFs>("node:fs");
-    const realOs = await vi.importActual<typeof NodeOs>("node:os");
-    const realPath = await vi.importActual<typeof NodePath>("node:path");
-
-    const root = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "ade-capture-symlink-"));
-    const outsideDir = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "ade-capture-secret-"));
-    const secret = realPath.join(outsideDir, "secret.png");
-    realFs.writeFileSync(secret, "SECRETBYTES");
+  it.skipIf(!captureFileSymlinksSupported)("refuses a symlink inside the capture directory that points outside it", async () => {
+    const { realFs, realPath, root, outsideDir, secret } = await captureJailFixture();
     const planted = realPath.join(root, "capture-1.png");
     realFs.symlinkSync(secret, planted);
-    const honest = realPath.join(root, "capture-2.png");
-    realFs.writeFileSync(honest, "PNGBYTES");
 
-    // Real fs for everything the delivery path touches, so nothing about the
-    // escape is simulated.
-    realpathSyncMock.mockImplementation((filePath: unknown) => realFs.realpathSync(filePath as string));
-    statSyncMock.mockImplementation((filePath: unknown) => realFs.statSync(filePath as string));
-    readFileSyncMock.mockImplementation((filePath: unknown) => realFs.readFileSync(filePath as string));
-
-    const child = fakeChild();
-    spawnMock.mockReturnValue(child);
-    const onShot = vi.fn();
-    const onFailure = vi.fn();
-    const helper = new CaptureHelper({
-      executablePath: "/tmp/ade-capture-helper",
-      outputDirectory: root,
-      logger,
-      onShot,
-      onFailure,
-      platform: "darwin",
-      chordCooldownMs: 0,
-    });
-    helper.updateSettings({ enabled: true });
-    child.emit("spawn");
-
-    child.stdout.write('{"type":"chord"}\n');
-    await new Promise((resolve) => setImmediate(resolve));
-    child.stdout.write(JSON.stringify({ type: "captured", path: planted }) + "\n");
-    await new Promise((resolve) => setImmediate(resolve));
+    const { onShot, onFailure } = await deliverCaptured(root, planted);
 
     expect(onShot).not.toHaveBeenCalled();
     expect(readFileSyncMock).not.toHaveBeenCalled();
@@ -276,13 +313,16 @@ describe("CaptureHelper", () => {
     // The file it pointed at is still there: refusing is not deleting.
     expect(realFs.existsSync(secret)).toBe(true);
 
-    // ...and an ordinary file in the same directory is still read.
-    child.stdout.write('{"type":"chord"}\n');
-    await new Promise((resolve) => setImmediate(resolve));
-    child.stdout.write(JSON.stringify({ type: "captured", path: honest }) + "\n");
-    await new Promise((resolve) => setImmediate(resolve));
+    realFs.rmSync(root, { recursive: true, force: true });
+    realFs.rmSync(outsideDir, { recursive: true, force: true });
+  });
 
-    expect(onFailure).toHaveBeenCalledTimes(1);
+  // The link case above needs a symlink; an ordinary capture in the same
+  // directory needs none and stays covered everywhere.
+  it("still reads an ordinary capture file in the directory", async () => {
+    const { realFs, root, outsideDir, honest } = await captureJailFixture();
+    const { onShot } = await deliverCaptured(root, honest);
+
     expect(onShot).toHaveBeenCalledTimes(1);
     expect(onShot.mock.calls[0][0].pngBase64).toBe(Buffer.from("PNGBYTES").toString("base64"));
 
@@ -605,8 +645,14 @@ describe("CaptureHelper", () => {
     const secret = realPath.join(outsideDir, "secret.png");
     realFs.writeFileSync(secret, "SECRETBYTES");
     // A LINKED DIRECTORY, so the escape survives `path.resolve`: the name stays
-    // inside the capture directory and the file the unlink opens does not.
-    realFs.symlinkSync(outsideDir, realPath.join(root, "shed"));
+    // inside the capture directory and the file the unlink opens does not. The
+    // real `fs` is used here, so this builds the link itself: a junction on
+    // Windows (no privilege needed), a directory symlink elsewhere.
+    realFs.symlinkSync(
+      realPath.resolve(outsideDir),
+      realPath.join(root, "shed"),
+      realPath.sep === "\\" ? "junction" : "dir",
+    );
     const named = realPath.join(root, "shed", "secret.png");
     realpathSyncMock.mockImplementation((filePath: unknown) => realFs.realpathSync(filePath as string));
 

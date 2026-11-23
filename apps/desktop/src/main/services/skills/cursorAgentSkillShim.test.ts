@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { symlinksSupported } from "../../../test/symlinks";
 import { cursorSdkSettingSources } from "../chat/cursorSdkPolicy";
 import {
   cursorAgentSkillShimRoot,
@@ -37,7 +38,7 @@ describe("prepareCursorAgentSkillShim", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("refuses a skill whose nested link escapes the skill root", () => {
+  it.skipIf(!symlinksSupported)("refuses a skill whose nested link escapes the skill root", () => {
     // A skill directory comes from a repo-controlled root, so a link to a file
     // outside it must never be materialized into the Cursor-readable shim.
     const secret = path.join(tmp, "secret.txt");

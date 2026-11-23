@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pruneStaleCompileCacheTags, scheduleStaleCompileCachePrune } from "./compileCachePrune";
+import { createTestDirectoryLink, symlinksSupported } from "../../test/symlinks";
 
 const CURRENT = "v24.15.0-arm64-e27d4a24-501";
 const OLD = "v24.14.0-arm64-9e3ad1fa-501";
@@ -38,7 +39,7 @@ describe("pruneStaleCompileCacheTags", () => {
   });
 
   // The two recent siblings keep the stale-looking link inside the removable range, so only the symlink check protects it.
-  it.skipIf(process.platform === "win32")("never follows or removes a symlink out of the root", async () => {
+  it.skipIf(!symlinksSupported)("never follows or removes a symlink out of the root", async () => {
     makeTag(CURRENT);
     makeTag(NEWER, HOUR);
     makeTag(OLDER, 2 * HOUR);
@@ -47,7 +48,7 @@ describe("pruneStaleCompileCacheTags", () => {
     const old = new Date(Date.now() - 40 * DAY);
     fs.writeFileSync(path.join(outside, "keep.txt"), "keep");
     fs.utimesSync(path.join(outside, "keep.txt"), old, old);
-    fs.symlinkSync(outside, path.join(root, OLD), "dir");
+    createTestDirectoryLink(outside, path.join(root, OLD));
     fs.lutimesSync(path.join(root, OLD), old, old);
 
     expect(await pruneStaleCompileCacheTags(path.join(root, CURRENT))).toEqual([]);
