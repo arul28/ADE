@@ -492,7 +492,6 @@ final class CloudSponsoredStore: ObservableObject {
     let tracking = CloudSponsoredTracking.status
     if let last = lastSeenAt[instanceId], now.timeIntervalSince(last) < Self.seenEvery, lastSeenTracking[instanceId] == tracking { return }
     lastSeenAt[instanceId] = now
-    lastSeenTracking[instanceId] = tracking
     let previous = seenInFlight[instanceId]
     let send = Task { @MainActor [self] in
       await previous?.value
@@ -509,8 +508,12 @@ final class CloudSponsoredStore: ObservableObject {
       lastSeenTracking[instanceId] = nil
       return
     }
+    // The answer as sent, read after any earlier report finished: the next
+    // look compares against what the server actually got.
+    let device = CloudSponsoredDevice.current
+    lastSeenTracking[instanceId] = device.tracking
     do {
-      try await client.sponsoredSeen(instanceId: instanceId, device: .current)
+      try await client.sponsoredSeen(instanceId: instanceId, device: device)
     } catch {
       // Not said: the next look tries again instead of waiting out the interval.
       if lastSeenAt[instanceId] == now {
