@@ -812,6 +812,143 @@ function toRollupCheckRuns(checkRuns: any[]): ChecksRollupCheckRun[] {
   }));
 }
 
+function isCancelledCheckRun(run: any): boolean {
+  return asString(run?.conclusion).toLowerCase() === "cancelled";
+}
+
+/** Only a pull_request run supersedes an earlier one of the same workflow. */
+const PR_RUN_EVENTS = new Set(["pull_request", "pull_request_target"]);
+
+type HeadWorkflowRun = {
+  check_suite_id?: unknown;
+  workflow_id?: unknown;
+  run_number?: unknown;
+  event?: unknown;
+};
+
+/** Later `completed_at`/`started_at` wins; the id breaks a tie. */
+function checkRunRecency(a: any, b: any): number {
+  const stamp = (run: any): number => {
+    for (const key of ["completed_at", "started_at"]) {
+      const parsed = Date.parse(asString(run?.[key]));
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return 0;
+  };
+  const byStamp = stamp(a) - stamp(b);
+  if (byStamp !== 0) return byStamp;
+  return (Number(a?.id) || 0) - (Number(b?.id) || 0);
+}
+
+/**
+ * Drop check runs from a workflow run that a newer run of the same workflow and
+ * event already replaced on this head (T3).
+ *
+ * GitHub re-runs CI on an unchanged head (ready_for_review, a label, or a
+ * force-push back to an earlier SHA), and when the newer run of the same
+ * workflow starts, the older run is cancelled but its check runs stay in
+ * `GET /commits/{sha}/check-runs` beside the replacement run's passes. A
+ * cancelled conclusion outranks a pass in every rollup, so without this a head
+ * that was re-run reads red forever.
+ *
+ * Only `pull_request` / `pull_request_target` runs supersede: a push or
+ * workflow_dispatch run on the same SHA is a different pipeline, not a
+ * replacement for the PR's. A required context is dropped only when the newest
+ * run actually re-reports it, so branch protection is never silently removed.
+ */
+function withoutSupersededCancelledChecks(
+  raw: any[],
+  runs: readonly HeadWorkflowRun[] | null,
+  requiredNames?: ReadonlySet<string>,
+): any[] {
+  if (!Array.isArray(raw) || raw.length === 0) return raw;
+  if (!Array.isArray(runs) || runs.length === 0) return raw;
+
+  const suiteToRun = new Map<number, HeadWorkflowRun>();
+  const newestRunByLineage = new Map<string, HeadWorkflowRun>();
+  for (const run of runs) {
+    const suiteId = Number(run?.check_suite_id);
+    if (Number.isFinite(suiteId) && suiteId > 0 && !suiteToRun.has(suiteId)) {
+      suiteToRun.set(suiteId, run);
+    }
+    const workflowId = Number(run?.workflow_id);
+    const runNumber = Number(run?.run_number);
+    const event = asString(run?.event);
+    if (!PR_RUN_EVENTS.has(event) || !Number.isFinite(workflowId) || !Number.isFinite(runNumber)) continue;
+    const lineage = `${workflowId} ${event}`;
+    const current = newestRunByLineage.get(lineage);
+    if (!current || Number(current.run_number) < runNumber) newestRunByLineage.set(lineage, run);
+  }
+
+  // Names the newest run of each lineage reported with a non-cancelled result.
+  // A required context absent from this set was not re-run, so its cancelled
+  // row must stay visible or the branch-protection gate would silently vanish.
+  const namesBySuite = new Map<number, Set<string>>();
+  for (const check of raw) {
+    if (isCancelledCheckRun(check)) continue;
+    const suiteId = Number(check?.check_suite?.id);
+    const name = asString(check?.name).trim();
+    if (!Number.isFinite(suiteId) || suiteId <= 0 || !name) continue;
+    const names = namesBySuite.get(suiteId) ?? new Set<string>();
+    names.add(name);
+    namesBySuite.set(suiteId, names);
+  }
+
+  return raw.filter((check) => {
+    if (!isCancelledCheckRun(check)) return true;
+    const run = suiteToRun.get(Number(check?.check_suite?.id));
+    if (!run) return true;
+    const event = asString(run?.event);
+    if (!PR_RUN_EVENTS.has(event)) return true;
+    const newest = newestRunByLineage.get(`${Number(run?.workflow_id)} ${event}`);
+    if (!newest) return true;
+    const runNumber = Number(run?.run_number);
+    if (!Number.isFinite(runNumber) || runNumber >= Number(newest.run_number)) return true;
+    const name = asString(check?.name).trim();
+    if (requiredNames?.has(name)) {
+      const newestSuiteId = Number(newest.check_suite_id);
+      if (!namesBySuite.get(newestSuiteId)?.has(name)) return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * One row per (app, name): the newest. GitHub's check-runs order is
+ * undocumented, and a job re-run inside the same workflow run (same
+ * `run_number`, so the lineage rule above cannot see it) or by an app that
+ * exposes no run lineage leaves the old row beside its replacement.
+ */
+function newestCheckRunPerName(raw: any[]): any[] {
+  if (!Array.isArray(raw) || raw.length <= 1) return raw;
+  const newest = new Map<string, any>();
+  for (const run of raw) {
+    const name = asString(run?.name) || "check";
+    const appSlug = asString(run?.app?.slug).toLowerCase();
+    const key = `${appSlug}\u0000${name.trim()}`;
+    const current = newest.get(key);
+    if (!current || checkRunRecency(run, current) > 0) newest.set(key, run);
+  }
+  return Array.from(newest.values());
+}
+
+/**
+ * The row set every surface judges: cancelled rows a newer workflow run
+ * replaced are gone, then each (app, name) keeps its newest row. The rollup
+ * and the `PrCheck` list both go through here, because a surface that keeps
+ * every row while another keeps only the newest reads the same head red and
+ * green at once — and prWatch, which wakes on the list, never sees the
+ * failure the row reports.
+ */
+function reduceCheckRunRows(
+  raw: any[],
+  runs: readonly HeadWorkflowRun[] | null,
+  requiredNames?: ReadonlySet<string>,
+): any[] {
+  const filtered = runs ? withoutSupersededCancelledChecks(raw, runs, requiredNames) : raw;
+  return newestCheckRunPerName(filtered);
+}
+
 function toRollupCommitStatuses(
   statuses: Array<{ context: string; state: string }> | undefined,
 ): ChecksRollupCommitStatus[] {
@@ -820,6 +957,25 @@ function toRollupCommitStatuses(
     context: asString(status?.context),
     state: asString(status?.state).toLowerCase(),
   }));
+}
+
+/**
+ * True when `rollupChecks` calls these rows failing — the state
+ * `deriveChecksRollup` gates its lineage read on. A real stage failure is
+ * decided before every required-context, merge-state and age input, so those
+ * need not be resolved to answer it.
+ */
+function checkRowsAreFailing(
+  rows: any[],
+  statuses: Array<{ context: string; state: string }> | undefined,
+): boolean {
+  return rollupChecks({
+    checkRuns: toRollupCheckRuns(rows),
+    commitStatuses: toRollupCommitStatuses(statuses),
+    requiredContexts: null,
+    mergeStateBlocked: false,
+    headCommitAgeMs: null,
+  }).status === "failing";
 }
 
 /**
@@ -5648,6 +5804,27 @@ export function createPrService({
     return [...runs];
   };
 
+  /**
+   * Workflow runs on one commit, used to tell a superseded cancelled check from
+   * a genuine one (T3). Same read `getActionRunsByCoords` makes; one page of
+   * 100 covers every workflow a normal head runs. Shared through the read
+   * cache: a detail open asks for status and checks together and the Checks tab
+   * polls both, so an in-flight or just-settled read is joined instead of
+   * spending quota on the same answer again. Errors propagate — every caller
+   * decides whether to keep the unfiltered rows instead.
+   */
+  const fetchHeadWorkflowRuns = async (repo: GitHubRepoRef, headSha: string): Promise<HeadWorkflowRun[]> => {
+    const runs = await readCache.shared(repo, `headWorkflowRuns:${headSha}`, async (): Promise<HeadWorkflowRun[]> => {
+      const { data } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/actions/runs`,
+        query: { head_sha: headSha, per_page: 100 },
+      });
+      return Array.isArray(data?.workflow_runs) ? data.workflow_runs : [];
+    });
+    return [...runs];
+  };
+
   /** Last-known rollup for a PR row, so a failed checks fetch can hold it. */
   const previousChecksRollup = (prId: string): ChecksRollup => {
     const row = getRowById(prId);
@@ -5673,6 +5850,7 @@ export function createPrService({
   const deriveChecksRollup = async (args: {
     repo: GitHubRepoRef;
     baseBranch: string;
+    headSha: string;
     checkRuns: any[];
     combinedStatus: { state: string; statuses: Array<{ context: string; state: string }> };
     mergeStateBlocked: boolean;
@@ -5697,13 +5875,31 @@ export function createPrService({
     const required = await requiredChecksResolver
       .resolve(args.repo, args.baseBranch, args.mergeStateBlocked)
       .catch(() => ({ contexts: null, source: "unavailable" as const }));
-    return rollupChecks({
-      checkRuns: toRollupCheckRuns(args.checkRuns),
+    const requiredNames = required.contexts ? new Set(required.contexts) : undefined;
+    // Judge the same reduced rows the Checks list shows: a same-name
+    // replacement the lineage rule cannot see still decides the verdict.
+    const derive = (checkRuns: any[], runs: readonly HeadWorkflowRun[] | null = null): ChecksRollup => rollupChecks({
+      checkRuns: toRollupCheckRuns(reduceCheckRunRows(checkRuns, runs, requiredNames)),
       commitStatuses: toRollupCommitStatuses(args.combinedStatus?.statuses),
       requiredContexts: required.contexts,
       mergeStateBlocked: args.mergeStateBlocked,
       headCommitAgeMs: commitAgeMs(earliestReportAt(args.checkRuns, args.combinedStatus) ?? args.headActivityAt, Date.now()),
     });
+    const first = derive(args.checkRuns);
+    // T3: only a cancelled row can turn a pass into a false failure, and only
+    // then is the extra runs read worth making on this hot path. A failed read
+    // keeps the first rollup — never invent a pass from a partial picture.
+    if (first.status !== "failing" || !args.checkRuns.some(isCancelledCheckRun) || !args.headSha) return first;
+    const runs = await fetchHeadWorkflowRuns(args.repo, args.headSha).catch((error: unknown) => {
+      logger.warn("prs.superseded_check_runs_failed", {
+        repo: `${args.repo.owner}/${args.repo.name}`,
+        headSha: args.headSha,
+        error: getErrorMessage(error),
+      });
+      return null;
+    });
+    if (!runs) return first;
+    return derive(args.checkRuns, runs);
   };
 
   const fetchCompare = async (repo: GitHubRepoRef, baseSha: string, headSha: string): Promise<{ behindBy: number }> => {
@@ -5775,6 +5971,7 @@ export function createPrService({
       ? await deriveChecksRollup({
           repo,
           baseBranch: asString(pr?.base?.ref) || row.base_branch,
+          headSha,
           checkRuns,
           combinedStatus,
           // No GraphQL merge box on this path; the rollup treats the absence as
@@ -6197,6 +6394,7 @@ export function createPrService({
     const checksRollup = await deriveChecksRollup({
       repo,
       baseBranch: asString(pr?.base?.ref),
+      headSha: restHeadSha,
       checkRuns,
       combinedStatus,
       mergeStateBlocked: (mergeState?.mergeStateStatus ?? "").toLowerCase() === "blocked",
@@ -6344,12 +6542,46 @@ export function createPrService({
     ]);
     if (combinedStatusError && checkRunsError) throw checkRunsError;
 
+    // T3: the superseded run's cancelled rows must not surface here either.
+    // This feeds the Checks tab, activity, the detail bundle and prWatch, so it
+    // judges the same reduced row set the row rollup does: superseded
+    // cancellations gone, then the newest row per (app, name).
+    //
+    // The lineage read is made under the rollup's own gate — a head already
+    // failing because of a cancelled row — and is shared through the read cache,
+    // so one detail open (status and checks together) and the Checks-tab poll
+    // ask GitHub once. Any other head cannot have its verdict changed by a
+    // lineage, so it is not worth a request; a failed read leaves the rows as
+    // they came rather than inventing a different list.
+    const currentRows = reduceCheckRunRows(checkRuns, null);
+    let effectiveCheckRuns = currentRows;
+    if (checkRuns.some(isCancelledCheckRun) && checkRowsAreFailing(currentRows, combinedStatus.statuses)) {
+      const required = await requiredChecksResolver
+        .resolve(repo, asString(pr?.base?.ref), false)
+        .catch(() => ({ contexts: null, source: "unavailable" as const }));
+      const runs = await fetchHeadWorkflowRuns(repo, headSha).catch((error: unknown) => {
+        logger.warn("prs.superseded_check_runs_failed", {
+          repo: `${repo.owner}/${repo.name}`,
+          prNumber,
+          headSha,
+          error: getErrorMessage(error),
+        });
+        return null;
+      });
+      if (runs) {
+        effectiveCheckRuns = reduceCheckRunRows(
+          checkRuns,
+          runs,
+          required.contexts ? new Set(required.contexts) : undefined,
+        );
+      }
+    }
+
     const out: PrCheck[] = [];
     const seen = new Set<string>();
 
-    for (const run of checkRuns) {
+    for (const run of effectiveCheckRuns) {
       const name = asString(run?.name) || "check";
-      if (seen.has(name)) continue;
       seen.add(name);
       const conclusion: PrCheck["conclusion"] = toJobConclusion(run?.conclusion);
       out.push({
@@ -6598,12 +6830,18 @@ export function createPrService({
    *   - else "none" (empty list, or only neutral/skipped/etc.)
    */
   const aggregateCommitCheckStatus = (
-    runs: Array<{ status?: string | null; conclusion?: string | null }>
+    runs: Array<{ status?: string | null; conclusion?: string | null }>,
+    headWorkflowRuns?: readonly HeadWorkflowRun[] | null,
   ): "success" | "failure" | "pending" | "none" => {
-    if (!Array.isArray(runs) || runs.length === 0) return "none";
+    // T3 applies to the head only: only that SHA can carry a newer run that
+    // superseded the one whose cancelled check runs are still listed. The
+    // reduction is the one the rollup and the Checks list use, so a same-name
+    // re-run does not leave this dot red beside a green row.
+    const effectiveRuns = reduceCheckRunRows(runs as any[], headWorkflowRuns ?? null);
+    if (!Array.isArray(effectiveRuns) || effectiveRuns.length === 0) return "none";
     let hasPending = false;
     let hasSuccess = false;
-    for (const run of runs) {
+    for (const run of effectiveRuns) {
       const status = asString(run?.status).toLowerCase();
       const conclusion = asString(run?.conclusion).toLowerCase();
       if (
@@ -6781,7 +7019,20 @@ export function createPrService({
         if (Date.now() - started > COMMIT_CHECK_STATUS_BUDGET_MS) return "none";
         try {
           const runs = await fetchCheckRuns(repo, commit.sha);
-          const status = aggregateCommitCheckStatus(runs);
+          // T3: only the head can carry a superseded run on the same SHA; an
+          // older commit's cancellation has no newer run here to replace it. A
+          // failed runs read keeps the raw rows rather than hiding the dot.
+          const headWorkflowRuns = isHead && runs.some(isCancelledCheckRun)
+            ? await fetchHeadWorkflowRuns(repo, commit.sha).catch((err: unknown) => {
+                logger.warn("prs.commit_head_workflow_runs_failed", {
+                  prId,
+                  sha: commit.sha,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+                return null;
+              })
+            : null;
+          const status = aggregateCommitCheckStatus(runs, headWorkflowRuns);
           remember(commit.sha, status);
           return status;
         } catch (err) {
