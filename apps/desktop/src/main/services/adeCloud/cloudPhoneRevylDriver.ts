@@ -42,6 +42,8 @@ const WAIT_POLL_MS = 700;
 const WAIT_LIMIT_S = 30;
 /** After an app launches, its first screen is read after this. */
 const LAUNCH_SETTLE_MS = 1_500;
+/** Reads of a just-launched app's screen before its empty answer is shown as it is. */
+const LAUNCH_SETTLE_READS = 4;
 const LOG_LINES = 200;
 
 /** Calls that only read, so a gateway error may be tried again. */
@@ -323,19 +325,23 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     }
   }
 
-  /** The app's first screen, after it launched. */
   /**
-   * The screen after a launch. The app already launched: a screen that can't
+   * The app's first screen, after it launched. A just-launched app often has
+   * no accessibility tree yet (an empty screen): read again, up to
+   * `LAUNCH_SETTLE_READS` times. The app already launched: a screen that can't
    * be read is a note, never a failure (a gone phone too: a retry would build
    * and install all over again on a new one).
    */
   async function settledScreen(phone: CloudPhoneHeld): Promise<string> {
-    await sleep(LAUNCH_SETTLE_MS);
-    try {
-      return screenText(await readScreen(phone));
-    } catch (error) {
-      if (error instanceof CloudPhoneGoneError) return "The cloud iPhone stopped right after the launch.";
-      return `The screen couldn't be read just now (${error instanceof Error ? error.message : "no answer"}). Run ade apple snapshot to look again.`;
+    for (let read = 1; ; read += 1) {
+      await sleep(LAUNCH_SETTLE_MS);
+      try {
+        const screen = await readScreen(phone);
+        if (screen.elements.length || read >= LAUNCH_SETTLE_READS) return screenText(screen);
+      } catch (error) {
+        if (error instanceof CloudPhoneGoneError) return "The cloud iPhone stopped right after the launch.";
+        return `The screen couldn't be read just now (${error instanceof Error ? error.message : "no answer"}). Run ade apple snapshot to look again.`;
+      }
     }
   }
 
