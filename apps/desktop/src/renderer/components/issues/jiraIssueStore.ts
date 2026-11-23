@@ -642,6 +642,9 @@ type JiraIssueListEntry = {
 };
 const lists = new Map<string, JiraIssueListEntry>();
 const listRequestVersions = new Map<string, number>();
+// Tokens only ever move forward, so a token pruned with its evicted listing is
+// never handed out again to a search that restarts under the same key.
+let nextListRequestVersion = 1;
 const EMPTY_LIST: JiraIssueListEntry = { issues: [], firstPageKeys: [], hasLoadedMore: false, nextCursor: null, fetchedAt: 0, status: "idle", error: null, promise: null, localChanges: {} };
 
 /**
@@ -785,7 +788,7 @@ export function loadJiraIssueList(
     return Promise.resolve();
   }
   const cursor = options.cursor ?? (options.force ? null : current.nextCursor);
-  const requestVersion = (listRequestVersions.get(key) ?? 0) + 1;
+  const requestVersion = nextListRequestVersion++;
   listRequestVersions.set(key, requestVersion);
   const promise = read({ ...filters, limit: PAGE_SIZE, cursor }, pin)
     .then((page: JiraIssuePage) => {
