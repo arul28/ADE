@@ -8844,7 +8844,11 @@ app.whenReady().then(async () => {
    */
   const projectNotGitRepositoryError = (root: string, error: unknown): unknown => {
     if (expectedErrorKind(error) !== "user") return error;
-    if (!fs.existsSync(path.join(root, ".ade")) || hasGitEntryAbove(root)) return error;
+    // The home folder's `.ade` (or a custom `ADE_HOME`) is ADE's own home, not a project's data.
+    const adeData = path.join(root, ".ade");
+    const customAdeHome = process.env.ADE_HOME?.trim();
+    if (pathsEqual(root, os.homedir()) || (customAdeHome && pathsEqual(adeData, customAdeHome))) return error;
+    if (!fs.existsSync(adeData) || hasGitEntryAbove(root)) return error;
     return markExpected(
       codedError(`The project folder ${root} is no longer a Git repository. Its .git folder isn't there.`, "project_not_git_repository"),
       "user",
@@ -8942,12 +8946,20 @@ app.whenReady().then(async () => {
           options.trustGitOwnership === true,
           options.webContentsId ?? null,
         ).catch((error: unknown) => {
-          throw projectNotGitRepositoryError(openRoot, error);
+          const notGit = projectNotGitRepositoryError(openRoot, error);
+          // Main just saw ADE's own data in this folder (`.ade`, and no `.git`
+          // above it), so the recovery screen this error opens may diagnose
+          // it. Unrecorded, its first call was refused as an unknown folder
+          // (ADE-DESKTOP-DV beside -DW) and the screen showed that instead.
+          if (isCodedError(notGit, "project_not_git_repository")) attemptedProjectRoots.record(openRoot);
+          throw notGit;
         }),
       ); // require a real git repo for onboarding.
       // INVARIANT: a root is recorded as "attempted" only once it has been
       // proven to be a real git repository on disk — `resolveRepoRoot` throws
-      // otherwise. The registry widens what a renderer may later name in
+      // otherwise — or main itself found it to be a project (ADE's data
+      // there, or the brain's own refusal) on the way to a recovery screen.
+      // The registry widens what a renderer may later name in
       // diagnostics/recovery calls, so recording an unvalidated string would
       // let a renderer launder any path on the machine into a known root by
       // calling `projectOpenRepo` with it first. Still recorded BEFORE the

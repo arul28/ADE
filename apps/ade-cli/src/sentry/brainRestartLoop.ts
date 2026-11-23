@@ -218,6 +218,7 @@ function readStartCause(runtimeDir: string, previous: BrainStart | undefined): B
       cause.startedBy = "systemd";
     } else if (process.platform === "darwin" && process.ppid === 1) {
       cause.startedBy = "launchd";
+      cause.launchdJob = process.env.XPC_SERVICE_NAME?.trim().slice(0, 120) || null;
     }
   } catch {
     // Unknown stays null.
@@ -227,12 +228,36 @@ function readStartCause(runtimeDir: string, previous: BrainStart | undefined): B
   // record has no pid, only its time.
   if (wedge && previous && (wedge.pid === previous.pid || (wedge.pid === undefined && sincePrevious(wedge.ts)))) {
     cause.previousWedge = typeof wedge.lastCommand === "string" ? wedge.lastCommand.slice(0, 80) : "unknown";
+    cause.previousWedgeDetail = wedgeDetail(wedge);
   }
   const failure = readStateFile(path.join(runtimeDir, LAST_FAILURE_FILE_NAME));
   if (failure && typeof failure.code === "string" && sincePrevious(failure.at)) {
     cause.previousFailureCode = failure.code.slice(0, 80);
   }
   return cause;
+}
+
+/**
+ * What the wedge breadcrumb says froze the brain, in a line for the report:
+ * every start in a loop that ends in a wedge otherwise reads only "idle"
+ * (ADE-BRAIN-69). Null when the breadcrumb holds none of it.
+ */
+function wedgeDetail(wedge: Record<string, unknown>): string | null {
+  const parts: string[] = [];
+  if (typeof wedge.blockedMs === "number") parts.push(`blockedMs=${Math.round(wedge.blockedMs)}`);
+  if (typeof wedge.freezeCause === "string") parts.push(`cause=${wedge.freezeCause.slice(0, 20)}`);
+  const fsCall = wedge.blockedFsCall && typeof wedge.blockedFsCall === "object" ? wedge.blockedFsCall as Record<string, unknown> : null;
+  if (fsCall && typeof fsCall.method === "string") {
+    parts.push(`fs=${fsCall.method.slice(0, 40)}${typeof fsCall.caller === "string" ? ` < ${fsCall.caller.slice(0, 160)}` : ""}`);
+  }
+  if (Array.isArray(wedge.openingProjects) && wedge.openingProjects.length > 0) {
+    const phases = wedge.openingProjects.slice(0, 3).flatMap((open) => {
+      const phase = open && typeof open === "object" ? (open as Record<string, unknown>).phase : null;
+      return typeof phase === "string" ? [phase.slice(0, 40)] : [];
+    });
+    parts.push(`opening=${wedge.openingProjects.length}${phases.length ? `(${phases.join(",")})` : ""}`);
+  }
+  return parts.length > 0 ? parts.join("; ") : null;
 }
 
 function countedStartsInWindow(starts: readonly BrainStart[], nowMs: number): number {

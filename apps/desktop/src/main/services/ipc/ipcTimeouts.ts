@@ -150,6 +150,8 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   },
 };
 
+/** The brain's own deadline for `projects.accountList`; the IPC wait adds the local-runtime setup on top. */
+export const PROJECT_ACCOUNT_LIST_TIMEOUT_MS = 10_000;
 /** What a runtime action through a gone connection adds to its own budget: pairing again (a woken computer, up to 2 min) and connecting. */
 const GONE_PIN_PAIRING_BUDGET_MS = 150_000;
 const REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
@@ -264,6 +266,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // renderer's outcome known through setup and result delivery.
     case IPC.projectSwitchToPath:
       return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
+    // The account's project list from this computer's brain, read as the
+    // window opens: its 10 s read starts only once the brain is connected, and
+    // a Windows cold start takes longer than the 30 s default (ADE-DESKTOP-E0).
+    case IPC.projectAccountList:
+      return localRuntimeCallIpcTimeoutMs(PROJECT_ACCOUNT_LIST_TIMEOUT_MS);
     // Awaits the user finishing Pi's own sign-in in a browser.
     case IPC.aiPiLoginStart:
       return PI_LOGIN_IPC_TIMEOUT_MS;

@@ -40,10 +40,21 @@ function classifyRendererUrl(rawUrl: string, devServerUrl: string): boolean {
 
 export type AdeRendererSenderState = "trusted" | "gone" | "untrusted";
 
+/**
+ * The sending frame's URL, else (no frame at all) its WebContents' URL. Null
+ * when it cannot be read: the frame was disposed under the call (Electron
+ * throws "Render frame was disposed" from `url`), which is a window closing
+ * or reloading, not a page. A frame that is there but unreadable never falls
+ * back to the WebContents' URL, so it is refused, not trusted on the
+ * window's word.
+ */
 function readSenderUrl(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">): string | null {
   try {
-    return event.senderFrame?.url
-      ?? (typeof event.sender.getURL === "function" ? event.sender.getURL() : null);
+    const frame = event.senderFrame;
+    // A frame with no page yet (empty URL) is the same teardown or early load.
+    if (frame) return frame.url || null;
+    const contentsUrl = typeof event.sender.getURL === "function" ? event.sender.getURL() : null;
+    return contentsUrl || null;
   } catch {
     return null;
   }
@@ -56,20 +67,30 @@ function readSenderUrl(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">
  */
 export function adeRendererSenderState(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">): AdeRendererSenderState {
   let win: Electron.BrowserWindow | null = null;
+  let url: string | null = null;
   try {
     if (typeof event.sender.isDestroyed === "function" && event.sender.isDestroyed()) return "gone";
+    // No URL at all: the frame that sent this was disposed before the call was
+    // handled. On quit, `destroyWindowsForExit` tears the ADE window down
+    // while its last polls and streams are still queued (ADE-DESKTOP-4C and
+    // -96 came right after the quit prompt's button; -CG, -1H, -E4, -E5 are
+    // the same burst of a window going away).
+    // A live page always has a URL, even `about:blank`, so this is teardown.
+    // Refused either way; only the report differs.
+    url = readSenderUrl(event);
+    if (url === null) return "gone";
     win = BrowserWindow.fromWebContents(event.sender);
     // No owning window: either ADE's own renderer still sending after its
     // window closed (on macOS the app outlives it; the closing page's polls
     // and streams fire once more), or a guest/panel surface. Only ADE's
     // renderer URL is the teardown; any other page is still an untrusted
     // sender, recorded as one. Both are refused.
-    if (!win) return isTrustedAdeRendererUrl(readSenderUrl(event)) ? "gone" : "untrusted";
+    if (!win) return isTrustedAdeRendererUrl(url) ? "gone" : "untrusted";
     if (typeof win.isDestroyed === "function" && win.isDestroyed()) return "gone";
   } catch {
     return "gone";
   }
-  return isTrustedAdeRendererUrl(readSenderUrl(event)) ? "trusted" : "untrusted";
+  return isTrustedAdeRendererUrl(url) ? "trusted" : "untrusted";
 }
 
 /** True when an IPC call comes from ADE's own renderer in a live ADE window. */

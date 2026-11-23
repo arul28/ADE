@@ -169,10 +169,12 @@ function outsideImportRootsError(absolutePath: string, roots: string[]): Error {
   const tempHint = process.platform === "win32"
     ? "the OS temp dir %TEMP% qualifies"
     : "the OS temp dir $TMPDIR and /tmp both qualify";
-  return new Error(
+  // The caller's path (ADE-BRAIN-8S): the answer says where to copy it.
+  return new AdeExpectedError(
     `Artifact path is outside allowed import roots: ${absolutePath}. `
     + `Allowed roots: ${unique.join(", ")}. `
     + `Copy the file into one of them (${tempHint}) and retry.`,
+    "user",
   );
 }
 

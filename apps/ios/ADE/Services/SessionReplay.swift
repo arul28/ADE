@@ -102,7 +102,34 @@ enum SessionReplay {
       return
     }
 
-    let config = PostHogConfig(projectToken: configuration.projectToken, host: configuration.host.absoluteString)
+    let projectToken = configuration.projectToken
+    let host = configuration.host.absoluteString
+    // The config is built off the main thread too: the first `PostHogConfig`
+    // realizes the SDK's Objective-C classes, which waits on the runtime lock
+    // while launch is still loading images, and froze the main thread past the
+    // watchdog (ADE-IOS-34, in `PostHogRageClickConfig`'s init). `setup` opens
+    // the SDK's disk storage and starts its queues, which froze it for seconds
+    // on a cold device. The SDK supports setup off the main thread (it hops to
+    // main itself for the UIKit reads), so only the wait happens here. Nothing
+    // touches the SDK before `didSetup`.
+    await Task.detached(priority: .utility) {
+      PostHogSDK.shared.setup(makeConfig(projectToken: projectToken, host: host, distinctId: distinctId))
+    }.value
+    lock.withLock { didSetup = true }
+    // A bootstrap is ignored for an install the SDK already identified as
+    // someone else, and the account can change while setup runs; this moves
+    // it to the id the product events use now (and then asks for flags).
+    if PostHogSDK.shared.getDistinctId() != ProductAnalytics.shared.currentDistinctId() {
+      syncIdentity()
+    } else {
+      startIfFlagAllows()
+    }
+  }
+
+  /// Replay only, masked, off until `startIfFlagAllows` has PostHog's answer.
+  /// `start` builds it on a background task.
+  private static func makeConfig(projectToken: String, host: String, distinctId: String) -> PostHogConfig {
+    let config = PostHogConfig(projectToken: projectToken, host: host)
     // Same person as the product events and the flag evaluation.
     config.bootstrap = PostHogBootstrapConfig(
       distinctId: distinctId,
@@ -150,23 +177,7 @@ enum SessionReplay {
     #if DEBUG
     config.debug = ProductAnalytics.isTruthyFlag(ProcessInfo.processInfo.environment["ADE_POSTHOG_REPLAY_DEBUG"])
     #endif
-
-    // `setup` opens the SDK's disk storage and starts its queues, which froze
-    // the main thread for seconds on a cold device. The SDK supports setup off
-    // the main thread (it hops to main itself for the UIKit reads), so only
-    // the wait happens here. Nothing touches the SDK before `didSetup`.
-    await Task.detached(priority: .utility) {
-      PostHogSDK.shared.setup(config)
-    }.value
-    lock.withLock { didSetup = true }
-    // A bootstrap is ignored for an install the SDK already identified as
-    // someone else, and the account can change while setup runs; this moves
-    // it to the id the product events use now (and then asks for flags).
-    if PostHogSDK.shared.getDistinctId() != ProductAnalytics.shared.currentDistinctId() {
-      syncIdentity()
-    } else {
-      startIfFlagAllows()
-    }
+    return config
   }
 
   /// Shipped builds record; a developer run from Xcode or a simulator only

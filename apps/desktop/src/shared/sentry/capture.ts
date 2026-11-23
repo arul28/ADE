@@ -211,9 +211,13 @@ export function wasReportedToSentry(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && reportedErrors.has(error));
 }
 
-export function captureProblem(message: string, context?: CaptureContext): void {
+export function captureProblem(message: string, context?: CaptureContext & { stack?: string | null }): void {
   if (!sentry) return;
-  captureError(new AdeProblem(message), { level: "error", ...context });
+  const { stack, ...rest } = context ?? {};
+  const problem = new AdeProblem(message);
+  // A stack the caller built (a profiled freeze's frames) instead of this call site's.
+  if (stack) problem.stack = stack;
+  captureError(problem, { level: "error", ...rest });
 }
 
 /** Context for the next error: what the user or the app just did. */

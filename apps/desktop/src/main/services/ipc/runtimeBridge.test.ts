@@ -4042,7 +4042,7 @@ describe("registerIpc sync bridge", () => {
         eventForSender(),
         { sessionId: "   " },
       ),
-    ).rejects.toThrow("sessionId is required");
+    ).rejects.toThrow("without a sessionId");
     expect(getMainTranscript).not.toHaveBeenCalled();
 
     const args = { sessionId: " chat-1 ", limit: 100, offset: 5 };

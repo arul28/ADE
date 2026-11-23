@@ -14,6 +14,7 @@
 import fs from "node:fs";
 
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type {
   ProviderLoginCaptureOffReason,
   ProviderLoginGhCliStatus,
@@ -164,7 +165,8 @@ export function createAllow(s: SyncShared) {
       key = memo.key;
     }
     if (local === "removed_from_account") {
-      throw new Error("You removed this sign-in from your account. Sign in with the agy CLI again on this computer, then allow again.");
+      // The person's own earlier choice; the sentence says what to do (ADE-DESKTOP-DT).
+      throw new AdeExpectedError("You removed this sign-in from your account. Sign in with the agy CLI again on this computer, then allow again.", "user");
     }
     if (local !== "captured" || !key) throw new Error("ADE couldn't put the sign-in in your account. Try again in a moment.");
     state.keychain = { ...(state.keychain ?? {}), antigravity: { allowedAt: now(), slot, key } };

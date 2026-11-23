@@ -1110,6 +1110,9 @@ const LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN = /Remote ADE service connection (clo
 // failure would re-run a non-idempotent action against a healthy daemon.
 const LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN = /^Remote ADE service method \S+ failed[\s(:]/i;
 
+/** 0xC000026B: Windows would not start a process because the session is logging off. */
+const WINDOWS_STATUS_DLL_INIT_FAILED_LOGOFF = 0xC000026B;
+
 // The brain's answer for a project id its registry does not hold. The id is
 // the brain's own hash of the folder; this pool caches it per folder, so a
 // brain that drops or re-keys the record leaves the pool sending a dead id on
@@ -4435,12 +4438,24 @@ export class LocalRuntimeConnectionPool {
         // How it ended and the last thing it wrote: a brain that dies at boot
         // says why only there.
         const stderrTail = spawnedRuntimeStderrTails.get(child)?.trim();
-        throw new Error(
+        const exited = new Error(
           `Spawned ADE runtime PID ${child.pid ?? "unknown"} exited before becoming ready ` +
           `(${child.signalCode ? `signal ${child.signalCode}` : `exit code ${child.exitCode}`}).` +
           (lastError ? ` Last connection error: ${lastError.message}` : "") +
           (stderrTail ? ` Last output: ${stderrTail}` : ""),
         );
+        // Windows refused to start it because the person is signing out or
+        // shutting down (STATUS_DLL_INIT_FAILED_LOGOFF): nothing in the brain
+        // ran (ADE-DESKTOP-E8). Every other exit stays a report.
+        // The code can arrive as the unsigned DWORD or as its signed int32.
+        if (
+          process.platform === "win32"
+          && child.exitCode !== null
+          && (child.exitCode >>> 0) === WINDOWS_STATUS_DLL_INIT_FAILED_LOGOFF
+        ) {
+          throw markExpected(exited, "environment");
+        }
+        throw exited;
       }
       const remainingMs = Math.max(1, deadline - Date.now());
       const probeTimeoutMs = Math.min(LOCAL_RUNTIME_STARTUP_PROBE_TIMEOUT_MS, remainingMs);

@@ -38,6 +38,7 @@ import { codexConfigApprovalPolicy } from "../../../shared/codexApprovalPolicy";
 import type { AgentChatCodexApprovalPolicy } from "../../../shared/types/chat";
 import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
 import { getModelById } from "../../../shared/modelRegistry";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   normalizeAutomationAgentLimits,
   normalizeRunCommandTimeoutMs,
@@ -1489,7 +1490,9 @@ export function createAutomationPlannerService({
       const validation = this.validateDraft({ draft: req.draft, confirmations: req.confirmations });
       if (!validation.ok || !validation.normalized) {
         const first = validation.issues.find((i) => i.level === "error");
-        throw new Error(first?.message ?? "Draft is invalid");
+        // The draft and its confirmations are the caller's (a person's form or an
+        // agent's `automations.saveDraft`): the answer names what to fix (ADE-BRAIN-96).
+        throw new AdeExpectedError(first?.message ?? "Draft is invalid", "user");
       }
 
       const normalized = validation.normalized;

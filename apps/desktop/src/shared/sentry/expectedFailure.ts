@@ -55,7 +55,9 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /Remote ADE service connection closed\b/,
   /Runtime RPC channel fell behind the sync connection/,
   /^Sync WebSocket is not open\.$/,
-  /^IPC handler for 'ade\.remoteRuntime\.callAction' timed out after/,
+  // streamEvents is a poll with its own 120 s answer; the 150 s IPC timer wins
+  // only while that inner timer sits in its late-timer grace (2026-11-23).
+  /^IPC handler for 'ade\.remoteRuntime\.(?:callAction|streamEvents)' timed out after/,
   /push relay \w+ failed: (account owner changed|HTTP 5\d\d)/,
   // Git states the user is told about and resolves themselves.
   /\bDIRTY_WORKTREE:/,
@@ -169,6 +171,11 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /^Nothing is accepting SSH connections at \S+\. /,
   // A peer (phone, web) holding a project id from another machine.
   /^This project is not on this ADE machine\b/,
+  // The ADE Cloud tab refusing an action that needs a lane's computer
+  // (`ADE_CLOUD_NEEDS_LANE_SENTENCE`). Preload marks it "user", but the mark
+  // does not survive contextBridge, so the window's report reads only the
+  // text (ADE-DESKTOP-DD, -DE, -DF; 2026-11-23).
+  /^ADE Cloud runs this on a lane's own computer\. Open a lane, or start one on ADE Cloud\.$/,
   // A second viewer asking for a lane's live stream while the first start is
   // still running; the answer says to try again once it answers.
   /^capture_starting: Lane \S+'s (?:live stream|recording) is already starting\. Try again once that start answers\.$/,
@@ -217,6 +224,13 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // Added from PostHog traffic, 2026-11-17. Kimi on a Windows computer with no
   // Git for Windows: the answer tells the person what to install.
   /^Kimi needs Git for Windows: /,
+  // Added from Sentry traffic, 2026-11-23. Marked where thrown now; the text
+  // stays for older brains. Inputs an agent or a person fixes and retries.
+  /^Artifact path is outside allowed import roots: /,
+  /^`ade secrets exec` runs only inside this project or one of its lanes\.$/,
+  /^The lane folder is outside ADE's managed worktree folder\.$/,
+  /^Missing confirmation: /,
+  /^sessionId is required\.$/,
 ];
 
 /**

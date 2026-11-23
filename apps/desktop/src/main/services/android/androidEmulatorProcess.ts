@@ -11,6 +11,7 @@ import { androidLowDiskSentence, parseEmulatorUserdataSpace } from "../../../sha
 import { readAdbDevices, restartAdbServer, runAdb, runAdbText } from "./adb";
 import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
+import { markExpected } from "../../../shared/expectedError";
 import { androidEmulatorPidCheck } from "./androidEmulatorImage";
 import { androidUserHome, parseAndroidIni, type AndroidEnv } from "./androidSdk";
 import { sleep } from "../shared/utils";
@@ -548,11 +549,16 @@ function exitedFailure(launch: AndroidEmulatorLaunch, info: AndroidEmulatorExit)
   // The emulator's own disk check: the same plain refusal as the disk guard's.
   const space = parseEmulatorUserdataSpace(reason);
   if (space) return new AndroidEmulatorFailure("ANDROID_LOW_DISK", androidLowDiskSentence(space.neededMb, space.freeMb), launch.logPath, false, space);
-  return new AndroidEmulatorFailure(
+  const failure = new AndroidEmulatorFailure(
     "ANDROID_EMULATOR_EXITED",
     `The emulator for ${androidAvdDisplayName(launch.avdName)} exited (${how}) before it finished booting.${reason ? ` ${reason}` : ""}`,
     launch.logPath,
   );
+  // Exit code 0 with no error line is the emulator ending itself on purpose
+  // (its window closed, or it gave up on the machine, ADE-BRAIN-91 at critical
+  // memory pressure on Windows), not a crash. A signal, an error or a non-zero
+  // code stays unmarked and is reported.
+  return !info.error && !info.signal && info.code === 0 && !reason ? markExpected(failure, "environment") : failure;
 }
 
 /**

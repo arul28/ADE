@@ -19,6 +19,7 @@ import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { terminateChildProcessTree } from "../shared/utils";
 import type { Logger } from "../logging/logger";
 import { codexPlanIncludesVoice } from "../../../shared/codexVoice";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { codexAuthModeFromAccountRead } from "./providerUsageAccount";
 import { codexDisableConfiguredMcpArgs } from "../mcp/codexMcpOff";
 
@@ -171,13 +172,13 @@ export async function startCodexVoiceHost(args: {
     write({ method: "initialized", params: {} });
     const account = codexAuthModeFromAccountRead(await request("account/read", {}).catch(() => null));
     if (!account) {
-      throw new Error("Voice needs Codex signed in with ChatGPT. Sign in to Codex and try again.");
+      throw new AdeExpectedError("Voice needs Codex signed in with ChatGPT. Sign in to Codex and try again.", "user");
     }
     if (account.authMode !== "chatgpt") {
-      throw new Error("Voice needs Codex signed in with ChatGPT. An API key cannot run voice.");
+      throw new AdeExpectedError("Voice needs Codex signed in with ChatGPT. An API key cannot run voice.", "user");
     }
     if (!codexPlanIncludesVoice(account.planType)) {
-      throw new Error(`Your ChatGPT plan (${account.planType}) does not include Codex voice.`);
+      throw new AdeExpectedError(`Your ChatGPT plan (${account.planType}) does not include Codex voice.`, "user");
     }
     const started = await request<{ thread?: { id?: unknown } }>("thread/start", {
       model: RELAY_MODEL,

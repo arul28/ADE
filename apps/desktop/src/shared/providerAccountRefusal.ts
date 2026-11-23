@@ -54,6 +54,8 @@ const AUTH_REFUSAL = new RegExp([
   String.raw`\bauthentication (?:failed|required|error)\b`,
   String.raw`\b(?:login|sign[- ]in) required\b`,
   String.raw`\bplease (?:log|sign) in\b`,
+  // Pi: "No API key found for <provider>" (2026-11-23).
+  String.raw`\bno api key (?:found|set|configured)\b`,
   String.raw`\binvalid (?:api[ _-]?key|authori[sz]ation token|auth(?:entication)? token|access token|bearer token|credentials?)\b`,
   String.raw`\b(?:token|credentials?|session token|api key) (?:has |have |is )?(?:expired|revoked)\b`,
   String.raw`\b(?:status(?:\s+code)?|http(?:\s+status)?|error|failed)\s*[:=]?\s*\(?401\b`,

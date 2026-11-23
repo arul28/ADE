@@ -522,6 +522,9 @@ function readExistingWithinRoot(rootPath: string, relPath: string, offset: numbe
 }
 
 function assertMutablePathAllowed(rootPath: string, relPath: string): string {
+  // Actions arrive from agents and the CLI as untyped JSON (ADE-BRAIN-8W: a
+  // write with no `relPath` threw a TypeError here).
+  if (typeof relPath !== "string") throw new AdeExpectedError("Name the file: a path relative to the lane is required.", "user");
   const normalizedRel = normalizeRelative(relPath);
   const candidatePath = path.join(rootPath, normalizedRel);
   if (isVolatileAdeRuntimePath(normalizedRel) || resolvesIntoVolatileAdePath(rootPath, path.normalize(candidatePath))) {

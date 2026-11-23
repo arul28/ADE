@@ -191,10 +191,26 @@ final class WorkChatTranscriptCell: UICollectionViewCell {
     super.invalidateIntrinsicContentSize()
   }
 
+  /// See `WorkChatTranscriptCellTurnMeasures`: the cap that keeps a re-ask
+  /// from nesting layout passes until UIKit asserts (ADE-IOS-30).
+  private var turnMeasures = WorkChatTranscriptCellTurnMeasures()
+  private var turnEndScheduled = false
+
+  private func scheduleTurnEnd() {
+    guard !turnEndScheduled else { return }
+    turnEndScheduled = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.turnEndScheduled = false
+      if self.turnMeasures.endTurn() { self.invalidateIntrinsicContentSize() }
+    }
+  }
+
   /// A fresh configuration is looked up in the cache by its own key; any
   /// invalidation the configure itself raises is about that same content.
   func didConfigure() {
     contentSizeInvalidated = false
+    turnMeasures.configured()
     guard !settlingConfiguration else { return }
     settlingConfiguration = true
     DispatchQueue.main.async { [weak self] in
@@ -215,12 +231,22 @@ final class WorkChatTranscriptCell: UICollectionViewCell {
       attributes.frame.size.height = cached
       return attributes
     }
+    let width = layoutAttributes.frame.width
+    if let held = turnMeasures.heldHeight(width: width) {
+      contentSizeInvalidated = false
+      scheduleTurnEnd()
+      let attributes = layoutAttributes
+      attributes.frame.size.height = held
+      return attributes
+    }
     if contentSizeInvalidated { ScrollDiagnostics.shared.count(.transcriptCellRemeasure) }
     contentSizeInvalidated = false
     let measureStart = CACurrentMediaTime()
     let measured = ScrollDiagnostics.shared.measure(.transcriptCellMeasure) {
       super.preferredLayoutAttributesFitting(layoutAttributes)
     }
+    measured.frame.size.height = turnMeasures.record(measured.frame.height, width: width)
+    scheduleTurnEnd()
     // Name the rows that cost more than a frame to measure (the older-page
     // prepend spikes are single 25-55 ms measurements).
     let measureMs = (CACurrentMediaTime() - measureStart) * 1000

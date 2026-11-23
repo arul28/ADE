@@ -118,6 +118,10 @@ const IGNORED_ERROR_PATTERNS: readonly RegExp[] = [
   // Sync turned off (or no project registered yet) is a state, not a failure;
   // presence and other sync calls answer with this on every lane change.
   /Sync service is not available/,
+  // The Electron SDK's child-process event for a GPU process Chromium restarts
+  // on its own (ADE-DESKTOP-E2). A GPU that cannot come back crashes the app,
+  // and that crash is still reported.
+  /^'GPU' process exited with 'abnormal-exit'$/,
 ];
 
 /**

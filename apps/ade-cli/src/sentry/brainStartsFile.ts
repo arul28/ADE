@@ -60,6 +60,18 @@ export type BrainStartCause = {
   previousWedge: string | null;
   /** The previous brain recorded a startup failure with this code before it ended. */
   previousFailureCode: string | null;
+  /**
+   * The previous brain's wedge in closed words: how long the loop was blocked,
+   * whose freeze it was, the synchronous file call or project open it was in.
+   * Absent on starts recorded before this field existed.
+   */
+  previousWedgeDetail?: string | null;
+  /**
+   * macOS: the launchd job this brain runs under (`XPC_SERVICE_NAME`). A brain
+   * whose parent exited is adopted by launchd too, so a parent of 1 alone does
+   * not say launchd started it; its own service's label does (ADE-BRAIN-7Q).
+   */
+  launchdJob?: string | null;
 };
 
 export type BrainStartsState = {
@@ -128,7 +140,9 @@ function isBrainStartCause(value: unknown): value is BrainStartCause {
     && isNumberOrNull(cause.supervisorRestartCount)
     && isNumberOrNull(cause.previousExitCode)
     && isStringOrNull(cause.previousWedge)
-    && isStringOrNull(cause.previousFailureCode);
+    && isStringOrNull(cause.previousFailureCode)
+    && (cause.previousWedgeDetail === undefined || isStringOrNull(cause.previousWedgeDetail))
+    && (cause.launchdJob === undefined || isStringOrNull(cause.launchdJob));
 }
 
 /** A hand-edited or older file's `cause` that is not one is dropped; the start itself is kept. */

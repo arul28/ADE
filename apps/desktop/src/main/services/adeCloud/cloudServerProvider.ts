@@ -237,12 +237,17 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       // that means this account, not one computer.
       const refused = response.status === 401 || code === "unauthorized"
         || (response.status === 404 && method === "GET" && path === INSTANCES);
-      throw new CloudProviderError(
+      const failure = new CloudProviderError(
         message ?? (response.status >= 500 ? "ADE Cloud is having trouble right now. Try again in a moment." : `ADE Cloud answered with an error (${response.status}).`),
         refused ? CLOUD_ACCESS_REFUSED : code ?? `http_${response.status}`,
         response.status,
         { reason, ...(computerLimit ? { computerLimit } : {}) },
       );
+      // A gateway or an unavailable server (502/503/504, ADE-BRAIN-97) is the
+      // server's failure: the account server reports its own, and every
+      // client that met it would report it again. A 500 stays reported.
+      if (response.status === 502 || response.status === 503 || response.status === 504) throw markExpected(failure, "network");
+      throw failure;
     }
     return body;
   }

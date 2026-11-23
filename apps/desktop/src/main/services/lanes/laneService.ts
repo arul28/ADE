@@ -6327,6 +6327,31 @@ export function createLaneService({
               }
             }
             if (!managedWorktreePath) {
+              // The folder lost its `.git` pointer file (someone deleted it)
+              // while Git still lists it: `git worktree remove` refuses with
+              // "validation failed … '.git' does not exist" forever
+              // (ADE-DESKTOP-DX). Not a prune: Git's entry still holds the
+              // checkout's index, HEAD log and submodule repositories, and the
+              // unsaved-work checks above could not read the folder. Repair
+              // writes the pointer back, so the next delete checks it like
+              // any other lane.
+              if (/cannot remove working tree: .*\.git'? does not exist/i.test(original)) {
+                const repairRes = await runGit(["worktree", "repair", row.worktree_path], {
+                  cwd: projectRoot,
+                  timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+                  env: GIT_ENGLISH_MESSAGES_ENV,
+                });
+                if (repairRes.exitCode === 0 && fs.existsSync(path.join(row.worktree_path, ".git"))) {
+                  throw new AdeExpectedError(
+                    "This lane's folder had lost its link to Git, so ADE could not check it for unsaved work. The link is restored; delete the lane again.",
+                    "user",
+                  );
+                }
+                logger.warn("lane.delete.worktree_repair_failed", {
+                  laneId,
+                  error: (repairRes.stderr || repairRes.stdout || "").trim() || `exit ${repairRes.exitCode}`,
+                });
+              }
               // Git can give up partway: it unregisters the worktree and
               // deletes `.git`, then fails on a file Windows still holds open
               // (an AV scan, an indexer) somewhere in a huge node_modules.
@@ -8755,37 +8780,39 @@ export function createLaneService({
       },
     ): Promise<ArchiveAndReclaimLaneResult> {
       if (args.confirmation !== "RECLAIM") {
-        throw new Error('Type "RECLAIM" to confirm removing this lane folder.');
+        throw new AdeExpectedError('Type "RECLAIM" to confirm removing this lane folder.', "user");
       }
       const row = getLaneRow(args.laneId);
       if (!row) throw new Error(`Lane not found: ${args.laneId}`);
       if (laneReclaimInFlight.has(args.laneId)) {
-        throw new Error("Archive & Reclaim is already running for this lane.");
+        throw new AdeExpectedError("Archive & Reclaim is already running for this lane.", "user");
       }
       if (deleteProgressByLaneId.get(args.laneId)?.overallStatus === "running") {
-        throw new Error("This lane is already being deleted.");
+        throw new AdeExpectedError("This lane is already being deleted.", "user");
       }
-      if (row.lane_type === "primary") throw new Error("The primary lane cannot be reclaimed.");
+      if (row.lane_type === "primary") throw new AdeExpectedError("The main checkout cannot be reclaimed.", "user");
       const normalizedRoot = normAbs(worktreesDir);
       const normalizedWorktree = normAbs(row.worktree_path);
       if (!isDirectlyInsideManagedWorktreesDir(normalizedWorktree)) {
-        throw new Error("The lane folder is outside ADE's managed worktree folder.");
+        // A lane made from a folder ADE does not manage (ADE-BRAIN-8T): reclaim
+        // only removes folders ADE made, and says so.
+        throw new AdeExpectedError("The lane folder is outside ADE's managed worktree folder.", "user");
       }
       if (await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)) {
-        throw new Error("ADE will not reclaim a folder through a symbolic link.");
+        throw new AdeExpectedError("ADE will not reclaim a folder through a symbolic link.", "user");
       }
 
       const risk = await laneServiceApi.getReclaimRisk({ laneId: args.laneId });
       const hardBlock = risk.blockedReasons.find((reason) => reason.disposition === "blocked");
-      if (hardBlock) throw new Error(hardBlock.message);
+      if (hardBlock) throw new AdeExpectedError(hardBlock.message, "user");
       if (risk.dirty && args.forceDirty !== true) {
         throw new LaneUnsavedWorkError("This lane has uncommitted files. Confirm that those changes may be lost.");
       }
       if (laneReclaimInFlight.has(args.laneId)) {
-        throw new Error("Archive & Reclaim is already running for this lane.");
+        throw new AdeExpectedError("Archive & Reclaim is already running for this lane.", "user");
       }
       if (deleteProgressByLaneId.get(args.laneId)?.overallStatus === "running") {
-        throw new Error("This lane is already being deleted.");
+        throw new AdeExpectedError("This lane is already being deleted.", "user");
       }
       const storageLock = acquireStorageLifecycleLock({
         laneId: args.laneId,

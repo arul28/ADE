@@ -98,10 +98,11 @@ export async function runWithSecrets(input: {
   baseEnv?: NodeJS.ProcessEnv;
 }): Promise<SecretExecResult> {
   const [file, ...args] = input.command;
-  if (!file) throw new Error("Give the command to run after `--`, e.g. `ade secrets exec -- npm run deploy`.");
+  if (!file) throw new AdeExpectedError("Give the command to run after `--`, e.g. `ade secrets exec -- npm run deploy`.", "user");
   const cwd = path.resolve(input.cwd);
   if (!input.allowedRoots.some((root) => isInside(cwd, path.resolve(root)))) {
-    throw new Error("`ade secrets exec` runs only inside this project or one of its lanes.");
+    // Where the caller ran it (ADE-BRAIN-92): the answer says where it works.
+    throw new AdeExpectedError("`ade secrets exec` runs only inside this project or one of its lanes.", "user");
   }
   if (!fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
     throw new AdeExpectedError(`The folder to run in no longer exists: ${cwd}`, "user");

@@ -12,6 +12,7 @@ import type {
   RemoteRuntimeTargetRoute,
   RemoteRuntimeTrustSshHostKeyResult,
 } from "../../../shared/types/remoteRuntime";
+import { markExpected } from "../../../shared/expectedError";
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import type { RuntimeRpcTransport, RuntimeRpcTransportCloseInfo } from "./runtimeRpcClient";
 import { routeKey } from "./routeUtils";
@@ -830,13 +831,15 @@ function normalizeSshConnectError(
   }
 
   if (/timed out while waiting for handshake|handshake.*timed out|ready timeout/i.test(message)) {
-    return copySshErrorMetadata(
+    // A machine that is asleep, offline or off this route: the network's
+    // answer, which the machine card shows (PostHog, 2026-11-23).
+    return markExpected(copySshErrorMetadata(
       source,
       new Error(
         `Timed out while waiting for the SSH handshake from ${endpoint}. ` +
           "Check that the machine is online, reachable over this route, and accepting SSH connections.",
       ),
-    );
+    ), "network");
   }
 
   if (isLocalPortUnavailableError(source)) {

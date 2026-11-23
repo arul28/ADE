@@ -1,5 +1,6 @@
 import * as inspector from "node:inspector";
 import { performance } from "node:perf_hooks";
+import { fileURLToPath } from "node:url";
 import { captureProblem } from "../../../../desktop/src/shared/sentry/capture";
 import { BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS } from "./brainLoopWatchdog";
 import { BRAIN_LOOP_FREEZE_LIMITS, brainLoopFreezeCause } from "./brainLoopWatchdogWorker";
@@ -22,6 +23,15 @@ import { BRAIN_LOOP_FREEZE_LIMITS, brainLoopFreezeCause } from "./brainLoopWatch
  * brain's life, and only when the brain froze itself: while the machine is
  * paging the brain back in from swap, any code it happens to be in stalls,
  * and the profile names that code for nothing.
+ *
+ * The brain is a minified bundle, so the profile's own names (`Zji
+ * cli.cjs:1263:132`) change with every build; an issue titled or grouped by
+ * them is a new issue, and an email, per build (ADE-BRAIN-8D … 95). The issue
+ * is grouped by what kind of work held the loop (a SQLite query, a process
+ * start, a file call, network interfaces, garbage collection, ADE's own
+ * code), which every build names the same. The heaviest stack goes along as
+ * the event's stack trace, which Sentry maps back to ADE's source through the
+ * bundle's source map, so each event still shows the code to fix.
  */
 
 const PROFILE_MS = 60_000;
@@ -32,6 +42,8 @@ const PROFILE_SAMPLING_US = 2_000;
 const MIN_RUN_MS = 1_000;
 /** Frames kept from the heaviest stack, leaf first. */
 const STACK_FRAMES_KEPT = 12;
+/** Frames the event's stack trace carries: enough to reach the ADE code that called in. */
+const TRACE_FRAMES_KEPT = 40;
 const TOP_FRAMES_KEPT = 5;
 /**
  * How long a finished profile waits for the watchdog's word on a freeze that
@@ -63,9 +75,45 @@ type BrainStallProfileSummary = {
   stack: string[];
   /** The frames with the most self time in the freezes. */
   topFrames: Array<{ frame: string; ms: number }>;
-  /** Stable grouping for one cause: same culprit, same issue. */
+  /** What kind of work held the loop; the same in every build. */
+  cause: BrainStallCause;
+  /** The innermost frame of the heaviest stack whose name survives minification (`getStatus`), or null. */
+  anchor: string | null;
+  /** The heaviest stack as the profile has it, leaf first, for the event's stack trace. */
+  frames: CallFrame[];
+  /** Stable grouping for one cause: the same in every build. */
   fingerprint: string[];
 };
+
+/**
+ * What kind of work held the loop. `library:<package>` names a dependency's
+ * own code; everything else is a closed list.
+ */
+type BrainStallCause = FixedBrainStallCause | `library:${string}`;
+
+/** The words after "Brain froze in" for each cause; a new cause must name its title here. */
+const FIXED_CAUSE_TITLES = {
+  sqlite: "a SQLite query",
+  "process-spawn": "a child process call",
+  "file-system": "a synchronous file call",
+  "network-interfaces": "reading the network interfaces",
+  os: "an operating system call",
+  "garbage-collection": "garbage collection",
+  crypto: "hashing or crypto",
+  network: "a network request",
+  "worker-message": "a worker message",
+  "node-internals": "Node's own code",
+  "ade-code": "ADE code",
+  unknown: "unknown code",
+} as const;
+
+type FixedBrainStallCause = keyof typeof FIXED_CAUSE_TITLES;
+
+function causeTitle(cause: BrainStallCause): string {
+  return cause.startsWith("library:")
+    ? `the ${cause.slice("library:".length)} package`
+    : FIXED_CAUSE_TITLES[cause as FixedBrainStallCause];
+}
 
 const IDLE = "(idle)";
 const GARBAGE_COLLECTOR = "(garbage collector)";
@@ -94,6 +142,84 @@ function isAdeFrame(frame: CallFrame): boolean {
 /** A minified bundle renames most functions to two or three letters: those do not group across releases. */
 function stableName(name: string): boolean {
   return name.length >= 4 && name !== "(anonymous)";
+}
+
+/** node:sqlite's native statement and database methods, as the profiler names them (no script). */
+const SQLITE_NATIVE_METHODS = new Set(["prepare", "all", "get", "run", "exec", "iterate"]);
+
+/** `fs` for `node:fs`, `child_process` for `node:internal/child_process`, `crypto` for `node:internal/crypto/hash`. */
+function nodeModuleOf(url: string): string | null {
+  if (!url.startsWith("node:")) return null;
+  const parts = url.slice("node:".length).split("/");
+  if (parts[0] === "internal" || parts[0] === "electron") {
+    // `node:internal/deps/undici/undici` is undici; `node:internal/fs/utils` is fs.
+    return parts[1] === "deps" ? parts[2] ?? null : parts[1] ?? null;
+  }
+  return parts[0] ?? null;
+}
+
+/** The npm package a script belongs to, from the last `node_modules` in its path. */
+function packageOf(url: string): string | null {
+  const match = /[\\/]node_modules[\\/]((?:@[^\\/]+[\\/])?[^\\/]+)[\\/](?!.*[\\/]node_modules[\\/])/.exec(url);
+  return match ? match[1]!.replace(/\\/g, "/") : null;
+}
+
+function causeOfNodeModule(module: string, frames: readonly CallFrame[]): BrainStallCause {
+  if (module === "fs") return "file-system";
+  if (module === "child_process") return "process-spawn";
+  if (module === "os") return frames.some((frame) => frame.functionName === "networkInterfaces") ? "network-interfaces" : "os";
+  if (module === "crypto") return "crypto";
+  if (/^(?:net|http|https|_http_\w+|tls|_tls_\w+|dns|undici)$/.test(module)) return "network";
+  if (module === "worker" || module === "worker_threads") return "worker-message";
+  return "node-internals";
+}
+
+/**
+ * What the heaviest stack was doing, read from the leaf outwards: the first
+ * Node module on it before ADE's own code (a native call is named by the Node
+ * function that made it), then node:sqlite's native methods, then whose
+ * script the code is.
+ */
+function stallCause(frames: readonly CallFrame[]): BrainStallCause {
+  const leaf = frames[0];
+  if (!leaf) return "unknown";
+  if (leaf.functionName === GARBAGE_COLLECTOR) return "garbage-collection";
+  for (const frame of frames) {
+    if (isAdeFrame(frame)) break;
+    const module = nodeModuleOf(frame.url);
+    if (module) return causeOfNodeModule(module, frames);
+  }
+  if (!leaf.url && SQLITE_NATIVE_METHODS.has(leaf.functionName)) return "sqlite";
+  const code = frames.find(isAdeFrame);
+  if (!code) return "unknown";
+  const pkg = packageOf(code.url);
+  return pkg ? `library:${pkg}` : "ade-code";
+}
+
+/** The script path a stack trace would print for a profile URL (`file:///…` → `/…`, `C:\…` on Windows). */
+function scriptPathOf(url: string): string {
+  if (!url.startsWith("file:")) return url;
+  try {
+    return fileURLToPath(url);
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * The heaviest stack as a V8 stack trace, so the SDK attaches the bundle's
+ * debug id and Sentry resolves each frame through the source map. A profile
+ * frame's position is where its function starts, which resolves to that
+ * function in ADE's source.
+ */
+function stallStackTrace(title: string, frames: readonly CallFrame[]): string | null {
+  const lines = frames.slice(0, TRACE_FRAMES_KEPT).flatMap((frame) => {
+    if (NON_CODE.has(frame.functionName)) return [];
+    if (!frame.url) return frame.functionName ? [`    at ${frame.functionName} (native)`] : [];
+    const location = `${scriptPathOf(frame.url)}:${frame.lineNumber + 1}:${frame.columnNumber + 1}`;
+    return [frame.functionName ? `    at ${frame.functionName} (${location})` : `    at ${location}`];
+  });
+  return lines.length > 0 ? `AdeProblem: ${title}\n${lines.join("\n")}` : null;
 }
 
 function summarizeBrainStallProfile(profile: BrainCpuProfile): BrainStallProfileSummary | null {
@@ -160,11 +286,13 @@ function summarizeBrainStallProfile(profile: BrainCpuProfile): BrainStallProfile
   }
   const culpritFrame = frames.find(isAdeFrame) ?? null;
   const leafFrame = frames[0] ?? null;
-  const fingerprint = culpritFrame
-    ? stableName(culpritFrame.functionName)
-      ? ["brain-stall", culpritFrame.functionName, fileName(culpritFrame.url)]
-      : ["brain-stall", frameLabel(culpritFrame)]
-    : ["brain-stall", leafFrame ? frameLabel(leafFrame) : "unknown"];
+  const cause = stallCause(frames);
+  const anchor = frames.slice(0, TRACE_FRAMES_KEPT).find((frame) => isAdeFrame(frame) && stableName(frame.functionName))?.functionName ?? null;
+  // The cause alone for Node's and SQLite's work: the stack trace says which
+  // ADE code asked. ADE's own code and a package's are split by the anchor,
+  // since two of them freezing are two bugs.
+  const splitByAnchor = cause === "ade-code" || cause.startsWith("library:");
+  const fingerprint = ["brain-stall", cause, ...(splitByAnchor && anchor ? [anchor] : [])];
   return {
     frozenMs: Math.round(runs.reduce((sum, run) => sum + run.ms, 0)),
     runs: runs.length,
@@ -177,6 +305,9 @@ function summarizeBrainStallProfile(profile: BrainCpuProfile): BrainStallProfile
       .sort((a, b) => b[1] - a[1])
       .slice(0, TOP_FRAMES_KEPT)
       .map(([frame, us]) => ({ frame, ms: Math.round(us / 1_000) })),
+    cause,
+    anchor,
+    frames,
     fingerprint,
   };
 }
@@ -295,11 +426,17 @@ export function createBrainStallProfiler(deps: {
     const key = summary.fingerprint.join("|");
     if (reportedCauses.has(key)) return;
     reportedCauses.add(key);
-    captureProblem(`Brain froze in ${summary.culprit ?? summary.leaf ?? "unknown code"}`, {
+    const title = `Brain froze in ${causeTitle(summary.cause)}`;
+    const memory = process.memoryUsage();
+    captureProblem(title, {
       level: "warning",
+      stack: stallStackTrace(title, summary.frames),
       fingerprint: summary.fingerprint,
-      tags: { stall_leaf: summary.leafName },
+      tags: { stall_cause: summary.cause, stall_leaf: summary.leafName, stall_anchor: summary.anchor },
       extra: {
+        // The minified names, for a build whose source map Sentry lacks.
+        culprit: summary.culprit,
+        leaf: summary.leaf,
         frozenMs: summary.frozenMs,
         runs: summary.runs,
         longestRunMs: summary.longestRunMs,
@@ -308,6 +445,10 @@ export function createBrainStallProfiler(deps: {
         freezeCause: pressure?.freezeCause ?? null,
         majorFaultsPer30s: pressure?.majorFaultsPer30s ?? null,
         cpuMsInProfile: pressure?.cpuMs ?? null,
+        // A garbage-collection freeze is about the heap's size.
+        heapUsedMb: Math.round(memory.heapUsed / 1_048_576),
+        heapTotalMb: Math.round(memory.heapTotal / 1_048_576),
+        rssMb: Math.round(memory.rss / 1_048_576),
       },
     });
   };
@@ -331,6 +472,7 @@ export function createBrainStallProfiler(deps: {
         frozenMs: summary.frozenMs,
         runs: summary.runs,
         longestRunMs: summary.longestRunMs,
+        cause: summary.cause,
         culprit: summary.culprit,
         leaf: summary.leaf,
         stack: summary.stack.join(" < "),

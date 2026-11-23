@@ -3,6 +3,7 @@ import path from "node:path";
 import { runGit } from "./git";
 import { isWithinDir } from "../shared/utils";
 import { adeScaffoldFileContents } from "../../../shared/adeLayout";
+import { markExpected } from "../../../shared/expectedError";
 
 /** The reason describeUnsavedWorktreeWork gives for an uncommitted or untracked file. */
 export const UNCOMMITTED_CHANGES_REASON = "Lane has uncommitted changes.";
@@ -23,7 +24,11 @@ export async function describeUnsavedWorktreeWork(worktreePath: string, timeoutM
     const reason = result.timedOut
       ? `git status did not finish within ${Math.round(timeoutMs / 1000)} seconds`
       : result.stderr.trim().split(/\r?\n/, 1)[0]?.slice(0, 300) || `git status exited with ${result.exitCode}`;
-    throw new Error(`ADE could not verify whether the lane has uncommitted files (${reason}).`);
+    const refusal = new Error(`ADE could not verify whether the lane has uncommitted files (${reason}).`);
+    // A checkout too slow for git status to answer in time (a huge repo, a
+    // busy disk): the delete is refused and the person retries
+    // (ADE-DESKTOP-C7). Git failing outright stays a report.
+    throw result.timedOut ? markExpected(refusal, "environment") : refusal;
   }
   if (result.stdout.trim().length > 0) {
     // ADE's own `.ade/` scaffold, as ADE wrote it, is no one's work: a cloud
