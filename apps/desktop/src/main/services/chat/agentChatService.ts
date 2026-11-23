@@ -38185,8 +38185,13 @@ export function createAgentChatService(args: {
     const invocationKey = acpInvocationKey(spawnPlan);
 
     const persisted = readPersistedState(managed.session.id);
-    const existingSessionId = managed.seededAcpSessionId?.trim()
+    // The id of a session ADE itself opened for this chat. A Devin Cloud
+    // chat's derived id (below) only guesses at a session nothing has opened
+    // yet, so it cannot be evidence that a session was lost.
+    const storedAcpSessionId = managed.seededAcpSessionId?.trim()
       || persisted?.acpSessionId?.trim()
+      || null;
+    const existingSessionId = storedAcpSessionId
       // A Devin Cloud chat opened from the panel knows its session by the web
       // id before it has ever spoken ACP.
       || (devinCloud && managed.session.devinSessionId?.trim()
@@ -38319,6 +38324,21 @@ export function createAgentChatService(args: {
           managed.runtimeInvalidated = false;
           managed.acpReasoningEffortInvalidated = false;
           managed.seededAcpSessionId = runtime.session.sessionId;
+          // A stored session the agent no longer had: this new session holds
+          // none of the conversation ADE keeps. Re-stage the once-per-thread
+          // sections and say so, as Muse's replacement session does. Only a
+          // session ADE opened can be lost; a provider switch clears the seed
+          // and replays the whole transcript instead.
+          if (storedAcpSessionId && runtime.session.entryPlan.mode === "new") {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "warning",
+              severity: "warning",
+              message: `${dialect.displayName} could not reopen this chat's session, so it started a new one. Earlier turns are summarized for it.`,
+            });
+            restageSectionsForNewProviderThread(managed);
+            refreshReconstructionContext(managed);
+          }
           managed.session.acpPermissionMode = permissionMode;
           if (runtime.session.systemPromptAppended) {
             markLaneGuidanceDelivered(managed, runtime.session.sessionId, runtime.session.systemPromptAppended);
@@ -79621,6 +79641,12 @@ export function createAgentChatService(args: {
       }
       if (previousProvider !== nextProvider || freshThreadForRoute) {
         delete managed.session.threadId;
+        // An ACP session id belongs to the provider that minted it. Carried
+        // onto the next provider, a deliberate switch looks like a session
+        // the agent no longer has (a `new` entry under a stored id), which
+        // warns about a lost conversation and stacks the tail on the full
+        // replay staged below. `runtimeInvalidated` drops the persisted copy.
+        delete managed.seededAcpSessionId;
         managed.runtimeInvalidated = true;
         managed.acpReasoningEffortInvalidated = false;
         clearDeliveredDirectiveEpoch(managed);
