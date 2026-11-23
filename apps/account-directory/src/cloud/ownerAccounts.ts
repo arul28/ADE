@@ -247,10 +247,10 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
   if (phoneChoice !== undefined) {
     // The email too: the list keeps the address, and a removal drops its waiting invite (else the invite sweep adds it back).
     const ref = { userId: who.userId, ...(who.email ? { email: who.email } : {}) };
-    const listed = await handleOwnerPhoneBeta(env, phoneChoice === "off" ? { ...ref, enabled: false } : { ...ref, provider: phoneChoice }, now);
+    // Its log entry is written with the list change, whatever happens to the test's write below.
+    const logged = [ownerLogStatement(env, now, "account_phone", who.userId, { phone: phoneChoice })];
+    const listed = await handleOwnerPhoneBeta(env, phoneChoice === "off" ? { ...ref, enabled: false } : { ...ref, provider: phoneChoice }, now, logged);
     if (!listed.ok) return listed;
-    // Logged at once: the list changed already, whatever happens to the test's write below.
-    await ownerLogStatement(env, now, "account_phone", who.userId, { phone: phoneChoice }).run();
   }
   if (testChanged) {
     statements.push(ownerLogStatement(env, now, reset ? "account_reset" : "account_test", who.userId, {
