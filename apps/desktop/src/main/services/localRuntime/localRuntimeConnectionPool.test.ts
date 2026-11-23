@@ -24,6 +24,9 @@ vi.mock("electron", () => ({
 // module so the tests state a start time instead of depending on this machine.
 vi.mock("../processes/processStartTime", () => ({
   readProcessStartTimeMs: vi.fn((): number | null => null),
+  // The CLI's exclusive lock imports these through the pool's module graph.
+  processStartTimeReader: () => () => null,
+  computerBootedAtMs: () => Date.now() - 60_000,
 }));
 
 import {
