@@ -329,6 +329,15 @@ type LanePrLookupRow = {
   archived_at: string | null;
 };
 
+/**
+ * GitHub withholds a file's `patch` and reports 0/0 for files near the tail of
+ * a large files page. GitHub's own default of 30 keeps every patch, so the
+ * files read pages smaller while walking far enough to keep the 1,000-file
+ * ceiling the old 10 x 100 walk had.
+ */
+const PR_FILES_PAGE_SIZE = 30;
+const PR_FILES_MAX_PAGES = Math.ceil(1_000 / PR_FILES_PAGE_SIZE);
+
 const PR_ACTION_RUNS_LIMIT = 12;
 /**
  * How many runs get their jobs hydrated. This used to be 6, which silently
@@ -5204,6 +5213,8 @@ export function createPrService({
     query?: Record<string, string | number | boolean | undefined | null>;
     select?: (payload: any) => T[];
     maxPages?: number;
+    /** Page size for endpoints whose payload shrinks as the page grows. Defaults to 100. */
+    pageSize?: number;
     /**
      * Delta sweep boundary: stop paginating at the first item whose
      * `updated_at` predates this instant, because every later page is older
@@ -5233,7 +5244,7 @@ export function createPrService({
     onBudgetExhausted?: () => void;
   }): Promise<T[]> => {
     const out: T[] = [];
-    const pageSize = 100;
+    const pageSize = args.pageSize ?? 100;
     const maxPages = args.maxPages ?? 10;
     const deltaBoundaryMs =
       args.query?.sort === "updated" && args.query?.direction === "desc"
@@ -6447,7 +6458,9 @@ export function createPrService({
   const getFilesSnapshotByCoords = async (coords: PrGithubCoords): Promise<PrFile[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const data = await fetchAllPages<any>({
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(coords.githubPrNumber)}/files`
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(coords.githubPrNumber)}/files`,
+      pageSize: PR_FILES_PAGE_SIZE,
+      maxPages: PR_FILES_MAX_PAGES,
     });
     return data.map((f: any) => ({
       filename: asString(f?.filename) || "",

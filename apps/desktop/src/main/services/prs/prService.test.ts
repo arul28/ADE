@@ -5445,6 +5445,61 @@ describe("prService coordinate-based detail (unmapped PRs)", () => {
     // requireRow would have thrown; reaching here proves the row was never required.
   });
 
+  it("pages PR files at 30 so GitHub keeps every patch", async () => {
+    const db = makeMockDb();
+    db.get.mockImplementation(() => null);
+    db.all.mockImplementation(() => []);
+    const fileCalls: Array<{ path: string; query?: Record<string, unknown> }> = [];
+    // A full page at 30 continues; GitHub withholds the patch for files at the
+    // tail of a large page, so a 100-item page would return these as 0/0.
+    const firstPage = Array.from({ length: 30 }, (_, index) => ({
+      filename: `file-${index}.ts`,
+      status: "modified",
+      additions: 0,
+      deletions: 0,
+      patch: null,
+    }));
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string; query?: Record<string, unknown> }) => {
+        if (args.path === "/repos/up-owner/up-repo/pulls/77/files") {
+          fileCalls.push(args);
+          if (args.query?.page === 2) {
+            return {
+              data: [{
+                filename: "last.ts",
+                status: "modified",
+                additions: 42,
+                deletions: 28,
+                patch: "@@ -1 +1 @@",
+              }],
+            };
+          }
+          return { data: firstPage };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const files = await service.getFilesByGithub({
+      repoOwner: "up-owner",
+      repoName: "up-repo",
+      githubPrNumber: 77,
+    });
+
+    expect(fileCalls.map((call) => call.query)).toEqual([
+      expect.objectContaining({ per_page: 30, page: 1 }),
+      expect.objectContaining({ per_page: 30, page: 2 }),
+    ]);
+    expect(files).toHaveLength(31);
+    expect(files.at(-1)).toMatchObject({
+      filename: "last.ts",
+      additions: 42,
+      deletions: 28,
+      patch: "@@ -1 +1 @@",
+    });
+  });
+
   it("returns a complete unmapped header and marks failed sidecars as unavailable", async () => {
     const db = makeMockDb();
     db.get.mockImplementation(() => null);
