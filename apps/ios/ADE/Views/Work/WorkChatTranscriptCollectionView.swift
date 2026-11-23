@@ -191,38 +191,18 @@ final class WorkChatTranscriptCell: UICollectionViewCell {
     super.invalidateIntrinsicContentSize()
   }
 
-  /// The real measurements this cell made in the current run-loop turn, at
-  /// `turnMeasuredWidth`, and the height the last one returned.
-  ///
-  /// UIKit re-asks a cell for its size every time its content invalidates,
-  /// inside the same layout pass, and asserts once those passes nest too deep
-  /// (`_UICollectionViewFeedbackLoopDebugger`: "stuck in a recursive layout
-  /// loop", ADE-IOS-30, right after a rotation re-measured every row). A
-  /// hosted row whose measured height moves with its position (text on a
-  /// fractional origin, a reflow at the new width) can answer a slightly
-  /// different height on each re-ask, and every answer moves the rows under
-  /// it, which re-asks again. Within one turn
-  /// a cell measures at most `maxMeasuresPerTurn` times; after that, and for
-  /// a sub-point difference, it repeats its last answer, which is a
-  /// measurement of the same content taken moments earlier.
-  private var turnMeasureCount = 0
-  private var turnMeasuredWidth: CGFloat = 0
-  private var turnMeasuredHeight: CGFloat?
-  private var turnResetScheduled = false
-  static let maxMeasuresPerTurn = 3
+  /// See `WorkChatTranscriptCellTurnMeasures`: the cap that keeps a re-ask
+  /// from nesting layout passes until UIKit asserts (ADE-IOS-30).
+  private var turnMeasures = WorkChatTranscriptCellTurnMeasures()
+  private var turnEndScheduled = false
 
-  private func resetTurnMeasures() {
-    turnMeasureCount = 0
-    turnMeasuredHeight = nil
-  }
-
-  private func scheduleTurnMeasureReset() {
-    guard !turnResetScheduled else { return }
-    turnResetScheduled = true
+  private func scheduleTurnEnd() {
+    guard !turnEndScheduled else { return }
+    turnEndScheduled = true
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
-      self.turnResetScheduled = false
-      self.resetTurnMeasures()
+      self.turnEndScheduled = false
+      if self.turnMeasures.endTurn() { self.invalidateIntrinsicContentSize() }
     }
   }
 
@@ -230,7 +210,7 @@ final class WorkChatTranscriptCell: UICollectionViewCell {
   /// invalidation the configure itself raises is about that same content.
   func didConfigure() {
     contentSizeInvalidated = false
-    resetTurnMeasures()
+    turnMeasures.configured()
     guard !settlingConfiguration else { return }
     settlingConfiguration = true
     DispatchQueue.main.async { [weak self] in
@@ -252,9 +232,9 @@ final class WorkChatTranscriptCell: UICollectionViewCell {
       return attributes
     }
     let width = layoutAttributes.frame.width
-    if turnMeasuredWidth != width { resetTurnMeasures() }
-    if let held = turnMeasuredHeight, turnMeasureCount >= Self.maxMeasuresPerTurn {
+    if let held = turnMeasures.heldHeight(width: width) {
       contentSizeInvalidated = false
+      scheduleTurnEnd()
       let attributes = layoutAttributes
       attributes.frame.size.height = held
       return attributes
@@ -265,13 +245,8 @@ final class WorkChatTranscriptCell: UICollectionViewCell {
     let measured = ScrollDiagnostics.shared.measure(.transcriptCellMeasure) {
       super.preferredLayoutAttributesFitting(layoutAttributes)
     }
-    if let held = turnMeasuredHeight, abs(measured.frame.height - held) < 1 {
-      measured.frame.size.height = held
-    }
-    turnMeasureCount += 1
-    turnMeasuredWidth = width
-    turnMeasuredHeight = measured.frame.height
-    scheduleTurnMeasureReset()
+    measured.frame.size.height = turnMeasures.record(measured.frame.height, width: width)
+    scheduleTurnEnd()
     // Name the rows that cost more than a frame to measure (the older-page
     // prepend spikes are single 25-55 ms measurements).
     let measureMs = (CACurrentMediaTime() - measureStart) * 1000

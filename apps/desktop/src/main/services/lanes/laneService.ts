@@ -6333,7 +6333,8 @@ export function createLaneService({
               // '.git' does not exist" forever. Prune drops that dead entry,
               // and the check below then offers the folder like any other.
               if (/cannot remove working tree: .*\.git'? does not exist/i.test(original)) {
-                await pruneWorktreesBestEffort();
+                const pruneFailure = await pruneWorktreesBestEffort();
+                if (pruneFailure) logger.warn("lane.delete.prune_failed", { laneId: row.id, error: pruneFailure });
               }
               // Git can give up partway: it unregisters the worktree and
               // deletes `.git`, then fails on a file Windows still holds open
@@ -8773,7 +8774,7 @@ export function createLaneService({
       if (deleteProgressByLaneId.get(args.laneId)?.overallStatus === "running") {
         throw new AdeExpectedError("This lane is already being deleted.", "user");
       }
-      if (row.lane_type === "primary") throw new AdeExpectedError("The primary lane cannot be reclaimed.", "user");
+      if (row.lane_type === "primary") throw new AdeExpectedError("The main checkout cannot be reclaimed.", "user");
       const normalizedRoot = normAbs(worktreesDir);
       const normalizedWorktree = normAbs(row.worktree_path);
       if (!isDirectlyInsideManagedWorktreesDir(normalizedWorktree)) {

@@ -15,14 +15,19 @@ import { Worker } from "node:worker_threads";
  * So on Windows every caller in the brain, ADE's own and the libraries', gets
  * the last snapshot, and a snapshot older than `REFRESH_AFTER_MS` is refreshed
  * by a short-lived worker thread, which can wait on the adapters for as long
- * as they take. Addresses change when the network does, not between two
- * reads, so a snapshot that is half a minute old costs nothing anyone sees.
- * Only the very first read, before any snapshot exists, is still made on the
- * caller's thread. Elsewhere the call is cheap (`getifaddrs`), so nothing
- * changes there.
+ * as they take (up to `WORKER_CEILING_MS`). The read that finds the snapshot
+ * old still gets that old snapshot and starts the refresh: while mDNS polls
+ * every 5 s the answer is at most about half a minute old, and a caller that
+ * reads seldom gets the addresses as of its last read once. Addresses change
+ * when the network does, so that costs nothing anyone sees. A worker starts
+ * only on a read, never on a timer. Only the very first read, before any
+ * snapshot exists, is still made on the caller's thread. Elsewhere the call is
+ * cheap (`getifaddrs`), so nothing changes there.
  */
 
 const REFRESH_AFTER_MS = 30_000;
+/** A worker still waiting on the adapters after this is stopped; the next read past the refresh age tries again. */
+const WORKER_CEILING_MS = 60_000;
 
 // A string, not a function's source: the bundle is minified, and a function
 // stringified into a worker loses the names it reached outside itself.
@@ -44,12 +49,27 @@ function copyOf(value: Interfaces): Interfaces {
   return copy;
 }
 
-export function installNetworkInterfacesSnapshot(): void {
+export function installNetworkInterfacesSnapshot(
+  warn?: (event: string, meta: Record<string, unknown>) => void,
+): void {
   if (installed || process.platform !== "win32") return;
   installed = true;
   const read = os.networkInterfaces.bind(os);
   let snapshot: { value: Interfaces; atMs: number } | null = null;
   let refreshing = false;
+  let warned = false;
+
+  // A failed or stuck read keeps the old snapshot until the next refresh age.
+  const settle = (value: Interfaces | null, failure?: string) => {
+    refreshing = false;
+    if (value && typeof value === "object") snapshot = { value, atMs: Date.now() };
+    else if (snapshot) snapshot.atMs = Date.now();
+    if (failure && !warned) {
+      // Once per brain: the old addresses keep being served either way.
+      warned = true;
+      warn?.("brain.network_interfaces_refresh_failed", { reason: failure });
+    }
+  };
 
   const refresh = () => {
     if (refreshing) return;
@@ -57,25 +77,26 @@ export function installNetworkInterfacesSnapshot(): void {
     let worker: Worker;
     try {
       worker = new Worker(WORKER_SOURCE, { eval: true });
-    } catch {
-      // No worker (out of threads): the snapshot stays, and the next read past
-      // the refresh age tries again.
-      refreshing = false;
-      if (snapshot) snapshot.atMs = Date.now();
+    } catch (error) {
+      // No worker (out of threads).
+      settle(null, error instanceof Error ? error.message : "worker_start_failed");
       return;
     }
     worker.unref();
-    const done = (value: Interfaces | null) => {
-      if (!refreshing) return;
-      refreshing = false;
-      // A failed read keeps the old snapshot until the next refresh age.
-      if (value && typeof value === "object") snapshot = { value, atMs: Date.now() };
-      else if (snapshot) snapshot.atMs = Date.now();
+    // This worker's own answer: a late exit from it must not end a later one.
+    let settled = false;
+    const done = (value: Interfaces | null, failure?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(ceiling);
+      settle(value, failure);
       void worker.terminate().catch(() => undefined);
     };
-    worker.once("message", (value: Interfaces | null) => done(value));
-    worker.once("error", () => done(null));
-    worker.once("exit", () => done(null));
+    const ceiling = setTimeout(() => done(null, "timeout"), WORKER_CEILING_MS);
+    ceiling.unref();
+    worker.once("message", (value: Interfaces | null) => done(value, value ? undefined : "read_failed"));
+    worker.once("error", (error) => done(null, error instanceof Error ? error.message : "worker_error"));
+    worker.once("exit", () => done(null, "worker_exit"));
   };
 
   const snapshotRead = (): Interfaces => {

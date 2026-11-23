@@ -1,5 +1,6 @@
 import { execFile, spawnSync, type ExecFileException } from "node:child_process";
-import { captureError, sendSentryLog } from "../../../shared/sentry/capture";
+import { captureError } from "../../../shared/sentry/capture";
+import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import {
   githubRepoRefFromSlug,
@@ -158,7 +159,7 @@ function reportLookupFailure(
   // `Match exec`) or a busy machine, not ADE (ADE-BRAIN-8Y). The remote is
   // read as not GitHub, as before ADE read ssh config. A Sentry Log, so the
   // owner can still count it; a spawn that throws stays an issue below.
-  sendSentryLog("warn", "github_ssh_alias.lookup_failed", {
+  forwardLogToSentry("warn", "github_ssh_alias.lookup_failed", {
     kind,
     code: typeof error.code === "string" ? error.code : null,
     platform: process.platform,

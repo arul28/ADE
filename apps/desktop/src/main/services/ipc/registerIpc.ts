@@ -1046,7 +1046,7 @@ import {
   createBrowserLoginImportService,
   type BrowserLoginImportService,
 } from "../builtInBrowser/loginImport";
-import { ipcHandlerTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
+import { ipcHandlerTimeoutMs, PROJECT_ACCOUNT_LIST_TIMEOUT_MS, readRuntimeActionRequest } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey, addRecentProjectsWithoutEviction } from "../state/globalState";
 import { discoverOnboardingProjects, listOnboardingProjectChats } from "../onboarding/onboardingDiscoveryClient";
 import { resolveOnboardingFolder } from "../onboarding/onboardingProjectDiscovery";
@@ -4808,12 +4808,12 @@ export function registerIpc({
     const targetId = typeof arg?.targetId === "string" ? arg.targetId.trim() : "";
     if (targetId) {
       return coerceAccountProjectListResult(
-        await runtimeBridge.callMachineMethod<unknown>(targetId, "projects.accountList", {}, { timeoutMs: 10_000 }),
+        await runtimeBridge.callMachineMethod<unknown>(targetId, "projects.accountList", {}, { timeoutMs: PROJECT_ACCOUNT_LIST_TIMEOUT_MS }),
       );
     }
     if (!localRuntimeConnectionPool) return { state: "not_loaded", projects: [] };
     return coerceAccountProjectListResult(
-      await localRuntimeConnectionPool.callSync<unknown>("projects.accountList", {}, { timeoutMs: 10_000 }),
+      await localRuntimeConnectionPool.callSync<unknown>("projects.accountList", {}, { timeoutMs: PROJECT_ACCOUNT_LIST_TIMEOUT_MS }),
     );
   });
 
@@ -10212,7 +10212,10 @@ export function registerIpc({
 
   handle(IPC.agentChatGetMainTranscript, async (_event, arg: AgentChatMainTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
     if (!arg || typeof arg.sessionId !== "string" || !arg.sessionId.trim().length) {
-      throw new Error("sessionId is required.");
+      // Only ADE's own window calls this, so a missing id is an ADE bug: worded
+      // apart from the brain's "sessionId is required." answer, which the
+      // expected-failure patterns drop.
+      throw new Error("The main transcript read was sent without a sessionId.");
     }
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getMainTranscript(arg);
@@ -14814,7 +14817,7 @@ export function registerIpc({
     async readAccountProjectList(): Promise<AccountProjectListResult> {
       if (!localRuntimeConnectionPool) return { state: "not_loaded", projects: [] };
       return coerceAccountProjectListResult(
-        await localRuntimeConnectionPool.callSync<unknown>("projects.accountList", {}, { timeoutMs: 10_000 }),
+        await localRuntimeConnectionPool.callSync<unknown>("projects.accountList", {}, { timeoutMs: PROJECT_ACCOUNT_LIST_TIMEOUT_MS }),
       );
     },
     /**

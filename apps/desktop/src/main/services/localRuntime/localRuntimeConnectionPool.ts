@@ -1110,12 +1110,13 @@ const LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN = /Remote ADE service connection (clo
 // failure would re-run a non-idempotent action against a healthy daemon.
 const LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN = /^Remote ADE service method \S+ failed[\s(:]/i;
 
+/** 0xC000026B: Windows would not start a process because the session is logging off. */
+const WINDOWS_STATUS_DLL_INIT_FAILED_LOGOFF = 0xC000026B;
+
 // The brain's answer for a project id its registry does not hold. The id is
 // the brain's own hash of the folder; this pool caches it per folder, so a
 // brain that drops or re-keys the record leaves the pool sending a dead id on
 // every call (ADE-DESKTOP-2P and eight sibling issues, one Windows window).
-/** 0xC000026B: Windows would not start a process because the session is logging off. */
-const WINDOWS_STATUS_DLL_INIT_FAILED_LOGOFF = 0xC000026B;
 const UNKNOWN_PROJECT_ID_PATTERN = /Unknown projectId: (project_[0-9a-f]+)/;
 
 /** How often one folder may be registered again after the brain forgot its id. */

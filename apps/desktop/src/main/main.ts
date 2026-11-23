@@ -8844,7 +8844,11 @@ app.whenReady().then(async () => {
    */
   const projectNotGitRepositoryError = (root: string, error: unknown): unknown => {
     if (expectedErrorKind(error) !== "user") return error;
-    if (!fs.existsSync(path.join(root, ".ade")) || hasGitEntryAbove(root)) return error;
+    // The home folder's `.ade` is ADE's own home, not a project's data.
+    if (pathsEqual(root, os.homedir())) return error;
+    const adeData = path.join(root, ".ade");
+    if (pathsEqual(adeData, process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade"))) return error;
+    if (!fs.existsSync(adeData) || hasGitEntryAbove(root)) return error;
     return markExpected(
       codedError(`The project folder ${root} is no longer a Git repository. Its .git folder isn't there.`, "project_not_git_repository"),
       "user",
@@ -8947,14 +8951,15 @@ app.whenReady().then(async () => {
           // above it), so the recovery screen this error opens may diagnose
           // it. Unrecorded, its first call was refused as an unknown folder
           // (ADE-DESKTOP-DV beside -DW) and the screen showed that instead.
-          if (notGit !== error) attemptedProjectRoots.record(openRoot);
+          if (isCodedError(notGit, "project_not_git_repository")) attemptedProjectRoots.record(openRoot);
           throw notGit;
         }),
       ); // require a real git repo for onboarding.
       // INVARIANT: a root is recorded as "attempted" only once it has been
       // proven to be a real git repository on disk — `resolveRepoRoot` throws
       // otherwise — or main itself found it to be a project (ADE's data
-      // there, or the brain's own refusal) on the way to a recovery screen. The registry widens what a renderer may later name in
+      // there, or the brain's own refusal) on the way to a recovery screen.
+      // The registry widens what a renderer may later name in
       // diagnostics/recovery calls, so recording an unvalidated string would
       // let a renderer launder any path on the machine into a known root by
       // calling `projectOpenRepo` with it first. Still recorded BEFORE the

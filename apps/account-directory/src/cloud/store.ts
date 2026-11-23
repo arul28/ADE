@@ -383,14 +383,24 @@ export function parseJsonColumn<T>(text: string | null, fallback: T, where: { la
  */
 export function reportCloudFailure(event: string, meta: Record<string, unknown> = {}, area = "cloud"): void {
   // Cloudflare's own short failure (D1 overloaded, a storage reset): the next
-  // tick or request runs it again, so it stays a log line. A burst fails every
-  // sweep of a tick at once, which was one Sentry issue per sweep.
+  // tick or request runs it again. A burst fails every sweep of a tick at
+  // once, which was one Sentry issue per sweep; now all of them share one
+  // issue per kind, so a short burst is one event and an outage that lasts
+  // still shows (once an hour per isolate).
   const transient = typeof meta.message === "string" ? cloudflareTransientKindOfText(meta.message) : null;
   logCloud(event, transient ? { ...meta, transient } : meta);
-  if (transient) return;
+  const throttleKey = transient ? `cloudflare-transient:${transient}` : event;
   const now = Date.now();
-  if (now - (lastFailureReport.get(event) ?? 0) < FAILURE_REPORT_INTERVAL_MS) return;
-  lastFailureReport.set(event, now);
+  if (now - (lastFailureReport.get(throttleKey) ?? 0) < FAILURE_REPORT_INTERVAL_MS) return;
+  lastFailureReport.set(throttleKey, now);
+  if (transient) {
+    Sentry.captureMessage(`Cloudflare transient: ${transient}`, {
+      level: "warning",
+      fingerprint: ["cloudflare-transient", transient],
+      tags: { area, transient, failure_event: event },
+    });
+    return;
+  }
   // The event name, plus the closed codes that say which failure it was:
   // `meta` also carries account and instance ids and free text, which stay in the log.
   Sentry.captureMessage(event, { level: "warning", fingerprint: [event], tags: { area, ...failureCodeTags(meta) } });

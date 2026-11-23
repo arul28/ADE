@@ -12,7 +12,9 @@
  *
  * Errors keep the SDK's text: `[code] message` from Cursor's error body, or
  * the message alone for 401 and 429, so callers that match on it (plan
- * refusals, rate limits, "unauthorized") read the same words.
+ * refusals, rate limits, "unauthorized") read the same words. A gateway's
+ * 502/503/504 page with no Cursor body is the one exception: it reads as a
+ * plain "not answering" network error.
  */
 
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";

@@ -1,7 +1,7 @@
 import * as inspector from "node:inspector";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
-import { captureError } from "../../../../desktop/src/shared/sentry/capture";
+import { captureProblem } from "../../../../desktop/src/shared/sentry/capture";
 import { BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS } from "./brainLoopWatchdog";
 import { BRAIN_LOOP_FREEZE_LIMITS, brainLoopFreezeCause } from "./brainLoopWatchdogWorker";
 
@@ -89,38 +89,30 @@ type BrainStallProfileSummary = {
  * What kind of work held the loop. `library:<package>` names a dependency's
  * own code; everything else is a closed list.
  */
-type BrainStallCause =
-  | "sqlite"
-  | "process-spawn"
-  | "file-system"
-  | "network-interfaces"
-  | "os"
-  | "garbage-collection"
-  | "crypto"
-  | "network"
-  | "worker-message"
-  | "node-internals"
-  | "ade-code"
-  | "unknown"
-  | `library:${string}`;
+type BrainStallCause = FixedBrainStallCause | `library:${string}`;
 
-/** The words after "Brain froze in" for each cause. */
+/** The words after "Brain froze in" for each cause; a new cause must name its title here. */
+const FIXED_CAUSE_TITLES = {
+  sqlite: "a SQLite query",
+  "process-spawn": "a child process call",
+  "file-system": "a synchronous file call",
+  "network-interfaces": "reading the network interfaces",
+  os: "an operating system call",
+  "garbage-collection": "garbage collection",
+  crypto: "hashing or crypto",
+  network: "a network request",
+  "worker-message": "a worker message",
+  "node-internals": "Node's own code",
+  "ade-code": "ADE code",
+  unknown: "unknown code",
+} as const;
+
+type FixedBrainStallCause = keyof typeof FIXED_CAUSE_TITLES;
+
 function causeTitle(cause: BrainStallCause): string {
-  switch (cause) {
-    case "sqlite": return "a SQLite query";
-    case "process-spawn": return "a child process call";
-    case "file-system": return "a synchronous file call";
-    case "network-interfaces": return "reading the network interfaces";
-    case "os": return "an operating system call";
-    case "garbage-collection": return "garbage collection";
-    case "crypto": return "hashing or crypto";
-    case "network": return "a network request";
-    case "worker-message": return "a worker message";
-    case "node-internals": return "Node's own code";
-    case "ade-code": return "ADE code";
-    case "unknown": return "unknown code";
-    default: return `the ${cause.slice("library:".length)} package`;
-  }
+  return cause.startsWith("library:")
+    ? `the ${cause.slice("library:".length)} package`
+    : FIXED_CAUSE_TITLES[cause as FixedBrainStallCause];
 }
 
 const IDLE = "(idle)";
@@ -435,13 +427,10 @@ export function createBrainStallProfiler(deps: {
     if (reportedCauses.has(key)) return;
     reportedCauses.add(key);
     const title = `Brain froze in ${causeTitle(summary.cause)}`;
-    const error = new Error(title);
-    error.name = "AdeProblem";
-    const trace = stallStackTrace(title, summary.frames);
-    if (trace) error.stack = trace;
     const memory = process.memoryUsage();
-    captureError(error, {
+    captureProblem(title, {
       level: "warning",
+      stack: stallStackTrace(title, summary.frames),
       fingerprint: summary.fingerprint,
       tags: { stall_cause: summary.cause, stall_leaf: summary.leafName, stall_anchor: summary.anchor },
       extra: {

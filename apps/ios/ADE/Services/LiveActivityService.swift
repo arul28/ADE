@@ -686,7 +686,13 @@ final class LiveActivityService {
         // a second, held the main thread for 28 s once (ADE-IOS-2S).
         let activities = Activity<ADEAgentRunsAttributes>.activities
             .filter { $0.attributes.isAccountWide && $0.activityState == .active }
-        guard !activities.isEmpty else { return }
+        guard !activities.isEmpty else {
+            // No account-wide activity to write: the 1 s floor still applies to
+            // the next read, but the hash stays unset, so an activity a push
+            // starts gets this frame on the next change.
+            lastLocalUpdateAt = Date()
+            return
+        }
         lastLocalContentHash = hash
         lastLocalUpdateAt = Date()
 

@@ -24,7 +24,7 @@ import {
 import type { ProviderInstance } from "../../../shared/types/providerInstances";
 import type { ProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { getErrorMessage } from "../shared/utils";
-import { expectedErrorKind, markExpected, type ExpectedErrorKind } from "../../../shared/expectedError";
+import { carryExpected, markExpected } from "../../../shared/expectedError";
 
 export const MACHINE_INVENTORY_MAX_LIVE_MACHINES = 12;
 export const MACHINE_INVENTORY_RATE_FLOOR_MS = 30_000;
@@ -197,7 +197,8 @@ function machineLabel(machine: AdeAccountMachine): string {
   return machine.customName?.trim() || machine.name?.trim() || machine.machineKey;
 }
 
-type InventoryFailure = { attemptedAt: number; message: string; expected: ExpectedErrorKind | null };
+/** The failure as thrown, mark included, so a repeat inside the floor reads the same. */
+type InventoryFailure = { attemptedAt: number; error: Error };
 
 export type AccountMachineInventoryFetcher = (
   machineKey: string,
@@ -246,8 +247,7 @@ export function createAccountMachineInventoryFetcher({
     }
     const priorFailure = failures.get(machineKey);
     if (priorFailure && currentTime - priorFailure.attemptedAt < MACHINE_INVENTORY_RATE_FLOOR_MS) {
-      const repeated = new Error(priorFailure.message);
-      throw priorFailure.expected ? markExpected(repeated, priorFailure.expected) : repeated;
+      throw carryExpected(priorFailure.error, new Error(priorFailure.error.message));
     }
     if (inFlight.size >= MACHINE_INVENTORY_MAX_LIVE_MACHINES && !inFlight.has(machineKey)) {
       throw new Error("Too many machine inventory reads are already in progress.");
@@ -292,15 +292,14 @@ export function createAccountMachineInventoryFetcher({
         : error instanceof Error && error.message
           ? error.message
           : "Details unavailable right now.";
-      const expected = tooOld ? "environment" : expectedErrorKind(error);
-      failures.set(machineKey, { attemptedAt, message, expected });
+      const failure = tooOld ? markExpected(new Error(message), "environment") : carryExpected(error, new Error(message));
+      failures.set(machineKey, { attemptedAt, error: failure });
       logger?.debug?.("account.machine_inventory_refresh_failed", {
         machineKey,
         label,
         error: getErrorMessage(error),
       });
-      const failure = new Error(message);
-      throw expected ? markExpected(failure, expected) : failure;
+      throw failure;
     } finally {
       inFlight.delete(machineKey);
     }
