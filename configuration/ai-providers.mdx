@@ -65,6 +65,14 @@ ADE lends its local proxy only the short-lived access token of each Claude and C
 On macOS, ADE does not read a Codex login kept in the Keychain, because reading it would prompt you. If Codex stores its login there, the launch explains how to switch Codex to file storage.
 </Note>
 
+## Free models: no plan, account or key
+
+You can chat in ADE with nothing signed in. ADE's OpenCode runs OpenCode Zen's free models, and the model picker lists them on its **Free** page (the gift tab under Recents; searching "free" finds them from any page). Each row carries a **Free** or **Ad-supported** badge and never asks for a sign-in.
+
+- On a computer with no agent signed in, ADE downloads OpenCode at launch, the picker opens on the Free page and a new chat starts on a free model. A model you pick wins.
+- If OpenCode is missing, the Free page offers **Get free models** and shows the download.
+- The Free page works the same in the web app and on the iPhone, on the chat's own machine.
+
 ## OpenCode — universal model access
 
 OpenCode is the managed layer that reaches everything else. ADE downloads and runs it for you, keeps its credentials in an isolated ADE-managed store (never your own `~/.local/share/opencode`), and refreshes its model catalog on its own. One group, four ways in:
