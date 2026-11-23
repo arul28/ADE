@@ -71,6 +71,11 @@ function processExists(pid: number): boolean {
 const LOCK_OWNER_START_TOLERANCE_MS = 2_000;
 /** A record written before this boot cannot have a live writer when the start time is unavailable. */
 const LOCK_WRITER_BOOT_SLACK_MS = 60_000;
+/**
+ * Captured once: `computerBootedAtMs` follows the wall clock, so reading it
+ * again after a forward clock step could make a live holder look pre-boot.
+ */
+const COMPUTER_BOOTED_AT_MS = computerBootedAtMs();
 
 /**
  * Whether the recorded pid is still the process that wrote the lock. A recycled
@@ -85,7 +90,7 @@ function lockOwnerStillRuns(
   if (!processExists(pid)) return false;
   const startedAtMs = startTimeOf(pid);
   if (startedAtMs != null) return startedAtMs - writtenAtMs <= LOCK_OWNER_START_TOLERANCE_MS;
-  return writtenAtMs > computerBootedAtMs() - LOCK_WRITER_BOOT_SLACK_MS;
+  return writtenAtMs > COMPUTER_BOOTED_AT_MS - LOCK_WRITER_BOOT_SLACK_MS;
 }
 
 // A contended `open(..., "wx")` reports EEXIST -- on Windows too.
@@ -130,6 +135,16 @@ function unlinkExclusiveFileLockIfStale(
       // the write time.
       if (owner.pid != null && lockOwnerStillRuns(owner.pid, stat.mtimeMs, startTimeOf)) return false;
       if (owner.pid == null && ageMs <= 30_000) return false;
+    }
+    // The lock may have been replaced between the stat and the owner read; the
+    // evidence would then describe a file that is no longer there.
+    const current = fs.statSync(lockPath);
+    if (
+      current.mtimeMs !== stat.mtimeMs
+      || current.ino !== stat.ino
+      || current.size !== stat.size
+    ) {
+      return false;
     }
     fs.unlinkSync(lockPath);
     return true;
