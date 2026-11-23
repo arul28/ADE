@@ -4447,7 +4447,12 @@ export class LocalRuntimeConnectionPool {
         // Windows refused to start it because the person is signing out or
         // shutting down (STATUS_DLL_INIT_FAILED_LOGOFF): nothing in the brain
         // ran (ADE-DESKTOP-E8). Every other exit stays a report.
-        if (process.platform === "win32" && child.exitCode === WINDOWS_STATUS_DLL_INIT_FAILED_LOGOFF) {
+        // The code can arrive as the unsigned DWORD or as its signed int32.
+        if (
+          process.platform === "win32"
+          && child.exitCode !== null
+          && (child.exitCode >>> 0) === WINDOWS_STATUS_DLL_INIT_FAILED_LOGOFF
+        ) {
           throw markExpected(exited, "environment");
         }
         throw exited;

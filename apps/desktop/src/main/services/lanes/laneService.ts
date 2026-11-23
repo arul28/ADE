@@ -6327,14 +6327,30 @@ export function createLaneService({
               }
             }
             if (!managedWorktreePath) {
-              // The folder lost its `.git` pointer file (someone deleted it,
-              // or an earlier remove got that far) while Git still lists it:
-              // `git worktree remove` refuses with "validation failed …
-              // '.git' does not exist" forever. Prune drops that dead entry,
-              // and the check below then offers the folder like any other.
+              // The folder lost its `.git` pointer file (someone deleted it)
+              // while Git still lists it: `git worktree remove` refuses with
+              // "validation failed … '.git' does not exist" forever
+              // (ADE-DESKTOP-DX). Not a prune: Git's entry still holds the
+              // checkout's index, HEAD log and submodule repositories, and the
+              // unsaved-work checks above could not read the folder. Repair
+              // writes the pointer back, so the next delete checks it like
+              // any other lane.
               if (/cannot remove working tree: .*\.git'? does not exist/i.test(original)) {
-                const pruneFailure = await pruneWorktreesBestEffort();
-                if (pruneFailure) logger.warn("lane.delete.prune_failed", { laneId: row.id, error: pruneFailure });
+                const repairRes = await runGit(["worktree", "repair", row.worktree_path], {
+                  cwd: projectRoot,
+                  timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+                  env: GIT_ENGLISH_MESSAGES_ENV,
+                });
+                if (repairRes.exitCode === 0 && fs.existsSync(path.join(row.worktree_path, ".git"))) {
+                  throw new AdeExpectedError(
+                    "This lane's folder had lost its link to Git, so ADE could not check it for unsaved work. The link is restored; delete the lane again.",
+                    "user",
+                  );
+                }
+                logger.warn("lane.delete.worktree_repair_failed", {
+                  laneId,
+                  error: (repairRes.stderr || repairRes.stdout || "").trim() || `exit ${repairRes.exitCode}`,
+                });
               }
               // Git can give up partway: it unregisters the worktree and
               // deletes `.git`, then fails on a file Windows still holds open
