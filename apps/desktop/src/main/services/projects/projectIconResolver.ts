@@ -76,10 +76,16 @@ const IOS_ASSET_CATALOG_CANDIDATE_DIRS = [
 
 const IOS_ASSET_ICONSET_EXTENSIONS = new Set([".appiconset", ".imageset"]);
 
-const LINK_ICON_HTML_RE =
-  /<link\b(?=[^>]*\brel=["'](?:icon|shortcut icon)["'])(?=[^>]*\bhref=["']([^"'?]+))[^>]*>/i;
-const LINK_ICON_OBJ_RE =
-  /(?=[^}]*\brel\s*:\s*["'](?:icon|shortcut icon)["'])(?=[^}]*\bhref\s*:\s*["']([^"'?]+))[^}]*/i;
+// `rel` is an unordered, whitespace-separated token list; any `icon` token marks an icon link.
+const ICON_REL_VALUE = String.raw`(?:"(?:[^"]*[\t\n\f\r ])?icon(?=[\t\n\f\r "])|'(?:[^']*[\t\n\f\r ])?icon(?=[\t\n\f\r ']))`;
+const LINK_ICON_HTML_RE = new RegExp(
+  String.raw`<link\b(?=[^>]*\brel=${ICON_REL_VALUE})(?=[^>]*\bhref=["']([^"'?]+))[^>]*>`,
+  "i",
+);
+const LINK_ICON_OBJ_RE = new RegExp(
+  String.raw`(?=[^}]*\brel\s*:\s*${ICON_REL_VALUE})(?=[^}]*\bhref\s*:\s*["']([^"'?]+))[^}]*`,
+  "i",
+);
 
 type ProjectIconOverride = string | null | undefined;
 

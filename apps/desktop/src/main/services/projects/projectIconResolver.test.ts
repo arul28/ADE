@@ -71,6 +71,29 @@ describe("projectIconResolver", () => {
     const iconPath = writeFile(root, "public/brand/logo.svg", "<svg>brand</svg>");
 
     expect(resolveProjectIconPath(root)).toBe(iconPath);
+
+    // `rel` is an unordered, whitespace-separated token list; any `icon` token
+    // marks an icon link, wherever it sits in the list.
+    const tokenListRoot = makeProjectRoot();
+    writeFile(tokenListRoot, "index.html", '<link rel="icon shortcut" href="/brand/logo.svg">');
+    const tokenListIconPath = writeFile(tokenListRoot, "public/brand/logo.svg", "<svg>brand</svg>");
+    expect(resolveProjectIconPath(tokenListRoot)).toBe(tokenListIconPath);
+
+    // The same token list in the `__root.tsx` head-config object form.
+    const objectRoot = makeProjectRoot();
+    writeFile(
+      objectRoot,
+      "app/routes/__root.tsx",
+      'export const Route = { head: () => ({ links: [{ rel: "icon shortcut", href: "/brand/logo.svg" }] }) };',
+    );
+    const objectIconPath = writeFile(objectRoot, "public/brand/logo.svg", "<svg>brand</svg>");
+    expect(resolveProjectIconPath(objectRoot)).toBe(objectIconPath);
+
+    // The closing quote pairs with the opening one, so `icon's` has no `icon` token.
+    const possessiveRoot = makeProjectRoot();
+    writeFile(possessiveRoot, "index.html", '<link rel="icon\'s" href="/brand/logo.svg">');
+    writeFile(possessiveRoot, "public/brand/logo.svg", "<svg>brand</svg>");
+    expect(resolveProjectIconPath(possessiveRoot)).toBeNull();
   });
 
   it("detects nested app icons in monorepos", () => {
