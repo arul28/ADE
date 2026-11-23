@@ -364,6 +364,9 @@ final class CloudSponsoredStore: ObservableObject {
   private var retriedNotCloud: Set<String> = []
   private var viewedAds: Set<String> = []
   private var lastSeenAt: [String: Date] = [:]
+  /// The tracking answer each computer's viewer row last got: a changed
+  /// answer (tracking turned off in Settings) is said at once, not after the interval.
+  private var lastSeenTracking: [String: String] = [:]
   /// Account changes this run: an ask that spans one publishes nothing.
   private var resetCount = 0
   private var observers: [NSObjectProtocol] = []
@@ -477,21 +480,29 @@ final class CloudSponsoredStore: ObservableObject {
   }
 
   /// Someone is watching this computer's chat or terminal: the Index may
-  /// answer its agents. At most once per computer every few minutes.
+  /// answer its agents. At most once per computer every few minutes, but at
+  /// once when the tracking answer changed: the server picks what Gravity
+  /// gets from the latest one, so a "no" must not wait out the interval.
   func noteSeen(instanceId: String) async {
     guard appActive else { return }
     let now = Date()
-    if let last = lastSeenAt[instanceId], now.timeIntervalSince(last) < Self.seenEvery { return }
+    let tracking = CloudSponsoredTracking.status
+    if let last = lastSeenAt[instanceId], now.timeIntervalSince(last) < Self.seenEvery, lastSeenTracking[instanceId] == tracking { return }
     lastSeenAt[instanceId] = now
+    lastSeenTracking[instanceId] = tracking
     guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
       lastSeenAt[instanceId] = nil
+      lastSeenTracking[instanceId] = nil
       return
     }
     do {
       try await client.sponsoredSeen(instanceId: instanceId, device: .current)
     } catch {
       // Not said: the next look tries again instead of waiting out the interval.
-      if lastSeenAt[instanceId] == now { lastSeenAt[instanceId] = nil }
+      if lastSeenAt[instanceId] == now {
+        lastSeenAt[instanceId] = nil
+        lastSeenTracking[instanceId] = nil
+      }
       cloudSponsoredLog.notice("sponsored seen failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
   }
@@ -502,6 +513,7 @@ final class CloudSponsoredStore: ObservableObject {
   /// The person said no: the next yes reports their presence at once.
   func forgetSeen() {
     lastSeenAt = [:]
+    lastSeenTracking = [:]
   }
 
   func reset() {
@@ -515,6 +527,7 @@ final class CloudSponsoredStore: ObservableObject {
     foldedPicks = []
     holder = nil
     lastSeenAt = [:]
+    lastSeenTracking = [:]
   }
 
   #if DEBUG

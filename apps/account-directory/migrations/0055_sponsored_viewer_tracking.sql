@@ -6,3 +6,6 @@
 -- not an iPhone or iPad, or is one whose answer was "authorized". Null (desktop,
 -- web, or an older iPhone app) on an iOS row means no hashed email.
 alter table cloud_sponsored_viewers add column tracking text;
+
+-- The hourly prune (minute 23) deletes rows a day old by `seen_at`.
+create index if not exists idx_cloud_sponsored_viewers_seen on cloud_sponsored_viewers(seen_at);
