@@ -381,6 +381,11 @@ export type AcpTurnFailure = {
   retryable: boolean;
   /** ISO instant the limit lifts, when the agent said. */
   resetAt: string | null;
+  /**
+   * The native session can carry on: the host resends this prompt once before
+   * failing the turn. Only a transient error after the model answered sets it.
+   */
+  resumeWith?: string;
 };
 
 /** What background work reports. `agent_reply` is a reply written outside any turn. */
