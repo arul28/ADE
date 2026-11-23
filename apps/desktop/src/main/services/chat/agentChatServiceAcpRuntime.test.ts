@@ -1060,11 +1060,17 @@ describe("acp chat runtime", () => {
     const replacement = promptText(agents[2]!);
     expect(replacement).toContain("teal");
     expect(replacement.indexOf("teal")).toBeLessThan(replacement.lastIndexOf("What did I say first?"));
-    // And the chat says the old session is gone instead of silently starting over.
-    const notices = events
-      .filter((envelope) => envelope.sessionId === session.id && envelope.event.type === "system_notice")
-      .map((envelope) => String((envelope.event as Record<string, any>).message));
-    expect(notices.some((message) => message.includes("Qwen Code") && message.includes("started a new one"))).toBe(true);
+    // And the chat says the old session is gone instead of silently starting
+    // over. Naming the provider is the contract; the sentence is not.
+    const notices = events.filter(
+      (envelope) => envelope.sessionId === session.id && envelope.event.type === "system_notice",
+    );
+    expect(notices.some((envelope) => {
+      const notice = envelope.event as { noticeKind?: string; severity?: string; message?: string };
+      return notice.noticeKind === "warning"
+        && notice.severity === "warning"
+        && Boolean(notice.message?.includes("Qwen Code"));
+    })).toBe(true);
   });
 
   it("offers the agent's advertised slash commands once, even when re-sent", async () => {
