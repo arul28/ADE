@@ -249,7 +249,19 @@ function isTailscaleAddress(ipAddress: string): boolean {
 // this computer, so a phone that dials them just burns a connect attempt.
 // Other `vEthernet (...)` adapters stay: with a Hyper-V External switch, or WSL
 // in bridged mode, Windows moves the real LAN address onto one of them.
-const VIRTUAL_ADAPTER_PATTERN = /^vEthernet \((WSL|Default Switch)|docker|^br-|virbr|vmnet|vboxnet/i;
+// Windows names its hotspot and Wi-Fi Direct adapters "<localized name>* <n>"
+// ("Local Area Connection* 2", "LAN-Verbindung* 10"); they carry the ICS
+// gateway 192.168.137.1 and reach only this machine's tethered devices.
+const VIRTUAL_ADAPTER_PATTERN = /^vEthernet \((WSL|Default Switch)|docker|^br-|virbr|vmnet|vboxnet|^virtualbox host-only|\* \d+$/i;
+
+// VirtualBox (0a:00:27) and VMware (00:50:56:c0:00) host-only adapters use
+// fixed MAC prefixes. Their Windows names are user-renameable ("VirtualBox
+// Host-Only Network" is not matched above), so the MAC is the backstop. Linux
+// bridges can inherit these MACs, so only Windows is checked.
+const WINDOWS_HOST_ADAPTER_MAC = /^(0a:00:27|00:50:56:c0:00):/i;
+
+/** VPN and proxy clients put their tunnels in 198.18.0.0/15 (RFC 2544), which is never a LAN. */
+const isVpnTunnelAddress = (address: string): boolean => /^198\.1[89]\./.test(address);
 
 function readLocalNetworkMetadata(): LocalNetworkMetadata {
   const interfaces = readNetworkInterfaces();
@@ -260,6 +272,8 @@ function readLocalNetworkMetadata(): LocalNetworkMetadata {
     const isLikelyTailscaleInterface = /tailscale|utun|tun/i.test(interfaceName);
     for (const entry of entries ?? []) {
       if (!entry || entry.internal || entry.family !== "IPv4") continue;
+      if (isVpnTunnelAddress(entry.address)) continue;
+      if (process.platform === "win32" && WINDOWS_HOST_ADAPTER_MAC.test(entry.mac)) continue;
       if (isLikelyTailscaleInterface || isTailscaleAddress(entry.address)) {
         tailscale.push(entry.address);
       } else {
