@@ -1886,7 +1886,7 @@ the old value only after the brain confirms.
 | Level | What it does | Where it works |
 |---|---|---|
 | `never` (default) | Holds nothing. Turns pause when the machine sleeps, and the chat says so. | everywhere |
-| `while-away` | The brain holds one OS wake lock **only while work runs**: macOS `caffeinate -i -w <brain pid>`; Windows a `SetThreadExecutionState` helper that exits with the brain; Linux `systemd-inhibit --what=idle:sleep` around `tail --pid=<brain pid>`, plus `gnome-session-inhibit --inhibit suspend:idle` in a GNOME session, whose idle suspend ignores the user's own logind lock. Stops idle sleep, not the lid. | macOS, Windows, Linux with systemd |
+| `while-away` | The brain holds one OS wake lock **only while work runs**: macOS `caffeinate -i -w <brain pid>`; Windows a `SetThreadExecutionState` helper that exits with the brain; Linux `systemd-inhibit --what=idle:sleep` around `tail --pid=<brain pid>`, plus `gnome-session-inhibit --inhibit suspend` in a GNOME session, whose idle suspend ignores the user's own logind lock. The screen still locks. Stops idle sleep, not the lid. | macOS, Windows, Linux with systemd |
 | `lid-closed` | `pmset -a disablesleep 1` through the authorization dialog. Machine-wide; outlives ADE. | macOS only |
 
 - **A wake lock stops idle sleep only** (measured: an `IOPMAssertion` held 35

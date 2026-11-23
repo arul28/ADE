@@ -254,13 +254,15 @@ export function createBrainKeepAwakeService(
       } else if (platform === "linux") {
         // logind's lock is not enough on GNOME: logind lets a user suspend
         // past their own lock, and GNOME's idle suspend runs as that user and
-        // reads only its own session's locks. So the command under
-        // systemd-inhibit also takes GNOME's lock when a GNOME session answers.
-        // `tail --pid` ends the chain with the brain, as `caffeinate -w` does on
-        // macOS, and the chain has its own process group so a release ends all
-        // of it.
-        const holdUntilBrainExits = `tail --pid=${process.pid} -f /dev/null`;
-        const gnomeInhibit = "gnome-session-inhibit --app-id ade-desktop --inhibit suspend:idle";
+        // reads only its own session's locks. So the shell under
+        // systemd-inhibit also holds GNOME's suspend lock when a GNOME session
+        // answers. Only suspend: GNOME's idle lock would also stop the screen
+        // from locking itself. The shell owns both its children (GNOME's tool
+        // moves a command it runs into a group of its own, so it runs none),
+        // `tail --pid` ends the chain with the brain, as `caffeinate -w` does
+        // on macOS, and the chain has its own process group so a release ends
+        // all of it.
+        const gnomeInhibit = "gnome-session-inhibit --app-id ade-desktop --inhibit suspend";
         const processChild = spawn("systemd-inhibit", [
           "--what=idle:sleep",
           "--who=ADE",
@@ -268,7 +270,13 @@ export function createBrainKeepAwakeService(
           "--mode=block",
           "/bin/sh",
           "-c",
-          `if command -v gnome-session-inhibit >/dev/null 2>&1 && ${gnomeInhibit} --reason "Checking the lock" true >/dev/null 2>&1; then exec ${gnomeInhibit} --reason "Agents are working" ${holdUntilBrainExits}; fi; exec ${holdUntilBrainExits}`,
+          [
+            `if command -v gnome-session-inhibit >/dev/null 2>&1 && ${gnomeInhibit} --reason "Checking the lock" true >/dev/null 2>&1; then`,
+            `${gnomeInhibit} --reason "Agents are working" --inhibit-only >/dev/null 2>&1 & gnome=$!;`,
+            `trap 'kill "$gnome" 2>/dev/null' EXIT; trap 'exit 143' TERM HUP INT;`,
+            "fi;",
+            `tail --pid=${process.pid} -f /dev/null`,
+          ].join(" "),
         ], { stdio: "ignore", detached: true });
         const killProcess = processChild.kill.bind(processChild);
         spawned = Object.assign(processChild, {
