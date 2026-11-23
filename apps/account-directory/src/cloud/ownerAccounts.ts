@@ -216,7 +216,13 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
   }
   let account = await loadAccount(env, who.userId, now);
   const statements: D1PreparedStatement[] = [];
-  let testWritten = false;
+  // A test of iPhone minutes saves only while extra minutes are off (`setExtraPhoneMinutes` guards the other
+  // way): each of this request's writes checks it in its own SQL, so either all of them land or none.
+  const guarded = !reset && change.phoneMinutes != null;
+  const whileExtraOff = `not exists (select 1 from cloud_accounts where user_id = ? and phone_extra_enabled = ${PHONE_EXTRA.on})`;
+  const guard = (sqlWhere: string): string => (guarded ? `${sqlWhere} and ${whileExtraOff}` : sqlWhere);
+  const guardBinds = guarded ? [who.userId] : [];
+  const extraOnRefusal = () => fail("conflict", "This account has extra iPhone minutes on, which bill past its plan's minutes, not a test's. Turn extra minutes off first, or use another account.", 409);
   if (reset) {
     statements.push(env.DB.prepare(`update cloud_accounts set test_plan = null, test_computers = null, test_hours_milli = null,
       test_phone_minutes = null, test_until = null, test_note = null, updated_at = ? where user_id = ?`).bind(now, who.userId));
@@ -235,44 +241,42 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
       return fail("conflict", "This account has earned hours or extra hours on, so a test with more hours than its plan would use them for real. Test fewer hours, or use another account.", 409);
     }
     // Extra minutes bill past the real plan's minutes, never a test's: the two would disagree on what is extra.
-    const extraOnRefusal = () => fail("conflict", "This account has extra iPhone minutes on, which bill past its plan's minutes, not a test's. Turn extra minutes off first, or use another account.", 409);
-    if (change.phoneMinutes != null && phoneExtraOn(env, account)) return extraOnRefusal();
-    const update = env.DB.prepare(`update cloud_accounts set test_plan = ?, test_computers = ?, test_hours_milli = ?, test_phone_minutes = ?,
-      test_until = ?, test_note = ?, updated_at = ? where user_id = ?${change.phoneMinutes != null ? ` and phone_extra_enabled <> ${PHONE_EXTRA.on}` : ""}`)
-      .bind(next.plan, next.computers, next.hoursMilli, next.phoneMinutes, any ? now + days * DAY_MS : null, any ? note ?? account.test_note ?? null : null, now, who.userId);
-    if (change.phoneMinutes != null) {
-      // Written first, alone, only while extra minutes are off: extra minutes turned on since the read above win
-      // (`setExtraPhoneMinutes` guards the other way), and nothing else in this request is saved.
-      if (((await update.run()).meta.changes ?? 0) === 0) return extraOnRefusal();
-    } else {
-      statements.push(update);
-    }
-    testWritten = true;
+    if (guarded && phoneExtraOn(env, account)) return extraOnRefusal();
+    statements.push(env.DB.prepare(`update cloud_accounts set test_plan = ?, test_computers = ?, test_hours_milli = ?, test_phone_minutes = ?,
+      test_until = ?, test_note = ?, updated_at = ? where ${guard("user_id = ?")}`)
+      .bind(next.plan, next.computers, next.hoursMilli, next.phoneMinutes, any ? now + days * DAY_MS : null, any ? note ?? account.test_note ?? null : null, now, who.userId, ...guardBinds));
   }
-  if (tester === true) statements.push(env.DB.prepare("insert into cloud_sponsored_testers (user_id, added_at) values (?, ?) on conflict (user_id) do nothing").bind(who.userId, now));
-  if (tester === false) statements.push(env.DB.prepare("delete from cloud_sponsored_testers where user_id = ?").bind(who.userId));
-  const testChanged = testWritten || statements.length > 0;
-  // The beta list keeps its own rules (a removal stops a running phone): its route does it.
-  if (phoneChoice !== undefined) {
-    // The email too: the list keeps the address, and a removal drops its waiting invite (else the invite sweep adds it back).
-    const ref = { userId: who.userId, ...(who.email ? { email: who.email } : {}) };
-    // Its log entry is written with the list change, whatever happens to the test's write below.
-    const logged = [ownerLogStatement(env, now, "account_phone", who.userId, { phone: phoneChoice })];
-    const listed = await handleOwnerPhoneBeta(env, phoneChoice === "off" ? { ...ref, enabled: false } : { ...ref, provider: phoneChoice }, now, logged);
-    if (!listed.ok) return listed;
+  if (tester === true) {
+    statements.push(env.DB.prepare(`insert into cloud_sponsored_testers (user_id, added_at) select ?, ? where ${guard("true")} on conflict (user_id) do nothing`)
+      .bind(who.userId, now, ...guardBinds));
   }
+  if (tester === false) statements.push(env.DB.prepare(`delete from cloud_sponsored_testers where ${guard("user_id = ?")}`).bind(who.userId, ...guardBinds));
+  const testChanged = statements.length > 0;
   if (testChanged) {
-    statements.push(ownerLogStatement(env, now, reset ? "account_reset" : "account_test", who.userId, {
+    const detail = {
       ...(reset ? {} : { ...change, ...(Object.keys(change).length ? { days } : {}) }),
       ...(tester === undefined ? {} : { tester }),
       ...(note ? { note } : {}),
-    }));
-    await env.DB.batch(statements);
+    };
+    statements.push(env.DB.prepare(`insert into cloud_owner_log (at, action, user_id, detail) select ?, ?, ?, ? where ${guard("true")}`)
+      .bind(now, reset ? "account_reset" : "account_test", who.userId, JSON.stringify(detail), ...guardBinds));
+    const results = await env.DB.batch(statements);
+    // Extra minutes turned on since the read above: nothing of this request was saved.
+    if (guarded && (results[0]?.meta.changes ?? 0) === 0) return extraOnRefusal();
     // Small's hours follow the plan and the testers list at once.
     await syncSmallRates(env, await loadAccount(env, who.userId, now), now);
     // A running phone is held to the new minutes at once: a lower test stops it sooner, a higher one lets it run on.
     if (reset || change.phoneMinutes !== undefined) await holdPhoneToAllowance(env, who.userId, now);
     logCloud("cloud.owner_account_changed", { userId: who.userId, reset, tester: tester ?? null, plan: change.plan ?? null });
+  }
+  // The beta list keeps its own rules (a removal stops a running phone): its route does it, after the test's write.
+  if (phoneChoice !== undefined) {
+    // The email too: the list keeps the address, and a removal drops its waiting invite (else the invite sweep adds it back).
+    const ref = { userId: who.userId, ...(who.email ? { email: who.email } : {}) };
+    // Its log entry is written with the list change.
+    const logged = [ownerLogStatement(env, now, "account_phone", who.userId, { phone: phoneChoice })];
+    const listed = await handleOwnerPhoneBeta(env, phoneChoice === "off" ? { ...ref, enabled: false } : { ...ref, provider: phoneChoice }, now, logged);
+    if (!listed.ok) return listed;
   }
   if (testChanged || phoneChoice !== undefined) account = await loadAccount(env, who.userId, now);
   return json({ ok: true, account: await describeAccount(env, account, who.email, now) });
