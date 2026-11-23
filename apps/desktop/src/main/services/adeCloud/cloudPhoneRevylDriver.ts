@@ -276,8 +276,11 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       case "scroll": {
         const direction = (rest[0]?.word ?? "").toLowerCase();
         if (!DIRECTIONS.has(direction)) return `${verb} is up, down, left or right`;
-        // No known size (the phone just turned): one read learns it.
-        const size = phone.points ?? await readScreen(phone, cmd).catch(() => null);
+        // No known size (the phone just turned): one read learns it. A gone phone still throws (its retry).
+        const size = phone.points ?? await readScreen(phone, cmd).catch((error: unknown) => {
+          if (error instanceof CloudPhoneGoneError) throw error;
+          return null;
+        });
         const width = size?.width || 400;
         const height = size?.height || 870;
         let at: { x: number; y: number } = { x: Math.round(width / 2), y: Math.round(height / 2) };
