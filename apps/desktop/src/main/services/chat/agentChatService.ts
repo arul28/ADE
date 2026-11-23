@@ -15155,7 +15155,7 @@ export function createAgentChatService(args: {
       // Masked before the cut: a key sliced at 120 chars would leak its prefix.
       const cmd = rawCmd ? redactCommandLine(rawCmd) : null;
       headline = cmd
-        ? `Run command: ${cmd.length > 120 ? cmd.slice(0, 117) + "..." : cmd}`
+        ? `Run command: ${cmd.length > 120 ? cutTextAtCodePoint(cmd, 117) + "..." : cmd}`
         : "Run a shell command";
     } else if (lowerName.includes("write")) {
       const filePath = typeof input.file_path === "string" ? input.file_path : null;

@@ -14,6 +14,7 @@
  */
 
 import { SECRET_TOKEN_PATTERNS } from "./secretTokenShapes";
+import { cutTextAtCodePoint } from "./codePointText";
 
 const PRIVATE_KEY_BLOCK = /-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-\n]*PRIVATE KEY-----|$)/g;
 
@@ -139,5 +140,5 @@ export function redactCommandLine(command: string): string {
  */
 export function oneLineRedacted(command: string, maxChars: number): string {
   const line = redactCommandLine(String(command ?? "")).replace(/\s+/g, " ").trim();
-  return line.length > maxChars ? `${line.slice(0, Math.max(0, maxChars - 1))}…` : line;
+  return line.length > maxChars ? `${cutTextAtCodePoint(line, Math.max(0, maxChars - 1))}…` : line;
 }
