@@ -129,13 +129,16 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   async function call(phone: CloudPhoneHeld, action: string, body?: Record<string, unknown>, options: { query?: Record<string, string>; timeoutMs?: number; cmd?: Command } = {}): Promise<Raw> {
     const first = options.cmd?.first === true;
     if (options.cmd) options.cmd.first = false;
-    const client = await ctx.client();
-    if (!client.phoneCall) throw new CloudPhoneError("Update ADE to drive this cloud iPhone.", "no_account");
-    // The server drives the signed-in account's phone: after a switch, never this command's next step.
-    if ((client.account ?? null) !== phone.account) throw new CloudPhoneError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account");
     const by = Date.now() + CONNECT_WAIT_MS;
     for (;;) {
-      const raw = await client.phoneCall({ action, ...(body ? { body } : {}), ...(options.query ? { query: options.query } : {}) }, { timeoutMs: options.timeoutMs });
+      // Checked before every dispatch, a retry too: the call carries the token signed in now, and
+      // after a switch that is another account's, never this command's next step.
+      const client = await ctx.client();
+      if (!client.phoneCall) throw new CloudPhoneError("Update ADE to drive this cloud iPhone.", "no_account");
+      if ((client.account ?? null) !== phone.account) throw new CloudPhoneError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account");
+      // `phoneId`: the held phone. A replacement (another chat stopped and started one) is refused
+      // `phone_not_running`, so a command never goes on on a phone it didn't start on.
+      const raw = await client.phoneCall({ action, phoneId: phone.phoneId, ...(body ? { body } : {}), ...(options.query ? { query: options.query } : {}) }, { timeoutMs: options.timeoutMs });
       const { code } = raw.status === 409 || raw.status >= 500 ? refusalOf(raw) : { code: "" };
       if (raw.status === 409 && code === "phone_not_running") {
         if (first) throw new CloudPhoneGoneError();
@@ -168,15 +171,25 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       const { code, message } = refusalOf(raw);
       throw new CloudPhoneError(`Reading the screen: ${message || `the phone answered ${raw.status}`}.`, code);
     }
-    let tree: unknown = null;
+    // An unreadable tree is an error, never an empty screen: a `gone` would pass on it.
+    const unreadable = (): CloudPhoneError => new CloudPhoneError("Reading the screen: the cloud iPhone answered a screen ADE couldn't read.", "screen_unreadable");
+    let tree: unknown;
     try {
       tree = JSON.parse(raw.body.toString("utf8"));
     } catch {
-      tree = null;
+      throw unreadable();
     }
     // Revyl answers the tree itself, or wrapped (`{ hierarchy: … }`).
     const unwrapped = tree && typeof tree === "object" && !Array.isArray(tree) && "hierarchy" in tree ? (tree as { hierarchy: unknown }).hierarchy : tree;
-    const parsed = typeof unwrapped === "string" ? (() => { try { return JSON.parse(unwrapped) as unknown; } catch { return null; } })() : unwrapped;
+    let parsed: unknown = unwrapped;
+    if (typeof unwrapped === "string") {
+      try {
+        parsed = JSON.parse(unwrapped);
+      } catch {
+        throw unreadable();
+      }
+    }
+    if (!parsed || typeof parsed !== "object") throw unreadable();
     const screen = screenOf(parsed, phone.points);
     if (screen.width && screen.height && !phone.points) phone.points = { width: screen.width, height: screen.height };
     return screen;
@@ -370,15 +383,26 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
   /** Builds the packed project on Revyl's runner; the build's version, or its errors. */
   async function build(phone: CloudPhoneHeld, input: CloudPhoneRunInput, mode: "build" | "prebuilt"): Promise<{ ok: true; version: string; seconds: number } | { ok: false; text: string }> {
-    const key = await uploadSource(phone, input.project, command());
-    const started = await callJson(phone, "build.start", {
-      source_key: key,
-      ...(mode === "prebuilt" ? { prebuilt: true } : {}),
-      ...(input.sub ? { path: input.sub.replace(/\\/g, "/") } : {}),
-      ...(input.scheme ? { scheme: input.scheme } : {}),
-      ...(input.configuration ? { configuration: input.configuration } : {}),
-      ...(input.clean ? { clean: true } : {}),
-    }, { timeoutMs: 150_000 });
+    // The upload and the submission make no device call: the phone is kept awake through them too.
+    const keepAwake = setInterval(() => {
+      void call(phone, "proxy.health").catch((error: unknown) => {
+        ctx.logger?.warn?.("cloud_phone.build_keep_awake_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
+    }, BUILD_KEEP_AWAKE_MS);
+    let started: Record<string, unknown>;
+    try {
+      const key = await uploadSource(phone, input.project, command());
+      started = await callJson(phone, "build.start", {
+        source_key: key,
+        ...(mode === "prebuilt" ? { prebuilt: true } : {}),
+        ...(input.sub ? { path: input.sub.replace(/\\/g, "/") } : {}),
+        ...(input.scheme ? { scheme: input.scheme } : {}),
+        ...(input.configuration ? { configuration: input.configuration } : {}),
+        ...(input.clean ? { clean: true } : {}),
+      }, { timeoutMs: 150_000 });
+    } finally {
+      clearInterval(keepAwake);
+    }
     const job = typeof started.build_job_id === "string" ? started.build_job_id : null;
     if (!job) throw new CloudPhoneError("The cloud iPhone didn't start the build.", "build_failed");
     return followBuild(phone, job, mode === "prebuilt" ? "Installing the app" : "Building the app");

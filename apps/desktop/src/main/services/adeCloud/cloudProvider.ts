@@ -255,7 +255,8 @@ export type CloudProvider = {
    * One call to the live phone through the server (`/cloud/phone/call`), for
    * a provider with no per-phone token (Revyl). The provider's answer comes
    * back as it is: its status, content type and bytes. Never throws on a
-   * provider's refusal; only when the server can't be reached.
+   * provider's refusal; only when the server can't be reached. `phoneId`: the
+   * held phone; the server refuses `phone_not_running` when it is not the live one.
    */
   phoneCall?(input: CloudPhoneCallRequest, options?: { timeoutMs?: number }): Promise<{ status: number; type: string | null; body: Buffer }>;
   /**

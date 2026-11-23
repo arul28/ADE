@@ -148,9 +148,12 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
     return json({ ok: true, removed: userIds });
   }
   for (const userId of userIds) {
-    await phoneBetaAddStatement(env.DB, userId, typedEmail || null, now).run();
+    // The grant and its provider in one write: a start in between never sees one without the other.
     // A provider change reaches the next phone; the live one keeps its own.
-    if (provider !== undefined) await env.DB.prepare("update cloud_phone_beta set provider = ? where user_id = ?").bind(provider, userId).run();
+    await env.DB.batch([
+      phoneBetaAddStatement(env.DB, userId, typedEmail || null, now),
+      ...(provider !== undefined ? [env.DB.prepare("update cloud_phone_beta set provider = ? where user_id = ?").bind(provider, userId)] : []),
+    ]);
   }
   logCloud("cloud.phone_beta_added", { count: userIds.length, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });
   return json({ ok: true, added: userIds, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });

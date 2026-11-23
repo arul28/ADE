@@ -550,10 +550,11 @@ async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string
       timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
     });
     const buildJob = typeof answer.body?.build_job_id === "string" ? answer.body.build_job_id : null;
-    // A start Revyl refused runs nothing: the claim goes back.
+    // A start Revyl refused runs nothing: the claim goes back. A 5xx or a timeout may hide a build Revyl took:
+    // the claim stays until it expires (BUILD_TIMEOUT_SECONDS), so a retry can't bill a second one.
     if (answer.status < 300) {
       await env.DB.prepare("update cloud_phones set build_job = ? where phone_id = ? and user_id = ? and build_started_at = ?").bind(buildJob, phone.id, userId, now).run();
-    } else {
+    } else if (answer.status < 500) {
       await env.DB.prepare("update cloud_phones set build_started_at = null where phone_id = ? and user_id = ? and build_started_at = ?").bind(phone.id, userId, now).run();
     }
     logCloud("cloud.phone_revyl_build", { userId, status: answer.status });
@@ -563,9 +564,10 @@ async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string
   if (action === "build.status" || action === "build.logs") {
     if (!job || !UUID.test(job)) return fail("bad_request", "job is the build's id.", 400);
     const answer = await workspaceJson(env, workspace, "GET", `/apps/remote/${encodeURIComponent(job)}/${action === "build.status" ? "status" : "logs"}`, { query });
-    // A finished build (whichever way) frees the phone for the next one.
+    // A finished build (whichever way) frees the phone for the next one: only its own claim, never one
+    // still waiting for Revyl's answer (no job yet) or a newer build's.
     if (action === "build.status" && answer.status === 200 && BUILD_ENDED.has(String(answer.body?.status ?? "").toLowerCase())) {
-      await env.DB.prepare("update cloud_phones set build_started_at = null, build_job = null where phone_id = ? and user_id = ? and (build_job is null or build_job = ?)").bind(phone.id, userId, job).run();
+      await env.DB.prepare("update cloud_phones set build_started_at = null, build_job = null where phone_id = ? and user_id = ? and build_job = ?").bind(phone.id, userId, job).run();
     }
     return json(answer.body ?? {}, answer.status);
   }

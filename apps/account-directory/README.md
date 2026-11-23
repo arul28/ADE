@@ -559,10 +559,14 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   servers sent `soon`),
   the period's `minutes`, the live `phone`, and `abilities` (the live phone's,
   or what a new one could have). `POST /cloud/phone`
-  `{ device?, providers?, needs? }` starts the account's phone (or answers its live one) and mints
-  a token for that phone (sent again, it answers the live phone with a fresh
-  token; 409 `phone_lacks` when the live phone lacks a need, `phone_cant`
-  when no allowed phone has it); `DELETE /cloud/phone` stops it.
+  `{ device?, providers?, needs? }` starts the account's phone (or answers its live one).
+  `providers` lists the providers the client drives (`["nomac", "revyl"]`);
+  a client that sends none (older brains) only ever gets NoMac. A NoMac phone
+  comes with a token for that phone (sent again, a fresh one); a Revyl phone's
+  token is empty, and the brain calls it through `POST /cloud/phone/call`.
+  409 `phone_lacks` when the live phone lacks a need, `phone_cant` when no
+  allowed phone has it, `phone_starting` while another start of the account
+  runs; `DELETE /cloud/phone` stops it.
 - `POST /cloud/phone/view` `{ control? }` answers a view link for it: NoMac's
   page (signed for the account when `NOMAC_EMBED_SECRET` is set), or for a
   Revyl phone `GET /cloud/phone/viewer` (no sign-in; the page is static) with
@@ -582,8 +586,10 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
 - Past the plan's minutes: the free plan stops (402 `phone_minutes_out`). A paid
   plan with extra iPhone minutes on (`POST /cloud/billing/extra-phone`
   `{ enabled, monthlyLimitUsd? }`, its own switch beside extra hours) keeps going at 2.5¢ a minute up to its monthly limit (402
-  `phone_extra_limit` at it). Every phone starts with NoMac's spend cap and time
-  limit set to what the account may still use, so it stops by itself there.
+  `phone_extra_limit` at it). A NoMac phone starts with NoMac's spend cap and
+  time limit set to what the account may still use, so it stops by itself
+  there. A Revyl phone has no limit of its own: the Worker writes its
+  `stop_at` at the start and the minute tick stops it.
   Minutes used while the switch was on stay owed after it goes off. A change
   while an ended period is still being billed (a phone of it still running)
   answers 409 `billing_busy`; it goes through once that period is settled.

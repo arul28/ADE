@@ -177,7 +177,7 @@ and `control orientation landscape|portrait` where the phone has them.
 
 For one command, `ade apple … --machine cloud`. What differs:
 
-- `launch` and `test` pack this checkout as it is (uncommitted changes too,
+- `launch` and `test` (on a phone that runs tests: `status` says) pack this checkout as it is (uncommitted changes too,
   git-ignored files left out), upload it, and build it with Xcode there
   (Xcode projects only). For an app built elsewhere, install its Simulator
   `.app` instead: `ade apple install --app <path>` (`--no-launch` installs

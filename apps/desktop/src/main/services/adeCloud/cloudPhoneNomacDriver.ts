@@ -7,7 +7,7 @@
  * `/sync/upload` + `/sync/fetch` for a packed checkout or app.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { Readable } from "node:stream";
 import {
@@ -199,7 +199,8 @@ export function createNomacDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       signal: AbortSignal.timeout(30 * 60_000),
     } as RequestInit);
     if (!put.ok) throw new CloudPhoneError(`Uploading ${what} failed (${put.status}).`, "upload_failed");
-    const key = `ade-fetch-${packed.sha256.slice(0, 32)}`;
+    // The same content unpacked under another name is another fetch; a retry of this one keeps its key.
+    const key = `ade-fetch-${createHash("sha256").update(`${packed.sha256}\0${name}`).digest("hex").slice(0, 32)}`;
     for (let attempt = 0; attempt < 600; attempt += 1) {
       const response = await nomac(phone, "POST", "/sync/fetch", { sha256: packed.sha256, name }, key);
       const body = response.body;

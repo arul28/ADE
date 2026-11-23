@@ -112,6 +112,9 @@ const UPLOAD_LIMIT_BYTES = 2 * 1024 ** 3;
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
 /** A held phone read ready this recently is used without reading it again. */
 const READY_TRUST_MS = 20_000;
+/** A start refused `phone_starting` (another machine's start in flight) is asked again this often, for this long. */
+const START_BUSY_POLL_MS = 2_000;
+const START_BUSY_WAIT_MS = 60_000;
 /** NoMac's own list of what never goes up (`simulator-use` sync): build output, dependencies, version control, keys. */
 const SKIP_DIRS = new Set([".git", ".hg", ".svn", "DerivedData", "build", ".build", "node_modules", "Pods", "xcuserdata", ".swiftpm", ".expo", ".gradle", ".ade"]);
 const isSecretFile = (name: string): boolean =>
@@ -485,9 +488,14 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     }
   }
 
-  /** The account's ready phone, started when there is none; `chatSessionId` is the agent chat told of a new one. */
-  async function ensure({ device, chatSessionId = null, needs = [] }: { device?: CloudPhoneDevice; chatSessionId?: string | null; needs?: readonly CloudPhoneAbility[] } = {}): Promise<Held> {
+  /**
+   * The account's ready phone, started when there is none; `chatSessionId` is the agent chat told of a new one.
+   * `account`: the account the command began under (a retry's), refused when another is signed in now.
+   */
+  async function ensure({ device, chatSessionId = null, needs = [], account: began }: { device?: CloudPhoneDevice; chatSessionId?: string | null; needs?: readonly CloudPhoneAbility[]; account?: string | null } = {}): Promise<Held> {
+    const switched = (): CloudPhoneError => new CloudPhoneError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account");
     const account = await currentAccount();
+    if (began !== undefined && account !== began) throw switched();
     // The running phone can't do what is needed: said before any call (the server says the same of one started elsewhere).
     const able = (phone: Held): Held => {
       const [lacked] = cloudPhoneLacks(phone.provider, needs);
@@ -517,7 +525,19 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     if (!starting) {
       const starter = (async () => {
         const client = await provider();
-        const start = await client.phoneStart!({ ...(device ? { device } : {}), ...(needs.length ? { needs } : {}) }).catch(async (error: unknown) => {
+        // Another machine's start for this account is in flight: asked again until it holds the live phone.
+        const startOnce = async (): Promise<CloudPhoneStart> => {
+          const by = Date.now() + START_BUSY_WAIT_MS;
+          for (;;) {
+            try {
+              return await client.phoneStart!({ ...(device ? { device } : {}), ...(needs.length ? { needs } : {}) });
+            } catch (error) {
+              if (!(error instanceof CloudProviderError) || error.code !== "phone_starting" || Date.now() + START_BUSY_POLL_MS > by) throw error;
+              await sleep(START_BUSY_POLL_MS);
+            }
+          }
+        };
+        const start = await startOnce().catch(async (error: unknown) => {
           // The account's running phone (started on another machine) lacks a need: the agent decides to stop it.
           if (!(error instanceof CloudProviderError) || error.code !== "phone_lacks" || !needs[0]) throw error;
           // Name the need it lacks, read from the running phone (the first need when it can't be read).
@@ -542,6 +562,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     const phone = await starting.phone;
     // Signed out or switched while it started: never hand this phone to another account.
     if (phone.account !== (await currentAccount())) throw new CloudPhoneError("The ADE account changed while the cloud iPhone started. Try again.", "no_account");
+    if (began !== undefined && phone.account !== began) throw switched();
     // Another caller's start (no needs) may have made this one: the server checked only that caller's needs.
     return able(phone);
   }
@@ -560,7 +581,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     } catch (error) {
       if (!(error instanceof CloudPhoneGoneError)) throw error;
       if (held === phone) held = null;
-      const fresh = await ensure({ chatSessionId, needs });
+      // Only for the account the command began under: after a switch, never on the new account's phone.
+      const fresh = await ensure({ chatSessionId, needs, account: phone.account });
       return await run(fresh, driverOf(fresh));
     }
   }

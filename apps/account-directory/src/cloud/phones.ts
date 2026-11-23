@@ -108,6 +108,9 @@ export type PhoneRow = {
   provider_ref: string | null;
 };
 
+/** A start's claim on its account (`phone_start_claim`) lapses after this: a start that died holding it. */
+const PHONE_START_CLAIM_MS = 2 * 60_000;
+
 /* ---- The providers ---- */
 
 /** Why a phone ended, in NoMac's words, once it has. */
@@ -437,8 +440,11 @@ async function phoneContext(env: CloudEnv, userId: string, now: number): Promise
     if (!read) unreadLiveRowId = liveRow.phone_id;
     if (read) {
       await savePhone(env, userId, read.session, now);
-      if (LIVE_STATES.has(read.session.state)) live = { ...read, createdAt: liveRow.created_at, where: { ...where, ref: read.session.ref ?? where.ref } };
       rows = await periodPhones(env, userId, account.period_start);
+      // A stop saved `ended` while this read was in flight: the row's state wins over the older answer.
+      const saved = rows.find((row) => row.phone_id === liveRow.phone_id)
+        ?? await env.DB.prepare("select state from cloud_phones where phone_id = ?").bind(liveRow.phone_id).first<Pick<PhoneRow, "state">>();
+      if (LIVE_STATES.has(read.session.state) && saved?.state === "live") live = { ...read, createdAt: liveRow.created_at, where: { ...where, ref: read.session.ref ?? where.ref } };
     }
   }
   const newest = await env.DB.prepare("select phone_id from cloud_phones where user_id = ? order by created_at desc limit 1").bind(userId).first<{ phone_id: string }>();
@@ -621,7 +627,10 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
   // A phone from an earlier period ran under that period's terms: it ends, and a new one starts on this period's.
   // Not for `attach` (Keep on): the allowance check ends that phone on its own schedule.
   if (context.live && startedBeforePeriod(context) && body.attach !== true) {
-    await stopPhone(env, userId, context.live.session.id, now, "period_changed");
+    // A stop the provider refused leaves that phone running: no second one beside it.
+    if (!(await stopPhone(env, userId, context.live.session.id, now, "period_changed"))) {
+      return fail("phone_unavailable", "Your ADE Cloud iPhone from last period couldn't be stopped yet. Try again in a moment.", 503);
+    }
     context.live = null;
   }
   let session = context.live?.session ?? null;
@@ -662,12 +671,36 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
     const route = routeOf(env, lock, drives, needs);
     if (route instanceof Response) return route;
-    const begun = await startOnRoute(env, route, userId, { userId, label: context.label, device, minutes, lastPhoneId: context.lastPhoneId, now });
+    // One start per account at a time, across providers and machines: two starts that both saw no live phone
+    // would each make one (and bill both). The other is told to try again, and then finds this phone.
+    const startingElsewhere = (): Response => fail("phone_starting", "Your ADE Cloud iPhone is starting. Try again in a moment.", 409);
+    const claimed = await env.DB.prepare("update cloud_accounts set phone_start_claim = ? where user_id = ? and (phone_start_claim is null or phone_start_claim < ?)")
+      .bind(now, userId, now - PHONE_START_CLAIM_MS).run();
+    if ((claimed.meta?.changes ?? 0) !== 1) return startingElsewhere();
+    let begun: Awaited<ReturnType<typeof startOnRoute>>;
+    try {
+      // A start that finished between this request's read and its claim: its phone is the answer next time.
+      // (A live row this request couldn't read, `liveRowId`, goes on as before: its provider answers that phone.)
+      const another = await env.DB.prepare("select 1 from cloud_phones where user_id = ? and state = 'live' and phone_id != ? limit 1")
+        .bind(userId, context.liveRowId ?? "").first();
+      if (another) return startingElsewhere();
+      begun = await startOnRoute(env, route, userId, { userId, label: context.label, device, minutes, lastPhoneId: context.lastPhoneId, now });
+      // The account was deleted while the provider started it: no row comes back under the person's id,
+      // and the phone stops rather than run unbilled.
+      if (!(begun instanceof Response) && !(await savePhone(env, userId, begun.started.session, now, accountRules(context.account) === "free", true))) {
+        const { provider: gone, started: { session: orphan } } = begun;
+        const stopped = await PHONE_PROVIDERS[gone].stop(env, userId, orphan.id, { provider: gone, ref: orphan.ref ?? null, device: orphan.device ?? null })
+          .catch((): { ok: false } => ({ ok: false }));
+        reportCloudFailure("cloud.phone_start_account_gone", { userId, phoneId: orphan.id, provider: gone, stopped: stopped.ok }, "cloud-phone");
+        return fail("not_found", "This ADE account no longer exists.", 404);
+      }
+    } finally {
+      await env.DB.prepare("update cloud_accounts set phone_start_claim = null where user_id = ? and phone_start_claim = ?").bind(userId, now).run();
+    }
     if (begun instanceof Response) return begun;
     const { started, reason } = begun;
     provider = begun.provider;
     ({ session, reused } = started);
-    await savePhone(env, userId, session, now, accountRules(context.account) === "free");
     // A phone with no limits of its own (Revyl's): its stop_at is the limit from the start.
     if (!PHONE_PROVIDERS[provider].ownsTimeLimit) {
       await env.DB.prepare("update cloud_phones set stop_at = coalesce(stop_at, ?), updated_at = ? where phone_id = ? and state = 'live'").bind(now + minutes * 60_000, now, session.id).run();
@@ -701,6 +734,10 @@ async function routePhoneCall(request: Request, env: CloudEnv, userId: string, n
   if (!row) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
   const body = await readJson(request);
   if (!body) return fail("bad_request", "That request could not be read.", 400);
+  // The phone the brain holds (`phoneId`): once another one replaced it, its steps never reach the new phone.
+  if (typeof body.phoneId === "string" && body.phoneId !== row.phone_id) {
+    return fail("phone_not_running", "The cloud iPhone this command was using has stopped.", 409);
+  }
   const where = whereOfRow(row);
   const call = PHONE_PROVIDERS[where.provider].call;
   if (!call) return fail("bad_request", "This phone takes its calls directly.", 400);
@@ -895,20 +932,23 @@ export async function runPhoneChecks(env: CloudEnv, now: number): Promise<void> 
  * deletion is retried.
  */
 export async function deleteAccountPhone(env: Pick<CloudEnv, "DB" | "NOMAC_API_KEY" | "REVYL_PARTNER_API_KEY" | "CLOUD_PHONE_ACCESS">, userId: string): Promise<void> {
-  // Revyl first: disconnecting the workspace stops its phones and revokes its credentials.
-  await forgetRevylAccount(env, userId);
+  // Revyl first: disconnecting the workspace stops its phones and revokes its credentials. Its failure
+  // never blocks NoMac's cleanup; it is thrown after, so the deletion is retried.
+  let revylFailure: unknown = null;
+  await forgetRevylAccount(env, userId).catch((error: unknown) => {
+    revylFailure = error;
+  });
   const hadPhone = await env.DB.prepare("select 1 from cloud_phones where user_id = ? and provider = 'nomac' limit 1").bind(userId).first();
   const inBeta = await env.DB.prepare("select 1 from cloud_phone_beta where user_id = ?").bind(userId).first();
-  await env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId).run();
   const label = phoneLabelFor(userId);
-  if (!label) return;
   // NoMac is skipped only for an account that could never have started a phone. One that could
   // may have a phone with no row (its start's answer was lost), so its label is always cleaned.
-  if (!hadPhone && !inBeta && phoneAccessSetting(env) !== "all") return;
-  // No key: a phone with a row means data at NoMac, tried again later; none means no phone could start here.
-  if (!env.NOMAC_API_KEY?.trim()) {
-    if (hadPhone) throw new Error("phone_cleanup_no_key");
-    return;
+  if (label && (hadPhone || inBeta || phoneAccessSetting(env) === "all")) {
+    // No key: a phone with a row means data at NoMac, tried again later; none means no phone could start here.
+    if (env.NOMAC_API_KEY?.trim()) await forgetNomacLabel(env, label);
+    else if (hadPhone) throw new Error("phone_cleanup_no_key");
   }
-  await forgetNomacLabel(env, label);
+  // The beta row is what sends a retry to NoMac: it goes only once NoMac's cleanup is done.
+  await env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId).run();
+  if (revylFailure) throw revylFailure;
 }

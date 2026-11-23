@@ -243,7 +243,7 @@ export const CLOUD_PATHS = {
   phone: "/cloud/phone",
   phoneView: "/cloud/phone/view",
   /**
-   * `POST { action, body?, query? }`: one call to the account's live phone at
+   * `POST { action, body?, query?, phoneId? }`: one call to the account's live phone at
    * a provider that has no per-phone token (Revyl). The server holds the key,
    * names the phone, and passes the provider's answer back as it is (JSON or
    * bytes). `PROXY_ACTIONS` and `BUILD_ACTIONS` in `phoneRevyl.ts` list the actions.
@@ -3154,6 +3154,8 @@ export type CloudPhoneCallRequest = {
   action: string;
   body?: Record<string, unknown>;
   query?: Record<string, string>;
+  /** The phone the brain holds: a 409 `phone_not_running` once another replaced it (older brains send none). */
+  phoneId?: string;
 };
 
 /**
