@@ -4147,6 +4147,237 @@ describe("prService.getStatus", () => {
   });
 });
 
+describe("prService.getStatus superseded cancelled checks", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /**
+   * T3's fixture: a head can carry check runs from a workflow run that a newer
+   * run of the same workflow superseded. The older run's CANCELLED check runs
+   * stay in the check-runs payload beside the replacement run's passes, so a
+   * read that trusts every row reports a false failure. GitHub re-runs CI on
+   * an unchanged head for ready_for_review, a label, or a force-push back to
+   * an earlier SHA.
+   */
+  const SUPERSEDED_CHECK_RUNS = [
+    {
+      id: 1001,
+      name: "check",
+      status: "completed",
+      conclusion: "cancelled",
+      app: { slug: "github-actions" },
+      check_suite: { id: 900 },
+      started_at: "2026-01-02T00:00:00Z",
+      completed_at: "2026-01-02T00:04:00Z",
+    },
+    {
+      id: 1002,
+      name: "web browser tests (runner ${{ matrix.slice }} of 6)",
+      status: "completed",
+      conclusion: "cancelled",
+      app: { slug: "github-actions" },
+      check_suite: { id: 900 },
+      started_at: "2026-01-02T00:00:00Z",
+      completed_at: "2026-01-02T00:04:00Z",
+    },
+    {
+      id: 1003,
+      name: "check",
+      status: "completed",
+      conclusion: "success",
+      app: { slug: "github-actions" },
+      check_suite: { id: 901 },
+      started_at: "2026-01-02T00:05:00Z",
+      completed_at: "2026-01-02T00:06:00Z",
+    },
+    {
+      id: 1004,
+      name: "web browser tests (runner 1 of 6)",
+      status: "completed",
+      conclusion: "success",
+      app: { slug: "github-actions" },
+      check_suite: { id: 901 },
+      started_at: "2026-01-02T00:05:00Z",
+      completed_at: "2026-01-02T00:06:00Z",
+    },
+  ];
+
+  const SUPERSEDED_WORKFLOW_RUNS = [
+    { workflow_id: 1, event: "pull_request", run_number: 41, check_suite_id: 900 },
+    { workflow_id: 1, event: "pull_request", run_number: 42, check_suite_id: 901 },
+  ];
+
+  function buildSupersededChecksService(opts: {
+    checkRuns?: any[];
+    workflowRuns?: any[] | "throws";
+    requiredContexts?: string[];
+  } = {}) {
+    const row = makePrRow({ id: "pr-superseded", github_pr_number: 90 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return {
+            data: makeGitHubPull({
+              number: 90,
+              html_url: row.github_url,
+              title: row.title,
+              mergeable: true,
+              mergeable_state: "clean",
+              head: { ref: "my-feature", sha: "head-sha" },
+              base: { ref: "main", sha: "base-sha" },
+            }),
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/status") {
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/check-runs") {
+          return { data: { check_runs: opts.checkRuns ?? SUPERSEDED_CHECK_RUNS } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs") {
+          if (opts.workflowRuns === "throws") throw new Error("GitHub API request failed (HTTP 502)");
+          return { data: { workflow_runs: opts.workflowRuns ?? SUPERSEDED_WORKFLOW_RUNS } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/pulls/90/reviews") return { data: [] };
+        if (args.path.includes("/compare/")) return { data: { behind_by: 0 } };
+        if (args.path === "/repos/test-owner/test-repo/rules/branches/main") {
+          return {
+            data: (opts.requiredContexts ?? []).map((context) => ({
+              type: "required_status_checks",
+              parameters: { required_status_checks: [{ context }] },
+            })),
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/branches/main/protection") return { data: {} };
+        if (args.method === "POST" && args.path === "/graphql") {
+          return {
+            data: {
+              data: {
+                repository: {
+                  viewerPermission: "WRITE",
+                  pullRequest: {
+                    mergeable: "MERGEABLE",
+                    mergeStateStatus: "CLEAN",
+                    reviewDecision: null,
+                    headRefOid: "head-sha",
+                    baseRef: { branchProtectionRule: null },
+                    latestOpinionatedReviews: { nodes: [] },
+                  },
+                },
+              },
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    return buildService({ db, githubService });
+  }
+
+  const GH_ACTIONS = { slug: "github-actions" };
+  const cancelledCheck = (id: number, name: string, suiteId: number) => ({
+    id,
+    name,
+    status: "completed",
+    conclusion: "cancelled",
+    app: GH_ACTIONS,
+    check_suite: { id: suiteId },
+    started_at: "2026-01-02T00:00:00Z",
+    completed_at: "2026-01-02T00:04:00Z",
+  });
+  const passedCheck = (id: number, name: string, suiteId: number) => ({
+    id,
+    name,
+    status: "completed",
+    conclusion: "success",
+    app: GH_ACTIONS,
+    check_suite: { id: suiteId },
+    started_at: "2026-01-02T00:05:00Z",
+    completed_at: "2026-01-02T00:06:00Z",
+  });
+
+  const cases: Array<{
+    name: string;
+    checkRuns: any[];
+    workflowRuns: any[] | "throws";
+    requiredContexts?: string[];
+    expectedStatus: "passing" | "failing";
+    /** Does a cancelled row survive into the Checks list? */
+    cancelledRowRemains: boolean;
+  }> = [
+    {
+      name: "does not fail a head whose cancelled check a newer run of the same workflow replaced",
+      checkRuns: SUPERSEDED_CHECK_RUNS,
+      workflowRuns: SUPERSEDED_WORKFLOW_RUNS,
+      expectedStatus: "passing",
+      cancelledRowRemains: false,
+    },
+    {
+      name: "keeps a cancelled check that belongs to the newest run of its lineage",
+      checkRuns: [cancelledCheck(2001, "check", 910), passedCheck(2002, "build", 910)],
+      workflowRuns: [{ workflow_id: 1, event: "pull_request", run_number: 41, check_suite_id: 910 }],
+      expectedStatus: "failing",
+      cancelledRowRemains: true,
+    },
+    {
+      name: "keeps a cancelled check whose newer run is a different workflow",
+      checkRuns: [cancelledCheck(2101, "check", 920), passedCheck(2102, "other-job", 921)],
+      workflowRuns: [
+        { workflow_id: 1, event: "pull_request", run_number: 41, check_suite_id: 920 },
+        { workflow_id: 2, event: "pull_request", run_number: 42, check_suite_id: 921 },
+      ],
+      expectedStatus: "failing",
+      cancelledRowRemains: true,
+    },
+    {
+      name: "keeps a cancelled check whose newer run is a different event",
+      checkRuns: [cancelledCheck(2201, "check", 930), passedCheck(2202, "other-job", 931)],
+      workflowRuns: [
+        { workflow_id: 1, event: "pull_request", run_number: 41, check_suite_id: 930 },
+        { workflow_id: 1, event: "push", run_number: 42, check_suite_id: 931 },
+      ],
+      expectedStatus: "failing",
+      cancelledRowRemains: true,
+    },
+    {
+      name: "keeps a required cancelled check the newer run does not re-report",
+      checkRuns: [cancelledCheck(2301, "required-job", 940), passedCheck(2302, "other-job", 941)],
+      workflowRuns: [
+        { workflow_id: 1, event: "pull_request", run_number: 41, check_suite_id: 940 },
+        { workflow_id: 1, event: "pull_request", run_number: 42, check_suite_id: 941 },
+      ],
+      requiredContexts: ["required-job"],
+      expectedStatus: "failing",
+      // The rollup knows branch protection and keeps the row; the Checks list
+      // has no required-context knowledge and applies the plain lineage rule.
+      cancelledRowRemains: false,
+    },
+    {
+      name: "keeps the first rollup when the workflow runs read fails",
+      checkRuns: SUPERSEDED_CHECK_RUNS,
+      workflowRuns: "throws",
+      expectedStatus: "failing",
+      // Without the runs read there is no lineage to judge the matrix row by.
+      cancelledRowRemains: true,
+    },
+  ];
+
+  it.each(cases)("$name", async ({ checkRuns, workflowRuns, requiredContexts, expectedStatus, cancelledRowRemains }) => {
+    const { service } = buildSupersededChecksService({ checkRuns, workflowRuns, requiredContexts });
+
+    const status = await service.getStatus("pr-superseded");
+    expect(status.checksStatus).toBe(expectedStatus);
+
+    // The Checks tab / activity / prWatch read the same payload through
+    // getChecks; the superseded rows must not come back there either.
+    const checks = await service.getChecks("pr-superseded");
+    expect(checks.some((check) => check.conclusion === "cancelled")).toBe(cancelledRowRemains);
+  });
+});
+
 describe("prService.refresh", () => {
   beforeEach(() => {
     vi.clearAllMocks();
