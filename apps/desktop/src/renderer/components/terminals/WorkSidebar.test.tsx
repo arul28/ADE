@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import type { ReactNode } from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -510,6 +510,20 @@ describe("WorkSidebar context targets", () => {
       expect.objectContaining({ sessionId: activeSession.id }),
       LANE_PIN,
     ));
+  });
+
+  it("does not offer Resume for an ended shell", async () => {
+    installAdeMock();
+    renderSidebar({
+      tab: "terminal",
+      activeSession: { ...activeSession, toolType: "shell", status: "completed" },
+      contextTarget: null,
+    });
+
+    const card = await screen.findByTestId("terminal-ended-card", {}, { timeout: 5_000 });
+    expect(card.textContent).toMatch(/ended/);
+    expect(within(card).queryByRole("button", { name: /Resume/ })).toBeNull();
+    expect(within(card).getByRole("button", { name: "Close" })).toBeTruthy();
   });
 
   it("keeps a lane with no owning session on the same warm empty state", () => {
