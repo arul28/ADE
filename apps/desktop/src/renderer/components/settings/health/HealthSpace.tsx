@@ -137,7 +137,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
             onMaintenanceFailed: ({ stillRunning }) => {
               notify(
                 stillRunning
-                  ? "ADE's tidy-up is taking a while; it keeps going in the background"
+                  ? "ADE's tidy-up is taking a while; it may still finish in the background"
                   : "ADE's tidy-up didn't finish; it runs again on its own every day",
                 "warning",
               );

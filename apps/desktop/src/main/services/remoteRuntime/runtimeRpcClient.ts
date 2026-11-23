@@ -10,6 +10,8 @@ import { RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../shared/rpcLiveness";
 import {
   readRunningRequestIds,
   REQUEST_STATUS_METHOD,
+  requestDeliveryAllowanceMs,
+  MAX_REQUEST_STATUS_IDS,
   RUNNING_REQUEST_NOT_RUNNING_REASON,
   type RequestStatusParams,
   RUNNING_REQUEST_MAX_EXTENSION_MS,
@@ -225,8 +227,14 @@ export class RuntimeRpcClient {
     };
     let timeoutMs: number;
     let withoutCheckMs: number;
+    let line: string;
     try {
+      line = `${JSON.stringify(payload)}\n`;
       timeoutMs = normalizeRuntimeRpcTimeoutMs(options.timeoutMs ?? this.timeoutMs);
+      // The first check cannot be answered before the request has arrived.
+      if (options.waitWhileRunning) {
+        timeoutMs = Math.min(MAX_RPC_TIMEOUT_MS, timeoutMs + requestDeliveryAllowanceMs(line.length));
+      }
       withoutCheckMs = Math.max(timeoutMs, normalizeRuntimeRpcTimeoutMs(options.timeoutWithoutCheckMs ?? timeoutMs));
     } catch (error) {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
@@ -250,7 +258,6 @@ export class RuntimeRpcClient {
         seenRunning: false,
       });
       try {
-        const line = `${JSON.stringify(payload)}\n`;
         this.bytesOut += Buffer.byteLength(line);
         this.transport.write(line);
       } catch (error) {
@@ -353,9 +360,13 @@ export class RuntimeRpcClient {
     try {
       do {
         this.statusCheckAgain = false;
-        const ids = [...this.overdue].filter((id) => this.pending.has(id));
+        const waiting = [...this.overdue].filter((id) => this.pending.has(id));
         this.overdue.clear();
-        if (ids.length === 0) break;
+        if (waiting.length === 0) break;
+        // The other end answers for at most this many ids; the rest go next.
+        const ids = waiting.slice(0, MAX_REQUEST_STATUS_IDS);
+        for (const id of waiting.slice(MAX_REQUEST_STATUS_IDS)) this.overdue.add(id);
+        if (this.overdue.size > 0) this.statusCheckAgain = true;
         // null: no answer, or an answer from an end that does not know the check.
         let running: Set<string | number> | null = null;
         let unsupported = false;

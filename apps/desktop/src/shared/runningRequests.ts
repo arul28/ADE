@@ -23,6 +23,17 @@
 
 export const REQUEST_STATUS_METHOD = "ade/requests/status";
 
+/**
+ * How long sending a request of `chars` may take before the other end has all
+ * of it: 16 KB/s, about 128 kbit/s, is a slow satellite uplink. A check sent
+ * on the same connection queues behind the request, so a large one (a pasted
+ * picture in one call) is not asked about before it can have arrived. Below
+ * 256 KB (16 s at that rate) it fits in any budget, and a budget stays exact.
+ */
+export function requestDeliveryAllowanceMs(chars: number): number {
+  return chars > 256 * 1024 ? Math.ceil(chars / 16) : 0;
+}
+
 /** After the first check, how often a call past its budget is asked about again. */
 export const RUNNING_REQUEST_RECHECK_MS = 15_000;
 
@@ -42,8 +53,8 @@ export const RUNNING_REQUEST_NOT_RUNNING_REASON = "it stopped working on it with
 export type RequestStatusParams = { ids: Array<string | number> };
 export type RequestStatusReply = { running: Array<string | number> };
 
-/** The most ids one `ade/requests/status` is answered for. */
-const MAX_REQUEST_STATUS_IDS = 1_000;
+/** The most ids one `ade/requests/status` is answered for; a client asks in groups this size. */
+export const MAX_REQUEST_STATUS_IDS = 1_000;
 
 /** The ids an `ade/requests/status` request asks about (server side). */
 export function readRequestStatusIds(params: unknown): unknown[] {

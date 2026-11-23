@@ -35,7 +35,7 @@ export type SafeCleanupPlanConfig = {
   confirmLabel: string;
   runMaintenance?: () => Promise<MaintenanceRunReport>;
   onMaintenanceDone?: (report: MaintenanceRunReport) => void;
-  /** `stillRunning`: the run outlived the wait and likely goes on in the background. */
+  /** `stillRunning`: the run timed out without the brain saying it stopped; it may still finish. */
   onMaintenanceFailed?: (failure: { error: unknown; stillRunning: boolean }) => void;
 };
 
@@ -53,7 +53,7 @@ function housekeepingMessage(housekeeping: Housekeeping | null): { tone: "info" 
       return { tone: "info", text: "Tidying ADE's own data in the background. You can close this; ADE shows what it freed when it's done." };
     case "failed":
       return housekeeping.stillRunning
-        ? { tone: "info", text: "ADE's own tidy-up is taking a while. It keeps going in the background, and it also runs on its own every day." }
+        ? { tone: "info", text: "ADE's own tidy-up is taking a while. It may still finish in the background, and it also runs on its own every day." }
         : { tone: "warning", text: "ADE's own tidy-up didn't finish this time. It runs again on its own every day. The files above were removed either way." };
     case "done":
       return housekeeping.report.actions.some((action) => Boolean(action.error))
