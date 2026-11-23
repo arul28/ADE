@@ -39,14 +39,17 @@ describe("ipcHandlerTimeoutMs", () => {
     ["remote", IPC.remoteRuntimeCallAction, { id: "target-1", projectId: "project-1", request: { domain: "storage", action: "runMaintenanceNow" } }],
     ["remote long-running", IPC.remoteRuntimeCallAction, { id: "target-1", projectId: "project-1", request: { domain: "lane", action: "create" } }],
   ] as const)("outlives the %s action's wait while it still runs", (_label, channel, payload) => {
-    expect(ipcHandlerTimeoutMs(channel, [payload])).toBe(
+    expect(ipcHandlerTimeoutMs(channel, [payload])).toBeGreaterThan(
       ipcInvokeTimeoutMs(channel, [payload]) + RUNNING_REQUEST_MAX_EXTENSION_MS,
     );
   });
 
-  it("leaves every other channel on its own budget", () => {
-    expect(ipcHandlerTimeoutMs(IPC.localRuntimeCallSync)).toBe(ipcInvokeTimeoutMs(IPC.localRuntimeCallSync));
-    expect(ipcHandlerTimeoutMs(IPC.localRuntimeStreamEvents)).toBe(ipcInvokeTimeoutMs(IPC.localRuntimeStreamEvents));
+  it.each([
+    ["a replay-safe read", IPC.localRuntimeCallAction, [{ request: { domain: "storage", action: "getSnapshot" } }]],
+    ["a sync call", IPC.localRuntimeCallSync, []],
+    ["an event stream", IPC.localRuntimeStreamEvents, []],
+  ] as const)("keeps %s on its own budget", (_label, channel, args) => {
+    expect(ipcHandlerTimeoutMs(channel, args)).toBe(ipcInvokeTimeoutMs(channel, args));
   });
 });
 

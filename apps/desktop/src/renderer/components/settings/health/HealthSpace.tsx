@@ -54,7 +54,6 @@ import { useStorageBytes } from "../storage/useStorageBytes";
 import type { HealthData } from "./useHealthData";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { decodeSettingsHash } from "../settingsHash";
-import { isRuntimeTransportTimeoutError } from "../../../../shared/runtimeErrors";
 import { requirePin } from "../../../state/repositoryScope";
 
 /** One storage result at a time: a new outcome replaces the last in place. */
@@ -135,9 +134,9 @@ export function HealthSpace({ data }: { data: HealthData }) {
               notify(outcome.message, outcome.failed ? "warning" : "success");
               refreshAfterChange();
             },
-            onMaintenanceFailed: (error: unknown) => {
+            onMaintenanceFailed: ({ stillRunning }) => {
               notify(
-                isRuntimeTransportTimeoutError(error)
+                stillRunning
                   ? "ADE's tidy-up is taking a while; it keeps going in the background"
                   : "ADE's tidy-up didn't finish; it runs again on its own every day",
                 "warning",

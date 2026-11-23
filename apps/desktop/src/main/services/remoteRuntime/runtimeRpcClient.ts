@@ -6,11 +6,12 @@ import { armDeadline, type DeadlineTimer } from "../../../shared/deadlineTimer";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { readBrainConnectionLossData, type BrainConnectionLossData } from "../../../shared/brainConnectionLoss";
 import { wireBrainFrames, type RuntimeActionReplyError } from "../../../shared/runtimeActionReplyError";
-import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import { RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../shared/rpcLiveness";
 import {
   readRunningRequestIds,
   REQUEST_STATUS_METHOD,
+  RUNNING_REQUEST_NOT_RUNNING_REASON,
+  type RequestStatusParams,
   RUNNING_REQUEST_MAX_EXTENSION_MS,
   RUNNING_REQUEST_RECHECK_MS,
 } from "../../../shared/runningRequests";
@@ -50,6 +51,8 @@ type PendingRequest = {
   budgetMs: number;
   /** Set for a call that asks the other end before giving up (`shared/runningRequests.ts`). */
   giveUpAt: number | null;
+  /** Its whole budget when the other end cannot answer that check. */
+  withoutCheckMs: number;
   /** The other end has said at least once that it still runs this call. */
   seenRunning: boolean;
 };
@@ -70,6 +73,12 @@ type RuntimeRpcCallOptions = {
    * read whose caller has a fallback to show when it is slow.
    */
   waitWhileRunning?: boolean;
+  /**
+   * With `waitWhileRunning`: the call's whole budget when the other end is an
+   * ADE from before the check, so it is not cut shorter than it used to be.
+   * Defaults to `timeoutMs`.
+   */
+  timeoutWithoutCheckMs?: number;
 };
 
 function reportBrainConnectionLoss(method: string, data: BrainConnectionLossData): void {
@@ -215,8 +224,10 @@ export class RuntimeRpcClient {
       ...(params ? { params } : {}),
     };
     let timeoutMs: number;
+    let withoutCheckMs: number;
     try {
       timeoutMs = normalizeRuntimeRpcTimeoutMs(options.timeoutMs ?? this.timeoutMs);
+      withoutCheckMs = Math.max(timeoutMs, normalizeRuntimeRpcTimeoutMs(options.timeoutWithoutCheckMs ?? timeoutMs));
     } catch (error) {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
@@ -235,6 +246,7 @@ export class RuntimeRpcClient {
         sentAt,
         budgetMs: timeoutMs,
         giveUpAt: options.waitWhileRunning ? sentAt + timeoutMs + RUNNING_REQUEST_MAX_EXTENSION_MS : null,
+        withoutCheckMs,
         seenRunning: false,
       });
       try {
@@ -307,10 +319,14 @@ export class RuntimeRpcClient {
     const pending = this.pending.get(id);
     if (!pending) return;
     const now = Date.now();
-    if (pending.giveUpAt != null && !this.requestStatusUnsupported && now < pending.giveUpAt) {
-      this.overdue.add(id);
-      void this.checkOverdueRequests();
-      return;
+    if (pending.giveUpAt != null && now < pending.giveUpAt) {
+      if (this.requestStatusUnsupported) {
+        if (this.waitWithoutCheck(id, pending, now)) return;
+      } else {
+        this.overdue.add(id);
+        void this.checkOverdueRequests();
+        return;
+      }
     }
     this.takePending(id);
     pending.reject(
@@ -339,28 +355,35 @@ export class RuntimeRpcClient {
         this.statusCheckAgain = false;
         const ids = [...this.overdue].filter((id) => this.pending.has(id));
         this.overdue.clear();
-        if (ids.length === 0) continue;
+        if (ids.length === 0) break;
         // null: no answer, or an answer from an end that does not know the check.
         let running: Set<string | number> | null = null;
+        let unsupported = false;
         try {
-          const reply = await this.call(REQUEST_STATUS_METHOD, { ids }, { timeoutMs: RPC_LIVENESS_PROBE_TIMEOUT_MS });
+          const params: RequestStatusParams = { ids };
+          const reply = await this.call(REQUEST_STATUS_METHOD, params, { timeoutMs: RPC_LIVENESS_PROBE_TIMEOUT_MS });
           running = readRunningRequestIds(reply);
-          if (!running) this.requestStatusUnsupported = true;
+          unsupported = !running;
         } catch (error) {
           if (this.closedError) return;
-          if (!isRuntimeTransportTimeoutError(error)) this.requestStatusUnsupported = true;
+          // Only an error reply means the other end does not know the check;
+          // a timeout, a failed write or a relay that lost its brain is no answer.
+          unsupported = error instanceof Error
+            && error.message.startsWith(`Remote ADE service method ${REQUEST_STATUS_METHOD} failed`)
+            && !("remoteDiagnostics" in error);
+        }
+        if (unsupported && !this.requestStatusUnsupported) {
+          this.requestStatusUnsupported = true;
+          console.warn("Remote ADE service does not answer request status checks; calls keep their plain budgets", {
+            method: REQUEST_STATUS_METHOD,
+          });
         }
         const now = Date.now();
         for (const id of ids) {
           const pending = this.pending.get(id);
           if (!pending) continue;
-          const failure = !running
-            ? pending.seenRunning
-              ? runtimeRpcTimeoutError(pending, now - pending.sentAt, "it stopped answering")
-              : runtimeRpcTimeoutError(pending, pending.budgetMs)
-            : !running.has(id)
-              ? runtimeRpcTimeoutError(pending, now - pending.sentAt, "it stopped working on it without an answer")
-              : null;
+          if (unsupported && this.waitWithoutCheck(id, pending, now)) continue;
+          const failure = overdueFailure(pending, running?.has(id) ?? null, now);
           if (failure) {
             this.takePending(id);
             pending.reject(failure);
@@ -378,6 +401,20 @@ export class RuntimeRpcClient {
     } finally {
       this.statusCheckRunning = false;
     }
+  }
+
+  /**
+   * The other end cannot answer the check (an ADE from before it): give the
+   * call the rest of `withoutCheckMs`, then a plain timeout. False when none is left.
+   */
+  private waitWithoutCheck(id: number, pending: PendingRequest, now: number): boolean {
+    const remainingMs = pending.sentAt + pending.withoutCheckMs - now;
+    if (remainingMs <= 0) return false;
+    pending.giveUpAt = null;
+    pending.budgetMs = pending.withoutCheckMs;
+    pending.deadline.cancel();
+    pending.deadline = armDeadline(remainingMs, () => this.handleDeadline(id));
+    return true;
   }
 
   private onData(chunk: string): void {
@@ -543,6 +580,20 @@ export class RuntimeRpcClient {
       pending.reject(error);
     }
   }
+}
+
+/**
+ * What a status check decided for one overdue call: null while the other end
+ * still runs it. `running` is null when the check got no usable answer.
+ */
+function overdueFailure(pending: PendingRequest, running: boolean | null, now: number): Error | null {
+  if (running === true) return null;
+  if (running === false) {
+    return runtimeRpcTimeoutError(pending, now - pending.sentAt, RUNNING_REQUEST_NOT_RUNNING_REASON);
+  }
+  return pending.seenRunning
+    ? runtimeRpcTimeoutError(pending, now - pending.sentAt, "it stopped answering")
+    : runtimeRpcTimeoutError(pending, pending.budgetMs);
 }
 
 /**

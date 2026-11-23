@@ -1664,8 +1664,9 @@ describe("RemoteConnectionPool", () => {
         }),
       }),
       // No budget of its own: checked at 25 s, so a sleeping machine fails as
-      // fast as the renderer's old 30 s timer did, and real work goes on.
-      { timeoutMs: 25_000, waitWhileRunning: true },
+      // fast as the renderer's old 30 s timer did, and real work goes on. An
+      // older machine without the check keeps the old 10 minutes.
+      { timeoutMs: 25_000, waitWhileRunning: true, timeoutWithoutCheckMs: 600_000 },
     );
   });
 
@@ -1897,7 +1898,7 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
-    }), { timeoutMs: 25_000, waitWhileRunning: true });
+    }), { timeoutMs: 25_000 });
     expect(secondClient.call).toHaveBeenCalledTimes(1);
     expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", expect.objectContaining({
       projectId: "project-1",
@@ -1906,7 +1907,7 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
-    }), { timeoutMs: 25_000, waitWhileRunning: true });
+    }), { timeoutMs: 25_000 });
   });
 
   it("retries file git decoration refresh once after ECONNRESET", async () => {
@@ -1956,7 +1957,7 @@ describe("RemoteConnectionPool", () => {
         action: "refreshGitDecorations",
         args: { workspaceId: "primary", forceFresh: true },
       },
-    }), { timeoutMs: 25_000, waitWhileRunning: true });
+    }), { timeoutMs: 25_000 });
   });
 
   it("falls back to empty git decorations when an older runtime lacks that optional action", async () => {
@@ -2004,7 +2005,7 @@ describe("RemoteConnectionPool", () => {
         action: "refreshGitDecorations",
         args: { workspaceId: "primary", forceFresh: true },
       },
-    }), { timeoutMs: 25_000, waitWhileRunning: true });
+    }), { timeoutMs: 25_000 });
   });
 
   it("lists remote ADE actions as grouped registry entries", async () => {
@@ -2108,7 +2109,7 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
-    }), { timeoutMs: 25_000, waitWhileRunning: true });
+    }), { timeoutMs: 25_000 });
   });
 
   it("calls project-scoped sync methods on the connected runtime", async () => {

@@ -1,3 +1,5 @@
+import { RUNNING_REQUEST_NOT_RUNNING_REASON } from "./runningRequests";
+
 export const LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE =
   "This local release build output cannot start the ADE brain directly. Install the channel app into /Applications and relaunch ADE.";
 
@@ -70,4 +72,13 @@ export function isRuntimeTransportTimeoutError(error: unknown): boolean {
   return /IPC handler for .+ timed out after \d+ms|Remote ADE service timed out waiting for method/i.test(
     errorMessage(error),
   );
+}
+
+/**
+ * A call timed out, and the work may still be going on over there: every
+ * timeout except the one where the brain said it was no longer running it
+ * (`shared/runningRequests.ts`).
+ */
+export function mayStillBeRunning(error: unknown): boolean {
+  return isRuntimeTransportTimeoutError(error) && !errorMessage(error).includes(RUNNING_REQUEST_NOT_RUNNING_REASON);
 }

@@ -33,8 +33,23 @@ export const RUNNING_REQUEST_RECHECK_MS = 15_000;
  */
 export const RUNNING_REQUEST_MAX_EXTENSION_MS = 30 * 60_000;
 
+/**
+ * Why a call stopped waiting when the brain said it was not running it
+ * (`mayStillBeRunning` in `runtimeErrors.ts` reads it).
+ */
+export const RUNNING_REQUEST_NOT_RUNNING_REASON = "it stopped working on it without an answer";
+
 export type RequestStatusParams = { ids: Array<string | number> };
 export type RequestStatusReply = { running: Array<string | number> };
+
+/** The most ids one `ade/requests/status` is answered for. */
+const MAX_REQUEST_STATUS_IDS = 1_000;
+
+/** The ids an `ade/requests/status` request asks about (server side). */
+export function readRequestStatusIds(params: unknown): unknown[] {
+  const ids = params && typeof params === "object" ? (params as { ids?: unknown }).ids : undefined;
+  return Array.isArray(ids) ? ids.slice(0, MAX_REQUEST_STATUS_IDS) : [];
+}
 
 /** The ids an `ade/requests/status` answer lists, or null when it is not one. */
 export function readRunningRequestIds(value: unknown): Set<string | number> | null {

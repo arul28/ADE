@@ -12,7 +12,7 @@ import { Banner } from "../../ui/notice";
 import { baseName, cleanupPartsLine, cleanupRunParts, groupRowsByLabel } from "./storageView";
 import { useStorageBytes } from "./useStorageBytes";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
-import { isRuntimeTransportTimeoutError } from "../../../../shared/runtimeErrors";
+import { mayStillBeRunning } from "../../../../shared/runtimeErrors";
 
 /**
  * Optional "safe cleanup" plan. When present the dialog shows what the
@@ -35,7 +35,8 @@ export type SafeCleanupPlanConfig = {
   confirmLabel: string;
   runMaintenance?: () => Promise<MaintenanceRunReport>;
   onMaintenanceDone?: (report: MaintenanceRunReport) => void;
-  onMaintenanceFailed?: (error: unknown) => void;
+  /** `stillRunning`: the run outlived the wait and likely goes on in the background. */
+  onMaintenanceFailed?: (failure: { error: unknown; stillRunning: boolean }) => void;
 };
 
 type Stage = "loading" | "review" | "removing" | "done" | "error";
@@ -43,8 +44,25 @@ type Stage = "loading" | "review" | "removing" | "done" | "error";
 /** The background maintenance run after the files are removed. */
 type Housekeeping =
   | { state: "running" }
-  | { state: "done" }
+  | { state: "done"; report: MaintenanceRunReport }
   | { state: "failed"; stillRunning: boolean };
+
+function housekeepingMessage(housekeeping: Housekeeping | null): { tone: "info" | "warning"; text: string } | null {
+  switch (housekeeping?.state) {
+    case "running":
+      return { tone: "info", text: "Tidying ADE's own data in the background. You can close this; ADE shows what it freed when it's done." };
+    case "failed":
+      return housekeeping.stillRunning
+        ? { tone: "info", text: "ADE's own tidy-up is taking a while. It keeps going in the background, and it also runs on its own every day." }
+        : { tone: "warning", text: "ADE's own tidy-up didn't finish this time. It runs again on its own every day. The files above were removed either way." };
+    case "done":
+      return housekeeping.report.actions.some((action) => Boolean(action.error))
+        ? { tone: "warning", text: "Some of ADE's own tidy-up steps didn't finish. They run again on their own every day." }
+        : null;
+    default:
+      return null;
+  }
+}
 
 /**
  * A storage dialog whose content draws its own header (the reclaim confirm).
@@ -179,7 +197,6 @@ export function StorageCleanupDialog({
   const [stage, setStage] = React.useState<Stage>("loading");
   const [preview, setPreview] = React.useState<StorageCleanupPreview | null>(null);
   const [result, setResult] = React.useState<StorageCleanupResult | null>(null);
-  const [report, setReport] = React.useState<MaintenanceRunReport | null>(null);
   const [housekeeping, setHousekeeping] = React.useState<Housekeeping | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   // Which half of the job failed. "Something went wrong" told people nothing;
@@ -211,7 +228,6 @@ export function StorageCleanupDialog({
     const requestId = ++requestRef.current;
     previewTargetsRef.current = openTargets;
     setResult(null);
-    setReport(null);
     setHousekeeping(null);
     setError(null);
     setStage("loading");
@@ -283,21 +299,22 @@ export function StorageCleanupDialog({
     // in the background and is never reported as this cleanup failing; its
     // outcome reaches the owner even after this dialog closes.
     if (requestRef.current === requestId) setHousekeeping({ state: "running" });
+    let nextReport: MaintenanceRunReport;
     try {
-      const nextReport = await runMaintenance();
-      plan?.onMaintenanceDone?.(nextReport);
-      if (requestRef.current !== requestId) return;
-      const maintenanceBytes = typeof nextReport.reclaimedBytes === "number" && Number.isFinite(nextReport.reclaimedBytes)
-        ? Math.max(0, nextReport.reclaimedBytes)
-        : 0;
-      setReport(nextReport);
-      setResult({ ...filesystemResult, freedBytes: filesystemResult.freedBytes + maintenanceBytes });
-      setHousekeeping({ state: "done" });
+      nextReport = await runMaintenance();
     } catch (err) {
-      plan?.onMaintenanceFailed?.(err);
-      if (requestRef.current !== requestId) return;
-      setHousekeeping({ state: "failed", stillRunning: isRuntimeTransportTimeoutError(err) });
+      const stillRunning = mayStillBeRunning(err);
+      plan?.onMaintenanceFailed?.({ error: err, stillRunning });
+      if (requestRef.current === requestId) setHousekeeping({ state: "failed", stillRunning });
+      return;
     }
+    plan?.onMaintenanceDone?.(nextReport);
+    if (requestRef.current !== requestId) return;
+    const maintenanceBytes = typeof nextReport.reclaimedBytes === "number" && Number.isFinite(nextReport.reclaimedBytes)
+      ? Math.max(0, nextReport.reclaimedBytes)
+      : 0;
+    setResult({ ...filesystemResult, freedBytes: filesystemResult.freedBytes + maintenanceBytes });
+    setHousekeeping({ state: "done", report: nextReport });
   }, [pin, plan, preview, onCleaned]);
 
   if (!open) return null;
@@ -309,6 +326,7 @@ export function StorageCleanupDialog({
     ?? (removableCount > 0 ? `Remove ${removableCount === 1 ? "1 item" : `${removableCount} items`}` : "Remove");
   // Files removed plus what the maintenance run returned, by kind, so the
   // total can be checked against its parts.
+  const report = housekeeping?.state === "done" ? housekeeping.report : null;
   const runParts = report ? cleanupRunParts(report) : null;
   const doneBreakdown = result && report && runParts
     ? cleanupPartsLine({
@@ -320,16 +338,7 @@ export function StorageCleanupDialog({
     : "";
   // Only files the person asked to remove decide whether the cleanup failed.
   const cleanupFailed = Boolean(result?.failed.length);
-  const housekeepingStepsFailed = Boolean(report?.actions.some((action) => Boolean(action.error)));
-  const housekeepingLine = housekeeping?.state === "running"
-    ? "Tidying ADE's own data in the background. You can close this; ADE shows what it freed when it's done."
-    : housekeeping?.state === "failed"
-      ? housekeeping.stillRunning
-        ? "ADE's own tidy-up is taking a while. It keeps going in the background, and it also runs on its own every day."
-        : "ADE's own tidy-up didn't finish this time. It runs again on its own every day. The files above were removed either way."
-      : housekeeping?.state === "done" && housekeepingStepsFailed
-        ? "Some of ADE's own tidy-up steps didn't finish. They run again on their own every day."
-        : null;
+  const housekeepingNote = housekeepingMessage(housekeeping);
 
   const footerActions: DialogAction[] =
     stage === "done"
@@ -536,16 +545,16 @@ export function StorageCleanupDialog({
               {doneBreakdown}
             </div>
           ) : null}
-          {housekeepingLine ? (
-            <div
-              role="status"
-              style={{ display: "flex", alignItems: "flex-start", gap: 8, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textMuted }}
-            >
-              {housekeeping?.state === "running" ? (
-                <CircleNotch size={14} className="animate-spin" style={{ flexShrink: 0, marginTop: 2 }} />
-              ) : null}
-              <span>{housekeepingLine}</span>
-            </div>
+          {housekeepingNote ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "storage-cleanup-housekeeping",
+                tone: housekeepingNote.tone,
+                title: housekeepingNote.text,
+                busy: housekeeping?.state === "running",
+              }}
+            />
           ) : null}
           {result.removed.length > 0 ? (
             <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>

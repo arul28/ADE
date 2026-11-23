@@ -37,7 +37,7 @@ import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import type { RemotePtyDataFilter } from "../pty/ptyDataSubscriptions";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
-import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { actionWaitsWhileRunning, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { probeRpcLiveness, type RpcLivenessClient } from "../../../shared/rpcLiveness";
 import { RUNNING_REQUEST_MAX_EXTENSION_MS } from "../../../shared/runningRequests";
 import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
@@ -245,7 +245,16 @@ class RemoteSyncCallTimeoutError extends Error {
   }
 }
 
-const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
+/**
+ * An action with no budget of its own: a read's whole budget, and when work
+ * first asks whether it still runs.
+ */
+const REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
+/**
+ * Work with no budget of its own, against an ADE from before the running
+ * check: the client default it always had, so it is not cut short.
+ */
+const REMOTE_ACTION_WITHOUT_CHECK_RPC_TIMEOUT_MS = 10 * 60_000;
 /** A project list read: a registry read on the other machine, as cheap as an event read. */
 const REMOTE_RUNTIME_PROJECT_LIST_TIMEOUT_MS = REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
@@ -485,19 +494,29 @@ const FOLLOW_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
 class BackgroundJobStillRunning extends Error {}
 
 /**
- * Every action call waits while the other machine still runs it
- * (`shared/runningRequests.ts`); its budget is only when it first asks. So an
- * action with no budget of its own asks early (it used to end at the
- * renderer's 30s IPC timer): a machine that went to sleep or a link that
- * dropped then fails as soon as it did before, while real work goes on.
+ * Work waits while the other machine still runs it
+ * (`shared/runningRequests.ts`); its budget is only when it first asks. So
+ * work with no budget of its own asks early (it used to end at the renderer's
+ * 30s IPC timer). A machine that went to sleep or a link that dropped leaves
+ * that check unanswered and fails about as soon as before, while real work
+ * goes on. A replay-safe read keeps a plain budget.
  */
 function remoteRuntimeActionCallOptions(
   request: RemoteRuntimeActionRequest,
-): { timeoutMs: number; waitWhileRunning: true } {
-  const timeoutMs = LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS.get(
+): { timeoutMs: number; waitWhileRunning?: true; timeoutWithoutCheckMs?: number } {
+  const budgetMs = LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS.get(
     `${request.domain}.${request.action}`,
   );
-  return { timeoutMs: timeoutMs ?? RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS, waitWhileRunning: true };
+  if (!actionWaitsWhileRunning(request.domain, request.action)) {
+    return { timeoutMs: budgetMs ?? REMOTE_ACTION_RPC_TIMEOUT_MS };
+  }
+  return budgetMs !== undefined
+    ? { timeoutMs: budgetMs, waitWhileRunning: true }
+    : {
+        timeoutMs: REMOTE_ACTION_RPC_TIMEOUT_MS,
+        waitWhileRunning: true,
+        timeoutWithoutCheckMs: REMOTE_ACTION_WITHOUT_CHECK_RPC_TIMEOUT_MS,
+      };
 }
 
 function normalizeForwardRemoteHost(value: string | null | undefined): string {

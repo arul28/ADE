@@ -1,7 +1,7 @@
 import { goneTargetMachineKey } from "../machines/goneTargets";
 import { MCP_SIGN_IN_TIMEOUT_MS } from "../mcp/mcpOAuth";
 import { IPC } from "../../../shared/ipc";
-import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { actionWaitsWhileRunning, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   localRuntimeActionIpcTimeoutMs,
   localRuntimeCallIpcTimeoutMs,
@@ -32,6 +32,8 @@ import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/servic
 import { DISK_USAGE_TIMEOUT_MS } from "../../../../../ade-cli/src/services/projects/projectMove/moveCopy";
 import { MANUAL_DIAGNOSTICS_IPC_TIMEOUT_MS } from "../diagnostics/autoDiagnosticsService";
 import { RUNNING_REQUEST_MAX_EXTENSION_MS } from "../../../shared/runningRequests";
+import { LATE_TIMER_GRACE_MS } from "../../../shared/deadlineTimer";
+import { RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../shared/rpcLiveness";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -194,16 +196,25 @@ function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null
 }
 
 /**
- * The IPC handler's own timer. A runtime action call waits past its budget
- * while the brain still runs it (`shared/runningRequests.ts`), so for those two
- * channels the timer also covers that wait: the call's answer, or its own
- * legible timeout, always lands first. Every other channel keeps its budget.
+ * The most a waiting call can end after its cap: one status check that gets
+ * no answer, then a late timer's grace.
+ */
+const RUNNING_REQUEST_HANDLER_MARGIN_MS = RPC_LIVENESS_PROBE_TIMEOUT_MS + LATE_TIMER_GRACE_MS;
+
+/**
+ * The IPC handler's own timer. A runtime action call that does work waits past
+ * its budget while the brain still runs it (`shared/runningRequests.ts`), so
+ * for those the timer also covers that wait: the call's answer, or its own
+ * legible timeout, always lands first. Reads and every other channel keep
+ * their budget.
  */
 export function ipcHandlerTimeoutMs(channel: string, args: readonly unknown[] = []): number {
   const budgetMs = ipcInvokeTimeoutMs(channel, args);
-  return channel === IPC.localRuntimeCallAction || channel === IPC.remoteRuntimeCallAction
-    ? budgetMs + RUNNING_REQUEST_MAX_EXTENSION_MS
-    : budgetMs;
+  if (channel !== IPC.localRuntimeCallAction && channel !== IPC.remoteRuntimeCallAction) return budgetMs;
+  const request = readRuntimeActionRequest(args);
+  // A request this cannot read is still sent; give it the wait to be safe.
+  if (request?.action && !actionWaitsWhileRunning(request.domain, request.action)) return budgetMs;
+  return budgetMs + RUNNING_REQUEST_MAX_EXTENSION_MS + RUNNING_REQUEST_HANDLER_MARGIN_MS;
 }
 
 /** What one call on `channel` is budgeted, before any wait while it still runs. */

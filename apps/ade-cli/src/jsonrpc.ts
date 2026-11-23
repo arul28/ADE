@@ -9,7 +9,11 @@ import {
 } from "../../desktop/src/shared/codedError";
 import { carryExpected, expectedErrorKind, type ExpectedErrorKind } from "../../desktop/src/shared/expectedError";
 import { brainStackFrames } from "../../desktop/src/shared/runtimeActionReplyError";
-import { REQUEST_STATUS_METHOD } from "../../desktop/src/shared/runningRequests";
+import {
+  readRequestStatusIds,
+  REQUEST_STATUS_METHOD,
+  type RequestStatusReply,
+} from "../../desktop/src/shared/runningRequests";
 
 export type JsonRpcId = string | number | null;
 
@@ -592,22 +596,34 @@ class InFlightRequests {
 /**
  * `ade/requests/status` (`shared/runningRequests.ts`): which of the asked ids
  * this connection is still working on. Answered here, not by the handler, so
- * it sees every method and needs no project or session.
+ * it sees every method and needs no project or session. It only names ids the
+ * same connection sent, so it needs no auth of its own. Only a single request
+ * is answered; inside a batch it reaches the handler, which does not know it
+ * (clients never batch it).
  */
 function requestStatusResponse(message: unknown, inFlight: InFlightRequests): JsonRpcResponse | null {
   if (!message || typeof message !== "object" || Array.isArray(message)) return null;
   const request = message as { id?: unknown; method?: unknown; params?: unknown };
   if (request.method !== REQUEST_STATUS_METHOD) return null;
   if (typeof request.id !== "string" && typeof request.id !== "number") return null;
-  const asked = request.params && typeof request.params === "object"
-    ? (request.params as { ids?: unknown }).ids
-    : undefined;
-  const ids = Array.isArray(asked) ? asked.slice(0, 1_000) : [];
-  return {
-    jsonrpc: "2.0",
-    id: request.id,
-    result: { running: ids.filter((id) => inFlight.has(id)) },
+  const result: RequestStatusReply = {
+    running: readRequestStatusIds(request.params).filter((id): id is string | number => inFlight.has(id)),
   };
+  return { jsonrpc: "2.0", id: request.id, result };
+}
+
+/**
+ * Runs `answer` with `message`'s requests counted as in flight. They are
+ * released only after the reply is written: a status check that reads an id
+ * as gone must find its reply already on the connection ahead of it.
+ */
+async function whileInFlight(inFlight: InFlightRequests, message: unknown, answer: () => Promise<void>): Promise<void> {
+  const tracked = inFlight.track(message);
+  try {
+    await answer();
+  } finally {
+    inFlight.release(tracked);
+  }
 }
 
 async function dispatchPayload(args: {
@@ -664,10 +680,7 @@ async function dispatchPayload(args: {
       return;
     }
 
-    // Released only after the reply is written: a status check that reads an
-    // id as gone must find its reply already on the connection ahead of it.
-    const tracked = inFlight.track(parsed);
-    try {
+    await whileInFlight(inFlight, parsed, async () => {
       const results = (
         await Promise.all(parsed.map((entry) => handleSingleMessage(entry, handler, onError, onInternalError)))
       ).filter((entry): entry is JsonRpcResponse => entry != null);
@@ -675,9 +688,7 @@ async function dispatchPayload(args: {
       if (results.length) {
         writeMessage(results, transport, writeFn);
       }
-    } finally {
-      inFlight.release(tracked);
-    }
+    });
     return;
   }
 
@@ -687,15 +698,12 @@ async function dispatchPayload(args: {
     return;
   }
 
-  const tracked = inFlight.track(parsed);
-  try {
+  await whileInFlight(inFlight, parsed, async () => {
     const response = await handleSingleMessage(parsed, handler, onError, onInternalError);
     if (response) {
       writeMessage(response, transport, writeFn);
     }
-  } finally {
-    inFlight.release(tracked);
-  }
+  });
 }
 
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB

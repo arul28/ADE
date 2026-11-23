@@ -2595,7 +2595,7 @@ describe("local runtime connection pool", () => {
           args: {},
         },
       },
-      { timeoutMs: 30_000, waitWhileRunning: true },
+      { timeoutMs: 30_000 },
     );
     expect(logger.warn).toHaveBeenCalledWith("local_runtime.ensure_project_connection_dropped", {
       rootPath,
@@ -2675,7 +2675,7 @@ describe("local runtime connection pool", () => {
     expect(client.call).toHaveBeenLastCalledWith(
       "ade/actions/call",
       expect.objectContaining({ name: "run_ade_action" }),
-      { timeoutMs: 30_000, waitWhileRunning: true },
+      { timeoutMs: 30_000 },
     );
     expect(actionCalls).toBe(2);
     expect(logger.warn).not.toHaveBeenCalledWith(
@@ -4027,7 +4027,7 @@ setInterval(() => {}, 1000);
           args: {},
         },
       },
-      { timeoutMs: 8_000, waitWhileRunning: true },
+      { timeoutMs: 8_000 },
     );
   });
 
@@ -4156,7 +4156,7 @@ setInterval(() => {}, 1000);
           action: "prepareCrossMachineHandoff",
         }),
       }),
-      { timeoutMs: 120_000, waitWhileRunning: true },
+      { timeoutMs: 120_000 },
     );
   });
 
