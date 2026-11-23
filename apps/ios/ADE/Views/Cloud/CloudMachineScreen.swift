@@ -1038,7 +1038,8 @@ enum CloudLaneComputerDelete {
     // this phone's copy drops it either way.
     await account.loadMachines()
     // The chats go after the computer, so a last saved part can't bring one back.
-    var chatsLeft = false
+    // No machine key: its saved chats can't be named, so none were deleted.
+    var chatsLeft = accountMachineKey == nil
     if let machineKey = accountMachineKey {
       if let onlyChats {
         // A move: the chats it left (Done, archived, another surface) stay

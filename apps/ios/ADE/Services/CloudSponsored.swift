@@ -1,3 +1,4 @@
+import AppTrackingTransparency
 import Foundation
 import OSLog
 import UIKit
@@ -123,6 +124,9 @@ struct CloudSponsoredDevice: Encodable, Equatable {
   let os: String
   let osVersion: String?
   let ua: String?
+  /// The App Tracking Transparency answer. The server sends Gravity the
+  /// account's hashed email only when it is "authorized".
+  let tracking: String?
 
   /// This iPhone or iPad. The user agent is the app's own plain one.
   @MainActor static var current: CloudSponsoredDevice {
@@ -131,8 +135,36 @@ struct CloudSponsoredDevice: Encodable, Equatable {
       type: UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "mobile",
       os: "ios",
       osVersion: UIDevice.current.systemVersion,
-      ua: "ADE-iOS/\(version ?? "0")"
+      ua: "ADE-iOS/\(version ?? "0")",
+      tracking: CloudSponsoredTracking.status
     )
+  }
+}
+
+/// Apple's App Tracking Transparency for sponsored cards. The prompt shows
+/// once, right before the first card is asked for in an ADE Cloud chat (the
+/// person already said yes to sponsored cards). Whatever the answer, the card
+/// is still asked for: without "authorized" the server leaves the hashed
+/// email out of what Gravity gets.
+enum CloudSponsoredTracking {
+  @MainActor static var status: String { name(ATTrackingManager.trackingAuthorizationStatus) }
+
+  /// Shows Apple's prompt when it has never been answered and the app is in
+  /// front (the system ignores it otherwise); returns the answer as sent.
+  @MainActor static func askOnce() async -> String {
+    let current = ATTrackingManager.trackingAuthorizationStatus
+    guard current == .notDetermined, UIApplication.shared.applicationState == .active else { return name(current) }
+    return name(await ATTrackingManager.requestTrackingAuthorization())
+  }
+
+  private static func name(_ status: ATTrackingManager.AuthorizationStatus) -> String {
+    switch status {
+    case .authorized: return "authorized"
+    case .denied: return "denied"
+    case .restricted: return "restricted"
+    case .notDetermined: return "not_determined"
+    @unknown default: return "not_determined"
+    }
   }
 }
 
@@ -332,6 +364,12 @@ final class CloudSponsoredStore: ObservableObject {
   private var retriedNotCloud: Set<String> = []
   private var viewedAds: Set<String> = []
   private var lastSeenAt: [String: Date] = [:]
+  /// The tracking answer each computer's viewer row last got: a changed
+  /// answer (tracking turned off in Settings) is said at once, not after the interval.
+  private var lastSeenTracking: [String: String] = [:]
+  /// The seen request in flight per computer: the next one waits for it, so
+  /// an older answer can never land after a newer one.
+  private var seenInFlight: [String: Task<Void, Never>] = [:]
   /// Account changes this run: an ask that spans one publishes nothing.
   private var resetCount = 0
   private var observers: [NSObjectProtocol] = []
@@ -445,21 +483,43 @@ final class CloudSponsoredStore: ObservableObject {
   }
 
   /// Someone is watching this computer's chat or terminal: the Index may
-  /// answer its agents. At most once per computer every few minutes.
+  /// answer its agents. At most once per computer every few minutes, but at
+  /// once when the tracking answer changed: the server picks what Gravity
+  /// gets from the latest one, so a "no" must not wait out the interval.
   func noteSeen(instanceId: String) async {
     guard appActive else { return }
     let now = Date()
-    if let last = lastSeenAt[instanceId], now.timeIntervalSince(last) < Self.seenEvery { return }
+    let tracking = CloudSponsoredTracking.status
+    if let last = lastSeenAt[instanceId], now.timeIntervalSince(last) < Self.seenEvery, lastSeenTracking[instanceId] == tracking { return }
     lastSeenAt[instanceId] = now
+    let previous = seenInFlight[instanceId]
+    let send = Task { @MainActor [self] in
+      await previous?.value
+      await sendSeen(instanceId: instanceId, at: now)
+    }
+    seenInFlight[instanceId] = send
+    await send.value
+    if seenInFlight[instanceId] == send { seenInFlight[instanceId] = nil }
+  }
+
+  private func sendSeen(instanceId: String, at now: Date) async {
     guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
       lastSeenAt[instanceId] = nil
+      lastSeenTracking[instanceId] = nil
       return
     }
+    // The answer as sent, read after any earlier report finished: the next
+    // look compares against what the server actually got.
+    let device = CloudSponsoredDevice.current
+    lastSeenTracking[instanceId] = device.tracking
     do {
-      try await client.sponsoredSeen(instanceId: instanceId, device: .current)
+      try await client.sponsoredSeen(instanceId: instanceId, device: device)
     } catch {
       // Not said: the next look tries again instead of waiting out the interval.
-      if lastSeenAt[instanceId] == now { lastSeenAt[instanceId] = nil }
+      if lastSeenAt[instanceId] == now {
+        lastSeenAt[instanceId] = nil
+        lastSeenTracking[instanceId] = nil
+      }
       cloudSponsoredLog.notice("sponsored seen failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
   }
@@ -470,6 +530,7 @@ final class CloudSponsoredStore: ObservableObject {
   /// The person said no: the next yes reports their presence at once.
   func forgetSeen() {
     lastSeenAt = [:]
+    lastSeenTracking = [:]
   }
 
   func reset() {
@@ -483,6 +544,8 @@ final class CloudSponsoredStore: ObservableObject {
     foldedPicks = []
     holder = nil
     lastSeenAt = [:]
+    lastSeenTracking = [:]
+    seenInFlight = [:]
   }
 
   #if DEBUG

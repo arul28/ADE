@@ -4,7 +4,7 @@ import { blockCommand, sendOwnerAlert } from "./blocks";
 import type { CloudPlanId } from "./contract";
 import { sendCloudEmail } from "./email";
 import { idleCleanupReportLine } from "./idleCleanup";
-import { pruneSponsored, sponsoredReportLines } from "./gravity";
+import { sponsoredReportLines } from "./gravity";
 import {
   CLOUD_PLANS,
   DISK_COST_MICROS_PER_GB_DAY,
@@ -420,10 +420,6 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     return undefined;
   });
   const freeDayCost = freeDay === undefined ? null : (freeDay?.compute ?? 0) + (freeDay?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
-  // Pruned against the time it runs, so nothing outlives a day by more than the gap between runs.
-  await pruneSponsored(env, Date.now()).catch((error: unknown) => {
-    reportCloudFailure("cloud.sponsored_prune_failed", { message: error instanceof Error ? error.message : "unknown" });
-  });
   const sponsored = await sponsoredReportLines(env, day, freeDayCost).catch((error: unknown) => {
     reportCloudFailure("cloud.sponsored_report_failed", { message: error instanceof Error ? error.message : "unknown" });
     return [] as string[];

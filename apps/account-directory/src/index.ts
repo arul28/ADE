@@ -3,6 +3,7 @@ import { createComputerSettled, forkComputerSettled, handleCloudRequest, isCloud
 import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/automations";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
+import { pruneSponsored } from "./cloud/gravity";
 import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
 import { runProjectComputerDeletes } from "./cloud/projectComputers";
 import { runCloudMoves } from "./cloud/moves";
@@ -229,6 +230,10 @@ export default Sentry.withSentry(sentryOptions, {
         // The day-2 getting-started email: minute 4 of every ten, up to 20
         // due rows. One indexed read when none is due; nothing on other ticks.
         settle("welcome_emails", () => runWelcomeEmails(env, event.scheduledTime)),
+        // Sponsored cards (`cloud/gravity.ts`): minutes 23 and 53 delete where
+        // people watched from (IP, user agent, device) and reply answers a day
+        // old, for every account. Nothing on other ticks.
+        settle("cloud_sponsored_prune", () => pruneSponsored(env, event.scheduledTime)),
         // The server launcher's records past their week (and a draft's day),
         // with their files. One indexed read when none is due.
         settle("cloud_launches", () => expireCloudLaunches(env)),

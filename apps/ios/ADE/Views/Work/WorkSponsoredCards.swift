@@ -132,6 +132,8 @@ struct WorkSponsoredReplySlot: View {
     let key = turnKey
     let ask: @MainActor () async -> CloudSponsoredAdAnswer = { [instanceId, sessionId, turn] in
       guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else { return .unavailable }
+      // Apple's tracking prompt, once, before the first card; the card is asked for whatever the answer.
+      _ = await CloudSponsoredTracking.askOnce()
       do {
         return try await client.sponsoredAd(instanceId: instanceId, chatId: sessionId, turn: turn, device: .current)
       } catch {

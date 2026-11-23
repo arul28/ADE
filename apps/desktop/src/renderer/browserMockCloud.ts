@@ -604,8 +604,9 @@ export function applyBrowserMockCloud(ade: any): void {
   // cards, test ads only, whatever the scenario's plan (the server says when).
   // Pair with `mockCloudLaneMachine=1` so a chat runs on an ADE Cloud computer.
   const sponsoredParam = param("mockSponsored");
-  if (sponsoredParam === "ask" || sponsoredParam === "on") {
-    state = { ...state, sponsored: { ads: true, consent: sponsoredParam === "on" ? "granted" : null, test: true } };
+  // `pick`: answered yes, for the Index pick card demo.
+  if (sponsoredParam === "ask" || sponsoredParam === "on" || sponsoredParam === "pick") {
+    state = { ...state, sponsored: { ads: true, consent: sponsoredParam === "ask" ? null : "granted", test: true } };
   }
   // `upgraded`: this computer last saw the account on Free, a period ago, with 79.1 hours left
   // (once per tab, as a real checkout coming back is seen once).
