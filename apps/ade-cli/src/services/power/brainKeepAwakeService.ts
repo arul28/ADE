@@ -252,18 +252,38 @@ export function createBrainKeepAwakeService(
           ? spawnOffThread(powershell, args)
           : spawn(powershell, args, { stdio: "ignore", windowsHide: true });
       } else if (platform === "linux") {
-        // logind drops the lock when systemd-inhibit ends, and `tail --pid`
-        // ends it with the brain, as `caffeinate -w` does on macOS.
-        spawned = spawn("systemd-inhibit", [
+        // logind's lock is not enough on GNOME: logind lets a user suspend
+        // past their own lock, and GNOME's idle suspend runs as that user and
+        // reads only its own session's locks. So the command under
+        // systemd-inhibit also takes GNOME's lock when a GNOME session answers.
+        // `tail --pid` ends the chain with the brain, as `caffeinate -w` does on
+        // macOS, and the chain has its own process group so a release ends all
+        // of it.
+        const holdUntilBrainExits = `tail --pid=${process.pid} -f /dev/null`;
+        const gnomeInhibit = "gnome-session-inhibit --app-id ade-desktop --inhibit suspend:idle";
+        const processChild = spawn("systemd-inhibit", [
           "--what=idle:sleep",
           "--who=ADE",
           "--why=Agents are working",
           "--mode=block",
-          "tail",
-          `--pid=${process.pid}`,
-          "-f",
-          "/dev/null",
-        ], { stdio: "ignore" });
+          "/bin/sh",
+          "-c",
+          `if command -v gnome-session-inhibit >/dev/null 2>&1 && ${gnomeInhibit} --reason "Checking the lock" true >/dev/null 2>&1; then exec ${gnomeInhibit} --reason "Agents are working" ${holdUntilBrainExits}; fi; exec ${holdUntilBrainExits}`,
+        ], { stdio: "ignore", detached: true });
+        const killProcess = processChild.kill.bind(processChild);
+        spawned = Object.assign(processChild, {
+          kill: (): boolean => {
+            if (processChild.pid) {
+              try {
+                process.kill(-processChild.pid, "SIGTERM");
+                return true;
+              } catch {
+                // The group is already gone; fall back to the process itself.
+              }
+            }
+            return killProcess();
+          },
+        });
       } else {
         attemptedThisActivePeriod = false;
         return;
