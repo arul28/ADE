@@ -125,7 +125,7 @@ describe("prPollingService", () => {
     service.start();
     await vi.advanceTimersByTimeAsync(12_000);
 
-    expect(refreshCalls).toEqual([undefined]);
+    expect(refreshCalls).toEqual([{ background: true }]);
     expect(events.filter((event) => event.type === "prs-updated")).toHaveLength(1);
 
     hotIds = ["pr-1"];
@@ -163,7 +163,7 @@ describe("prPollingService", () => {
 
     service.start();
     await vi.advanceTimersByTimeAsync(12_000);
-    expect(refresh).toHaveBeenLastCalledWith();
+    expect(refresh).toHaveBeenLastCalledWith({ background: true });
 
     service.reconcilePrs(["pr-1"]);
     await vi.advanceTimersByTimeAsync(0);
@@ -174,7 +174,7 @@ describe("prPollingService", () => {
 
     await vi.advanceTimersByTimeAsync(55_000);
     expect(refresh).toHaveBeenCalledTimes(3);
-    expect(refresh).toHaveBeenLastCalledWith();
+    expect(refresh).toHaveBeenLastCalledWith({ background: true });
   });
 
   it("uses webhook reconciliation instead of hot polling while the relay is healthy", async () => {

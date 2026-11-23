@@ -433,7 +433,7 @@ export function createPrPollingService({
       } else if (hotPrIds.length > 0) {
         await prService.refresh({ prIds: hotPrIds });
       } else {
-        await prService.refresh();
+        await prService.refresh({ background: true });
       }
       const prs = prService.listAll();
       try {

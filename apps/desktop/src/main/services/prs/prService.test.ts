@@ -4512,6 +4512,71 @@ describe("prService.refresh", () => {
     });
   });
 
+  function countPullReads(githubService: ReturnType<typeof makeGithubService>, prNumber: number): number {
+    return (githubService.apiRequest as any).mock.calls
+      .filter(([args]: [{ path: string }]) => args.path.endsWith(`/pulls/${prNumber}`))
+      .length;
+  }
+
+  it("stops re-reading a row whose background read keeps failing", async () => {
+    const goneRow = makePrRow({ id: "pr-gone", github_pr_number: 91, state: "open" });
+    const okRow = makePrRow({ id: "pr-ok", github_pr_number: 90, state: "open" });
+    const githubService = makeRefreshGithubService(new Set([91]));
+    const { service } = buildService({ db: makeRefreshDb([goneRow, okRow]), githubService });
+
+    await service.refresh({ background: true });
+    await service.refresh({ background: true });
+
+    // The permanently failing row is inside its cooldown on the second sweep.
+    expect(countPullReads(githubService, 91)).toBe(1);
+    // The healthy stale sibling is still read every sweep.
+    expect(countPullReads(githubService, 90)).toBe(2);
+  });
+
+  it("clears a row's backoff after a requested read succeeds", async () => {
+    const row = makePrRow({ id: "pr-flaky", github_pr_number: 91, state: "open" });
+    const failing = new Set([91]);
+    const githubService = makeRefreshGithubService(failing);
+    const { service } = buildService({ db: makeRefreshDb([row]), githubService });
+
+    await service.refresh({ background: true });
+    expect(countPullReads(githubService, 91)).toBe(1);
+
+    failing.clear();
+    await service.refresh({ prId: "pr-flaky" });
+    await service.refresh({ background: true });
+
+    expect(countPullReads(githubService, 91)).toBe(3);
+  });
+
+  it("does not arm the per-row ladder for a rate-limited failure", async () => {
+    const row = makePrRow({ id: "pr-limited", github_pr_number: 91, state: "open" });
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async () => {
+        const error = new Error("rate limited") as Error & { rateLimitResetAtMs?: number };
+        error.rateLimitResetAtMs = Date.now() + 60_000;
+        throw error;
+      }),
+    });
+    const { service } = buildService({ db: makeRefreshDb([row]), githubService });
+
+    await service.refresh({ background: true });
+    await service.refresh({ background: true });
+
+    // Rate limits stay on the global pause machinery, not the per-row ladder.
+    expect(countPullReads(githubService, 91)).toBe(2);
+  });
+
+  it("still rethrows a GitHub-wide failure from a background sweep", async () => {
+    const row = makePrRow({ id: "pr-outage", github_pr_number: 91, state: "open" });
+    const { service } = buildService({
+      db: makeRefreshDb([row]),
+      githubService: makeOutageGithubService("No server is currently available to service your request."),
+    });
+
+    await expect(service.refresh({ background: true })).rejects.toThrow(/No server is currently available/);
+  });
+
   it("still rejects explicit single-PR refresh failures", async () => {
     const failingRow = makePrRow({ id: "pr-bad", github_pr_number: 91 });
     const { service, logger } = buildService({

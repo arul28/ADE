@@ -1153,14 +1153,25 @@ function isGraphqlUndefinedFieldError(error: unknown): boolean {
     .test(getErrorMessage(error));
 }
 
+/**
+ * How stale a row must be before a background read, and the floor a failed
+ * read buys: an active PR is due every couple of minutes, a closed one rarely.
+ */
+function backgroundRefreshStaleMs(state: string | null | undefined): number {
+  const normalized = String(state ?? "").toLowerCase();
+  return normalized === "open" || normalized === "draft"
+    ? BACKGROUND_REFRESH_MIN_STALE_MS
+    : BACKGROUND_REFRESH_CLOSED_STALE_MS;
+}
+
 function isBackgroundRefreshCandidate(row: PullRequestRow, nowMs: number): boolean {
-  const state = String(row.state ?? "").toLowerCase();
-  const isActive = state === "open" || state === "draft";
-  const staleAfterMs = isActive ? BACKGROUND_REFRESH_MIN_STALE_MS : BACKGROUND_REFRESH_CLOSED_STALE_MS;
   const lastSyncedAtMs = parseIsoMs(row.last_synced_at);
   if (lastSyncedAtMs <= 0) return true;
-  return nowMs - lastSyncedAtMs >= staleAfterMs;
+  return nowMs - lastSyncedAtMs >= backgroundRefreshStaleMs(row.state);
 }
+
+/** The per-PR key in the shared GitHub read ladder. */
+const backgroundPrReadKey = (prId: string): string => `pr:${prId}`;
 
 function compareBackgroundRefreshPriority(left: PullRequestRow, right: PullRequestRow): number {
   const leftState = String(left.state ?? "").toLowerCase();
@@ -5902,10 +5913,19 @@ export function createPrService({
     return updated;
   };
 
-  const refreshPrIds = async (prIds: string[]): Promise<PrSummary[]> => {
+  const refreshPrIds = async (
+    prIds: string[],
+    options: { recordFailures?: boolean } = {},
+  ): Promise<PrSummary[]> => {
     const uniquePrIds = [...new Set(prIds.map((prId) => String(prId ?? "").trim()).filter(Boolean))];
     const refreshed: PrSummary[] = [];
     const failures: Array<{ prId: string; reason: unknown }> = [];
+    // A failed row never advances `last_synced_at`, so without a ladder it is
+    // the oldest candidate on every later sweep and is re-read forever. The
+    // row's state picks the floor: an active PR keeps its couple of minutes.
+    const stateByPrId = options.recordFailures
+      ? new Map(listRows().map((row) => [row.id, row.state]))
+      : null;
     for (let i = 0; i < uniquePrIds.length; i += REFRESH_CONCURRENCY) {
       const batchPrIds = uniquePrIds.slice(i, i + REFRESH_CONCURRENCY);
       const results = await Promise.allSettled(batchPrIds.map((prId) => refreshOne(prId)));
@@ -5913,9 +5933,17 @@ export function createPrService({
         const prId = batchPrIds[index] ?? "";
         if (result.status === "fulfilled") {
           refreshed.push(result.value);
+          githubReadBackoff.clear(backgroundPrReadKey(result.value.id));
           return;
         }
         failures.push({ prId, reason: result.reason });
+        if (options.recordFailures && githubRateLimitResetAtMsOf(result.reason) == null) {
+          githubReadBackoff.record(
+            backgroundPrReadKey(prId),
+            result.reason,
+            backgroundRefreshStaleMs(stateByPrId?.get(prId)),
+          );
+        }
         logger.warn("prs.refresh_failed", { prId, error: getErrorMessage(result.reason) });
       });
     }
@@ -10534,13 +10562,16 @@ export function createPrService({
 
     getReviewSnapshot,
 
-    async refresh(args: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> {
+    async refresh(args: { prId?: string; prIds?: string[]; background?: boolean } = {}): Promise<PrSummary[]> {
       const requestedPrIds = [
         ...(args.prId ? [args.prId] : []),
         ...((args.prIds ?? []).map((prId) => String(prId ?? "").trim()).filter(Boolean)),
       ];
       if (requestedPrIds.length > 0) {
-        return withGithubStackMemberships(await refreshPrIds(requestedPrIds));
+        const refreshed = await refreshPrIds(requestedPrIds);
+        // A requested read that succeeds restores the background sweep.
+        for (const pr of refreshed) githubReadBackoff.clear(backgroundPrReadKey(pr.id));
+        return withGithubStackMemberships(refreshed);
       }
 
       const rows = listRows();
@@ -10548,6 +10579,9 @@ export function createPrService({
       const hotPrIds = new Set(getHotRefreshPrIds(nowMs));
       const staleCandidates = rows
         .filter((row) => !hotPrIds.has(row.id) && isBackgroundRefreshCandidate(row, nowMs))
+        // A background sweep skips a row still inside its failure cooldown; a
+        // user-requested refresh reads every row once (the branch above).
+        .filter((row) => !args.background || !githubReadBackoff.isBackedOff(backgroundPrReadKey(row.id), nowMs))
         .sort(compareBackgroundRefreshPriority)
         .slice(0, BACKGROUND_REFRESH_MAX_PRS);
       const hotCandidates = rows
@@ -10566,7 +10600,10 @@ export function createPrService({
       // rethrow would pin a perfectly healthy poller at max backoff forever.
       // Only a failure that says GitHub itself is unusable counts.
       try {
-        await refreshPrIds(candidates.map((row) => row.id));
+        await refreshPrIds(
+          candidates.map((row) => row.id),
+          args.background ? { recordFailures: true } : {},
+        );
       } catch (error) {
         if (isGithubWideFailure(error)) throw error;
         logger.warn("prs.background_refresh_rows_failed", { error: getErrorMessage(error) });
