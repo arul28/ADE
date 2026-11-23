@@ -32,6 +32,7 @@ import { buildDeeplink, type DeeplinkTarget } from "./deeplinks";
 import { normalizeJiraIssueKey, jiraIssueRef } from "./issueRefs";
 import { getModelById, resolveModelDescriptor } from "./modelRegistry";
 import { modelPermissionLabel } from "./modelPermissions";
+import { wallClockAsUtc } from "./formatting";
 
 export type ThreadEntityLane = { id: string; name: string };
 export type ThreadEntitySession = { id: string };
@@ -400,10 +401,12 @@ export function linearTeamKeyFromIdentifier(identifier: string | null | undefine
   return match ? match[1]!.toUpperCase() : null;
 }
 
-const TIME_SAME_DAY = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
-const TIME_OTHER_DAY = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-const TIME_RANGE = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-const TIME_DAY = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+// Pinned to UTC and fed wall-clock-shifted Dates (see wallClockAsUtc): a
+// formatter built without a zone would keep the load-time zone after a change.
+const TIME_SAME_DAY = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", hour: "numeric", minute: "2-digit", second: "2-digit" });
+const TIME_OTHER_DAY = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const TIME_RANGE = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", hour: "numeric", minute: "2-digit" });
+const TIME_DAY = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "short", day: "numeric" });
 
 /**
  * A zoned timestamp (or same-day range) in the reader's local time, the one
@@ -418,10 +421,10 @@ export function formatThreadEntityTimestamp(
   const date = new Date(epochMs);
   const sameDay = new Date(now).toDateString() === date.toDateString();
   if (endEpochMs != null) {
-    const range = TIME_RANGE.formatRange(date, new Date(endEpochMs));
-    return sameDay ? range : `${TIME_DAY.format(date)}, ${range}`;
+    const range = TIME_RANGE.formatRange(wallClockAsUtc(date), wallClockAsUtc(new Date(endEpochMs)));
+    return sameDay ? range : `${TIME_DAY.format(wallClockAsUtc(date))}, ${range}`;
   }
-  return (sameDay ? TIME_SAME_DAY : TIME_OTHER_DAY).format(date);
+  return (sameDay ? TIME_SAME_DAY : TIME_OTHER_DAY).format(wallClockAsUtc(date));
 }
 
 /** Stable identity for "these two chips point at the same thing". */

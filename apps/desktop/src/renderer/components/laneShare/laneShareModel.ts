@@ -4,6 +4,7 @@ import type { LaneShareGivenEntry } from "../../../shared/types/laneShare";
 import { LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE } from "../../../shared/laneShareDirectory";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { rootAppStoreApi } from "../../state/appStore";
+import { wallClockAsUtc } from "../../../shared/formatting";
 
 /**
  * Pure helpers for the owner's lane sharing UI: states, quick end dates,
@@ -128,10 +129,10 @@ export function laneShareQuickEnds(now: number): LaneShareQuickEnd[] {
   ];
 }
 
-const dateTime = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const dateTime = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 export function formatLaneShareEnd(endsAt: number | null): string {
-  return endsAt == null ? "No end date" : `Ends ${dateTime.format(new Date(endsAt))}`;
+  return endsAt == null ? "No end date" : `Ends ${dateTime.format(wallClockAsUtc(new Date(endsAt)))}`;
 }
 
 /** "12 of 50 today", "12 of 200", "12 messages", or null when nothing was counted here. */

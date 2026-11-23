@@ -4,8 +4,9 @@ import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { Z_LAYERS } from "../ui/zLayers";
 import { cn } from "../ui/cn";
+import { wallClockAsUtc } from "../../../shared/formatting";
 
-const DUE_DATE_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
+const DUE_DATE_FORMAT = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
 
 function isoDate(date: Date): string {
   const year = date.getFullYear();
@@ -66,7 +67,7 @@ export function IssueDueDatePicker({
         className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.02] px-2 text-[11.5px] text-fg/85 transition-colors hover:border-fg/[0.16] hover:bg-fg/[0.05] disabled:cursor-default disabled:opacity-70"
       >
         <CalendarBlank size={12} className="shrink-0 text-[color:var(--kit-text-3)]" />
-        <span className="truncate">{selected ? DUE_DATE_FORMAT.format(selected) : "None"}</span>
+        <span className="truncate">{selected ? DUE_DATE_FORMAT.format(wallClockAsUtc(selected)) : "None"}</span>
       </button>
       <AnchoredMenu
         open={open}
