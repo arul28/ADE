@@ -543,7 +543,9 @@ function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | 
   }
   const ghCliPath = resolveGhCliPath();
   try {
-    const result = spawnSync(ghCliPath, ["auth", "token"], {
+    // Always github.com: without --hostname, gh picks GH_HOST, so a person
+    // signed in to a GitHub Enterprise host would hand ADE that host's token.
+    const result = spawnSync(ghCliPath, ["auth", "token", "--hostname", "github.com"], {
       encoding: "utf8",
       timeout: 5_000,
       windowsHide: true,
@@ -622,7 +624,9 @@ async function readGhAuthTokenUncachedAsync(): Promise<GhAuthTokenResult> {
   }
   if (lastGhAuthFailure && !ghAuthFailureBackoff.canAttempt()) return lastGhAuthFailure;
   const ghCliPath = await resolveGhCliPathAsync();
-  const result = await runCommandAsync(ghCliPath, ["auth", "token"], {
+  // Always github.com: without --hostname, gh picks GH_HOST, so a person
+  // signed in to a GitHub Enterprise host would hand ADE that host's token.
+  const result = await runCommandAsync(ghCliPath, ["auth", "token", "--hostname", "github.com"], {
     timeoutMs: 5_000,
     maxBuffer: 64 * 1024,
   });
