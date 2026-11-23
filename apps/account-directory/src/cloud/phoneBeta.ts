@@ -97,9 +97,10 @@ export async function resolvePendingPhoneBeta(env: CloudEnv, now: number): Promi
  * an account with it first appears (`claimPhoneBetaInvite` in `store.ts`), or
  * the owner check finds it in Clerk (`resolvePendingPhoneBeta`).
  * Removing an email removes a waiting one too. With `CLOUD_PHONE_ACCESS=all`
- * the list no longer matters.
+ * the list no longer matters. `alongside`: the caller's statements (the
+ * account test tool's log), written with an account's change in one batch.
  */
-export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, unknown>, now: number): Promise<Response> {
+export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, unknown>, now: number, alongside: readonly D1PreparedStatement[] = []): Promise<Response> {
   const typedEmail = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const typedUserId = typeof body.userId === "string" ? body.userId.trim() : "";
   if (!typedEmail && !typedUserId) {
@@ -138,13 +139,10 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
   }
   const pendingDelete = typedEmail ? [env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(typedEmail)] : [];
   if (body.enabled === false) {
-    // The account exists now: no email of it needs to wait.
-    if (pendingDelete.length) await env.DB.batch(pendingDelete);
-    for (const userId of userIds) {
-      await env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId).run();
-      // Off the list is off now: a running phone stops (under `all`, the list doesn't matter).
-      if (phoneAccessSetting(env) === "beta") await stopAccountPhones(env, userId, now, "access_removed");
-    }
+    // The account exists now: no email of it needs to wait. The caller's statements (its log) land in the same write.
+    await env.DB.batch([...pendingDelete, ...userIds.map((userId) => env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId)), ...alongside]);
+    // Off the list is off now: a running phone stops (under `all`, the list doesn't matter).
+    if (phoneAccessSetting(env) === "beta") for (const userId of userIds) await stopAccountPhones(env, userId, now, "access_removed");
     logCloud("cloud.phone_beta_removed", { count: userIds.length });
     return json({ ok: true, removed: userIds });
   }
@@ -159,6 +157,7 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
       ...(provider !== undefined ? [env.DB.prepare("update cloud_phone_beta set provider = ? where user_id = ?").bind(provider, userId)] : []),
     ]),
     ...pendingDelete,
+    ...alongside,
   ]);
   logCloud("cloud.phone_beta_added", { count: userIds.length, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });
   return json({ ok: true, added: userIds, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });

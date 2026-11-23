@@ -71,6 +71,9 @@ async function billableThisPeriod(env: CloudEnv, account: AccountRow, now: numbe
   return phoneUsageOf(env, account, rows, now, true).extra.billableMinutes;
 }
 
+const testMinutesRefusal = (): CloudBillingError =>
+  new CloudBillingError("plan_test", "This account has test iPhone minutes. Reset the test before turning on extra minutes.", 409);
+
 /**
  * Extra iPhone minutes on (paid plans only), with a monthly limit in cents or
  * none, or off. Turning them off keeps what was already used past the plan
@@ -88,6 +91,8 @@ export async function setExtraPhoneMinutes(
   if (account.stripe_status === "past_due") {
     throw new CloudBillingError("needs_paid_plan", "Extra iPhone minutes change once your last payment goes through.", 403);
   }
+  // Billing counts past the plan's minutes, the apps past a test's: the two would disagree on what is extra.
+  if (choice.enabled && account.test_phone_minutes != null) throw testMinutesRefusal();
   // An ended period still tracked is billed first, at its own settings, so this choice starts clean on the
   // current one: its running phone stops, then its minutes go out. Until they have, the choice waits.
   if (tracksEndedPeriod(account)) {
@@ -108,12 +113,14 @@ export async function setExtraPhoneMinutes(
     if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra iPhone minutes need a paid plan.", 403);
     await ensurePhoneMinutesItem(env, account, now);
     // What was sent and owed in this period stays: turning it on again bills no minute twice and drops none owed.
-    await env.DB.prepare(`
+    // Only while no test minutes are set: an owner's test saved since the read above wins (`ownerAccounts.ts` guards the other way).
+    const turnedOn = await env.DB.prepare(`
       update cloud_accounts set phone_extra_enabled = ${PHONE_EXTRA.on}, phone_extra_limit_cents = ?,
         phone_extra_period_start = coalesce(phone_extra_period_start, ?),
         phone_extra_included = ?, updated_at = ?
-      where user_id = ?
+      where user_id = ? and test_phone_minutes is null
     `).bind(choice.monthlyLimitCents, account.period_start, includedPhoneMinutes(account), now, userId).run();
+    if ((turnedOn.meta.changes ?? 0) === 0) throw testMinutesRefusal();
     logCloud("cloud.extra_phone_on", { userId, limitCents: choice.monthlyLimitCents });
   } else {
     await env.DB.prepare(`

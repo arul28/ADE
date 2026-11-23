@@ -316,6 +316,8 @@ export type AccountRow = {
   test_plan?: string | null;
   test_computers?: number | null;
   test_hours_milli?: number | null;
+  /** The iPhone minutes its phone limits count instead of the plan's (migration 0058); billing never reads it. */
+  test_phone_minutes?: number | null;
   test_until?: number | null;
   test_note?: string | null;
   deleted_at: number | null;
@@ -986,10 +988,15 @@ export function paidPlanOf(account: Pick<AccountRow, "paid_plan">): CloudPaidPla
 /** Whether a move from one paid plan to another is a downgrade (it waits for the period end). */
 export const isPaidDowngrade = (from: CloudPaidPlanId, to: CloudPaidPlanId): boolean => PAID_PLAN_RANK[to] < PAID_PLAN_RANK[from];
 
-type TestFields = Pick<AccountRow, "test_plan" | "test_computers" | "test_hours_milli">;
+type TestFields = Pick<AccountRow, "test_plan" | "test_computers" | "test_hours_milli" | "test_phone_minutes">;
 
 /** Whether the account test tool has anything in force on this account (`ownerAccounts.ts`). */
 export function hasAccountTest(account: Partial<TestFields>): boolean {
+  return hasComputerTest(account) || account.test_phone_minutes != null;
+}
+
+/** Whether a test changes the account's plan, computers or hours: what the plan cleanup reads (iPhone minutes don't touch computers). */
+export function hasComputerTest(account: Partial<TestFields>): boolean {
   return testPlanOf(account) != null || account.test_computers != null || account.test_hours_milli != null;
 }
 
