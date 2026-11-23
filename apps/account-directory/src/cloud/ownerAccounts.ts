@@ -13,6 +13,7 @@ import {
   writeCloudSetting,
 } from "./settings";
 import {
+  PHONE_EXTRA,
   accountRules,
   boughtPlanIdOf,
   computerLimitOf,
@@ -215,6 +216,7 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
   }
   let account = await loadAccount(env, who.userId, now);
   const statements: D1PreparedStatement[] = [];
+  let testWritten = false;
   if (reset) {
     statements.push(env.DB.prepare(`update cloud_accounts set test_plan = null, test_computers = null, test_hours_milli = null,
       test_phone_minutes = null, test_until = null, test_note = null, updated_at = ? where user_id = ?`).bind(now, who.userId));
@@ -233,16 +235,23 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
       return fail("conflict", "This account has earned hours or extra hours on, so a test with more hours than its plan would use them for real. Test fewer hours, or use another account.", 409);
     }
     // Extra minutes bill past the real plan's minutes, never a test's: the two would disagree on what is extra.
-    if (change.phoneMinutes != null && phoneExtraOn(env, account)) {
-      return fail("conflict", "This account has extra iPhone minutes on, which bill past its plan's minutes, not a test's. Turn extra minutes off first, or use another account.", 409);
+    const extraOnRefusal = () => fail("conflict", "This account has extra iPhone minutes on, which bill past its plan's minutes, not a test's. Turn extra minutes off first, or use another account.", 409);
+    if (change.phoneMinutes != null && phoneExtraOn(env, account)) return extraOnRefusal();
+    const update = env.DB.prepare(`update cloud_accounts set test_plan = ?, test_computers = ?, test_hours_milli = ?, test_phone_minutes = ?,
+      test_until = ?, test_note = ?, updated_at = ? where user_id = ?${change.phoneMinutes != null ? ` and phone_extra_enabled <> ${PHONE_EXTRA.on}` : ""}`)
+      .bind(next.plan, next.computers, next.hoursMilli, next.phoneMinutes, any ? now + days * DAY_MS : null, any ? note ?? account.test_note ?? null : null, now, who.userId);
+    if (change.phoneMinutes != null) {
+      // Written first, alone, only while extra minutes are off: extra minutes turned on since the read above win
+      // (`setExtraPhoneMinutes` guards the other way), and nothing else in this request is saved.
+      if (((await update.run()).meta.changes ?? 0) === 0) return extraOnRefusal();
+    } else {
+      statements.push(update);
     }
-    statements.push(env.DB.prepare(`update cloud_accounts set test_plan = ?, test_computers = ?, test_hours_milli = ?, test_phone_minutes = ?,
-      test_until = ?, test_note = ?, updated_at = ? where user_id = ?`)
-      .bind(next.plan, next.computers, next.hoursMilli, next.phoneMinutes, any ? now + days * DAY_MS : null, any ? note ?? account.test_note ?? null : null, now, who.userId));
+    testWritten = true;
   }
   if (tester === true) statements.push(env.DB.prepare("insert into cloud_sponsored_testers (user_id, added_at) values (?, ?) on conflict (user_id) do nothing").bind(who.userId, now));
   if (tester === false) statements.push(env.DB.prepare("delete from cloud_sponsored_testers where user_id = ?").bind(who.userId));
-  const testChanged = statements.length > 0;
+  const testChanged = testWritten || statements.length > 0;
   // The beta list keeps its own rules (a removal stops a running phone): its route does it.
   if (phoneChoice !== undefined) {
     // The email too: the list keeps the address, and a removal drops its waiting invite (else the invite sweep adds it back).
