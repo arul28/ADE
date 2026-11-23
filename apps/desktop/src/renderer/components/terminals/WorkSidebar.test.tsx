@@ -512,6 +512,21 @@ describe("WorkSidebar context targets", () => {
     ));
   });
 
+  it("does not offer Resume for an ended shell", async () => {
+    const { resumeSession } = installAdeMock();
+    renderSidebar({
+      tab: "terminal",
+      activeSession: { ...activeSession, toolType: "shell", status: "completed" },
+      contextTarget: null,
+    });
+
+    const card = screen.getByTestId("terminal-ended-card");
+    expect(card.textContent).toMatch(/ended/);
+    expect(screen.queryByRole("button", { name: /Resume/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Close/ })).toBeTruthy();
+    expect(resumeSession).not.toHaveBeenCalled();
+  });
+
   it("keeps a lane with no owning session on the same warm empty state", () => {
     installAdeMock();
     renderSidebar({ tab: "terminal", activeSession: null, contextTarget: null });

@@ -1,5 +1,6 @@
 import { Suspense, createElement, lazy, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
+import { isTrackedAgentCliToolType } from "../../../shared/types";
 import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
 import { useAndroidStatusWatch } from "../../lib/androidStatusWatch";
@@ -308,6 +309,13 @@ function WorkTerminalTool({
     // controls: the sentence explaining what "ended" means was doing no work
     // the header above it was not already doing.
     const endedSession = activeSession?.status && activeSession.status !== "running" ? activeSession : null;
+    // Resume acts on a tracked agent CLI. A shell or an untracked session has
+    // nothing to bring back, so the button could only fail.
+    const resumableEnded = Boolean(
+      endedSession
+      && endedSession.tracked !== false
+      && isTrackedAgentCliToolType(endedSession.toolType),
+    );
     if (endedSession) {
       return (
         <div className="flex h-full min-h-0 items-center justify-center px-4">
@@ -320,15 +328,17 @@ function WorkTerminalTool({
             <span className="min-w-0 flex-1 truncate font-sans text-[13px] text-fg/80">
               {formatToolTypeLabel(endedSession.toolType)} ended
             </span>
-            <button
-              type="button"
-              onClick={onResumeEndedSession}
-              disabled={resumingSession}
-              className={WORK_TOOL_CHROME_CHIP}
-            >
-              <Play size={12} weight="fill" />
-              <span>{resumingSession ? "Resuming…" : "Resume"}</span>
-            </button>
+            {resumableEnded && (
+              <button
+                type="button"
+                onClick={onResumeEndedSession}
+                disabled={resumingSession}
+                className={WORK_TOOL_CHROME_CHIP}
+              >
+                <Play size={12} weight="fill" />
+                <span>{resumingSession ? "Resuming…" : "Resume"}</span>
+              </button>
+            )}
             {/* `onClose`, not the pane's `closePane`: this branch only renders
                 for the terminal tool, where there is no browser view to park. */}
             <button type="button" onClick={onClose} className={WORK_TOOL_CHROME_CHIP}>
