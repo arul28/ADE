@@ -440,11 +440,19 @@ final class ClientUpdateGateStore: ObservableObject {
 /// alert, a chat with the keyboard up) can be reached, and nothing under it
 /// is torn down: when the minimum is lowered or the answer goes stale, the
 /// cover lifts and the app is where it was.
+///
+/// The app's own windows are hidden while covered, not just covered: the cover
+/// is opaque, and a hidden window keeps its views without laying them out or
+/// drawing them. Covered but shown, the tabs kept updating under it as sync ran
+/// (badges, sessions), and on iOS 27.2 the watchdog ended the app inside those
+/// tab bar updates (ADE-IOS-35, 36, 27), each time while this cover was up.
 @MainActor
 final class PhoneUpdateGateWindows {
   static let shared = PhoneUpdateGateWindows()
 
   private var windows: [ObjectIdentifier: UIWindow] = [:]
+  /// The app's windows this cover hid, shown again when it lifts.
+  private var hiddenAppWindows: [UIWindow] = []
   private var requirement: PhoneUpdateRequirement?
   private var subscription: AnyCancellable?
   private var sceneObservers: [NSObjectProtocol] = []
@@ -468,7 +476,10 @@ final class PhoneUpdateGateWindows {
     sceneObservers.append(NotificationCenter.default.addObserver(forName: UIScene.didDisconnectNotification, object: nil, queue: .main) { [weak self] note in
       guard let scene = note.object as? UIScene else { return }
       let key = ObjectIdentifier(scene)
-      Task { @MainActor in self?.windows.removeValue(forKey: key)?.isHidden = true }
+      Task { @MainActor in
+        self?.windows.removeValue(forKey: key)?.isHidden = true
+        self?.hiddenAppWindows.removeAll { $0.windowScene == nil || $0.windowScene === scene }
+      }
     })
   }
 
@@ -477,6 +488,8 @@ final class PhoneUpdateGateWindows {
     self.requirement = requirement
     guard let requirement else {
       guard !windows.isEmpty else { return }
+      for window in hiddenAppWindows { window.isHidden = false }
+      hiddenAppWindows.removeAll()
       for window in windows.values { window.isHidden = true }
       windows.removeAll()
       // The app's own window takes the keyboard and focus back.
@@ -502,6 +515,19 @@ final class PhoneUpdateGateWindows {
       window.accessibilityViewIsModal = true
       window.makeKeyAndVisible()
       windows[key] = window
+    }
+    hideAppWindows()
+  }
+
+  /// The app's own visible windows (normal level: never a cover, the keyboard
+  /// or the system's text windows), in every scene. Runs again when a scene
+  /// comes back, so a window shown while backgrounded is hidden too.
+  private func hideAppWindows() {
+    for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
+      for window in scene.windows where !window.isHidden && window.windowLevel == .normal {
+        window.isHidden = true
+        hiddenAppWindows.append(window)
+      }
     }
   }
 }

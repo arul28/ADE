@@ -21,6 +21,7 @@ import { expectedErrorKind } from "../expectedError";
 import { GITHUB_AUTOLINKS_REFUSED } from "../githubAutolinks";
 import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../pendingInputAnswers";
 import { SIMCTL_MISSING } from "../xcodeToolchain";
+import { STEER_NO_LONGER_QUEUED_MESSAGE } from "../steerOrder";
 import { SECRET_NAME_RULE } from "../types/passwords";
 import { LINEAR_NOT_CONNECTED_MESSAGE } from "../types/automations";
 
@@ -159,7 +160,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   new RegExp(`^${escapeRegExp(SECRET_NAME_RULE)}$`),
   /^(?:Path|Attachment source) is not a file\.$/,
   /^This Codex chat does not have a thread to rewind yet\.$/,
-  /^This message is no longer queued\.$/,
+  new RegExp(`^${escapeRegExp(STEER_NO_LONGER_QUEUED_MESSAGE)}$`),
   // A Linear call on a machine where Linear is not connected; the UI sends the
   // user to Linear settings.
   new RegExp(`^${escapeRegExp(LINEAR_NOT_CONNECTED_MESSAGE)}$`),

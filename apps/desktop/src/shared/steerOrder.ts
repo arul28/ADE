@@ -5,6 +5,18 @@
  */
 
 /**
+ * The chat service's answer when a queued message was already sent, edited
+ * away or dropped by the time a person acts on it. The pane drops the stale
+ * chip on it instead of showing the queue as it was.
+ */
+export const STEER_NO_LONGER_QUEUED_MESSAGE = "This message is no longer queued.";
+
+export function isSteerNoLongerQueuedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(STEER_NO_LONGER_QUEUED_MESSAGE);
+}
+
+/**
  * `items` sorted to `order` (a list of ids). Items `order` does not name keep
  * their relative place after the named ones; ids with no item are skipped.
  */

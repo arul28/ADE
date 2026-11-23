@@ -1675,6 +1675,25 @@ function dropCrrTriggers(db: DatabaseSyncType, tableName: string, logger?: Logge
   return triggers.length;
 }
 
+/**
+ * Turn a CRR back into a plain table: its triggers, clock and pks tables and
+ * its `crsql_master` rows go; its rows stay. Safe on partial metadata, where
+ * `crsql_as_table` itself can refuse.
+ */
+function stripCrrMetadata(db: DatabaseSyncType, tableName: string, logger?: Logger): void {
+  if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
+    runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
+  }
+  try {
+    getRow(db, "select crsql_as_table(?) as ok", [tableName]);
+  } catch {
+    // Table may not be registered enough for crsql_as_table; shadow cleanup below still applies.
+  }
+  dropCrrTriggers(db, tableName, logger);
+  runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_clock`)}`);
+  runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_pks`)}`);
+}
+
 /** Strip CRR triggers/metadata so row deletes stay local (no replicated tombstones). */
 function deleteAllRowsWithoutCrrReplication(
   db: DatabaseSyncType,
@@ -1683,23 +1702,11 @@ function deleteAllRowsWithoutCrrReplication(
 ): void {
   if (!rawHasTable(db, tableName)) return;
 
-  const clockTableName = `${tableName}__crsql_clock`;
-  const pksTableName = `${tableName}__crsql_pks`;
-  if (rawHasTable(db, clockTableName) || rawHasTable(db, pksTableName) || listCrrTriggers(db, tableName).length > 0) {
-    if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
-      runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
-    }
+  if (rawHasTable(db, `${tableName}__crsql_clock`) || rawHasTable(db, `${tableName}__crsql_pks`) || listCrrTriggers(db, tableName).length > 0) {
     if (rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
       deleteCrsqlChangesRowsIfAllowed(db, tableName, logger, "local-only-table-wipe");
     }
-    try {
-      getRow(db, "select crsql_as_table(?) as ok", [tableName]);
-    } catch {
-      // Table may not be registered enough for crsql_as_table; shadow cleanup below still applies.
-    }
-    dropCrrTriggers(db, tableName, logger);
-    runStatement(db, `drop table if exists ${quoteIdentifier(clockTableName)}`);
-    runStatement(db, `drop table if exists ${quoteIdentifier(pksTableName)}`);
+    stripCrrMetadata(db, tableName, logger);
   }
 
   runStatement(db, `delete from ${quoteIdentifier(tableName)}`);
@@ -2802,26 +2809,54 @@ function safeAddColumn(db: MigrationDb, sql: string): boolean {
 function makeCrrAwareDb({
   getDb,
   isCrsqliteLoaded,
+  logger,
 }: {
   getDb: () => DatabaseSyncType;
   isCrsqliteLoaded: () => boolean;
+  logger?: Logger;
 }): MigrationDb {
+  // A table whose sync metadata is broken loses it, then takes the ALTER as a
+  // plain table; `ensureCrrTables` makes it a CRR again after the migration,
+  // and `crsql_as_crr` gives every existing row a fresh clock. Without this a
+  // project whose one table is broken never opens: cr-sqlite's
+  // `crsql_commit_alter` fails ("failed compacting tables post alteration"),
+  // rolls the ALTER back with its own savepoint, and the next open repeats it.
+  const alterAsPlainTable = (db: DatabaseSyncType, tableName: string, sql: string, params: SqlValue[], reason: string): void => {
+    stripCrrMetadata(db, tableName, logger);
+    logger?.warn("db.crr_alter_metadata_reset", { tableName, reason });
+    runStatement(db, sql, params);
+  };
   return {
     run: (sql: string, params: SqlValue[] = []) => {
       const db = getDb();
       const alterTable = parseAlterTableTarget(sql);
-      if (alterTable && isCrsqliteLoaded() && rawHasTable(db, `${alterTable}__crsql_clock`)) {
-        getRow(db, "select crsql_begin_alter(?) as ok", [alterTable]);
-        try {
-          runStatement(db, sql, params);
-        } catch (error) {
-          // Commit the alter even on failure so the CRR state stays consistent,
-          // then re-throw so callers can handle duplicate-column upgrades.
-          getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
-          throw error;
+      if (alterTable && isCrsqliteLoaded()) {
+        const hasClock = rawHasTable(db, `${alterTable}__crsql_clock`);
+        const hasPks = rawHasTable(db, `${alterTable}__crsql_pks`);
+        // cr-sqlite's alter needs both: either one alone always fails its commit.
+        if (hasClock !== hasPks) {
+          alterAsPlainTable(db, alterTable, sql, params, hasClock ? "pks_table_missing" : "clock_table_missing");
+          return;
         }
-        getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
-        return;
+        if (hasClock) {
+          getRow(db, "select crsql_begin_alter(?) as ok", [alterTable]);
+          try {
+            runStatement(db, sql, params);
+          } catch (error) {
+            // Commit the alter even on failure so the CRR state stays consistent,
+            // then re-throw so callers can handle duplicate-column upgrades.
+            getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
+            throw error;
+          }
+          try {
+            getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
+          } catch (error) {
+            // A lock is the sibling process: the open waits and runs again.
+            if (isSqliteBusyOrLockedError(error)) throw error;
+            alterAsPlainTable(db, alterTable, sql, params, error instanceof Error ? error.message : String(error));
+          }
+          return;
+        }
       }
       runStatement(db, sql, params);
     },
@@ -5264,6 +5299,7 @@ async function openKvDbOnce(
   const crrAwareDb = makeCrrAwareDb({
     getDb: () => db,
     isCrsqliteLoaded: () => crsqliteLoaded,
+    logger,
   });
   const hadCrsqlMetadataBeforeOpen = hasCrsqlMetadataBeforeOpen(db);
   const appVersion = options.appVersion?.trim() || null;

@@ -330,6 +330,41 @@ describe("kvDb migrations - legacy upgrade paths", () => {
     }
   });
 
+  // A project whose one CRR lost half its sync metadata never opened: every
+  // ALTER on that table failed in `crsql_commit_alter`, which rolled it back.
+  it.skipIf(!isCrsqliteAvailable())("opens a project whose synced table lost its pks table before a column is added", async () => {
+    const dbPath = makeDbPath("ade-kvdb-crr-half-metadata-");
+    const first = await openKvDb(dbPath, createLogger());
+    const now = "2026-11-23T00:00:00.000Z";
+    first.run("pragma foreign_keys = off");
+    first.run(
+      `insert into pull_requests (id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, state,
+         base_branch, head_branch, created_at, updated_at)
+       values ('pr-1', 'project-1', 'lane-1', 'o', 'r', 7, 'https://github.com/o/r/pull/7', 'open', 'main', 'feat', ?, ?)`,
+      [now, now],
+    );
+    // An install from before `merged_head_sha`, whose pks table is gone.
+    first.get("select crsql_as_table('pull_requests') as ok");
+    first.run("alter table pull_requests drop column merged_head_sha");
+    first.get("select crsql_as_crr('pull_requests') as ok");
+    first.run("drop table pull_requests__crsql_pks");
+    first.close();
+
+    const reopened = await openKvDb(dbPath, createLogger());
+    try {
+      expect(listColumnNames(reopened, "pull_requests")).toContain("merged_head_sha");
+      expect(reopened.get<{ id: string }>("select id from pull_requests")?.id).toBe("pr-1");
+      // A CRR again, with the row's clock: it still syncs.
+      expect(reopened.get<{ count: number }>("select count(1) as count from pull_requests__crsql_pks")?.count).toBe(1);
+      reopened.run("update pull_requests set title = 'renamed' where id = 'pr-1'");
+      expect(reopened.get<{ count: number }>(
+        "select count(1) as count from crsql_changes where [table] = 'pull_requests' and cid = 'title'",
+      )?.count).toBe(1);
+    } finally {
+      reopened.close();
+    }
+  });
+
   it("coalesces duplicate lane_linear_issue_links rows during migrate", async () => {
     const dbPath = makeDbPath("ade-kvdb-linear-links-dedupe-");
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });

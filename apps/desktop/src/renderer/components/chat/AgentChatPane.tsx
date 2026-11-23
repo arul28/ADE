@@ -7,6 +7,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { CloneToMachineDialog } from "../projects/CloneToMachineDialog";
 import { Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { compactFirstOffer } from "../../../shared/compactFirst";
+import { isSteerNoLongerQueuedError } from "../../../shared/steerOrder";
 import { latestCompactionKeyOf, useCompactFirst } from "./useCompactFirst";
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
 import { compareTextInsensitive } from "../../../shared/formatting";
@@ -22156,6 +22157,16 @@ export function AgentChatPane({
                 setAttachments((current) => mergeAttachments(current, queuedAttachments));
                 setContextAttachments((current) => mergeChatContextAttachments(current, queuedContextAttachments));
               }).catch((error: unknown) => {
+                if (isSteerNoLongerQueuedError(error)) {
+                  // Sent or dropped before the click landed: the chip is stale,
+                  // and leaving it up only invites the same refusal again.
+                  setPendingSteersBySession((current) => ({
+                    ...current,
+                    [sessionId]: (current[sessionId] ?? []).filter((entry) => entry.steerId !== steerId),
+                  }));
+                  setError("That message was already sent, so it can't go back to the composer.");
+                  return;
+                }
                 setError(`Couldn't move the queued message back to the composer: ${error instanceof Error ? error.message : String(error)}`);
               });
             }}

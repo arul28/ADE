@@ -418,7 +418,7 @@ import {
   isFastModeEnabledSetting,
 } from "../../../shared/fastModePolicy";
 import type { ChatLaunchArgs } from "../../../shared/types/chatLaunch";
-import { applySteerOrder, moveSteerId } from "../../../shared/steerOrder";
+import { applySteerOrder, moveSteerId, STEER_NO_LONGER_QUEUED_MESSAGE } from "../../../shared/steerOrder";
 import { createParentWakeBatcher } from "./parentWakeBatcher";
 import {
   externalChatContext,
@@ -69699,7 +69699,7 @@ export function createAgentChatService(args: {
           );
         }
       } else if (requireQueued) {
-        throw new Error("This message is no longer queued.");
+        throw new Error(STEER_NO_LONGER_QUEUED_MESSAGE);
       }
       // No submission means no queue holds the message — clear the chip rather
       // than leaving a control that does nothing every time it is pressed.
@@ -69707,7 +69707,7 @@ export function createAgentChatService(args: {
     } else if (!runtime) {
       const persistedSteers = readPersistedState(managed.session.id)?.pendingSteers ?? [];
       removed = persistedSteers.some((steer) => steer.steerId === steerId);
-      if (requireQueued && !removed) throw new Error("This message is no longer queued.");
+      if (requireQueued && !removed) throw new Error(STEER_NO_LONGER_QUEUED_MESSAGE);
       // A torn-down session holds no local queue, so the staged chip is the
       // only thing left to cancel. The shared finalizer also drops the steer
       // from persisted state before a future runtime can hydrate it.
@@ -69715,7 +69715,7 @@ export function createAgentChatService(args: {
       // The message lives in OpenCode's inbox; only a cancel there takes it back.
       const idx = runtime.pendingSteers.findIndex((row) => row.steerId === steerId);
       if (idx === -1) {
-        if (requireQueued) throw new Error("This message is no longer queued.");
+        if (requireQueued) throw new Error(STEER_NO_LONGER_QUEUED_MESSAGE);
       } else {
         const row = runtime.pendingSteers[idx]!;
         try {
@@ -69748,7 +69748,7 @@ export function createAgentChatService(args: {
         removed = true;
         if (runtime.kind === "claude" && removedSteer) runtime.knownQueuedMessages.delete(removedSteer.uuid);
       } else if (requireQueued) {
-        throw new Error("This message is no longer queued.");
+        throw new Error(STEER_NO_LONGER_QUEUED_MESSAGE);
       }
     }
 
@@ -69788,7 +69788,7 @@ export function createAgentChatService(args: {
       // silent no-op.
       const submissionId = runtime.queuedSubmissionBySteerId.get(steerId)
         ?? await recoverCodexQueueSubmissionId(managed, runtime, steerId);
-      if (!submissionId) throw new Error("This message is no longer queued.");
+      if (!submissionId) throw new Error(STEER_NO_LONGER_QUEUED_MESSAGE);
       const threadId = managed.session.threadId;
       if (!threadId) throw new Error("This message cannot be edited because Codex has no active thread.");
       if (!trimmed.length) {
@@ -69810,7 +69810,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return;
     }
-    if (!runtime) throw new Error("This message is no longer queued.");
+    if (!runtime) throw new Error(STEER_NO_LONGER_QUEUED_MESSAGE);
 
     // An inline dispatch owns the row across the network await and sends the
     // text it read at call time. Editing it mid-flight would make the
@@ -69821,7 +69821,7 @@ export function createAgentChatService(args: {
       throw new Error("This message is already being dispatched.");
     }
     const idx = runtime.pendingSteers.findIndex((s) => s.steerId === steerId);
-    if (idx === -1) throw new Error("This message is no longer queued.");
+    if (idx === -1) throw new Error(STEER_NO_LONGER_QUEUED_MESSAGE);
 
     if (!trimmed.length) {
       const [removed] = runtime.pendingSteers.splice(idx, 1);
@@ -69871,7 +69871,7 @@ export function createAgentChatService(args: {
       const persisted = survivingPersistedSteers(managed, readPersistedState(managed.session.id)?.pendingSteers ?? []);
       const ids = persisted.map((steer) => steer.steerId);
       const nextIds = moveSteerId(ids, steerId, toIndex);
-      if (!nextIds) throw new Error("This message is no longer queued.");
+      if (!nextIds) throw new Error(STEER_NO_LONGER_QUEUED_MESSAGE);
       persistedSteerOrder.set(managed, nextIds);
       const saved = persistChatState(managed);
       // Either way the override goes: on success the file now holds this
@@ -69892,7 +69892,7 @@ export function createAgentChatService(args: {
     }
     const queue = runtime.pendingSteers;
     const nextIds = moveSteerId(queue.map((steer) => steer.steerId), steerId, toIndex);
-    if (!nextIds) throw new Error("This message is no longer queued.");
+    if (!nextIds) throw new Error(STEER_NO_LONGER_QUEUED_MESSAGE);
     const byId = new Map(queue.map((steer) => [steer.steerId, steer] as const));
     queue.splice(0, queue.length, ...nextIds.map((id) => byId.get(id)!));
     emitChatEvent(managed, {
