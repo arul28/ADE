@@ -7,7 +7,8 @@
 
 import { CLOUD_PHONE_PROVIDERS, isCloudPhoneProvider } from "./contract";
 import { fail, json } from "./http";
-import { phoneAccessSetting, providerSetting, stopAccountPhones } from "./phones";
+import { phoneAccessSetting, stopAccountPhones } from "./phones";
+import { providerSetting } from "./phoneRoute";
 import { logCloud, phoneBetaAddStatement, reportCloudFailure, type CloudEnv } from "./store";
 
 /** Clerk's lookups wait this long. */
@@ -124,11 +125,12 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
         logCloud("cloud.phone_beta_pending_removed");
         return json({ ok: true, removed: [], pending: true });
       }
-      // A waiting email keeps its provider lock until its account appears (`phoneBetaAddStatement`).
+      // A waiting email keeps its provider until its account appears (`phoneBetaAddStatement`). `both` is
+      // stored as the word, so it replaces an older lock on that account's row (null there keeps it).
       await env.DB.prepare(provider === undefined
         ? "insert into cloud_phone_beta_pending (email, added_at) values (?, ?) on conflict(email) do nothing"
         : "insert into cloud_phone_beta_pending (email, added_at, provider) values (?, ?, ?) on conflict(email) do update set provider = excluded.provider")
-        .bind(...(provider === undefined ? [typedEmail, now] : [typedEmail, now, provider])).run();
+        .bind(...(provider === undefined ? [typedEmail, now] : [typedEmail, now, provider ?? "both"])).run();
       logCloud("cloud.phone_beta_pending_added", provider !== undefined ? { provider: provider ?? "both" } : {});
       return json({ ok: true, added: [], pending: true, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });
     }

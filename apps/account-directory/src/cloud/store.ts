@@ -1259,7 +1259,7 @@ export async function loadAccount(env: CloudEnv, userId: string, now: number): P
 export function phoneBetaAddStatement(db: D1Database, userId: string, email: string | null, now: number, { whilePending = false }: { whilePending?: boolean } = {}): D1PreparedStatement {
   const upsert = "on conflict(user_id) do update set email = coalesce(excluded.email, cloud_phone_beta.email)";
   return whilePending
-    // The waiting email's provider lock comes along (an older lock on the row stays when it has none).
+    // The waiting email's provider comes along (`both` too; an older lock on the row stays when it has none).
     ? db.prepare(`insert into cloud_phone_beta (user_id, email, added_at, provider) select ?, ?, ?, provider from cloud_phone_beta_pending where email = ? ${upsert}, provider = coalesce(excluded.provider, cloud_phone_beta.provider)`)
       .bind(userId, email, now, email)
     : db.prepare(`insert into cloud_phone_beta (user_id, email, added_at) values (?, ?, ?) ${upsert}`).bind(userId, email, now);

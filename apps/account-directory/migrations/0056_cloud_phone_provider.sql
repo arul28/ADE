@@ -1,4 +1,4 @@
--- The ADE Cloud iPhone on more than one provider (src/cloud/phones.ts,
+-- The ADE Cloud iPhone on more than one provider (src/cloud/phones.ts, phoneRoute.ts,
 -- phoneRevyl.ts). Additive only: apply before the Worker that reads it.
 
 -- Who runs each phone (`nomac` or `revyl`), and the provider's own second id
@@ -16,7 +16,7 @@ alter table cloud_phones add column build_started_at integer;
 alter table cloud_phones add column build_job text;
 
 -- The owner's lock of a tester on the beta list to one provider (`nomac` or
--- `revyl`; null: both, through the router), and the same for an email still
+-- `revyl`; null or `both`: the router), and the same for an email still
 -- waiting for its account, which carries it over when the account appears.
 alter table cloud_phone_beta add column provider text;
 alter table cloud_phone_beta_pending add column provider text;

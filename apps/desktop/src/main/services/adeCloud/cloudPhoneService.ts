@@ -28,6 +28,8 @@ import {
   CLOUD_PHONE_ABILITY_WORDS,
   CLOUD_PHONE_PROVIDER_ABILITIES,
   cloudPhoneAbilitiesOf,
+  cloudPhoneLacks,
+  isCloudPhoneAbility,
   type CloudPhoneAbility,
   type CloudPhoneDevice,
   type CloudPhoneMinutes,
@@ -39,10 +41,10 @@ import {
 import type { CloudProvider } from "./cloudProvider";
 import { CloudProviderError } from "./cloudProvider";
 import {
-  CLOUD_PHONE_ACTION_ABILITY,
   CLOUD_PHONE_AGENT_ACTIONS,
-  CLOUD_PHONE_CONTROL_ABILITY,
   CLOUD_PHONE_DEVICES,
+  cloudPhoneActionAbility,
+  cloudPhoneControlAbility,
   isCloudPhoneDevice,
   type CloudPhoneStatusView,
 } from "../../../shared/cloudPhone";
@@ -376,7 +378,6 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     revyl: createRevylDriver(driverContext),
   };
   const driverOf = (phone: Held): CloudPhoneDriver => drivers[phone.provider];
-  const hasAbility = (phone: Held, ability: CloudPhoneAbility): boolean => CLOUD_PHONE_PROVIDER_ABILITIES[phone.provider].includes(ability);
 
   /**
    * The account signed in now. After a sign-out or a switch to another account
@@ -489,7 +490,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     const account = await currentAccount();
     // The running phone can't do what is needed: said before any call (the server says the same of one started elsewhere).
     const able = (phone: Held): Held => {
-      const lacked = needs.find((need) => !hasAbility(phone, need));
+      const [lacked] = cloudPhoneLacks(phone.provider, needs);
       if (lacked) throw new CloudPhoneError(lacksSentence(lacked), "phone_lacks");
       return phone;
     };
@@ -516,10 +517,12 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     if (!starting) {
       const starter = (async () => {
         const client = await provider();
-        const start = await client.phoneStart!({ ...(device ? { device } : {}), ...(needs.length ? { needs } : {}) }).catch((error: unknown) => {
+        const start = await client.phoneStart!({ ...(device ? { device } : {}), ...(needs.length ? { needs } : {}) }).catch(async (error: unknown) => {
           // The account's running phone (started on another machine) lacks a need: the agent decides to stop it.
-          if (error instanceof CloudProviderError && error.code === "phone_lacks" && needs[0]) throw new CloudPhoneError(lacksSentence(needs[0]), "phone_lacks");
-          throw error;
+          if (!(error instanceof CloudProviderError) || error.code !== "phone_lacks" || !needs[0]) throw error;
+          // Name the need it lacks, read from the running phone (the first need when it can't be read).
+          const running = await client.phoneState!().then((state) => state.phone?.provider, () => undefined);
+          throw new CloudPhoneError(lacksSentence((running && cloudPhoneLacks(running, needs)[0]) || needs[0]), "phone_lacks");
         });
         const previous = liveRun;
         const phone = hold(start, client, chatSessionId);
@@ -638,7 +641,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const lacks = CLOUD_PHONE_ABILITIES.filter((ability) => !abilities.includes(ability));
       // An action that needs an ability the phone lacks is left out, not discovered by a failed call.
       const capabilities = state.access !== "on" ? [] : CLOUD_PHONE_AGENT_ACTIONS.filter((action) => {
-        const needed = (CLOUD_PHONE_ACTION_ABILITY as Record<string, CloudPhoneAbility | undefined>)[action];
+        const needed = cloudPhoneActionAbility(action);
         return !needed || abilities.includes(needed);
       });
       return { ...state, phone: withoutProvider(state.phone), abilities, lacks: state.access === "on" ? lacks : [], capabilities, supported: state.access === "on", reason, lastActivityAt };
@@ -651,10 +654,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         throw new CloudPhoneError(`device is ${CLOUD_PHONE_DEVICES.join(", ")}.`, "bad_request");
       }
       const asked = Array.isArray(args?.needs) ? args.needs : typeof args?.needs === "string" ? args.needs.split(/[,\s]+/).filter(Boolean) : [];
-      const needs = cloudPhoneAbilitiesOf(asked);
-      const unknown = asked.filter((name) => !needs.includes(name as CloudPhoneAbility));
-      if (unknown.length) throw new CloudPhoneError(`needs is a list of ${CLOUD_PHONE_ABILITIES.join(", ")}.`, "bad_request");
-      const phone = await ensure({ device, chatSessionId: cloudPhoneCallerChat(args), needs });
+      if (!asked.every(isCloudPhoneAbility)) throw new CloudPhoneError(`needs is a list of ${CLOUD_PHONE_ABILITIES.join(", ")}.`, "bad_request");
+      const phone = await ensure({ device, chatSessionId: cloudPhoneCallerChat(args), needs: cloudPhoneAbilitiesOf(asked) });
       const state = await (await provider()).phoneState!();
       return { phone: withoutProvider(state.phone), minutes: state.minutes ?? phone.minutes, abilities: [...CLOUD_PHONE_PROVIDER_ABILITIES[phone.provider]] };
     },
@@ -848,8 +849,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       if (!action) throw new CloudPhoneError("action is required (launch, terminate, open_url, location, push, appearance, …).", "bad_request");
       const value = textArg(args?.value, "value");
       const app = textArg(args?.app, "app", 300);
-      // A launch with arguments passes them as env values, which needs that ability.
-      const need = Object.hasOwn(CLOUD_PHONE_CONTROL_ABILITY, action) ? CLOUD_PHONE_CONTROL_ABILITY[action] : action === "launch" && value ? "launchEnv" : undefined;
+      const need = cloudPhoneControlAbility(action, value);
       return withPhone(cloudPhoneCallerChat(args), (phone, driver) => driver.control(phone, { action, ...(value !== undefined ? { value } : {}), ...(app ? { app } : {}) }), need);
     },
 

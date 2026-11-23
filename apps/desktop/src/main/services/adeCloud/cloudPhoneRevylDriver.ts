@@ -58,6 +58,8 @@ const ORIENTATIONS = new Set(["portrait", "landscape"]);
 const PERF_SECONDS = 5;
 /** One read of the performance capture takes this many samples at most (two a second). */
 const PERF_READ_LIMIT = 5_000;
+/** Pages read to reach the capture's end: a phone's longest run fits in 3. */
+const PERF_PAGES_MAX = 4;
 
 const parseJson = (raw: Raw): Record<string, unknown> | null => {
   try {
@@ -576,9 +578,15 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
     async perf(phone, input) {
       const seconds = input.seconds ?? PERF_SECONDS;
       const cmd = command();
-      // The capture's cursor is an offset from the phone's start: read to its end, then what came in over `seconds`.
-      const first = await callJson(phone, "proxy.performance_metrics", undefined, { cmd, query: { limit: String(PERF_READ_LIMIT) } });
-      const cursor = typeof first.next_cursor === "string" ? first.next_cursor : null;
+      // The capture's cursor is an offset from the phone's start: page to its end (2 hours at 2 a second is
+      // under 3 pages), then read what came in over `seconds`.
+      let cursor: string | null = null;
+      for (let page = 0; page < PERF_PAGES_MAX; page += 1) {
+        const read = await callJson(phone, "proxy.performance_metrics", undefined, { cmd, query: { limit: String(PERF_READ_LIMIT), ...(cursor ? { cursor } : {}) } });
+        const next = typeof read.next_cursor === "string" ? read.next_cursor : null;
+        if (next) cursor = next;
+        if (!next || !Array.isArray(read.items) || read.items.length < PERF_READ_LIMIT) break;
+      }
       await sleep(seconds * 1_000);
       const body = await callJson(phone, "proxy.performance_metrics", undefined, { query: { limit: String(PERF_READ_LIMIT), ...(cursor ? { cursor } : {}) } });
       return textAnswer(perfText(body, seconds));

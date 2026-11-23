@@ -3017,6 +3017,10 @@ export const CLOUD_PHONE_PROVIDER_ABILITIES: Readonly<Record<CloudPhoneProvider,
   revyl: ["perf", "shake", "orientation"],
 };
 
+/** What of `needs` the provider's phone can't do. */
+export const cloudPhoneLacks = (provider: CloudPhoneProvider, needs: readonly CloudPhoneAbility[]): CloudPhoneAbility[] =>
+  needs.filter((need) => !CLOUD_PHONE_PROVIDER_ABILITIES[provider].includes(need));
+
 /** Each ability as a person reads it after "can" / "can't": "This cloud iPhone can't run an app's tests." */
 export const CLOUD_PHONE_ABILITY_WORDS: Readonly<Record<CloudPhoneAbility, string>> = {
   tests: "run an app's tests",
@@ -3036,9 +3040,12 @@ export const CLOUD_PHONE_ABILITY_WORDS: Readonly<Record<CloudPhoneAbility, strin
  * provider's name: "NoMac's simulator" and "Revyl" read "the cloud iPhone".
  */
 export function withoutPhoneProviderNames(text: string): string {
+  // A link to a provider's own site goes; a name inside a person's own identifier
+  // (`com.revyl.demo`, `~/nomac-app`, `revyl_test`) is theirs and stays.
   return text
-    .replace(/\b(?:NoMac|Revyl)(?:'s)?\s+(?:phones?|simulators?|devices?|sessions?|servers?|service)\b/gi, "the cloud iPhone")
-    .replace(/\b(?:NoMac|Revyl)\b/gi, "the cloud iPhone");
+    .replace(/\b(?:https?:\/\/)?(?:[\w-]+\.)*(?:nomac\.app|revyl\.(?:ai|com|dev|io))\b\S*/gi, "(link removed)")
+    .replace(/(?:\bthe\s+)?(?<![./\\\w-])(?:NoMac|Revyl)(?:'s)?\s+(?:phones?|simulators?|devices?|sessions?|servers?|service)\b/gi, "the cloud iPhone")
+    .replace(/(?:\bthe\s+)?(?<![./\\\w-])(?:NoMac|Revyl)(?![\w/\\-])/gi, "the cloud iPhone");
 }
 
 /** The abilities a list names (unknown names dropped, each once). */

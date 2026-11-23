@@ -73,17 +73,13 @@ export const CLOUD_PHONE_BUILD_TIMEOUT_MS = 32 * 60_000;
 /** Any other phone call, which may first wait up to 6 minutes for a free phone. */
 export const CLOUD_PHONE_CALL_TIMEOUT_MS = 7 * 60_000;
 
-/**
- * The action that needs each ability, where one does (`control` actions
- * need theirs too: `CLOUD_PHONE_CONTROL_ABILITY`).
- */
-export const CLOUD_PHONE_ACTION_ABILITY: Readonly<Partial<Record<(typeof CLOUD_PHONE_SPEND_ACTIONS)[number], CloudPhoneAbility>>> = {
-  runTests: "tests",
-  perf: "perf",
-};
+/** The action that needs an ability, where one does (`runTests`: `tests`). */
+export function cloudPhoneActionAbility(action: string): CloudPhoneAbility | undefined {
+  return action === "runTests" ? "tests" : action === "perf" ? "perf" : undefined;
+}
 
 /** The `control` actions only some cloud iPhones do, and the ability each needs. */
-export const CLOUD_PHONE_CONTROL_ABILITY: Readonly<Record<string, CloudPhoneAbility>> = {
+const CONTROL_ABILITY = {
   uninstall: "uninstall",
   storekit: "storekit",
   locale: "locale",
@@ -91,7 +87,13 @@ export const CLOUD_PHONE_CONTROL_ABILITY: Readonly<Record<string, CloudPhoneAbil
   status_bar: "statusBar",
   shake: "shake",
   orientation: "orientation",
-};
+} as const satisfies Readonly<Record<string, CloudPhoneAbility>>;
+
+/** The ability a `control` call needs, if any: a launch with a value passes it as env values (`launchEnv`). */
+export function cloudPhoneControlAbility(action: string, value: unknown): CloudPhoneAbility | undefined {
+  if (Object.hasOwn(CONTROL_ABILITY, action)) return CONTROL_ABILITY[action as keyof typeof CONTROL_ABILITY];
+  return action === "launch" && value ? "launchEnv" : undefined;
+}
 
 /**
  * `cloud_phone.getStatus` as the tools pane and agents read it

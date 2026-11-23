@@ -536,7 +536,8 @@ variant only.
 An iOS Simulator in the cloud, one per account, run by NoMac or Revyl and
 driven from any machine with `ade apple` (`src/cloud/phones.ts` for the rows,
 minutes, access and routes; one provider record each in `phoneNomac.ts` and
-`phoneRevyl.ts` behind `phoneProvider.ts`; Revyl's viewer page in
+`phoneRevyl.ts` behind `phoneProvider.ts`; which provider (lock, router,
+failover) in `phoneRoute.ts`; Revyl's viewer page in
 `phoneViewerPage.ts`; the owner's beta list in `phoneBeta.ts`; migrations `0047_cloud_phone_beta.sql`,
 `0048_cloud_phone_usage.sql` and `0056_cloud_phone_provider.sql`, shapes in
 `contract.ts`). The owner sets each beta email to `nomac` or `revyl` (a lock:

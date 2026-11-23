@@ -105,7 +105,7 @@
   // stopped. A beta row's provider locks that tester to one provider; with
   // none (`both`), the router starts the phone on var CLOUD_PHONE_PROVIDER
   // (`nomac` or `revyl`; NoMac when unset), on the other when that one
-  // refuses, and on the one that has an ability the start needs (phones.ts
+  // refuses, and on the one that has an ability the start needs (phoneRoute.ts
   // `routeOf`). With neither provider able to start phones, the phone reads
   // `off`.
   //
@@ -335,6 +335,9 @@
         "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1UdF4HPWulQjqSYPydFHhXGd",
         "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
         "CLOUD_PHONE_ACCESS": "beta",
+        // Revyl may start phones (owner's yes, 2026-11-23). Who gets it is the
+        // beta list's per-email provider: a `nomac` lock never reaches Revyl.
+        "CLOUD_PHONE_REVYL": "on",
         // Sponsored cards and the Index (src/cloud/gravity.ts): off, and test
         // ads, until the owner turns them on. GRAVITY_API_KEY is a secret.
         "GRAVITY_ADS": "off",

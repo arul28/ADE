@@ -11,7 +11,8 @@ from a chat's Tools menu. The launch plan is `docs/plans/ade-cloud-iphone-launch
 
 Server: `apps/account-directory/src/cloud/phones.ts` (routes, minutes, the
 guard), one record per provider behind `phoneProvider.ts` (`phoneNomac.ts`,
-`phoneRevyl.ts` for Revyl's workspaces and calls), `phoneViewerPage.ts` (the
+`phoneRevyl.ts` for Revyl's workspaces and calls), `phoneRoute.ts` (which
+provider: the lock, the router, failover), `phoneViewerPage.ts` (the
 viewer page for Revyl's stream), `phoneBeta.ts` (the owner's beta list) and
 `phoneBilling.ts` (extra minutes to Stripe). Brain:
 `apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts`, with one driver
@@ -139,8 +140,8 @@ both used, without changing anything an agent or a person sees.
   route (`lock`, `default`, `need`, `failover`) and provider go in the
   `cloud.phone_started` log line and PostHog's `ade_cloud_phone`. Each phone
   row keeps its `provider`, so a running phone is never switched, and a Revyl
-  phone is still read and stopped with the switch off. `routeOf`
-  (`phones.ts`) owns the order.
+  phone is still read and stopped with the switch off. `phoneRoute.ts`
+  owns the order (`routeOf`) and the failover (`startOnRoute`).
 - **Abilities, not names.** Agents and people never see a provider's name:
   every answer and error passes through `withoutPhoneProviderNames`. What
   differs is listed as abilities (`CLOUD_PHONE_PROVIDER_ABILITIES` in
