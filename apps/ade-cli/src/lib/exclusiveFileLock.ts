@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { computerBootedAtMs, processStartTimeReader } from "../../../desktop/src/main/services/processes/processStartTime";
 
 /**
  * Cross-process mutual exclusion over one lock file.
@@ -66,6 +67,27 @@ function processExists(pid: number): boolean {
   }
 }
 
+/** `ps lstart` is whole-second; mirrors the 2 s window the sync-host singleton uses. */
+const LOCK_OWNER_START_TOLERANCE_MS = 2_000;
+/** A record written before this boot cannot have a live writer when the start time is unavailable. */
+const LOCK_WRITER_BOOT_SLACK_MS = 60_000;
+
+/**
+ * Whether the recorded pid is still the process that wrote the lock. A recycled
+ * pid belongs to a process that started after the write, so its start time is
+ * later than the lock's; a genuine holder started before writing it.
+ */
+function lockOwnerStillRuns(
+  pid: number,
+  writtenAtMs: number,
+  startTimeOf: (pid: number) => number | null,
+): boolean {
+  if (!processExists(pid)) return false;
+  const startedAtMs = startTimeOf(pid);
+  if (startedAtMs != null) return startedAtMs - writtenAtMs <= LOCK_OWNER_START_TOLERANCE_MS;
+  return writtenAtMs > computerBootedAtMs() - LOCK_WRITER_BOOT_SLACK_MS;
+}
+
 // A contended `open(..., "wx")` reports EEXIST -- on Windows too.
 //
 // This branch used to also treat EPERM/EACCES as contention, on the theory that
@@ -94,13 +116,19 @@ function isExclusiveFileLockContention(error: unknown): boolean {
  * process after the holder crashed, and a lock held only for a quick write
  * is never that old.
  */
-function unlinkExclusiveFileLockIfStale(lockPath: string, staleAfterMs?: number): boolean {
+function unlinkExclusiveFileLockIfStale(
+  lockPath: string,
+  staleAfterMs?: number,
+  startTimeOf: (pid: number) => number | null = () => null,
+): boolean {
   try {
     const stat = fs.statSync(lockPath);
     const ageMs = Date.now() - stat.mtimeMs;
     if (staleAfterMs === undefined || ageMs <= staleAfterMs) {
       const owner = readExclusiveFileLockOwner(lockPath);
-      if (owner.pid != null && processExists(owner.pid)) return false;
+      // The lock file is written once and never heartbeated, so its mtime is
+      // the write time.
+      if (owner.pid != null && lockOwnerStillRuns(owner.pid, stat.mtimeMs, startTimeOf)) return false;
       if (owner.pid == null && ageMs <= 30_000) return false;
     }
     fs.unlinkSync(lockPath);
@@ -138,6 +166,7 @@ function tryClaimExclusiveFileLock(
   owner: ExclusiveFileLockOwner,
   deadline: number,
   options: ExclusiveFileLockOptions,
+  startTimeOf: (pid: number) => number | null,
 ): number | null {
   let created: number | null = null;
   while (created == null) {
@@ -146,7 +175,7 @@ function tryClaimExclusiveFileLock(
     } catch (error) {
       if (!isExclusiveFileLockContention(error)) throw error;
       // The holder is gone: the lock is free now, so claim it right away.
-      if (unlinkExclusiveFileLockIfStale(lockPath, options.staleAfterMs)) continue;
+      if (unlinkExclusiveFileLockIfStale(lockPath, options.staleAfterMs, startTimeOf)) continue;
       if (Date.now() >= deadline) {
         throw new ExclusiveFileLockTimeoutError(
           `Timed out waiting for ${options.label} at ${lockPath}.`,
@@ -188,10 +217,11 @@ export async function withExclusiveFileLock<T>(
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + options.waitMs;
   const owner = createExclusiveFileLockOwner();
-  let fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options);
+  const startTimeOf = processStartTimeReader();
+  let fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options, startTimeOf);
   while (fd == null) {
     await new Promise((resolve) => setTimeout(resolve, 100));
-    fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options);
+    fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options, startTimeOf);
   }
   try {
     return await task();
@@ -216,10 +246,11 @@ export function withExclusiveFileLockSync<T>(
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + options.waitMs;
   const owner = createExclusiveFileLockOwner();
-  let fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options);
+  const startTimeOf = processStartTimeReader();
+  let fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options, startTimeOf);
   while (fd == null) {
     Atomics.wait(syncSleepCell, 0, 0, SYNC_RETRY_MS);
-    fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options);
+    fd = tryClaimExclusiveFileLock(lockPath, owner, deadline, options, startTimeOf);
   }
   try {
     return task();

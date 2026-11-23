@@ -48,6 +48,23 @@ describe("withExclusiveFileLock", () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
+  it("reaps a lock whose recorded pid was reused by a live process", async () => {
+    const lockPath = tempLockPath();
+    // The pid is alive, but it cannot be the writer: the lock predates this
+    // boot, so whichever identity rule answers, the holder is gone.
+    fs.writeFileSync(lockPath, JSON.stringify({ id: "older-owner", pid: process.pid }));
+    const beforeBoot = new Date(Date.now() - os.uptime() * 1_000 - 120_000);
+    fs.utimesSync(lockPath, beforeBoot, beforeBoot);
+    let ran = false;
+
+    await withExclusiveFileLock(lockPath, async () => {
+      ran = true;
+    }, { waitMs: 1_000, label: "test lock" });
+
+    expect(ran).toBe(true);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
   it("gives up with its named timeout error, and never runs the task, when the holder outlasts the wait", async () => {
     const lockPath = tempLockPath();
     let release!: () => void;
