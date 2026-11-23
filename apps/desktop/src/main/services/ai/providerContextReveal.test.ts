@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveWithinAllowedDirs } from "../ipc/allowedRendererPath";
+import { symlinksSupported } from "../../../test/symlinks";
 import { providerContextRevealRoots, resolveProviderContextRevealTarget } from "./providerContextReveal";
 
 let tempRoot: string;
@@ -70,7 +71,7 @@ describe("providerContextRevealRoots", () => {
     expect(() => resolveWithinAllowedDirs(roots(), file)).toThrow(/outside allowed directories/);
   });
 
-  it("refuses a link inside an allowed folder whose target is outside every root", () => {
+  it.skipIf(!symlinksSupported)("refuses a link inside an allowed folder whose target is outside every root", () => {
     const secret = write(path.join(home, ".ssh", "id_ed25519"));
     const link = path.join(home, ".claude", "skills", "leak");
     fs.mkdirSync(path.dirname(link), { recursive: true });
@@ -85,7 +86,8 @@ describe("resolveProviderContextRevealTarget", () => {
     const dotfiles = write(path.join(tempRoot, "dotfiles", "lint", "SKILL.md"));
     const link = path.join(home, ".claude", "skills", "lint");
     fs.mkdirSync(path.dirname(link), { recursive: true });
-    fs.symlinkSync(path.dirname(dotfiles), link);
+    // A directory link works on Windows without Developer Mode as a junction.
+    fs.symlinkSync(path.resolve(path.dirname(dotfiles)), link, process.platform === "win32" ? "junction" : "dir");
     expect(() => resolveWithinAllowedDirs(roots(), link)).toThrow(/outside allowed directories/);
     expect(resolveProviderContextRevealTarget(roots(), link)).toBe(link);
   });
@@ -93,7 +95,7 @@ describe("resolveProviderContextRevealTarget", () => {
   it("refuses a path that passes through a symlinked folder", () => {
     write(path.join(home, ".ssh", "id_ed25519"));
     const linkedDir = path.join(project, "keys");
-    fs.symlinkSync(path.join(home, ".ssh"), linkedDir);
+    fs.symlinkSync(path.resolve(home, ".ssh"), linkedDir, process.platform === "win32" ? "junction" : "dir");
     const through = path.join(linkedDir, "id_ed25519");
     expect(fs.realpathSync(through)).toBe(path.join(home, ".ssh", "id_ed25519"));
     expect(() => resolveProviderContextRevealTarget(roots(), through)).toThrow(/outside allowed directories/);

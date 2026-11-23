@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { symlinksSupported } from "../../../test/symlinks";
 import type { BuiltInBrowserNetworkLogEntry } from "../../../shared/types";
 import {
   resolveBuiltInBrowserEmulation,
@@ -296,7 +297,7 @@ describe("built-in browser upload roots", () => {
 
   // Regression: a symlink an agent can write inside the project root used to
   // pass the lexical containment check and upload its target to the page.
-  it("rejects a symlink inside an allowed root that points outside it", () => {
+  it.skipIf(!symlinksSupported)("rejects a symlink inside an allowed root that points outside it", () => {
     const link = path.join(projectRoot, ".ade", "tmp", "report.txt");
     fs.symlinkSync(path.join(sandbox, "secrets", "id_ed25519"), link);
     try {

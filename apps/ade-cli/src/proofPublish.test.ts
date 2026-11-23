@@ -10,6 +10,7 @@ import {
   publishProofToPullRequest,
 } from "./proofPublish";
 import { resolveStoredProofFile, type PublishableArtifact } from "../../desktop/src/main/services/prs/prBodyProofStaging";
+import { symlinksSupported } from "./test/symlinks";
 
 type Run = typeof spawnSync;
 type RunResult = { status: number; stdout?: string; stderr?: string };
@@ -69,7 +70,7 @@ describe("resolveStoredProofFile", () => {
       .toBe(fs.realpathSync(path.join(root, ".ade", "artifacts", "pic.png")));
   });
 
-  it("refuses a symlink inside the store that points outside it", () => {
+  it.skipIf(!symlinksSupported)("refuses a symlink inside the store that points outside it", () => {
     const root = project();
     const outside = path.join(root, "secret.png");
     fs.writeFileSync(outside, "secret");

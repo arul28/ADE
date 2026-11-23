@@ -75,7 +75,8 @@ describe("pruneAgentObservationCacheRoot", () => {
     const root = scratchDir();
     const outside = scratchDir();
     writeObservation(outside, "precious", 60 * 60_000);
-    fs.symlinkSync(outside, path.join(root, "session-link"));
+    // A directory link works on Windows without Developer Mode as a junction.
+    fs.symlinkSync(path.resolve(outside), path.join(root, "session-link"), process.platform === "win32" ? "junction" : "dir");
 
     await pruneAgentObservationCacheRoot(root, 30 * 60_000);
 
