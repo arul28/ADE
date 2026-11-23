@@ -25,6 +25,7 @@ import type {
   ChatSourceRef,
   ChatSourceRefKind,
 } from "./types";
+import { cutTextAtCodePoint } from "./codePointText";
 
 export type ChatSourceKind = ChatSourceRefKind | "tool";
 
@@ -123,7 +124,7 @@ function text(value: unknown): string | null {
 }
 
 function clip(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+  return value.length > max ? `${cutTextAtCodePoint(value, max - 1)}…` : value;
 }
 
 function positiveInt(value: unknown): number | undefined {

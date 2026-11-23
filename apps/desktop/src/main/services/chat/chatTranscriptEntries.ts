@@ -9,6 +9,7 @@ import type {
 import { canonicalSteerRows } from "../../../shared/chatTranscript";
 import { canCoalesceBufferedAssistantText, type BufferedAssistantText } from "./chatTextBatching";
 import { redactOutgoingChatText } from "../../utils/redaction";
+import { cutTextAtCodePoint } from "../../../shared/codePointText";
 
 /**
  * Flatten a transcript envelope stream into role-tagged entries.
@@ -398,7 +399,7 @@ export function chatLifecycleEvents(envelopes: readonly AgentChatEventEnvelope[]
     } else if (event.type === "pending_input_resolved") {
       add(entry, "input_resolved", event.turnId ? { turnId: event.turnId } : {});
     } else if (event.type === "error") {
-      add(entry, "error", { ...(event.turnId ? { turnId: event.turnId } : {}), message: redactOutgoingChatText(event.message).slice(0, 500) });
+      add(entry, "error", { ...(event.turnId ? { turnId: event.turnId } : {}), message: cutTextAtCodePoint(redactOutgoingChatText(event.message), 500) });
     }
   }
   return events;
