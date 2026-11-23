@@ -140,7 +140,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     recentUse: { days: RECENT_USE_DAYS, usedMilli: recentMilli },
     dueForDeletion: due,
     deletedInstanceIds,
-    // Small's rate is the account's own: half a Medium-hour on Free with no sponsored cards (`free_small_needs_ads`).
+    // Small's rate is the account's own: half a Medium-hour on Free with no sponsored cards (`gravity.ts` `smallUsesNoHours`).
     catalog: cloudCatalog(offers, shownPlan, { smallUsesHours: !(await smallUsesNoHours(env, account)) }),
     billing: {
       periodStart: account.period_start,

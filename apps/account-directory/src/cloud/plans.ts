@@ -48,7 +48,7 @@ export const SMALL_SHAPE = { cpu: 2, memoryGb: 4 } as const;
 
 /**
  * Small's rate on Free while the account shows no sponsored cards and the
- * `free_small_needs_ads` setting is on (`gravity.ts` `smallUsesNoHours`):
+ * ad switch reaches the account (`gravity.ts` `smallUsesNoHours`):
  * half a Medium-hour an hour, as Small costs half of a Medium (owner, 2026-11-23).
  */
 export const SMALL_NO_CARDS_RATE_MILLI = 500;
@@ -189,7 +189,7 @@ export function cloudCatalog(offers: CloudOffers, planId: CloudPlanId = "free", 
   return {
     sizes: CLOUD_SIZES.map(({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb }) => ({
       type, cpu, memoryGb, tier, label, diskMaxGb,
-      // Free's Small with no sponsored cards uses hours (`free_small_needs_ads`): clients show and count it so.
+      // Free's Small with no sponsored cards uses hours (`gravity.ts` `smallUsesNoHours`): clients show and count it so.
       multiplierMilli: tier === "small" && smallUsesHours ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli,
     })),
     plans: {

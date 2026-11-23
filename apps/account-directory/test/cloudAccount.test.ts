@@ -5195,14 +5195,14 @@ describe("sponsored cards", () => {
     setting("gravity_ads", "off");
     expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toBeUndefined();
     setting("gravity_ads", "all");
-    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "granted", test: true });
+    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "granted", test: true, smallNeedsCards: true });
     // A no on one machine is the answer on every machine.
     expect(await (await send(OWNER, "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE })).json()).toEqual({ ok: true });
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     expect(harness.row("select consent, email_hash from cloud_sponsored_consent where user_id = ?", OWNER)).toEqual({ consent: "declined", email_hash: null });
     // A no keeps nothing of where the person watched from.
     expect(harness.rows("select * from cloud_sponsored_viewers")).toEqual([]);
-    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "declined", test: true });
+    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "declined", test: true, smallNeedsCards: true });
   });
 
   const owner = (path: string, body: Row, bearer = "owner-token-test") => handleCloudRequest(new Request(`https://directory.test/cloud/owner/${path}`, {
@@ -5237,10 +5237,10 @@ describe("sponsored cards", () => {
     expect(harness.rows("select action from cloud_owner_log where user_id = ? order by id", OWNER).map((row) => row.action)).toEqual(["account_test", "account_test_ended"]);
   });
 
-  it("with Free needing cards for Small, a no runs Small at half a Medium-hour, a yes at none, each charged for its own stretch; an older no is asked again", async () => {
+  it("where ads reach Free, a no runs Small at half a Medium-hour, a yes at none, each charged for its own stretch; an older no is asked again; ads off frees Small", async () => {
     harness.env.CLOUD_OWNER_TOKEN = "owner-token-test";
     harness.exec("update cloud_computers set multiplier_milli = 0 where instance_id = ?", INSTANCE);
-    expect((await owner("settings", { key: "free_small_needs_ads", value: "on" })).status).toBe(200);
+    expect((await owner("settings", { key: "gravity_ads", value: "all" })).status).toBe(200);
     // The yes from before keeps Small free.
     expect(computer(harness).multiplier_milli).toBe(0);
     const used = usedMilli(harness);
@@ -5248,13 +5248,30 @@ describe("sponsored cards", () => {
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     expect(computer(harness).multiplier_milli).toBe(500);
     // A yes from where Gravity shows no cards would be unlimited Small for nothing: refused.
-    const fromFrance = new Request("https://directory.test/cloud/sponsored/consent", {
-      method: "PUT",
-      headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json" },
-      body: JSON.stringify({ consent: "granted" }),
-    });
-    Object.defineProperty(fromFrance, "cf", { value: { country: "FR" } });
-    expect((await handleCloudRequest(fromFrance, harness.env)).status).toBe(403);
+    const fromBrazil = (method: string, path: string, body?: Row) => {
+      const request = new Request(`https://directory.test${path}`, {
+        method,
+        headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json" },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      Object.defineProperty(request, "cf", { value: { country: "BR" } });
+      return handleCloudRequest(request, harness.env);
+    };
+    expect((await fromBrazil("PUT", "/cloud/sponsored/consent", { consent: "granted" })).status).toBe(403);
+    expect(computer(harness).multiplier_milli).toBe(500);
+    // A tester sees Gravity's test ads from anywhere, so its cards show abroad; never with real ads.
+    harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
+    const abroad = async () => ((await (await fromBrazil("GET", "/cloud/account")).json()) as CloudAccountState).sponsored?.ads;
+    expect(await abroad()).toBe(true);
+    // Its yes from abroad counts too, and frees Small; with real ads it is refused.
+    expect((await fromBrazil("PUT", "/cloud/sponsored/consent", { consent: "granted" })).status).toBe(200);
+    expect(computer(harness).multiplier_milli).toBe(0);
+    expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
+    goLive();
+    expect(await abroad()).toBe(false);
+    expect((await fromBrazil("PUT", "/cloud/sponsored/consent", { consent: "granted" })).status).toBe(403);
+    setting("gravity_live", "off");
+    harness.exec("delete from cloud_sponsored_testers where user_id = ?", OWNER);
     expect(computer(harness).multiplier_milli).toBe(500);
     const declined = await accountState();
     expect([declined.sponsored?.smallNeedsCards, declined.catalog.sizes.find((size) => size.tier === "small")?.multiplierMilli]).toEqual([true, 500]);
@@ -5268,9 +5285,9 @@ describe("sponsored cards", () => {
     // A no from before the rule was a different deal: the question comes back.
     harness.exec("update cloud_sponsored_consent set consent = 'declined', decided_at = ? where user_id = ?", NOW - DAY, OWNER);
     expect((await accountState()).sponsored?.consent).toBeNull();
-    // Paid plans and accounts the ad switch doesn't reach keep Small free; turning the rule off frees every Small at once.
+    // Paid plans and accounts the ad switch doesn't reach keep Small free; turning ads off frees every Small at once.
     harness.exec("update cloud_computers set multiplier_milli = 500 where instance_id = ?", INSTANCE);
-    expect((await owner("settings", { key: "free_small_needs_ads", value: "off" })).status).toBe(200);
+    expect((await owner("settings", { key: "gravity_ads", value: "off" })).status).toBe(200);
     expect(computer(harness).multiplier_milli).toBe(0);
   });
 
@@ -5307,7 +5324,16 @@ describe("sponsored cards", () => {
     expect(await (await send(OWNER, "/cloud/sponsored/index", { instanceId: INSTANCE, chatId: "chat-child", need: "a hosted Postgres for this app" })).json()).toEqual({ pick: null, reason: "not_cloud" });
     expect(gravityCalls).toHaveLength(1);
 
+    // A tester watching from outside the countries gets no search before go-live either: Index picks are real.
+    setting("gravity_live", "off");
+    setting("gravity_ads", "testers");
+    harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
+    harness.exec("update cloud_sponsored_viewers set country = 'BR' where user_id = ?", OWNER);
+    expect(await (await index()).json()).toEqual({ pick: null, reason: "country" });
+    expect(gravityCalls).toHaveLength(1);
+
     // Ten minutes after the person last looked, nobody is watching.
+    harness.exec("update cloud_sponsored_viewers set country = null where user_id = ?", OWNER);
     clock = NOW + 11 * 60_000;
     expect(await (await index()).json()).toEqual({ pick: null, reason: "nobody_watching" });
     expect(gravityCalls).toHaveLength(1);

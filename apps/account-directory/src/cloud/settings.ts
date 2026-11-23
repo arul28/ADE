@@ -14,8 +14,6 @@ export const CLOUD_SETTINGS = {
   gravity_ads: ["off", "testers", "all"],
   /** Real ads and real Index picks instead of Gravity's test ads; held under `GRAVITY_LIVE` (`1`). */
   gravity_live: ["off", "on"],
-  /** Free's Small computers use hours unless the account shows sponsored cards (`smallRate.ts`). */
-  free_small_needs_ads: ["off", "on"],
 } as const satisfies Record<string, readonly [string, ...string[]]>;
 
 export type CloudSettingKey = keyof typeof CLOUD_SETTINGS;

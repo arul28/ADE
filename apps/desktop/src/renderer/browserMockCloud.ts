@@ -609,7 +609,7 @@ export function applyBrowserMockCloud(ade: any): void {
   if (sponsoredParam === "ask" || sponsoredParam === "on" || sponsoredParam === "pick") {
     state = { ...state, sponsored: { ads: true, consent: sponsoredParam === "ask" ? null : "granted", test: true } };
   }
-  // `small`: the server's `free_small_needs_ads` rule on and no answer yet, so
+  // `small`: ads reach this Free account and it has no answer yet, so
   // Small uses hours (half a Medium-hour an hour) until the person says yes.
   const smallRate = (consent: CloudSponsoredConsent | null) => ({
     ...state.catalog,
