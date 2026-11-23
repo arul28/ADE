@@ -70,11 +70,16 @@ export function formatGb(mb: number): string {
 }
 
 /**
- * A Date shifted so its UTC fields read the current zone's wall clock. A
- * formatter pinned to `timeZone: "UTC"` then prints local time while still
- * following a system time-zone change; one built without a zone would keep
- * the zone it was constructed in for as long as it is cached.
+ * A Date whose UTC fields read the current zone's wall clock. A formatter
+ * pinned to `timeZone: "UTC"` then prints local time while still following a
+ * system time-zone change; one built without a zone would keep the zone it was
+ * constructed in for as long as it is cached. Built from the local calendar
+ * fields rather than an offset, so a historical sub-minute zone offset is not
+ * truncated by `getTimezoneOffset()`.
  */
 export function wallClockAsUtc(date: Date): Date {
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  const wallClock = new Date(0);
+  wallClock.setUTCFullYear(date.getFullYear(), date.getMonth(), date.getDate());
+  wallClock.setUTCHours(date.getHours(), date.getMinutes(), date.getSeconds(), date.getMilliseconds());
+  return wallClock;
 }
