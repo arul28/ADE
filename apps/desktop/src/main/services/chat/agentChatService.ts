@@ -38319,6 +38319,19 @@ export function createAgentChatService(args: {
           managed.runtimeInvalidated = false;
           managed.acpReasoningEffortInvalidated = false;
           managed.seededAcpSessionId = runtime.session.sessionId;
+          // A stored session the agent no longer had: this new session holds
+          // none of the conversation ADE keeps. Re-stage the once-per-thread
+          // sections and say so, as Muse's replacement session does.
+          if (existingSessionId && runtime.session.entryPlan.mode === "new") {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "warning",
+              severity: "warning",
+              message: `${dialect.displayName} could not reopen this chat's session, so it started a new one. Earlier turns are summarized for it.`,
+            });
+            restageSectionsForNewProviderThread(managed);
+            refreshReconstructionContext(managed);
+          }
           managed.session.acpPermissionMode = permissionMode;
           if (runtime.session.systemPromptAppended) {
             markLaneGuidanceDelivered(managed, runtime.session.sessionId, runtime.session.systemPromptAppended);

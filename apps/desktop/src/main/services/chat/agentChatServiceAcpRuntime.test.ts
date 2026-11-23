@@ -8,9 +8,11 @@ import {
   createAcpSessionPool,
   createMockAcpAgent,
   createService,
+  flushAllQueuedTranscriptWrites,
   fs,
   getDynamicAcpModelDescriptors,
   getModelById,
+  installRealTranscriptParser,
   path,
   readPersistedChatState,
   respondWithSession,
@@ -961,6 +963,108 @@ describe("acp chat runtime", () => {
     });
     expect(resumeCalls[0]).toMatchObject({ sessionId: "acp-session-1" });
     expect(agent.methodsReceived()).not.toContain("session/new");
+  });
+
+  it("tells a replacement ACP session the conversation it lost", async () => {
+    // A chat restored from disk carries its transcript, but the agent may no
+    // longer have the stored session (the documented -32002 rejoin, or a
+    // Restart session). The host opens session/new while ADE keeps showing
+    // the old turns, so the next turn must carry them onto the replacement,
+    // and the chat must say so.
+    // A second service reads the restored transcript from disk, not this
+    // module's event buffer, so the real parser is part of the setup.
+    installRealTranscriptParser();
+    const agents: MockAcpAgent[] = [];
+    const spawnFreshAgent = () => {
+      const agent = createMockAcpAgent();
+      const index = agents.length;
+      agent.on("session/new", respondWithSession(index === 2 ? "acp-2" : "acp-1"));
+      agent.on("session/close", () => ({ result: {} }));
+      agent.on("session/set_config_option", () => ({ result: {} }));
+      agent.on("session/cancel", () => ({ result: {} }));
+      agent.on("session/prompt", async () => ({ result: { stopReason: "end_turn" } }));
+      if (index < 2) {
+        // The first two processes still have the session: the rejoin succeeds.
+        agent.on("session/resume", respondWithSession("acp-1"));
+        agent.on("session/load", respondWithSession("acp-1"));
+      } else {
+        // The third never persisted acp-1: the rejoin is refused as missing.
+        const missing = () => ({ error: { code: -32002, message: "session not found" } });
+        agent.on("session/resume", missing);
+        agent.on("session/load", missing);
+      }
+      agents.push(agent);
+      return agent.child;
+    };
+    const promptText = (agent: MockAcpAgent) => agent.received
+      .filter((entry) => entry.method === "session/prompt")
+      .map((entry) => (entry.params as { prompt: Array<{ type: string; text?: string }> }).prompt
+        .filter((block) => block.type === "text")
+        .map((block) => block.text ?? "")
+        .join("\n"))
+      .join("\n");
+    const doneOn = (events: AgentChatEventEnvelope[], sessionId: string) => events
+      .filter((envelope) => envelope.sessionId === sessionId && envelope.event.type === "done");
+
+    const firstPool = createAcpSessionPool();
+    acpTeardown.push(() => firstPool.disposeAll("test teardown"));
+    const firstEvents: AgentChatEventEnvelope[] = [];
+    const first = createService({
+      onEvent: (event: AgentChatEventEnvelope) => firstEvents.push(event),
+      acpSpawnOverride: spawnFreshAgent,
+      acpSessionPool: firstPool,
+    });
+    acpTeardown.push(() => { void first.service.disposeAll(); });
+    const session = await first.service.createSession({
+      laneId: "lane-1",
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    await first.service.sendMessage({
+      sessionId: session.id,
+      text: "My favourite colour is teal. Reply with only the word: noted",
+    });
+    await vi.waitFor(() => expect(doneOn(firstEvents, session.id)).toHaveLength(1));
+    await flushAllQueuedTranscriptWrites();
+
+    // A second service over the same state is the restored chat: its first
+    // turn rejoins the agent's session, which already holds the kept turn, so
+    // the tail is consumed there and the replacement has to be told again.
+    const secondPool = createAcpSessionPool();
+    acpTeardown.push(() => secondPool.disposeAll("test teardown"));
+    const events: AgentChatEventEnvelope[] = [];
+    const second = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      acpSpawnOverride: spawnFreshAgent,
+      acpSessionPool: secondPool,
+      laneService: first.laneService,
+      sessionService: first.sessionService,
+    });
+    acpTeardown.push(() => { void second.service.disposeAll(); });
+
+    await second.service.sendMessage({ sessionId: session.id, text: "Second message." });
+    await vi.waitFor(() => expect(doneOn(events, session.id)).toHaveLength(1));
+    // The resumed thread's turn carries the kept turn, so the tail is spent
+    // there; nothing is left staged for the replacement.
+    expect(promptText(agents[1]!)).toContain("teal");
+
+    await second.service.restartSession({ sessionId: session.id });
+
+    await second.service.sendMessage({ sessionId: session.id, text: "What did I say first?" });
+    await vi.waitFor(() => expect(doneOn(events, session.id)).toHaveLength(2));
+
+    expect(agents).toHaveLength(3);
+    // The replacement hears the kept turn, before the new message (the tail is
+    // prepended, not substituted).
+    const replacement = promptText(agents[2]!);
+    expect(replacement).toContain("teal");
+    expect(replacement.indexOf("teal")).toBeLessThan(replacement.lastIndexOf("What did I say first?"));
+    // And the chat says the old session is gone instead of silently starting over.
+    const notices = events
+      .filter((envelope) => envelope.sessionId === session.id && envelope.event.type === "system_notice")
+      .map((envelope) => String((envelope.event as Record<string, any>).message));
+    expect(notices.some((message) => message.includes("Qwen Code") && message.includes("started a new one"))).toBe(true);
   });
 
   it("offers the agent's advertised slash commands once, even when re-sent", async () => {
