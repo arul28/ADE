@@ -51,7 +51,8 @@ export type AdeRendererSenderState = "trusted" | "gone" | "untrusted";
 function readSenderUrl(event: Pick<IpcMainInvokeEvent, "sender" | "senderFrame">): string | null {
   try {
     const frame = event.senderFrame;
-    if (frame) return frame.url;
+    // A frame with no page yet (empty URL) is the same teardown or early load.
+    if (frame) return frame.url || null;
     const contentsUrl = typeof event.sender.getURL === "function" ? event.sender.getURL() : null;
     return contentsUrl || null;
   } catch {

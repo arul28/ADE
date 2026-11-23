@@ -26,7 +26,7 @@ import { Worker } from "node:worker_threads";
  */
 
 const REFRESH_AFTER_MS = 30_000;
-/** A worker still waiting on the adapters after this is stopped; the next read past the refresh age tries again. */
+/** A worker still waiting on the adapters after this is given up on; a new one starts only once it has exited. */
 const WORKER_CEILING_MS = 60_000;
 
 // A string, not a function's source: the bundle is minified, and a function
@@ -57,6 +57,10 @@ export function installNetworkInterfacesSnapshot(
   const read = os.networkInterfaces.bind(os);
   let snapshot: { value: Interfaces; atMs: number } | null = null;
   let refreshing = false;
+  // A worker past the ceiling. `terminate` cannot interrupt the native call it
+  // is stuck in, so no new worker starts until this one has exited: at most
+  // one thread waits on the adapters at a time.
+  let stuckWorker: Worker | null = null;
   let warned = false;
 
   // A failed or stuck read keeps the old snapshot until the next refresh age.
@@ -72,7 +76,7 @@ export function installNetworkInterfacesSnapshot(
   };
 
   const refresh = () => {
-    if (refreshing) return;
+    if (refreshing || stuckWorker) return;
     refreshing = true;
     let worker: Worker;
     try {
@@ -92,7 +96,14 @@ export function installNetworkInterfacesSnapshot(
       settle(value, failure);
       void worker.terminate().catch(() => undefined);
     };
-    const ceiling = setTimeout(() => done(null, "timeout"), WORKER_CEILING_MS);
+    const ceiling = setTimeout(() => {
+      if (settled) return;
+      stuckWorker = worker;
+      worker.once("exit", () => {
+        if (stuckWorker === worker) stuckWorker = null;
+      });
+      done(null, "timeout");
+    }, WORKER_CEILING_MS);
     ceiling.unref();
     worker.once("message", (value: Interfaces | null) => done(value, value ? undefined : "read_failed"));
     worker.once("error", (error) => done(null, error instanceof Error ? error.message : "worker_error"));

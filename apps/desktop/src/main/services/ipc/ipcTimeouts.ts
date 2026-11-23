@@ -150,9 +150,9 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   },
 };
 
-/** What a runtime action through a gone connection adds to its own budget: pairing again (a woken computer, up to 2 min) and connecting. */
 /** The brain's own deadline for `projects.accountList`; the IPC wait adds the local-runtime setup on top. */
 export const PROJECT_ACCOUNT_LIST_TIMEOUT_MS = 10_000;
+/** What a runtime action through a gone connection adds to its own budget: pairing again (a woken computer, up to 2 min) and connecting. */
 const GONE_PIN_PAIRING_BUDGET_MS = 150_000;
 const REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
 /** A cloud lane's work check: waking its computer, then the check itself (3 minutes at most). */

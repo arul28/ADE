@@ -8844,10 +8844,10 @@ app.whenReady().then(async () => {
    */
   const projectNotGitRepositoryError = (root: string, error: unknown): unknown => {
     if (expectedErrorKind(error) !== "user") return error;
-    // The home folder's `.ade` is ADE's own home, not a project's data.
-    if (pathsEqual(root, os.homedir())) return error;
+    // The home folder's `.ade` (or a custom `ADE_HOME`) is ADE's own home, not a project's data.
     const adeData = path.join(root, ".ade");
-    if (pathsEqual(adeData, process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade"))) return error;
+    const customAdeHome = process.env.ADE_HOME?.trim();
+    if (pathsEqual(root, os.homedir()) || (customAdeHome && pathsEqual(adeData, customAdeHome))) return error;
     if (!fs.existsSync(adeData) || hasGitEntryAbove(root)) return error;
     return markExpected(
       codedError(`The project folder ${root} is no longer a Git repository. Its .git folder isn't there.`, "project_not_git_repository"),

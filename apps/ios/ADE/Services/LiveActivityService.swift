@@ -688,8 +688,9 @@ final class LiveActivityService {
             .filter { $0.attributes.isAccountWide && $0.activityState == .active }
         guard !activities.isEmpty else {
             // No account-wide activity to write: the 1 s floor still applies to
-            // the next read, but the hash stays unset, so an activity a push
-            // starts gets this frame on the next change.
+            // the next read, and the hash is cleared, so an activity a push
+            // starts gets its frame on the next tick.
+            lastLocalContentHash = nil
             lastLocalUpdateAt = Date()
             return
         }
