@@ -719,12 +719,15 @@ card, whatever the plan.
   `0055`). The server sends Gravity the hashed email from an iOS device only
   when the answer is `authorized`; anything else, or nothing from an older app,
   still asks for the card without it. Desktop and web always send it.
-- **Small needs cards on Free** (the `free_small_needs_ads` switch, starts
-  off): a Free account the ad switch reaches runs Small without hours only
+- **Small needs cards on Free** (part of the ad switch, no switch of its
+  own): a Free account the ad switch reaches runs Small without hours only
   while it said yes. A no or no answer runs Small at half a Medium-hour an hour
   (`SMALL_NO_CARDS_RATE_MILLI`, set on the computer row by `syncSmallRates`; the
-  account's catalog shows Small at that rate). A no from before the switch
-  turned on is asked again.
+  account's catalog shows Small at that rate). A no from before the ad switch
+  last changed is asked again.
+- **Testers abroad:** while ads are test ads (`gravity_live` off), an account
+  on the testers list gets cards from any country; everyone else still needs
+  `GRAVITY_COUNTRIES`. Real ads keep the country check for everyone.
 - **Testing:** the account test tool flips these switches and has an account
   act as any plan, instantly, without touching Stripe
   ([account-test-tool.md](account-test-tool.md)).

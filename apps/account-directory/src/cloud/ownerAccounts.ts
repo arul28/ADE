@@ -227,8 +227,8 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
     const note = typeof body.note === "string" && body.note.trim() ? body.note.trim().slice(0, MAX_NOTE) : null;
     await writeCloudSetting(env, key, body.value, note, now);
     logCloud("cloud.owner_setting_changed", { key, value: body.value });
-    // Small's hours follow these two at once for every account; what a time budget leaves, the tick's sweep finishes.
-    if (key === "free_small_needs_ads" || key === "gravity_ads") await syncAllSmallRates(env, now, { force: true });
+    // Small's hours follow the ad switch at once for every account; what a time budget leaves, the tick's sweep finishes.
+    if (key === "gravity_ads") await syncAllSmallRates(env, now, { force: true });
   }
   const settings = await readCloudSettings(env);
   const switches = await gravitySwitches(env, settings);
@@ -236,7 +236,7 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
     ok: true,
     settings,
     ceilings: { gravity_ads: env.GRAVITY_ADS?.trim() || "off", gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off" },
-    inForce: { gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", free_small_needs_ads: settings.free_small_needs_ads },
+    inForce: { gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off" },
   });
 }
 

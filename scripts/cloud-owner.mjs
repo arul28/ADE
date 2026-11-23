@@ -24,8 +24,7 @@ Accounts (an email, or a Clerk user id that starts with user_):
 
 Switches:
   settings                               every switch, its deploy ceiling and what is in force
-  set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on,
-                                         free_small_needs_ads off|on
+  set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on
 
 Environment: CLOUD_OWNER_TOKEN (required), ADE_ACCOUNT_ORIGIN (default https://account.ade-app.dev).`;
 

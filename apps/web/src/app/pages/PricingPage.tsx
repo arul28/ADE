@@ -18,7 +18,7 @@ import {
   FINDER_DAYS_A_MONTH,
   FREE_PLAN,
   FREE_RULES,
-  FREE_SMALL_NEEDS_ADS_ON_WEBSITE,
+  GRAVITY_ADS_ON_WEBSITE,
   HOURLY_SIZES,
   INVITE_RULES,
   MOST_COMPUTERS,
@@ -168,8 +168,8 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
   const cheapest = plan.id === CHEAPEST_PAID?.id;
   const lit = free || cheapest;
   const tone = free ? "lamp" : cheapest ? "violet" : "quiet";
-  // Free's Small is unlimited only with sponsored cards on (the server's `free_small_needs_ads`).
-  const smallNeedsAds = free && FREE_SMALL_NEEDS_ADS_ON_WEBSITE;
+  // Where ads reach Free, its Small is unlimited only with sponsored cards on.
+  const smallNeedsAds = free && GRAVITY_ADS_ON_WEBSITE;
   return (
     <div
       className={cn(
