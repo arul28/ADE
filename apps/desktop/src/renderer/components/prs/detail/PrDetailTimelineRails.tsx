@@ -44,7 +44,7 @@ import {
 import { PrAssigneesCard, type PrAssigneeChange } from "../shared/PrAssigneesCard";
 import type { GitHubFilterOptionsLoader } from "../shared/useGitHubFilterOptions";
 import { buildUnifiedChecks, summarizePipelineStates } from "../shared/prUnifiedChecks";
-import { buildPrChatPrompt, prFailingCheckNames, prOpenFindings } from "../shared/prChatActions";
+import { buildPrChatPrompt, prFailingCheckNames, prOpenFindings, runPrResolveConflicts } from "../shared/prChatActions";
 import { resolvePrNextStepFromStatus, type PrNextStepAction } from "../../../../shared/prNextStep";
 import { isPrBotAuthor } from "../../../../shared/prBotIdentity";
 import { PR_DESCRIPTION_BOT_EVENT_PREFIX, splitPrBodyBotSections } from "../../../../shared/prBodyBotSections";
@@ -1000,8 +1000,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           else onOpenChecksTab?.();
           return;
         case "resolve_conflicts":
-          if (onHandPrompt) onHandPrompt(buildPrChatPrompt("resolve_conflicts", pr));
-          else void window.ade.app.openExternal(`${pr.githubUrl}/conflicts`);
+          runPrResolveConflicts(pr, onHandPrompt ?? null);
           return;
         case "address_feedback":
         case "fix_threads":
@@ -1022,7 +1021,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           case "delete_branch": return deleteArmed ? "Click again to delete" : "Delete branch";
           case "reopen": return "Reopen";
           case "ready_for_review": return "Ready for review";
-          case "resolve_conflicts": return onHandPrompt ? "Resolve in chat" : "Resolve on GitHub";
+          case "resolve_conflicts": return "Resolve conflicts";
           case "update_branch": return updateBranchBusy ? "Updating…" : "Update branch";
           case "fix_checks": return onHandPrompt ? "Fix in chat" : "Open checks";
           // Short: the card's headline already says which checks.

@@ -38,6 +38,8 @@ import {
   chatLabel,
   usePrChatHandoff,
   linkedPrChats,
+  prHasConflicts,
+  runPrResolveConflicts,
   type PrChatActionKind,
   type PrChatFinding,
 } from "./prChatActions";
@@ -189,7 +191,7 @@ export function usePrActionsMenu(context: PrActionsContext) {
   const sections = React.useMemo<PrMenuSection[]>(() => {
     const out: PrMenuSection[] = [];
     const open = pr.state === "open" || pr.state === "draft";
-    const conflicts = Boolean(status?.mergeConflicts) || status?.mergeStateStatus === "dirty";
+    const conflicts = prHasConflicts(status);
 
     // ── Chat actions ──────────────────────────────────────────────────────
     if (pr.laneId) {
@@ -325,6 +327,18 @@ export function usePrActionsMenu(context: PrActionsContext) {
           onSelect: () => void window.ade.app.openExternal(`https://github.com/${pr.repoOwner}/${pr.repoName}/settings`),
         });
       }
+    }
+    // A PR with no lane has no chat to hand the work to, but it still has the
+    // same conflict action as every other surface: open GitHub's conflict page.
+    if (open && conflicts && !pr.laneId) {
+      stateItems.push({
+        id: "resolve_conflicts",
+        label: "Resolve conflicts",
+        description: "Opens the conflicts page on GitHub",
+        icon: <GitDiff size={14} weight="duotone" />,
+        tone: TONE.conflicts,
+        onSelect: () => runPrResolveConflicts(pr),
+      });
     }
     if (onManageLane && pr.laneId) {
       stateItems.push({
