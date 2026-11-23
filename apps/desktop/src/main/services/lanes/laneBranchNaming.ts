@@ -312,6 +312,22 @@ export function createLaneBranchNaming(deps: {
   };
 
   /**
+   * Whether a non-zero `git branch -m` nevertheless renamed the branch. git
+   * moves the ref and each worktree's HEAD first and rewrites `branch.<name>`
+   * config last, so a held or stale `.git/config.lock` exits non-zero with
+   * "fatal: branch is renamed, but update of config-file failed" after the
+   * rename has already happened.
+   */
+  const branchRenameLanded = async (cwd: string, to: string): Promise<boolean> => {
+    const current = await runGit(["branch", "--show-current"], { cwd, timeoutMs: 8_000 }).catch(() => null);
+    if (!current || current.exitCode !== 0 || current.stdout.trim() !== to) return false;
+    // `branch --show-current` also prints the name of an unborn branch, so the
+    // ref itself must exist; a HEAD that still points at the old name fails above.
+    const target = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${to}`], { cwd, timeoutMs: 8_000 }).catch(() => null);
+    return target?.exitCode === 0;
+  };
+
+  /**
    * `git branch -m from to` in the lane's folder, then the lane row. When the
    * row can't be written the git rename is rolled back; when that fails too
    * the row is forced to match git, so the two never disagree.
@@ -324,7 +340,7 @@ export function createLaneBranchNaming(deps: {
       cwd: lane.worktree_path,
       timeoutMs: 15_000,
     });
-    if (renamed.exitCode !== 0) {
+    if (renamed.exitCode !== 0 && !(await branchRenameLanded(lane.worktree_path, to))) {
       logger.warn("lane.branch_rename_failed", {
         laneId: lane.id,
         from,
@@ -332,6 +348,20 @@ export function createLaneBranchNaming(deps: {
         error: renamed.stderr.trim(),
       });
       return "git_rename_failed";
+    }
+    if (renamed.exitCode !== 0) {
+      // The ref moved; only the `branch.<name>` entries stayed behind.
+      logger.warn("lane.branch_rename_config_not_moved", {
+        laneId: lane.id,
+        from,
+        to,
+        error: renamed.stderr.trim(),
+      });
+      // Best effort: do what git could not, so nothing lingers under the old name.
+      await runGit(["config", "--rename-section", `branch.${from}`, `branch.${to}`], {
+        cwd: lane.worktree_path,
+        timeoutMs: 8_000,
+      });
     }
     // `branch -m` carries the placeholder's marker along; the new name is the lane's own.
     await setTemporaryBranchMarker(lane.worktree_path, to, false);
@@ -354,7 +384,7 @@ export function createLaneBranchNaming(deps: {
         error,
         errorText: error instanceof Error ? error.message : String(error),
       });
-      if (rollback.exitCode !== 0) {
+      if (rollback.exitCode !== 0 && !(await branchRenameLanded(lane.worktree_path, from))) {
         db.run("update lanes set branch_ref = ? where id = ? and project_id = ?", [to, lane.id, projectId]);
         deps.invalidateLaneListCache();
         const reconciledLane = getLaneRow(lane.id);
