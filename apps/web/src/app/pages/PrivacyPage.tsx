@@ -188,7 +188,7 @@ const gravitySection: Section = {
         "a SHA-256 hash of your account email (never the email itself).",
       ],
     },
-    "On iPhone and iPad, ADE first asks with Apple's App Tracking Transparency prompt. The email hash is sent only if you allow tracking there; if you don't, sponsored cards still show and ADE sends everything above except the email hash.",
+    "In the ADE app for iPhone and iPad, ADE first asks with Apple's App Tracking Transparency prompt. The email hash is sent only if you allow tracking there; if you don't, sponsored cards still show and ADE sends everything above except the email hash.",
     "When an agent asks for a tool recommendation, ADE sends the need the agent described, with the IP address and device of your latest visit to that computer's chats. In a CLI session on ADE Cloud, that request is all that is sent; never the terminal's output.",
     "Gravity receives this as an independent controller. Under section 7 of Gravity's Terms it keeps a perpetual license to use what ADE sends, and it may not delete it when you ask. Gravity's own privacy policy is at https://trygravity.com/privacy.",
     "ADE never sends anything from chats on your own computer or from paid plans. ADE sends no file contents beyond what is in those messages.",

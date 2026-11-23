@@ -5026,6 +5026,7 @@ describe("sponsored cards", () => {
     ["an iPhone where tracking is restricted", { ...IPHONE, tracking: "restricted" }, false],
     ["an iPhone that never answered", { ...IPHONE, tracking: "not_determined" }, false],
     ["an older iPhone app that sends no answer", IPHONE, false],
+    ["the web app in an iPhone browser (no Apple prompt there)", { type: "mobile", os: "ios", osVersion: "26.1", ua: null }, true],
   ])("from %s, the card is still asked for, with the hashed email only when allowed", async (_label, device, withEmail) => {
     const answer = await (await send(OWNER, "/cloud/sponsored/ad", adBody({ device }))).json() as { ad: Row | null };
     expect(answer.ad).toMatchObject({ brand: "Neon" });

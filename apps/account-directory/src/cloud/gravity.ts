@@ -205,14 +205,16 @@ function readDevice(value: unknown): CloudSponsoredDevice | null {
 }
 
 /**
- * The account's hashed email for Gravity, when this device may send it. An
- * iPhone or iPad sends it only once the person allowed tracking in Apple's
- * prompt (App Tracking Transparency); any other answer, or none from an older
- * app, leaves it out. Desktop and web have no such prompt and always send it.
+ * The account's hashed email for Gravity, when this device may send it. The
+ * ADE iPhone and iPad app (its own `ADE-iOS/` user agent) sends it only once
+ * the person allowed tracking in Apple's prompt (App Tracking Transparency);
+ * any other answer, or none from an older app, leaves it out. Desktop and the
+ * web, a browser on an iPhone included, have no such prompt and send it.
  */
-function hashedEmailFor(device: { os: string; tracking?: string | null } | null, emailHash: string | null): string | null {
+function hashedEmailFor(device: { os: string; ua?: string | null; tracking?: string | null } | null, emailHash: string | null): string | null {
   if (!emailHash) return null;
-  if (device?.os === "ios" && device.tracking !== "authorized") return null;
+  const iosApp = device?.os === "ios" && /^ADE-iOS\//.test(device.ua ?? "");
+  if (iosApp && device?.tracking !== "authorized") return null;
   return emailHash;
 }
 
@@ -598,12 +600,6 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
 /* ---- The owner's report ---- */
 
 /**
- * Lines for the owner's daily report: ADE's own counts of the day, and what
- * Gravity says the day paid (ads and the Index), against `freeCostMicros`, the
- * day's cost of free-plan use. Nothing while the switch is off and the day
- * had no requests. Gravity's reports are best effort: a failed read says so.
- */
-/**
  * The hourly clean-up (minute 23 of each hour, every account, whatever the
  * switch): a reply's answer older than a day, and where a person watched from
  * (IP address, user agent, device, OS) once that is a day old, a computer
@@ -619,6 +615,12 @@ export async function pruneSponsored(env: GravityEnv, scheduledTime: number): Pr
   ]);
 }
 
+/**
+ * Lines for the owner's daily report: ADE's own counts of the day, and what
+ * Gravity says the day paid (ads and the Index), against `freeCostMicros`, the
+ * day's cost of free-plan use. Nothing while the switch is off and the day
+ * had no requests. Gravity's reports are best effort: a failed read says so.
+ */
 export async function sponsoredReportLines(env: GravityEnv, day: string, freeCostMicros: number | null): Promise<string[]> {
   const rows = (await env.DB.prepare("select kind, count from cloud_sponsored_days where day = ? and user_id = ?")
     .bind(day, ALL).all<{ kind: string; count: number }>()).results ?? [];

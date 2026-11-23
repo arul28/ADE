@@ -3088,8 +3088,8 @@ export type CloudSponsoredDevice = {
   /** The app's own user agent; a browser's request header wins over it. */
   ua?: string | null;
   /**
-   * iPhone and iPad only: the app's App Tracking Transparency answer. Gravity
-   * gets the account's hashed email from an iOS device only when this is
+   * The ADE iPhone and iPad app only: its App Tracking Transparency answer.
+   * Gravity gets the account's hashed email from the app only when this is
    * "authorized"; anything else, or nothing (an older app), leaves it out and
    * the card is still asked for. Desktop and web send nothing here.
    */
