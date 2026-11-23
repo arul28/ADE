@@ -777,7 +777,9 @@ async function readCachedGhAuthToken(force: boolean): Promise<string | null> {
 
 async function spawnGhAuthToken(): Promise<string | null> {
   // Reaped: when the keychain hangs, gh exits but its `security` helper stays.
-  const result = await runReapedCommand("gh", ["auth", "token"], { timeoutMs: 2_000, maxBuffer: 64 * 1024 });
+  // Always github.com: without --hostname, gh picks GH_HOST, so a person
+  // signed in to a GitHub Enterprise host would hand ADE that host's token.
+  const result = await runReapedCommand("gh", ["auth", "token", "--hostname", "github.com"], { timeoutMs: 2_000, maxBuffer: 64 * 1024 });
   if (result.error || result.exitCode !== 0) return null;
   const token = result.stdout.trim();
   return token.length > 0 ? token : null;

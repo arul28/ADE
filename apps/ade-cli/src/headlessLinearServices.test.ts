@@ -99,6 +99,9 @@ const HEADLESS_GITHUB_ENV_KEYS = [
   "GITHUB_TOKEN",
   "GH_TOKEN",
   "GH_CONFIG_DIR",
+  "GH_HOST",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
   "ADE_DISABLE_OFF_THREAD_SPAWN",
 ] as const;
 
@@ -2110,6 +2113,53 @@ describe("headlessLinearServices", () => {
       await expect(secondProject.getReadTokenOrThrowAsync()).resolves.toBe("gho_after_force_refresh");
       expect(ghAuthTokenMock).toHaveBeenCalledTimes(3);
       expect(fetchImpl).toHaveBeenCalled();
+    } finally {
+      ghAuthTokenMock.mockReset();
+      environment.restore();
+    }
+  });
+
+  it("reads the github.com token even when GH_HOST names another host", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-gh-token-host-", {
+      emptyGhConfig: true,
+    });
+    process.env.ADE_DISABLE_OFF_THREAD_SPAWN = "1";
+    process.env.GH_HOST = "ghe.corp.example";
+    process.env.GH_ENTERPRISE_TOKEN = "gho_enterprise";
+    process.env.GITHUB_ENTERPRISE_TOKEN = "gho_enterprise";
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    // gh answers for GH_HOST unless --hostname names a host, so an unscoped
+    // lookup would hand ADE the enterprise token and send it to github.com.
+    ghAuthTokenMock.mockImplementation((_file, args, _options, callback) => {
+      const askedForGithub =
+        Array.isArray(args)
+        && args.includes("--hostname")
+        && args[args.indexOf("--hostname") + 1] === "github.com";
+      (callback as (error: null, stdout: string, stderr: string) => void)(
+        null,
+        `${askedForGithub ? "gho_github_com" : "gho_enterprise"}\n`,
+        "",
+      );
+      return undefined;
+    });
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ login: "octocat" }), {
+      status: 200,
+      headers: { "content-type": "application/json", "x-oauth-scopes": "repo, workflow" },
+    })) as unknown as typeof fetch;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      { fetchImpl },
+    );
+
+    try {
+      await expect(githubService.getReadTokenOrThrowAsync()).resolves.toBe("gho_github_com");
+      expect(ghAuthTokenMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.arrayContaining(["auth", "token", "--hostname", "github.com"]),
+        expect.anything(),
+        expect.anything(),
+      );
     } finally {
       ghAuthTokenMock.mockReset();
       environment.restore();

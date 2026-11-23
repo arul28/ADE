@@ -365,7 +365,9 @@ async function readGitHubCliAuthToken(): Promise<GitHubCliAuthResult> {
 
   try {
     // Reaped: when the keychain hangs, gh exits but its `security` helper stays.
-    const stdout = await runReapedCommandStdout(resolved.path, ["auth", "token"], {
+    // Always github.com: without --hostname, gh picks GH_HOST, so a person
+    // signed in to a GitHub Enterprise host would hand ADE that host's token.
+    const stdout = await runReapedCommandStdout(resolved.path, ["auth", "token", "--hostname", "github.com"], {
       timeoutMs: 5_000,
       maxBuffer: 256 * 1024,
       env: {
