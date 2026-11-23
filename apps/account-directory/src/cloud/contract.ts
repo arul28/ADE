@@ -3087,7 +3087,16 @@ export type CloudSponsoredDevice = {
   osVersion?: string | null;
   /** The app's own user agent; a browser's request header wins over it. */
   ua?: string | null;
+  /**
+   * iPhone and iPad only: the app's App Tracking Transparency answer. Gravity
+   * gets the account's hashed email from an iOS device only when this is
+   * "authorized"; anything else, or nothing (an older app), leaves it out and
+   * the card is still asked for. Desktop and web send nothing here.
+   */
+  tracking?: CloudSponsoredTracking | null;
 };
+export type CloudSponsoredTracking = "authorized" | "denied" | "restricted" | "not_determined";
+export const CLOUD_SPONSORED_TRACKING = ["authorized", "denied", "restricted", "not_determined"] as const;
 export const CLOUD_SPONSORED_DEVICE_TYPES = ["desktop", "mobile", "tablet"] as const;
 export const CLOUD_SPONSORED_OSES = ["macos", "windows", "linux", "ios", "android", "chromeos", "other"] as const;
 

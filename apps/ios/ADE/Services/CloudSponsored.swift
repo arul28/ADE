@@ -1,3 +1,4 @@
+import AppTrackingTransparency
 import Foundation
 import OSLog
 import UIKit
@@ -123,6 +124,9 @@ struct CloudSponsoredDevice: Encodable, Equatable {
   let os: String
   let osVersion: String?
   let ua: String?
+  /// The App Tracking Transparency answer. The server sends Gravity the
+  /// account's hashed email only when it is "authorized".
+  let tracking: String?
 
   /// This iPhone or iPad. The user agent is the app's own plain one.
   @MainActor static var current: CloudSponsoredDevice {
@@ -131,8 +135,36 @@ struct CloudSponsoredDevice: Encodable, Equatable {
       type: UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "mobile",
       os: "ios",
       osVersion: UIDevice.current.systemVersion,
-      ua: "ADE-iOS/\(version ?? "0")"
+      ua: "ADE-iOS/\(version ?? "0")",
+      tracking: CloudSponsoredTracking.status
     )
+  }
+}
+
+/// Apple's App Tracking Transparency for sponsored cards. The prompt shows
+/// once, right before the first card is asked for in an ADE Cloud chat (the
+/// person already said yes to sponsored cards). Whatever the answer, the card
+/// is still asked for: without "authorized" the server leaves the hashed
+/// email out of what Gravity gets.
+enum CloudSponsoredTracking {
+  @MainActor static var status: String { name(ATTrackingManager.trackingAuthorizationStatus) }
+
+  /// Shows Apple's prompt when it has never been answered and the app is in
+  /// front (the system ignores it otherwise); returns the answer as sent.
+  @MainActor static func askOnce() async -> String {
+    let current = ATTrackingManager.trackingAuthorizationStatus
+    guard current == .notDetermined, UIApplication.shared.applicationState == .active else { return name(current) }
+    return name(await ATTrackingManager.requestTrackingAuthorization())
+  }
+
+  private static func name(_ status: ATTrackingManager.AuthorizationStatus) -> String {
+    switch status {
+    case .authorized: return "authorized"
+    case .denied: return "denied"
+    case .restricted: return "restricted"
+    case .notDetermined: return "not_determined"
+    @unknown default: return "not_determined"
+    }
   }
 }
 

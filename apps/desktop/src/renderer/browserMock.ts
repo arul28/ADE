@@ -65,6 +65,7 @@ import { renderLaneBranchPrefix } from "../shared/laneBranchName";
 import { branchNameFromLaneRef } from "../shared/laneBaseResolution";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
+import { buildSponsoredPickCard } from "../shared/sponsoredPick";
 import {
   formatThreadReviewBlock,
   normalizeThreadCommentAnchor,
@@ -3107,14 +3108,37 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
 /**
  * `?mockSponsored=ask|on` with `?mockCloudLaneMachine=1`: the ADE Cloud chat
  * ends on a finished reply, so a sponsored card (or the one-time question)
- * shows under it (`SponsoredReplySlot`).
+ * shows under it (`SponsoredReplySlot`). `?mockSponsored=pick` instead shows
+ * the agent's Index pick card (`SponsoredPickCard`) with made-up demo facts:
+ * Gravity's Index has no inventory for ADE's account yet, so a real pick
+ * can't be shown.
  */
 // Read once: the app routes away from the first URL and drops its query.
-const BROWSER_MOCK_SPONSORED = browserMockFlag("mockSponsored");
+const BROWSER_MOCK_SPONSORED = browserMockParam("mockSponsored");
 function browserMockSponsoredTurnEvents(sessionId: string): any[] {
   if (!BROWSER_MOCK_SPONSORED || !/^(cloud-chat-1|mock-session-codex-1)$/.test(sessionId)) return [];
   const at = (offsetMs: number) => new Date(Date.now() - 60_000 + offsetMs).toISOString();
   const turnId = "cloud-turn-1";
+  if (BROWSER_MOCK_SPONSORED === "pick") {
+    const need = "A hosted Postgres database for the checkout service";
+    const card = buildSponsoredPickCard({
+      id: "demo-pick-1",
+      name: "Harbor Postgres (demo)",
+      category: "Databases",
+      description: "Serverless Postgres with branching per lane and a free tier. Demo data: real picks wait on Gravity's Index inventory.",
+      url: "https://trygravity.ai/r/demo-pick",
+      websiteUrl: "https://example.com",
+      docsUrl: null,
+      sponsored: true,
+      installSteps: ["npm i pg", "export DATABASE_URL=postgres://…"],
+    }, need);
+    return [
+      { sessionId, timestamp: at(0), event: { type: "user_message", text: "Add a Postgres database for the checkout service and wire up the order table.", turnId } },
+      { sessionId, timestamp: at(12_000), event: { type: "text", turnId, text: "The checkout service needs a hosted Postgres database, and this project has none yet. Here is one option; nothing is installed until you say so." } },
+      { sessionId, timestamp: at(13_000), event: { type: "ade_card", ...card, turnId } },
+      { sessionId, timestamp: at(14_000), event: { type: "done", turnId, status: "completed", model: "gpt-6.2" } },
+    ];
+  }
   return [
     { sessionId, timestamp: at(0), event: { type: "user_message", text: "Add a Postgres database for the checkout service and wire up the order table.", turnId } },
     { sessionId, timestamp: at(20_000), event: { type: "text", turnId, text: "I added a `orders` table with a migration, a typed query helper, and a connection pool in `src/db.ts`. The checkout handler now writes each order in one transaction. Set `DATABASE_URL` to your Postgres connection string before you run it." } },

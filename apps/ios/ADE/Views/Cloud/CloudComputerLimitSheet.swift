@@ -207,7 +207,7 @@ extension CloudLaneActions {
 /// 1. Free up a computer: the lane and its chats stay; it gets a new computer
 ///    the next time a message is sent there. A computer with no lane can only
 ///    be deleted.
-/// 2. Delete a lane: the ordinary cloud lane delete, which checks its work first.
+/// 2. Delete lane and computer: the ordinary cloud lane delete, which checks its work first.
 /// 3. Move to the next plan, said as a fact only: the iPhone app sells
 ///    nothing (App Store 3.1.1/3.1.3), so there is no checkout, price or link.
 ///
@@ -258,18 +258,14 @@ struct CloudComputerLimitSheet: View {
     NavigationStack {
       ScrollViewReader { scroller in
       ScrollView {
-        VStack(alignment: .leading, spacing: 16) {
-          VStack(alignment: .leading, spacing: 6) {
-            Text(CloudComputerLimit.title(limit: limitCount))
-              .font(.system(size: 18, weight: .semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .fixedSize(horizontal: false, vertical: true)
-              .accessibilityAddTraits(.isHeader)
-            Text("A new cloud lane needs a computer of its own. Pick how to make room.")
-              .font(.system(size: 13.5))
-              .foregroundStyle(ADEColor.textSecondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
+        VStack(alignment: .leading, spacing: 14) {
+          hero
+          Text("Make room for your new lane")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .textCase(.uppercase)
+            .padding(.leading, 4)
+            .padding(.top, 2)
           ways
           if way != nil {
             if lanes.isEmpty && way != .move {
@@ -292,7 +288,6 @@ struct CloudComputerLimitSheet: View {
       }
       }
       .background(ADEColor.pageBackground.ignoresSafeArea())
-      .navigationTitle("Cloud computers")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
@@ -305,6 +300,66 @@ struct CloudComputerLimitSheet: View {
     .presentationDetents([.large])
     // The lane's delete and its computer's page open over this card.
     .cloudLaneActionsHost()
+  }
+
+  // MARK: The hero
+
+  private var planId: String? { limit.planId ?? account?.currentPlanId }
+
+  /// The plan on a dusk sky, one lit window per computer in use, and the one fact.
+  private var hero: some View {
+    let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+    let inUse = limitCount ?? lanes.count
+    return VStack(alignment: .leading, spacing: 12) {
+      HStack(spacing: 7) {
+        CloudLogo(size: 15, glow: true)
+        Text("ADE Cloud")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(CloudBrandColor.skyText)
+        if let planId {
+          CloudPlanWord(text: cloudPlanLabel(planId), size: 16)
+        }
+        Spacer(minLength: 0)
+      }
+      if inUse > 0 {
+        windows(inUse)
+      }
+      VStack(alignment: .leading, spacing: 3) {
+        Text(CloudComputerLimit.title(limit: limitCount))
+          .font(.system(size: 19, weight: .semibold))
+          .foregroundStyle(CloudBrandColor.skyText)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityAddTraits(.isHeader)
+        Text("Each cloud lane runs on its own computer.")
+          .font(.system(size: 13))
+          .foregroundStyle(CloudBrandColor.skyText2)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(16)
+    .padding(.bottom, 14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(CloudSky(moon: true, bank: true).clipShape(shape))
+    .overlay(shape.strokeBorder(CloudBrandColor.glassEdge, lineWidth: 0.75))
+    .accessibilityElement(children: .combine)
+  }
+
+  /// One lit window per computer, all in use (at most 10, then "+N").
+  private func windows(_ count: Int) -> some View {
+    HStack(spacing: 6) {
+      ForEach(0..<min(count, 10), id: \.self) { _ in
+        RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+          .fill(LinearGradient(colors: [CloudBrandColor.lampHot, CloudBrandColor.lamp], startPoint: .top, endPoint: .bottom))
+          .frame(width: 20, height: 15)
+          .shadow(color: CloudBrandColor.lamp.opacity(0.55), radius: 5)
+      }
+      if count > 10 {
+        Text("+\(count - 10)")
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(CloudBrandColor.lamp)
+      }
+    }
+    .accessibilityHidden(true)
   }
 
   // MARK: The three ways
@@ -322,47 +377,59 @@ struct CloudComputerLimitSheet: View {
 
   @ViewBuilder
   private var wayTiles: some View {
-    tile(.free, symbol: "arrow.3.trianglepath", title: "Free up a computer", line: "Keep the lane and its chats; it gets a new computer later.")
-    tile(.delete, symbol: "trash", title: "Delete a lane", line: "The lane and its computer go. ADE checks its work is on GitHub.")
+    tile(.free, symbol: "arrow.3.trianglepath", tint: CloudBrandColor.mark, title: "Free up a computer", line: "The lane and its chats stay")
+    tile(.delete, symbol: "trash", tint: ADEColor.danger, title: "Delete lane and computer", line: "Its chats go too")
     if let next = nextPlan {
-      tile(.move, symbol: "arrow.up.circle", title: "The \(cloudPlanLabel(next.planId)) plan", line: "\(plural(next.computerLimit, "computer")). Small stays unlimited.")
+      tile(.move, symbol: "arrow.up", tint: ADEColor.success, title: "Upgrade to \(cloudPlanLabel(next.planId))", line: upgradeLine(next))
     }
   }
 
-  private func tile(_ target: Way, symbol: String, title: String, line: String) -> some View {
+  /// "10 computers, 7 more than now".
+  private func upgradeLine(_ next: CloudComputerLimit.NextPlan) -> String {
+    let more = limitCount.map { next.computerLimit - $0 } ?? 0
+    return more > 0 ? "\(plural(next.computerLimit, "computer")), \(more) more than now" : plural(next.computerLimit, "computer")
+  }
+
+  private func tile(_ target: Way, symbol: String, tint: Color, title: String, line: String) -> some View {
     let picked = way == target
-    let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+    let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
     return Button {
       ADEHaptics.light()
       way = picked ? nil : target
     } label: {
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 7) {
-          Image(systemName: symbol)
-            .font(.system(size: 12.5, weight: .semibold))
-            .foregroundStyle(picked ? ADEColor.accent : CloudBrandColor.mark)
-            .frame(width: 18)
+      HStack(spacing: 12) {
+        Image(systemName: symbol)
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(tint)
+          .frame(width: 34, height: 34)
+          .background(tint.opacity(0.13), in: Circle())
+        VStack(alignment: .leading, spacing: 2) {
           Text(title)
-            .font(.system(size: 14.5, weight: .semibold))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
-          Spacer(minLength: 0)
+            .minimumScaleFactor(0.85)
+          Text(line)
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
         }
-        Text(line)
-          .font(.system(size: 12.5))
-          .foregroundStyle(ADEColor.textSecondary)
-          .multilineTextAlignment(.leading)
-          .fixedSize(horizontal: false, vertical: true)
-          .padding(.leading, 25)
+        Spacer(minLength: 0)
+        Image(systemName: "chevron.down")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .rotationEffect(.degrees(picked ? 180 : 0))
       }
       .padding(.horizontal, 12)
       .padding(.vertical, 11)
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-      .background(picked ? ADEColor.accent.opacity(0.08) : ADEKit.surface, in: shape)
-      .overlay(shape.strokeBorder(picked ? ADEColor.accent.opacity(0.55) : ADEKit.edge, lineWidth: picked ? 1.25 : 0.75))
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+      .background(picked ? tint.opacity(0.07) : ADEKit.surface, in: shape)
+      .overlay(shape.strokeBorder(picked ? tint.opacity(0.55) : ADEKit.edge, lineWidth: picked ? 1.25 : 0.75))
       .contentShape(shape)
     }
     .buttonStyle(.plain)
+    .accessibilityLabel("\(title). \(line)")
     .accessibilityAddTraits(picked ? .isSelected : [])
   }
 
@@ -395,10 +462,10 @@ struct CloudComputerLimitSheet: View {
     if withLane.isEmpty {
       stepText("None of your computers holds a lane to keep. Delete one instead.")
     } else {
-      question("Which computer?")
+      question("Which lane?")
       picker(chosen: freeLane?.instanceId, freeOnly: true) { freeId = $0 }
       if let lane = freeLane {
-        what("its work is pushed to GitHub, the computer is deleted, and “\(lane.laneName)” stays in your lanes with its chats.\(lane.awake ? " What runs on it now stops." : "") Your next message there starts a new computer.")
+        what("Its work is pushed to GitHub and the computer goes.\(lane.awake ? " What runs on it now stops." : "") Your next message there starts a new one.")
         confirm(
           title: "Free up \(lane.laneName)",
           busyTitle: "Freeing \(lane.laneName)…",
@@ -415,10 +482,10 @@ struct CloudComputerLimitSheet: View {
     picker(chosen: deleteLane?.instanceId, freeOnly: false) { deleteId = $0 }
     if let lane = deleteLane {
       what(lane.hasLane
-        ? "“\(lane.laneName)”, its computer and its chats are deleted. If any of its work isn't on GitHub, ADE asks you first."
-        : "this computer has no lane; ADE deletes it.")
+        ? "The lane, its computer and its chats are deleted. ADE asks first if any work isn't on GitHub."
+        : "This computer has no lane, so only the computer goes.")
       confirm(
-        title: lane.hasLane ? "Delete \(lane.laneName)" : "Delete this computer",
+        title: lane.hasLane ? "Delete lane and computer" : "Delete this computer",
         busyTitle: "Deleting…",
         busy: actions.freeing.contains(lane.instanceId),
         tone: .crit
@@ -429,16 +496,13 @@ struct CloudComputerLimitSheet: View {
   @ViewBuilder
   private var moveStep: some View {
     if let next = nextPlan {
-      let label = cloudPlanLabel(next.planId)
-      question(label)
+      question("What \(cloudPlanLabel(next.planId)) adds")
       VStack(alignment: .leading, spacing: 6) {
-        fact("\(plural(next.computerLimit, "cloud computer"))\(limitCount.map { next.computerLimit > $0 ? ", \(next.computerLimit - $0) more than now" : "" } ?? "")")
         if let hours = planFacts(next.planId)?.includedMilli, hours > 0 {
           fact("\(cloudHours(hours)) hours a month for bigger computers")
         }
-        fact("Small computers stay unlimited and never use your hours")
+        fact("Small computers stay unlimited")
       }
-      what("on \(label) you can have \(plural(next.computerLimit, "cloud computer")), and your new lane can start.")
     }
   }
 
@@ -542,8 +606,9 @@ struct CloudComputerLimitSheet: View {
   }
 
   private func what(_ text: String) -> some View {
-    Text("\(Text("What happens: ").fontWeight(.semibold).foregroundStyle(ADEColor.textPrimary))\(Text(text).foregroundStyle(ADEColor.textSecondary))")
+    Text(text)
       .font(.system(size: 13))
+      .foregroundStyle(ADEColor.textSecondary)
       .fixedSize(horizontal: false, vertical: true)
   }
 

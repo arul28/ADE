@@ -33,7 +33,7 @@ import "./cloudLane.css";
  *    `POST /cloud/instances/:id/free`). The lane and its chats stay; it gets a
  *    new computer the next time a message is sent there. A computer with no
  *    lane can only be deleted.
- * 2. Delete a lane (the ordinary cloud lane delete, which checks its work first).
+ * 2. Delete lane and computer (the ordinary cloud lane delete, which checks its work first).
  * 3. Move to the next plan (the ordinary checkout). On a paid plan the move
  *    charges the difference now: the step says so, and its button is the one ask.
  *
@@ -160,12 +160,11 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
       <p className="adecl-limit-empty">None of your computers holds a lane to keep. Delete one instead.</p>
     ) : (
       <>
-        <p className="adecl-limit-step-q">Which computer?</p>
+        <p className="adecl-limit-step-q">Which lane?</p>
         <LanePicker lanes={lanes} chosen={freeLane?.instanceId ?? null} onChoose={setFreeId} freeOnly now={now} label="Computer to free up" />
         {freeLane ? (
           <p className="adecl-limit-what">
-            <b>What happens:</b> its work is pushed to GitHub, the computer is deleted, and “{freeLane.laneName}” stays in your lanes with its chats.
-            {freeLane.awake ? " What runs on it now stops." : ""} Your next message there starts a new computer.
+            Its work is pushed to GitHub and the computer goes.{freeLane.awake ? " What runs on it now stops." : ""} Your next message there starts a new one.
           </p>
         ) : null}
       </>
@@ -181,10 +180,9 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
         {deleteLane ? (
           <>
             <p className="adecl-limit-what">
-              <b>What happens:</b>{" "}
               {deleteLane.hasLane === false
-                ? "this computer has no lane; ADE deletes it."
-                : `“${deleteLane.laneName}”, its computer and its chats are deleted. If any of its work isn't on GitHub, ADE asks you first.`}
+                ? "This computer has no lane, so only the computer goes."
+                : "The lane, its computer and its chats are deleted. ADE asks first if any work isn't on GitHub."}
             </p>
             {deleteLane.hasLane !== false ? <KeepChatsCheckbox checked={keepChats} onChange={setKeepChats} /> : null}
           </>
@@ -193,7 +191,7 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
     );
     if (deleteLane) {
       confirm = {
-        label: deleteLane.hasLane === false ? "Delete this computer" : `Delete ${deleteLane.laneName}`,
+        label: deleteLane.hasLane === false ? "Delete this computer" : "Delete lane and computer",
         variant: "solid",
         disabled: !canChange,
         onClick: () => run(() => deleteCloudLaneWithCheck({ instanceId: deleteLane.instanceId, laneName: deleteLane.laneName, askFirst: false, keepChats })),
@@ -207,7 +205,7 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
         <ul className="adecl-limit-facts">
           <li>{plural(next.computerLimit, "cloud computer")}{detail ? `, ${next.computerLimit - detail.limit} more than now` : ""}</li>
           {nextHours != null ? <li>{formatCloudHours(nextHours)} hours a month for bigger computers</li> : null}
-          <li>Small computers stay unlimited and never use your hours</li>
+          <li>Small computers stay unlimited</li>
         </ul>
         <p className="adecl-limit-what">
           <b>What happens:</b>{" "}
@@ -228,7 +226,7 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
       icon={<CloudMark size={16} brand />}
       onOpenChange={(open) => { if (!open) onClose(); }}
       title={title}
-      description="A new cloud lane needs a computer of its own. Pick how to make room."
+      description="Each cloud lane runs on its own computer. Make room for your new lane."
       actions={[...(confirm ? [{ ...confirm, autoFocus: true }] : []), { label: "Not now", variant: "secondary", onClick: onClose }]}
       footerStart={!canChange && way !== "move" && way ? <span className="adecl-limit-empty">Free up or delete lanes from the ADE desktop app.</span> : undefined}
     >
@@ -237,8 +235,8 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
       ) : (
         <>
           <div className="adecl-limit-ways" data-count={next ? 3 : 2}>
-            <WayButton way="free" picked={way} onPick={setWay} icon={<Recycle size={14} />} title="Free up a computer" line="Keep the lane and its chats; it gets a new computer later." />
-            <WayButton way="delete" picked={way} onPick={setWay} icon={<Trash size={14} />} title="Delete a lane" line="The lane and its computer go. ADE checks its work is on GitHub." />
+            <WayButton way="free" picked={way} onPick={setWay} icon={<Recycle size={14} />} title="Free up a computer" line="The lane and its chats stay" />
+            <WayButton way="delete" picked={way} onPick={setWay} icon={<Trash size={14} />} title="Delete lane and computer" line="Its chats go too" />
             {next ? (
               <WayButton
                 way="move"
@@ -246,7 +244,7 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
                 onPick={setWay}
                 icon={<ArrowCircleUp size={14} />}
                 title={cloudComputerLimitUpgradeLabel(next)}
-                line={`${plural(next.computerLimit, "computer")}, $${next.priceUsd} a month. Small stays unlimited.`}
+                line={`${plural(next.computerLimit, "computer")}${detail && next.computerLimit > detail.limit ? `, ${next.computerLimit - detail.limit} more` : ""} · $${next.priceUsd} a month`}
               />
             ) : null}
           </div>

@@ -7,6 +7,7 @@ import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/
 import { reportExtraPhoneMinutes, setExtraPhoneMinutes } from "../src/cloud/phoneBilling";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
+import { pruneSponsored } from "../src/cloud/gravity";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
 import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
@@ -5016,6 +5017,29 @@ describe("sponsored cards", () => {
     expect(JSON.stringify(harness.rows("select * from cloud_sponsored_turns"))).not.toContain("database");
   });
 
+  // App Tracking Transparency: an iPhone sends the hashed email only once the person allowed tracking.
+  const IPHONE = { type: "mobile", os: "ios", osVersion: "26.1", ua: "ADE-iOS/1.1.10" };
+  it.each<[string, Row, boolean]>([
+    ["a desktop", DEVICE, true],
+    ["an iPhone that allowed tracking", { ...IPHONE, tracking: "authorized" }, true],
+    ["an iPhone that said no", { ...IPHONE, tracking: "denied" }, false],
+    ["an iPhone where tracking is restricted", { ...IPHONE, tracking: "restricted" }, false],
+    ["an iPhone that never answered", { ...IPHONE, tracking: "not_determined" }, false],
+    ["an older iPhone app that sends no answer", IPHONE, false],
+  ])("from %s, the card is still asked for, with the hashed email only when allowed", async (_label, device, withEmail) => {
+    const answer = await (await send(OWNER, "/cloud/sponsored/ad", adBody({ device }))).json() as { ad: Row | null };
+    expect(answer.ad).toMatchObject({ brand: "Neon" });
+    expect(gravityCalls).toHaveLength(1);
+    const user = gravityCalls[0]!.body.user as Row;
+    expect(user.hashed_email).toBe(withEmail ? "e".repeat(64) : undefined);
+    // The Index sends the email by the device the person last watched from.
+    Object.assign(harness.env, { GRAVITY_LIVE: "1" });
+    expect(await (await send(OWNER, "/cloud/sponsored/seen", { instanceId: INSTANCE, device })).json()).toEqual({ ok: true });
+    await send(OWNER, "/cloud/sponsored/index", { instanceId: INSTANCE, chatId: "chat-1", need: "a hosted Postgres for this app" });
+    expect(gravityCalls).toHaveLength(2);
+    expect(gravityCalls[1]!.body.hashed_email).toBe(withEmail ? "e".repeat(64) : undefined);
+  });
+
   it.each<[string, () => void, Row, string]>([
     ["the switch is off", () => { gravityEnv().GRAVITY_ADS = undefined; }, {}, "off"],
     ["the account is not a tester", () => { gravityEnv().GRAVITY_ADS = "testers"; }, {}, "off"],
@@ -5048,6 +5072,19 @@ describe("sponsored cards", () => {
     // A no keeps nothing of where the person watched from.
     expect(harness.rows("select * from cloud_sponsored_viewers")).toEqual([]);
     expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "declined", test: true });
+  });
+
+  it("forgets where people watched from a day after their last look, every hour, for every account", async () => {
+    const DAY = 24 * 60 * 60_000;
+    const viewer = (user: string, instance: string, seenAt: number) => harness.insert("cloud_sponsored_viewers", { user_id: user, instance_id: instance, ip: "203.0.113.7", ua: "ADE/1", device_type: "desktop", os: "macos", seen_at: seenAt });
+    viewer(OWNER, INSTANCE, NOW - DAY - 60_000);
+    viewer(OTHER, "other00001", NOW - DAY - 60_000);
+    viewer(OWNER, "recent0001", NOW);
+    // NOW is 12:00 UTC. Only minute 23 of an hour prunes; the rest of the hour makes no query.
+    await pruneSponsored(harness.env as never, NOW + 22 * 60_000);
+    expect(harness.rows("select instance_id from cloud_sponsored_viewers")).toHaveLength(3);
+    await pruneSponsored(harness.env as never, NOW + 23 * 60_000);
+    expect(harness.rows("select user_id, instance_id from cloud_sponsored_viewers")).toEqual([{ user_id: OWNER, instance_id: "recent0001" }]);
   });
 
   it("the Index answers an agent only while the person watches, with the person's address", async () => {

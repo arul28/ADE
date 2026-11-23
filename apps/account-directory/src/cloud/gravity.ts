@@ -8,6 +8,7 @@ import {
   CLOUD_SPONSORED_MESSAGE_MAX_CHARS,
   CLOUD_SPONSORED_NEED_MAX_CHARS,
   CLOUD_SPONSORED_OSES,
+  CLOUD_SPONSORED_TRACKING,
   type CloudSponsoredAd,
   type CloudSponsoredAdAnswer,
   type CloudSponsoredConsent,
@@ -199,7 +200,20 @@ function readDevice(value: unknown): CloudSponsoredDevice | null {
   const type = CLOUD_SPONSORED_DEVICE_TYPES.find((entry) => entry === raw.type);
   const os = CLOUD_SPONSORED_OSES.find((entry) => entry === raw.os);
   if (!type || !os) return null;
-  return { type, os, osVersion: shortString(raw.osVersion, 64), ua: shortString(raw.ua, 512) };
+  const tracking = CLOUD_SPONSORED_TRACKING.find((entry) => entry === raw.tracking) ?? null;
+  return { type, os, osVersion: shortString(raw.osVersion, 64), ua: shortString(raw.ua, 512), tracking };
+}
+
+/**
+ * The account's hashed email for Gravity, when this device may send it. An
+ * iPhone or iPad sends it only once the person allowed tracking in Apple's
+ * prompt (App Tracking Transparency); any other answer, or none from an older
+ * app, leaves it out. Desktop and web have no such prompt and always send it.
+ */
+function hashedEmailFor(device: { os: string; tracking?: string | null } | null, emailHash: string | null): string | null {
+  if (!emailHash) return null;
+  if (device?.os === "ios" && device.tracking !== "authorized") return null;
+  return emailHash;
 }
 
 function readMessages(value: unknown, keep: number): CloudSponsoredMessage[] {
@@ -328,12 +342,12 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
   if (!computer) return json({ ok: false });
   // Written only while the answer is still yes, in the same statement: a "no" that lands meanwhile wins.
   await env.DB.prepare(`
-    insert into cloud_sponsored_viewers (user_id, instance_id, ip, ua, device_type, os, os_version, country, seen_at)
-    select ?, ?, ?, ?, ?, ?, ?, ?, ?
+    insert into cloud_sponsored_viewers (user_id, instance_id, ip, ua, device_type, os, os_version, tracking, country, seen_at)
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     where exists (select 1 from cloud_sponsored_consent where user_id = ? and consent = 'granted')
     on conflict (user_id, instance_id) do update set ip = excluded.ip, ua = excluded.ua, device_type = excluded.device_type,
-      os = excluded.os, os_version = excluded.os_version, country = excluded.country, seen_at = excluded.seen_at
-  `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, country, now, userId).run();
+      os = excluded.os, os_version = excluded.os_version, tracking = excluded.tracking, country = excluded.country, seen_at = excluded.seen_at
+  `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, device.tracking ?? null, country, now, userId).run();
   return json({ ok: true });
 }
 
@@ -423,12 +437,13 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
 
   const live = isLive(env);
   const ip = clientIp(request);
+  const hashedEmail = hashedEmailFor(device, consent.email_hash);
   const result = await gravityAds(
     {
       body: {
         gravity_context: {
           sessionId: await gravitySessionId(userId, chatId),
-          user: { id: await gravityUserId(userId), ...(consent.email_hash ? { hashed_email: consent.email_hash } : {}) },
+          user: { id: await gravityUserId(userId), ...(hashedEmail ? { hashed_email: hashedEmail } : {}) },
           device: {
             ua: clientUa(request, device) ?? undefined,
             device_type: device.type,
@@ -522,7 +537,7 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   const computer = await ownCloudComputer(env, userId, body.instanceId);
   if (!computer) return none("not_cloud");
   const viewer = await env.DB.prepare("select * from cloud_sponsored_viewers where user_id = ? and instance_id = ?")
-    .bind(userId, computer.instance_id).first<{ ip: string | null; ua: string | null; country: string | null; seen_at: number }>();
+    .bind(userId, computer.instance_id).first<{ ip: string | null; ua: string | null; os: string; tracking: string | null; country: string | null; seen_at: number }>();
   // The country is the person's, from their last look at the chat: the agent's computer is not where they are.
   const blocked = await blockedReason(env, account, viewer?.country ?? null);
   if (blocked) return none(blocked);
@@ -543,6 +558,8 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   }
   if (!(await reserveRequest(env, now, userId, "index"))) return none("limit");
   const messages = readMessages(body.messages, INDEX_CONTEXT_MESSAGES);
+  // The person's own device decides, as for a card: an iPhone without tracking allowed sends no email.
+  const hashedEmail = hashedEmailFor(viewer, consent.email_hash);
 
   let response: Response;
   try {
@@ -554,7 +571,7 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
         user_ip: viewer.ip,
         ...(viewer.ua ? { user_agent: viewer.ua } : {}),
         ...(chatId && ROW_ID.test(chatId) ? { session_id: await gravitySessionId(userId, chatId) } : {}),
-        ...(consent.email_hash ? { hashed_email: consent.email_hash } : {}),
+        ...(hashedEmail ? { hashed_email: hashedEmail } : {}),
         ...(viewer.country ? { country: viewer.country } : {}),
         ...(messages.length ? { context: { messages } } : {}),
         max_options: 1,
@@ -587,10 +604,15 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
  * had no requests. Gravity's reports are best effort: a failed read says so.
  */
 /**
- * The daily clean-up: a reply's answer older than a day, and where a person
- * watched from once that is a day old (a computer since deleted included).
+ * The hourly clean-up (minute 23 of each hour, every account, whatever the
+ * switch): a reply's answer older than a day, and where a person watched from
+ * (IP address, user agent, device, OS) once that is a day old, a computer
+ * since deleted included. So nothing outlives a day by more than an hour.
+ * Every other tick makes no query.
  */
-export async function pruneSponsored(env: GravityEnv, now: number): Promise<void> {
+export async function pruneSponsored(env: GravityEnv, scheduledTime: number): Promise<void> {
+  if (new Date(scheduledTime).getUTCMinutes() !== 23) return;
+  const now = scheduledTime;
   await env.DB.batch([
     env.DB.prepare("delete from cloud_sponsored_turns where created_at < ?").bind(now - TURN_TTL_MS),
     env.DB.prepare("delete from cloud_sponsored_viewers where seen_at < ?").bind(now - TURN_TTL_MS),
