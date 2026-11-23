@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { symlinksSupported } from "../../../test/symlinks";
 import { resolveSceneStillOwner, SceneStillScopeKeyError } from "./sceneStills";
 import { ingestSceneSnapshot } from "./sceneSnapshotIngest";
 
@@ -104,7 +105,7 @@ describe("ingesting a scene snapshot", () => {
    * store passes string-only containment, and the ingest below it follows the
    * link — so the jail and the read disagreed about which file they meant.
    */
-  it("refuses a symlink inside the store that points out of it", async () => {
+  it.skipIf(!symlinksSupported)("refuses a symlink inside the store that points out of it", async () => {
     const { projectRoot, artifactsRoot, filed, broker } = createFixture();
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "ade-scene-link-"));
     const secret = writePng(elsewhere, "secret.png");

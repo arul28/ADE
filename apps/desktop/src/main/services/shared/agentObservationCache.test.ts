@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { symlinksSupported } from "../../../test/symlinks";
 import {
   pruneAgentObservationCacheRoot,
   pruneAgentObservationDirectory,
@@ -71,7 +72,7 @@ describe("pruneAgentObservationCacheRoot", () => {
 
   // Regression: `fs.stat` resolved a symlink, so a link planted in the cache
   // root made a read-shaped sweep delete .json/.png files in the link's target.
-  it("skips a symlinked directory instead of deleting through it", async () => {
+  it.skipIf(!symlinksSupported)("skips a symlinked directory instead of deleting through it", async () => {
     const root = scratchDir();
     const outside = scratchDir();
     writeObservation(outside, "precious", 60 * 60_000);

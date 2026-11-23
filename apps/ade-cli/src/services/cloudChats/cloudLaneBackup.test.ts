@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CloudBackupReport, CloudLaneBackup, CloudLaneBackupFacts } from "../../../../account-directory/src/cloud/contract";
 import type { CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import { prepareLaneBranchFromBackup, restoreLaneBackupIfNeeded, runLaneBackups } from "./cloudLaneBackup";
+import { symlinksSupported } from "../../test/symlinks";
 
 /**
  * A lane's unpushed work lives only in its backup once its computer is
@@ -153,7 +154,7 @@ afterEach(() => {
 });
 
 describe("lane backups", () => {
-  it("a new computer gets the lane's work back exactly: commits, staged, unstaged, deleted, untracked, binary and symlink; ignored files stay out; nothing reaches GitHub", async () => {
+  it.skipIf(!symlinksSupported)("a new computer gets the lane's work back exactly: commits, staged, unstaged, deleted, untracked, binary and symlink; ignored files stay out; nothing reaches GitHub", async () => {
     const { origin, source } = seedOrigin();
     makeUnpushedWork(source);
     const originBefore = git(origin, "for-each-ref");
@@ -193,7 +194,7 @@ describe("lane backups", () => {
     expect(server.rows.size).toBe(0);
   });
 
-  it.each<[string, (target: string) => void]>([
+  it.skipIf(!symlinksSupported).each<[string, (target: string) => void]>([
     ["uncommitted work of its own", (target) => write(target, "mine.txt", "newer\n")],
     ["a commit past the backup's base that the backup lacks", (target) => {
       write(target, "other.txt", "other\n");
@@ -218,7 +219,7 @@ describe("lane backups", () => {
     expect(server.rows.get(`key-old/${LANE}`)!.restoredByMachineKey).toBeNull();
   });
 
-  it("a lane at the backup's commit: one that holds the work is left alone and marked restored; one with other uncommitted work keeps it", async () => {
+  it.skipIf(!symlinksSupported)("a lane at the backup's commit: one that holds the work is left alone and marked restored; one with other uncommitted work keeps it", async () => {
     const { source } = seedOrigin();
     makeUnpushedWork(source);
     const server = fakeServer();
@@ -234,7 +235,7 @@ describe("lane backups", () => {
     expect(treeOf(source)).toEqual(before);
   });
 
-  it("a branch never pushed is made on the new computer from the backup, without a push, and its work is put back", async () => {
+  it.skipIf(!symlinksSupported)("a branch never pushed is made on the new computer from the backup, without a push, and its work is put back", async () => {
     const { origin, source } = seedOrigin();
     git(source, "checkout", "-q", "-b", "ade/never-pushed", "main");
     makeUnpushedWork(source);
@@ -341,7 +342,7 @@ describe("lane backups", () => {
     expect([server.rows.size, server.deleted]).toEqual([1, []]);
   });
 
-  it("a lane whose folder is missing counts as saved only by its backup", async () => {
+  it.skipIf(!symlinksSupported)("a lane whose folder is missing counts as saved only by its backup", async () => {
     const { source } = seedOrigin();
     makeUnpushedWork(source);
     const missing = () => runLaneBackups({ api: fakeServer().api, instanceId: "box", machineKey: "key-old", logger, lanes: async () => ({ complete: true, lanes: [], missing: [LANE] }), mayGoOn: () => true });

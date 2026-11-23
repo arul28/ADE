@@ -4,6 +4,7 @@ import path from "node:path";
 import { isMainThread } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { injectFsFault } from "../../../test/faultInjection";
+import { symlinksSupported } from "../../../test/symlinks";
 import {
   cleanupAbandonedTempFiles,
   createFileVersionTracker,
@@ -368,7 +369,7 @@ describe("durableFile", () => {
   });
 
   describe("cleanupAbandonedTempFiles", () => {
-    it("removes only matching old regular files and never follows symlinks", () => {
+    it.skipIf(!symlinksSupported)("removes only matching old regular files and never follows symlinks", () => {
       const oldTemp = path.join(root, ".state.json.tmp-123-old");
       const youngTemp = path.join(root, ".state.json.tmp-123-young");
       const nonMatching = path.join(root, "state.json.tmp-123-old");

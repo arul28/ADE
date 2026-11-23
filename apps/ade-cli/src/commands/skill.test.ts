@@ -12,6 +12,7 @@ import {
   readAgentSkillFile,
 } from "../services/skills/agentSkillCatalogService";
 import { CliSkillUsageError, runSkillCommand, runSkillList, runSkillShow } from "./skill";
+import { symlinksSupported } from "../test/symlinks";
 
 describe("ade skill (bundled agent skills)", () => {
   it("list --json returns entries for known bundled skills", () => {
@@ -68,7 +69,7 @@ describe("ade skill (bundled agent skills)", () => {
 
   // `skill show <name> <file>` is read-only over ADE MCP, so a skill folder a
   // repo controls must not become a way to read, or probe for, other files.
-  it("reads a skill's own Markdown files and nothing outside its folder", () => {
+  it.skipIf(!symlinksSupported)("reads a skill's own Markdown files and nothing outside its folder", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-skill-file-"));
     const project = path.join(root, "project");
     const skillDir = path.join(project, ".claude", "skills", "guide");
