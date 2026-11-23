@@ -2465,7 +2465,7 @@ describe("local runtime connection pool", () => {
       expect.objectContaining({
         arguments: expect.objectContaining({ domain: "lane", action: "delete" }),
       }),
-      { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS },
+      { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS, waitWhileRunning: true },
     );
 
     resolveCall({ domain: "lane", action: "delete", result: null, statusHints: {} });
@@ -2501,7 +2501,7 @@ describe("local runtime connection pool", () => {
     expect(call).toHaveBeenCalledWith(
       "ade/actions/call",
       expect.anything(),
-      { timeoutMs: 120_000 },
+      { timeoutMs: 120_000, waitWhileRunning: true },
     );
   });
 
@@ -2595,7 +2595,7 @@ describe("local runtime connection pool", () => {
           args: {},
         },
       },
-      { timeoutMs: 30_000 },
+      { timeoutMs: 30_000, waitWhileRunning: true },
     );
     expect(logger.warn).toHaveBeenCalledWith("local_runtime.ensure_project_connection_dropped", {
       rootPath,
@@ -2675,7 +2675,7 @@ describe("local runtime connection pool", () => {
     expect(client.call).toHaveBeenLastCalledWith(
       "ade/actions/call",
       expect.objectContaining({ name: "run_ade_action" }),
-      { timeoutMs: 30_000 },
+      { timeoutMs: 30_000, waitWhileRunning: true },
     );
     expect(actionCalls).toBe(2);
     expect(logger.warn).not.toHaveBeenCalledWith(
@@ -4027,7 +4027,7 @@ setInterval(() => {}, 1000);
           args: {},
         },
       },
-      { timeoutMs: 8_000 },
+      { timeoutMs: 8_000, waitWhileRunning: true },
     );
   });
 
@@ -4079,7 +4079,7 @@ setInterval(() => {}, 1000);
           action: "suggestLaneNameFromPrompt",
         }),
       }),
-      { timeoutMs: 120_000 },
+      { timeoutMs: 120_000, waitWhileRunning: true },
     );
     expect(call).toHaveBeenNthCalledWith(
       2,
@@ -4090,7 +4090,7 @@ setInterval(() => {}, 1000);
           action: "deleteSession",
         }),
       }),
-      { timeoutMs: 30_000 },
+      { timeoutMs: 30_000, waitWhileRunning: true },
     );
   });
 
@@ -4145,7 +4145,7 @@ setInterval(() => {}, 1000);
           action: "handoffSession",
         }),
       }),
-      { timeoutMs: 120_000 },
+      { timeoutMs: 120_000, waitWhileRunning: true },
     );
     expect(call).toHaveBeenNthCalledWith(
       2,
@@ -4156,7 +4156,7 @@ setInterval(() => {}, 1000);
           action: "prepareCrossMachineHandoff",
         }),
       }),
-      { timeoutMs: 120_000 },
+      { timeoutMs: 120_000, waitWhileRunning: true },
     );
   });
 
@@ -4213,7 +4213,7 @@ setInterval(() => {}, 1000);
           args: { sessionId: "chat-1" },
         },
       },
-      { timeoutMs: 30_000 },
+      { timeoutMs: 30_000, waitWhileRunning: true },
     );
     expect(call).toHaveBeenCalledTimes(1);
     expect(close).not.toHaveBeenCalled();

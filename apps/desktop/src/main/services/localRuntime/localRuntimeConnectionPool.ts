@@ -2774,6 +2774,9 @@ export class LocalRuntimeConnectionPool {
       const tConnect = Date.now();
       const actionCallOptions = {
         timeoutMs: localRuntimeActionTimeoutMs(request.domain, request.action),
+        // Past that budget the brain is asked whether it still runs the
+        // action, and the call waits while it does (`shared/runningRequests.ts`).
+        waitWhileRunning: true,
       };
       let value: unknown = undefined;
       let callError: Error | null = null;

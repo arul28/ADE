@@ -8,6 +8,12 @@ import {
 } from "./runtimeRpcClient";
 import { expectedErrorKind } from "../../../shared/expectedError";
 import { LATE_TIMER_GRACE_MS } from "../../../shared/deadlineTimer";
+import {
+  REQUEST_STATUS_METHOD,
+  RUNNING_REQUEST_MAX_EXTENSION_MS,
+  RUNNING_REQUEST_RECHECK_MS,
+} from "../../../shared/runningRequests";
+import { startJsonRpcServer, type JsonRpcHandler } from "../../../../../ade-cli/src/jsonrpc";
 
 class MockTransport implements RuntimeRpcTransport {
   readonly writes: string[] = [];
@@ -444,6 +450,132 @@ describe("RuntimeRpcClient", () => {
     unsubscribe();
     transport.emitData({ jsonrpc: "2.0", method: "runtime/event", params: { projectId: "project-2" } });
     expect(onRuntimeEvent).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * A client and the brain's real JSON-RPC server, joined in memory. Each write
+ * lands on the other side in a later microtask, in order, as one socket does.
+ */
+function connectToRealServer(handler: JsonRpcHandler): RuntimeRpcClient {
+  const toServer = new Set<(chunk: Buffer) => void>();
+  const toClient = new Set<(chunk: Buffer) => void>();
+  const deliver = (targets: Set<(chunk: Buffer) => void>, data: string) =>
+    queueMicrotask(() => {
+      for (const callback of targets) callback(Buffer.from(data, "utf8"));
+    });
+  startJsonRpcServer(handler, {
+    onData: (callback) => toServer.add(callback),
+    write: (data) => deliver(toClient, data),
+    close: () => {},
+  }, { nonFatal: true });
+  return new RuntimeRpcClient({
+    onData: (callback) => toClient.add(callback),
+    write: (data) => deliver(toServer, data),
+    close: () => {},
+  });
+}
+
+describe("RuntimeRpcClient waiting while the other end still runs a call", () => {
+  const ACTION = { name: "run_ade_action", arguments: { domain: "storage", action: "runMaintenanceNow" } };
+
+  it("keeps waiting past the budget while the brain's server lists the call, and gets its answer", async () => {
+    vi.useFakeTimers();
+    try {
+      let finish: (value: unknown) => void = () => {};
+      const client = connectToRealServer(async (request) => {
+        if (request.method !== "ade/actions/call") return {};
+        return await new Promise((resolve) => { finish = resolve; });
+      });
+      const call = client.call("ade/actions/call", ACTION, { timeoutMs: 30_000, waitWhileRunning: true });
+      const outcome = call.then((value) => ({ value }), (error: Error) => ({ error: error.message }));
+
+      // Three checks past the budget, minutes of work: still waiting.
+      await vi.advanceTimersByTimeAsync(30_000 + 3 * RUNNING_REQUEST_RECHECK_MS);
+      await expect(Promise.race([outcome, Promise.resolve("pending")])).resolves.toBe("pending");
+
+      finish({ ok: true, result: { reclaimedBytes: 42 } });
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(outcome).resolves.toEqual({ value: { ok: true, result: { reclaimedBytes: 42 } } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails at the budget, as before, when the call does not ask to wait", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = connectToRealServer(async (request) =>
+        request.method === "ade/actions/call" ? await new Promise(() => {}) : {});
+      const call = client.call("ade/actions/call", ACTION, { timeoutMs: 30_000 });
+      const assertion = expect(call).rejects.toThrow(
+        "Remote ADE service timed out waiting for method ade/actions/call storage.runMaintenanceNow (30000ms).",
+      );
+      await vi.advanceTimersByTimeAsync(30_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    {
+      name: "an older brain that does not know the check",
+      reply: (id: number) => ({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } }),
+      message: "(30000ms).",
+    },
+    {
+      name: "a brain that no longer runs the call (its answer is not coming)",
+      reply: (id: number) => ({ jsonrpc: "2.0", id, result: { running: [] } }),
+      message: "it stopped working on it without an answer",
+    },
+  ])("fails when asked and answered by $name", async ({ reply, message }) => {
+    vi.useFakeTimers();
+    try {
+      const transport = new MockTransport();
+      const client = new RuntimeRpcClient(transport);
+      const call = client.call("ade/actions/call", ACTION, { timeoutMs: 30_000, waitWhileRunning: true });
+      const outcome = call.then(() => "resolved", (error: Error) => error.message);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const status = JSON.parse(transport.writes[1]!.trim()) as { id: number; method: string; params: { ids: number[] } };
+      expect(status.method).toBe(REQUEST_STATUS_METHOD);
+      expect(status.params.ids).toEqual([requestId(transport.writes[0]!)]);
+      transport.emitData(reply(status.id));
+      await expect(outcome).resolves.toContain(message);
+      expect(client.isClosed()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails, as before, when the check itself gets no answer (a machine asleep, a dead link)", async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = new MockTransport();
+      const client = new RuntimeRpcClient(transport);
+      const call = client.call("ade/actions/call", ACTION, { timeoutMs: 30_000, waitWhileRunning: true });
+      const outcome = call.then(() => "resolved", (error: Error) => error.message);
+      await vi.advanceTimersByTimeAsync(30_000 + 15_000);
+      await expect(outcome).resolves.toMatch(/timed out waiting for method ade\/actions\/call storage\.runMaintenanceNow \(30000ms\)\.$/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops waiting at the cap even while the brain still says it runs the call", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = connectToRealServer(async (request) =>
+        request.method === "ade/actions/call" ? await new Promise(() => {}) : {});
+      const call = client.call("ade/actions/call", ACTION, { timeoutMs: 30_000, waitWhileRunning: true });
+      const outcome = call.then(() => "resolved", (error: Error) => error.message);
+      await vi.advanceTimersByTimeAsync(30_000 + RUNNING_REQUEST_MAX_EXTENSION_MS - 1_000);
+      await expect(Promise.race([outcome, Promise.resolve("pending")])).resolves.toBe("pending");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(outcome).resolves.toContain("it was still running there");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

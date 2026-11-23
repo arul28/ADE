@@ -1452,7 +1452,7 @@ describe("RemoteConnectionPool", () => {
         action: "create",
         args: { name: "work" },
       },
-    }), { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS });
+    }), { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS, waitWhileRunning: true });
     expect(secondClient.call).not.toHaveBeenCalled();
   });
 
@@ -1523,7 +1523,7 @@ describe("RemoteConnectionPool", () => {
         action: "create",
         args: { name: "work" },
       },
-    }), { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS });
+    }), { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS, waitWhileRunning: true });
     expect(client.close).not.toHaveBeenCalled();
     expect(ssh.end).not.toHaveBeenCalled();
   });
@@ -1616,7 +1616,7 @@ describe("RemoteConnectionPool", () => {
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
   });
 
-  it("extends remote lane naming actions without adding a timeout to unrelated mutations", async () => {
+  it("extends remote lane naming actions, and asks early about any other action while it still runs", async () => {
     const client = createClient();
     client.call.mockResolvedValue({
       ok: true,
@@ -1652,7 +1652,7 @@ describe("RemoteConnectionPool", () => {
           action: "suggestLaneNameFromPrompt",
         }),
       }),
-      { timeoutMs: 120_000 },
+      { timeoutMs: 120_000, waitWhileRunning: true },
     );
     expect(client.call).toHaveBeenNthCalledWith(
       2,
@@ -1663,6 +1663,9 @@ describe("RemoteConnectionPool", () => {
           action: "deleteSession",
         }),
       }),
+      // No budget of its own: checked at 25 s, so a sleeping machine fails as
+      // fast as the renderer's old 30 s timer did, and real work goes on.
+      { timeoutMs: 25_000, waitWhileRunning: true },
     );
   });
 
@@ -1894,7 +1897,7 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
-    }), { timeoutMs: 25_000 });
+    }), { timeoutMs: 25_000, waitWhileRunning: true });
     expect(secondClient.call).toHaveBeenCalledTimes(1);
     expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", expect.objectContaining({
       projectId: "project-1",
@@ -1903,7 +1906,7 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
-    }), { timeoutMs: 25_000 });
+    }), { timeoutMs: 25_000, waitWhileRunning: true });
   });
 
   it("retries file git decoration refresh once after ECONNRESET", async () => {
@@ -1953,7 +1956,7 @@ describe("RemoteConnectionPool", () => {
         action: "refreshGitDecorations",
         args: { workspaceId: "primary", forceFresh: true },
       },
-    }), { timeoutMs: 25_000 });
+    }), { timeoutMs: 25_000, waitWhileRunning: true });
   });
 
   it("falls back to empty git decorations when an older runtime lacks that optional action", async () => {
@@ -2001,7 +2004,7 @@ describe("RemoteConnectionPool", () => {
         action: "refreshGitDecorations",
         args: { workspaceId: "primary", forceFresh: true },
       },
-    }), { timeoutMs: 25_000 });
+    }), { timeoutMs: 25_000, waitWhileRunning: true });
   });
 
   it("lists remote ADE actions as grouped registry entries", async () => {
@@ -2105,7 +2108,7 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
-    }), { timeoutMs: 25_000 });
+    }), { timeoutMs: 25_000, waitWhileRunning: true });
   });
 
   it("calls project-scoped sync methods on the connected runtime", async () => {

@@ -705,7 +705,9 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     fireEvent.click(await screen.findByRole("button", { name: /clean up safely/i }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(await within(dialog).findByRole("button", { name: /clean up safely/i }));
-    expect(await within(dialog).findByText(/some cleanup steps couldn't finish/i)).toBeTruthy();
+    // ADE's own tidy-up failing is not the person's cleanup failing.
+    expect(await within(dialog).findByText(/tidy-up steps didn't finish/i)).toBeTruthy();
+    expect(within(dialog).queryByText(/cleanup didn't finish/i)).toBeNull();
     expect(getToasts().find((toast) => toast.title === "Some cleanup steps couldn't finish")?.tone).toBe("warning");
     expect(within(dialog).queryByText("Storage is already tidy.")).toBeNull();
   });

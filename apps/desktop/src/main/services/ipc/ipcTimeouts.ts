@@ -31,6 +31,7 @@ import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/bui
 import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { DISK_USAGE_TIMEOUT_MS } from "../../../../../ade-cli/src/services/projects/projectMove/moveCopy";
 import { MANUAL_DIAGNOSTICS_IPC_TIMEOUT_MS } from "../diagnostics/autoDiagnosticsService";
+import { RUNNING_REQUEST_MAX_EXTENSION_MS } from "../../../shared/runningRequests";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -192,6 +193,20 @@ function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null
     : null;
 }
 
+/**
+ * The IPC handler's own timer. A runtime action call waits past its budget
+ * while the brain still runs it (`shared/runningRequests.ts`), so for those two
+ * channels the timer also covers that wait: the call's answer, or its own
+ * legible timeout, always lands first. Every other channel keeps its budget.
+ */
+export function ipcHandlerTimeoutMs(channel: string, args: readonly unknown[] = []): number {
+  const budgetMs = ipcInvokeTimeoutMs(channel, args);
+  return channel === IPC.localRuntimeCallAction || channel === IPC.remoteRuntimeCallAction
+    ? budgetMs + RUNNING_REQUEST_MAX_EXTENSION_MS
+    : budgetMs;
+}
+
+/** What one call on `channel` is budgeted, before any wait while it still runs. */
 export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = []): number {
   if (channel === IPC.localRuntimeCallAction) {
     const request = readRuntimeActionRequest(args);

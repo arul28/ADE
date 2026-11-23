@@ -54,6 +54,7 @@ import { useStorageBytes } from "../storage/useStorageBytes";
 import type { HealthData } from "./useHealthData";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { decodeSettingsHash } from "../settingsHash";
+import { isRuntimeTransportTimeoutError } from "../../../../shared/runtimeErrors";
 import { requirePin } from "../../../state/repositoryScope";
 
 /** One storage result at a time: a new outcome replaces the last in place. */
@@ -127,14 +128,26 @@ export function HealthSpace({ data }: { data: HealthData }) {
       ...(runMaintenanceNow
         ? {
             runMaintenance: runMaintenanceNow,
+            // The run finishes in the background, often after the dialog
+            // closed: its result is a toast, and the page re-reads what it freed.
             onMaintenanceDone: (report: MaintenanceRunReport) => {
               const outcome = maintenanceOutcome(report, platform);
-              if (outcome.failed) notify(outcome.message, "warning");
+              notify(outcome.message, outcome.failed ? "warning" : "success");
+              refreshAfterChange();
+            },
+            onMaintenanceFailed: (error: unknown) => {
+              notify(
+                isRuntimeTransportTimeoutError(error)
+                  ? "ADE's tidy-up is taking a while; it keeps going in the background"
+                  : "ADE's tidy-up didn't finish; it runs again on its own every day",
+                "warning",
+              );
+              refreshAfterChange();
             },
           }
         : {}),
     };
-  }, [notify, plan, platform, runMaintenanceNow]);
+  }, [notify, plan, platform, refreshAfterChange, runMaintenanceNow]);
 
   const canCleanUp = Boolean(plan && (plan.fsTargets.length > 0 || runMaintenanceNow));
 

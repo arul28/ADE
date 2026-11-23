@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { IPC } from "../../../shared/ipc";
-import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
+import { ipcHandlerTimeoutMs, ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
+import { RUNNING_REQUEST_MAX_EXTENSION_MS } from "../../../shared/runningRequests";
 import { MCP_SIGN_IN_TIMEOUT_MS } from "../mcp/mcpOAuth";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
@@ -28,6 +29,26 @@ import {
 } from "../git/gitTimeouts";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { DISK_USAGE_TIMEOUT_MS } from "../../../../../ade-cli/src/services/projects/projectMove/moveCopy";
+
+describe("ipcHandlerTimeoutMs", () => {
+  // The action call under these channels waits past its budget while the brain
+  // still runs it. A handler timer that fires first reports "IPC handler timed
+  // out" for an action that is still running — the failure this wait removes.
+  it.each([
+    ["local", IPC.localRuntimeCallAction, { request: { domain: "storage", action: "runMaintenanceNow" } }],
+    ["remote", IPC.remoteRuntimeCallAction, { id: "target-1", projectId: "project-1", request: { domain: "storage", action: "runMaintenanceNow" } }],
+    ["remote long-running", IPC.remoteRuntimeCallAction, { id: "target-1", projectId: "project-1", request: { domain: "lane", action: "create" } }],
+  ] as const)("outlives the %s action's wait while it still runs", (_label, channel, payload) => {
+    expect(ipcHandlerTimeoutMs(channel, [payload])).toBe(
+      ipcInvokeTimeoutMs(channel, [payload]) + RUNNING_REQUEST_MAX_EXTENSION_MS,
+    );
+  });
+
+  it("leaves every other channel on its own budget", () => {
+    expect(ipcHandlerTimeoutMs(IPC.localRuntimeCallSync)).toBe(ipcInvokeTimeoutMs(IPC.localRuntimeCallSync));
+    expect(ipcHandlerTimeoutMs(IPC.localRuntimeStreamEvents)).toBe(ipcInvokeTimeoutMs(IPC.localRuntimeStreamEvents));
+  });
+});
 
 describe("ipcInvokeTimeoutMs", () => {
   it.each([
