@@ -68,3 +68,13 @@ export function formatGb(mb: number): string {
   const value = mb / 1024;
   return value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/u, "");
 }
+
+/**
+ * A Date shifted so its UTC fields read the current zone's wall clock. A
+ * formatter pinned to `timeZone: "UTC"` then prints local time while still
+ * following a system time-zone change; one built without a zone would keep
+ * the zone it was constructed in for as long as it is cached.
+ */
+export function wallClockAsUtc(date: Date): Date {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+}
