@@ -4907,7 +4907,8 @@ extension AgentChatEvent {
         "stopMode": .string(stopMode),
       ]
       // A restore names the steers it put back, so the queue shows them again.
-      if let restoredSteers = try container.decodeIfPresent([RemoteJSONValue].self, forKey: .restoredSteers) {
+      // Optional and additive: a malformed list must not drop the whole event.
+      if let restoredSteers = try? container.decodeIfPresent([RemoteJSONValue].self, forKey: .restoredSteers) {
         detail["restoredSteers"] = .array(restoredSteers)
       }
       self = .systemNotice(
