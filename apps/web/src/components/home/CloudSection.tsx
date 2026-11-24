@@ -1,17 +1,19 @@
-import { ArrowUpRight, Check, Smartphone } from "lucide-react";
-import { ADS_FREE_PLAN_SENTENCE, CLOUD_SMALL_UNLIMITED_SENTENCE, PRICING_PLANS, formatCount } from "../../lib/cloudPricing";
+import { Link } from "react-router-dom";
+import { ArrowRight, ArrowUpRight, Check } from "lucide-react";
+import { ADS_FREE_PLAN_SENTENCE, PRICING_PLANS, UNIT, formatCount } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
-import { MARKETING_CTA_POSITIONS } from "../../lib/marketingAnalytics";
+import { MARKETING_CTA_POSITIONS, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { PLAN_CTAS, planHref } from "../../lib/planLinks";
 import { CloudLockup } from "../cloud/CloudMark";
-import { AppleMark } from "./marks";
+import { ComingSoon } from "../cloud/ComingSoon";
 import { CloudCharts, CloudSources } from "./CloudCharts";
 
 /**
  * ADE Cloud on the home page, right under the hero. It picks a fight: three
  * benchmark-style charts against the agent apps that publish a cloud price,
  * a greyed card of the apps with no cloud at all, then the four plans, each
- * opening the web app at that plan. Competitor numbers live in
+ * opening the web app at that plan, with the unit said once under them.
+ * Competitor numbers live in
  * `lib/cloudCompetitors.ts` with their sources.
  */
 export function CloudSection() {
@@ -24,33 +26,37 @@ export function CloudSection() {
           <h2 id="ade-cloud-title" className="mt-5 font-display text-white" style={{ fontSize: "clamp(30px, 3.4vw, 46px)", lineHeight: 1.1 }}>
             Cloud computers for your agents.
             <br className="hidden md:block" />{" "}
-            <span className="text-white/45">{CLOUD_SMALL_UNLIMITED_SENTENCE}</span>
+            <span className="text-white/45">{UNIT.smallUnlimited}</span>
           </h2>
         </div>
 
         <CloudCharts />
+
+        <div className="mt-14 flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
+          <h3 className="font-display text-[clamp(24px,2.4vw,30px)] leading-tight text-white">Plans</h3>
+          <Link
+            to="/pricing"
+            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}
+            className="focus-ring inline-flex items-center gap-1.5 rounded text-[14px] text-white/70 transition-colors hover:text-white"
+          >
+            Full pricing <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
         <Plans />
 
-        <p className="mt-5 text-[13px] leading-relaxed text-white/45">{ADS_FREE_PLAN_SENTENCE}</p>
-        <p className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-[14px] text-white/55">
-          <span className="text-white/80">Coming soon</span>
-          <span className="inline-flex items-center gap-2">
-            <Smartphone className="h-4 w-4" /> iOS Simulator in the cloud
-          </span>
-          <span className="inline-flex items-center gap-2">
-            <AppleMark className="h-4 w-4" /> Mac computers in the cloud
-          </span>
-        </p>
+        <p className="mt-5 max-w-[82ch] text-[14px] leading-relaxed text-white/60">{UNIT.unitSentence}</p>
+        <p className="mt-2 max-w-[82ch] text-[13px] leading-relaxed text-white/45">{ADS_FREE_PLAN_SENTENCE}</p>
+        <ComingSoon compact className="mt-6" />
         <CloudSources />
       </div>
     </section>
   );
 }
 
-/** The four plans in one row (cloud computers, then hours for the sizes bigger than Small); each opens the web app's ADE Cloud settings at that plan. */
+/** The four plans in one row (cloud computers, then the month's hours or credits for the sizes bigger than Small); each opens the web app's ADE Cloud settings at that plan. */
 function Plans() {
   return (
-    <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
       {PRICING_PLANS.map((plan) => {
         const free = plan.priceUsd === 0;
         return (
@@ -72,14 +78,15 @@ function Plans() {
               <span className={cn("font-display text-[36px] leading-none", free ? "text-[#ffc861]" : "text-white")}>${plan.priceUsd}</span>
               <span className="text-[13px] text-white/45">a month</span>
             </p>
-            <p className="mt-2 text-[14px] text-white/70">
-              <span className="font-mono text-white tabular-nums">{formatCount(plan.computerLimit)}</span> cloud computers
-            </p>
-            <p className="mt-0.5 text-[14px] text-white/70">
-              <span className="font-mono text-white tabular-nums">{formatCount(plan.hours)}</span> hours for bigger ones
-            </p>
-            <p className="mt-0.5 text-[14px] text-white/70">{plan.adSupported ? "Ad-supported" : "No ads"}</p>
-            <p className="mt-0.5 text-[14px] text-white/45">iOS Simulator: coming soon</p>
+            <ul className="mt-3 flex flex-col gap-1 text-[14px] leading-snug text-white/70">
+              <li>
+                <span className="font-mono text-white tabular-nums">{formatCount(plan.computerLimit)}</span> cloud computers
+              </li>
+              <li>
+                <span className="font-mono text-white tabular-nums">{formatCount(plan.hours)}</span> {plan.hours === 1 ? UNIT.one : UNIT.many} for {UNIT.spenders}
+              </li>
+              <li>{plan.adSupported ? "Ad-supported" : "No ads"}</li>
+            </ul>
             {free && (
               <p className="mt-3 inline-flex items-center gap-1.5 text-[13px] text-[#ffc861]">
                 <Check className="h-3.5 w-3.5" strokeWidth={2.5} /> No credit card needed
