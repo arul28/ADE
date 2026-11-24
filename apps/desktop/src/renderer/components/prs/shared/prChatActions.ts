@@ -1,4 +1,5 @@
 import type { AgentChatSessionSummary, OpenProjectBinding, PrReviewThread, PrWithConflicts } from "../../../../shared/types";
+import type { MergeStateStatus } from "../../../../shared/types/prs";
 import { PR_THREAD_CLOSEOUT_RULE } from "../../../../shared/prWatch";
 import { digestPreview } from "../../../../shared/prConversationDigest";
 import { pipelineStateOf, type PrPipelineStateInput } from "../../../../shared/prPipelineState";
@@ -59,6 +60,37 @@ export function prFailingCheckNames(
 
 function prLine(pr: PrRef): string {
   return `${pr.repoOwner}/${pr.repoName} PR #${pr.githubPrNumber} "${pr.title}" (${pr.headBranch} → ${pr.baseBranch}) — ${pr.githubUrl}`;
+}
+
+/**
+ * Whether a PR has conflicts, from either live signal. The PR menu and the
+ * Merge card both read this, so one surface cannot offer "Resolve conflicts"
+ * while the other stays silent for the same PR.
+ */
+export function prHasConflicts(
+  status: { mergeConflicts?: boolean | null; mergeStateStatus?: MergeStateStatus | null } | null | undefined,
+): boolean {
+  return Boolean(status?.mergeConflicts) || status?.mergeStateStatus === "dirty";
+}
+
+/** GitHub's own conflict page for the PR. */
+export function prConflictsUrl(pr: Pick<PrWithConflicts, "githubUrl">): string {
+  return `${pr.githubUrl}/conflicts`;
+}
+
+/**
+ * Run the conflict action the same way everywhere: hand the shared prompt to
+ * a chat when one can take it, else open GitHub's conflict page.
+ */
+export function runPrResolveConflicts(
+  pr: PrRef,
+  handOff?: ((prompt: string) => void) | null,
+): void {
+  if (handOff) {
+    handOff(buildPrChatPrompt("resolve_conflicts", pr));
+    return;
+  }
+  void window.ade.app.openExternal(prConflictsUrl(pr));
 }
 
 export function buildPrChatPrompt(
