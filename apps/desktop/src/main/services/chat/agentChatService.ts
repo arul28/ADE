@@ -54,7 +54,7 @@ import {
   readPersistedChatRecord,
   type DeletedChatReopenSource,
 } from "./deletedChats";
-import { agentCliDisplayName, agentCliRowTitle, createCliSessionLifecycle, isTrackedAgentCliRow, type CliSessionLifecycle } from "./cliSessionLifecycle";
+import { agentCliDisplayName, agentCliRowTitle, createCliSessionLifecycle, isTrackedAgentCliRow, trackedCliIdentity, type CliSessionLifecycle } from "./cliSessionLifecycle";
 import {
   cliFreshReason,
   cliMoveLaunch,
@@ -679,6 +679,7 @@ import type {
   AgentChatContextUsageArgs,
   AgentChatDeleteArgs,
   AgentChatDeleteResult,
+  AgentChatIdentity,
   AgentChatRecoverContinuityArgs,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerMode,
@@ -9312,7 +9313,7 @@ function pushClaudeMessage<TMessage>(
  * ids that share the most of the asked name's words (`deepseek`, `flash`), so a
  * caller one prefix or version off sees the id to use. Empty when none share any.
  */
-function closestOpenCodeModelIds(asked: string, limit = 3): string {
+function closestOpenCodeModelsHint(asked: string, limit = 3): string {
   const words = (value: string) => value.toLowerCase().split(/[^a-z0-9.]+/).filter((word) => word.length > 1);
   const askedWords = new Set(words(asked));
   if (!askedWords.size) return "";
@@ -12567,7 +12568,12 @@ export function createAgentChatService(args: {
   createScheduledWorkScheduler?: typeof createChatScheduledWorkScheduler;
   onEvent?: (event: AgentChatEventEnvelope) => void;
   /** A chat was deleted. Fires once, after its transcript is gone, with what it was. */
-  onChatDeleted?: (sessionId: string, chat: { title: string | null; laneId: string | null; parentSessionId: string | null }) => void;
+  /** `surface: "cli"`: a tracked provider CLI deleted like a chat; it has no saved account copy. */
+  onChatDeleted?: (
+    sessionId: string,
+    chat: AgentChatIdentity,
+    options?: { surface: "cli" },
+  ) => void;
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
   /**
@@ -53133,7 +53139,7 @@ export function createAgentChatService(args: {
       requestedModelDescriptor = lookUpRequestedModel();
       resolvedModelId = requestedModelDescriptor?.id ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
       if (!resolvedModelId) {
-        throw new AdeExpectedError(`OpenCode has no model '${normalizedInputModel}'.${closestOpenCodeModelIds(normalizedInputModel)} ${unknownModelHint("opencode")}`, "user");
+        throw new AdeExpectedError(`OpenCode has no model '${normalizedInputModel}'.${closestOpenCodeModelsHint(normalizedInputModel)} ${unknownModelHint("opencode")}`, "user");
       }
     }
 
@@ -77982,9 +77988,16 @@ export function createAgentChatService(args: {
     if (isTrackedAgentCliRow(existing)) {
       // An agent CLI terminal deletes like a chat: stopped, kept in Recently deleted.
       await cancelScheduledWorkFor(trimmedSessionId);
+      // Read now, as for a chat below: the row is gone once deleteCli returns.
+      const deletedCliChat = trackedCliIdentity(existing);
       const deletedCli = await cliLifecycle.deleteCli(existing, { remember: deleteOptions.remember === true });
       releaseRemoteWorkOfEndedChat(trimmedSessionId, "deleted");
       forgetRemoteWork(trimmedSessionId);
+      try {
+        if (!deleteOptions.localOnly && deletedCliChat) onChatDeleted?.(trimmedSessionId, deletedCliChat, { surface: "cli" });
+      } catch (error) {
+        logger.warn("agent_chat.on_deleted_failed", { sessionId: trimmedSessionId, error: getErrorMessage(error) });
+      }
       return deletedCli;
     }
     if (!isChatToolType(existing.toolType)) {

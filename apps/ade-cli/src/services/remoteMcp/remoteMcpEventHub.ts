@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import type { PrEventPayload } from "../../../../desktop/src/shared/types/prs";
+import type { AgentChatEventEnvelope, AgentChatIdentity } from "../../../../desktop/src/shared/types/chat";
+import type { PrChecksStatus, PrEventPayload, PrReviewStatus, PrState, PrSummary } from "../../../../desktop/src/shared/types/prs";
 import type { TrackedCliTurnEndedEvent } from "../../../../desktop/src/main/services/pty/cliTurnSignals";
 import { readPendingInputRequest } from "../../../../desktop/src/shared/pendingInputRequest";
 import { redactOutgoingChatText } from "../../../../desktop/src/main/utils/redaction";
@@ -46,14 +46,18 @@ export type McpHubEntry = {
 /** A position in one machine's events: this brain run, and the last event at or before it. */
 export type McpHubPosition = { boot: string; seq: number };
 
+/** What an event says about its chat: its name, its lane, and the chat that started it. */
+export type McpChatIdentity = AgentChatIdentity;
+
 /** How a project's runtime answers for its chats when an app reads an event. */
 export type McpChatSource = {
-  summary(sessionId: string): Promise<Record<string, unknown> | null>;
-  /** The turn's last assistant message, written at or after `sinceMs` when given; null when it has none. */
-  finalReply(sessionId: string, turnId: string | null, sinceMs: number | null): Promise<{ text: string; messageId: string | null } | null>;
+  /** The chat's name, lane and parent; null when it is gone. */
+  identity(sessionId: string): Promise<McpChatIdentity | null>;
+  /** The turn's last assistant message, written between `sinceMs` and `untilMs` when given; null when it has none. */
+  finalReply(sessionId: string, turnId: string | null, sinceMs: number | null, untilMs: number | null): Promise<McpTurnReply | null>;
 };
 
-const RING_MAX = 1_000;
+export const MCP_HUB_RING_MAX = 1_000;
 const MAX_TEXT_CHARS = 500;
 /** Sessions whose last ended turn is remembered, so a turn reported twice (status, then done) counts once. */
 const MAX_TRACKED_SESSIONS = 2_000;
@@ -74,7 +78,21 @@ const endedTurns = new Map<string, { turnId: string | null; at: number; entry: M
 /** When each session's running turn began. */
 const turnStarts = new Map<string, number>();
 /** What each deleted chat was: its earlier events are still read after its summary is gone. */
-const deletedChats = new Map<string, { title: string | null; laneId: string | null; parentSessionId: string | null }>();
+const deletedChats = new Map<string, McpChatIdentity>();
+type PrField = "state" | "checks" | "review";
+/** The poll (its `polledAt`) that last sent notifications for each PR, and the fields they told, so a change is not told twice. */
+const prNotifiedPolls = new Map<string, { polledAt: string; fields: Set<PrField> }>();
+/** What each PR notification tells: a lifecycle kind its state, the rest its checks or review. */
+const PR_NOTIFICATION_FIELDS: Record<string, readonly PrField[]> = {
+  opened: ["state"],
+  reopened: ["state"],
+  closed: ["state"],
+  merged: ["state"],
+  checks_failing: ["checks"],
+  review_requested: ["review"],
+  changes_requested: ["review"],
+  merge_ready: ["checks", "review"],
+};
 
 const clip = (text: string, max = MAX_TEXT_CHARS): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const cleanText = (value: unknown): string | null => {
@@ -94,8 +112,8 @@ const push = (entry: Omit<McpHubEntry, "seq" | "eventId" | "at" | "turnStartedAt
   const eventId = `evt_${createHash("sha256").update(`${bootId}:${seq}`).digest("base64url").slice(0, 22)}`;
   const full: McpHubEntry = { ...entry, turnStartedAt: entry.turnStartedAt ?? null, seq, eventId, at: Date.now() };
   ring.push(full);
-  if (ring.length > RING_MAX) {
-    const dropped = ring.length - RING_MAX;
+  if (ring.length > MCP_HUB_RING_MAX) {
+    const dropped = ring.length - MCP_HUB_RING_MAX;
     droppedThroughAt = ring[dropped - 1]!.at;
     ring = ring.slice(dropped);
   }
@@ -224,30 +242,33 @@ export function noteCliTurnEndedForMcp(projectId: string, event: TrackedCliTurnE
   });
 }
 
-/** A deleted chat's name, lane and parent, read before its files went: nothing can read them after. */
-export type McpDeletedChat = { title?: string | null; laneId?: string | null; parentSessionId?: string | null };
-
-export function noteChatDeletedForMcp(projectId: string, sessionId: string, chat?: McpDeletedChat): void {
+/** `chat`: the deleted chat's name, lane and parent, read before its files went; nothing can read them after. */
+export function noteChatDeletedForMcp(projectId: string, sessionId: string, chat: McpChatIdentity): void {
   turnErrors.delete(sessionId);
   endedTurns.delete(sessionId);
   turnStarts.delete(sessionId);
-  const known = {
-    title: chat?.title?.trim() || null,
-    laneId: chat?.laneId?.trim() || null,
-    parentSessionId: chat?.parentSessionId?.trim() || null,
+  const known: McpChatIdentity = {
+    title: chat.title?.trim() || null,
+    laneId: chat.laneId?.trim() || null,
+    parentSessionId: chat.parentSessionId?.trim() || null,
   };
   remember(deletedChats, sessionId, known);
   push({ name: "chat.deleted", projectId, sessionId, turnId: null, data: { ...known } });
 }
 
 /** A deleted chat's name, lane and parent, while the hub still remembers it. */
-export function mcpDeletedChat(sessionId: string): { title: string | null; laneId: string | null; parentSessionId: string | null } | null {
+export function mcpDeletedChat(sessionId: string): McpChatIdentity | null {
   return deletedChats.get(sessionId) ?? null;
 }
 
-/** A PR event from a project runtime; only an opened, merged, closed or checks change counts. */
+/** A PR event from a project runtime: each PR notification counts, of any kind. */
 export function notePrEventForMcp(projectId: string, event: PrEventPayload): void {
   if (event.type !== "pr-notification") return;
+  const told = prNotifiedPolls.get(event.prId);
+  const fields = told && told.polledAt === event.polledAt ? told.fields : new Set<PrField>();
+  // A kind this hub doesn't know tells every field: never a second event for it.
+  for (const field of PR_NOTIFICATION_FIELDS[event.kind] ?? ["state", "checks", "review"]) fields.add(field);
+  remember(prNotifiedPolls, event.prId, { polledAt: event.polledAt, fields });
   push({
     name: "pr.changed",
     projectId,
@@ -267,6 +288,114 @@ export function notePrEventForMcp(projectId: string, event: PrEventPayload): voi
       ...(cleanText(event.message) ? { message: cleanText(event.message) } : {}),
     },
   });
+}
+
+/** One PR's change as the PR poller found it (`onPullRequestsChanged`). */
+export type McpPrChange = {
+  pr: PrSummary;
+  previousState: PrState | null;
+  previousChecksStatus: PrChecksStatus | null;
+  previousReviewStatus: PrReviewStatus | null;
+};
+
+/**
+ * The PR poller's changes, after it sent its notifications for the same poll.
+ * A PR notification is sent only for some changes (a draft's checks passing is
+ * none), so a change of state, checks or review that no notification of this
+ * poll told is told here, once: `checks_changed`, `review_changed` or
+ * `state_changed`, with what it was before. A PR seen for the first time is
+ * not a change.
+ */
+export function notePrChangesForMcp(projectId: string, polledAt: string, changes: readonly McpPrChange[]): void {
+  for (const { pr, previousState, previousChecksStatus, previousReviewStatus } of changes) {
+    if (previousState === null) continue;
+    const told = prNotifiedPolls.get(pr.id);
+    const toldNow = told && told.polledAt === polledAt ? told.fields : null;
+    const stateMoved = previousState !== pr.state && !toldNow?.has("state");
+    const checksMoved = previousChecksStatus !== pr.checksStatus && !toldNow?.has("checks");
+    const reviewMoved = previousReviewStatus !== pr.reviewStatus && !toldNow?.has("review");
+    if (!stateMoved && !checksMoved && !reviewMoved) continue;
+    push({
+      name: "pr.changed",
+      projectId,
+      sessionId: null,
+      turnId: null,
+      data: {
+        kind: stateMoved ? "state_changed" : checksMoved ? "checks_changed" : "review_changed",
+        prId: pr.id,
+        prNumber: pr.githubPrNumber,
+        title: clip(pr.title ?? "", 300),
+        laneId: pr.laneId,
+        repo: `${pr.repoOwner}/${pr.repoName}`,
+        url: pr.githubUrl,
+        state: pr.state,
+        checksStatus: pr.checksStatus,
+        reviewStatus: pr.reviewStatus,
+        ...(stateMoved ? { previousState } : {}),
+        ...(checksMoved ? { previousChecksStatus } : {}),
+        ...(reviewMoved ? { previousReviewStatus } : {}),
+      },
+    });
+  }
+}
+
+/** A transcript entry as `turnFinalReply` reads it. */
+export type McpTranscriptEntry = { role: string; text: string; timestamp: string; turnId?: string | null; messageId?: string | null };
+
+export type McpTurnReply = { text: string; messageId: string | null };
+
+/** Slack for clock rounding before the turn began, and for a reply written just after its end was reported. */
+const REPLY_BEFORE_START_MS = 5;
+const REPLY_AFTER_END_MS = 1_000;
+
+/**
+ * A turn's final reply among transcript entries: the last assistant entry
+ * written between the turn's start and its end (an entry with no readable
+ * time counts). The turn's own entry wins when the provider tags entries with
+ * turns; else the newest untagged one, so a provider that tags only some
+ * entries still finds its reply. Null when the turn wrote none, so a turn with
+ * no text never gets the reply of the turn before or after it.
+ */
+function turnFinalReply(
+  entries: readonly McpTranscriptEntry[],
+  turnId: string | null,
+  sinceMs: number | null,
+  untilMs: number | null,
+): McpTurnReply | null {
+  const replies = entries.filter((entry) => {
+    if (entry.role !== "assistant") return false;
+    const at = Date.parse(entry.timestamp);
+    if (Number.isNaN(at)) return true;
+    return (sinceMs === null || at >= sinceMs - REPLY_BEFORE_START_MS)
+      && (untilMs === null || at <= untilMs + REPLY_AFTER_END_MS);
+  }).reverse();
+  const reply = (turnId ? replies.find((entry) => entry.turnId === turnId) : null)
+    ?? replies.find((entry) => !turnId || !entry.turnId);
+  return reply ? { text: reply.text, messageId: reply.messageId ?? null } : null;
+}
+
+/** How many of a chat's newest entries the first reply lookup reads. */
+const MCP_REPLY_RECENT_ENTRIES = 40;
+
+/**
+ * Finds a turn's final reply in a chat's transcript. Reads the newest entries
+ * first (cheap, and enough for a recent turn); when the turn began before the
+ * oldest of them, reads again from the turn's start, so an app that catches up
+ * on a backlog still gets older turns' replies. `read` is `readTranscript`.
+ */
+export async function findTurnFinalReply(
+  read: (limit: number | undefined, since: string | undefined) => Promise<readonly McpTranscriptEntry[]>,
+  turnId: string | null,
+  sinceMs: number | null,
+  untilMs: number | null,
+): Promise<McpTurnReply | null> {
+  const recent = await read(MCP_REPLY_RECENT_ENTRIES, undefined);
+  const found = turnFinalReply(recent, turnId, sinceMs, untilMs);
+  if (found || sinceMs === null || recent.length < MCP_REPLY_RECENT_ENTRIES) return found;
+  const oldest = Date.parse(recent[0]?.timestamp ?? "");
+  if (Number.isNaN(oldest) || oldest <= sinceMs) return null;
+  const since = new Date(sinceMs - REPLY_BEFORE_START_MS).toISOString();
+  return turnFinalReply(await read(undefined, since), turnId, sinceMs, untilMs);
 }
 
 /** A project runtime's reader for its chats. Returns its removal. */

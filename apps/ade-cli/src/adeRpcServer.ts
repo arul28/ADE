@@ -376,22 +376,15 @@ function activityCaller(session: SessionState): "agent" | "person" {
 }
 
 /**
- * Whether the caller is a person's client rather than an agent.
- *
- * A CTO acting through its action caller (`CTO_REMOTE_CLIENT_NAME`, from
- * another machine or from this brain in process) is an agent here, whatever
- * its identity looks like: it carries no chat, run or step id, but a model is
- * driving it. So it cannot capture product analytics, answer a remote browser
- * request, or pass any other user-client gate.
- */
-/**
  * The person's own secret and password actions that an app with full ADE MCP
- * access may also take for them: read a secret's value, read or save a saved
- * login or secret. The person chose full access in Settings → ADE MCP ("works
- * like you"). A chat's own agent still may not: it is not that app.
+ * access may also take for them: read a secret's value, copy another
+ * project's secrets, read or save a saved login or secret. The person chose
+ * full access in Settings → ADE MCP ("works like you"). A chat's own agent
+ * still may not: it is not that app.
  */
 const ADE_MCP_PERSON_SECRET_ACTIONS: ReadonlySet<string> = new Set([
   "project_secret.get",
+  "project_secret.copy",
   "passwords.revealValue",
   "passwords.saveLogin",
   "passwords.saveSecret",
@@ -404,7 +397,8 @@ const ADE_MCP_PERSON_SECRET_ACTIONS: ReadonlySet<string> = new Set([
  * so the caller's process must also be one the runner started for that
  * connection (`isRunningRemoteRun`).
  */
-function isVerifiedAdeMcpWriteRun(session: SessionState, stampedChatSessionId: string | null): boolean {
+function isVerifiedAdeMcpWriteRun(session: SessionState, callerCtx: { chatSessionId?: string | null }): boolean {
+  const stampedChatSessionId = stampedChatSessionIdOf(session, callerCtx);
   const callerPid = Number(/:(\d+)$/.exec(session.identity.callerId ?? "")?.[1] ?? Number.NaN);
   const claimedConnection = asOptionalTrimmedString(session.identity.remoteMcpConnectionId);
   return !stampedChatSessionId
@@ -415,6 +409,20 @@ function isVerifiedAdeMcpWriteRun(session: SessionState, stampedChatSessionId: s
     && isRunningRemoteRun(callerPid, claimedConnection);
 }
 
+/** The chat a caller runs in, from its resolved context or its session stamp; null for none. */
+function stampedChatSessionIdOf(session: SessionState, callerCtx: { chatSessionId?: string | null }): string | null {
+  return asOptionalTrimmedString(callerCtx.chatSessionId) ?? asOptionalTrimmedString(session.identity.chatSessionId) ?? null;
+}
+
+/**
+ * Whether the caller is a person's client rather than an agent.
+ *
+ * A CTO acting through its action caller (`CTO_REMOTE_CLIENT_NAME`, from
+ * another machine or from this brain in process) is an agent here, whatever
+ * its identity looks like: it carries no chat, run or step id, but a model is
+ * driving it. So it cannot capture product analytics, answer a remote browser
+ * request, or pass any other user-client gate.
+ */
 function isUserClientSession(session: SessionState): boolean {
   return !callerIdentityIsAgent(session.identity) && !isRemoteBrainCallerClientName(session.clientName);
 }
@@ -7025,7 +7033,7 @@ async function runTool(args: {
     if (
       isUserOnlyAdeAction(domain, action)
       && !mayUseUserOnlyActions(session)
-      && !(ADE_MCP_PERSON_SECRET_ACTIONS.has(`${domain}.${action}`) && isVerifiedAdeMcpWriteRun(session, asOptionalTrimmedString(session.identity.chatSessionId) ?? null))
+      && !(ADE_MCP_PERSON_SECRET_ACTIONS.has(`${domain}.${action}`) && isVerifiedAdeMcpWriteRun(session, callerCtx))
     ) {
       // Deleting a simulator is the user's call, made from the device picker.
       scopeAccessDenied(
@@ -7042,10 +7050,6 @@ async function runTool(args: {
       domain === "chat"
       && (action === "respondToInput" || action === "approveToolUse")
       && (!isUserClient || isUnboundAdeCliCaller(session) || isTrustedChatlessAdeCliCaller(session))
-      // An outside app the person gave full access in ADE MCP answers for the
-      // person, every card included: it is not the chat's own agent, and the
-      // check below is on this brain's own records, not on a claim.
-      && !isVerifiedAdeMcpWriteRun(session, asOptionalTrimmedString(callerCtx.chatSessionId) ?? asOptionalTrimmedString(session.identity.chatSessionId) ?? null)
     ) {
       // The Mac input-lease and Windows shared-seat cards ARE the user's
       // permission. An agent answering one would be granting itself access, so
@@ -7179,10 +7183,8 @@ async function runTool(args: {
       // A caller with a chat is that chat's agent, asked in its chat: it never
       // takes the unattended ADE MCP path. The run, and the connection it was
       // started for, are this brain's own records.
-      const stampedChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
-        ?? asOptionalTrimmedString(session.identity.chatSessionId)
-        ?? null;
-      const viaAdeMcp = isVerifiedAdeMcpWriteRun(session, stampedChatSessionId);
+      const stampedChatSessionId = stampedChatSessionIdOf(session, callerCtx);
+      const viaAdeMcp = isVerifiedAdeMcpWriteRun(session, callerCtx);
       const { approval: _ignoredApproval, ...cloudArgs } = rawObjectArgs;
       scopedObjectArgs = {
         ...cloudArgs,

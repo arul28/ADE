@@ -27,6 +27,7 @@ import { PROOF_DUPLICATE_CODE } from "../../desktop/src/shared/proofProvenance";
 import { MAC_DESKTOP_PROOF_BACKEND_NAME } from "../../desktop/src/shared/types/macDesktop";
 import { APP_CONTROL_PROOF_BACKEND_NAME } from "../../desktop/src/shared/types/appControl";
 import { remoteMachineLongCallBudgetMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
+import { withTimeout } from "../../desktop/src/main/services/ai/utils";
 import { androidStoreShotCaption } from "../../desktop/src/shared/androidDevicePresentation";
 import {
   CLI_COMMAND_ALIASES,
@@ -1645,17 +1646,11 @@ async function withCloudActions<T>(
  * account gives null, and the link goes out without it.
  */
 async function boundedLinkAccountProjectId(client: SocketJsonRpcClient, projectId: string): Promise<string | null> {
-  let timer: NodeJS.Timeout | null = null;
-  const answer = await Promise.race([
-    client.request("ade/actions/call", withProjectId({ name: "get_link_ownership", arguments: {} }, projectId))
-      .then((raw) => unwrapToolResult(raw))
-      .catch(() => null),
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), 3_000);
-      timer.unref?.();
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
+  const answer = await withTimeout(
+    client.request("ade/actions/call", withProjectId({ name: "get_link_ownership", arguments: {} }, projectId)).then((raw) => unwrapToolResult(raw)),
+    3_000,
+    "get_link_ownership timed out",
+  ).catch(() => null);
   const id = isRecord(answer) ? asString(answer.accountProjectId) : null;
   return id && isAccountProjectId(id) ? id : null;
 }

@@ -630,6 +630,7 @@ export function createRemoteMcpService(args: {
     connection: (id) => store.list().find((connection) => connection.id === id) ?? null,
     servingHere: serving,
     syncSoon: () => void syncVault(),
+    record,
     warn: (event, data) => args.logger?.warn?.(event, data),
     now,
   });

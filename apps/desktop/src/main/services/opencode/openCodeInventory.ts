@@ -1004,13 +1004,17 @@ function borrowSameConfigInventory(
   fp: string,
   entries: Record<string, PersistedInventoryEntry>,
 ): ReturnType<typeof peekOpenCodeInventoryCache> {
-  if (OPENCODE_PROJECT_CONFIG_NAMES.some((name) => fs.existsSync(path.join(projectRoot, name)))) return null;
+  const hasOwnConfig = (root: string) => OPENCODE_PROJECT_CONFIG_NAMES.some((name) => fs.existsSync(path.join(root, name)));
+  if (hasOwnConfig(projectRoot)) return null;
+  // A source with its own OpenCode config may list models this project doesn't have.
   const live = inventoryCache && inventoryCache.passiveConfigFingerprint === fp && inventoryCache.modelIds.length
+    && !hasOwnConfig(inventoryCache.projectRoot)
     ? inventoryCache
     : null;
-  const saved = Object.values(entries)
-    .filter((entry) => entry.passiveConfigFingerprint === fp && entry.modelIds.length > 0)
-    .sort((a, b) => b.savedAt - a.savedAt)[0] ?? null;
+  const saved = live ? null : Object.entries(entries)
+    .filter(([, entry]) => entry.passiveConfigFingerprint === fp && entry.modelIds.length > 0)
+    .sort(([, a], [, b]) => b.savedAt - a.savedAt)
+    .find(([root]) => !hasOwnConfig(root))?.[1] ?? null;
   const source = live ?? saved;
   if (!source) return null;
   // The registry must know these ids, or a launch naming one is refused.

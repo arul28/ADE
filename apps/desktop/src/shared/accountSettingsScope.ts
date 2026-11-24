@@ -77,6 +77,19 @@ export function accountRepoScopeKey(gitOriginUrl: string | null | undefined): st
   return `${REPO_SCOPE_PREFIX}${cleaned}`;
 }
 
+/** `owner/name` → that GitHub repository's URL (no `.git`); null for anything else. */
+export function githubSlugUrl(value: string): string | null {
+  const trimmed = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(trimmed)
+    ? `https://github.com/${trimmed.replace(/\.git$/, "")}`
+    : null;
+}
+
+/** A remote's address as typed: an http(s) or ssh URL, or `git@host:path`. */
+export function isGitRemoteAddress(value: string): boolean {
+  return /^(?:https?:\/\/|ssh:\/\/|git@)/i.test(value.trim());
+}
+
 /**
  * The key a setting saves under, or null when it does not belong in the account
  * store at all.

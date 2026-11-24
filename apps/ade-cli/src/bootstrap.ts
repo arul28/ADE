@@ -117,6 +117,7 @@ import {
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService, flushAllQueuedTranscriptWrites, listMachineProviderAccountChatLoad } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
+import { trackedCliIdentity } from "../../desktop/src/main/services/chat/cliSessionLifecycle";
 import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
@@ -426,8 +427,10 @@ import {
   noteChatDeletedForMcp,
   noteChatEventForMcp,
   noteCliTurnEndedForMcp,
+  notePrChangesForMcp,
   notePrEventForMcp,
   registerMcpChatSource,
+  findTurnFinalReply,
 } from "./services/remoteMcp/remoteMcpEventHub";
 
 /** One warm-runtime budget for every project scope this brain opens. */
@@ -3377,8 +3380,9 @@ export async function createAdeRuntime(args: {
             chatBrowserLifecycleHolder.current?.(event.sessionId, "running");
           }
         },
-        onChatDeleted: (sessionId, chat) => {
-          cloudChatUploader?.noteChatDeleted(sessionId);
+        onChatDeleted: (sessionId, chat, options) => {
+          // A CLI's transcript is its terminal, never uploaded as a chat.
+          if (options?.surface !== "cli") cloudChatUploader?.noteChatDeleted(sessionId);
           noteChatDeletedForMcp(projectId, sessionId, chat);
         },
         onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
@@ -3478,20 +3482,20 @@ export async function createAdeRuntime(args: {
       // ADE MCP Events read a chat's name and final reply only when an app asks.
       const chats = agentChatService;
       teardown.push(registerMcpChatSource(projectId, {
-        summary: async (sessionId) => {
+        identity: async (sessionId) => {
           const summary = await chats.getSessionSummary(sessionId);
-          return summary ? { ...summary } : null;
+          if (summary) {
+            return { title: summary.title ?? null, laneId: summary.laneId ?? null, parentSessionId: summary.orchestrationParentSessionId?.trim() || null };
+          }
+          // A tracked provider CLI has no chat summary; its row says which chat started it.
+          return trackedCliIdentity(sessionService.get(sessionId));
         },
-        finalReply: async (sessionId, turnId, sinceMs) => {
-          const entries = await chats.readTranscript(sessionId, 8);
-          // Only this turn's: a turn with no text of its own must not get the one before it.
-          const replies = entries.filter((entry) => entry.role === "assistant"
-            && (sinceMs === null || !(Date.parse(entry.timestamp) < sinceMs - 5)));
-          // A provider that tags no entry with its turn: the newest reply is this turn's.
-          const tagged = replies.some((entry) => entry.turnId);
-          const reply = [...replies].reverse().find((entry) => !turnId || !tagged || entry.turnId === turnId);
-          return reply ? { text: reply.text, messageId: reply.messageId ?? null } : null;
-        },
+        finalReply: (sessionId, turnId, sinceMs, untilMs) => findTurnFinalReply(
+          (limit, since) => chats.readTranscript(sessionId, limit, since),
+          turnId,
+          sinceMs,
+          untilMs,
+        ),
       }));
     }
     // The CTO's account copy: written here while this machine is the CTO's
@@ -4269,7 +4273,9 @@ export async function createAdeRuntime(args: {
       onEvent: emitPrEvent,
       onPullRequestsSnapshot: (snapshot) =>
         prMergeAutoSettlementService.processSnapshot(snapshot),
-      onPullRequestsChanged: async ({ prs, changedPrs, changes }) => {
+      onPullRequestsChanged: async ({ prs, changedPrs, changes, polledAt }) => {
+        // After this poll's notifications: ADE MCP Events tell the changes they left out.
+        notePrChangesForMcp(projectId, polledAt, changes);
         if (changedPrs.length > 0) {
           // Poll results must not start another hot-refresh window; doing so
           // turns active CI into an unbounded high-frequency GitHub API loop.

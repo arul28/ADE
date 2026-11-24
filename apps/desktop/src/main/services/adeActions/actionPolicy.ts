@@ -403,8 +403,10 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   lane: ["removeDeletedLane"],
   // A secret's value is the person's to read (Settings, or the desktop's own
   // calls). Agents use secrets by name with `ade secrets exec`, which puts
-  // them in a command's environment and returns its output masked.
-  project_secret: ["get"],
+  // them in a command's environment and returns its output masked. `copy`
+  // reads any repository's secrets on the account into this project, where
+  // `exec` hands them to any command: the person's call too.
+  project_secret: ["get", "copy"],
   // Passwords: only the person adds, changes, imports or removes saved items;
   // agents use logins through `ade browser signin` and never read a value.
   passwords: ["saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "importLaneEnv", "previewLaneEnv", "exportSecrets", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],

@@ -1,10 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import https from "node:https";
-import { lookup } from "node:dns/promises";
 import { randomUUID } from "node:crypto";
-import net from "node:net";
-import { isLocalHostname, isPrivateIpAddress, isPublicIpAddress, pinnedLookup } from "../net/publicHostGuard";
+import { postToPublicHttps, publicHttpsUrlProblem } from "../net/publicHttpsPost";
 import { chatWaitTargetMatches } from "../../../shared/chatWait";
 import type { Logger } from "../logging/logger";
 import { createFileVersionTracker, writeFileAtomic } from "../state/durableFile";
@@ -65,20 +62,13 @@ type ArmChatWebhookArgs = { sessionId: string; url: string; token?: string | nul
 
 /** A public https URL, or a sentence saying why it can't be one. */
 export function chatWebhookUrlProblem(value: string): string | null {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return "The notify URL isn't a valid URL.";
+  switch (publicHttpsUrlProblem(value)) {
+    case "invalid": return "The notify URL isn't a valid URL.";
+    case "not_https": return "The notify URL must use https.";
+    case "credentials": return "The notify URL can't carry a user name or password; use the notify token.";
+    case "private": return "The notify URL must be a public address, not this computer or a private network.";
+    default: return null;
   }
-  if (url.protocol !== "https:") return "The notify URL must use https.";
-  if (url.username || url.password) return "The notify URL can't carry a user name or password; use the notify token.";
-  const host = url.hostname.replace(/^\[|\]$/g, "");
-  // Other names are resolved and checked before each POST (`postPinned`).
-  if (net.isIP(host) ? isPrivateIpAddress(host) : isLocalHostname(host)) {
-    return "The notify URL must be a public address, not this computer or a private network.";
-  }
-  return null;
 }
 
 function stateOfChat(summary: Record<string, unknown>, lastTurnFailed: boolean): ChatWebhookState | null {
@@ -98,35 +88,13 @@ const EVENT_OF_STATE: Record<ChatWebhookState, ChatWebhookEvent> = {
 const PRIVATE_ADDRESS = -1;
 
 /**
- * POSTs to the address the name resolved to, checked public, so DNS can't
- * swap in a private one between the check and the request. 0 when it failed.
+ * The POST's status: PRIVATE_ADDRESS for a private name, 0 when it failed. A
+ * name that does not resolve now is tried again like any failed POST, and
+ * logged when it is given up on.
  */
 async function postPinned(rawUrl: string, headers: Record<string, string>, body: string): Promise<number> {
-  const url = new URL(rawUrl);
-  const host = url.hostname.replace(/^\[|\]$/g, "");
-  let target: { address: string; family: number };
-  try {
-    const addresses = await lookup(host, { all: true, verbatim: true });
-    if (!addresses.length || addresses.some((entry) => !isPublicIpAddress(entry.address))) return PRIVATE_ADDRESS;
-    target = addresses[0]!;
-  } catch {
-    // A name that does not resolve now is tried again like any failed POST, and logged when it is given up on.
-    return 0;
-  }
-  return await new Promise<number>((resolve) => {
-    const request = https.request(url, {
-      method: "POST",
-      headers: { ...headers, "content-length": String(Buffer.byteLength(body)) },
-      lookup: pinnedLookup(target.address, target.family === 6 ? 6 : 4),
-      timeout: POST_TIMEOUT_MS,
-    }, (response) => {
-      response.resume();
-      resolve(response.statusCode ?? 0);
-    });
-    request.on("timeout", () => request.destroy());
-    request.on("error", () => resolve(0));
-    request.end(body);
-  });
+  const answer = await postToPublicHttps(rawUrl, headers, body, { timeoutMs: POST_TIMEOUT_MS });
+  return answer.error === "private_address" ? PRIVATE_ADDRESS : answer.status;
 }
 
 export function createChatWebhookRegistry(deps: {

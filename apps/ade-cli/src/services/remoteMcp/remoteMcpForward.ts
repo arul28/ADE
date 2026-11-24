@@ -307,11 +307,12 @@ export function createRemoteMcpMachineRouter(deps: {
     const self = thisMachine();
     if (!wanted) return { kind: "here", machine: self };
     const lower = wanted.toLowerCase();
-    if (wanted === self.key || lower === self.name.toLowerCase() || sameHostname(os.hostname(), wanted)) return { kind: "here", machine: self };
+    if (wanted === self.key || lower === self.name.toLowerCase()) return { kind: "here", machine: self };
     const machines = await roster();
     const byKey = machines.filter((machine) => machine.machineKey === lower);
     const byName = byKey.length ? byKey : machines.filter((machine) => machine.name.toLowerCase() === lower);
-    // An app may know a computer by its network name (`Mac.lan`, `arul-pc`).
+    // An app may know a computer by its network name (`Mac.lan`, `arul-pc`), after every exact key and name.
+    if (!byName.length && sameHostname(os.hostname(), wanted)) return { kind: "here", machine: self };
     const byHost = byName.length ? byName : machines.filter((machine) => sameHostname(machine.hostname, wanted));
     // As the CLI's `--machine` does: "aruls mac studio" finds "Arul’s Mac Studio".
     const named = byHost.length ? byHost : looseMachineNameMatches(machines, wanted, (machine) => [machine.name]);

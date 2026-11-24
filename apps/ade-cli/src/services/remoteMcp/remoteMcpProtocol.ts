@@ -1,25 +1,17 @@
 import os from "node:os";
 import { adeDeprecatedAgentSkillAliases } from "../../../../desktop/src/shared/adeCliGuidance";
-import path from "node:path";
 import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
-import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
-import { isInsideTempFolder } from "../../../../desktop/src/main/services/shared/pathCompare";
 import type {
   RemoteMcpActivityEntry,
   RemoteMcpActivityOutcome,
   RemoteMcpConnectionSummary,
   RemoteMcpScope,
 } from "../../../../desktop/src/shared/types/remoteMcp";
-import { readProjectFolderStates, type ProjectFolderState } from "../projects/projectFolderPresence";
-import {
-  parseAccountProjectSelector,
-  recordMatchesAccountProject,
-  resolveAccountProject,
-} from "../projects/accountProjectSelector";
 import type { AccountProjectView } from "../../../../desktop/src/shared/accountProject";
 import { listAgentSkills, readAgentSkill } from "../skills/agentSkillCatalogService";
 import { adeWithheldAgentSkills } from "../../../../desktop/src/shared/agentSkillRoots";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
+import { createRemoteMcpProjects, type RemoteMcpProject, type ResolvedProject } from "./remoteMcpProjects";
 import { checkRemoteAdeCommand, redactedCommandForLog, splitCommandLine } from "./remoteMcpCommandPolicy";
 import {
   DEFAULT_TIMEOUT_MS,
@@ -55,16 +47,30 @@ import {
   type RemoteMcpToolResult,
 } from "./remoteMcpForward";
 import { adeAppResourceListing, appDrawsViews, readAdeAppResource, withAppUi } from "./remoteMcpApps";
-import { CHAT_ID_TOOL_NAMES, chatIdOf, createChatRouter, type ChatCall } from "./remoteMcpChatRouting";
+import { chatIdOf, createChatRouter, type ChatCall } from "./remoteMcpChatRouting";
 import { redactOutgoingChatText } from "../../../../desktop/src/main/utils/redaction";
 import {
   EVENTS_EXTENSION_ID,
-  EVENTS_ERROR,
   EVENTS_HERE_TOOL_NAME,
   EVENTS_POLL_TOOL_NAME,
-  McpEventsError,
-  type RemoteMcpEvents,
-} from "./remoteMcpEvents";
+  eventsPollToolDefinition,
+} from "./remoteMcpEventCatalog";
+import type { RemoteMcpEvents } from "./remoteMcpEvents";
+
+/** `run` over every item, at most `limit` at a time; results in the items' order. */
+async function mapWithLimit<T, R>(items: readonly T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await run(items[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
 
 /**
  * ADE MCP's protocol: the JSON-RPC methods an authenticated connection may
@@ -73,19 +79,9 @@ import {
  * one message for a connection that already passed them.
  */
 
-export type RemoteMcpProject = {
-  projectId: string;
-  rootPath: string;
-  displayName: string;
-  lastOpenedAt: number;
-  /** The account project this folder is a copy of, when known. */
-  accountProjectId?: string | null;
-  gitOriginUrl?: string | null;
-};
+export type { RemoteMcpProject } from "./remoteMcpProjects";
 
 export type JsonRpcMessage = { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: unknown };
-
-type ResolvedProject = { cwd: string; project: RemoteMcpProject | null };
 
 type ActivityBase = Pick<RemoteMcpActivityEntry, "connectionId" | "label" | "scope" | "tool">;
 
@@ -106,9 +102,7 @@ const MAX_PROMPTS = 200;
 const MAX_PROMPT_DESCRIPTION_CHARS = 1_024;
 /** How long the command catalog is reused before it is read again. */
 const CATALOG_TTL_MS = 5 * 60_000;
-/** An every-project sweep reads the projects opened in this window, newest first. */
-const EVERY_PROJECT_WINDOW_MS = 30 * 24 * 60 * 60_000;
-const EVERY_PROJECT_MAX = 6;
+/** Projects an every-project sweep reads at once. */
 const EVERY_PROJECT_PARALLEL = 2;
 /** A run longer than this is logged with where its time went (unless the tool waits on purpose). */
 const SLOW_RUN_MS = 20_000;
@@ -120,21 +114,6 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-async function mapWithLimit<T, R>(items: readonly T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await run(items[index]!);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
-
-/** A run that never started, as a failed result, so a sweep reports it beside the others. */
 /**
  * Whether a `usage_limits` answer names any signed-in account. A failed call
  * counts as one: its error is the answer, not a reason to ask every computer.
@@ -145,6 +124,7 @@ function hasUsageAccounts(result: RemoteMcpToolResult): boolean {
   return !Array.isArray(value.accounts) || value.accounts.length > 0;
 }
 
+/** A run that never started, as a failed result, so a sweep reports it beside the others. */
 function failedRun(message: string): RemoteRunResult {
   return { exitCode: null, stdout: "", stderr: message, timedOut: false, truncated: false, durationMs: 0 };
 }
@@ -165,7 +145,7 @@ export function createRemoteMcpProtocol(deps: {
   /** The account's computers: every tool takes `machine`, and machines_list lists them. */
   machines: RemoteMcpMachineRouter;
   /** MCP Events (SEP-3415): poll and webhook delivery of chat and PR events. */
-  events?: RemoteMcpEvents;
+  events: RemoteMcpEvents;
 }) {
   let activeRuns = 0;
   const runsByConnection = new Map<string, number>();
@@ -176,125 +156,7 @@ export function createRemoteMcpProtocol(deps: {
   };
   const catalogByScope = new Map<RemoteMcpScope, { at: number; text: Promise<string> }>();
 
-  // ── Projects ──────────────────────────────────────────────────────────────
-
-  /**
-   * The registered projects with their folder's state, newest first. A
-   * registry keeps projects whose folder was deleted (test projects in a temp
-   * folder) or sits on a drive that is not plugged in; neither may win a name
-   * or a default.
-   */
-  const projectsByState = async (projects: readonly RemoteMcpProject[]) => {
-    const states = await readProjectFolderStates(projects);
-    const stateOf = new Map<RemoteMcpProject, ProjectFolderState>(projects.map((project, index) => [project, states[index]!]));
-    return { stateOf, ordered: byLastOpened([...projects]) };
-  };
-  /**
-   * The projects a call may run in, newest first: those whose folder is
-   * confirmed there, or, only when none is, those that could not be checked
-   * in time (a hung network mount). Never a deleted folder or an unplugged drive.
-   */
-  const usableProjects = (ordered: readonly RemoteMcpProject[], stateOf: ReadonlyMap<RemoteMcpProject, ProjectFolderState>): RemoteMcpProject[] => {
-    const present = ordered.filter((project) => stateOf.get(project) === "present");
-    return present.length ? present : ordered.filter((project) => stateOf.get(project) === "unknown");
-  };
-  const byLastOpened = (projects: RemoteMcpProject[]): RemoteMcpProject[] =>
-    projects.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
-
-  /** The projects an every-project sweep reads: opened in the last 30 days, at most six. */
-  const recentProjects = async (): Promise<RemoteMcpProject[]> => {
-    const { stateOf, ordered } = await projectsByState(deps.listProjects());
-    const projects = usableProjects(ordered, stateOf);
-    const cutoff = Date.now() - EVERY_PROJECT_WINDOW_MS;
-    const recent = projects.filter((project) => project.lastOpenedAt >= cutoff);
-    return (recent.length ? recent : projects.slice(0, 1)).slice(0, EVERY_PROJECT_MAX);
-  };
-
-  const describeCandidate = (project: RemoteMcpProject): string => `${project.displayName} (id ${project.projectId}, ${project.rootPath})`;
-  const driveNotConnected = (project: RemoteMcpProject): string =>
-    `${project.displayName}'s drive isn't connected on ${deps.machineName()} (${project.rootPath}). `
-    + "Connect it, or pick another project.";
-  const folderGone = (project: RemoteMcpProject): string =>
-    `${project.displayName}'s folder is gone (${project.rootPath}). Clone it again with projects_clone, `
-    + "or remove the stale entry with [\"projects\",\"prune\"].";
-  /**
-   * What a run says when its folder vanished between the pick and the start,
-   * from a fresh look at the folder: a deleted folder on a drive that is
-   * plugged in is gone, not disconnected.
-   */
-  const missingFolderMessage = async (project: RemoteMcpProject | null, cwd: string): Promise<string> => {
-    if (!project) return `The folder ${cwd} isn't on ${deps.machineName()}.`;
-    const [state] = await readProjectFolderStates([project], { fresh: true });
-    if (state === "driveMissing") return driveNotConnected(project);
-    if (state === "gone") return folderGone(project);
-    return `${project.displayName}'s folder (${project.rootPath}) can't be read on ${deps.machineName()} right now. Try again shortly.`;
-  };
-
-  /**
-   * The project a call runs in. Without `project`, the most recently opened
-   * one whose folder is there, which changes when the person opens another:
-   * every result names it, so a call never lands in a different repo
-   * unnoticed. An id or path picks exactly; a name picks among the projects
-   * whose folder is there, and two with the same name are refused with both.
-   */
-  const resolveProject = async (requested: unknown): Promise<ResolvedProject | { error: string }> => {
-    const all = deps.listProjects();
-    const { stateOf, ordered } = await projectsByState(all);
-    const found = (project: RemoteMcpProject): ResolvedProject => ({ cwd: project.rootPath, project });
-    const refusal = (project: RemoteMcpProject) => ({
-      error: stateOf.get(project) === "driveMissing" ? driveNotConnected(project) : folderGone(project),
-    });
-    const usable = usableProjects(ordered, stateOf);
-    if (typeof requested !== "string" || !requested.trim()) {
-      // A throwaway test project must not become where an app's call lands.
-      const recent = usable.find((project) => !isInsideTempFolder(project.rootPath)) ?? usable[0];
-      // No project at all: machine-wide commands (`projects list`, `doctor`) still work.
-      return recent ? found(recent) : { cwd: os.homedir(), project: null };
-    }
-    const wanted = requested.trim();
-    const lower = wanted.toLowerCase();
-    // Asked for by id or path: run there unless it is known to be unreachable.
-    const reachable = (project: RemoteMcpProject) => {
-      const state = stateOf.get(project);
-      return state === "present" || state === "unknown";
-    };
-    const exact = all.filter((project) =>
-      project.projectId === wanted
-      || (path.isAbsolute(wanted) && samePathOnPlatform(project.rootPath, wanted)));
-    if (exact.length === 1) return reachable(exact[0]!) ? found(exact[0]!) : refusal(exact[0]!);
-    const named = ordered.filter((project) =>
-      project.displayName.toLowerCase() === lower || path.basename(project.rootPath).toLowerCase() === lower);
-    const namedPresent = named.filter((project) => stateOf.get(project) === "present");
-    const liveNamed = namedPresent.length ? namedPresent : named.filter((project) => stateOf.get(project) === "unknown");
-    if (liveNamed.length === 1) return found(liveNamed[0]!);
-    if (liveNamed.length > 1) {
-      return {
-        error: `More than one project is called "${wanted}": ${liveNamed.map(describeCandidate).join("; ")}. Pass its id or path as \`project\`.`,
-      };
-    }
-    if (named.length > 0) return refusal(named.find((project) => stateOf.get(project) === "driveMissing") ?? named[0]!);
-    // An account project id (`ap_…`) or a GitHub `owner/name` (L30).
-    const selector = parseAccountProjectSelector(wanted);
-    if (selector) {
-      const resolvedAccount = resolveAccountProject(selector, deps.accountProjects?.() ?? {});
-      if (resolvedAccount.kind === "removed") {
-        return { error: `${resolvedAccount.name} was removed from the ADE account. Add it again from ADE to use it.` };
-      }
-      if (resolvedAccount.kind === "found") {
-        const copies = usable.filter((project) => recordMatchesAccountProject(project, resolvedAccount));
-        if (copies.length > 0) return found(copies[0]!);
-        return {
-          error: `${resolvedAccount.name} has no copy on ${deps.machineName()}. `
-            + "Run on a machine that has one, or add one here with projects_clone.",
-        };
-      }
-      if (selector.kind === "id") {
-        return { error: `The ADE account has no project ${wanted}, or ${deps.machineName()} has not read the account's projects yet.` };
-      }
-    }
-    const known = usable.map((project) => project.displayName).join(", ") || "none";
-    return { error: `No project "${wanted}" on this machine. Projects: ${known}. A new repository can be added with projects_clone.` };
-  };
+  const { resolveProject, recentProjects, missingFolderMessage, projectChoices } = createRemoteMcpProjects(deps);
 
   // ── MCP ───────────────────────────────────────────────────────────────────
 
@@ -652,7 +514,7 @@ export function createRemoteMcpProtocol(deps: {
     if (onlyElsewhere && (!context.accountMount || context.via)) return refuse(logBase, onlyMachineRefusal(only));
     if (name === MACHINES_TOOL_NAME) return await machinesListResult(logBase);
     if (name === EVENTS_POLL_TOOL_NAME || (name === EVENTS_HERE_TOOL_NAME && context.via)) {
-      return await eventsToolResult(connection, name, input, context, logBase);
+      return await deps.events.toolCall(connection, name, input, context);
     }
     const { machine: selector, ...rest } = input;
     const localParams = { ...params, arguments: rest };
@@ -675,7 +537,7 @@ export function createRemoteMcpProtocol(deps: {
       // the computer that answered has none, the others are asked instead of
       // answering "not signed in here".
       if (name === "usage_limits" && context.accountMount && !context.via && !only && !hasUsageAccounts(result)) {
-        return await fanOut(connection, name, params, rest, context, null);
+        return await fanOut(connection, name, params, rest, context, null, result);
       }
       // On the account address any computer may answer: say which one did.
       return context.accountMount ? withMachineLabel(result, self) : result;
@@ -709,12 +571,6 @@ export function createRemoteMcpProtocol(deps: {
     const reason = router.unavailableReason(resolved.machine);
     if (reason) return refuse(logBase, `${reason} ${await onlineMachinesSentence()}`);
     return await forwardTo(connection, name, rest, resolved.machine, context, forwardTimeoutMs(name, rest));
-  };
-
-  /** The projects to pick from, last opened first. */
-  const projectChoices = async (): Promise<RemoteMcpProject[]> => {
-    const { stateOf, ordered } = await projectsByState(deps.listProjects());
-    return usableProjects(ordered, stateOf).slice(0, 8);
   };
 
   const chats = createChatRouter({
@@ -814,6 +670,8 @@ export function createRemoteMcpProtocol(deps: {
     input: Record<string, unknown>,
     context: RemoteMcpCallContext,
     onlyMachineKey: string | null,
+    /** This machine's answer, when it already gave one. */
+    hereResult?: RemoteMcpToolResult,
   ): Promise<RemoteMcpToolResult> => {
     const router = deps.machines;
     const targets = (await router.roster()).filter((machine) =>
@@ -826,7 +684,7 @@ export function createRemoteMcpProtocol(deps: {
       const result = reason
         ? toolError(reason)
         : machine.isThisMachine
-          ? await callTool(connection, localParams)
+          ? hereResult ?? await callTool(connection, localParams)
           : await forwardTo(connection, name, input, machine, context, timeoutMs);
       const text = firstText(result).replace(/^\[machine: [^\]\n]*\]\n?/, "");
       return result.isError
@@ -886,63 +744,6 @@ export function createRemoteMcpProtocol(deps: {
     annotations: { readOnlyHint: true, openWorldHint: false },
   });
 
-  const eventsPollToolDefinition = () => ({
-    name: EVENTS_POLL_TOOL_NAME,
-    title: "Chat and PR events",
-    description: "What happened on every machine since `cursor`: turns ended (with the final reply), waits on an answer, "
-      + "answers, deleted chats, PR changes. Omit `cursor` to start now, then pass back each answer's.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        cursor: { type: "string" },
-        names: { type: "array", items: { type: "string" }, description: "Default all: chat.turn_ended, chat.needs_input, chat.input_resolved, chat.deleted, pr.changed." },
-        project: { type: "string" },
-        session: { type: "string" },
-        include_subagents: { type: "boolean" },
-        include_reply: { type: "boolean" },
-        max: { type: "integer" },
-      } as Record<string, unknown>,
-    },
-    annotations: { readOnlyHint: true, openWorldHint: false },
-  });
-
-  /** An events tool call: the poll an app makes, or one machine's part of it. */
-  const eventsToolResult = async (
-    connection: RemoteMcpConnectionSummary,
-    name: string,
-    input: Record<string, unknown>,
-    context: RemoteMcpCallContext,
-    logBase: ActivityBase,
-  ): Promise<RemoteMcpToolResult> => {
-    const events = deps.events;
-    if (!events) return refuse(logBase, "Events aren't available on this machine.");
-    const started = Date.now();
-    try {
-      if (name === EVENTS_HERE_TOOL_NAME) {
-        const read = await events.answerHere(input);
-        return { content: [{ type: "text", text: `${read.events.length} events` }], structuredContent: read, isError: false };
-      }
-      const page = await events.pollTool(connection, context, input);
-      deps.record({ ...logBase, command: "", outcome: "ok", exitCode: null, durationMs: Date.now() - started });
-      const lines = page.events.map((event) => {
-        const data = event.data as Record<string, unknown>;
-        const what = [data.outcome, data.kind, data.resolution].find((value) => typeof value === "string");
-        const title = typeof data.title === "string" && data.title ? ` "${data.title}"` : "";
-        return `${event.timestamp} ${event.name}${what ? ` ${String(what)}` : ""}${title} ${String(data.sessionId ?? data.url ?? "")}`.trimEnd();
-      });
-      const text = [
-        lines.length ? lines.join("\n") : "No new events.",
-        page.truncated ? "Some events were missed (a machine restarted or more than 1,000 happened); check chat_status." : "",
-        page.hasMore ? "More follow: call again with this cursor now." : "",
-        page.unread.length ? `Not read now: ${page.unread.map((machine) => machine.name).join(", ")}. Their events come on a later call.` : "",
-        `cursor: ${page.cursor}`,
-      ].filter(Boolean).join("\n");
-      return { content: [{ type: "text", text }], structuredContent: { view: EVENTS_POLL_TOOL_NAME, ...page }, isError: false };
-    } catch (error) {
-      return refuse(logBase, getErrorMessage(error));
-    }
-  };
-
   /** Adds `machine` to every tool and lists machines_list. */
   const withMachineTools = <T extends { name: string; inputSchema: { properties?: Record<string, unknown> } }>(
     tools: T[],
@@ -952,7 +753,7 @@ export function createRemoteMcpProtocol(deps: {
       inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties, machine: machineInput(tool.name) } },
     })),
     machinesToolDefinition(),
-    ...(deps.events ? [eventsPollToolDefinition()] : []),
+    eventsPollToolDefinition(),
   ];
 
   const handleRpc = async (
@@ -991,13 +792,9 @@ export function createRemoteMcpProtocol(deps: {
             tools: { listChanged: false },
             resources: { listChanged: false },
             prompts: { listChanged: false },
-            ...(deps.events
-              ? {
-                extensions: { [EVENTS_EXTENSION_ID]: {} },
-                // Clients built on the draft before SEP-3415 read this key.
-                events: {},
-              }
-              : {}),
+            extensions: { [EVENTS_EXTENSION_ID]: {} },
+            // Clients built on the draft before SEP-3415 read this key.
+            events: {},
           },
           serverInfo: { name: "ade", title: `ADE on ${deps.machineName()}`, version: remoteMcpAdeVersion() },
           instructions: instructions(connection.scope),
@@ -1076,28 +873,8 @@ export function createRemoteMcpProtocol(deps: {
       case "events/subscribe":
       case "events/unsubscribe":
       case "events/stream": {
-        const events = deps.events;
-        if (!events) return fail(-32601, `Method not found: ${method}`);
-        try {
-          if (method === "events/list") return reply({ resultType: "complete", events: events.list() });
-          if (method === "events/poll") return reply({ resultType: "complete", ...(await events.poll(connection, context, params)) });
-          if (method === "events/subscribe") return reply({ resultType: "complete", ...(await events.subscribe(connection, params)) });
-          if (method === "events/unsubscribe") {
-            events.unsubscribe(connection, params);
-            return reply({ resultType: "complete" });
-          }
-          throw new McpEventsError(
-            EVENTS_ERROR.unsupported,
-            "ADE delivers events by events/poll or a webhook (events/subscribe); the relay holds no open stream.",
-            { feature: "deliveryMode", value: "push" },
-          );
-        } catch (error) {
-          if (error instanceof McpEventsError) {
-            return { jsonrpc: "2.0", id, error: { code: error.code, message: error.message, ...(error.data ? { data: error.data } : {}) } };
-          }
-          deps.warn?.("remote_mcp.events_failed", { method, error: getErrorMessage(error) });
-          return fail(-32603, getErrorMessage(error));
-        }
+        const answer = await deps.events.rpc(connection, context, method, params);
+        return "error" in answer ? { jsonrpc: "2.0", id, error: answer.error } : reply(answer.result);
       }
       default:
         return fail(-32601, `Method not found: ${method}`);

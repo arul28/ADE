@@ -832,23 +832,34 @@ export function splitCommandLine(line: string): string[] | null {
   return words;
 }
 
-/** A flag whose value is a credential (`--api-key sk-…`). */
-const SECRET_FLAG_NAME = /token|secret|password|api[-_]?key|credential/i;
+/** A flag whose value is a credential (`--api-key sk-…`, `secrets set NAME --value …`). */
+const SECRET_FLAG_NAME = /token|secret|password|api[-_]?key|credential|value/i;
+/** `ade secrets` verbs whose later words can hold a value (`set` has the CLI's aliases `put` and `add`). */
+const SECRET_VALUE_VERBS: ReadonlySet<string> = new Set(["set", "put", "add", "request"]);
 
 /**
  * The words safe to keep in the activity log. Values that look like they set a
  * secret are replaced, and the whole line is bounded.
  */
-export function redactedCommandForLog(args: readonly string[]): string {
+export function redactedCommandForLog(rawArgs: readonly string[]): string {
+  // Read as the policy reads it: the program name dropped (models often add it).
+  const args = rawArgs[0] === "ade" ? rawArgs.slice(1) : rawArgs;
   const out: string[] = [];
-  const secretCommand = args[0] === "secrets" && (args[1] === "set" || args[1] === "request");
+  // Every word after `secrets set <key>` (the verb is the first word that is
+  // not a flag), or after a Passwords or secret action
+  // (`actions run passwords.saveSecret --arg value=…`), can be a value.
+  const verbAt = args[0] === "secrets" || args[0] === "secret" ? args.findIndex((word, index) => index > 0 && !word.startsWith("-")) : -1;
+  const secretAction = args.findIndex((word, index) => args[index - 1] === "run" && /^(?:passwords|project_secret)\./.test(word));
+  const valuesFrom = verbAt > 0 && SECRET_VALUE_VERBS.has(args[verbAt]!.toLowerCase())
+    ? verbAt + 2
+    : secretAction >= 0 ? secretAction + 1 : Number.POSITIVE_INFINITY;
   for (let index = 0; index < args.length; index += 1) {
     const word = args[index]!;
-    if (secretCommand && index >= 3) {
+    if (index >= valuesFrom) {
       out.push("[redacted]");
       continue;
     }
-    if (/(?:token|secret|password|api[-_]?key)=/i.test(word)) {
+    if (/(?:token|secret|password|api[-_]?key|value)=/i.test(word)) {
       out.push(word.replace(/=.*/, "=[redacted]"));
       continue;
     }

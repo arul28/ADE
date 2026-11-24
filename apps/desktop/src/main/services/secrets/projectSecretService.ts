@@ -5,7 +5,7 @@ import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/service
 import { getMachineAccountStores } from "../../../../../ade-cli/src/services/account/machineAccountStores";
 import type { PasswordService } from "../../../../../ade-cli/src/services/passwords/passwordService";
 import type { LegacySecretAdoption, ProjectSecretEntry } from "../../../../../ade-cli/src/services/passwords/passwordProjectSecrets";
-import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
+import { accountRepoScopeKey, githubSlugUrl, isGitRemoteAddress } from "../../../shared/accountSettingsScope";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { AccountStoreResult } from "../../../shared/types/accountStore";
 import type { AccountVaultItem } from "../../../shared/types/accountVault";
@@ -78,9 +78,7 @@ export function projectSecretScopeForRoot(projectRoot: string): string {
  * folder on this computer, which must exist.
  */
 function copySourceScope(from: string): string {
-  const repo = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(from)
-    ? `https://github.com/${from.replace(/\.git$/, "")}`
-    : /^(?:https?:\/\/|ssh:\/\/|git@)/i.test(from) ? from : null;
+  const repo = githubSlugUrl(from) ?? (isGitRemoteAddress(from) ? from : null);
   if (repo) {
     const scope = accountRepoScopeKey(repo);
     if (!scope) throw new AdeExpectedError(`ADE can't read ${from} as a repository. Pass owner/repo or the project's folder.`, "user");

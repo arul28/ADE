@@ -113,9 +113,10 @@ gets the same through `events/poll`, or `events/subscribe` for signed
 webhooks.
 
 When a chat waits on the person, `inbox` shows the question and `chat_respond`
-answers it, if the person told you to. With full access that is every card:
-approvals, screen-control consent, and a secret card (its answer is saved to
-the project's secrets, not to the chat).
+answers it, if the person told you to. With full access that is approvals,
+questions, and a secret card (its answer is saved to the project's secrets,
+not to the chat). Screen-control consent stays with the person: they answer it
+in ADE.
 
 A chat that is gone says why: `state: "deleted"` with `deletedAt` and
 `reopenable` (null when ADE could not check), or `state: "not_found"`.

@@ -14,6 +14,7 @@ import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage
 import type { AccountResetCreditSpender } from "../../desktop/src/main/services/usage/accountUsageLiveRefresh";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
 import { stripAnsiWithOptions } from "../../desktop/src/shared/ansiStrip";
+import { githubSlugUrl, isGitRemoteAddress } from "../../desktop/src/shared/accountSettingsScope";
 import type { RemoteWorkChatEnded, RemoteWorkMachineRef, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import type { CloudSignInStatus } from "../../desktop/src/shared/cloudSignIns";
 import {
@@ -1198,6 +1199,8 @@ export type CliPlan =
       kind: "execute";
       label: string;
       steps: InvocationStep[];
+      /** The answer names the chat or CLI session it made: the output adds its `ade link session` link. */
+      printsSessionLink?: boolean;
       visualizer?: "lanes";
       summary?: "status" | "doctor" | "auth";
       formatter?: FormatterId;
@@ -5064,8 +5067,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Agents use secrets, they never read them: \`ade secrets exec\` runs a command
   with the project's secrets in its environment, on this computer, and prints
   its output with every value masked (also in base64 and URL-encoded form;
-  values under 8 characters are not masked, and it says which). \`get\` is the
-  person's (or an app the person gave full ADE MCP access); export is in the
+  values under 8 characters are not masked, and it says which). \`get\` and
+  \`copy\` are the person's (or an app the person gave full ADE MCP access);
+  export is in the
   ADE desktop app (Settings › Passwords & Secrets).
   --env NAME (repeatable) passes only those; --timeout 10m.
 
@@ -5077,7 +5081,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
-    $ ade secrets copy --from owner/other-repo      Copy another project's own secrets here, in one go
+    $ ade secrets copy --from owner/other-repo      Copy another project's own secrets here, in one go (the person's;
+                                                    an agent's shell is refused)
     $ ade secrets copy --from /path/to/other --names STRIPE_API_KEY,SENTRY_DSN --overwrite
       A name this project already has is skipped (and listed) unless --overwrite.
       Values never print. --machine <name>: both projects on that machine.
@@ -9165,6 +9170,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
       kind: "execute",
       label: "new chat cli",
       formatter: "pty-create",
+      printsSessionLink: true,
       steps,
       ...laneSetupTimeout,
     };
@@ -9216,6 +9222,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   return {
     kind: "execute",
     label: "new chat",
+    printsSessionLink: true,
     steps,
     ...laneSetupTimeout,
   };
@@ -13227,6 +13234,7 @@ function buildChatPlan(args: string[]): CliPlan {
         return {
           kind: "execute",
           label: "chat create",
+          printsSessionLink: true,
           machineFanOut: true,
           chatCreateCheck,
           cloudLaunch,
@@ -13261,9 +13269,9 @@ function buildChatPlan(args: string[]): CliPlan {
         };
       }
       if (notify) {
-        return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, cloudLaunch, steps: [{ ...createStep, key: "session" }, ...notifySteps("session"), ...laneChatsSteps("session")] };
+        return { kind: "execute", label: "chat create", printsSessionLink: true, machineFanOut: true, chatCreateCheck, cloudLaunch, steps: [{ ...createStep, key: "session" }, ...notifySteps("session"), ...laneChatsSteps("session")] };
       }
-      return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, cloudLaunch, steps: [createStep, ...laneChatsSteps("result")] };
+      return { kind: "execute", label: "chat create", printsSessionLink: true, machineFanOut: true, chatCreateCheck, cloudLaunch, steps: [createStep, ...laneChatsSteps("result")] };
     }
     const issueForKickoff = linearIssue;
     const steps: InvocationStep[] = [
@@ -13316,7 +13324,7 @@ function buildChatPlan(args: string[]): CliPlan {
         unwrapToolResult: true,
       });
     }
-    return { kind: "execute", label: "chat create from Linear issue", machineFanOut: true, chatCreateCheck, cloudLaunch, steps };
+    return { kind: "execute", label: "chat create from Linear issue", printsSessionLink: true, machineFanOut: true, chatCreateCheck, cloudLaunch, steps };
   }
   if (sub === "send") {
     const imageUrl = readValue(args, ["--image-url"]);
@@ -22542,9 +22550,9 @@ function buildSecretsPlan(args: string[], target: { remote: boolean } = { remote
  * is not this shell's); another machine's path is sent as typed.
  */
 function secretCopySource(from: string, remote: boolean): string {
-  if (/^(?:https?:\/\/|ssh:\/\/|git@)/i.test(from) || remote) return from;
+  if (isGitRemoteAddress(from) || remote) return from;
   const local = resolveCliPathArg(from);
-  if (/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(from) && !fs.existsSync(local)) return from;
+  if (githubSlugUrl(from) && !fs.existsSync(local)) return from;
   return local;
 }
 
@@ -27689,10 +27697,8 @@ function withTemporaryFolderWarning(result: unknown): unknown {
 
 /** `owner/name` → its GitHub URL; anything else (a URL, an ssh address) as given. */
 function githubCloneUrl(repo: string): string {
-  const trimmed = repo.trim();
-  return /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(trimmed)
-    ? `https://github.com/${trimmed.replace(/\.git$/, "")}.git`
-    : trimmed;
+  const url = githubSlugUrl(repo);
+  return url ? `${url}.git` : repo.trim();
 }
 
 function withProjectId(
@@ -42971,18 +42977,11 @@ async function followShellToExit(
  */
 async function laneNotFoundHint(connection: CliConnection): Promise<JsonObject> {
   const nextAction = "The lane id is not in this project. `ade lanes list --text` lists its lanes; pass one of their ids with --lane.";
-  let timer: NodeJS.Timeout | null = null;
-  const listed = await Promise.race([
-    connection
-      .request("ade/actions/call", { name: "list_lanes", arguments: { includeArchived: false } })
-      .then((raw) => unwrapToolResult(raw))
-      .catch(() => null),
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), 3_000);
-      timer.unref?.();
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
+  const listed = await withTimeout(
+    connection.request("ade/actions/call", { name: "list_lanes", arguments: { includeArchived: false } }).then((raw) => unwrapToolResult(raw)),
+    3_000,
+    "list_lanes timed out",
+  ).catch(() => null);
   const lanes = linkRecords(listed, ["lanes", "items", "result"]).flatMap((lane) => {
     const id = asString(lane.id);
     if (!id) return [];
@@ -42993,14 +42992,6 @@ async function laneNotFoundHint(connection: CliConnection): Promise<JsonObject> 
     ? { nextAction, lanes: lanes.slice(0, 8), ...(lanes.length > 8 ? { moreLanes: lanes.length - 8 } : {}) }
     : { nextAction };
 }
-
-/** The launches whose answer names the chat or CLI session they made. */
-const SESSION_LINK_PLAN_LABELS = new Set([
-  "new chat",
-  "new chat cli",
-  "chat create",
-  "chat create from Linear issue",
-]);
 
 /**
  * The deeplink `ade link session <id>` prints for the session a launch just
@@ -43015,7 +43006,7 @@ async function createdSessionLink(
   values: JsonObject,
   connection: CliConnection,
 ): Promise<string | null> {
-  if (!SESSION_LINK_PLAN_LABELS.has(plan.label)) return null;
+  if (!plan.printsSessionLink) return null;
   const created = unwrapActionEnvelope(values.session ?? values.result);
   const record = isRecord(created) && isRecord(created.session) ? created.session : created;
   if (!isRecord(record)) return null;
@@ -43030,21 +43021,13 @@ async function sessionLinkOn(
   sessionId: string,
   laneId: string | null | undefined,
 ): Promise<string> {
-  let timer: NodeJS.Timeout | null = null;
-  const ownership = await Promise.race([
+  const ownership = await withTimeout(
     connection
-      .request("ade/actions/call", {
-        name: "get_link_ownership",
-        arguments: { sessionId, ...(laneId ? { laneId } : {}) },
-      })
-      .then((raw) => parseDeeplinkOwnership(unwrapToolResult(raw)))
-      .catch(() => null),
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), 3_000);
-      timer.unref?.();
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
+      .request("ade/actions/call", { name: "get_link_ownership", arguments: { sessionId, ...(laneId ? { laneId } : {}) } })
+      .then((raw) => parseDeeplinkOwnership(unwrapToolResult(raw))),
+    3_000,
+    "get_link_ownership timed out",
+  ).catch(() => null);
   return buildDeeplink({
     kind: "session",
     sessionId,

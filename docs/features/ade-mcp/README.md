@@ -21,13 +21,17 @@ calling. See [Typed tools](#typed-tools). Tools with a view come back as an
 | Path | Role |
 |---|---|
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpService.ts` | The server: HTTP router (stateless Streamable HTTP, JSON responses), token checks, OAuth endpoints, Settings actions. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpProtocol.ts` | MCP JSON-RPC for a signed-in connection: tools (`ade` and the typed tools), the `ade://commands` resource, prompts, project resolution, run limits. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpProtocol.ts` | MCP JSON-RPC for a signed-in connection: tools (`ade` and the typed tools), the `ade://commands` resource, prompts, run limits. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpOAuth.ts` | Stateless client registration, redirect URI rules, authorize request parsing, PKCE, pending sign-ins and authorization codes, the sign-in and allow pages. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpKnownApps.ts` | Which app a sign-in is, from the redirect URI it used (and, for local and app-scheme addresses only, its registered name). |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpHttp.ts` | The HTTP shapes, plus brain→relay requests: when a request may be tried again, the call id, plain network-error sentences, and the replay guard that answers a repeated call once. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpTools.ts` | The typed tools: inputs, the argv each builds, how its JSON is trimmed, its `next` hint, and its result shape; `printsAgentOutput` (which output gets secrets masked) and `explicitTargetRefusal`. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpEventHub.ts` | MCP Events, one machine: the newest 1,000 chat and PR events in memory, fed by each project runtime (`bootstrap.ts`), and the readers for a chat's title and final reply. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpEvents.ts` | MCP Events over the account address: `events/list`, `events/poll` across the machines, webhook subscriptions in the account vault, signed delivery, and the `events_poll` tool. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpEvents.ts` | MCP Events over the account address: the `events/*` methods, `events/poll` across the machines, and the `events_poll` tool call. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpEventCatalog.ts` | MCP Events types (`events/list`), argument checks, the account cursor, and the `events_poll` tool's schema and text. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpEventWebhooks.ts` | MCP Events webhooks: subscriptions in the account vault, the endpoint check, and each machine's signed delivery. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpProjects.ts` | Which project a call means (id, path, name, account project), and what to say when its folder is gone. |
+| `apps/desktop/src/main/services/net/publicHttpsPost.ts` | A POST to an outside URL that can't reach this computer or a private network: public https only, DNS pinned, no redirects, one deadline for the whole request. Chat webhooks and MCP Events webhooks use it. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpChatRouting.ts` | A chat id finds its chat: rerun in its project here, or forward to its computer, remembered per connection; deleted and not-found answers. |
 | `apps/desktop/resources/agent-skills/ade-mcp-client/SKILL.md` | The walkthrough for an outside bot, served as an MCP prompt and left out of in-ADE agents' skill line (`adeOutsideClientAgentSkills`). |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpContextBudget.test.ts`, `.json` | The context-size ratchet. |
@@ -360,7 +364,8 @@ the walkthrough for a bot. What it relies on:
 computer all run at full access, on any computer through `machine`: open
 (`ade projects add`) or clone (`projects_clone`) a project, create a lane
 (`ade lanes create`), start a chat with a model (`chat_start`), message or
-steer it (`chat_send`), answer its approvals (`inbox`, `chat_respond`), wait
+steer it (`chat_send`), answer its approvals and secret cards (`inbox`,
+`chat_respond`; screen-control consent stays with the person), wait
 (`chat_wait`), read results (`chat_read`, `diff_*`, `files_read`), run a shell
 command (`ade shell start -- <command>`: without `--lane` it runs in the
 project's primary lane, then `ade terminal read`), look at PRs and CI
@@ -770,17 +775,22 @@ advertises it under `capabilities.extensions`, and also as a top-level
 
 | Event | When | Arguments |
 |---|---|---|
-| `chat.turn_ended` | A turn completed, failed or was interrupted. Carries the final reply (at most 4,000 characters, secrets removed, written after the turn began) and the error of a failed turn; a turn the provider refused also carries `httpStatus` (429 is a rate or plan limit). | `project`, `machine`, `session`, `include_subagents`, `include_reply` |
+| `chat.turn_ended` | A turn completed, failed or was interrupted. Carries the final reply (at most 4,000 characters, secrets removed, written between the turn's start and its end; the turn's own reply when the provider tags replies with turns) and the error of a failed turn; a turn the provider refused also carries `httpStatus` (429 is a rate or plan limit). | `project`, `machine`, `session`, `include_subagents`, `include_reply` |
 | `chat.needs_input` | A chat waits on an approval, a question or a secret (`secret: true`). | `project`, `machine`, `session`, `include_subagents` |
 | `chat.input_resolved` | That question was answered, declined or cancelled. | the same |
-| `chat.deleted` | A chat was deleted. | the same |
-| `pr.changed` | A PR was opened, closed, merged or reopened, or its checks or reviews changed (`pr-notification`). | `project`, `machine` |
+| `chat.deleted` | A chat or a tracked provider CLI was deleted. | the same |
+| `pr.changed` | A PR was opened, closed, merged or reopened, or its checks or reviews changed. `kind` is the PR notification's kind (`pr-notification`); a change the poller sends no notification for (a draft's checks passing, say) comes once as `checks_changed`, `review_changed` or `state_changed`, with `previous…` fields (`notePrChangesForMcp`). | `project`, `machine` |
 
 - **Source.** Each project runtime in the brain calls the hub from its chat
-  `onEvent`, `onChatDeleted` and `emitPrEvent`, and from its terminals'
-  `onTrackedCliTurnEnded` (a provider's own CLI: no reply, no turn id). The
+  `onEvent`, `onChatDeleted`, `emitPrEvent` and the PR poller's
+  `onPullRequestsChanged`, and from its terminals' `onTrackedCliTurnEnded` (a
+  provider's own CLI: no reply, no turn id; its parent chat comes from the
+  terminal row, `trackedCliIdentity`). The
   hub keeps only these events, stamped when it records them, and reads a
   chat's title, lane, parent and final reply only when an app reads the event.
+  The reply lookup reads the chat's newest 40 entries, and reads again from the
+  turn's start when the turn is older than those (`findTurnFinalReply`), so an
+  app that catches up on a backlog still gets older turns' replies.
   A turn reported twice (by status, then by done) counts once. A deleted
   chat's title, lane and parent are read before its files go, so its earlier
   events still read right. A chat that another chat started is left out
@@ -790,7 +800,8 @@ advertises it under `capabilities.extensions`, and also as a top-level
   listed). The cursor (`ade1_…`) holds one position per machine and the time
   it began, so a machine with no position yet gives its events since then,
   and an offline one keeps its position until it is back. A null cursor starts
-  now and asks no machine. `nextPollMs` is 15 s. Machines that gave no answer
+  now and asks no machine. A `machine` left out of ADE MCP is refused, not
+  read as every machine. `nextPollMs` is 15 s. Machines that gave no answer
   (offline, asleep, or on an ADE without Events) are named in
   `_meta["dev.ade/unreadMachines"]`.
 - **Gaps.** The hub is in memory. A brain restart, or more than 1,000 events
@@ -806,9 +817,12 @@ advertises it under `capabilities.extensions`, and also as a top-level
   merged. A turn's webhook waits until 600 ms after the turn, so its reply is
   in the transcript file. Each machine
   resolves the URL at delivery time and connects to the checked public
-  address, with no redirects. One event is in flight per subscription; a
-  failure is tried again after 30 s, 1, 2 and 4 minutes, and 410 or 413 is not
-  retried. TTLs are 1 minute to 1 day (1 hour by default; no expiry is not
+  address, with no redirects. One event is in flight per subscription, and a
+  machine sends to at most 4 subscriptions at once, each POST bounded to
+  10 s in all, so a slow endpoint holds only its own. A failure is tried
+  again after 30 s, 1, 2 and 4 minutes, and 410 or 413 is not retried.
+  Settings → ADE MCP activity lists each subscribe and unsubscribe with the
+  URL's host. TTLs are 1 minute to 1 day (1 hour by default; no expiry is not
   granted). The machine that took the subscribe removes it once it expires
   (any machine does, a day later), and sends `terminated` when the app's
   connection is removed. A new secret
@@ -833,7 +847,8 @@ advertises it under `capabilities.extensions`, and also as a top-level
   stream.
 - **`events_poll`.** The same poll as a tool, for an app whose MCP client has
   no Events support (Grok Bot): every event type unless `names` picks some,
-  one cursor for all of them.
+  one cursor for all of them. It takes every event type's arguments,
+  `machine` included.
 - **Cost.** A webhook is a POST from the person's own machine: nothing goes
   through ADE's servers. A poll is one Worker request and one Durable Object
   request per machine asked. A machine with no subscriptions does no webhook

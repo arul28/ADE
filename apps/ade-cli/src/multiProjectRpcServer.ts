@@ -88,6 +88,7 @@ import {
   projectRecordIconValue,
   projectRecordNameValue,
   type ProjectRecordIconValue,
+  type ProjectRecordNameValue,
 } from "../../desktop/src/shared/projectRecord";
 import {
   ProjectRegistry,
@@ -1647,7 +1648,7 @@ function readProjectId(params: Record<string, unknown>): ProjectId | null {
 }
 
 /** `params.displayName`, normalized, or null when not asked for. An empty or non-text name is refused. */
-function readRequestedProjectDisplayName(params: Record<string, unknown>): { v: 1; name: string } | null {
+function readRequestedProjectDisplayName(params: Record<string, unknown>): ProjectRecordNameValue | null {
   if (params.displayName === undefined || params.displayName === null) return null;
   const value = typeof params.displayName === "string" ? projectRecordNameValue(params.displayName) : null;
   if (!value) {
@@ -4375,11 +4376,12 @@ export function createMultiProjectRpcRequestHandler(
      * (`project.name` in the account settings store), so every machine of the
      * account shows it; with none, it is this machine's only.
      */
-    const withRequestedDisplayName = (record: ProjectRecord, name: { v: 1; name: string } | null): ProjectRecord => {
+    const withRequestedDisplayName = (record: ProjectRecord, name: ProjectRecordNameValue | null): ProjectRecord => {
       if (!name) return record;
-      const renamed = projectRegistry.setDisplayName(record.projectId, name.name) ?? record;
-      projectRecords?.writeName(renamed, name);
-      return { ...record, ...renamed, displayName: name.name };
+      const renamed = projectRegistry.setDisplayName(record.projectId, name.name);
+      projectRecords?.writeName(renamed ?? record, name);
+      // No registry row left to rename: the answer still names what was asked.
+      return renamed ? { ...record, ...renamed } : { ...record, displayName: name.name };
     };
 
     if (method === "projects.list") {

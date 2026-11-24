@@ -3417,6 +3417,8 @@ async function buildAiSettingsStatus(
     opencodeBinarySource: status.opencodeBinarySource,
     opencodeInventoryError: status.opencodeInventoryError,
     opencodeProviders: status.opencodeProviders,
+    // `ade providers status` tells a list never read from one that has no login.
+    opencodeProvidersStale: status.opencodeProvidersStale,
     piInstallation: status.piInstallation,
     apiKeyStore: status.apiKeyStore,
     features: AI_SETTINGS_FEATURE_KEYS.map((feature) => ({

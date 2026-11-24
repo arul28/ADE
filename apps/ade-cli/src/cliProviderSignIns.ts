@@ -67,6 +67,10 @@ function openCodeState(status: Record<string, unknown>): { state: ProviderSignIn
     return { state: "unknown", detail: text(status.opencodeInventoryError) ?? "OpenCode's provider list was not read yet." };
   }
   const providers = status.opencodeProviders.filter(isRecord);
+  // A cold status read starts no OpenCode: with no saved list, the empty list means "never read", not "no login".
+  if (providers.length === 0 && status.opencodeProvidersStale === true) {
+    return { state: "unknown", detail: text(status.opencodeInventoryError) ?? "OpenCode's provider list was not read yet. Open its model picker once." };
+  }
   const signedIn = providers.filter((provider) => provider.signedIn === true || provider.credentialSource != null);
   if (signedIn.length > 0) {
     return { state: "signed_in", detail: `Through ${signedIn.map((provider) => text(provider.name) ?? text(provider.id)).filter(Boolean).join(", ")}.` };
