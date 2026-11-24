@@ -400,8 +400,9 @@ inputs) first took write to 23,361; stating the `machine` and `project`
 defaults once in the instructions, instead of on every tool, brought it to
 19,994, and read to 13,308 (below its 13,897 before them), with the eval
 unchanged.
-`events_poll` (MCP Events for clients without them) added 714 bytes to
-each scope's tools (read 13,746 → 14,460, write 20,735 → 21,449).
+`events_poll` (MCP Events for clients without them, with its `machine`
+input and the event names as an enum) added 839 bytes to each scope's tools
+(read 13,746 → 14,585, write 20,735 → 21,574).
 
 ### Eval
 

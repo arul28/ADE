@@ -114,6 +114,12 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
   "secrets",
 ]);
 
+/**
+ * `ade secrets` flags whose next word is always their value: a secret that
+ * reads `--machine` is the secret, never a machine to run on.
+ */
+const SECRET_VALUE_FLAGS: ReadonlySet<string> = new Set(["--name", "--value", "--value-file", "--secret", "--secret-file"]);
+
 /** The verbs of a command that may run on one other machine; the others stay here. */
 const MACHINE_ONLY_VERBS: Readonly<Record<string, { verbs: readonly string[]; usage: string }>> = {
   providers: {
@@ -312,7 +318,8 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       kept.push(...command.slice(index));
       break;
     }
-    if (FREE_TEXT_VALUE_FLAGS.has(token) && index + 1 < command.length) {
+    if ((FREE_TEXT_VALUE_FLAGS.has(token) || ((primary === "secrets" || primary === "secret") && SECRET_VALUE_FLAGS.has(token)))
+      && index + 1 < command.length) {
       kept.push(token, command[index + 1]!);
       index += 1;
       continue;

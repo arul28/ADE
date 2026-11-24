@@ -497,8 +497,13 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
       const pending = state.pending;
       if (pending.nextAt > now()) return false;
       // Each POST waits on the last: stop the moment the app is revoked, the subscription
-      // is removed, or this machine stops serving, so no more chat data goes out.
-      if (states.get(subscription.id) !== state || !deps.connection(subscription.connectionId) || !deps.servingHere()) return false;
+      // is removed or expires, or this machine stops serving, so no more chat data goes out.
+      if (
+        states.get(subscription.id) !== state
+        || subscription.refreshBefore <= now()
+        || !deps.connection(subscription.connectionId)
+        || !deps.servingHere()
+      ) return false;
       const finished = await attempt(subscription, state, pending);
       if (!finished) return false;
       state.after = { boot: mcpHubHead().boot, seq: pending.seq };
@@ -531,7 +536,10 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
       });
     }
   };
+  /** The subscriptions the current run queued: a waiting task no run still wants is dropped. */
+  let queuedThisRun = new Set<string>();
   const enqueue = (id: string, task: () => Promise<boolean | void>): void => {
+    queuedThisRun.add(id);
     if (delivering.has(id)) again.add(id);
     else waiting.set(id, task);
   };
@@ -541,7 +549,7 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
     const self = selfKey();
     const ids = new Set(subscriptions.map((entry) => entry.id));
     for (const id of states.keys()) if (!ids.has(id)) states.delete(id);
-    for (const id of waiting.keys()) if (!ids.has(id)) waiting.delete(id);
+    queuedThisRun = new Set();
     const serving = deps.servingHere();
     for (const subscription of subscriptions) {
       const owner = subscription.servedBy === self;
@@ -569,6 +577,8 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
         return false;
       }));
     }
+    // Expired, removed, revoked or no longer served here since it was queued: it waits no more.
+    for (const id of waiting.keys()) if (!queuedThisRun.has(id)) waiting.delete(id);
     pump();
     scheduleRetry();
   };

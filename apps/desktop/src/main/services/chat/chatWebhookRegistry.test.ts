@@ -8,17 +8,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const posts: Array<{ url: string; authorization: string | undefined; body: Record<string, unknown> }> = [];
 vi.mock("node:dns/promises", () => ({ lookup: vi.fn(async () => [{ address: "93.184.216.34", family: 4 }]) }));
 vi.mock("node:https", () => {
-  const request = (url: URL, options: { headers: Record<string, string> }, onResponse: (response: { statusCode: number; resume: () => void }) => void) => ({
+  const request = (url: URL, options: { headers: Record<string, string> }, onResponse: (response: { statusCode: number; resume: () => void; destroy: () => void }) => void) => ({
     on: () => undefined,
+    destroy: () => undefined,
     end: (body: string) => {
       posts.push({ url: url.toString(), authorization: options.headers.authorization, body: JSON.parse(body) });
-      onResponse({ statusCode: 200, resume: () => undefined });
+      onResponse({ statusCode: 200, resume: () => undefined, destroy: () => undefined });
     },
   });
   return { default: { request } };
 });
 
 const { createChatWebhookRegistry } = await import("./chatWebhookRegistry");
+const { lookup } = await import("node:dns/promises");
 
 const logger = { info: vi.fn(), warn: vi.fn() };
 
@@ -113,5 +115,32 @@ describe("chat webhooks", () => {
     expect(Object.keys(onDisk.removed)).toHaveLength(1);
     armer.registry.dispose();
     runner.registry.dispose();
+  });
+
+  it("never posts to a URL that is, or resolves to, this computer or a private network", async () => {
+    const { registry, summaries } = brain(secretsDir, { runs: true });
+    // A private address in the URL itself is refused when the webhook is armed.
+    for (const url of ["https://127.0.0.1/ade", "https://10.0.0.5/ade", "https://[::1]/ade", "https://localhost/ade"]) {
+      await expect(registry.arm({ sessionId: "chat-3", url }), url).rejects.toThrow();
+    }
+    // A public-looking name whose DNS answer includes a private address (a
+    // rebinding name) is armed, but its POST is never sent.
+    vi.mocked(lookup).mockImplementation((async () => [
+      { address: "93.184.216.34", family: 4 },
+      { address: "169.254.169.254", family: 4 },
+    ]) as never);
+    try {
+      summaries.set("chat-3", { status: "idle", laneId: "lane-3" });
+      await registry.arm({ sessionId: "chat-3", url: "https://rebind.example.com/ade" });
+      registry.signal("chat-3", { type: "status", turnStatus: "started" });
+      await vi.advanceTimersByTimeAsync(300);
+      registry.signal("chat-3", { type: "done" });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(posts).toHaveLength(0);
+      expect(logger.warn).toHaveBeenCalledWith("agent_chat.webhook_private_address", expect.objectContaining({ sessionId: "chat-3" }));
+    } finally {
+      vi.mocked(lookup).mockImplementation((async () => [{ address: "93.184.216.34", family: 4 }]) as never);
+      registry.dispose();
+    }
   });
 });

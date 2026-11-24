@@ -6859,6 +6859,12 @@ describe("adeRpcServer", () => {
     await initialize(chatlessCto, { callerId: "ade-cli:4242", role: "cto" });
     const claimed = await callTool(chatlessCto, "run_ade_action", { domain: "chat", action: "respondToInput", args: answer("consent-card") });
     expect(claimed?.error?.code).toBe(JsonRpcErrorCode.policyDenied);
+    // Nor is a shell that claims a full-access ADE MCP connection: an app with full
+    // access answers other cards, never the person's screen-control consent.
+    const claimedMcp = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(claimedMcp, { callerId: "ade-cli:4245", role: "cto", remoteMcpConnectionId: "conn-full" });
+    const mcpAnswer = await callTool(claimedMcp, "run_ade_action", { domain: "chat", action: "approveToolUse", args: answer("consent-card") });
+    expect(mcpAnswer?.error?.code).toBe(JsonRpcErrorCode.policyDenied);
     expect(respondToInput).not.toHaveBeenCalled();
     expect(approveToolUse).not.toHaveBeenCalled();
 
