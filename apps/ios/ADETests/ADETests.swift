@@ -6432,6 +6432,16 @@ final class ADETests: XCTestCase {
       XCTAssertEqual(pruneResolvedQueuedSteerEnvelopes(restored).count, 4)
       XCTAssertNil(workAvailableQueueRecovery(from: restored))
     }
+
+    // Two identical restored prompts: the one sent as a fresh turn (an id'd
+    // "delivering" notice, then a user row with no steer id) settles only itself.
+    let twinLines = [
+      #"{"sessionId":"s","timestamp":"2026-07-16T12:00:02.000Z","sequence":1,"event":{"type":"queue_recovery","recoveryId":"r","state":"restored","messageCount":2,"expiresAt":"2026-07-16T12:00:08.000Z","stopMode":"stop_and_clear","restoredSteers":[{"steerId":"steer-1","text":"again"},{"steerId":"steer-2","text":"again"}]}}"#,
+      #"{"sessionId":"s","timestamp":"2026-07-16T12:00:03.000Z","sequence":2,"event":{"type":"system_notice","noticeKind":"info","message":"Delivering queued message.","turnId":"turn-2","steerId":"steer-1"}}"#,
+      #"{"sessionId":"s","timestamp":"2026-07-16T12:00:04.000Z","sequence":3,"event":{"type":"user_message","text":"again","turnId":"turn-2","deliveryState":"delivered"}}"#,
+    ]
+    let twins = parseWorkChatTranscript(twinLines.joined(separator: "\n"))
+    XCTAssertEqual(derivePendingWorkSteers(from: twins).map(\.id), ["steer-2"])
   }
 
   @MainActor

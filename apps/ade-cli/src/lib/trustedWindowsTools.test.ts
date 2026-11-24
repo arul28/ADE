@@ -109,6 +109,20 @@ describe("trusted Windows tool resolution", () => {
   });
 
   const nativeWindowsTest = process.platform === "win32" ? it : it.skip;
+  nativeWindowsTest("keeps files already in an adopted directory readable", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-private-adopt-"));
+    try {
+      const existing = path.join(dir, "existing.json");
+      fs.writeFileSync(existing, "kept");
+      ensurePrivateDirectory(dir);
+      expect(fs.readFileSync(existing, "utf8")).toBe("kept");
+      const created = path.join(dir, "created.json");
+      fs.writeFileSync(created, "new");
+      expect(fs.readFileSync(created, "utf8")).toBe("new");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
   nativeWindowsTest("ignores cwd, PATH, SystemRoot, and windir poisoning on Windows", () => {
     const poisonDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-trusted-tools-poison-"));
 

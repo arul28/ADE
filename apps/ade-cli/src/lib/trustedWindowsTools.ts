@@ -153,14 +153,20 @@ function resolveCurrentWindowsUser(): string {
  * Remove inherited access and grant the current Windows user full control.
  * Callers inject `aclRunner` in tests; production always resolves icacls from
  * the trusted System32 path so a poisoned PATH cannot change credential ACLs.
+ *
+ * `inheritToChildren` (directories) makes the grant object- and
+ * container-inheriting. Without it, removing inheritance from a directory that
+ * already holds files leaves those files with no access entry at all, so the
+ * user can no longer read them.
  */
 export function applyWindowsOwnerOnlyAcl(
   targetPath: string,
-  options: WindowsOwnerOnlyAclOptions = {},
+  options: WindowsOwnerOnlyAclOptions & { inheritToChildren?: boolean } = {},
 ): void {
   const currentUser = options.currentUser?.trim() || resolveCurrentWindowsUser();
   const command = resolveTrustedWindowsTool("icacls");
-  const args = [targetPath, "/inheritance:r", "/grant:r", `${currentUser}:F`];
+  const grant = options.inheritToChildren ? "(OI)(CI)F" : "F";
+  const args = [targetPath, "/inheritance:r", "/grant:r", `${currentUser}:${grant}`];
   const result = options.aclRunner
     ? options.aclRunner(command, args)
     : (() => {
@@ -244,7 +250,7 @@ export function ensurePrivateDirectory(
   // the complete directory already existed. A newly recreated directory must
   // be ACL'd again even when its comparison key is still cached.
   if (created === undefined && securedPrivatePaths.has(key)) return;
-  securePrivatePath(directoryPath, options);
+  applyWindowsOwnerOnlyAcl(directoryPath, { ...options, inheritToChildren: true });
   securedPrivatePaths.add(key);
 }
 
@@ -252,7 +258,7 @@ export function ensurePrivateDirectory(
  * Write a file only its owner can read, inside a directory already made
  * private by {@link ensurePrivateDirectory}.
  *
- * WHY no per-file icacls: the directory grant `icacls <dir> /grant:r user:F`
+ * WHY no per-file icacls: the directory grant `icacls <dir> /grant:r user:(OI)(CI)F`
  * is object- and container-inheriting, so a file created underneath already
  * carries exactly that ACE. Re-running icacls per file spawned one process per
  * credential file written on every launch and changed nothing about the result.
