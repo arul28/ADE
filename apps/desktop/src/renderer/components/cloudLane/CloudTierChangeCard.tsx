@@ -3,6 +3,7 @@ import { ArrowRight } from "@phosphor-icons/react";
 import { capitalizeCloudPhrase, cloudCatalogOf, cloudHoursLeftMilli, formatCloudHours, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot, CloudLaneTierTiming } from "../../../shared/cloudLaneLife";
 import { cloudTierHoursAt, cloudTierRateLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { CLOUD_HOURS_WORDS, cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import { ipcErrorMessage } from "../../lib/format";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { CloudSizeCards } from "../settings/cloudDashboard/CloudSizeCards";
@@ -43,8 +44,8 @@ function waitText(move: boolean): string {
     : "About 2 minutes: the computer restarts at the new size. Your files and chats stay.";
 }
 
-function rateText(tier: CloudTier | null): string {
-  return tier ? cloudTierRateLabel(tier) : "";
+function rateText(tier: CloudTier | null, words: CloudUnitWords = CLOUD_HOURS_WORDS): string {
+  return tier ? cloudTierRateLabel(tier, words) : "";
 }
 
 /** The hours left, the plan's and the earned ones (as the ADE Cloud page counts them); null before the account is read. */
@@ -52,9 +53,9 @@ function hoursLeftOf(account: CloudAccountState | null): number | null {
   return account?.hours ? cloudHoursLeftMilli(account) : null;
 }
 
-function hoursText(leftMilli: number | null, tier: CloudTier | null): string | null {
+function hoursText(leftMilli: number | null, tier: CloudTier | null, words: CloudUnitWords): string | null {
   if (leftMilli == null || !tier || tier.multiplierMilli <= 0) return null;
-  return `${formatCloudHours(leftMilli)} h left is about ${cloudTierHoursAt(tier, leftMilli)} awake at this size.`;
+  return `${words.credits ? words.milli(leftMilli) : `${formatCloudHours(leftMilli)} h`} left is about ${cloudTierHoursAt(tier, leftMilli)} awake at this size.`;
 }
 
 export function CloudTierChangeCard({
@@ -84,6 +85,7 @@ export function CloudTierChangeCard({
   headless?: boolean;
 }) {
   const tiers = useMemo(() => cloudTiers(cloudCatalogOf(account)), [account]);
+  const words = cloudUnitWords(account);
   const [picked, setPicked] = useState<CloudTierId | null>(facts.toSizeId);
   const [busy, setBusy] = useState<CloudLaneTierTiming | null>(null);
   // One action: by default the change starts once the agent finishes its turn.
@@ -95,7 +97,7 @@ export function CloudTierChangeCard({
   const changed = to != null && to.id !== facts.fromSizeId;
   const available = cloudLaneChangesAvailable();
   const leftMilli = hoursLeftOf(account);
-  const hours = hoursText(leftMilli, to);
+  const hours = hoursText(leftMilli, to, words);
   const currentDiskGb = computer?.diskGb ?? null;
   const diskLine = to && changed ? tierChangeDiskLine({ to, move, currentGb: currentDiskGb }) : null;
   const diskGrow = useMemo(
@@ -148,6 +150,7 @@ export function CloudTierChangeCard({
             markId={facts.fromSizeId}
             markLabel="Now"
             ariaLabel="New size"
+            words={words}
           />
         </div>
       ) : null}
@@ -164,7 +167,7 @@ export function CloudTierChangeCard({
             {to.label}
           </span>
           <span className="adecl-tier-rate kit-num">
-            {from ? `${capitalizeCloudPhrase(rateText(from))}, then ${rateText(to)}` : capitalizeCloudPhrase(rateText(to))}
+            {from ? `${capitalizeCloudPhrase(rateText(from, words))}, then ${rateText(to, words)}` : capitalizeCloudPhrase(rateText(to, words))}
           </span>
         </div>
       ) : null}
@@ -172,7 +175,7 @@ export function CloudTierChangeCard({
       {changed ? (
         <dl className="adecl-tier-facts">
           {facts.reason ? (<><dt>Why</dt><dd>{facts.reason}</dd></>) : null}
-          {hours ? (<><dt>Hours</dt><dd>{hours}</dd></>) : null}
+          {hours ? (<><dt>{words.Noun}</dt><dd>{hours}</dd></>) : null}
           {diskLine || diskGrow.choices.length || diskGrow.why ? (
             <>
               <dt>Disk</dt>

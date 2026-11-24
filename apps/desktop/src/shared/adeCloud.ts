@@ -28,6 +28,7 @@ import type {
 } from "../../../account-directory/src/cloud/contract";
 import { CLOUD_INVITE_REFUSAL_REASONS, CLOUD_PLAN_SENTENCE_NAMES, CLOUD_SMALL_UNLIMITED_SENTENCE, formatCloudCents } from "../../../account-directory/src/cloud/contract";
 import { cloudCatalog } from "../../../account-directory/src/cloud/plans";
+import { CLOUD_HOURS_WORDS, cloudUnitWords, formatCloudHours, type CloudUnitWords } from "./cloudUnitWords";
 import type {
   CloudEarnedHours,
   CloudFreePlan,
@@ -73,6 +74,7 @@ export { overPlanLimitsSentence, planCleanupDoneSentence, planCleanupSentence, t
 /** Pricing v2's shared sentences and codes (`docs/plans/pricing-v2-and-gravity.md`): every surface says the same. */
 export {
   CLOUD_COMPUTER_LIMIT_CODE,
+  CLOUD_CREDIT_UNIT_SENTENCE,
   CLOUD_HOUR_UNIT_SENTENCE,
   CLOUD_OUTSIDE_AGENT_FREE_CODE,
   CLOUD_OUTSIDE_AGENT_FREE_MESSAGE,
@@ -278,9 +280,8 @@ export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, cata
  * (`capitalizeCloudPhrase` where it starts one). Where the account's hours
  * are known, surfaces say how long they last instead (`cloudTierHoursAt`).
  */
-export function formatCloudHoursRate(rate: number): string {
-  if (!(rate > 0)) return "uses no hours";
-  return `uses ${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"} an hour`;
+export function formatCloudHoursRate(rate: number, words: CloudUnitWords = CLOUD_HOURS_WORDS): string {
+  return words.rate(rate);
 }
 
 /** A lowercase phrase as the start of a sentence: "Uses 2.5 hours an hour". */
@@ -315,10 +316,14 @@ export function cloudSmallUsesHours(catalog: Pick<CloudCatalog, "sizes">): boole
 /**
  * Small's line for this account: "Unlimited Small computers. They never use
  * your hours." or, when its Small uses hours, "Small computers use half an
- * hour of your hours for each hour awake."
+ * hour of your hours for each hour awake." Credits mode says credits.
  */
-export function cloudSmallHoursSentence(catalog: Pick<CloudCatalog, "sizes">): string {
+export function cloudSmallHoursSentence(catalog: Pick<CloudCatalog, "sizes">, words: CloudUnitWords = CLOUD_HOURS_WORDS): string {
   const rate = cloudSmallRateMilli(catalog) / 1000;
+  if (words.credits) {
+    if (!(rate > 0)) return "Unlimited Small computers. They never use your credits.";
+    return `Small computers use ${rate === 0.5 ? "half a credit" : words.count(rate)} for each hour awake.`;
+  }
   if (!(rate > 0)) return CLOUD_SMALL_UNLIMITED_SENTENCE;
   const amount = rate === 0.5 ? "half an hour" : `${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"}`;
   return `Small computers use ${amount} of your hours for each hour awake.`;
@@ -961,17 +966,8 @@ export async function cloudDomainEnabled(
   }
 }
 
-/**
- * "1,600", "299.8" or "49.5" hours from thousandths: whole hours plainly, any
- * other value to the tenth, rounded down at every size. So 299.8 left of 300
- * reads "299.8", never "299" (an hour used that wasn't) or "300" (none used).
- * Integer tenths, so 0.3 h never prints as 0.2 through float error. The CLI
- * (`cloudHoursText`) and the phone (`cloudHours`) write it the same way.
- */
-export function formatCloudHours(milli: number): string {
-  const tenths = Math.floor(Math.max(0, Number.isFinite(milli) ? milli : 0) / 100);
-  return (tenths / 10).toLocaleString("en-US", { maximumFractionDigits: 1 });
-}
+/** "1,600", "299.8" or "49.5" from thousandths (hours or credits): lives with the unit's words. */
+export { formatCloudHours } from "./cloudUnitWords";
 
 /** The banner for an account, or null when there is nothing to warn about. */
 export type CloudAccountBanner = {
@@ -992,7 +988,8 @@ export const CLOUD_FREE_REFUSED_BANNER_ID = "cloud-free-refused";
 /** "You're out of hours", "You've used 95%", a failed payment: one banner, the most urgent. */
 export function cloudAccountBanner(account: CloudAccountState): CloudAccountBanner | null {
   const resetDate = formatCloudDate(account.billing.periodEnd);
-  const left = formatCloudHours(account.hours.leftMilli);
+  const words = cloudUnitWords(account);
+  const { noun } = words;
   const catalog = cloudCatalogOf(account);
   if (account.billing.notice === "past_due") {
     return {
@@ -1005,29 +1002,29 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
   // The free plan's GitHub rules hold its hours: they don't come back at the reset, so say why instead.
   const github = account.rules === "free" ? cloudFreePlanOf(account).github : undefined;
   if (account.hours.state === "zero" && github && github.state !== "ok" && github.sentence) {
-    return { id: CLOUD_FREE_GITHUB_BANNER_ID, tone: "warning", title: "Free hours wait on GitHub", detail: github.sentence };
+    return { id: CLOUD_FREE_GITHUB_BANNER_ID, tone: "warning", title: `Free ${noun} wait on GitHub`, detail: github.sentence };
   }
   // Another account already used this computer's free plan: those hours never come back at the reset, so never say "until Dec 1".
   const freePlan = account.rules === "free" ? cloudFreePlanOf(account) : undefined;
   if (account.hours.state === "zero" && freePlan?.state === "refused" && freePlan.sentence) {
-    return { id: CLOUD_FREE_REFUSED_BANNER_ID, tone: "warning", title: "No free hours on this account", detail: freePlan.sentence };
+    return { id: CLOUD_FREE_REFUSED_BANNER_ID, tone: "warning", title: `No free ${noun} on this account`, detail: freePlan.sentence };
   }
   if (account.hours.state === "zero") {
     // Small computers usually never use hours, so they keep working: only the bigger sizes stop.
     // A Free account whose Small uses hours (sponsored cards off) stops every size.
     const bigger = cloudSmallUsesHours(catalog)
       ? `Your cloud computers are stopped until ${resetDate}. Turn on sponsored cards in Settings › ADE Cloud to keep Small computers unlimited.`
-      : `Medium, Large and X-Large computers are stopped until ${resetDate}. Small computers keep working.`;
+      : `Medium, Large and X-Large computers${words.credits ? " and the ADE Cloud iPhone" : ""} are stopped until ${resetDate}. Small computers keep working.`;
     const plans = cloudCatalogHasMax(catalog)
-      ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
+      ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} ${noun} a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
       : cloudCatalogHasPro(catalog)
-        ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, and Pro ${formatCloudHours(catalog.plans.pro.includedMilli)}.`
-        : ` The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} hours a month.`;
+        ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} ${noun} a month, and Pro ${formatCloudHours(catalog.plans.pro.includedMilli)}.`
+        : ` The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} ${noun} a month.`;
     return {
       id: "cloud-hours-zero",
       tone: "warning",
-      title: "You're out of hours for bigger computers",
-      detail: account.extraHours.available ? `${bigger} Turn on extra hours to keep going sooner.` : `${bigger}${plans}`,
+      title: words.credits ? "You're out of credits" : "You're out of hours for bigger computers",
+      detail: account.extraHours.available ? `${bigger} Turn on ${words.extra.toLowerCase()} to keep going sooner.` : `${bigger}${plans}`,
     };
   }
   if (account.hours.state === "warn95" || account.hours.state === "warn80") {
@@ -1035,8 +1032,8 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
     return {
       id: `cloud-hours-${percent}`,
       tone: percent === 95 ? "warning" : "info",
-      title: `You've used ${percent}% of your ADE Cloud hours`,
-      detail: `${left} ${left === "1" ? "hour" : "hours"} left until ${resetDate}.`,
+      title: `You've used ${percent}% of your ADE Cloud ${noun}`,
+      detail: `${words.milli(account.hours.leftMilli)} left until ${resetDate}.`,
     };
   }
   if (account.billing.notice === "restored") {

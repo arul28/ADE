@@ -25,6 +25,7 @@ import {
   type CloudSponsoredIndexRequest,
 } from "../../../shared/adeCloud";
 import { CLOUD_MACHINE_KEY_METADATA, cloudMachineOfInstance as toCloudMachine } from "../../../shared/cloudMachineOfInstance";
+import type { CloudPhoneProviderChoice, CloudPhoneProviderChoiceAnswer } from "../../../shared/cloudPhone";
 import { cloudMachineRefusal, runCloudMachineLifecycleAction } from "../../../shared/cloudMachineActions";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider, type CloudInstance } from "./cloudProvider";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
@@ -533,6 +534,19 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       const client = await deps.client();
       if (!client) return { pick: null, reason: "unavailable" };
       return await client.sponsoredIndex(input);
+    },
+    /**
+     * A tester's pick of who runs their phones (`ade cloud phone-provider`).
+     * Account level: no pin, any folder. The server refuses anyone not on the
+     * iPhone's beta list with its own sentence (`phone_not_on_account`).
+     */
+    setPhoneProvider: async (provider: CloudPhoneProviderChoice): Promise<CloudPhoneProviderChoiceAnswer> => {
+      const client = await deps.client();
+      if (!client) throw new Error((await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet.");
+      if (!client.setPhoneProvider) throw new Error("This ADE Cloud can't change the cloud iPhone provider yet.");
+      const answer = await client.setPhoneProvider(provider);
+      logger.info?.("cloud.phone_provider_set", { provider: answer.provider });
+      return answer;
     },
     /** The account's invite link and what it earned; null without ADE Cloud here. */
     referral: async (): Promise<CloudReferralSummary | null> => {

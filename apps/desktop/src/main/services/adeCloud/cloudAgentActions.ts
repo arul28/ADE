@@ -104,6 +104,7 @@ import { buildSponsoredPickCard } from "../../../shared/sponsoredPick";
 import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
 import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import { countAgentMadeToday, type createCloudMachines } from "./cloudMachines";
+import { isCloudPhoneProviderChoice, type CloudPhoneProviderChoiceAnswer } from "../../../shared/cloudPhone";
 import { cloudAgentLimitsChanges, type CloudAgentLimitsStore } from "./cloudSleep";
 
 /**
@@ -1276,6 +1277,18 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const code = text(record(rawArgs), "code");
       if (!code) throw new Error("Pass the invite link or its 8-character code.");
       return await deps.machines.redeemInvite(code);
+    },
+
+    /**
+     * A tester's pick of who runs their ADE Cloud iPhones (`ade cloud
+     * phone-provider auto|nomac|revyl`): the account's, so no pin and any
+     * folder. The server refuses anyone not on the iPhone's beta list, and its
+     * sentence is the error, so no one else learns a provider's name.
+     */
+    async phone_provider(rawArgs?: unknown): Promise<CloudPhoneProviderChoiceAnswer> {
+      const provider = text(record(rawArgs), "provider")?.toLowerCase() ?? null;
+      if (!isCloudPhoneProviderChoice(provider)) throw new Error("Pass provider: auto, nomac or revyl.");
+      return await deps.machines.setPhoneProvider(provider);
     },
 
     /** What agents may do alone: a preset (ask, balanced, hands_off) or single limits. Loosening asks the person. */

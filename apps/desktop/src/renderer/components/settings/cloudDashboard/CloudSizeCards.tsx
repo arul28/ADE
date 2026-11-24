@@ -1,6 +1,7 @@
 import { useId, useRef, type KeyboardEvent } from "react";
 import { Check } from "@phosphor-icons/react";
 import { cloudTierFacts, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../../shared/cloudTiers";
+import { CLOUD_HOURS_WORDS, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import "./cloudSizeCards.css";
 
@@ -24,6 +25,7 @@ export function CloudSizeCards({
   markId,
   markLabel,
   ariaLabel,
+  words = CLOUD_HOURS_WORDS,
 }: {
   tiers: readonly CloudTier[];
   picked: CloudTierId | null;
@@ -34,6 +36,8 @@ export function CloudSizeCards({
   markId: CloudTierId | null;
   markLabel: string;
   ariaLabel: string;
+  /** The account's words (hours or credits, `cloudUnitWords`). */
+  words?: CloudUnitWords;
 }) {
   const idBase = useId();
   const cards = useRef<(HTMLButtonElement | null)[]>([]);
@@ -57,14 +61,14 @@ export function CloudSizeCards({
     <div className="adecd-sizes-wrap">
       <div className="adecd-sizes" role="radiogroup" aria-label={ariaLabel} onKeyDown={onKeyDown}>
         {tiers.map((tier, index) => {
-          const facts = cloudTierFacts(tier);
+          const facts = cloudTierFacts(tier, words);
           const id = `${idBase}-${tier.id}`;
           const marked = tier.id === markId;
           const described = [marked ? `${id}-mark` : null, `${id}-rate`, `${id}-specs`].filter(Boolean).join(" ");
           const usesHours = cloudTierUsesHours(tier);
           // Time on this size (Small reads "Unlimited"); the others say how long the hours left last here.
           const big = usesHours && leftMilli == null ? null : cloudTierHoursAt(tier, leftMilli ?? 0);
-          const under = !usesHours ? "never uses your hours" : leftMilli != null ? "left at this size" : facts.rateLine.toLowerCase();
+          const under = !usesHours ? `never uses your ${words.noun}` : leftMilli != null ? "left at this size" : facts.rateLine.toLowerCase();
           return (
             <button
               key={tier.id}

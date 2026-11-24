@@ -113,7 +113,7 @@ import type {
   CloudPhoneViewPreloadApi,
   CloudPhoneViewStateEvent,
 } from "../shared/types/cloudPhoneView";
-import type { CloudPhoneStatusView, CloudPhoneView } from "../shared/cloudPhone";
+import type { CloudPhoneProviderChoice, CloudPhoneProviderChoiceAnswer, CloudPhoneStatusView, CloudPhoneView } from "../shared/cloudPhone";
 import { IPC } from "../shared/ipc";
 import type {
   CloudKeptLaneRestoreArgs,
@@ -14522,6 +14522,8 @@ const adeBridge = {
     pickPlanCleanup: (input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState | null> =>
       ipcRenderer.invoke(IPC.cloudPickPlanCleanup, input),
     setExtraPhoneMinutes: (choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraPhoneMinutes, choice),
+    // Account-level: a tester's pick of who runs their phones, so no pin.
+    setPhoneProvider: (provider: CloudPhoneProviderChoice): Promise<CloudPhoneProviderChoiceAnswer> => ipcRenderer.invoke(IPC.cloudSetPhoneProvider, { provider }),
     redeemInvite: (code: string): Promise<CloudInviteRedeemOutcome> => ipcRenderer.invoke(IPC.cloudRedeemInvite, { code }),
     openBillingPortal: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenBillingPortal),
     openFreeUnlock: (): Promise<{ opened: boolean; unlocked: boolean }> => ipcRenderer.invoke(IPC.cloudOpenFreeUnlock),

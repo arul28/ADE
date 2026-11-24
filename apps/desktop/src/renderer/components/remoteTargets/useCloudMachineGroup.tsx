@@ -229,7 +229,7 @@ export function useCloudMachineGroup(args: {
     if (!showCloudGroup) return null;
     return (
       <div className="ade-cx-section" data-machine-group="cloud">
-        <CloudGroupHead boxes={cloudGroupBoxes} loading={cloudMachines.loading} />
+        <CloudGroupHead boxes={cloudGroupBoxes} loading={cloudMachines.loading} account={cloudAccount} />
         <CloudGroupBanners
           result={cloudResult}
           loadError={cloudMachines.loadError}

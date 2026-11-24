@@ -14,6 +14,7 @@ import { adeCloudAccountBlock, type AdeCloudTrayAction } from "../chat/useAdeClo
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { Banner, NoticePopover, type NoticeAction } from "../ui/notice";
 import { cloudLaneRestartProblem, cloudLaneRestartTier, useStartLaneOnNewComputer } from "./CloudLaneWithoutComputer";
+import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import {
   CLOUD_QUEUE_SIZE_ID,
   canDeleteCloudLaneWithoutComputer,
@@ -182,6 +183,7 @@ function NewComputerSizeChip({ machineKey, account, picked }: { machineKey: stri
       onChoose={(tier) => pickNewComputerSize(machineKey, tier)}
       onSetDefault={pickCloudDefaultTier}
       hoursLeftMilli={account ? cloudHoursLeftMilli(account) : null}
+      words={cloudUnitWords(account)}
     />
   );
 }

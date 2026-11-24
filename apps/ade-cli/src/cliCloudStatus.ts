@@ -1,7 +1,8 @@
 /**
- * `ade cloud status --text`: whether a new lane can start, the plan, hours,
- * computers, agents, each lane and the sizes (Pricing v2: unlimited Small
- * computers, computers per plan, hours as time on each size, no plan disk).
+ * `ade cloud status --text`: whether a new lane can start, the plan, hours
+ * (or credits, once the server sends `credits`), computers, agents, each lane
+ * and the sizes (Pricing v2: unlimited Small computers, computers per plan,
+ * hours as time on each size, no plan disk).
  *
  * Split from `cli.ts`, which keeps the formatter switch. The import cycle rule
  * of `cliMacDesktopFormat.ts` applies to `./cli`:
@@ -9,6 +10,7 @@
  *   NEITHER FILE MAY USE THE OTHER'S IMPORTS AS A VALUE AT MODULE SCOPE.
  */
 import { formatCloudHoursRate } from "../../desktop/src/shared/adeCloud";
+import { CLOUD_HOURS_WORDS, cloudUnitWords, type CloudUnitWords } from "../../desktop/src/shared/cloudUnitWords";
 import { isRecord } from "./cli";
 
 /** "12.5" from a number of hours, "—" when unknown. */
@@ -34,9 +36,16 @@ function cloudUpdateText(value: unknown): string {
   return target && target !== image ? `${head}, ${target} next` : `${head}, up to date`;
 }
 
-/** "uses no hours" (Small), "uses 2.5 hours an hour": a rate in words, never a multiplier; "—" when unknown. */
-function cloudRateText(value: unknown): string {
-  return typeof value === "number" && Number.isFinite(value) ? formatCloudHoursRate(value) : "—";
+/** "uses no hours" (Small), "uses 2.5 hours an hour" (or credits): a rate in words, never a multiplier; "—" when unknown. */
+function cloudRateText(value: unknown, words: CloudUnitWords = CLOUD_HOURS_WORDS): string {
+  return typeof value === "number" && Number.isFinite(value) ? formatCloudHoursRate(value, words) : "—";
+}
+
+/** The words of `cloud.status`: credits when it sends `credits`, else hours. */
+function statusWords(status: Record<string, unknown>): CloudUnitWords {
+  const credits = isRecord(status.credits) ? status.credits : null;
+  const perMinute = credits && typeof credits.iphonePerMinute === "number" ? credits.iphonePerMinute : null;
+  return cloudUnitWords(perMinute != null ? { credits: { phoneMilliPerMinute: perMinute * 1000 } } : null);
 }
 
 /** "$5", "$1.50": cents as dollars, cents shown only when there are some. */
@@ -45,8 +54,12 @@ function dollarsText(cents: unknown): string {
   return `$${(cents / 100).toFixed(cents % 100 === 0 ? 0 : 2)}`;
 }
 
-/** The iPhone row: minutes left and when they reset, and what happens past them. */
-function cloudIphoneText(iphone: Record<string, unknown>): string {
+/** The iPhone row: minutes left and when they reset, and what happens past them. Under credits: its rate and what it used. */
+function cloudIphoneText(iphone: Record<string, unknown>, words: CloudUnitWords): string {
+  if (words.credits && words.phoneMilliPerMinute != null) {
+    const used = typeof iphone.creditsUsed === "number" ? ` · ${cloudHoursText(iphone.creditsUsed)} credits used this period` : "";
+    return `uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute from your credits${used}`;
+  }
   const minutes = isRecord(iphone.minutes) ? iphone.minutes : {};
   const resets = typeof iphone.resetsAt === "string" ? ` · resets ${iphone.resetsAt.slice(0, 10)}` : "";
   const extra = isRecord(iphone.extraMinutes) ? iphone.extraMinutes : {};
@@ -65,6 +78,7 @@ function cloudIphoneText(iphone: Record<string, unknown>): string {
 export function formatCloudStatus(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const status = isRecord(raw) ? raw : {};
+  const words = statusWords(status);
   const rows: Array<[string, string]> = [];
   const can = isRecord(status.canStartLane) ? status.canStartLane : {};
   const lines: string[] = [];
@@ -79,10 +93,11 @@ export function formatCloudStatus(value: unknown): string {
     // since (a new plan table), say both, so this line and Hours agree.
     const periodHours = hours && typeof hours.included === "number" ? hours.included : null;
     const resetsOn = hours && typeof hours.resetsAt === "string" ? hours.resetsAt.slice(0, 10) : null;
+    const forBigger = words.credits ? "credits" : "hours for bigger computers";
     const planHours = typeof includes.hours === "number"
       ? periodHours != null && periodHours !== includes.hours && resetsOn
-        ? `${cloudHoursText(periodHours)} hours for bigger computers this period, ${cloudHoursText(includes.hours)} from ${resetsOn}`
-        : `${cloudHoursText(includes.hours)} hours for bigger computers`
+        ? `${cloudHoursText(periodHours)} ${forBigger} this period, ${cloudHoursText(includes.hours)} from ${resetsOn}`
+        : `${cloudHoursText(includes.hours)} ${forBigger}`
       : null;
     const facts = [
       computers,
@@ -95,14 +110,14 @@ export function formatCloudStatus(value: unknown): string {
   }
   if (hours) {
     const resets = typeof hours.resetsAt === "string" ? hours.resetsAt.slice(0, 10) : "—";
-    const extra = isRecord(hours.extraHours) && hours.extraHours.enabled === true ? " · extra hours on" : "";
-    const out = hours.state === "zero" ? " · out: bigger computers stop, Small keeps working" : "";
-    rows.push(["Hours", `${cloudHoursText(hours.left)} of ${cloudHoursText(hours.included)} left (Medium-hours) · resets ${resets}${extra}${out}`]);
+    const extra = isRecord(hours.extraHours) && hours.extraHours.enabled === true ? ` · ${words.extra.toLowerCase()} on` : "";
+    const out = hours.state === "zero" ? (words.credits ? " · out: bigger computers and the iPhone stop, Small keeps working" : " · out: bigger computers stop, Small keeps working") : "";
+    rows.push([words.Noun, `${cloudHoursText(hours.left)} of ${cloudHoursText(hours.included)} left${words.credits ? "" : " (Medium-hours)"} · resets ${resets}${extra}${out}`]);
   }
   if (typeof status.smallComputers === "string") rows.push(["Small", status.smallComputers]);
   // Only an account that has the ADE Cloud iPhone gets this part.
   const iphone = isRecord(status.iphone) && status.iphone.access === "on" ? status.iphone : null;
-  if (iphone) rows.push(["iPhone", cloudIphoneText(iphone)]);
+  if (iphone) rows.push(["iPhone", cloudIphoneText(iphone, words)]);
   const computers = isRecord(status.computers) ? status.computers : null;
   // Cloud computers asleep or not, of the plan's limit (an older ADE sends no limit: a count only).
   if (computers) {
@@ -115,7 +130,7 @@ export function formatCloudStatus(value: unknown): string {
     const sizes = Array.isArray(agents.sizesAllowed) ? agents.sizesAllowed.join(", ") : "—";
     rows.push(["Agents", agents.unattendedSpend === true
       ? `${String(agents.newComputersLeftToday ?? 0)} of ${String(agents.newComputersPerDay ?? 0)} new computers left today · alone up to: ${sizes}`
-      : "agents nobody watches may not use hours; attended agents ask in their chat"]);
+      : `agents nobody watches may not use ${words.noun}; attended agents ask in their chat`]);
   }
   const width = Math.max(...rows.map(([label]) => label.length));
   for (const [label, text] of rows) lines.push(`${label.padEnd(width)}  ${text}`);
@@ -136,7 +151,7 @@ export function formatCloudStatus(value: unknown): string {
     return [
       lane ? boxName(box) : `(no lane) ${boxName(box)}`,
       size,
-      cloudRateText(box.hoursRate),
+      cloudRateText(box.hoursRate, words),
       notJoined ? `${String(box.state ?? "")}, not joined to ADE yet` : String(box.state ?? ""),
       lane && typeof lane.projectOrigin === "string" ? lane.projectOrigin : "",
       notJoined ? "" : cloudUpdateText(box.update),
@@ -147,7 +162,7 @@ export function formatCloudStatus(value: unknown): string {
   const sizeRows = sizes.map((size) => [
     String(size.id ?? ""),
     `${size.kind === "full" ? "full computer" : "standard"} · ${String(size.cpu ?? "?")} CPU · ${String(size.memoryGb ?? "?")} GB`,
-    size.usesHours === false || size.hoursRate === 0 ? "unlimited (never uses hours)" : cloudRateText(size.hoursRate),
+    size.usesHours === false || size.hoursRate === 0 ? `unlimited (never uses ${words.noun})` : cloudRateText(size.hoursRate, words),
     size.isDefault === true ? "default" : "",
   ]);
   const table = (cells: string[][]): string[] => {
@@ -181,13 +196,15 @@ export function formatCloudStatus(value: unknown): string {
     // Past the plan: the price, or "stops" where nothing more is sold (Free).
     const past = (value: unknown, unit: string): string => (typeof value === "number" ? `${value}¢ ${unit}` : "stops");
     const iphoneShown = plans.some((plan) => typeof plan.iphoneMinutes === "number");
-    lines.push("", `Plans (a month; Small computers are unlimited on every plan; past the plan's hours${iphoneShown ? " and iPhone minutes" : ""})`, ...table(plans.map((plan) => [
+    lines.push("", `Plans (a month; Small computers are unlimited on every plan; past the plan's ${words.noun}${iphoneShown ? " and iPhone minutes" : ""})`, ...table(plans.map((plan) => [
       `${String(plan.label ?? plan.id)}${plan.current === true ? " (yours)" : ""}`,
       typeof plan.priceUsdMonth === "number" ? `${dollarsText(plan.priceUsdMonth * 100)}` : "?",
       typeof plan.computers === "number" ? `${plan.computers} computers` : "",
-      typeof plan.hoursOnSizes === "string" && plan.hoursOnSizes ? plan.hoursOnSizes : `${cloudHoursText(plan.hours)} hours`,
+      words.credits
+        ? `${cloudHoursText(plan.hours)} credits${typeof plan.hoursOnSizes === "string" && plan.hoursOnSizes ? ` (${plan.hoursOnSizes})` : ""}`
+        : typeof plan.hoursOnSizes === "string" && plan.hoursOnSizes ? plan.hoursOnSizes : `${cloudHoursText(plan.hours)} hours`,
       typeof plan.iphoneMinutes === "number" ? `${plan.iphoneMinutes} iPhone min` : "",
-      `extra hours: ${typeof plan.extraHourCents === "number" ? `${plan.extraHourCents}¢ each` : "none"}${iphoneShown ? ` · iPhone: ${past(plan.extraIphoneMinuteCents, "a minute")}` : ""}`,
+      `${words.extra.toLowerCase()}: ${typeof plan.extraHourCents === "number" ? `${plan.extraHourCents}¢ each` : "none"}${iphoneShown ? ` · iPhone: ${past(plan.extraIphoneMinuteCents, "a minute")}` : ""}`,
       plan.outsideAgents === false ? "no outside agents" : "outside agents ok",
     ])));
     if (typeof hours?.unit === "string") lines.push(`  ${hours.unit}`);

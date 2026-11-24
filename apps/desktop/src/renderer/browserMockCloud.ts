@@ -22,6 +22,9 @@
  *  - `emptyplus`: Plus with nothing made yet and no use this period.
  * On `free`, Get Plus lands the plan a moment later, as a checkout coming back does.
  * `&mockCloudAccess=off` answers "no ADE Cloud" (the hidden state).
+ * `&mockCloudCredits=1` answers in credits mode (one balance the iPhone draws
+ * from too); `&mockPhone=on` gives a Free account the ADE Cloud iPhone; and
+ * `&mockPhoneProvider=auto|nomac|revyl` makes the account a tester with that pick.
  *
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
  * calls and replacing only the account and computer reads.
@@ -593,6 +596,9 @@ export function applyBrowserMockCloud(ade: any): void {
   }
   const requested = param("mockCloud") as Scenario | null;
   if (!requested) return;
+  const creditsParam = param("mockCloudCredits") === "1";
+  const phoneParam = param("mockPhone") === "on";
+  const providerParam = param("mockPhoneProvider");
   const scenario: Scenario = SCENARIOS.includes(requested) ? requested : "free";
   const accessOn = param("mockCloudAccess") !== "off";
   // Read once: the app routes away from the first URL and drops its query.
@@ -601,6 +607,30 @@ export function applyBrowserMockCloud(ade: any): void {
   const fix = fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
   let state = account(fix, machines, now);
+  // Credits mode: the iPhone has used some of the balance; no separate extra iPhone minutes.
+  const withCredits = (next: CloudAccountState): CloudAccountState => {
+    let out = next;
+    if (phoneParam && !out.phone) {
+      out = { ...out, phone: { access: "on", minutes: { included: 60, used: 12, left: 48 }, state: "none", extra: { available: false, enabled: false, centsPerMinute: null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 } } };
+    }
+    if (out.phone && (providerParam === "auto" || providerParam === "nomac" || providerParam === "revyl")) {
+      out = { ...out, phone: { ...out.phone, providerChoice: providerParam } };
+    }
+    if (!creditsParam) return out;
+    const phoneUsed = out.phone ? Math.min(out.hours.usedMilli, Math.round(out.hours.usedMilli * 0.4)) : 0;
+    const leftMinutes = Math.floor(out.hours.leftMilli / 1000);
+    return {
+      ...out,
+      credits: { phoneMilliPerMinute: 1000 },
+      phone: out.phone ? {
+        ...out.phone,
+        creditsUsedMilli: phoneUsed,
+        minutes: { included: Math.floor(phoneUsed / 1000) + leftMinutes, used: Math.floor(phoneUsed / 1000), left: leftMinutes },
+        extra: { ...out.phone.extra, available: false, enabled: false },
+      } : undefined,
+    };
+  };
+  state = withCredits(state);
   // `&mockSponsored=ask` (the one-time question), `on` (answered yes) or `small` (below): sponsored
   // cards, test ads only, whatever the scenario's plan (the server says when).
   // Pair with `mockCloudLaneMachine=1` so a chat runs on an ADE Cloud computer.
@@ -699,6 +729,14 @@ export function applyBrowserMockCloud(ade: any): void {
         },
       };
     },
+    // A tester's provider pick (`mockPhoneProvider`); anyone else gets the server's refusal.
+    setPhoneProvider: async (provider: "auto" | "nomac" | "revyl") => {
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+      if (!state.phone?.providerChoice) throw new Error("This account can't pick who runs its cloud iPhones.");
+      state = { ...state, phone: { ...state.phone, providerChoice: provider } };
+      for (const listener of statusListeners) listener();
+      return { ok: true as const, provider };
+    },
     setExtraHours: async (enabled: boolean) => {
       state.extraHours = { ...state.extraHours, enabled };
       for (const listener of statusListeners) listener();
@@ -731,7 +769,7 @@ export function applyBrowserMockCloud(ade: any): void {
           fix.planId = landed;
           fix.freshPeriod = true;
           fix.usedMilli = 0;
-          state = account(fix, machines, Date.now());
+          state = withCredits(account(fix, machines, Date.now()));
           for (const listener of statusListeners) listener();
         }, 1_500);
         return { opened: true };

@@ -200,7 +200,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "integrations", label: "Integrations", description: "GitHub, Linear, Jira and MCP servers: the services ADE and your agents use.", group: "app" },
   // Shown only to an account ADE Cloud lets in: every entry on it is an ADE
   // Cloud entry, and those exist only with access (`isSettingAvailable`).
-  { id: "ade-cloud", label: "ADE Cloud", description: "Your plan, hours, cloud computers and lanes, the sizes, and the sign-ins your cloud computers use.", group: "app" },
+  { id: "ade-cloud", label: "ADE Cloud", description: "Your plan and what it has left, cloud computers and lanes, the sizes, and the sign-ins your cloud computers use.", group: "app" },
   // One MCP server for the account: one URL reaches every computer you
   // include. The id stays `ade-mcp`, so links from when it was a Computer page
   // still land here.

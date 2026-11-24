@@ -443,11 +443,18 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-glassbtn:hover { background: rgba(255, 255, 255, 0.11); }
 .adecd-glassbtn:focus-visible { outline: 2px solid var(--adec-lamp); outline-offset: 2px; }
 
-/* The hero: the dusk sky, the plan, the numbers on the left and the city on the right. */
+/*
+ * The hero: the night sky, the plan and when it resets on top, then three
+ * parts in a row (stacked when narrow): what is left of the plan, the cloud
+ * computers, and what happens past the plan. Every line wraps: nothing is
+ * cut off at any width.
+ */
 .adecd-hero {
   container: adecdhero / inline-size;
-  padding: 18px 22px 20px;
+  padding: 18px 22px 22px;
 }
+/* The moon sits in the open sky of the top row, beside Compare plans, so the three parts never cover it. */
+.adecd-hero .adecd-sky-moon { top: 16px; right: 168px; width: 30px; height: 30px; }
 .adecd-hero-head {
   position: relative;
   display: flex;
@@ -471,77 +478,110 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 /* A plan that just landed: its name glows a few times, then rests. */
 .adecd-hero-plan[data-celebrate] { animation: adecd-plan-glow 1.6s ease-in-out 3; }
 @keyframes adecd-plan-glow { 50% { text-shadow: 0 0 28px rgba(255, 210, 122, 0.85), 0 0 4px rgba(255, 241, 207, 0.9); } }
-.adecd-hero-period {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  margin-left: 4px;
-  padding: 0 9px;
-  border: 1px solid var(--adecd-glass-edge);
-  border-radius: 999px;
-  background: var(--adecd-glass);
-  font-size: 11px;
-  color: var(--adecd-fg-2);
-  white-space: nowrap;
-}
-.adecd-hero-period[data-tone="warn"] { color: #fcd34d; border-color: rgba(252, 211, 77, 0.35); }
-.adecd-hero-period[data-tone="crit"] { color: #fca5a5; border-color: rgba(252, 165, 165, 0.4); background: rgba(248, 113, 113, 0.12); }
+/* When the plan resets (or ends, or failed to pay): plain text beside the name, no pill. */
+.adecd-hero-period { margin-left: 2px; font-size: 12px; color: var(--adecd-fg-2); }
+.adecd-hero-period[data-tone="warn"] { color: #fcd34d; }
+.adecd-hero-period[data-tone="crit"] { color: #fca5a5; font-weight: 500; }
 
-.adecd-hero-body {
+.adecd-hero-parts {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(270px, 1fr) minmax(0, 1fr);
-  align-items: stretch;
-  gap: 8px 8px;
-  margin-top: 16px;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 18px;
 }
-.adecd-hero-stats { display: flex; flex-direction: column; gap: 18px; min-width: 0; padding-bottom: 6px; }
+.adecd-hero-part {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px 16px 15px;
+  border: 1px solid var(--adecd-glass-edge);
+  border-radius: 14px;
+  background: rgba(14, 10, 40, 0.42);
+  backdrop-filter: blur(10px);
+}
 .adecd-label { font-size: 11.5px; color: var(--adecd-fg-2); }
-.adecd-hours-num { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin: 2px 0 10px; }
+.adecd-hours-num { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 10px; margin: 0 0 4px; }
 .adecd-hours-num b {
-  font-size: 54px;
-  line-height: 58px;
+  font-size: 46px;
+  line-height: 50px;
   font-weight: 500;
   letter-spacing: -0.035em;
   color: var(--adecd-fg);
 }
-.adecd-hours-num span { font-size: 13px; color: var(--adecd-fg-2); }
-.adecd-meter { height: 6px; background: rgba(255, 255, 255, 0.1); }
-.adecd-hero .adecd-meter:not([data-level]) > span,
-.adecd-hero .adecd-meter[data-level="ok"] > span {
-  background: linear-gradient(90deg, #8b5cf6 0%, #e15fa3 70%, var(--adec-lamp) 100%);
-  box-shadow: 0 0 12px rgba(244, 114, 182, 0.45);
+.adecd-hours-num span { font-size: 14px; color: var(--adecd-fg-2); }
+
+/* The whole plan as one bar: what used it (chart colours), then what is left (grey), with the lamp where use ends. */
+.adecd-bar {
+  --adecd-c-computers: #a78bfa;
+  --adecd-c-phone: #f472b6;
+  --adecd-c-used: #a78bfa;
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
 }
+.adecd-bar > span { flex-basis: 0; min-width: 3px; }
+.adecd-bar > span[data-part="computers"] { background: var(--adecd-c-computers); }
+.adecd-bar > span[data-part="phone"] { background: var(--adecd-c-phone); }
+.adecd-bar > span[data-part="used"] { background: linear-gradient(90deg, #8b5cf6 0%, #e15fa3 100%); }
+.adecd-bar > span[data-part="left"] { background: rgba(255, 255, 255, 0.14); }
+/* The lamp: a gold end on the last used part, where what is left begins. */
+.adecd-bar > span:not([data-part="left"]):nth-last-child(2),
+.adecd-bar > span:not([data-part="left"]):last-child {
+  box-shadow: inset -3px 0 0 var(--adec-lamp), 0 0 10px rgba(255, 210, 122, 0.35);
+}
+.adecd-hero-balance[data-level="warn"] .adecd-bar > span[data-part="left"] { background: color-mix(in srgb, #fcd34d 55%, transparent); }
+.adecd-hero-balance[data-level="crit"] .adecd-bar > span[data-part="left"] { background: color-mix(in srgb, #f87171 65%, transparent); }
+
+.adecd-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--adecd-fg-2);
+}
+.adecd-legend li { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.adecd-legend b { font-weight: 600; color: var(--adecd-fg); }
+.adecd-legend i { width: 8px; height: 8px; border-radius: 2px; background: rgba(255, 255, 255, 0.24); }
+.adecd-legend li[data-part="computers"] i { background: #a78bfa; }
+.adecd-legend li[data-part="phone"] i { background: #f472b6; }
+.adecd-legend li[data-part="used"] i { background: linear-gradient(90deg, #8b5cf6, #e15fa3); }
+.adecd-hero-balance[data-level="warn"] .adecd-legend li[data-part="left"] b { color: #fcd34d; }
+.adecd-hero-balance[data-level="crit"] .adecd-legend li[data-part="left"] b { color: #fca5a5; }
+
 .adecd-hours-notes {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin: 10px 0 0;
+  margin: 6px 0 0;
   padding: 0;
   list-style: none;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.45;
   color: var(--adecd-fg-2);
 }
+.adecd-hours-notes:empty { display: none; }
 .adecd-hours-notes li[data-tone="warn"] { color: #fcd34d; }
-.adecd-hero-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.adecd-hero-chips:empty { display: none; }
-.adecd-hero-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 22px;
-  padding: 0 9px;
-  border: 1px solid var(--adecd-glass-edge);
-  border-radius: 999px;
-  background: var(--adecd-glass);
-  font-size: 11px;
-  color: var(--adecd-fg-2);
-  white-space: nowrap;
-}
-.adecd-hero-chip[data-tone="lamp"] { color: var(--adec-lamp); border-color: rgba(255, 210, 122, 0.3); background: rgba(255, 210, 122, 0.08); }
-.adecd-hero-chip i { width: 6px; height: 6px; border-radius: 50%; background: rgba(255, 255, 255, 0.3); }
-.adecd-hero-chip i[data-on] { background: var(--adec-lamp); box-shadow: 0 0 6px rgba(255, 210, 122, 0.8); }
+.adecd-hours-notes li[data-tone="lamp"] { color: var(--adec-lamp); }
+
+.adecd-part-num { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; }
+.adecd-part-num b { font-size: 30px; line-height: 36px; font-weight: 500; letter-spacing: -0.03em; color: var(--adecd-fg); }
+.adecd-part-num span { font-size: 13px; color: var(--adecd-fg-2); }
+.adecd-part-line { font-size: 12px; line-height: 1.45; color: var(--adecd-fg-2); }
+.adecd-part-state { display: flex; align-items: center; gap: 8px; }
+.adecd-part-state b { font-size: 22px; line-height: 36px; font-weight: 500; color: var(--adecd-fg); }
+.adecd-part-state i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: rgba(255, 255, 255, 0.3); }
+.adecd-part-state[data-on] i { background: var(--adec-lamp); box-shadow: 0 0 8px rgba(255, 210, 122, 0.8); }
+.adecd-linkish.adecd-part-link { align-self: flex-start; margin-top: auto; padding-top: 4px; font-size: 12px; color: var(--adec-lamp); }
+.adecd-part-link:focus-visible { outline: 2px solid var(--adec-lamp); outline-offset: 2px; border-radius: 3px; }
+
 .adecd-linkish {
   padding: 0;
   border: 0;
@@ -552,50 +592,17 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
   text-underline-offset: 2px;
   cursor: pointer;
 }
-.adecd-minis { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.adecd-mini {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
-  padding: 10px 12px 11px;
-  border: 1px solid var(--adecd-glass-edge);
-  border-radius: 12px;
-  background: var(--adecd-glass);
-  backdrop-filter: blur(10px);
-}
-.adecd-mini-num { display: flex; align-items: baseline; gap: 6px; }
-.adecd-mini-num b { font-size: 21px; line-height: 25px; font-weight: 500; color: var(--adecd-fg); }
-.adecd-mini-num span { font-size: 11.5px; color: var(--adecd-fg-2); }
-.adecd-mini .adecd-meter { height: 4px; margin-top: auto; }
-.adecd-mini .adecd-mini-note { margin-top: auto; }
-.adecd-mini .adecd-meter:not([data-level]) > span,
-.adecd-mini .adecd-meter[data-level="ok"] > span { background: linear-gradient(90deg, #a78bfa, #c4b5fd); box-shadow: none; }
-.adecd-mini-note { font-size: 11px; color: var(--adecd-fg-2); opacity: 0.85; }
 
-.adecd-hero-city { position: relative; min-width: 0; display: flex; flex-direction: column; justify-content: flex-end; }
-.adecd-hero-city .adecd-city-svg { max-height: 330px; }
-.adecd-city-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 100%;
-  min-height: 220px;
-  padding: 10px 24px;
-  text-align: center;
+/* Two rows (the balance, then the other two side by side), then one column. */
+@container adecdhero (max-width: 760px) {
+  .adecd-hero-parts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .adecd-hero-balance { grid-column: 1 / -1; }
 }
-.adecd-city-empty b { font-size: 13.5px; font-weight: 600; color: var(--adecd-fg); }
-.adecd-city-empty span { max-width: 320px; font-size: 11.5px; line-height: 1.5; color: var(--adecd-fg-2); }
-.adecd-plot { width: 170px; height: 74px; margin-bottom: 6px; }
-.adecd-plot-ground { fill: rgba(42, 30, 92, 0.75); stroke: var(--adecd-pad-edge); }
-.adecd-plot-lot { fill: rgba(255, 210, 122, 0.06); stroke: var(--adec-lamp); stroke-opacity: 0.6; stroke-dasharray: 3 3; }
-
-@container adecdhero (max-width: 640px) {
-  .adecd-hero-body { grid-template-columns: 1fr; }
-  .adecd-hero-city .adecd-city-svg { max-height: 220px; }
-  .adecd-hours-num b { font-size: 44px; line-height: 48px; }
+@container adecdhero (max-width: 460px) {
+  .adecd-hero { padding: 16px 14px 18px; }
+  .adecd-hero .adecd-sky-moon { right: 16px; width: 22px; height: 22px; }
+  .adecd-hero-parts { grid-template-columns: minmax(0, 1fr); }
+  .adecd-hours-num b { font-size: 38px; line-height: 42px; }
 }
 
 

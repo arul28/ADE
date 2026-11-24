@@ -204,11 +204,12 @@ async function packProject(root: string): Promise<Packed & { count: number }> {
 }
 
 /**
- * The held phone can't do what a command needs: never swapped for another
- * quietly (its app's state and minutes would go), the agent decides.
+ * The held phone can't do what a command needs. Never swapped for another
+ * (its app's state and minutes would go), and no restart hint: a new phone
+ * starts by the server's fixed order, not by what a command needs.
  */
 const lacksSentence = (ability: CloudPhoneAbility): string =>
-  `This cloud iPhone can't ${CLOUD_PHONE_ABILITY_WORDS[ability]}. To get one that can, run ade apple stop, then run this command again (or ade apple start --needs ${ability}).`;
+  `This cloud iPhone can't ${CLOUD_PHONE_ABILITY_WORDS[ability]}.`;
 
 /** A cloud iPhone's status without who runs it: agents and people see abilities, never a provider. */
 const withoutProvider = (phone: CloudPhoneSummary | null): CloudPhoneStatusView["phone"] => {

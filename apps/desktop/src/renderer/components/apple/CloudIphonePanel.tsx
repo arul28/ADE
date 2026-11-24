@@ -9,6 +9,8 @@ import {
   type CloudPhoneStatusView,
   type CloudPhoneView,
 } from "../../../shared/cloudPhone";
+import { cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
+import { useCloudAccount } from "../../state/cloudAccountStore";
 import { ipcErrorMessage } from "../../lib/format";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { usePaneOffScreen } from "../../lib/parkedSurface";
@@ -170,6 +172,9 @@ function useCloudPhoneLink(pin: OpenProjectBinding | null, phoneId: string | nul
  */
 function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean) {
   const { status, error: statusError, refresh } = useCloudPhoneStatus(pin, hidden);
+  // The account (already read for the header's meter): credits mode, where the
+  // iPhone has no minutes of its own and draws from the credits. Account level, no pin.
+  const words = cloudUnitWords(useCloudAccount());
   const phone = status?.phone ?? null;
   const ready = phone?.state === "ready";
   const { link, error: linkError } = useCloudPhoneLink(pin, ready ? phone.id : null, hidden);
@@ -220,7 +225,8 @@ function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean) {
     model: CLOUD_PHONE_MODELS[device],
     family: device === "ipad" ? "ipad" as const : "iphone" as const,
     minutes,
-    minutesLine: minutes ? `${minutes.left} of ${minutes.included} min left` : null,
+    words,
+    minutesLine: minutes ? cloudPhoneLeftText(minutes.left, minutes.included, words) : null,
     off: !phone || phone.state === "ended",
     setError,
     busy,
@@ -230,22 +236,39 @@ function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean) {
 
 type CloudPhoneControl = ReturnType<typeof useCloudPhoneControl>;
 
+/**
+ * "77 of 120 min left", or under credits (one balance, the iPhone has no
+ * minutes of its own) "418 credits left, 1 credit a minute": the phone's
+ * minutes left are the credits left at its rate.
+ */
+function cloudPhoneLeftText(minutesLeft: number, included: number, words: CloudUnitWords): string {
+  if (words.phoneMilliPerMinute == null) return `${minutesLeft} of ${included} min left`;
+  const perMinute = words.phoneMilliPerMinute / 1000;
+  return `${words.count(Math.floor(minutesLeft * perMinute * 10) / 10)} left, ${words.count(perMinute)} a minute`;
+}
+
 /** The one line on top, as the local pane has: a failure, else a fact about the device. */
 function CloudPhoneStrip({ control, failure = control.failure }: { control: CloudPhoneControl; failure?: unknown }) {
-  const { status, phone, minutes, off, busy, run, dismiss } = control;
+  const { status, phone, minutes, words, off, busy, run, dismiss } = control;
   if (failure) return <AppleDeviceStatusStrip error={failure} onDismiss={dismiss} />;
   if (status?.access === "on" && off) {
-    const why = phone?.endReason ? ` ${END_REASONS[phone.endReason] ?? `It ended (${phone.endReason}).`}` : "";
+    const reason = phone?.endReason === "spend_cap" && words.credits ? "It used the credits this period had left." : phone?.endReason ? END_REASONS[phone.endReason] : null;
+    const why = phone?.endReason ? ` ${reason ?? `It ended (${phone.endReason}).`}` : "";
     // Start stays even with the plan's minutes used up: extra minutes may
     // allow it, and when they don't the server's refusal shows here.
     return (
       <AppleDeviceNoticeStrip
-        sentence={minutes && minutes.included <= 0
-          // Every plan has minutes: none at all is a free plan the free-plan checks hold.
-          ? "The free plan's iPhone minutes need the same check as its free hours. Finish it in Settings › ADE Cloud, or pick a plan."
-          : minutes && minutes.left <= 0
-            ? `This period's ${minutes.included} ADE Cloud iPhone minutes are used up.${why}`
-            : `The ADE Cloud iPhone is off.${why}`}
+        sentence={words.credits
+          // Credits: the iPhone draws from the account's credits, one balance.
+          ? minutes && minutes.left <= 0
+            ? `Your ADE Cloud credits are used up, and the iPhone uses ${words.count((words.phoneMilliPerMinute ?? 1000) / 1000)} a minute.${why}`
+            : `The ADE Cloud iPhone is off. It uses ${words.count((words.phoneMilliPerMinute ?? 1000) / 1000)} a minute while it runs.${why}`
+          : minutes && minutes.included <= 0
+            // Every plan has minutes: none at all is a free plan the free-plan checks hold.
+            ? "The free plan's iPhone minutes need the same check as its free hours. Finish it in Settings › ADE Cloud, or pick a plan."
+            : minutes && minutes.left <= 0
+              ? `This period's ${minutes.included} ADE Cloud iPhone minutes are used up.${why}`
+              : `The ADE Cloud iPhone is off.${why}`}
         actionLabel={busy === "start" ? "Starting" : "Start"}
         busy={busy === "start"}
         onAction={() => void run("start")}
@@ -265,7 +288,7 @@ function CloudPhoneStrip({ control, failure = control.failure }: { control: Clou
  */
 function CloudPhoneRunningStrip({ control }: { control: CloudPhoneControl }) {
   const live = useCloudPhoneLive();
-  const { phone, model, busy, run, refresh, pinRef, hidden } = control;
+  const { phone, model, busy, run, refresh, pinRef, hidden, words } = control;
   // A parked pane neither ticks nor reads.
   const { now, stopAt, warn } = useCloudPhoneIdleCountdown(live, !hidden, true);
   const [keeping, setKeeping] = useState(false);
@@ -291,7 +314,7 @@ function CloudPhoneRunningStrip({ control }: { control: CloudPhoneControl }) {
   };
 
   const left = cloudPhoneMinutesLeft(live, now);
-  const minutesPart = left != null && live.status?.minutes ? ` · ${left} of ${live.status.minutes.included} min left` : "";
+  const minutesPart = left != null && live.status?.minutes ? ` · ${cloudPhoneLeftText(left, live.status.minutes.included, words)}` : "";
   const onFor = phone?.readyAt ? ` · on ${formatPhoneSpan(now - phone.readyAt, false)}` : "";
   if (warn && stopAt != null) {
     // The deadline is this window's estimate (another machine's calls don't
