@@ -366,6 +366,6 @@ export class RemoteTargetRegistry {
     this.cache = null;
     fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
     // The shared writer waits out a Windows antivirus or indexer holding the file.
-    writeFileAtomic(this.path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    writeFileAtomic(this.path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600, renameOnly: true });
   }
 }

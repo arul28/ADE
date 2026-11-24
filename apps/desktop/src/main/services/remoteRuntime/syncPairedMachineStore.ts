@@ -1496,7 +1496,7 @@ export class DesktopPairedMachineStore {
     fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
     // The shared writer waits out the antivirus or indexer that holds a
     // just-written file on Windows; a bare rename failed there with EPERM.
-    writeFileAtomic(this.path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    writeFileAtomic(this.path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600, renameOnly: true });
   }
 }
 

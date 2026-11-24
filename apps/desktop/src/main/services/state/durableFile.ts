@@ -11,6 +11,12 @@ export type AtomicWriteOptions = {
    * own bits (see `existingFileMode`).
    */
   mode?: number;
+  /**
+   * Only ever replace the target by a rename: skip the last-resort copy onto
+   * it and throw instead. For a file a torn write would cost more than a lost
+   * one (saved credentials), which the previous version keeps whole.
+   */
+  renameOnly?: boolean;
 };
 
 /**
@@ -138,7 +144,7 @@ function renameRetryingOnWindows(tempPath: string, filePath: string): void {
  * is losing the write outright. It runs in two steps, and the second one only
  * when the first proves the target itself is what refuses to be renamed over.
  */
-function replaceViaRename(tempPath: string, filePath: string, mode?: number): void {
+function replaceViaRename(tempPath: string, filePath: string, mode?: number, renameOnly = false): void {
   try {
     renameRetryingOnWindows(tempPath, filePath);
     return;
@@ -172,7 +178,7 @@ function replaceViaRename(tempPath: string, filePath: string, mode?: number): vo
       // below. When the copy is what failed, writing those same bytes straight
       // onto the target would produce exactly the half-written destination the
       // staging exists to prevent.
-      if (!reachedStagedRename || !stagedCode || !COPY_RECOVERABLE_RENAME_CODES.has(stagedCode)) {
+      if (renameOnly || !reachedStagedRename || !stagedCode || !COPY_RECOVERABLE_RENAME_CODES.has(stagedCode)) {
         throw replaceFailure(filePath, renameError, stagedError);
       }
     }
@@ -226,7 +232,7 @@ export function writeFileAtomic(
     if (opts.fsync) bestEffortFsync(fd);
     fs.closeSync(fd);
     fd = null;
-    replaceViaRename(tempPath, filePath, mode);
+    replaceViaRename(tempPath, filePath, mode, opts.renameOnly);
 
     // Windows has no directory handle to flush; opening one fails outright, so
     // the attempt is skipped rather than caught.
