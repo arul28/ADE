@@ -6442,6 +6442,11 @@ final class ADETests: XCTestCase {
     ]
     let twins = parseWorkChatTranscript(twinLines.joined(separator: "\n"))
     XCTAssertEqual(derivePendingWorkSteers(from: twins).map(\.id), ["steer-2"])
+    // The same delivery when the user row does carry the steer id.
+    var idTwinLines = twinLines
+    idTwinLines[2] = #"{"sessionId":"s","timestamp":"2026-07-16T12:00:04.000Z","sequence":3,"event":{"type":"user_message","text":"again","turnId":"turn-2","steerId":"steer-1","deliveryState":"delivered"}}"#
+    let idTwins = parseWorkChatTranscript(idTwinLines.joined(separator: "\n"))
+    XCTAssertEqual(derivePendingWorkSteers(from: idTwins).map(\.id), ["steer-2"])
   }
 
   @MainActor

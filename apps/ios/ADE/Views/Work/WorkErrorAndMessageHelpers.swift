@@ -1305,11 +1305,12 @@ func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [Wor
         }
         let normalizedText = normalizedQueuedSteerText(text)
         if let steerId {
-          resolvedSteerIds.insert(steerId)
+          let alreadySettled = !resolvedSteerIds.insert(steerId).inserted
+          awaitingEchoByText.removeSteerId(steerId)
           if !normalizedText.isEmpty {
             if queuedSteerIdsByText[normalizedText]?.contains(steerId) == true {
               queuedSteerIdsByText[normalizedText]?.remove(steerId)
-            } else if let consumed = queuedSteerIdsByText[normalizedText]?.first {
+            } else if !alreadySettled, let consumed = queuedSteerIdsByText[normalizedText]?.first {
               resolvedSteerIds.insert(consumed)
               queuedSteerIdsByText[normalizedText]?.remove(consumed)
             }
@@ -2300,11 +2301,14 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
           queuedSteerIdsByText[normalizedText]?.remove(steerId)
         } else if let steerId {
           queue.removeValue(forKey: steerId)
-          resolved.insert(steerId)
+          // Already settled (a "Delivering…" notice came first): this row is
+          // that steer's own delivery and must not take a same-text twin.
+          let alreadySettled = !resolved.insert(steerId).inserted
+          awaitingEchoByText.removeSteerId(steerId)
           if !normalizedText.isEmpty {
             if queuedSteerIdsByText[normalizedText]?.contains(steerId) == true {
               queuedSteerIdsByText[normalizedText]?.remove(steerId)
-            } else if let consumed = queuedSteerIdsByText[normalizedText]?.first {
+            } else if !alreadySettled, let consumed = queuedSteerIdsByText[normalizedText]?.first {
               queue.removeValue(forKey: consumed)
               resolved.insert(consumed)
               queuedSteerIdsByText[normalizedText]?.remove(consumed)
@@ -2358,6 +2362,13 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
 }
 
 private extension Dictionary where Key == String, Value == Set<String> {
+  /// Drops a steer from the index, whatever its text.
+  mutating func removeSteerId(_ steerId: String) {
+    for key in keys where self[key]?.contains(steerId) == true {
+      self[key]?.remove(steerId)
+    }
+  }
+
   /// Takes a steer a notice settled out of this queued-by-text index. A
   /// "Delivering…" one waits in `awaitingEcho` for its id-less user row.
   mutating func settleSteerId(_ steerId: String, message: String, awaitingEcho: inout [String: Set<String>]) {
