@@ -126,22 +126,28 @@ computer's start does, once the account may use the phone at all
 NoMac and Revyl run the phone behind one shape, so either can be dropped, or
 both used, without changing anything an agent or a person sees.
 
-- **Which one.** The owner sets each beta email to `nomac`, `revyl` or
-  `both` (`provider` on the beta list row; a pending email keeps its choice
-  when it signs in). `nomac` or `revyl` is a **lock**: that account only ever
-  gets that provider, never a quiet fallback. When it can't start (Revyl's
-  switch `CLOUD_PHONE_REVYL` is off, the provider refuses) the start fails
-  with 503; when it lacks what the command needs, 409 `phone_cant`; when the
-  client can't drive it, 409 `phone_needs_update`. `both` (or no row value)
-  is the **router**: one global order for every such account,
-  `CLOUD_PHONE_PROVIDER` first (default NoMac), then the other, keeping only
-  providers that can start, that this client can drive, and that have every
-  ability the command needs. A start that fails moves to the next one. The
-  route (`lock`, `default`, `need`, `failover`) and provider go in the
+- **Which one.** One fixed order (`routeOf` in `phoneRoute.ts`): NoMac
+  first, then Revyl, and Revyl only on a paid plan, as the fallback when
+  NoMac definitely refuses. A free plan's phone is NoMac's alone: when NoMac
+  refuses it (or can't start here), the start answers 503 `phone_busy` ("busy
+  right now because of heavy use… move to a paid plan for priority access").
+  A lost answer (a NoMac 5xx or timeout, which may hide a phone it made) is
+  never retried elsewhere. A start's `needs` never picks the provider: a phone
+  that lacks an ability says so. Only providers that can start here
+  (`CLOUD_PHONE_REVYL=on` for Revyl) and that this client can drive count.
+- **A tester's pick.** An account on the beta list may pick one provider for
+  every phone of theirs (`auto`, `nomac` or `revyl`), from the toggle an ADE
+  beta build shows, or `ade cloud phone-provider`. It is stored in the beta
+  row's `provider` (`POST /cloud/phone/provider`, 403 for anyone else, and
+  `CloudAccountState.phone.providerChoice` tells a tester's apps). A pick is
+  the only provider tried, never a quiet fallback; when it can't start, 503;
+  when the client can't drive it, 409 `phone_needs_update`. The owner no
+  longer sets providers (`phone <account> on|off` only puts an account on the
+  list). The route (`choice`, `default`, `failover`) and provider go in the
   `cloud.phone_started` log line and PostHog's `ade_cloud_phone`. Each phone
   row keeps its `provider`, so a running phone is never switched, and a Revyl
-  phone is still read and stopped with the switch off. `phoneRoute.ts`
-  owns the order (`routeOf`) and the failover (`startOnRoute`).
+  phone is still read and stopped with the switch off. `phoneRoute.ts` owns
+  the order (`routeOf`) and the failover (`startOnRoute`).
 - **Abilities, not names.** Agents and people never see a provider's name:
   every answer and error passes through `withoutPhoneProviderNames`. What
   differs is listed as abilities (`CLOUD_PHONE_PROVIDER_ABILITIES` in
@@ -150,11 +156,10 @@ both used, without changing anything an agent or a person sees.
   CPU, memory and frame rate, `ade apple perf`), `shake` and `orientation`
   (`portrait`/`landscape`). `GET /cloud/phone` returns `abilities` (the live
   phone's, or what a new one could have); the brain's status adds `lacks`
-  and leaves out `capabilities` it can't do. A command that needs an ability
-  sends `needs` with its start, so it gets a phone that has it; a held phone
-  without it answers "This cloud iPhone can't X. To get one that can, run
-  ade apple stop, then run this command again (or ade apple start --needs
-  X)." (409 `phone_lacks` from the server). `ade apple status`, `ade devices
+  and leaves out `capabilities` it can't do. A phone without an ability a
+  command needs answers "This cloud iPhone can't X." (409 `phone_lacks` from
+  the server for a running phone); `needs` never changes which provider a new
+  phone starts on. `ade apple status`, `ade devices
   use ios@cloud` and `ade apple --help` on the cloud iPhone print the
   ability lines.
 - **What is shared.** The server owns minutes, `stop_at`, the minute tick, the

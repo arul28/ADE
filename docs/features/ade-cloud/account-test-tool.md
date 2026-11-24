@@ -32,7 +32,7 @@ Name an account by its verified email or its Clerk user id (`user_…`).
 | `show <account>` | The real plan, the test, what is in force now, and the last changes |
 | `act-as <account> free\|plus\|pro\|max` | The account acts as that plan: computer limit, hours, outside agents, sponsored cards, Small's hours |
 | `limits <account> --computers N --hours N --phone-minutes N` | Its own computer limit, monthly hours and ADE Cloud iPhone minutes this period, on top of the plan (`limits <account>` with no options clears all three) |
-| `phone <account> nomac\|revyl\|both\|off` | On the ADE Cloud iPhone's beta list with that provider (`both`: the router, which tries the default provider first (`CLOUD_PHONE_PROVIDER`, NoMac today), then the other when the first refuses or the command needs something only the other has), or off it. Not a test: it stays until changed. While `CLOUD_PHONE_ACCESS` is `beta`, `off` stops a running phone (under `all`, the list doesn't decide access) |
+| `phone <account> on\|off` | On the ADE Cloud iPhone's beta list, or off it. Not a test: it stays until changed. While `CLOUD_PHONE_ACCESS` is `beta`, `off` stops a running phone (under `all`, the list doesn't decide access). A tester picks their own phones' provider (`auto`, NoMac or Revyl) in an ADE beta build or with `ade cloud phone-provider`; the owner no longer sets it |
 | `tester <account> on\|off` | On or off the sponsored testers list |
 | `reset <account>` | Back to the real plan |
 
@@ -74,6 +74,7 @@ minutes on is refused (409) while test iPhone minutes are set.
 |---|---|---|---|
 | `gravity_ads` | `off`, `testers`, `all` | `GRAVITY_ADS` | Sponsored cards, the Index and the Free rule: nobody, the testers list, or every Free account |
 | `gravity_live` | `off`, `on` | `GRAVITY_LIVE=1` | Real ads instead of Gravity's free test ads |
+| `cloud_credits` | `off`, `testers`, `all` | `CLOUD_CREDITS` | Credits: hours become credits on every surface and the ADE Cloud iPhone draws from them at one a minute. `testers` is the iPhone beta list. See [Credits](README.md#credits) |
 
 ```bash
 node scripts/cloud-owner.mjs settings

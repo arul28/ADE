@@ -78,12 +78,15 @@ import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, nextAbi
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { sendCloudEmail } from "./email";
+import { warnHours } from "./hoursWarnings";
 import { fail, json, readJson } from "./http";
 import {
   PHONE_EXTRA,
   accountRules,
   earnedLeftForLimits,
   extraActiveForLimits,
+  hasNoFreePlan,
+  hoursState,
   includedMilliOf,
   listComputers,
   liveUsedMilli,
@@ -1132,8 +1135,13 @@ export async function runPhoneChecks(env: CloudEnv, now: number): Promise<void> 
     try {
       const account = await loadAccount(env, userId, now);
       if ((await phoneAccess(env, userId)).access !== "on") continue;
-      // Under credits the phone has no minutes of its own to warn about: the hours emails cover the balance.
-      if (await creditsOnFor(env, userId)) continue;
+      // Under credits the phone has no minutes of its own: the balance's emails warn (an account with
+      // no computer in the minute tick hears them only from here).
+      const credits = await phoneCreditsFor(env, account, now);
+      if (credits) {
+        await warnHours(env, account, hoursState(account, credits.liveUsedMilli), credits.liveUsedMilli, now, hasNoFreePlan(account));
+        continue;
+      }
       const usage = phoneUsageOf(env, account, await periodPhones(env, userId, account.period_start), now);
       await warnPhoneMinutes(env, account, usage, now);
     } catch (error) {
