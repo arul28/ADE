@@ -20,6 +20,8 @@ struct LaneMoveReviewView: View {
   var wake: (() -> Void)? = nil
   let backend: any LaneMoveBackend
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  /// The cloud account, for its unit (hours or credits).
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
   @ObservedObject private var runs = LaneMoveRuns.shared
   private var syncService: SyncService { syncPublishes.service }
   @State private var preview: CloudKeptLaneRestorePreview?
@@ -159,7 +161,7 @@ struct LaneMoveReviewView: View {
         if savedCopyIncomplete {
           LaneMoveFactRow(
             symbol: "exclamationmark.triangle.fill",
-            text: "\(nonEmptyTrimmed(preview?.fromComputer?.reason) ?? "The computer's saved copy doesn't hold all of this lane's work.") So ADE wakes the computer and moves the lane from there. \(CloudBalanceWords.current.wakingUses)",
+            text: "\(nonEmptyTrimmed(preview?.fromComputer?.reason) ?? "The computer's saved copy doesn't hold all of this lane's work.") So ADE wakes the computer and moves the lane from there. \(CloudBalanceWords(cloudStore.account).wakingUses)",
             tone: ADEColor.warning
           )
         } else if source.fromComputer != nil {

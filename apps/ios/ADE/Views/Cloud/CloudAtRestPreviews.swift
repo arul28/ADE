@@ -23,11 +23,11 @@ enum CloudAtRestPreviews {
       return AnyView(NavigationStack { CloudLaneAtRestScreen(subject: Data.subject, onAwake: {}) })
     case "duo-cloud-files":
       seed()
-      return AnyView(CloudLaneFilesSheet(repo: Data.repo, branch: Data.branch, summary: Data.summary, fleetKey: Data.subject.fleetKey, onAwake: {}))
+      return AnyView(CloudLaneFilesSheet(repo: Data.repo, branch: Data.branch, summary: Data.summary, fleetKey: Data.subject.fleetKey, words: .hours, onAwake: {}))
     case "duo-cloud-files-folder":
       seed()
       return AnyView(NavigationStack {
-        CloudLaneFolderScreen(repo: Data.repo, branch: Data.branch, folder: "apps/web/src", summary: Data.summary, fleetKey: Data.subject.fleetKey, onAwake: {})
+        CloudLaneFolderScreen(repo: Data.repo, branch: Data.branch, folder: "apps/web/src", summary: Data.summary, fleetKey: Data.subject.fleetKey, words: .hours, onAwake: {})
       })
     case "duo-cloud-files-file":
       seed()
@@ -36,10 +36,10 @@ enum CloudAtRestPreviews {
       })
     case "duo-cloud-files-no-access":
       seed(contents: Data.noAccess)
-      return AnyView(CloudLaneFilesSheet(repo: Data.repo, branch: Data.branch, summary: Data.summary, fleetKey: Data.subject.fleetKey, onAwake: {}))
+      return AnyView(CloudLaneFilesSheet(repo: Data.repo, branch: Data.branch, summary: Data.summary, fleetKey: Data.subject.fleetKey, words: .hours, onAwake: {}))
     case "duo-cloud-files-unpushed":
       seed(contents: Data.unpushed)
-      return AnyView(CloudLaneFilesSheet(repo: Data.repo, branch: Data.branch, summary: Data.summary, fleetKey: Data.subject.fleetKey, onAwake: {}))
+      return AnyView(CloudLaneFilesSheet(repo: Data.repo, branch: Data.branch, summary: Data.summary, fleetKey: Data.subject.fleetKey, words: .hours, onAwake: {}))
     case "duo-cloud-work":
       seed()
       return AnyView(CloudWorkFixture())
@@ -749,6 +749,7 @@ private struct CloudAccountTabsFixture: View {
         branch: CloudAtRestPreviews.Data.branch,
         summary: CloudAtRestPreviews.Data.summary,
         fleetKey: "cloud-fixture",
+        words: .hours,
         onAwake: {}
       )
       .tabItem { Label("Files", systemImage: "folder") }

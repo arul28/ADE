@@ -104,6 +104,11 @@ final class AccountCloudStore: ObservableObject {
   /// until a read that started after it lands (`savedSponsoredPending`).
   private var savedSponsored: CloudSponsoredState?
   private var savedSponsoredPending = false
+  /// The same for a tester's iPhone provider pick (`setPhoneProvider`): an
+  /// account read that started before a pick keeps the picked provider.
+  private var providerSaves = 0
+  private var savedProvider: String?
+  private var savedProviderPending = false
 
   /// Which account the store holds now: a write that started under another one doesn't land.
   var generation: Int { accountGeneration }
@@ -145,6 +150,7 @@ final class AccountCloudStore: ObservableObject {
   func refresh(client: CloudServerClient, owner: AccountPairingAuthorization) async {
     let generation = accountGeneration
     let saves = sponsoredSaves
+    let pickSaves = providerSaves
     async let accessRead = readAccess(client)
     async let accountRead = readAccount(client)
     lanesReadSeq &+= 1
@@ -154,16 +160,29 @@ final class AccountCloudStore: ObservableObject {
     guard generation == accountGeneration, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
     if let nextAccess, nextAccess != access { access = nextAccess }
     if var nextAccount {
-      if saves != sponsoredSaves {
-        // Started before a save: the saved answer, or what a newer read already put in.
-        nextAccount.sponsored = savedSponsoredPending ? savedSponsored : account?.sponsored
-      } else {
-        // Started after every save: the server's answer is the truth now.
-        savedSponsoredPending = false
-      }
+      keepSavedAnswers(&nextAccount, sponsoredSavesAtStart: saves, providerSavesAtStart: pickSaves)
       if nextAccount != account { account = nextAccount }
     }
     applyLanesRead(nextLanes, seq: lanesSeq)
+  }
+
+  /// An account read that started before a consent or provider save keeps
+  /// the saved answer (or what a newer read already put in) instead of the
+  /// old one it carries; one that started after every save is the truth.
+  private func keepSavedAnswers(_ next: inout CloudPhoneAccount, sponsoredSavesAtStart: Int, providerSavesAtStart: Int) {
+    if sponsoredSavesAtStart != sponsoredSaves {
+      next.sponsored = savedSponsoredPending ? savedSponsored : account?.sponsored
+    } else {
+      savedSponsoredPending = false
+    }
+    if providerSavesAtStart != providerSaves {
+      let kept = savedProviderPending ? savedProvider : account?.phone?.providerChoice
+      if let phone = next.phone, phone.providerChoice != nil, phone.providerChoice != kept {
+        next.phone = CloudPhoneAccount.Phone(access: phone.access, creditsUsedMilli: phone.creditsUsedMilli, providerChoice: kept ?? phone.providerChoice)
+      }
+    } else {
+      savedProviderPending = false
+    }
   }
 
   private func readAccess(_ client: CloudServerClient) async -> Access? {
@@ -710,14 +729,16 @@ final class AccountCloudStore: ObservableObject {
       return cloudServerFailureMessage(error)
     }
     accountCloudLog.notice("cloud_store phone_provider=\(provider, privacy: .public)")
+    guard generation == accountGeneration else { return nil }
+    // A read already out (`refresh`) started before this save: it keeps the pick.
+    providerSaves &+= 1
+    savedProvider = provider
+    savedProviderPending = true
     let saves = sponsoredSaves
+    let pickSaves = providerSaves
     guard var next = await readAccount(client), generation == accountGeneration else { return nil }
-    // A consent saved while this read was out keeps its answer, as `refresh` does.
-    if saves != sponsoredSaves {
-      next.sponsored = savedSponsoredPending ? savedSponsored : account?.sponsored
-    } else {
-      savedSponsoredPending = false
-    }
+    // A consent or another pick saved while this read was out keeps its answer, as `refresh` does.
+    keepSavedAnswers(&next, sponsoredSavesAtStart: saves, providerSavesAtStart: pickSaves)
     if next != account { account = next }
     return nil
   }
@@ -728,6 +749,8 @@ final class AccountCloudStore: ObservableObject {
     accountGeneration &+= 1
     savedSponsored = nil
     savedSponsoredPending = false
+    savedProvider = nil
+    savedProviderPending = false
     access = nil
     account = nil
     lanesWithoutComputer = []

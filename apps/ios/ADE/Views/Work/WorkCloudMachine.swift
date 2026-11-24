@@ -449,7 +449,7 @@ struct CloudLaneStateLinesContent: View {
           .accessibilityValue(whyOpen ? "Open" : "Closed")
           .adeInspectable("CloudLane.Why")
           if whyOpen {
-            Text(CloudDeletedComputerFacts.whySentence)
+            Text(deleted.whySentence)
               .font(.caption)
               .foregroundStyle(ADEColor.textSecondary)
               .fixedSize(horizontal: false, vertical: true)

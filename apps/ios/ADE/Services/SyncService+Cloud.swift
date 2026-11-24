@@ -417,7 +417,8 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// entries, which decode with only an id and a date.
   let dueForDeletion: [IdleCleanup]
   let referral: CloudPhoneReferral?
-  let phone: Phone?
+  /// `var` so a read that started before a provider pick keeps the pick (`AccountCloudStore.setPhoneProvider`).
+  var phone: Phone?
   /// Present: the account counts in credits (`CloudBalanceWords`). Absent: hours.
   let credits: Credits?
   /// Sponsored cards in this account's ADE Cloud chats (`CloudSponsoredState`).

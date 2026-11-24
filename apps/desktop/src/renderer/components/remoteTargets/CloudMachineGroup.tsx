@@ -16,7 +16,7 @@ import {
 import { Banner } from "../ui/notice";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
-import { cloudUnitWords } from "../../../shared/cloudUnitWords";
+import { cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import { CloudLaneSavedWork } from "../cloudLane/CloudLaneSavedWork";
 import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
@@ -141,6 +141,7 @@ function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) 
 export function CloudBoxStrip({
   box,
   catalog,
+  words,
   work,
   pending,
   approvalUrl,
@@ -153,6 +154,8 @@ export function CloudBoxStrip({
   box: CloudMachine;
   /** The account's sizes, so the box's size reads as the pickers name it. */
   catalog: CloudCatalog;
+  /** The account's words (hours or credits) for the box's rate. */
+  words?: CloudUnitWords;
   work: CloudBoxWork;
   pending: CloudBoxPending | null;
   /** A copy's or move's sign-in link while its new computer waits for the person. */
@@ -167,7 +170,7 @@ export function CloudBoxStrip({
 }) {
   const tone = cloudStateTone(box);
   const stateLabel = box.pastDue ? "Suspended" : CLOUD_STATE_LABELS[box.state];
-  const rate = describeCloudRate(box);
+  const rate = describeCloudRate(box, words);
   const atRest = box.state === "asleep" || box.state === "stopped";
   const canWake = atRest && !box.pastDue;
   const laneNames = work.lanes.map((lane) => (lane.projectName ? `${lane.name} (${lane.projectName})` : lane.name));

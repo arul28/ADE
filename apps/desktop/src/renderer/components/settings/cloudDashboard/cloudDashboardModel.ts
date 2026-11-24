@@ -200,7 +200,14 @@ export function heroBalanceParts(account: CloudAccountState, words: CloudUnitWor
   const left = Math.min(plan, Math.max(0, leftMilli));
   const used = Math.max(0, plan - left);
   if (!words.credits) return [{ key: "used", label: "Used", milli: used }, { key: "left", label: "Left", milli: left }];
-  const phone = Math.min(used, Math.max(0, account.phone?.creditsUsedMilli ?? 0));
+  // `phone.creditsUsedMilli` and `hours.usedMilli` count the whole period, past
+  // the plan too, while the bar is the plan only. Which credits fell inside
+  // the plan isn't known, so the plan's used part is split in proportion to
+  // what each used over the period: the parts never go below 0 and always
+  // sum to `used` (Computers 600 + iPhone 50 past a 600 plan reads 554 / 46).
+  const phoneTotal = Math.max(0, account.phone?.creditsUsedMilli ?? 0);
+  const periodTotal = Math.max(phoneTotal, account.hours.usedMilli);
+  const phone = periodTotal > 0 ? Math.round((used * phoneTotal) / periodTotal) : 0;
   return [
     { key: "computers", label: "Computers", milli: used - phone },
     { key: "phone", label: "iPhone", milli: phone },
@@ -215,7 +222,8 @@ export function heroBalanceParts(account: CloudAccountState, words: CloudUnitWor
  */
 export function heroCreditsWorth(account: CloudAccountState, words: CloudUnitWords = cloudUnitWords(account)): string | null {
   if (!words.credits) return null;
-  const left = cloudHoursLeftMilli(account);
+  // The plan's own credits left, the hero's big number (earned ones are shown apart).
+  const left = Math.max(0, account.hours.leftMilli);
   const medium = cloudTiers(cloudCatalogOf(account)).find((tier) => tier.id === "medium");
   const mediumHours = medium ? cloudTierHoursAt(medium, left).replace(/ h$/, "") : null;
   const onMedium = mediumHours ? `${mediumHours} ${mediumHours === "1" ? "hour" : "hours"} on a Medium computer` : null;

@@ -23,6 +23,8 @@ import SwiftUI
 struct LaneMoveSheet: View {
   // The places the backend lists follow the sync state.
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  /// The cloud account, for its unit (hours or credits).
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
   @ObservedObject private var runs = LaneMoveRuns.shared
   @Environment(\.dismiss) private var dismiss
   @State private var source: LaneMoveSource
@@ -246,7 +248,7 @@ struct LaneMoveSheet: View {
           .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
-        Text(CloudBalanceWords.current.wakingUses)
+        Text(CloudBalanceWords(cloudStore.account).wakingUses)
           .font(.caption)
           .foregroundStyle(ADEColor.textMuted)
         if let wakeError {

@@ -66,7 +66,8 @@ const LINK_RETRY_MS = 10_000;
 const END_REASONS: Readonly<Record<string, string>> = {
   idle: `It stopped after ${CLOUD_PHONE_IDLE_MINUTES} minutes with nothing to do.`,
   time_limit: "It reached its time limit.",
-  spend_cap: "It used the minutes this period had left.",
+  // No per-phone billing mode reaches the app (a phone started before credits keeps minutes): true for both.
+  spend_cap: "It reached its spend limit.",
   stopped: "It was stopped.",
   credit: "ADE Cloud could not keep it running.",
   crashed: "It crashed.",
@@ -252,7 +253,7 @@ function CloudPhoneStrip({ control, failure = control.failure }: { control: Clou
   const { status, phone, minutes, words, off, busy, run, dismiss } = control;
   if (failure) return <AppleDeviceStatusStrip error={failure} onDismiss={dismiss} />;
   if (status?.access === "on" && off) {
-    const reason = phone?.endReason === "spend_cap" && words.credits ? "It used the credits this period had left." : phone?.endReason ? END_REASONS[phone.endReason] : null;
+    const reason = phone?.endReason ? END_REASONS[phone.endReason] : null;
     const why = phone?.endReason ? ` ${reason ?? `It ended (${phone.endReason}).`}` : "";
     // Start stays even with the plan's minutes used up: extra minutes may
     // allow it, and when they don't the server's refusal shows here.

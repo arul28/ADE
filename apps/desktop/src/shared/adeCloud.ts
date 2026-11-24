@@ -290,9 +290,10 @@ export function capitalizeCloudPhrase(phrase: string): string {
 }
 
 /** What a size uses of the plan, as one sentence for approval cards: Small never uses hours. */
-export function describeCloudHoursUse(kind: CloudMachineKind, shape: CloudShapeId, catalog?: CloudCatalog): string {
+export function describeCloudHoursUse(kind: CloudMachineKind, shape: CloudShapeId, catalog?: CloudCatalog, words: CloudUnitWords = CLOUD_HOURS_WORDS): string {
   const rate = cloudHoursRate(kind, shape, catalog);
-  if (!(rate > 0)) return "Small computers never use your hours.";
+  if (!(rate > 0)) return `Small computers never use your ${words.noun}.`;
+  if (words.credits) return `It uses about ${words.count(rate)} for each hour it's awake, and none while it sleeps.`;
   return `It uses about ${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"} of your plan for each hour it's awake, and none while it sleeps.`;
 }
 

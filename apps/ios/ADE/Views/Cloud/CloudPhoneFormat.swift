@@ -457,9 +457,6 @@ struct CloudBalanceWords: Equatable {
   init(phoneMilliPerMinute: Int?) { self.phoneMilliPerMinute = phoneMilliPerMinute }
   init(_ account: CloudPhoneAccount?) { phoneMilliPerMinute = account?.credits?.phoneMilliPerMinute }
 
-  /// The signed-in account's unit, for a screen that holds no account of its own.
-  @MainActor static var current: CloudBalanceWords { CloudBalanceWords(AccountCloudStore.shared.account) }
-
   /// "hours", "credits".
   var unit: String { credits ? "credits" : "hours" }
   /// "Hours", "Credits".
@@ -597,9 +594,6 @@ struct CloudBalanceWords: Equatable {
     guard let phoneRate else { return "\(what) Time on it comes out of the plan's iPhone minutes." }
     return "\(what) It uses \(phoneRate) of your ADE Cloud credits."
   }
-
-  /// Why it ended when it ran out (`spend_cap`).
-  var phoneSpendCapLine: String { credits ? "It used the last of your ADE Cloud credits." : "It used the minutes this plan includes." }
 }
 
 /// "3 cloud computers" (`cloudComputersPhrase`).

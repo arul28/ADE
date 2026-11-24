@@ -29,6 +29,9 @@ import { cloudHoursOnSizesLine, cloudTierOfMachine, cloudTierUsesHours, cloudTie
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { NO_PROVIDER_SENTENCE } from "./cloudAccess";
 
+
+/** What a credit is, without `CLOUD_CREDIT_UNIT_SENTENCE`'s "Small computers use none." (for a catalog that charges Small). */
+const CLOUD_CREDIT_DEFINITION = "A credit is an hour on a Medium computer or a minute on the ADE Cloud iPhone.";
 /**
  * `cloud.status`: the whole ADE Cloud account in one read (plan, hours,
  * computers, each lane, the sizes, what agents may do, and whether a new lane
@@ -313,7 +316,8 @@ export function buildCloudAccountStatus(input: {
           resetsAt: new Date(account.billing.periodEnd).toISOString(),
           extraHours: { available: part.extraHours?.available === true, enabled: part.extraHours?.enabled === true },
           unit: words.credits
-            ? `${CLOUD_CREDIT_UNIT_SENTENCE}${cloudSmallUsesHours(catalog) ? ` ${cloudSmallHoursSentence(catalog, words)}` : ""}`
+            // `CLOUD_CREDIT_UNIT_SENTENCE` ends "Small computers use none.": where Small is charged, the definition without it, then what Small uses.
+            ? cloudSmallUsesHours(catalog) ? `${CLOUD_CREDIT_DEFINITION} ${cloudSmallHoursSentence(catalog, words)}` : CLOUD_CREDIT_UNIT_SENTENCE
             : cloudSmallUsesHours(catalog) ? `${CLOUD_HOUR_UNIT_SENTENCE} ${cloudSmallHoursSentence(catalog)}` : `${CLOUD_HOUR_UNIT_SENTENCE} Small computers never use hours.`,
         }
       : null,

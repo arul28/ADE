@@ -127,7 +127,7 @@ struct CloudIphoneSheet: View {
           ADESettingsNotice(message: error, tone: .warn)
         }
         VStack(alignment: .leading, spacing: 12) {
-          if let line = cloudIphoneEndLine(status.phone, words: words) {
+          if let line = cloudIphoneEndLine(status.phone) {
             Text(line)
               .font(.system(size: 13.5))
               .foregroundStyle(ADEColor.textSecondary)
@@ -639,13 +639,15 @@ func cloudIphoneAllowsNavigation(_ url: URL) -> Bool {
 }
 
 /// Why the phone ended, in the phone's words.
-func cloudIphoneEndLine(_ phone: CloudIphoneStatus.Phone?, words: CloudBalanceWords) -> String? {
+func cloudIphoneEndLine(_ phone: CloudIphoneStatus.Phone?) -> String? {
   guard let phone, phone.state == "ended" else { return nil }
   switch phone.endReason {
   case "stopped": return "You stopped it."
   case "idle": return "It stopped after 5 minutes with no use."
   case "time_limit": return "It reached its 2-hour limit."
-  case "spend_cap": return words.phoneSpendCapLine
+  // No per-phone billing mode reaches the app, and a phone started before
+  // credits keeps its minutes: one line that is true for both.
+  case "spend_cap": return "It reached its spend limit."
   default: return "It ended."
   }
 }

@@ -22241,13 +22241,14 @@ function formatCloudList(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const machines = isRecord(raw) && Array.isArray(raw.machines) ? raw.machines.filter(isRecord) : [];
   const lines: string[] = [];
+  const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
+  const words = cloudUnitWords(account as Pick<CloudAccountState, "credits"> | null);
   if (!machines.length) lines.push("No ADE Cloud computers. A new lane on ADE Cloud makes one: ade chat create --machine cloud, or ade lanes create --machine cloud --name <name>.");
   for (const box of machines) {
     const sleep = isRecord(box.sleep) && box.sleep.state !== "auto" ? "sleep pending" : "";
-    const rate = typeof box.hoursRate === "number" ? formatCloudHoursRate(box.hoursRate) : "—";
+    const rate = typeof box.hoursRate === "number" ? formatCloudHoursRate(box.hoursRate, words) : "—";
     lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${rate}  ${sleep}  (${String(box.instanceId)})`);
   }
-  const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
   if (account) lines.push(formatCloudAccount(account));
   return lines.join("\n");
 }
