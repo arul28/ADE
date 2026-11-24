@@ -1,4 +1,5 @@
 import { authenticate } from "../callerToken";
+import { unsettledPhoneMilli } from "./credits";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { readBoundedJson } from "../sinkUtils";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
@@ -75,7 +76,7 @@ import { deleteBackupsForLane, deleteBackupsWithComputer, markRestedWithBackups,
 import { prepareStopBackupReportId } from "./cron";
 import { freeCapRefuses } from "./costReport";
 import { ACCOUNT_BLOCKED_MESSAGE, accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
-import { extraPhoneOffered, handleNomacWebhook, handlePhoneViewer, isNomacWebhookRequest, isPhoneViewerRequest, routePhone } from "./phones";
+import { enforcePhoneAllowance, extraPhoneOffered, handleNomacWebhook, handlePhoneViewer, isNomacWebhookRequest, isPhoneViewerRequest, routePhone } from "./phones";
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
 import { INSTANCE_LIST_TTL_S, listInstancesCached } from "./instanceListCache";
 import { boundedDisplayText } from "../displayText";
@@ -435,7 +436,8 @@ async function getAccountContext(env: CloudEnv, userId: string, now: number): Pr
 }> {
   const account = await loadAccount(env, userId, now);
   const computers = await listComputers(env, userId);
-  const liveUsed = liveUsedMilli(account, computers, now);
+  // A running credits phone's unbilled minutes are spent already: a computer can't use them too.
+  const liveUsed = liveUsedMilli(account, computers, now) + await unsettledPhoneMilli(env, account, now);
   // A Small that uses hours on Free (no sponsored cards, `smallUsesNoHours`) stops at 0 like any other size.
   const smallFree = await smallUsesNoHours(env, account);
   return {
@@ -1831,6 +1833,8 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
       return json(await buildAccountState(env, userId, now, request));
     }
     await setExtraHours(env, userId, body.enabled, now);
+    // Under credits a running phone may use extra credits: off, it is held to the balance at once.
+    if (!body.enabled) await enforcePhoneAllowance(env, userId, now);
     return json(await buildAccountState(env, userId, now, request));
   } catch (error) {
     if (error instanceof CloudBillingError) return fail(error.code, error.message, error.status);

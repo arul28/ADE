@@ -1,4 +1,5 @@
 import { readBoundedBody } from "../sinkUtils";
+import { unsettledPhoneMilli } from "./credits";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
 import { CLOUD_WEB_BILLING_RETURN_PARAM, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
@@ -757,7 +758,7 @@ export async function setExtraHours(env: CloudEnv, userId: string, enabled: bool
   if (enabled) await ensureExtraHoursItem(env, account, now);
   // Turning them off stops new use; what was already used is still reported.
   const owed = !enabled && extraActive(account)
-    ? extraOwedMilli(account, liveUsedMilli(account, await listComputers(env, userId), now))
+    ? extraOwedMilli(account, liveUsedMilli(account, await listComputers(env, userId), now) + await unsettledPhoneMilli(env, account, now))
     : 0;
   const recordOwed = () => env.DB.prepare("update cloud_accounts set extra_owed_milli = ?, updated_at = ? where user_id = ?").bind(owed, now, userId).run();
   // Before the switch moves: read after a failure, the switch being off would forget what's owed.

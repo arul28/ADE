@@ -1,4 +1,4 @@
-import { PHONE_CREDIT_MILLI_PER_MINUTE, creditsOnFor } from "./credits";
+import { PHONE_CREDIT_MILLI_PER_MINUTE, creditsOnFor, unsettledPhoneMilli } from "./credits";
 import { requestCountry, smallUsesNoHours, sponsoredAccountState } from "./gravity";
 import { timedWakesCancelledOf } from "./accountNotices";
 import type { CloudAccountState } from "./contract";
@@ -84,7 +84,8 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     reportCloudFailure("cloud.free_plan.github_view_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "cloud-free-plan");
     return undefined;
   });
-  const live = liveUsedMilli(account, computers, now);
+  // A running credits phone's minutes its provider hasn't billed yet count now, as the limits count them.
+  const live = liveUsedMilli(account, computers, now) + await unsettledPhoneMilli(env, account, now);
   // Credits (`credits.ts`): one balance, which the ADE Cloud iPhone draws from too.
   const credits = await creditsOnFor(env, userId).catch((error: unknown) => {
     reportCloudFailure("cloud.credits_read_failed", { userId, message: error instanceof Error ? error.message : "unknown" });

@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/cloudflare";
+import { PHONE_CREDIT_MILLI_AT_SQL } from "./credits";
 import type { CallerTokenEnv } from "../callerToken";
 import { cloudflareTransientKindOfText } from "../cloudflareTransient";
 import { CLOUD_INTEGRATION_REQUESTS_PER_MINUTE, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanId } from "./contract";
@@ -1452,6 +1453,22 @@ async function startFreshPeriod(
   statements.push(env.DB.prepare(`
     update cloud_computers set awake_since = ? where user_id = ? and awake_since is not null and awake_since <= ?
   `).bind(now, account.user_id, now));
+  // A running credits phone's minutes its provider hasn't billed yet go into the ending period, at its time
+  // so far, before the earned draw reads `used_milli`; its later answers add nothing to the new period
+  // (`phoneCreditStatements` counts a phone only in the period it started). Held to the period read, so
+  // two racing rolls add them once; the phones' marks only grow.
+  const phonePeriod = [account.user_id, account.period_start] as const;
+  statements.push(env.DB.prepare(`
+    update cloud_accounts set used_milli = used_milli + coalesce((
+      select sum(max(0, ${PHONE_CREDIT_MILLI_AT_SQL} - credited_milli)) from cloud_phones
+      where user_id = ? and state = 'live' and credits = 1 and created_at >= ?
+    ), 0)
+    where user_id = ? and period_start = ?
+  `).bind(now, ...phonePeriod, ...phonePeriod));
+  statements.push(env.DB.prepare(`
+    update cloud_phones set credited_milli = max(credited_milli, ${PHONE_CREDIT_MILLI_AT_SQL})
+    where user_id = ? and state = 'live' and credits = 1 and created_at >= ?
+  `).bind(now, ...phonePeriod));
   // After the settles above, before `used_milli` resets below; both columns read the row as it was.
   statements.push(env.DB.prepare(`
     update cloud_accounts set earned_used_milli = earned_used_milli + ${EARNED_DRAW_SQL}

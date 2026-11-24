@@ -39,7 +39,7 @@
  */
 
 import { isCloudBlocked, sendOwnerAlert } from "./blocks";
-import { PHONE_CREDIT_MILLI_PER_MINUTE, creditsOnFor } from "./credits";
+import { PHONE_CREDIT_MILLI_PER_MINUTE, accountWithUnsettledPhones, creditsAtStart, creditsOnFor, phoneCreditMilliOf, unsettledPhoneMilli } from "./credits";
 import { captureCloudPhone, type CloudWaitUntil } from "./analytics";
 import { freeCapRefuses } from "./costReport";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
@@ -198,9 +198,10 @@ const BILLED_CREDIT_MILLI_SQL = `(((billed_seconds + 59) / 60) * ${PHONE_CREDIT_
  * A credits phone's newly billed minutes into its account's credits
  * (`used_milli`): what its billed minutes add past what was already counted
  * (`credited_milli`), so a repeated answer adds nothing. Only for a phone
- * started in the account's current period: one that ran across the turn
- * stopped then (`period_changed`), and its last minutes are not charged to
- * the new period. Statements for the save's own batch, after its upsert.
+ * started in the account's current period: one that ran across the turn had
+ * its time so far charged to the ending period by the turn
+ * (`startFreshPeriod`), and its later minutes are not charged to the new one.
+ * Statements for the save's own batch, after its upsert.
  */
 function phoneCreditStatements(db: D1Database, phoneId: string, now: number): D1PreparedStatement[] {
   const newMilli = `(select max(0, ${BILLED_CREDIT_MILLI_SQL} - credited_milli) from cloud_phones
@@ -263,7 +264,7 @@ async function updatePhone(env: CloudEnv, session: PhoneSession, now: number): P
   const userId = userIdOfLabel(session.label);
   const account = userId ? await env.DB.prepare("select plan, stripe_status from cloud_accounts where user_id = ? and deleted_at is null").bind(userId).first<Pick<AccountRow, "plan" | "stripe_status">>() : null;
   if (!userId || !account) return null;
-  if (!(await savePhone(env, userId, session, now, { free: accountRules(account) === "free", onlyLiveAccount: true, credits: await creditsOnFor(env, userId) }))) return null;
+  if (!(await savePhone(env, userId, session, now, { free: accountRules(account) === "free", onlyLiveAccount: true, credits: await creditsAtStart(env, userId, isoMs(session.created_at) ?? now) }))) return null;
   logCloud("cloud.phone_recovered", { userId, phoneId: session.id });
   return { userId, wasEnded: false };
 }
@@ -338,20 +339,11 @@ const minutePhones = (rows: readonly PhoneRow[]): PhoneRow[] => rows.filter((row
 /** NoMac's billed minutes of the minute phones, never an estimate: what billing counts. */
 export const settledPhoneMinutes = (rows: readonly PhoneRow[]): number => phoneMinutesUsed(minutePhones(rows), 0, true);
 
-/**
- * The credits the period's credits phones used (thousandths): what is in
- * `used_milli` already, and a running one's time past that (`unsettled`).
- */
-function phoneCreditsOf(rows: readonly PhoneRow[], now: number): { usedMilli: number; unsettledMilli: number } {
+/** The credits the period's credits phones used (thousandths), a running one's time so far included. */
+function phoneCreditsUsedOf(rows: readonly PhoneRow[], now: number): number {
   let usedMilli = 0;
-  let unsettledMilli = 0;
-  for (const row of rows) {
-    if (row.credits !== 1) continue;
-    const milli = rowMinutes(row, now, false) * PHONE_CREDIT_MILLI_PER_MINUTE;
-    usedMilli += Math.max(milli, row.credited_milli);
-    unsettledMilli += Math.max(0, milli - row.credited_milli);
-  }
-  return { usedMilli, unsettledMilli };
+  for (const row of rows) if (row.credits === 1) usedMilli += Math.max(phoneCreditMilliOf(row, now), row.credited_milli);
+  return usedMilli;
 }
 
 /* ---- Who may use it, and how much ---- */
@@ -465,20 +457,29 @@ type PhoneUsage = {
 
 /**
  * Credits in force for an account's phone (`credits.ts`): the account's
- * hours used now, computers' running stretches included. Null when credits
- * don't reach the account (its phone counts iPhone minutes).
+ * hours used now, computers' running stretches and running credits phones'
+ * unsettled minutes included. Null when the phone counts iPhone minutes.
  */
 export type PhoneCredits = { liveUsedMilli: number };
 
 /**
- * The account's `PhoneCredits`, or null: a read of its computers, only when
- * credits reach it. `reload`: read the account again first (a phone's save
- * since `account` was read may have added to `used_milli`).
+ * The account's `PhoneCredits`, or null. `counts`: whether this phone counts
+ * in credits, when it is known (a running phone keeps what it started on,
+ * `cloud_phones.credits`); left out, whether credits reach the account now
+ * (a new phone). `reload`: read the account again (a phone's save since
+ * `account` was read may have added to `used_milli`), in one read with the
+ * phones' settled marks.
  */
-export async function phoneCreditsFor(env: CloudEnv, account: AccountRow, now: number, { reload = false }: { reload?: boolean } = {}): Promise<PhoneCredits | null> {
-  if (!(await creditsOnFor(env, account.user_id))) return null;
-  const read = reload ? await loadAccount(env, account.user_id, now) : account;
-  return { liveUsedMilli: liveUsedMilli(read, await listComputers(env, account.user_id), now) };
+export async function phoneCreditsFor(
+  env: CloudEnv,
+  account: AccountRow,
+  now: number,
+  { reload = false, counts }: { reload?: boolean; counts?: boolean } = {},
+): Promise<PhoneCredits | null> {
+  if (counts === false || (counts === undefined && !(await creditsOnFor(env, account.user_id)))) return null;
+  const read = reload ? await accountWithUnsettledPhones(env, account.user_id, now) : { account, unsettledMilli: await unsettledPhoneMilli(env, account, now) };
+  const current = read.account ?? account;
+  return { liveUsedMilli: liveUsedMilli(current, await listComputers(env, account.user_id), now) + read.unsettledMilli };
 }
 
 /**
@@ -503,9 +504,8 @@ export function phoneUsageOf(env: CloudEnv, account: AccountRow, rows: readonly 
   const minutesEnabled = !underTest && phoneExtraOn(env, account);
   const billableMinutes = billableExtraMinutes({ used: minutesUsed, included: includedPhoneMinutes(account), enabled: minutesEnabled, limitCents, owed: inPeriod(account, account.phone_extra_owed_minutes) });
   if (credits) {
-    const phone = phoneCreditsOf(rows, now);
-    // The hours used now, with the running phone's time its provider hasn't billed yet.
-    const live = credits.liveUsedMilli + phone.unsettledMilli;
+    // The hours used now, the running phone's time its provider hasn't billed yet included.
+    const live = credits.liveUsedMilli;
     const leftMilli = Math.max(0, includedMilliOf(account) - live) + Math.max(0, earnedLeftForLimits(account, live));
     const left = Math.floor(leftMilli / PHONE_CREDIT_MILLI_PER_MINUTE);
     const extraOn = extraActiveForLimits(account);
@@ -516,7 +516,7 @@ export function phoneUsageOf(env: CloudEnv, account: AccountRow, rows: readonly 
       left,
       // Credits have their own warnings (the hours emails): the phone sends none of its own.
       state: "none",
-      creditsUsedMilli: phone.usedMilli,
+      creditsUsedMilli: phoneCreditsUsedOf(rows, now),
       extra: { available: false, enabled: false, limitCents: null, billableMinutes, leftMinutes: extraOn ? CLOUD_PHONE_MAX_MINUTES : 0 },
     };
   }
@@ -627,8 +627,9 @@ async function phoneContext(env: CloudEnv, userId: string, now: number): Promise
     }
   }
   const newest = await env.DB.prepare("select phone_id from cloud_phones where user_id = ? order by created_at desc limit 1").bind(userId).first<{ phone_id: string }>();
-  // Read after the live phone's save: a credits phone's new minutes are in `used_milli` by then.
-  const credits = await phoneCreditsFor(env, account, now, { reload: liveRow != null });
+  // A running phone is held to what it started on (minutes or credits), whatever the switch says now; a
+  // new one, to what reaches the account now. Read after the live phone's save: its new minutes are in by then.
+  const credits = await phoneCreditsFor(env, account, now, { reload: liveRow != null, counts: liveRow ? liveRow.credits === 1 : undefined });
   return { account, label, usage: phoneUsageOf(env, account, rows, now, false, credits), live, lastPhoneId: newest?.phone_id ?? null, liveRowId: unreadLiveRowId, rows, credits };
 }
 
@@ -882,6 +883,14 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       logCloud("cloud.phone_start_refused", { userId, code: "phone_start_unsure", provider: context.account.phone_start_unsure ?? null });
       return route;
     }
+    // Needs never pick the provider: the route's first must do them all, and a fallback that can't is
+    // left out, so no billed phone starts that can't do what was asked.
+    const lacking = cloudPhoneLacks(route.order[0], needs);
+    if (lacking.length) {
+      logCloud("cloud.phone_start_refused", { userId, code: "phone_lacks", needs: lacking, provider: route.order[0] });
+      return fail("phone_lacks", `The ADE Cloud iPhone can't ${abilityWords(lacking)}.`, 409);
+    }
+    route.order = route.order.filter((provider) => cloudPhoneLacks(provider, needs).length === 0);
     // One start per account at a time, across providers and machines: two starts that both saw no live phone
     // would each make one (and bill both). The other is told to try again, and then finds this phone.
     const startingElsewhere = (): Response => fail("phone_starting", "Your ADE Cloud iPhone is starting. Try again in a moment.", 409);
