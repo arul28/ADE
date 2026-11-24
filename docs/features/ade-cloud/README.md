@@ -468,6 +468,42 @@ Hours, plan, disk and billing come from `GET /cloud/account`
 (`CloudAccountState`), read only while ADE Cloud shows (`useCloudMachines`).
 At 0 hours the server refuses, and its sentence is what the person sees.
 
+### Credits
+
+One balance for everything ADE Cloud runs (owner, 2026-11-24), behind the
+`cloud_credits` switch (`off`, `testers` = the iPhone beta list, `all`; deploy
+ceiling `CLOUD_CREDITS`; [account test tool](account-test-tool.md)). It
+starts off: until it reaches an account, that account sees hours and the
+iPhone's own minutes as above.
+
+A credit is the hour renamed, so no number changes: Free 50, Plus 100, Pro
+600, Max 1,500 a month; a Small computer uses none, Medium 1 an hour, Large
+2.5, X-Large 4. The ADE Cloud iPhone draws from the same balance at one credit
+a minute (a Mac VM, later, the same). Past the plan, a paid plan's extra
+credits are the extra-hours switch at 2¢ each, so an extra iPhone minute is
+an extra credit and there is no separate extra-iPhone-minutes switch. Free
+stops when the credits run out.
+
+How the server counts it (`credits.ts`, `phones.ts`, migration 0059):
+
+- A phone counts in credits when the switch reached its account at its start
+  (`cloud_phones.credits = 1`). One started before keeps the old iPhone
+  minutes and their billing, so a flip never counts a phone twice.
+- Its billed minutes go into the account's `used_milli` as its provider
+  settles them, in the same write as the phone's row
+  (`phoneCreditStatements`); `credited_milli` holds what is already in, so a
+  repeated answer adds nothing. Every rule that reads hours (the limits,
+  extra hours, earned hours, the period's end) counts them. A phone that ran
+  across a period's turn adds nothing to the new period.
+- What a phone may run is what the credits allow: the plan's left, then
+  earned ones, then any minute while extra hours are on (two hours at most a
+  phone), with running computers' time counted too. The ten-minute check
+  moves its `stop_at` as computers use the balance.
+- `CloudAccountState.credits` (`{ phoneMilliPerMinute }`) tells every surface
+  to say credits; `phone.creditsUsedMilli` is the iPhone's share, for the
+  split bar. The iPhone's own minute warnings stop; the hours emails cover
+  the balance.
+
 ### A cheaper plan's limits
 
 `planCleanup.ts`, migrations 0027 and 0032. ADE never removes a computer on
@@ -694,7 +730,7 @@ subagent's (`cloud_chat_copies`). Chats on the person's own machine never get a
 card, whatever the plan.
 
 - **Formats:** the `gravity_format` switch (`below_reply` default,
-  `above_prompt`, `inline`, or `split` for an A/B test; migration `0059`
+  `above_prompt`, `inline`, or `split` for an A/B test; migration `0061`
   keeps an owner's choice per account) names where
   an account's card shows: under the finished reply, docked above the prompt
   box (the latest reply's card, kept while the next reply runs), or one linked

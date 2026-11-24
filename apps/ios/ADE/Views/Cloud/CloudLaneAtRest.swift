@@ -260,6 +260,7 @@ struct CloudLaneAtRestScreen: View {
           branch: branch,
           summary: summary,
           fleetKey: subject.fleetKey,
+          words: CloudBalanceWords(cloudStore.account),
           onAwake: onAwake
         )
       }
@@ -273,7 +274,7 @@ struct CloudLaneAtRestScreen: View {
       Button("Wake and open") { Task { await wake() } }
       Button("Cancel", role: .cancel) {}
     } message: { file in
-      Text("\(file.path) changed on the lane and GitHub doesn't have the change. Opening it wakes the lane's computer, which uses ADE Cloud hours.")
+      Text("\(file.path) changed on the lane and GitHub doesn't have the change. Opening it wakes the lane's computer, which uses \(CloudBalanceWords(cloudStore.account).cloudUnit).")
     }
     .adeInspectable("CloudLane.AtRest")
   }
@@ -658,6 +659,8 @@ struct CloudLaneFilesSheet: View {
   let branch: String
   let summary: CloudGitSummary?
   let fleetKey: String
+  /// The account's unit (hours or credits), for what waking uses.
+  let words: CloudBalanceWords
   let onAwake: @MainActor () async -> Void
   @Environment(\.dismiss) private var dismiss
   @State private var path: [CloudFilesRoute] = []
@@ -665,7 +668,7 @@ struct CloudLaneFilesSheet: View {
   var body: some View {
     NavigationStack(path: $path) {
       CloudLaneFolderScreen(
-        repo: repo, branch: branch, folder: "", summary: summary, fleetKey: fleetKey,
+        repo: repo, branch: branch, folder: "", summary: summary, fleetKey: fleetKey, words: words,
         onAwake: {
           dismiss()
           await onAwake()
@@ -681,7 +684,7 @@ struct CloudLaneFilesSheet: View {
         switch route {
         case .folder(let folder):
           CloudLaneFolderScreen(
-            repo: repo, branch: branch, folder: folder, summary: summary, fleetKey: fleetKey,
+            repo: repo, branch: branch, folder: folder, summary: summary, fleetKey: fleetKey, words: words,
             onAwake: {
               dismiss()
               await onAwake()
@@ -708,6 +711,8 @@ struct CloudLaneFolderScreen: View {
   let folder: String
   let summary: CloudGitSummary?
   let fleetKey: String
+  /// The account's unit (hours or credits), for what waking uses.
+  let words: CloudBalanceWords
   let onAwake: @MainActor () async -> Void
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
@@ -845,7 +850,7 @@ struct CloudLaneFolderScreen: View {
       }
       Button("Cancel", role: .cancel) {}
     } message: { file in
-      Text("\(file.path) changed on the lane and GitHub doesn't have the change. Opening the lane's copy wakes its computer, which uses ADE Cloud hours.")
+      Text("\(file.path) changed on the lane and GitHub doesn't have the change. Opening the lane's copy wakes its computer, which uses \(words.cloudUnit).")
     }
   }
 

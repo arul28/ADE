@@ -1,6 +1,6 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { ADE_MEDIUM, ADE_SMALL, CAPY_CHECKED_ON, CHECKED_ON, NO_CLOUD, RIVALS, adeMediumMonthly, adeSmallMonthly } from "../../lib/cloudCompetitors";
-import { CLOUD_SMALL_FAIR_USE_SENTENCE, CLOUD_SMALL_UNLIMITED_SENTENCE, FREE_PLAN, PRICING_PLANS, cloudComputersPhrase, formatCount, formatUsd } from "../../lib/cloudPricing";
+import { CLOUD_SMALL_FAIR_USE_SENTENCE, FREE_PLAN, PRICING_PLANS, UNIT, cloudComputersPhrase, formatCount, formatUsd } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
 
 /*
@@ -33,7 +33,7 @@ export function CloudSources() {
       Prices from each vendor's own pricing page on {CHECKED_ON}, except Capy's on {CAPY_CHECKED_ON}, for the computer only;
       model use is extra, except that Capy's plans include some model usage and its credits pay for tokens. Values marked ≈ are our
       arithmetic from that page. Free hours count only hours that come back every month, so one-time credits (Replicas, Superconductor)
-      count as none. Apps with a cloud but no published price are left out. ADE Cloud: {CLOUD_SMALL_UNLIMITED_SENTENCE} Each plan has a
+      count as none. Apps with a cloud but no published price are left out. ADE Cloud: {UNIT.smallUnlimited} Each plan has a
       number of cloud computers ({FREE_PLAN.name} has {cloudComputersPhrase(FREE_PLAN.computerLimit)}). {CLOUD_SMALL_FAIR_USE_SENTENCE} Apps from{" "}
       <a href="https://ademark.dev" target="_blank" rel="noreferrer" className="underline decoration-white/25 underline-offset-2 hover:text-white/75">
         ademark.dev

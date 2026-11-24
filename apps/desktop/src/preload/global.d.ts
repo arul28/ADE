@@ -61,7 +61,7 @@ import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } fro
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { AndroidEmulatorPreloadApi } from "../shared/types/androidEmulator";
 import type { CloudPhoneViewPreloadApi } from "../shared/types/cloudPhoneView";
-import type { CloudPhoneStatusView, CloudPhoneView } from "../shared/cloudPhone";
+import type { CloudPhoneProviderChoice, CloudPhoneProviderChoiceAnswer, CloudPhoneStatusView, CloudPhoneView } from "../shared/cloudPhone";
 import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
 import type { DatabaseCopiesBridge } from "../shared/types/startupRecovery";
 import type { ProductSurveyBridge } from "../shared/types/productSurveys";
@@ -5207,6 +5207,11 @@ declare global {
         sponsoredViewed?: (impUrl: string) => Promise<boolean>;
         /** Extra iPhone minutes on, with a monthly limit in whole dollars or no limit, or off (paid plans). */
         setExtraPhoneMinutes?: (choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }) => Promise<CloudAccountState | null>;
+        /**
+         * A tester's pick of who runs their ADE Cloud iPhones (account level,
+         * no pin). Refused for an account not on the iPhone's beta list.
+         */
+        setPhoneProvider?: (provider: CloudPhoneProviderChoice) => Promise<CloudPhoneProviderChoiceAnswer>;
         /**
          * Enters a friend's invite: the pasted link (https or ade://) or the bare
          * code (no pin: account level). Once per account, never changed, within

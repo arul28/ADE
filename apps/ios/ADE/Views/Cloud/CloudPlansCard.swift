@@ -62,22 +62,29 @@ struct CloudPlansCard: View {
     (accountStore.account.map { $0.sponsored } ?? account.sponsored) != nil
   }
 
-  /// The ADE Cloud iPhone's minutes show only while it is on for the account.
-  private var showsSimulatorMinutes: Bool { account.phoneOn && columns.contains { $0.facts.phoneMinutes != nil } }
+  private var words: CloudBalanceWords { CloudBalanceWords(account) }
+
+  /// The ADE Cloud iPhone's minutes show only while it is on for the
+  /// account, and never under credits: it draws from them, with no minutes
+  /// of its own.
+  private var showsSimulatorMinutes: Bool { !words.credits && account.phoneOn && columns.contains { $0.facts.phoneMinutes != nil } }
 
   /// The one place for the explanations: what every plan includes.
   private var howItWorks: some View {
     VStack(alignment: .leading, spacing: 0) {
-      howRow("infinity", freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free with sponsored cards on." : cloudSmallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
+      howRow("infinity", freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free with sponsored cards on." : words.smallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
       Divider().overlay(ADEKit.edge)
-      howRow("clock", "Hours run the bigger sizes", "and renew every month. \(cloudHourUnitSentence)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")")
+      howRow("clock", "\(words.title) run the bigger sizes", "and renew every month. \(words.unitSentence)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")")
       Divider().overlay(ADEKit.edge)
       howRow("desktopcomputer", "Cloud computers", "count every lane's computer, asleep or awake. Free one up and its lane and chats stay.")
       Divider().overlay(ADEKit.edge)
-      howRow("moon.stars", "Computers sleep on their own", "a few minutes after work stops, so your hours only go to real work.")
+      howRow("moon.stars", "Computers sleep on their own", "a few minutes after work stops, so your \(words.unit) only go to real work.")
       if showsSimulatorMinutes {
         Divider().overlay(ADEKit.edge)
         howRow("iphone", "iOS Simulator minutes:", "time on an iPhone simulator in the cloud, for agents to test your app.")
+      } else if account.phoneOn, let rate = words.phoneRate {
+        Divider().overlay(ADEKit.edge)
+        howRow("iphone", "The ADE Cloud iPhone", "uses \(rate), for agents to test your app on an iPhone simulator in the cloud.")
       }
     }
     .background(ADEKit.track.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -127,22 +134,22 @@ struct CloudPlansCard: View {
         if let computers = computerLimit(column) {
           bigFact("\(computers)", computers == 1 ? "cloud computer" : "cloud computers", current: current)
         } else if current, let old = oldTermsHours(column), let end {
-          bigFact(cloudHours(old), staysOn ? "computer hours until \(cloudDate(end)), then \(cloudHours(column.facts.includedMilli))" : "computer hours until \(cloudDate(end))", current: current)
+          bigFact(cloudHours(old), staysOn ? "\(words.until(cloudDate(end))), then \(cloudHours(column.facts.includedMilli))" : words.until(cloudDate(end)), current: current)
         } else {
-          bigFact(cloudHours(column.facts.includedMilli), "computer hours a month", current: current)
+          bigFact(cloudHours(column.facts.includedMilli), words.perMonth, current: current)
         }
       }
       VStack(alignment: .leading, spacing: 6) {
         fact("infinity", column.id == "free" && freeSmallNeedsCards ? "Unlimited Small with cards" : "Unlimited Small", current: current)
         if current, let old = oldTermsHours(column), let end {
-          fact("clock", "\(cloudHours(old)) h until \(cloudDate(end))\(staysOn ? ", then \(cloudHours(column.facts.includedMilli))" : "")", current: current)
+          fact("clock", "\(words.amount(old)) until \(cloudDate(end))\(staysOn ? ", then \(cloudHours(column.facts.includedMilli))" : "")", current: current)
         } else {
-          fact("clock", "\(cloudHours(column.facts.includedMilli)) h for bigger sizes", current: current)
+          fact("clock", words.planLine(column.facts.includedMilli), current: current)
         }
         if showsSimulatorMinutes, let minutes = column.facts.phoneMinutes {
           fact("iphone", "\(minutes) iOS Simulator minutes", current: current)
         }
-        fact("bolt", extraHoursSold(column) ? "Extra hours if on" : "No extra hours", current: current, quiet: !extraHoursSold(column))
+        fact("bolt", extraHoursSold(column) ? "\(words.extra) if on" : "No \(words.extra.lowercased())", current: current, quiet: !extraHoursSold(column))
       }
     }
     .padding(12)
@@ -230,12 +237,13 @@ struct CloudPlansCard: View {
     if let computers = computerLimit(column) {
       parts.append(cloudComputersPhrase(computers))
       parts.append(column.id == "free" && freeSmallNeedsCards ? "unlimited Small computers with sponsored cards" : "unlimited Small computers")
+      if words.credits { parts.append(words.planSentence(column.facts.includedMilli)) }
       parts.append(cloudHoursOnSizes(column.facts.includedMilli, tiers: tiers) ?? "\(cloudHours(column.facts.includedMilli)) hours a month")
     } else {
-      parts.append("\(cloudHours(column.facts.includedMilli)) computer hours a month")
+      parts.append("\(cloudHours(column.facts.includedMilli)) \(words.perMonth)")
     }
     if showsSimulatorMinutes, let minutes = column.facts.phoneMinutes { parts.append("\(minutes) iOS Simulator minutes") }
-    parts.append(extraHoursSold(column) ? "extra hours if on" : "no extra hours")
+    parts.append(extraHoursSold(column) ? "\(words.extra.lowercased()) if on" : "no \(words.extra.lowercased())")
     return "\(column.label)\(current ? ", your plan" : "")\(isNew ? ", new" : ""): \(parts.joined(separator: ", "))"
   }
 
@@ -283,7 +291,7 @@ struct CloudSponsoredCard: View {
           .padding(.top, -4)
           .padding(.bottom, sponsored.smallUsesHoursWithoutCards ? 4 : 12)
         if sponsored.smallUsesHoursWithoutCards {
-          Text("Small computers use your hours while sponsored cards are off.")
+          Text("Small computers use your \(CloudBalanceWords(accountStore.account ?? pageAccount).unit) while sponsored cards are off.")
             .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)

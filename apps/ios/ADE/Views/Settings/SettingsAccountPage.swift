@@ -19,6 +19,8 @@ struct SettingsAccountPage: View {
   @ObservedObject private var account = AccountService.shared
   @ObservedObject private var hidden = HiddenMachineStore.shared
   @ObservedObject private var github = GitHubAccountConnection.shared
+  /// The cloud account, for its unit (hours or credits).
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
   @Environment(\.openURL) private var openURL
   @State private var confirmGitHubDisconnect = false
   @State private var githubDisconnecting = false
@@ -41,12 +43,13 @@ struct SettingsAccountPage: View {
   @ViewBuilder
   private var inviteSection: some View {
     if let referral, referral.offersCodeBox, syncService.cloudAvailable, syncService.cloudSupported {
+      let words = CloudBalanceWords(cloudStore.account)
       ADESettingsSection(
         "Invite",
-        hint: "Were you invited? You both get \(cloudHours(referral.rewardMilli)) free cloud hours.\(referral.enterCodeUntil.map { " Add it by \(cloudDate($0))." } ?? "")"
+        hint: "Were you invited? You both get \(cloudHours(referral.rewardMilli)) \(words.freeCloud).\(referral.enterCodeUntil.map { " Add it by \(cloudDate($0))." } ?? "")"
       ) {
         // The box keeps its "Invite added" line; the section is gone on the next visit.
-        CloudInviteCodeBox(syncService: syncService, rewardMilli: referral.rewardMilli, onDone: { _ in })
+        CloudInviteCodeBox(syncService: syncService, rewardMilli: referral.rewardMilli, words: words, onDone: { _ in })
         .adeKitCard()
       }
     }

@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/cloudflare";
+import { PHONE_CREDIT_MILLI_AT_SQL } from "./credits";
 import type { CallerTokenEnv } from "../callerToken";
 import { cloudflareTransientKindOfText } from "../cloudflareTransient";
 import { CLOUD_INTEGRATION_REQUESTS_PER_MINUTE, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanId } from "./contract";
@@ -47,8 +48,8 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   NOMAC_WEBHOOK_SECRET?: string;
   /** Secret. ADE's Revyl partner key for the ADE Cloud iPhone on Revyl (`phoneRevyl.ts`). Unset: no phone starts on Revyl. */
   REVYL_PARTNER_API_KEY?: string;
-  /** Who runs new phones: `nomac` (default) or `revyl`; the owner's per-account choice on the beta list wins (`phones.ts`). */
-  CLOUD_PHONE_PROVIDER?: string;
+  /** The highest the `cloud_credits` setting may go (`credits.ts`): `off` (default, a hard off), `testers` or `all`. */
+  CLOUD_CREDITS?: string;
   /** The owner's switch for Revyl: `on` lets new phones start there (with the key set). Unset or anything else: NoMac only (`revylEnabled`). */
   CLOUD_PHONE_REVYL?: string;
   /** Who may use the ADE Cloud iPhone: `beta` (default, the owner's list), `all`, or `off` (`phones.ts`). */
@@ -277,6 +278,9 @@ export type AccountRow = {
   /** A phone start whose answer was lost: the provider and when (migration 0057, `heldToUnsureStart`). */
   phone_start_unsure?: string | null;
   phone_start_unsure_at?: number | null;
+  /** The latest phone start's billing (1 credits, 0 iPhone minutes) and when it began (migration 0060). */
+  phone_start_credits?: number | null;
+  phone_start_credits_at?: number | null;
   /** When the ADE account was created (Clerk), for the invite code's 30-day window. */
   account_created_at: number | null;
   /** Unused since Pricing v2 (Cloud 7's old plan terms, migration 0033): every new period writes 0. */
@@ -1355,14 +1359,13 @@ export async function loadAccount(env: CloudEnv, userId: string, now: number): P
  * address the owner typed) when one is given and the one it had otherwise.
  * Shared by the owner's add, a waiting email's claim and its hourly retry.
  * `whilePending`: a claim adds only while that waiting email is still there,
- * in the same write, so an owner's remove during the Clerk lookup holds, and
- * takes the provider lock the owner gave the waiting email.
+ * in the same write, so an owner's remove during the Clerk lookup holds. The
+ * row's `provider` is the tester's own pick (`phones.ts`): never set here.
  */
 export function phoneBetaAddStatement(db: D1Database, userId: string, email: string | null, now: number, { whilePending = false }: { whilePending?: boolean } = {}): D1PreparedStatement {
   const upsert = "on conflict(user_id) do update set email = coalesce(excluded.email, cloud_phone_beta.email)";
   return whilePending
-    // The waiting email's provider comes along (`both` too; an older lock on the row stays when it has none).
-    ? db.prepare(`insert into cloud_phone_beta (user_id, email, added_at, provider) select ?, ?, ?, provider from cloud_phone_beta_pending where email = ? ${upsert}, provider = coalesce(excluded.provider, cloud_phone_beta.provider)`)
+    ? db.prepare(`insert into cloud_phone_beta (user_id, email, added_at) select ?, ?, ? from cloud_phone_beta_pending where email = ? ${upsert}`)
       .bind(userId, email, now, email)
     : db.prepare(`insert into cloud_phone_beta (user_id, email, added_at) values (?, ?, ?) ${upsert}`).bind(userId, email, now);
 }
@@ -1453,6 +1456,23 @@ async function startFreshPeriod(
   statements.push(env.DB.prepare(`
     update cloud_computers set awake_since = ? where user_id = ? and awake_since is not null and awake_since <= ?
   `).bind(now, account.user_id, now));
+  // A running credits phone's minutes its provider hasn't billed yet go into the ending period, at its time
+  // so far, before the earned draw reads `used_milli`; its later answers add nothing to the new period
+  // (`phoneCreditStatements` counts a phone only in the period it started). Held to the period read, so
+  // two racing rolls add them once; the phones' marks only grow.
+  const phonePeriod = [account.user_id, account.period_start] as const;
+  statements.push(env.DB.prepare(`
+    update cloud_accounts set used_milli = used_milli + coalesce((
+      select sum(max(0, ${PHONE_CREDIT_MILLI_AT_SQL} - credited_milli)) from cloud_phones
+      where user_id = ? and state = 'live' and credits = 1 and created_at >= ?
+    ), 0)
+    where user_id = ? and period_start = ?
+  `).bind(now, ...phonePeriod, ...phonePeriod));
+  statements.push(env.DB.prepare(`
+    update cloud_phones set credited_milli = max(credited_milli, ${PHONE_CREDIT_MILLI_AT_SQL})
+    where user_id = ? and state = 'live' and credits = 1 and created_at >= ?
+      and exists (select 1 from cloud_accounts where user_id = ? and period_start = ?)
+  `).bind(now, ...phonePeriod, ...phonePeriod));
   // After the settles above, before `used_milli` resets below; both columns read the row as it was.
   statements.push(env.DB.prepare(`
     update cloud_accounts set earned_used_milli = earned_used_milli + ${EARNED_DRAW_SQL}

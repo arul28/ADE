@@ -483,7 +483,7 @@ export const ADE_ACTION_MACHINE_SCOPED = {
   // The account's lanes, saved chats, copies, backups and jobs are read from any folder
   // (`ade cloud lanes|chats|sessions|backups|jobs|project`); `lane_keep` only restarts an idle clock.
   cloud: [
-    "access", "status", "list", "hours", "limits", "sleep", "wake", "referral", "invite_redeem", "cloud_sign_in_status", "saved_chat_machine", ...CLOUD_SIGN_IN_WRITES,
+    "access", "status", "list", "hours", "limits", "sleep", "wake", "referral", "invite_redeem", "phone_provider", "cloud_sign_in_status", "saved_chat_machine", ...CLOUD_SIGN_IN_WRITES,
     "lanes", "lane_show", "lane_git", "lane_keep", "saved_chats_list", "saved_chats_read", "sessions_list", "session_read", "backups_list", "jobs_list", "project_overview",
   ],
   account_vault: ["get", "set", "remove"],
@@ -1262,6 +1262,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES,
     // The invite link and what it earned; entering a friend's code (CTO-only above: a person's client).
     "referral", "invite_redeem",
+    // A tester's pick of who runs their phones; the server refuses anyone off the iPhone's beta list.
+    "phone_provider",
     // A kept lane (its computer deleted) moved to this machine from the server copies:
     // what would come back, the move itself (user-only, above) and its progress.
     "kept_lane_move_preview", "kept_lane_move", "kept_lane_move_status",

@@ -249,6 +249,8 @@ export const CLOUD_PATHS = {
    * bytes). `PROXY_ACTIONS` and `BUILD_ACTIONS` in `phoneRevyl.ts` list the actions.
    */
   phoneCall: "/cloud/phone/call",
+  /** `POST { provider }` (`CloudPhoneProviderChoice`): a tester picks the provider of their phones. 403 `phone_not_on_account` for anyone else. */
+  phoneProvider: "/cloud/phone/provider",
   /** `GET`: ADE's own page that shows a phone streamed over WebRTC (WHEP), for a view link's `#` part. Not an account route. */
   phoneViewer: "/cloud/phone/viewer",
   /** `POST { enabled, monthlyLimitUsd? }`: extra iPhone minutes on a paid plan (`CloudAccountState.phone.extra`). */
@@ -661,6 +663,9 @@ export const CLOUD_SMALL_FAIR_USE_SENTENCE = "Small computers are for your own w
 /** What one hour of the plan is: one hour on a Medium computer. */
 export const CLOUD_HOUR_UNIT_SENTENCE = "One hour is one hour on a Medium computer. Bigger sizes use more an hour.";
 
+/** What a credit buys, under credits (`CloudAccountState.credits`). */
+export const CLOUD_CREDIT_UNIT_SENTENCE = "A credit is an hour on a Medium computer or a minute on the ADE Cloud iPhone. Small computers use none.";
+
 /**
  * The sizes and plans, so no client carries its own copy. A size uses
  * `multiplierMilli / 1000` hours for each hour awake, in Medium-hours
@@ -731,6 +736,14 @@ export type CloudAccountState = {
    * absent, a client shows nothing of them, not even the question.
    */
   sponsored?: CloudSponsoredState;
+  /**
+   * Credits: `hours` is one balance of credits (the same numbers: a Medium
+   * computer uses one an hour), and the ADE Cloud iPhone draws from it at
+   * `phoneMilliPerMinute` thousandths a minute (one credit). Surfaces say
+   * "credits" and show no separate iPhone minutes. Absent: hours, and the
+   * iPhone's own minutes (`phone.minutes`).
+   */
+  credits?: { phoneMilliPerMinute: number };
   /** What the person pays for. A `past_due` paid account still says `paid` here. */
   plan: "free" | "paid";
   /** The rules in force: `past_due` is `free` until a paid invoice. */
@@ -2997,19 +3010,30 @@ export type CloudEventWakeInternalResult = { subscribed: boolean; woken: number 
 
 /**
  * Who runs the phones: NoMac or Revyl. Every ADE surface drives either the
- * same way; the server picks one per account (`CLOUD_PHONE_PROVIDER`, the
- * owner's per-account choice on the beta list) and every phone keeps its own.
+ * same way; the server picks for each start (NoMac first, Revyl second and
+ * only on a paid plan, or a tester's own pick) and every phone keeps its own.
  */
 export const CLOUD_PHONE_PROVIDERS = ["nomac", "revyl"] as const;
 export type CloudPhoneProvider = (typeof CLOUD_PHONE_PROVIDERS)[number];
 export const isCloudPhoneProvider = (value: unknown): value is CloudPhoneProvider => (CLOUD_PHONE_PROVIDERS as readonly unknown[]).includes(value);
 
 /**
+ * A tester's pick for their phones (`CLOUD_PATHS.phoneProvider`): `auto` is
+ * the fixed order, the others start every phone there alone. Only accounts on
+ * the beta list may pick; ADE shows the choice only in its beta builds.
+ */
+export type CloudPhoneProviderChoice = "auto" | CloudPhoneProvider;
+export const CLOUD_PHONE_PROVIDER_CHOICES: readonly CloudPhoneProviderChoice[] = ["auto", ...CLOUD_PHONE_PROVIDERS];
+
+/** `POST /cloud/phone/provider`. */
+export type CloudPhoneProviderChoiceAnswer = { ok: true; provider: CloudPhoneProviderChoice };
+
+/**
  * What a cloud iPhone can do beyond what every one does (its screen as text,
  * steps, screenshots, builds, installs, controls, logs, recordings). Each
  * provider has some of these; people and agents see only these names and
- * never the provider's. The server routes a start that needs one to a
- * provider that has it, and the brain refuses one the live phone lacks.
+ * never the provider's. A start never picks its provider by them (NoMac
+ * first, then Revyl), and the brain refuses one the live phone lacks.
  */
 export const CLOUD_PHONE_ABILITIES = ["tests", "perf", "uninstall", "storekit", "locale", "timezone", "statusBar", "launchEnv", "shake", "orientation"] as const;
 export type CloudPhoneAbility = (typeof CLOUD_PHONE_ABILITIES)[number];
@@ -3106,7 +3130,7 @@ export type CloudPhoneState = {
   recent?: CloudPhoneUse[];
   /**
    * What the live phone can do beyond the basics, or with none running what
-   * a start can get (`needs` picks among them). Absent from an older server.
+   * the next start's first provider can do. Absent from an older server.
    */
   abilities?: CloudPhoneAbility[];
 };
@@ -3176,6 +3200,10 @@ export type CloudPhoneMinutesState = "none" | "warn80" | "zero";
 /** `CloudAccountState.phone`. */
 export type CloudAccountPhone = {
   access: CloudPhoneAccess;
+  /** A tester's pick (`CloudPhoneProviderChoice`): sent only to accounts on the beta list, which may change it. */
+  providerChoice?: CloudPhoneProviderChoice;
+  /** Under credits (`CloudAccountState.credits`): the credits the iPhone used this period, in thousandths. */
+  creditsUsedMilli?: number;
   /** The plan's minutes this period; null when access is not `on`. */
   minutes: CloudPhoneMinutes | null;
   state: CloudPhoneMinutesState;

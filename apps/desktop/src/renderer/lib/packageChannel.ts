@@ -28,3 +28,15 @@ export function isPrereleaseChannel(
 export function packageChannelLabel(channel: AppPackageChannel): string {
   return channel === "alpha" ? "ALPHA" : "STABLE";
 }
+
+/**
+ * A build testers run: a dev build, an Alpha package, or the Beta update
+ * track. Tester-only controls (the ADE Cloud iPhone's provider pick) show only
+ * here, and only to an account the server marks as a tester.
+ */
+export function isTesterBuild(): boolean {
+  if (import.meta.env?.DEV) return true;
+  if (isPrereleaseChannel()) return true;
+  if (typeof window === "undefined") return false;
+  return (window as { ade?: { app?: { updateTrack?: unknown } } }).ade?.app?.updateTrack === "beta";
+}

@@ -256,6 +256,8 @@ final class CloudPaneStore: ObservableObject {
   var outOfHours: Bool { account?.outOfHours == true }
 
   var tiers: [CloudPhoneTier] { cloudPhoneTiers(account?.catalog) }
+  /// The account's unit, hours or credits (`CloudBalanceWords`).
+  var words: CloudBalanceWords { CloudBalanceWords(account) }
   /// The hours left now, earned hours too (what the sizes card counts); nil before the account is read.
   var hoursLeftMilli: Int? { account.map { $0.hours.leftMilli + max(0, $0.earnedHours?.leftMilli ?? 0) } }
 

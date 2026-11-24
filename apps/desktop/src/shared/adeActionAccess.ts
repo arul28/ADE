@@ -377,7 +377,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "kept_lane_move_preview", "kept_lane_move_status",
     ],
     write: [
-      "create", "sleep", "wake", "resize", "copy", "move", "delete", "invite_redeem",
+      "create", "sleep", "wake", "resize", "copy", "move", "delete", "invite_redeem", "phone_provider",
       "kept_lane_move",
       "update", "set_limits", "lane_launch", "lane_launch_cancel", "tier_request", "recommend",
       "clear_caches", "grow_disk",

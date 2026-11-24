@@ -1,4 +1,5 @@
 import { mintDeviceApprovalLink } from "../deviceAppApproval";
+import { unsettledPhoneMilli } from "./credits";
 import { findByUserCode, normalizeUserCode, resolveDeviceRequestOptions } from "../deviceAuthorization";
 import { sha256Hex } from "../sinkUtils";
 import { trustedHttpsOrigin } from "../trustedOrigin";
@@ -494,7 +495,7 @@ async function startSizeOf(env: CloudEnv, userId: string, parsed: CloudServerLau
     if (row?.size_id === CLOUD_AUTO_SIZE.to) {
       const medium = cloudSizeForTier(CLOUD_AUTO_SIZE.to)!;
       const account = await loadAccount(env, userId, now);
-      const liveUsed = liveUsedMilli(account, await listComputers(env, userId), now);
+      const liveUsed = liveUsedMilli(account, await listComputers(env, userId), now) + await unsettledPhoneMilli(env, account, now);
       if (!isOutOfHoursFor(account, liveUsed, medium.multiplierMilli)) return { sizeId: CLOUD_AUTO_SIZE.to, remembered: true };
     }
   } catch (error) {

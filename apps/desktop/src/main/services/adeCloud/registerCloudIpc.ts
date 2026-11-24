@@ -30,6 +30,7 @@ import { isGravityUrl, type CloudSponsoredAdAnswer, type CloudSponsoredAdRequest
 import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
 import { isCloudTierId } from "../../../shared/cloudTiers";
+import { isCloudPhoneProviderChoice, type CloudPhoneProviderChoiceAnswer } from "../../../shared/cloudPhone";
 import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode, type CloudCarriedSignIns, type CloudLaneBackup, type CloudLaunchRecord, type CloudModelCatalog } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
@@ -736,6 +737,20 @@ export function registerCloudIpc(args: {
     logger.info("cloud.extra_phone_minutes_set", { enabled: choice.enabled });
     sendToAllWindows(IPC.cloudStatusChanged);
     return account;
+  });
+
+  // Account-level: a tester's pick of who runs their phones, so no pin. The
+  // server refuses anyone not on the iPhone's beta list with its own sentence.
+  ipcMain.handle(IPC.cloudSetPhoneProvider, async (event, arg: { provider?: unknown }): Promise<CloudPhoneProviderChoiceAnswer> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetPhoneProvider)) throw new Error("ADE can't change that from here.");
+    if (!isCloudPhoneProviderChoice(arg?.provider)) throw new Error("Pick auto, nomac or revyl.");
+    const provider = await requireCloudProvider(credentials);
+    if (!provider.setPhoneProvider) throw new Error("This ADE Cloud can't change the cloud iPhone provider yet.");
+    const choice = arg.provider;
+    const answer = await billingCall(async () => await provider.setPhoneProvider!(choice));
+    logger.info("cloud.phone_provider_set", { provider: answer.provider });
+    sendToAllWindows(IPC.cloudStatusChanged);
+    return answer;
   });
 
   /**

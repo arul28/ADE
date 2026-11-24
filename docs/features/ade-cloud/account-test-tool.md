@@ -32,7 +32,7 @@ Name an account by its verified email or its Clerk user id (`user_…`).
 | `show <account>` | The real plan, the test, what is in force now, and the last changes |
 | `act-as <account> free\|plus\|pro\|max` | The account acts as that plan: computer limit, hours, outside agents, sponsored cards, Small's hours |
 | `limits <account> --computers N --hours N --phone-minutes N` | Its own computer limit, monthly hours and ADE Cloud iPhone minutes this period, on top of the plan (`limits <account>` with no options clears all three) |
-| `phone <account> nomac\|revyl\|both\|off` | On the ADE Cloud iPhone's beta list with that provider (`both`: the router, which tries the default provider first (`CLOUD_PHONE_PROVIDER`, NoMac today), then the other when the first refuses or the command needs something only the other has), or off it. Not a test: it stays until changed. While `CLOUD_PHONE_ACCESS` is `beta`, `off` stops a running phone (under `all`, the list doesn't decide access) |
+| `phone <account> on\|off` | On the ADE Cloud iPhone's beta list, or off it. Not a test: it stays until changed. While `CLOUD_PHONE_ACCESS` is `beta`, `off` stops a running phone (under `all`, the list doesn't decide access). A tester picks their own phones' provider (`auto`, NoMac or Revyl) in an ADE beta build or with `ade cloud phone-provider`; the owner no longer sets it |
 | `tester <account> on\|off` | On or off the sponsored testers list |
 | `ad-format <account> below_reply\|above_prompt\|inline\|switch` | Where this account's sponsored cards show: under the reply, docked above the prompt box, or one linked sentence at the end of the reply (`switch`: whatever `gravity_format` says). Not a test: it stays until changed |
 | `ab [--days N]` | The format A/B scoreboard (default 14 days): per format its weight, accounts held to it, how many said yes or no, cards asked and filled, hides per card, and Gravity's views, clicks, CTR and revenue for that format's placements |
@@ -78,6 +78,7 @@ minutes on is refused (409) while test iPhone minutes are set.
 | `gravity_live` | `off`, `on` | `GRAVITY_LIVE=1` | Real ads instead of Gravity's free test ads |
 | `gravity_format` | `below_reply`, `above_prompt`, `inline`, `split` | none | Where cards show for every account; `split` holds each account to one of the three by its id (the same on every machine). An account set with `ad-format` keeps its own |
 | `gravity_format_split` | `70-20-10`, `80-15-5`, `60-25-15`, `50-30-20`, `34-33-33` | none | Under `split`, the share of new accounts for under the reply, inline and above the prompt box, in that order. An account keeps the format it was first given (`cloud_sponsored_formats`), so a change moves only accounts ads reach for the first time |
+| `cloud_credits` | `off`, `testers`, `all` | `CLOUD_CREDITS` | Credits: hours become credits on every surface and the ADE Cloud iPhone draws from them at one a minute. `testers` is the iPhone beta list. See [Credits](README.md#credits) |
 
 ```bash
 node scripts/cloud-owner.mjs settings

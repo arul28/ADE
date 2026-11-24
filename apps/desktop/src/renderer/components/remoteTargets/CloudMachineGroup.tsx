@@ -3,7 +3,6 @@ import { ArrowClockwise, CircleNotch, GitBranch, Sun, UserCirclePlus, UserMinus 
 import {
   cloudAccountBanner,
   cloudHoursLeftMilli,
-  formatCloudHours,
   type CloudAccountState,
   cloudMachineSelfUpdating,
   cloudOutOfHours,
@@ -17,6 +16,7 @@ import {
 import { Banner } from "../ui/notice";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
+import { cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import { CloudLaneSavedWork } from "../cloudLane/CloudLaneSavedWork";
 import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
@@ -37,19 +37,23 @@ import { connectButtonStyle, machineRowStyle, nameStyle, subTextStyle } from "./
 export function CloudGroupHead({
   boxes,
   loading,
+  account = null,
 }: {
   boxes: readonly CloudMachine[];
   loading: boolean;
+  /** The account, for its words (hours or credits); null before it is read. */
+  account?: CloudAccountState | null;
 }) {
   const totals = cloudGroupTotals(boxes);
+  const words = cloudUnitWords(account);
   return (
     <div className="ade-cx-section-head ade-cx-cloud-head">
       <CloudMark size={12} bold />
       {ADE_CLOUD_NAME}
       {loading ? <CircleNotch size={11} className="animate-spin" aria-label="Checking ADE Cloud" /> : null}
       {totals.hoursRate > 0 ? (
-        <span className="ade-cx-cloud-head-facts kit-num" title="How fast the computers awake now use your hours. One hour is one hour on a Medium.">
-          Now: {formatCloudHoursRate(totals.hoursRate)}
+        <span className="ade-cx-cloud-head-facts kit-num" title={`How fast the computers awake now use your ${words.noun}. ${words.unitSentence}`}>
+          Now: {formatCloudHoursRate(totals.hoursRate, words)}
         </span>
       ) : null}
     </div>
@@ -112,7 +116,7 @@ export function CloudGroupBanners({
         model={{
           ...accountBanner,
           icon: <CloudMark size={15} />,
-          actions: onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined,
+          actions: onOpenSettings ? [{ label: `Plans and ${cloudUnitWords(result?.state === "ok" ? result.account : null).noun}`, onClick: onOpenSettings }] : undefined,
           report: false,
         }}
       />,
@@ -137,6 +141,7 @@ function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) 
 export function CloudBoxStrip({
   box,
   catalog,
+  words,
   work,
   pending,
   approvalUrl,
@@ -149,6 +154,8 @@ export function CloudBoxStrip({
   box: CloudMachine;
   /** The account's sizes, so the box's size reads as the pickers name it. */
   catalog: CloudCatalog;
+  /** The account's words (hours or credits) for the box's rate. */
+  words?: CloudUnitWords;
   work: CloudBoxWork;
   pending: CloudBoxPending | null;
   /** A copy's or move's sign-in link while its new computer waits for the person. */
@@ -163,7 +170,7 @@ export function CloudBoxStrip({
 }) {
   const tone = cloudStateTone(box);
   const stateLabel = box.pastDue ? "Suspended" : CLOUD_STATE_LABELS[box.state];
-  const rate = describeCloudRate(box);
+  const rate = describeCloudRate(box, words);
   const atRest = box.state === "asleep" || box.state === "stopped";
   const canWake = atRest && !box.pastDue;
   const laneNames = work.lanes.map((lane) => (lane.projectName ? `${lane.name} (${lane.projectName})` : lane.name));
@@ -282,7 +289,8 @@ export function AdeCloudMachineRow({
 }) {
   const lanes = boxes.filter((box) => (box as CloudLaneMachine).lane).length;
   const awake = cloudGroupTotals(boxes).running;
-  const hoursLeft = account ? formatCloudHours(cloudHoursLeftMilli(account)) : null;
+  const words = cloudUnitWords(account);
+  const hoursLeft = account ? words.short(cloudHoursLeftMilli(account)) : null;
   // Parts of one line, each its own phrase: a sentence never gets the hours
   // joined onto it with a comma ("…start one., 0 h left").
   const line = !known
@@ -300,7 +308,7 @@ export function AdeCloudMachineRow({
           <span style={nameStyle}>{ADE_CLOUD_NAME}</span>
           <span style={subTextStyle}>
             {line}
-            {hoursLeft != null ? <span className="kit-num">{` · ${hoursLeft} h left`}</span> : null}
+            {hoursLeft != null ? <span className="kit-num">{` · ${hoursLeft} left`}</span> : null}
           </span>
         </div>
         {onOpenSettings ? (

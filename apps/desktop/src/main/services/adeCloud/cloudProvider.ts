@@ -32,6 +32,7 @@ import type {
   CloudPhoneAbility,
   CloudPhoneDevice,
   CloudPhoneStart,
+  CloudPhoneProviderChoice,
   CloudPhoneState,
   CloudPhoneView,
   CloudPlanCleanupPick,
@@ -251,6 +252,12 @@ export type CloudProvider = {
   /** A link that shows the live phone to this account alone. */
   phoneView?(input: { control: boolean }): Promise<CloudPhoneView>;
   phoneStop?(): Promise<{ stopped: boolean }>;
+  /**
+   * A tester picks who runs their phones (`POST /cloud/phone/provider`).
+   * Account-level, so no pin. Anyone not on the beta list is refused
+   * (403 `phone_not_on_account`, its sentence the error's message).
+   */
+  setPhoneProvider?(provider: CloudPhoneProviderChoice): Promise<{ ok: true; provider: CloudPhoneProviderChoice }>;
   /**
    * One call to the live phone through the server (`/cloud/phone/call`), for
    * a provider with no per-phone token (Revyl). The provider's answer comes

@@ -11,6 +11,7 @@ import {
   type CloudAccountState,
   type CloudPlanId,
 } from "../../../../shared/adeCloud";
+import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
 
 /**
  * "You're on Plus": the moment a purchase or a move up lands. The account
@@ -52,12 +53,14 @@ export type CloudPlanMoment = {
   renewsAt: number;
   /** Free hours left before the upgrade that the new plan's fresh period replaced; null when none were. */
   replacedFreeMilli: number | null;
+  /** What the balance is called (`cloudUnitWords`): credits once the server sends `credits`. */
+  noun: "hours" | "credits";
 };
 
 /** "Your 79.1 unused free hours were replaced by Plus's 300." when the upgrade replaced free hours; null otherwise. */
 export function cloudPlanReplacedSentence(moment: CloudPlanMoment): string | null {
   return moment.replacedFreeMilli != null
-    ? `Your ${formatCloudHours(moment.replacedFreeMilli)} unused free hours were replaced by ${moment.label}'s ${formatCloudHours(moment.includedMilli)}.`
+    ? `Your ${formatCloudHours(moment.replacedFreeMilli)} unused free ${moment.noun} were replaced by ${moment.label}'s ${formatCloudHours(moment.includedMilli)}.`
     : null;
 }
 
@@ -66,7 +69,7 @@ export function cloudPlanMomentWords(moment: CloudPlanMoment): { title: string; 
   const replaced = cloudPlanReplacedSentence(moment);
   return {
     title: `You're on ${moment.label}`,
-    detail: `${moment.computers} cloud computers, unlimited Small ones and ${formatCloudHours(moment.includedMilli)} hours a month for bigger ones. Renews ${formatCloudDate(moment.renewsAt)}.${replaced ? ` ${replaced}` : ""}`,
+    detail: `${moment.computers} cloud computers, unlimited Small ones and ${formatCloudHours(moment.includedMilli)} ${moment.noun} a month for ${moment.noun === "credits" ? "bigger ones and the iPhone" : "bigger ones"}. Renews ${formatCloudDate(moment.renewsAt)}.${replaced ? ` ${replaced}` : ""}`,
   };
 }
 
@@ -99,6 +102,7 @@ export function nextCloudPlanSeen(previous: CloudPlanSeen | null, account: Cloud
       computers: cloudPlanComputerLimitOf(facts),
       renewsAt: account.billing.periodEnd,
       replacedFreeMilli: replaced,
+      noun: cloudUnitWords(account).noun,
     },
   };
 }

@@ -23218,6 +23218,7 @@ export function AgentChatPane({
                                   onSetDefault={adeCloud.setDefaultTier}
                                   disabled={shellLaunchBusy}
                                   hoursLeftMilli={adeCloud.hoursLeftMilli}
+                                  words={adeCloud.words}
                                 />
                               ) : null}
                               {cursorCloudMode && !parallelChatMode ? (

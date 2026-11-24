@@ -35,6 +35,7 @@ enum CloudRefusalCode {
     "github_app_not_installed", "template_unset", "template_unavailable",
     "linear_needs_renewal", "plan_past_due", "too_many_messages", "message_taken",
     "computer_limit", "outside_agent_free_plan", "phone_needs_update", "phone_cant",
+    "phone_busy", "phone_credits_out", "phone_not_on_account",
   ]
 
   /// Refusals of the Linear, Jira and limits routes (`CLOUD_INTEGRATION_ERROR_CODES`,
@@ -469,6 +470,13 @@ struct CloudServerClient {
 
   func account() async throws -> CloudPhoneAccount {
     try decode(CloudPhoneAccount.self, from: try await send("GET", "cloud/account"))
+  }
+
+  /// A tester picks who runs their ADE Cloud iPhones (`POST /cloud/phone/provider`):
+  /// `auto`, `nomac` or `revyl`. 403 `phone_not_on_account` for anyone not on the beta list.
+  func setPhoneProvider(_ provider: String) async throws {
+    let body = try JSONSerialization.data(withJSONObject: ["provider": provider])
+    _ = try await send("POST", "cloud/phone/provider", body: body)
   }
 
   func lanesWithoutComputer() async throws -> [CloudLaneWithoutComputer] {

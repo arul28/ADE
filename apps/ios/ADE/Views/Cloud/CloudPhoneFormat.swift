@@ -13,28 +13,22 @@ struct CloudHoursNote: Hashable {
 }
 
 /// The hero's lines under the hours: why the free plan has no hours (warnings,
-/// in full), then short chips for earned hours, extra hours and the pace.
+/// in full), then short lines for earned hours, extra hours and the pace.
 func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [CloudHoursNote] {
+  let words = CloudBalanceWords(account)
   var notes: [CloudHoursNote] = []
   if let free = account.freePlan, free.state == "refused" {
     // The phone's own words: the server's sentence names a plan to get
     // (App Store 3.1.1, see `cloudPhoneWords`).
-    notes.append(.init(text: "This computer already used another account's free hours, so the free plan has no hours here.", tone: .warn))
+    notes.append(.init(text: "This computer already used another account's \(words.free), so the free plan has no \(words.unit) here.", tone: .warn))
   }
   if let line = cloudFreeGithubLine(account) {
     notes.append(.init(text: line, tone: .warn))
   }
   if let earned = account.earnedHours, earned.leftMilli > 0 {
-    notes.append(.init(text: "+\(cloudHours(earned.leftMilli)) h earned", tone: .lamp))
+    notes.append(.init(text: "+\(words.amount(earned.leftMilli)) earned", tone: .lamp))
   }
-  if let extra = account.extraHours, extra.available {
-    if extra.enabled {
-      let used = extra.usedMilli ?? 0
-      notes.append(.init(text: used > 0 ? "Extra hours on, \(cloudHours(used)) h used" : "Extra hours on", tone: .on))
-    } else {
-      notes.append(.init(text: "Extra hours off", tone: .off))
-    }
-  }
+  // Extra hours or credits have their own tile on the hero ("Past your plan").
   if let forecast = cloudHoursForecast(account, now: now) {
     notes.append(.init(text: forecast, tone: .chip))
   }
@@ -46,16 +40,17 @@ func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [CloudHoursNote
 /// the card (no charge) that starts a new GitHub account's hours early.
 func cloudFreeGithubLine(_ account: CloudPhoneAccount) -> String? {
   guard let github = account.freePlan?.github, let state = github.state else { return nil }
+  let words = CloudBalanceWords(account)
   switch state {
   case "no_github":
-    return "Free hours need a GitHub account at least 30 days old. Connect GitHub to start."
+    return "\(words.freeTitle) need a GitHub account at least 30 days old. Connect GitHub to start."
   case "too_new":
     if let at = github.oldEnoughAt {
-      return "Your GitHub account is new, so free hours start on \(cloudFreeGithubDay(at))."
+      return "Your GitHub account is new, so \(words.free) start on \(cloudFreeGithubDay(at))."
     }
-    return "Your GitHub account is new, so free hours start when it is 30 days old."
+    return "Your GitHub account is new, so \(words.free) start when it is 30 days old."
   case "used":
-    return "This GitHub account already gives another ADE account its free hours, so the free plan has no hours here."
+    return "This GitHub account already gives another ADE account its \(words.free), so the free plan has no \(words.unit) here."
   case "checking":
     return "ADE couldn't check your GitHub account just now. It tries again in a few minutes."
   default:
@@ -172,24 +167,25 @@ func cloudIgnoredFilesShort(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFile
 /// (`timedWakesCancelledSentence`), in the phone's own words: what the person
 /// can do that isn't a purchase (App Store 3.1.1). `resetsAt` is when the
 /// hours reset, when the account says.
-func cloudTimedWakesCancelledSentence(_ notice: CloudPhoneAccount.TimedWakesCancelled, resetsAt: Double?) -> String {
+func cloudTimedWakesCancelledSentence(_ notice: CloudPhoneAccount.TimedWakesCancelled, resetsAt: Double?, words: CloudBalanceWords) -> String {
   let what = notice.count == 1 ? "A timed wake-up" : "\(notice.count) timed wake-ups"
   let head = "\(what) on your ADE Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule)"
   let after = "each computer sets its next timed wake-up again the next time it runs."
   if notice.reason == "over_plan_disk" {
     return "\(head), because your computers hold more disk than the free plan has, so they can't wake. Once you delete a computer, \(after)"
   }
-  let reset = resetsAt.map { "When your hours reset on \(cloudDate($0))" } ?? "When your hours reset"
-  return "\(head), because you're out of ADE Cloud hours, so your computers can't wake. \(reset), \(after)"
+  let reset = resetsAt.map { "When your \(words.unit) reset on \(cloudDate($0))" } ?? "When your \(words.unit) reset"
+  return "\(head), because you're out of \(words.cloudUnit), so your computers can't wake. \(reset), \(after)"
 }
 
 /// The iPhone never points at a purchase (App Store 3.1.1/3.1.3): a server
 /// message keeps only its sentences that don't mention one (getting a plan,
-/// a paid plan, upgrading, adding or buying hours, extra hours or disk). A
+/// a paid plan, picking a plan, upgrading, adding or buying hours, extra
+/// hours, credits or disk). A
 /// plan named as a fact ("Plus allows 40 GB") stays. Nil when nothing is left.
 func cloudPhoneWords(_ message: String?) -> String? {
   guard let message else { return nil }
-  let purchase = ["get plus", "get pro", "get a paid plan", "paid plan", "upgrade", "add hours", "buy", "extra hours", "extra disk"]
+  let purchase = ["get plus", "get pro", "get a paid plan", "paid plan", "pick a plan", "upgrade", "add hours", "buy", "extra hours", "extra credits", "extra disk"]
   var kept: [String] = []
   message.enumerateSubstrings(in: message.startIndex..., options: .bySentences) { sentence, _, _, _ in
     guard let sentence = sentence?.trimmingCharacters(in: .whitespacesAndNewlines), !sentence.isEmpty else { return }
@@ -209,8 +205,9 @@ func cloudHoursForecast(_ account: CloudPhoneAccount, now: Date) -> String? {
   guard left > 0 else { return nil }
   let perDay = recent.usedMilli / recent.days
   let endsAt = now.timeIntervalSince1970 * 1000 + (left / perDay) * 86_400_000
-  if endsAt >= periodEnd { return "At this pace your hours last until they reset" }
-  return "At this pace your hours last until \(cloudDate(endsAt))"
+  let unit = CloudBalanceWords(account).unit
+  if endsAt >= periodEnd { return "At this pace your \(unit) last until they reset" }
+  return "At this pace your \(unit) last until \(cloudDate(endsAt))"
 }
 
 /// One mark at most, so the name keeps its room: the idle cleanup's warning,
@@ -236,12 +233,13 @@ func cloudMachineOld(_ machine: CloudPhoneMachine, now: Date) -> Bool {
   return false
 }
 
-/// "Small · Never uses hours", "Large · Full computer" (the last run sits
-/// under the state). No multiplier and no disk: hours are time on a size,
-/// and disk shows only on a computer whose disk is nearly full.
-func cloudMachineLine(_ machine: CloudPhoneMachine, tier: CloudPhoneTier?, now: Date) -> String {
+/// "Small · Never uses hours" ("Small · Uses no credits"), "Large · Full
+/// computer" (the last run sits under the state). No multiplier and no disk:
+/// hours are time on a size, and disk shows only on a computer whose disk is
+/// nearly full.
+func cloudMachineLine(_ machine: CloudPhoneMachine, tier: CloudPhoneTier?, now: Date, words: CloudBalanceWords) -> String {
   guard let tier else { return machine.size ?? "" }
-  if !tier.usesHours { return "\(tier.label) · Never uses hours" }
+  if !tier.usesHours { return "\(tier.label) · \(words.smallNever)" }
   return tier.full ? "\(tier.label) · Full computer" : tier.label
 }
 
@@ -306,11 +304,12 @@ struct CloudPhoneTier: Identifiable, Equatable {
 
   /// What this size does with the account's hours, as time: "Never uses
   /// your hours" on Small, else "Your hours last 20 h on it" (nil
-  /// `leftMilli`: the account wasn't read, "Uses your hours").
-  func hoursLine(leftMilli: Int?) -> String {
-    guard usesHours else { return "Never uses your hours" }
-    guard let leftMilli else { return "Uses your hours" }
-    return "Your hours last \(hoursLeftLabel(leftMilli)) on it"
+  /// `leftMilli`: the account wasn't read, "Uses your hours"). Credits say
+  /// the same in theirs (`CloudBalanceWords`).
+  func hoursLine(leftMilli: Int?, words: CloudBalanceWords) -> String {
+    guard usesHours else { return words.neverUsesYours }
+    guard let leftMilli else { return words.uses(self) }
+    return "Your \(words.unit) last \(hoursLeftLabel(leftMilli)) on it"
   }
 
   /// How long `leftMilli` hours last at this size (`cloudTierHoursAt`): rounded
@@ -433,12 +432,169 @@ func cloudSmallTierUsingHours(_ account: CloudPhoneAccount) -> CloudPhoneTier? {
   return small
 }
 
-/// The offer, as every surface says it (`CLOUD_SMALL_UNLIMITED_SENTENCE`). Never "0 hours".
-let cloudSmallUnlimitedSentence = "Unlimited Small computers. They never use your hours."
-/// The small print beside it (`CLOUD_SMALL_FAIR_USE_SENTENCE`).
+/// The small print beside the Small offer (`CLOUD_SMALL_FAIR_USE_SENTENCE`).
 let cloudSmallFairUseSentence = "Small computers are for your own work and fall under fair use."
-/// What one hour of the plan is (`CLOUD_HOUR_UNIT_SENTENCE`).
-let cloudHourUnitSentence = "One hour is one hour on a Medium computer. Bigger sizes use more an hour."
+
+// MARK: - Hours or credits
+
+/// ADE Cloud's one balance, in the words of the unit the account counts it
+/// in: hours, or credits once the server's credits switch reaches the account
+/// (`CloudPhoneAccount.credits`). An older server, or the switch off, sends
+/// no `credits`, so those read exactly as before. The numbers are the same
+/// thousandths either way (a Medium computer uses one an hour). Every word
+/// that differs between the two comes from here, never from an `if` where
+/// it is shown.
+struct CloudBalanceWords: Equatable {
+  /// Under credits, what a minute on the ADE Cloud iPhone uses, in
+  /// thousandths of a credit; nil on hours.
+  let phoneMilliPerMinute: Int?
+
+  /// The account counts in credits.
+  var credits: Bool { phoneMilliPerMinute != nil }
+
+  static let hours = CloudBalanceWords(phoneMilliPerMinute: nil)
+
+  init(phoneMilliPerMinute: Int?) { self.phoneMilliPerMinute = phoneMilliPerMinute }
+  init(_ account: CloudPhoneAccount?) { phoneMilliPerMinute = account?.credits?.phoneMilliPerMinute }
+
+  /// "hours", "credits".
+  var unit: String { credits ? "credits" : "hours" }
+  /// "Hours", "Credits".
+  var title: String { credits ? "Credits" : "Hours" }
+  /// "ADE Cloud hours", "ADE Cloud credits".
+  var cloudUnit: String { "ADE Cloud \(unit)" }
+  /// "free hours", "free credits".
+  var free: String { "free \(unit)" }
+  /// "Free hours", "Free credits".
+  var freeTitle: String { "Free \(unit)" }
+  /// "free cloud hours", "free cloud credits".
+  var freeCloud: String { "free cloud \(unit)" }
+  /// "Extra hours", "Extra credits": past the plan, on a paid plan.
+  var extra: String { "Extra \(unit)" }
+
+  /// A number of them with the unit: "42.5 h", "42.5 credits", "1 credit".
+  func amount(_ milli: Int) -> String {
+    let number = cloudHours(milli)
+    guard credits else { return "\(number) h" }
+    return "\(number) \(number == "1" ? "credit" : "credits")"
+  }
+
+  /// A number of them in words: "20 hours", "20 credits", "1 credit".
+  func spelled(_ milli: Int) -> String {
+    let number = cloudHours(milli)
+    let one = number == "1"
+    return "\(number) \(credits ? (one ? "credit" : "credits") : (one ? "hour" : "hours"))"
+  }
+
+  /// A size that never uses the balance: "Never uses hours", "Uses no credits".
+  var smallNever: String { credits ? "Uses no credits" : "Never uses hours" }
+  /// "Never uses your hours", "Uses no credits".
+  var neverUsesYours: String { credits ? "Uses no credits" : "Never uses your hours" }
+  /// "They never use your hours", "They use no credits".
+  var theyNeverUse: String { credits ? "They use no credits" : "They never use your hours" }
+
+  /// What a size uses: "Uses your hours" (hours are time on a size, never a
+  /// multiplier), or its rate in credits: "Uses 2.5 credits an hour".
+  func uses(_ tier: CloudPhoneTier) -> String {
+    guard tier.usesHours else { return neverUsesYours }
+    guard credits else { return "Uses your hours" }
+    return "Uses \(spelled(tier.multiplierMilli)) an hour"
+  }
+
+  /// The offer, as every surface says it (`CLOUD_SMALL_UNLIMITED_SENTENCE`). Never "0 hours".
+  var smallUnlimitedSentence: String { "Unlimited Small computers. \(theyNeverUse)." }
+
+  /// What one of them is (`CLOUD_HOUR_UNIT_SENTENCE`, `CLOUD_CREDIT_UNIT_SENTENCE`).
+  var unitSentence: String {
+    credits
+      ? "A credit is an hour on a Medium computer or a minute on the ADE Cloud iPhone. Small computers use none."
+      : "One hour is one hour on a Medium computer. Bigger sizes use more an hour."
+  }
+
+  /// A plan's month: "100 hours a month" ("… for the bigger sizes" beside
+  /// the plan's computers, which Small's unlimited use doesn't count), or
+  /// "100 credits a month".
+  func monthly(_ milli: Int, besideComputers: Bool) -> String {
+    let month = "\(cloudHours(milli)) \(unit) a month"
+    return besideComputers && !credits ? "\(month) for the bigger sizes" : month
+  }
+
+  /// The hero's label over the number left.
+  func leftTitle(smallUsesBalance: Bool) -> String {
+    if credits { return "Credits left this month" }
+    return smallUsesBalance ? "Hours left this month" : "Hours left this month for bigger computers"
+  }
+
+  /// "of 600 h", "of 600 credits".
+  func of(_ milli: Int) -> String { "of \(amount(milli))" }
+
+  /// The plan table's unit under its big number: "computer hours a month", "credits a month".
+  var perMonth: String { credits ? "credits a month" : "computer hours a month" }
+  /// "computer hours until Dec 1", "credits until Dec 1".
+  func until(_ date: String) -> String { credits ? "credits until \(date)" : "computer hours until \(date)" }
+  /// A plan's balance in one short line: "100 h for bigger sizes", "100 credits a month".
+  func planLine(_ milli: Int) -> String {
+    credits ? "\(amount(milli)) a month" : "\(amount(milli)) for bigger sizes"
+  }
+  /// "50 hours a month for bigger computers", "50 credits a month".
+  func planSentence(_ milli: Int) -> String {
+    credits ? "\(spelled(milli)) a month" : "\(cloudHours(milli)) hours a month for bigger computers"
+  }
+
+  /// Out of the balance, on the notices card.
+  func outNotice(smallUsesBalance: Bool) -> String {
+    smallUsesBalance
+      ? "You're out of \(unit). Your computers stop until your \(unit) reset; running work on them saves first."
+      : "You're out of \(unit). Small computers keep working. Bigger sizes stop until your \(unit) reset; running work on them saves first."
+  }
+
+  /// Free's Small with sponsored cards off: "Small computers use your hours,
+  /// half an hour for each hour awake".
+  var smallWithoutCards: String {
+    credits ? "Small computers use credits, half a credit for each hour awake" : "Small computers use your hours, half an hour for each hour awake"
+  }
+
+  /// "Waking it uses ADE Cloud hours."
+  var wakingUses: String { "Waking it uses \(cloudUnit)." }
+
+  /// "About 482 iPhone minutes, or 482 hours on a Medium computer.": what
+  /// the credits left buy, rounded down. Nil on hours, or with no rate to
+  /// say it in. The iPhone part only while it is on for the account.
+  func leftBuys(_ leftMilli: Int, medium: CloudPhoneTier?, phoneOn: Bool) -> String? {
+    guard let phoneMilliPerMinute else { return nil }
+    func whole(_ value: Int) -> String { value.formatted(.number.locale(Locale(identifier: "en_US"))) }
+    let left = max(0, leftMilli)
+    let hours = medium.flatMap { $0.usesHours ? left / $0.multiplierMilli : nil }
+    let hoursPart = hours.map { "\(whole($0)) \($0 == 1 ? "hour" : "hours") on a Medium computer" }
+    if phoneOn {
+      let minutes = left / phoneMilliPerMinute
+      let minutesPart = "\(whole(minutes)) iPhone \(minutes == 1 ? "minute" : "minutes")"
+      return "About \(minutesPart)\(hoursPart.map { ", or \($0)" } ?? "")."
+    }
+    return hoursPart.map { "About \($0)." }
+  }
+
+  // The ADE Cloud iPhone: its own minutes on hours, a minute's rate of the credits under them.
+
+  /// "1 credit a minute"; nil on hours.
+  var phoneRate: String? { phoneMilliPerMinute.map { "\(spelled($0)) a minute" } }
+
+  /// The sheet's header: "42 min left", or the credits left, "42 credits left".
+  func phoneLeft(_ minutes: CloudIphoneStatus.Minutes) -> (text: String, spoken: String) {
+    guard let phoneMilliPerMinute else {
+      return ("\(minutes.left) min left", "\(minutes.left) minutes left of \(minutes.included) this period")
+    }
+    let milli = max(0, minutes.left) * phoneMilliPerMinute
+    return ("\(amount(milli)) left", "\(spelled(milli)) left this period")
+  }
+
+  /// Under Start phone: where its time comes from.
+  func phoneStartNote(device: String) -> String {
+    let what = "Starts an \(device) simulator in the cloud."
+    guard let phoneRate else { return "\(what) Time on it comes out of the plan's iPhone minutes." }
+    return "\(what) It uses \(phoneRate) of your ADE Cloud credits."
+  }
+}
 
 /// "3 cloud computers" (`cloudComputersPhrase`).
 func cloudComputersPhrase(_ count: Int) -> String {
@@ -486,8 +642,8 @@ func cloudLimitsPresetName(_ limits: CloudPhoneLimits) -> String {
   }
 }
 
-func cloudLimitsSummary(_ limits: CloudPhoneLimits) -> String {
-  guard limits.unattendedSpend else { return "Unattended agents ask before anything uses hours" }
+func cloudLimitsSummary(_ limits: CloudPhoneLimits, words: CloudBalanceWords) -> String {
+  guard limits.unattendedSpend else { return "Unattended agents ask before anything uses \(words.unit)" }
   return "\(limits.machinesPerDay) new computers a day, up to \(cloudShapeLabel(limits.maxShape))"
 }
 
@@ -506,15 +662,17 @@ struct CloudPlanMoment: Equatable {
   let renewsAt: Double
   /// Free hours left before the upgrade that the paid period replaced; nil when none were.
   let replacedFreeMilli: Int?
+  /// The account's unit when the plan landed.
+  let words: CloudBalanceWords
 
   var title: String { "You're on \(cloudPlanLabel(planId))" }
 
   var detail: String {
-    let hours = cloudHours(includedMilli)
-    var line = computerLimit.map { "\(cloudComputersPhrase($0)) and \(hours) hours a month for the bigger sizes. Renews \(cloudDate(renewsAt))." }
-      ?? "\(hours) hours a month. Renews \(cloudDate(renewsAt))."
+    let amount = cloudHours(includedMilli)
+    var line = computerLimit.map { "\(cloudComputersPhrase($0)) and \(words.monthly(includedMilli, besideComputers: true)). Renews \(cloudDate(renewsAt))." }
+      ?? "\(words.monthly(includedMilli, besideComputers: false)). Renews \(cloudDate(renewsAt))."
     if let replaced = replacedFreeMilli {
-      line += " Your \(cloudHours(replaced)) unused free hours were replaced by \(cloudPlanLabel(planId))'s \(hours)."
+      line += " Your \(cloudHours(replaced)) unused \(words.free) were replaced by \(cloudPlanLabel(planId))'s \(amount)."
     }
     return line
   }
@@ -564,7 +722,8 @@ enum CloudPlanSeenStore {
       includedMilli: account.hours.includedMilli,
       computerLimit: account.computerLimit,
       renewsAt: account.billing?.periodEnd ?? 0,
-      replacedFreeMilli: previousPlan == "free" && previousStart != periodStart && previousLeft > 0 ? previousLeft : nil
+      replacedFreeMilli: previousPlan == "free" && previousStart != periodStart && previousLeft > 0 ? previousLeft : nil,
+      words: CloudBalanceWords(account)
     ) : nil
     var record: [String: Any] = ["planId": planId, "periodStart": periodStart, "leftMilli": max(0, account.hours.leftMilli)]
     if let shown = moment?.key ?? celebrated { record["celebrated"] = shown }

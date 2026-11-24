@@ -9,12 +9,20 @@ import {
   isCloudPhoneDevice,
   type CloudPhoneAbility,
   type CloudPhoneDevice,
+  type CloudPhoneProviderChoice,
   type CloudPhoneState,
   type CloudPhoneView,
 } from "../../../account-directory/src/cloud/contract";
 
 /** `CloudPhoneView` is `cloud_phone.view`: a link that shows the live phone, for this account only. */
 export { CLOUD_PHONE_DEVICES, isCloudPhoneDevice, type CloudPhoneDevice, type CloudPhoneView };
+/** A tester's pick of who runs their phones (`POST /cloud/phone/provider`): account-level, never a pin. */
+export { CLOUD_PHONE_PROVIDER_CHOICES, type CloudPhoneProviderChoice, type CloudPhoneProviderChoiceAnswer } from "../../../account-directory/src/cloud/contract";
+
+/** Whether a value is a tester's provider pick (`auto`, `nomac` or `revyl`). */
+export function isCloudPhoneProviderChoice(value: unknown): value is CloudPhoneProviderChoice {
+  return value === "auto" || value === "nomac" || value === "revyl";
+}
 
 /**
  * The actions that run the phone, so spend the plan's minutes: each starts the

@@ -11,7 +11,7 @@ import { Section } from "../../components/Section";
 import {
   FREE_OFFER,
   INVITE_ENTER_DAYS,
-  INVITE_REWARD_HOURS,
+  INVITE_REWARD_LINE,
   inviteAppLink,
   inviteCodeFrom,
   lookUpInvite,
@@ -67,7 +67,7 @@ export function InvitePage() {
             <p className="mt-5 text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
               {invalid
                 ? `You can still get ADE. ${FREE_OFFER} in the cloud come free.`
-                : `You both get ${INVITE_REWARD_HOURS} extra cloud hours for bigger computers. ${FREE_OFFER} come free.`}
+                : `You both get ${INVITE_REWARD_LINE}. ${FREE_OFFER} come free.`}
             </p>
           </Reveal>
 

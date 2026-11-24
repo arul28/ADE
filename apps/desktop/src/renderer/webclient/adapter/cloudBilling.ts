@@ -7,6 +7,7 @@ import {
 } from "../../../../../account-directory/src/cloud/contract";
 import { readCloudPlanCleanup, type CloudAccountState, type CloudOpenCheckoutResult } from "../../../shared/adeCloud";
 import { parseCodedErrorMessage } from "../../../shared/codedError";
+import { isCloudPhoneProviderChoice, type CloudPhoneProviderChoice, type CloudPhoneProviderChoiceAnswer } from "../../../shared/cloudPhone";
 import { captureError } from "../../../shared/sentry/capture";
 import type { BrowserAccountClient } from "../account/client";
 import { stashCloudLink, type WebCloudLink } from "../shell/cloudPlanLink";
@@ -198,6 +199,13 @@ export function createWebCloudBilling(accountClient: CloudBillingAccountClient) 
 
     async setExtraPhoneMinutes(choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState> {
       return accountState(await post(CLOUD_PATHS.billingExtraPhone, choice, page));
+    },
+
+    /** A tester's pick of who runs their phones (account level, as on the desktop). The server refuses anyone else with its sentence. */
+    async setPhoneProvider(provider: CloudPhoneProviderChoice): Promise<CloudPhoneProviderChoiceAnswer> {
+      const body = record(await post(CLOUD_PATHS.phoneProvider, { provider }, page));
+      if (body?.ok !== true || !isCloudPhoneProviderChoice(body.provider)) throw new Error(BAD_ANSWER);
+      return { ok: true, provider: body.provider };
     },
 
     async pickPlanCleanup(input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState> {

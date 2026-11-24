@@ -499,7 +499,7 @@ struct CloudComputerLimitSheet: View {
       question("What \(cloudPlanLabel(next.planId)) adds")
       VStack(alignment: .leading, spacing: 6) {
         if let hours = planFacts(next.planId)?.includedMilli, hours > 0 {
-          fact("\(cloudHours(hours)) hours a month for bigger computers")
+          fact(CloudBalanceWords(account).planSentence(hours))
         }
         // A paid plan's Small never uses hours; a Free account's may now (sponsored cards off).
         fact(account.flatMap(cloudSmallTierUsingHours) != nil ? "Unlimited Small computers" : "Small computers stay unlimited")

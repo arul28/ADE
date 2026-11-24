@@ -1,5 +1,6 @@
 import type { CloudCatalog, CloudTierId as CatalogTierId } from "../../../account-directory/src/cloud/contract";
-import { formatCloudHoursRate, type CloudMachine } from "./adeCloud";
+import type { CloudMachine } from "./adeCloud";
+import { CLOUD_HOURS_WORDS, type CloudUnitWords } from "./cloudUnitWords";
 
 /**
  * The four sizes a person picks for an ADE Cloud lane: Small, Medium, Large
@@ -114,9 +115,9 @@ export function cloudTierRank(id: CloudTierId): number {
   return CLOUD_TIER_IDS.indexOf(id) + 1;
 }
 
-/** The size's hours rate from the catalog, in words: "uses no hours" (Small), "uses 2.5 hours an hour" (`formatCloudHoursRate`). */
-export function cloudTierRateLabel(tier: Pick<CloudTier, "multiplierMilli">): string {
-  return formatCloudHoursRate(tier.multiplierMilli / 1000);
+/** The size's rate from the catalog, in words: "uses no hours" (Small), "uses 2.5 hours an hour"; credits mode says credits. */
+export function cloudTierRateLabel(tier: Pick<CloudTier, "multiplierMilli">, words: CloudUnitWords = CLOUD_HOURS_WORDS): string {
+  return words.rate(tier.multiplierMilli / 1000);
 }
 
 /** Whether this size uses the plan's hours: every size but Small, and Small too when the account's catalog rates it (Free, sponsored cards off). */
@@ -166,7 +167,7 @@ export type CloudTierFacts = {
   runs: string;
   /** True for a full computer: Docker and the Android emulator. */
   full: boolean;
-  /** "Never uses your hours" (Small), "1 hour of work uses 2.5 hours of your plan". */
+  /** "Never uses your hours" (Small), "1 hour of work uses 2.5 hours of your plan"; credits mode says credits. */
   rateLine: string;
   /** Hours of the plan per hour awake (Medium-hours); 0 for Small. */
   rate: number;
@@ -179,9 +180,8 @@ const TIER_RUNS: Record<CloudTierId, string> = {
   xlarge: "Docker, Android and heavy builds",
 };
 
-export function cloudTierFacts(tier: CloudTier): CloudTierFacts {
+export function cloudTierFacts(tier: CloudTier, words: CloudUnitWords = CLOUD_HOURS_WORDS): CloudTierFacts {
   const rate = tier.multiplierMilli / 1000;
-  const hours = (value: number) => `${value} hour${value === 1 ? "" : "s"}`;
   return {
     specs: [
       `${tier.cpu} CPU`,
@@ -191,7 +191,7 @@ export function cloudTierFacts(tier: CloudTier): CloudTierFacts {
     ],
     runs: TIER_RUNS[tier.id],
     full: tier.type === "vm",
-    rateLine: rate > 0 ? `1 hour of work uses ${hours(rate)} of your plan` : "Never uses your hours",
+    rateLine: words.rateLine(rate),
     rate,
   };
 }
