@@ -74,7 +74,7 @@ import { readBoundedBody, sha256Hex } from "../sinkUtils";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
 import { forgetRevylAccount } from "./phoneRevyl";
-import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, routeOf, startOnRoute } from "./phoneRoute";
+import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, routeOf, startOnRoute, unsureStartHeld } from "./phoneRoute";
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { sendCloudEmail } from "./email";
@@ -920,10 +920,15 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     // One start per account at a time, across providers and machines: two starts that both saw no live phone
     // would each make one (and bill both). The other is told to try again, and then finds this phone.
     const startingElsewhere = (): Response => fail("phone_starting", "Your ADE Cloud iPhone is starting. Try again in a moment.", 409);
-    // With the claim, what this start decided about billing: a phone found later with no row is billed so.
-    const claimed = await env.DB.prepare(`update cloud_accounts set phone_start_claim = ?, phone_start_credits = ?, phone_start_credits_at = ?
+    // What this start decides about billing, saved with the claim: a phone found later with no row is billed so.
+    // A retry of a start whose answer was lost may get that start's phone back from the provider: it keeps the
+    // first attempt's decision (and its time), whatever reaches the account now.
+    const retry = unsureStartHeld(context.account, now) && context.account.phone_start_credits != null;
+    const startCredits = retry ? context.account.phone_start_credits === 1 : context.credits != null;
+    const claimed = await env.DB.prepare(`update cloud_accounts set phone_start_claim = ?, phone_start_credits = ?,
+      phone_start_credits_at = case when ? then phone_start_credits_at else ? end
       where user_id = ? and (phone_start_claim is null or phone_start_claim < ?)`)
-      .bind(now, context.credits != null ? 1 : 0, now, userId, now - PHONE_START_CLAIM_MS).run();
+      .bind(now, startCredits ? 1 : 0, retry ? 1 : 0, now, userId, now - PHONE_START_CLAIM_MS).run();
     if ((claimed.meta?.changes ?? 0) !== 1) return startingElsewhere();
     let begun: Awaited<ReturnType<typeof startOnRoute>>;
     try {
@@ -933,7 +938,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       begun = await startOnRoute(env, route, userId, { userId, label: context.label, device, minutes, lastPhoneId: context.lastPhoneId, now });
       // The account was deleted while the provider started it: no row comes back under the person's id,
       // and the phone stops rather than run unbilled.
-      if (!(begun instanceof Response) && !(await savePhone(env, userId, begun.started.session, now, { free: accountRules(context.account) === "free", onlyLiveAccount: true, credits: context.credits != null }))) {
+      if (!(begun instanceof Response) && !(await savePhone(env, userId, begun.started.session, now, { free: accountRules(context.account) === "free", onlyLiveAccount: true, credits: startCredits }))) {
         const { provider: gone, started: { session: orphan } } = begun;
         const stopped = await PHONE_PROVIDERS[gone].stop(env, userId, orphan.id, { provider: gone, ref: orphan.ref ?? null, device: orphan.device ?? null })
           .catch((): { ok: false } => ({ ok: false }));

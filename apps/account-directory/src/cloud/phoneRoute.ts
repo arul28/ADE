@@ -93,10 +93,14 @@ const UNSURE_START_MS = 15 * 60_000;
 /** The account's lost start (migration 0057): the provider and when. */
 type UnsureStart = { phone_start_unsure?: string | null; phone_start_unsure_at?: number | null };
 
+/** A start whose answer was lost may still have a phone coming up: the next start is its retry. */
+export const unsureStartHeld = (account: UnsureStart, now: number): boolean =>
+  isCloudPhoneProvider(account.phone_start_unsure) && (account.phone_start_unsure_at ?? 0) > now - UNSURE_START_MS;
+
 /** The route held to the provider a lost start may have made a phone at, or refused when it can't go there. */
 export function heldToUnsureStart(route: PhoneRoute, account: UnsureStart, now: number): PhoneRoute | Response {
   const unsure = account.phone_start_unsure;
-  if (!isCloudPhoneProvider(unsure) || (account.phone_start_unsure_at ?? 0) <= now - UNSURE_START_MS) return route;
+  if (!unsureStartHeld(account, now) || !isCloudPhoneProvider(unsure)) return route;
   if (route.order.includes(unsure)) return { ...route, order: [unsure] };
   return fail("phone_unavailable", "Your last ADE Cloud iPhone start didn't finish answering, and that phone may still be coming up. Try again in a few minutes.", 503);
 }

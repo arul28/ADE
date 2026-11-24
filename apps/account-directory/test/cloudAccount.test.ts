@@ -4167,6 +4167,20 @@ describe("ADE Cloud iPhone minutes", () => {
     expect(harness.row("select credits from cloud_phones where phone_id = 'ses_lost'").credits).toBe(expected);
   });
 
+  it("a retry after a lost start keeps the first attempt's billing, though the account joined credits between", async () => {
+    seedPhoneAccount();
+    harness.env.CLOUD_CREDITS = "all";
+    harness.insert("cloud_settings", { key: "cloud_credits", value: "testers", updated_at: clock - HOUR });
+    // Not on the list: the first attempt is on iPhone minutes, and NoMac's answer is lost.
+    phoneStartNetwork("down");
+    expect((await harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac"] })).status).toBe(502);
+    // Now a tester (credits reach the account); the retry gets the phone that start made.
+    harness.insert("cloud_phone_beta", { user_id: OWNER, added_at: clock });
+    phoneStartNetwork("ok");
+    expect((await harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac"] })).status).toBe(200);
+    expect(harness.row("select credits from cloud_phones where phone_id = 'ses_new'").credits).toBe(0);
+  });
+
   it("a new phone after the last one ended is billed by what reaches the account now", async () => {
     seedPhoneAccount();
     harness.env.CLOUD_CREDITS = "all";
