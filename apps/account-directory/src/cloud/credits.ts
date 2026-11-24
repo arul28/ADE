@@ -21,7 +21,7 @@
 
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import type { PhoneRow } from "./phones";
-import { heldUnder, isCloudSettingValue, readCloudSettings, settingChangedAt, type CloudSettings } from "./settings";
+import { heldUnder, isCloudSettingValue, readCloudSettings, type CloudSettings } from "./settings";
 import type { AccountRow, CloudEnv } from "./store";
 
 /** What a running iPhone uses: one credit (a thousand thousandths) a minute. */
@@ -36,23 +36,33 @@ export async function creditsMode(env: CloudEnv, settings?: CloudSettings): Prom
 }
 
 /**
- * Whether a phone that started at `startedAt` counts in credits: credits reach
- * the account now, and the switch last changed before that start. For a phone
- * found with no row (its start's answer was lost): one from before a flip
- * keeps its iPhone minutes, as it would have with its row.
+ * Whether a phone that started at `startedAt` counts in credits: what the
+ * `cloud_credits` switch said then (its last change at or before the start,
+ * from the owner's change log, which every flip writes), held under today's
+ * deploy ceiling. For a phone found with no row (its start's answer was
+ * lost): it is billed as its start would have saved it, whatever the switch
+ * says now.
  */
 export async function creditsAtStart(env: CloudEnv, userId: string, startedAt: number): Promise<boolean> {
-  if (!(await creditsOnFor(env, userId))) return false;
-  const changedAt = await settingChangedAt(env, "cloud_credits");
-  return changedAt == null || startedAt >= changedAt;
+  const ceiling = env.CLOUD_CREDITS?.trim().toLowerCase();
+  if (!isCloudSettingValue("cloud_credits", ceiling) || ceiling === "off") return false;
+  const row = await env.DB.prepare(`select json_extract(detail, '$.value') as value from cloud_owner_log
+    where action = 'setting' and json_extract(detail, '$.key') = 'cloud_credits' and at <= ? order by at desc, id desc limit 1`)
+    .bind(startedAt).first<{ value: string | null }>();
+  const then = isCloudSettingValue("cloud_credits", row?.value) ? row.value : "off";
+  return creditsReach(env, userId, heldUnder("cloud_credits", then, ceiling));
+}
+
+/** Whether credits reach this account under `mode`: `all`, or `testers` and it is on the iPhone's beta list. */
+async function creditsReach(env: CloudEnv, userId: string, mode: "off" | "testers" | "all"): Promise<boolean> {
+  if (mode === "off") return false;
+  if (mode === "all") return true;
+  return Boolean(await env.DB.prepare("select 1 as listed from cloud_phone_beta where user_id = ?").bind(userId).first<{ listed: number }>());
 }
 
 /** Whether credits reach this account now: `all`, or `testers` and it is on the iPhone's beta list. */
 export async function creditsOnFor(env: CloudEnv, userId: string): Promise<boolean> {
-  const mode = await creditsMode(env);
-  if (mode === "off") return false;
-  if (mode === "all") return true;
-  return Boolean(await env.DB.prepare("select 1 as listed from cloud_phone_beta where user_id = ?").bind(userId).first<{ listed: number }>());
+  return creditsReach(env, userId, await creditsMode(env));
 }
 
 /** A credits phone's row, as the balance reads it. */

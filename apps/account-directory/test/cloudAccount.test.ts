@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { reportExtraPhoneMinutes, setExtraPhoneMinutes } from "../src/cloud/phoneBilling";
 import { enforcePhoneAllowance } from "../src/cloud/phones";
+import { creditsAtStart } from "../src/cloud/credits";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { pruneSponsored } from "../src/cloud/gravity";
@@ -4135,6 +4136,20 @@ describe("ADE Cloud iPhone minutes", () => {
     seedPhone("ses_r", 0, clock - 5 * 60_000, "live", credits);
     liveNomacPhone("ses_r", clock - 5 * 60_000, 0);
     expect(await enforcePhoneAllowance(harness.env, OWNER, clock)).toBe(outcome);
+  });
+
+  it.each([
+    // A start whose answer was lost, recovered after the switch moved: billed as it started.
+    { name: "testers then all: a tester's phone started under testers counts in credits", flips: [["testers", -2 * HOUR], ["all", HOUR]], listed: true, expected: true },
+    { name: "off then all after the start: it keeps iPhone minutes", flips: [["off", -2 * HOUR], ["all", HOUR]], listed: false, expected: false },
+    { name: "all, then off after the start: it counts in credits", flips: [["all", -2 * HOUR], ["off", HOUR]], listed: false, expected: true },
+    { name: "never set: iPhone minutes", flips: [], listed: true, expected: false },
+  ] as const)("a recovered phone is billed by the switch at its start: $name", async ({ flips, listed, expected }) => {
+    seedPhoneAccount();
+    harness.env.CLOUD_CREDITS = "all";
+    if (listed) harness.insert("cloud_phone_beta", { user_id: OWNER, added_at: clock - DAY });
+    flips.forEach(([value, offset], index) => harness.insert("cloud_owner_log", { id: index + 1, at: clock + offset, action: "setting", user_id: null, detail: JSON.stringify({ key: "cloud_credits", value, note: null }) }));
+    expect(await creditsAtStart(harness.env, OWNER, clock)).toBe(expected);
   });
 
   it("a period's turn charges a running credits phone's unbilled minutes to the period that ends, once", async () => {
