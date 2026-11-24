@@ -22461,10 +22461,13 @@ function buildSecretsPlan(args: string[], target: { remote: boolean } = { remote
     // sent as typed.
     const from = readValue(args, ["--from"]);
     if (!from?.trim()) throw new CliUsageError("secrets copy needs --from <folder|owner/repo>: the project whose secrets to copy.");
-    const names = readRepeatedValues(args, ["--names", "--name", "--env"])
+    const nameFilters = readRepeatedValues(args, ["--names", "--name", "--env"]);
+    const names = nameFilters
       .flatMap((value) => value.split(","))
       .map((name) => name.trim())
       .filter(Boolean);
+    // A filter that names nothing must not turn into "copy every secret".
+    if (nameFilters.length && !names.length) throw new CliUsageError("secrets copy --names needs at least one secret name.");
     const overwrite = readFlag(args, ["--overwrite", "--replace"]);
     return {
       kind: "execute",

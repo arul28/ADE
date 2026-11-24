@@ -657,7 +657,9 @@ export function createProjectSecretService(projectRoot: string, options: Project
       const sourceScope = copySourceScope(from);
       const scope = accountScope();
       if (sourceScope === scope) throw new AdeExpectedError("That is this project, so there is nothing to copy.", "user");
-      const only = Array.isArray(args?.names) && args.names.length
+      // A list that names nothing is a mistake, never "copy them all": only no list copies all.
+      if (Array.isArray(args?.names) && !args.names.length) throw new AdeExpectedError("Name at least one secret to copy, or leave out names to copy them all.", "user");
+      const only = Array.isArray(args?.names)
         ? [...new Set(args.names.map((name) => normalizeSecretName(typeof name === "string" ? name : "")))]
         : null;
       const overwrite = args?.overwrite === true;
@@ -667,6 +669,8 @@ export function createProjectSecretService(projectRoot: string, options: Project
         throw new AdeExpectedError("Passwords & Secrets is off here. The person can turn it on in Settings › Passwords & Secrets.", "user");
       }
       return await oneAtATime(async () => {
+        // The account whose secrets are read is the one every write must go to.
+        const accountId = service.accountUserId();
         // The other project's own secrets: those for every project are already this one's.
         const source = new Map([...(await freshFor(sourceScope)).values()]
           .filter((entry) => entry.projectScope === sourceScope)
@@ -680,11 +684,28 @@ export function createProjectSecretService(projectRoot: string, options: Project
         }
         const picked = (only ?? [...source.keys()].sort((a, b) => a.localeCompare(b))).map((name) => source.get(name)!);
         const own = new Set([...(await freshFor(scope)).values()].filter((entry) => entry.projectScope === scope).map((entry) => entry.name));
+        // What the old store still holds is this project's own too: reads show it until it moves.
+        try {
+          for (const entry of usableLegacy() ?? []) own.add(entry.name);
+        } catch (error) {
+          // Unreadable, it adds nothing to reads either (`withLegacy`).
+          logger?.warn?.("project_secret.legacy_unreadable", { error: errorText(error) });
+        }
         const result: ProjectSecretCopyResult = { from, copied: [], replaced: [], skipped: [] };
         for (const entry of picked) {
           if (own.has(entry.name) && !overwrite) {
             result.skipped.push(entry.name);
             continue;
+          }
+          // Signed out or switched account since the read: the next write would land in another account.
+          const current = await service.status();
+          if (service.accountUserId() !== accountId) {
+            const done = [...result.copied, ...result.replaced];
+            throw new AdeExpectedError(
+              `The signed-in account changed while copying, so ${entry.name} was not copied${done.length ? ` (${done.join(", ")} copied before it)` : " (nothing was copied)"}. `
+              + "Run the same command again.",
+              "user",
+            );
           }
           try {
             await service.saveSecret({
@@ -692,7 +713,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
               value: entry.value,
               projectScope: scope,
               // Signed out, nothing can go to the account: this computer keeps it.
-              deviceOnly: entry.deviceOnly || !status.signedIn,
+              deviceOnly: entry.deviceOnly || !current.signedIn,
             });
           } catch (error) {
             const done = [...result.copied, ...result.replaced];

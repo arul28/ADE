@@ -177,6 +177,10 @@ describe("redactedCommandForLog", () => {
     ["every word after a request's name", ["secrets", "request", "STRIPE_KEY", "--reason", "sk_live_6"], "sk_live_6", "secrets request STRIPE_KEY"],
     ["a Passwords action", ["ade", "actions", "run", "passwords.saveSecret", "--arg", "value=sk_live_7"], "sk_live_7", "actions run passwords.saveSecret"],
     ["a token flag on any command", ["prs", "create", "--token", "ghp_8"], "ghp_8", "prs create --token"],
+    ["a split Passwords action", ["actions", "run", "passwords", "saveSecret", "--input-json", "{\"value\":\"sk_live_9\"}"], "sk_live_9", "actions run passwords saveSecret"],
+    ["a chat answer by --text", ["chat", "respond", "chat-1", "--text", "hunter10 token=x"], "hunter10", "chat respond chat-1 --text"],
+    ["a chat answer by --answer=", ["chat", "answer", "chat-1", "--answer=1=hunter11"], "hunter11", "chat answer chat-1"],
+    ["a chat answer map", ["chat", "respond", "chat-1", "--answers-json", "{\"q1\":\"hunter12\"}"], "hunter12", "chat respond chat-1 --answers-json"],
   ])("never logs the value: %s", (_label, args, secret, kept) => {
     const line = redactedCommandForLog(args);
     expect(line).not.toContain(secret);

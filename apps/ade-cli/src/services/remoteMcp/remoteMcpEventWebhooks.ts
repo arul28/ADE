@@ -183,12 +183,25 @@ function createSubscriptionStore(vault: RemoteMcpVault, warn: (event: string, da
         throw new Error("ADE couldn't save the subscription to your account vault. Try again shortly.");
       }
     },
+    /** Best effort (expiry, revocation): a failure is logged, and the next run tries again. */
     remove(id: string): void {
       try {
-        vault.remove(REMOTE_MCP_VAULT_SCOPE, REMOTE_MCP_VAULT_KIND, keyOf(id));
+        if (!vault.remove(REMOTE_MCP_VAULT_SCOPE, REMOTE_MCP_VAULT_KIND, keyOf(id))) {
+          warn("remote_mcp.events_unsubscribe_failed", { id, error: "refused" });
+        }
       } catch (error) {
         warn("remote_mcp.events_unsubscribe_failed", { id, error: getErrorMessage(error) });
       }
+    },
+    /** An app's unsubscribe: it hears of a failure, so it can try again, never a removal that didn't happen. */
+    removeOrThrow(id: string): void {
+      let removed = false;
+      try {
+        removed = vault.remove(REMOTE_MCP_VAULT_SCOPE, REMOTE_MCP_VAULT_KIND, keyOf(id));
+      } catch (error) {
+        warn("remote_mcp.events_unsubscribe_failed", { id, error: getErrorMessage(error) });
+      }
+      if (!removed) throw new Error("ADE couldn't remove the subscription from your account vault. Try again shortly.");
     },
   };
 }
@@ -340,10 +353,19 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
     deps.syncSoon();
     kick();
     const state = states.get(id);
+    // The app's cursor keeps its other machines' positions: each delivers its own from there.
+    const given = (() => {
+      try {
+        return decodeCursor(record.cursor);
+      } catch {
+        return null;
+      }
+    })();
+    const parts = { ...given?.m, ...(state ? { [selfKey()]: encodePosition(state.after) } : {}) };
     return {
       id,
       refreshBefore: new Date(record.refreshBefore).toISOString(),
-      cursor: encodeCursor({ t: record.startAt, m: state ? { [selfKey()]: encodePosition(state.after) } : {} }),
+      cursor: encodeCursor({ t: given ? Math.min(given.t, record.startAt) : record.startAt, m: parts }),
       truncated: false,
       ...(live && state
         ? {
@@ -367,7 +389,7 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
     if (!store.list().some((entry) => entry.id === id)) {
       throw new McpEventsError(EVENTS_ERROR.notFound, "No subscription matches that event, arguments and URL.", { kind: "subscription" });
     }
-    store.remove(id);
+    store.removeOrThrow(id);
     states.delete(id);
     // A delivery still waiting for a free slot must not start for it.
     waiting.delete(id);
@@ -381,6 +403,9 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
     after: McpHubPosition;
     /** This run started after the subscription did: tell the app it may have missed events. */
     gapOwed: boolean;
+    /** The gap notice failed: when to try it again, and how many tries it took. */
+    gapRetryAt: number | null;
+    gapAttempts: number;
     /** Waiting for a turn's reply to reach its file, until then. */
     settleAt: number | null;
     pending: Pending | null;
@@ -396,16 +421,19 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
       ? [subscription.secret, subscription.previousSecret]
       : [subscription.secret];
 
-  const sendControl = async (subscription: StoredSubscription, body: Record<string, unknown>): Promise<void> => {
+  /** True when the app took it (a 2xx answer). */
+  const sendControl = async (subscription: StoredSubscription, body: Record<string, unknown>): Promise<boolean> => {
     const text = JSON.stringify(body);
-    await postWebhook(subscription.url, signedHeaders({
+    const answer = await postWebhook(subscription.url, signedHeaders({
       secrets: secretsOf(subscription),
       webhookId: controlMessageId(String(body.type)),
       subscriptionId: subscription.id,
       body: text,
     }), text, false).catch((error: unknown) => {
       warn("remote_mcp.events_control_failed", { subscriptionId: subscription.id, type: String(body.type), error: getErrorMessage(error) });
+      return null;
     });
+    return answer !== null && answer.status >= 200 && answer.status < 300;
   };
 
   const stateFor = (subscription: StoredSubscription): DeliveryState => {
@@ -425,7 +453,7 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
       const startMs = given ? Math.min(given.t, subscription.startAt) : subscription.startAt;
       const after = resumed ?? mcpHubPositionAt(startMs);
       const gapOwed = !resumed && !mcpHubCovers(startMs);
-      state = { after, gapOwed, settleAt: null, pending: null, lastDeliveryAt: null, lastError: null, failedSince: null };
+      state = { after, gapOwed, gapRetryAt: null, gapAttempts: 0, settleAt: null, pending: null, lastDeliveryAt: null, lastError: null, failedSince: null };
       states.set(subscription.id, state);
     }
     return state;
@@ -467,10 +495,21 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
         const read = await readHere({ filter, part: encodePosition(state.after), sinceMs: null, max: 1, maxAgeMs: null });
         const first = read.events[0];
         if (read.truncated || state.gapOwed) {
-          state.gapOwed = false;
-          // Past the gap, so the next pass doesn't report it again.
+          if (state.gapRetryAt !== null && state.gapRetryAt > now()) return false;
+          // Past the gap, so the next read doesn't find it again; it stays owed until the app takes the notice.
           if (read.truncated) state.after = first ? { boot: mcpHubHead().boot, seq: first.seq - 1 } : decodePosition(read.part) ?? state.after;
-          await sendControl(subscription, { type: "gap", cursor: encodeCursor({ t: subscription.startAt, m: { [selfKey()]: encodePosition(state.after) } }) });
+          const told = await sendControl(subscription, { type: "gap", cursor: encodeCursor({ t: subscription.startAt, m: { [selfKey()]: encodePosition(state.after) } }) });
+          const delay = told ? undefined : RETRY_DELAYS_MS[state.gapAttempts + 1];
+          if (delay !== undefined) {
+            state.gapOwed = true;
+            state.gapAttempts += 1;
+            state.gapRetryAt = now() + delay;
+            return false;
+          }
+          if (!told) warn("remote_mcp.events_gap_dropped", { subscriptionId: subscription.id, attempts: state.gapAttempts + 1 });
+          state.gapOwed = false;
+          state.gapRetryAt = null;
+          state.gapAttempts = 0;
         }
         if (!first) {
           state.after = decodePosition(read.part) ?? state.after;
@@ -604,6 +643,7 @@ export function createMcpWebhooks(deps: McpWebhooksDeps) {
     const next = Math.min(...[...states].flatMap(([id, state]) => delivering.has(id) ? [] : [
       ...(state.pending ? [state.pending.nextAt] : []),
       ...(state.settleAt !== null ? [state.settleAt] : []),
+      ...(state.gapRetryAt !== null ? [state.gapRetryAt] : []),
     ]));
     if (Number.isFinite(next)) arm(Math.max(250, next - now()));
   };

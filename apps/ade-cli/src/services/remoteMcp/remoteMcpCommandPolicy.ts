@@ -834,6 +834,11 @@ export function splitCommandLine(line: string): string[] | null {
 
 /** A flag whose value is a credential (`--api-key sk-…`, `secrets set NAME --value …`). */
 const SECRET_FLAG_NAME = /token|secret|password|api[-_]?key|credential|value/i;
+/**
+ * `chat respond` flags that carry an answer. The log can't tell a secret
+ * question from another, so every typed answer is left out; a picked option shows.
+ */
+const ANSWER_FLAGS: ReadonlySet<string> = new Set(["--answer", "--answers-json", "--text", "--message", "--response"]);
 /** `ade secrets` verbs whose later words can hold a value (`set` has the CLI's aliases `put` and `add`). */
 const SECRET_VALUE_VERBS: ReadonlySet<string> = new Set(["set", "put", "add", "request"]);
 
@@ -848,24 +853,33 @@ export function redactedCommandForLog(rawArgs: readonly string[]): string {
   // Every word after `secrets set <key>` (the verb is the first word that is
   // not a flag), or after a Passwords or secret action
   // (`actions run passwords.saveSecret --arg value=…`), can be a value.
+  const verbOf = (command: string): string =>
+    args[0] === command ? (args.find((word, index) => index > 0 && !word.startsWith("-")) ?? "").toLowerCase() : "";
   const verbAt = args[0] === "secrets" || args[0] === "secret" ? args.findIndex((word, index) => index > 0 && !word.startsWith("-")) : -1;
-  const secretAction = args.findIndex((word, index) => args[index - 1] === "run" && /^(?:passwords|project_secret)\./.test(word));
+  // Dotted (`passwords.saveSecret`) or split (`passwords saveSecret`): the values follow the action.
+  const secretAction = args.findIndex((word, index) => args[index - 1] === "run" && /^(?:passwords|project_secret)(?:\.|$)/.test(word));
   const valuesFrom = verbAt > 0 && SECRET_VALUE_VERBS.has(args[verbAt]!.toLowerCase())
     ? verbAt + 2
-    : secretAction >= 0 ? secretAction + 1 : Number.POSITIVE_INFINITY;
+    : secretAction >= 0 ? secretAction + (args[secretAction]!.includes(".") ? 1 : 2) : Number.POSITIVE_INFINITY;
+  const answering = verbOf("chat") === "respond" || verbOf("chat") === "answer";
   for (let index = 0; index < args.length; index += 1) {
     const word = args[index]!;
     if (index >= valuesFrom) {
       out.push("[redacted]");
       continue;
     }
-    if (/(?:token|secret|password|api[-_]?key|value)=/i.test(word)) {
-      out.push(word.replace(/=.*/, "=[redacted]"));
+    const previous = args[index - 1] ?? "";
+    if (previous.startsWith("-") && (SECRET_FLAG_NAME.test(previous) || (answering && ANSWER_FLAGS.has(previous)))) {
+      out.push("[redacted]");
       continue;
     }
-    const previous = args[index - 1] ?? "";
-    if (previous.startsWith("-") && SECRET_FLAG_NAME.test(previous)) {
-      out.push("[redacted]");
+    const flag = word.split("=", 1)[0]!;
+    if (answering && word.includes("=") && ANSWER_FLAGS.has(flag)) {
+      out.push(`${flag}=[redacted]`);
+      continue;
+    }
+    if (/(?:token|secret|password|api[-_]?key|value)=/i.test(word)) {
+      out.push(word.replace(/=.*/, "=[redacted]"));
       continue;
     }
     out.push(/\s/.test(word) ? JSON.stringify(word) : word);

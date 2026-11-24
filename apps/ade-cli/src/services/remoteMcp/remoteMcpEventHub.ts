@@ -40,6 +40,8 @@ export type McpHubEntry = {
   turnId: string | null;
   /** For a turn end: when the turn began, so its reply is one written after it. */
   turnStartedAt: number | null;
+  /** For a turn end: when the chat's next turn began, so its reply is one written before that. */
+  nextTurnStartedAt: number | null;
   data: Record<string, unknown>;
 };
 
@@ -53,8 +55,11 @@ export type McpChatIdentity = AgentChatIdentity;
 export type McpChatSource = {
   /** The chat's name, lane and parent; null when it is gone. */
   identity(sessionId: string): Promise<McpChatIdentity | null>;
-  /** The turn's last assistant message, written between `sinceMs` and `untilMs` when given; null when it has none. */
-  finalReply(sessionId: string, turnId: string | null, sinceMs: number | null, untilMs: number | null): Promise<McpTurnReply | null>;
+  /**
+   * The turn's last assistant message, written between `sinceMs` and `untilMs`, and before
+   * `beforeMs` (the next turn's start), when given; null when it has none.
+   */
+  finalReply(sessionId: string, turnId: string | null, sinceMs: number | null, untilMs: number | null, beforeMs: number | null): Promise<McpTurnReply | null>;
 };
 
 export const MCP_HUB_RING_MAX = 1_000;
@@ -66,6 +71,8 @@ const bootId = randomBytes(6).toString("base64url");
 /** When this brain run began: what happened before it is not kept. */
 const bootAt = Date.now();
 let lastSeq = 0;
+/** The newest event's time: the next is never older, even when the wall clock goes back. */
+let lastAt = 0;
 let ring: McpHubEntry[] = [];
 /** When the newest event that fell out of the ring happened. */
 let droppedThroughAt: number | null = null;
@@ -77,6 +84,15 @@ const turnErrors = new Map<string, string>();
 const endedTurns = new Map<string, { turnId: string | null; at: number; entry: McpHubEntry }>();
 /** When each session's running turn began. */
 const turnStarts = new Map<string, number>();
+/**
+ * How long a turn end told by status waits for its done: done has the turn's
+ * id and HTTP status, and an app must get one finished event, not one that
+ * changes after it read it.
+ */
+const STATUS_END_WAIT_MS = 1_500;
+type HeldEnd = { projectId: string; outcome: "completed" | "failed" | "interrupted"; turnId: string | null; statusMessage: string | null; timer: ReturnType<typeof setTimeout> };
+/** Turn ends told by status, waiting for done. */
+const heldEnds = new Map<string, HeldEnd>();
 /** What each deleted chat was: its earlier events are still read after its summary is gone. */
 const deletedChats = new Map<string, McpChatIdentity>();
 type PrField = "state" | "checks" | "review";
@@ -106,11 +122,12 @@ const remember = <V>(map: Map<string, V>, key: string, value: V): void => {
   if (map.size > MAX_TRACKED_SESSIONS) map.delete(map.keys().next().value!);
 };
 
-const push = (entry: Omit<McpHubEntry, "seq" | "eventId" | "at" | "turnStartedAt"> & { turnStartedAt?: number | null }): McpHubEntry => {
+const push = (entry: Omit<McpHubEntry, "seq" | "eventId" | "at" | "turnStartedAt" | "nextTurnStartedAt"> & { turnStartedAt?: number | null }): McpHubEntry => {
   const seq = ++lastSeq;
   // Header-safe and the same wherever it is read, so an app can drop a repeat.
   const eventId = `evt_${createHash("sha256").update(`${bootId}:${seq}`).digest("base64url").slice(0, 22)}`;
-  const full: McpHubEntry = { ...entry, turnStartedAt: entry.turnStartedAt ?? null, seq, eventId, at: Date.now() };
+  lastAt = Math.max(Date.now(), lastAt);
+  const full: McpHubEntry = { ...entry, turnStartedAt: entry.turnStartedAt ?? null, nextTurnStartedAt: null, seq, eventId, at: lastAt };
   ring.push(full);
   if (ring.length > MCP_HUB_RING_MAX) {
     const dropped = ring.length - MCP_HUB_RING_MAX;
@@ -173,6 +190,15 @@ const turnEnded = (
   remember(endedTurns, sessionId, { turnId, at, entry });
 };
 
+/** Publishes a held status end now: its done did not come in time, or the chat moved on. */
+const releaseHeldEnd = (sessionId: string): void => {
+  const held = heldEnds.get(sessionId);
+  if (!held) return;
+  clearTimeout(held.timer);
+  heldEnds.delete(sessionId);
+  turnEnded(held.projectId, sessionId, held.outcome, held.turnId, held.statusMessage, null);
+};
+
 /** One chat event from a project runtime; only turn ends, cards and errors count. */
 export function noteChatEventForMcp(projectId: string, envelope: AgentChatEventEnvelope): void {
   const event = envelope.event;
@@ -180,17 +206,36 @@ export function noteChatEventForMcp(projectId: string, envelope: AgentChatEventE
   if (type !== "status" && type !== "done" && type !== "error" && type !== "approval_request" && type !== "pending_input_resolved") return;
   const sessionId = envelope.sessionId;
   const turnId = ("turnId" in event && typeof event.turnId === "string" && event.turnId.trim()) || null;
+  // Anything after a held end but its done comes after that end.
+  if (event.type !== "done" && event.type !== "error") releaseHeldEnd(sessionId);
   if (event.type === "status") {
     if (event.turnStatus === "started") {
+      const startedAt = Date.now();
+      const ended = endedTurns.get(sessionId);
+      if (ended) ended.entry.nextTurnStartedAt = startedAt;
       turnErrors.delete(sessionId);
       endedTurns.delete(sessionId);
-      remember(turnStarts, sessionId, Date.now());
+      remember(turnStarts, sessionId, startedAt);
       return;
     }
-    turnEnded(projectId, sessionId, event.turnStatus, turnId, cleanText(event.message), null);
+    const statusMessage = cleanText(event.message);
+    // Done tells what this lacks: hold it a moment, so the event goes out whole.
+    if ((!turnId || event.turnStatus === "failed") && !endedTurns.has(sessionId)) {
+      const timer = setTimeout(() => releaseHeldEnd(sessionId), STATUS_END_WAIT_MS);
+      timer.unref?.();
+      heldEnds.set(sessionId, { projectId, outcome: event.turnStatus, turnId, statusMessage, timer });
+      if (heldEnds.size > MAX_TRACKED_SESSIONS) releaseHeldEnd(heldEnds.keys().next().value!);
+      return;
+    }
+    turnEnded(projectId, sessionId, event.turnStatus, turnId, statusMessage, null);
   } else if (event.type === "done") {
     const httpStatus = typeof event.apiErrorStatus === "number" && event.apiErrorStatus >= 400 ? event.apiErrorStatus : null;
-    turnEnded(projectId, sessionId, event.status, turnId, null, httpStatus);
+    const held = heldEnds.get(sessionId);
+    if (held) {
+      clearTimeout(held.timer);
+      heldEnds.delete(sessionId);
+    }
+    turnEnded(projectId, sessionId, event.status, turnId ?? held?.turnId ?? null, held?.statusMessage ?? null, httpStatus);
   } else if (event.type === "error") {
     const message = cleanText(event.message);
     if (message) remember(turnErrors, sessionId, message);
@@ -244,6 +289,7 @@ export function noteCliTurnEndedForMcp(projectId: string, event: TrackedCliTurnE
 
 /** `chat`: the deleted chat's name, lane and parent, read before its files went; nothing can read them after. */
 export function noteChatDeletedForMcp(projectId: string, sessionId: string, chat: McpChatIdentity): void {
+  releaseHeldEnd(sessionId);
   turnErrors.delete(sessionId);
   endedTurns.delete(sessionId);
   turnStarts.delete(sessionId);
@@ -361,13 +407,16 @@ function turnFinalReply(
   turnId: string | null,
   sinceMs: number | null,
   untilMs: number | null,
+  beforeMs: number | null,
 ): McpTurnReply | null {
   const replies = entries.filter((entry) => {
     if (entry.role !== "assistant") return false;
     const at = Date.parse(entry.timestamp);
     if (Number.isNaN(at)) return true;
     return (sinceMs === null || at >= sinceMs - REPLY_BEFORE_START_MS)
-      && (untilMs === null || at <= untilMs + REPLY_AFTER_END_MS);
+      && (untilMs === null || at <= untilMs + REPLY_AFTER_END_MS)
+      // The next turn's reply, written within the slack after this one's end, is not this turn's.
+      && (beforeMs === null || at < beforeMs);
   }).reverse();
   const reply = (turnId ? replies.find((entry) => entry.turnId === turnId) : null)
     ?? replies.find((entry) => !turnId || !entry.turnId);
@@ -388,14 +437,15 @@ export async function findTurnFinalReply(
   turnId: string | null,
   sinceMs: number | null,
   untilMs: number | null,
+  beforeMs: number | null = null,
 ): Promise<McpTurnReply | null> {
   const recent = await read(MCP_REPLY_RECENT_ENTRIES, undefined);
-  const found = turnFinalReply(recent, turnId, sinceMs, untilMs);
+  const found = turnFinalReply(recent, turnId, sinceMs, untilMs, beforeMs);
   if (found || sinceMs === null || recent.length < MCP_REPLY_RECENT_ENTRIES) return found;
   const oldest = Date.parse(recent[0]?.timestamp ?? "");
   if (Number.isNaN(oldest) || oldest <= sinceMs) return null;
   const since = new Date(sinceMs - REPLY_BEFORE_START_MS).toISOString();
-  return turnFinalReply(await read(undefined, since), turnId, sinceMs, untilMs);
+  return turnFinalReply(await read(undefined, since), turnId, sinceMs, untilMs, beforeMs);
 }
 
 /** A project runtime's reader for its chats. Returns its removal. */

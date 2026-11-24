@@ -48,8 +48,8 @@ const TLS_CODES = /CERT|SSL|TLS|SELF_SIGNED|UNABLE_TO_VERIFY/i;
 /**
  * POSTs to the address the name resolved to, checked public, so DNS can't
  * swap in a private one between the check and the request. Never follows a
- * redirect. `timeoutMs` bounds the whole request, not only a silent socket, so
- * an endpoint that sends a byte now and then can't hold the caller.
+ * redirect. `timeoutMs` bounds the whole call, from the DNS lookup on, not only
+ * a silent socket, so an endpoint that sends a byte now and then can't hold the caller.
  */
 export async function postToPublicHttps(
   rawUrl: string,
@@ -59,16 +59,30 @@ export async function postToPublicHttps(
 ): Promise<PublicHttpsPostResult> {
   const url = new URL(rawUrl);
   const host = url.hostname.replace(/^\[|\]$/g, "");
+  // The deadline counts from here: a slow DNS answer holds the caller no longer than a slow endpoint.
+  const deadlineAt = Date.now() + options.timeoutMs;
   let target: { address: string; family: number };
+  let lookupTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const addresses = await lookup(host, { all: true, verbatim: true });
+    const addresses = await Promise.race([
+      lookup(host, { all: true, verbatim: true }),
+      new Promise<null>((resolve) => {
+        lookupTimer = setTimeout(() => resolve(null), options.timeoutMs);
+        lookupTimer.unref?.();
+      }),
+    ]);
+    // Out of time: a late answer starts no request, because this call has returned.
+    if (addresses === null) return { status: 0, error: "timeout" };
     if (!addresses.length || addresses.some((entry) => !isPublicIpAddress(entry.address))) {
       return { status: 0, error: "private_address" };
     }
     target = addresses[0]!;
   } catch {
     return { status: 0, error: "unresolved" };
+  } finally {
+    clearTimeout(lookupTimer);
   }
+  const timeLeftMs = Math.max(1, deadlineAt - Date.now());
   return await new Promise<PublicHttpsPostResult>((resolve) => {
     let settled = false;
     const finish = (value: PublicHttpsPostResult) => {
@@ -81,7 +95,7 @@ export async function postToPublicHttps(
       method: "POST",
       headers: { ...headers, "content-length": String(Buffer.byteLength(body)) },
       lookup: pinnedLookup(target.address, target.family === 6 ? 6 : 4),
-      timeout: options.timeoutMs,
+      timeout: timeLeftMs,
     }, (response) => {
       const status = response.statusCode ?? 0;
       const maxBytes = options.maxBodyBytes;
@@ -106,7 +120,7 @@ export async function postToPublicHttps(
     const deadline = setTimeout(() => {
       finish({ status: 0, error: "timeout" });
       request.destroy();
-    }, options.timeoutMs);
+    }, timeLeftMs);
     deadline.unref?.();
     request.on("timeout", () => {
       finish({ status: 0, error: "timeout" });

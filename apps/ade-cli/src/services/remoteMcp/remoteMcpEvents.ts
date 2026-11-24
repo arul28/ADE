@@ -6,7 +6,9 @@ import {
   mcpChatSource,
   mcpDeletedChat,
   mcpHubCovers,
+  mcpHubHead,
   mcpHubPositionAt,
+  onMcpEvent,
   readMcpHub,
   type McpChatIdentity,
   type McpEventName,
@@ -107,13 +109,18 @@ export function createRemoteMcpEvents(deps: McpEventsDeps) {
     }
     return pending;
   };
+  // Read when it happens, while its project's runtime is open: a subagent's event read after
+  // that runtime closed still shows its parent, so a filter that leaves subagents out holds.
+  onMcpEvent((entry) => {
+    if (entry.sessionId && entry.name !== "chat.deleted" && CHAT_EVENT_NAMES.has(entry.name)) void identityOf(entry);
+  });
 
   const replyOf = (entry: McpHubEntry): Promise<Record<string, unknown> | null> => {
     let pending = replies.get(entry);
     if (!pending) {
       const source = mcpChatSource(entry.projectId);
       pending = source && entry.sessionId
-        ? source.finalReply(entry.sessionId, entry.turnId, entry.turnStartedAt, entry.at).then((reply) => {
+        ? source.finalReply(entry.sessionId, entry.turnId, entry.turnStartedAt, entry.at, entry.nextTurnStartedAt).then((reply) => {
           if (!reply?.text.trim()) return null;
           const text = redactOutgoingChatText(reply.text.trim());
           return {
@@ -160,6 +167,8 @@ export function createRemoteMcpEvents(deps: McpEventsDeps) {
         ...(entry.name === "chat.deleted" ? {} : { turnId: entry.turnId }),
       }
       : { ...entry.data };
+    // A chat's name, live or kept from its deletion, is chat text like its reply.
+    if (typeof data.title === "string") data.title = redactOutgoingChatText(data.title);
     if (entry.name === "chat.turn_ended" && filter.includeReply) {
       const reply = await replyOf(entry);
       if (reply) data.reply = reply;
@@ -271,10 +280,22 @@ export function createRemoteMcpEvents(deps: McpEventsDeps) {
     const maxAgeMs = boundedInteger(request.maxAgeMs, "maxAgeMs", null, 0, Number.MAX_SAFE_INTEGER);
     const cursor = decodeCursor(request.cursor);
     const targets = await targetsFor(connection, filter.machine);
-    // Null starts now: no machine needs asking, each starts at this moment.
-    if (!cursor) return { events: [] as McpOccurrence[], cursor: encodeCursor({ t: now(), m: {} }), truncated: false, hasMore: false, unread: [] as Array<{ key: string; name: string; reason: string }> };
     const argumentsForward = isRecord(request.arguments) ? { ...request.arguments } : {};
     delete argumentsForward.machine;
+    if (!cursor) {
+      // Null starts now. Each machine it reaches gives its own position now (a read from the
+      // far future is its newest), so a machine whose clock is behind this one's misses
+      // nothing. One it can't reach starts from this machine's time when it is back.
+      const startAt = now();
+      const parts: Record<string, string> = {};
+      await Promise.all(targets.map(async (target) => {
+        const part = target.here
+          ? encodePosition(mcpHubHead())
+          : (await readThere(target, context, { names: request.names, arguments: argumentsForward, part: null, since: Number.MAX_SAFE_INTEGER, max: 1, maxAgeMs: null }))?.part;
+        if (part) parts[target.key] = part;
+      }));
+      return { events: [] as McpOccurrence[], cursor: encodeCursor({ t: startAt, m: parts }), truncated: false, hasMore: false, unread: [] as Array<{ key: string; name: string; reason: string }> };
+    }
     const reads = await Promise.all(targets.map(async (target) => {
       const part = cursor.m[target.key] ?? null;
       const read = target.here
@@ -282,9 +303,19 @@ export function createRemoteMcpEvents(deps: McpEventsDeps) {
         : await readThere(target, context, { names: request.names, arguments: argumentsForward, part, since: cursor.t, max, maxAgeMs });
       return { target, read };
     }));
-    const merged = reads.flatMap(({ target, read }) => (read?.events ?? []).map((event) => ({ ...event, key: target.key })))
+    const merged = reads.flatMap(({ target, read }) => (read?.events ?? []).map((event, index) => ({ ...event, key: target.key, index })))
       .sort((left, right) => left.occurrence.timestamp.localeCompare(right.occurrence.timestamp));
-    const kept = merged.slice(0, max);
+    // A page keeps the first events of each machine in that machine's own order, so no
+    // machine's cursor moves past an event the page left out.
+    const cut = merged.slice(0, max);
+    const keptCount = new Map<string, number>();
+    for (const { target } of reads) {
+      const indexes = new Set(cut.filter((event) => event.key === target.key).map((event) => event.index));
+      let count = 0;
+      while (indexes.has(count)) count += 1;
+      keptCount.set(target.key, count);
+    }
+    const kept = cut.filter((event) => event.index < (keptCount.get(event.key) ?? 0));
     const parts: Record<string, string> = { ...cursor.m };
     let hasMore = merged.length > kept.length;
     for (const { target, read } of reads) {
