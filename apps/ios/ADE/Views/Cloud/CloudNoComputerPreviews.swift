@@ -81,6 +81,9 @@ enum CloudNoComputerPreviews {
       return AnyView(CloudChatFixture(state: .asleep, deletingDays: 3))
     case "duo-cloud-refused-out_of_hours":
       return AnyView(CloudChatFixture(state: .refused("This account has no ADE Cloud hours left this period. Your lanes and chats stay readable.")))
+    case "duo-cloud-refused-out_of_credits":
+      // The same refusal for an account under credits.
+      return AnyView(CloudChatFixture(state: .refused("This account has no ADE Cloud credits left this period. Your lanes and chats stay readable.")))
     case "duo-cloud-refused-too_many_awake":
       return AnyView(CloudChatFixture(state: .refused("Too many of your computers are awake at once. Put one you aren't using to sleep, then try again.")))
     case "duo-cloud-refused-account_blocked":
@@ -250,7 +253,8 @@ private struct CloudChatFixture: View {
     return CloudNewComputerSizePick(
       tiers: Self.tiers,
       picked: store.newComputerSizes["mk-cloud"],
-      pick: { store.pickNewComputerSize(machineKey: "mk-cloud", sizeId: $0) }
+      pick: { store.pickNewComputerSize(machineKey: "mk-cloud", sizeId: $0) },
+      words: CloudBalanceWords(store.account)
     )
   }
 

@@ -8,10 +8,13 @@ import WebKit
 // every command (`cloudPhone.*`); the live picture is NoMac's own page in a
 // web view that can go nowhere else.
 
-/// The sheet: minutes left, start, stop, a screenshot, and the phone itself
-/// once it is ready.
+/// The sheet: minutes (or credits) left, start, stop, a screenshot, and the
+/// phone itself once it is ready.
 struct CloudIphoneSheet: View {
   @StateObject private var model: CloudIphoneModel
+  /// The account as the account server last answered it: credits or hours,
+  /// and a tester's provider pick.
+  @ObservedObject private var accountStore = AccountCloudStore.shared
   @Environment(\.dismiss) private var dismiss
   @Environment(\.scenePhase) private var scenePhase
   /// Bumped by Try again, and after Start or Stop, to restart the read loop.
@@ -44,6 +47,8 @@ struct CloudIphoneSheet: View {
   /// Read while the sheet is up and the app is in front: a phone that starts
   /// keeps its progress moving, and one that is off notices access changes.
   private var pollKey: String { "\(scenePhase == .active)-\(pollGeneration)" }
+
+  private var words: CloudBalanceWords { CloudBalanceWords(accountStore.account) }
 
   @ViewBuilder
   private var content: some View {
@@ -122,7 +127,7 @@ struct CloudIphoneSheet: View {
           ADESettingsNotice(message: error, tone: .warn)
         }
         VStack(alignment: .leading, spacing: 12) {
-          if let line = cloudIphoneEndLine(status.phone) {
+          if let line = cloudIphoneEndLine(status.phone, words: words) {
             Text(line)
               .font(.system(size: 13.5))
               .foregroundStyle(ADEColor.textSecondary)
@@ -146,12 +151,16 @@ struct CloudIphoneSheet: View {
           }
           .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
           .disabled(model.starting)
-          Text("Starts an \(cloudIphoneDeviceName("iphone")) simulator in the cloud. Time on it comes out of the plan's iPhone minutes.")
+          Text(words.phoneStartNote(device: cloudIphoneDeviceName("iphone")))
             .font(.system(size: 12))
             .foregroundStyle(ADEColor.textMuted)
             .fixedSize(horizontal: false, vertical: true)
         }
         .adeKitCard()
+        if let account = accountStore.account, CloudPhoneProviderPicker.shows(account) {
+          CloudPhoneProviderPicker(account: account, syncService: model.syncService)
+            .adeKitCard()
+        }
         Spacer(minLength: 0)
       }
       .padding(16)
@@ -267,11 +276,13 @@ struct CloudIphoneSheet: View {
         .lineLimit(1)
       Spacer(minLength: 8)
       if let minutes = status.minutes {
-        Text("\(minutes.left) min left")
+        let left = words.phoneLeft(minutes)
+        Text(left.text)
           .font(.adeMono(12.5))
           .foregroundStyle(minutes.left > 0 ? ADEColor.textSecondary : ADEColor.danger)
           .lineLimit(1)
-          .accessibilityLabel("\(minutes.left) minutes left of \(minutes.included) this period")
+          .fixedSize()
+          .accessibilityLabel(left.spoken)
       }
     }
   }
@@ -322,6 +333,7 @@ final class CloudIphoneModel: ObservableObject {
 
   let sessionId: String
   private let service: SyncService
+  var syncService: SyncService { service }
   /// Only the newest read lands.
   private var statusRequest = 0
   private var linkRequest = 0
@@ -627,14 +639,102 @@ func cloudIphoneAllowsNavigation(_ url: URL) -> Bool {
 }
 
 /// Why the phone ended, in the phone's words.
-func cloudIphoneEndLine(_ phone: CloudIphoneStatus.Phone?) -> String? {
+func cloudIphoneEndLine(_ phone: CloudIphoneStatus.Phone?, words: CloudBalanceWords) -> String? {
   guard let phone, phone.state == "ended" else { return nil }
   switch phone.endReason {
   case "stopped": return "You stopped it."
   case "idle": return "It stopped after 5 minutes with no use."
   case "time_limit": return "It reached its 2-hour limit."
-  case "spend_cap": return "It used the minutes this plan includes."
+  case "spend_cap": return words.phoneSpendCapLine
   default: return "It ended."
+  }
+}
+
+// MARK: - Tester provider pick
+
+/// "Cloud iPhone provider (testers)": a tester's pick of who runs their ADE
+/// Cloud iPhones, Auto (the server's order), NoMac or Revyl. Shown only in
+/// ADE's Beta and Debug builds, and only to an account the server sends
+/// `phone.providerChoice` to (the iPhone's beta list). The pick is the
+/// account's, so it goes to the account server with the account's own
+/// sign-in and no machine; the next phone starts there, a running one keeps
+/// its own. A refusal shows the server's sentence.
+struct CloudPhoneProviderPicker: View {
+  let account: CloudPhoneAccount
+  let syncService: SyncService
+  /// After a save: a page whose account came through a computer reads it again.
+  var onSaved: () async -> Void = {}
+  /// The pick while it saves, and until the account read shows it.
+  @State private var pending: String?
+  @State private var saving = false
+  @State private var error: String?
+
+  static let choices: [(value: String, title: String)] = [("auto", "Auto"), ("nomac", "NoMac"), ("revyl", "Revyl")]
+
+  /// Only ADE's Beta and Debug builds offer the pick; the App Store build never does.
+  static var buildOffersPick: Bool {
+    #if ADE_BETA_APP || DEBUG
+    true
+    #else
+    false
+    #endif
+  }
+
+  static func shows(_ account: CloudPhoneAccount?) -> Bool {
+    buildOffersPick && account?.phone?.providerChoice != nil
+  }
+
+  private var choice: String { account.phone?.providerChoice ?? "auto" }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 8) {
+        Text("Cloud iPhone provider (testers)")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .fixedSize(horizontal: false, vertical: true)
+        Spacer(minLength: 0)
+        if saving { ProgressView().controlSize(.small) }
+      }
+      ADEKitSegmented(
+        selection: Binding(get: { pending ?? choice }, set: { save($0) }),
+        options: Self.choices
+      )
+      .disabled(saving)
+      .accessibilityLabel("Cloud iPhone provider")
+      Text("The next phone starts there. A phone that's running keeps its own.")
+        .font(.system(size: 12))
+        .foregroundStyle(ADEColor.textMuted)
+        .fixedSize(horizontal: false, vertical: true)
+      if let error {
+        Text(error)
+          .font(.system(size: 12.5))
+          .foregroundStyle(ADEColor.danger)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .onChange(of: choice) { _, now in
+      if now == pending { pending = nil }
+    }
+  }
+
+  private func save(_ provider: String) {
+    guard !saving, provider != (pending ?? choice) else { return }
+    saving = true
+    error = nil
+    pending = provider
+    ADEHaptics.light()
+    Task {
+      if let failure = await AccountCloudStore.shared.setPhoneProvider(provider, using: syncService) {
+        error = failure
+        pending = nil
+        ADEHaptics.error()
+      } else {
+        await onSaved()
+        if choice == provider { pending = nil }
+      }
+      saving = false
+    }
   }
 }
 

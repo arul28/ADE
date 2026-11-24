@@ -273,7 +273,7 @@ struct CloudLaneAtRestScreen: View {
       Button("Wake and open") { Task { await wake() } }
       Button("Cancel", role: .cancel) {}
     } message: { file in
-      Text("\(file.path) changed on the lane and GitHub doesn't have the change. Opening it wakes the lane's computer, which uses ADE Cloud hours.")
+      Text("\(file.path) changed on the lane and GitHub doesn't have the change. Opening it wakes the lane's computer, which uses \(CloudBalanceWords.current.cloudUnit).")
     }
     .adeInspectable("CloudLane.AtRest")
   }
@@ -845,7 +845,7 @@ struct CloudLaneFolderScreen: View {
       }
       Button("Cancel", role: .cancel) {}
     } message: { file in
-      Text("\(file.path) changed on the lane and GitHub doesn't have the change. Opening the lane's copy wakes its computer, which uses ADE Cloud hours.")
+      Text("\(file.path) changed on the lane and GitHub doesn't have the change. Opening the lane's copy wakes its computer, which uses \(CloudBalanceWords.current.cloudUnit).")
     }
   }
 

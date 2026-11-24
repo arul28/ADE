@@ -174,7 +174,7 @@ struct CloudMachineFacts: View {
         }
         if let tier {
           fact("Size", "\(tier.label)\(tier.full ? ", full computer" : "") · \(tier.cpu) CPU · \(cloudGbText(tier.memoryGb)) GB")
-          fact("Hours", tier.hoursLine(leftMilli: store.hoursLeftMilli))
+          fact(store.words.title, tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words))
         } else if let size = machine.size {
           fact("Size", size)
         }
@@ -334,7 +334,7 @@ struct CloudMachineSizeCard: View {
     if store.canManage, let current = cloudPhoneTier(of: machine, in: tiers) {
       let busy = store.busy.contains(machine.instanceId) || machine.isMoving || store.isMoving(machine.instanceId)
       let otherKind = store.movesUnsupported ? tiers.first { $0.type != current.type } : nil
-      ADEKitCard(title: "Size", symbol: "cpu", hint: "More CPU and memory use hours faster.", flush: true) {
+      ADEKitCard(title: "Size", symbol: "cpu", hint: "More CPU and memory use \(store.words.unit) faster.", flush: true) {
         VStack(alignment: .leading, spacing: 0) {
           ForEach(Array(tiers.enumerated()), id: \.element.id) { index, tier in
             if index > 0 { ADESettingsHairline() }
@@ -365,9 +365,9 @@ struct CloudMachineSizeCard: View {
         Button("Cancel", role: .cancel) {}
       } message: { tier in
         if tier.type == current.type {
-          Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(tier.label): \(tier.hoursLine(leftMilli: store.hoursLeftMilli)).")
+          Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(tier.label): \(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)).")
         } else {
-          Text("ADE copies its files to a new computer and deletes this one. Its lane and chats come along. It takes a few minutes and uses hours on both while it copies. \(tier.label): \(tier.hoursLine(leftMilli: store.hoursLeftMilli)).")
+          Text("ADE copies its files to a new computer and deletes this one. Its lane and chats come along. It takes a few minutes and uses \(store.words.unit) on both while it copies. \(tier.label): \(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)).")
         }
       }
     }
@@ -412,7 +412,7 @@ struct CloudMachineSizeCard: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 8)
-        Text(store.hoursLeftMilli.map { tier.hoursLeftLabel($0) } ?? (tier.usesHours ? "Uses hours" : "Unlimited"))
+        Text(store.hoursLeftMilli.map { tier.hoursLeftLabel($0) } ?? (tier.usesHours ? "Uses \(store.words.unit)" : "Unlimited"))
           .font(.system(size: 13, weight: .semibold))
           .monospacedDigit()
           .foregroundStyle(CloudBrandColor.mark)
@@ -426,9 +426,9 @@ struct CloudMachineSizeCard: View {
     .disabled(isCurrent || (!sameKind && store.movesUnsupported) || busy)
     .accessibilityHint(
       isCurrent ? "Its size now."
-        : sameKind ? "\(tier.hoursLine(leftMilli: store.hoursLeftMilli)). It restarts on the new size."
+        : sameKind ? "\(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). It restarts on the new size."
         : store.movesUnsupported ? cloudPhoneKindChangeReason(to: tier)
-        : "\(tier.hoursLine(leftMilli: store.hoursLeftMilli)). ADE moves it to a new computer."
+        : "\(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). ADE moves it to a new computer."
     )
   }
 }

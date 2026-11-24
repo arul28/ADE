@@ -278,8 +278,8 @@ final class AccountCloudStore: ObservableObject {
     if let access, access.readOnly || !access.enabled {
       return access.reason ?? "ADE Cloud is read-only for this account. Your lanes and chats stay readable."
     }
-    if account?.outOfHours == true {
-      return "This account has no ADE Cloud hours left this period. Your lanes and chats stay readable."
+    if let account, account.outOfHours {
+      return "This account has no \(CloudBalanceWords(account).cloudUnit) left this period. Your lanes and chats stay readable."
     }
     return nil
   }
@@ -694,6 +694,32 @@ final class AccountCloudStore: ObservableObject {
     guard var next = account, next.sponsored != state else { return }
     next.sponsored = state
     account = next
+  }
+
+  /// A tester's pick of who runs their ADE Cloud iPhones (`auto`, `nomac`,
+  /// `revyl`), saved on the account, then the account read again so every
+  /// screen shows the server's answer. Nil when it worked, else the server's
+  /// sentence (`phone_not_on_account` for anyone not on the beta list).
+  func setPhoneProvider(_ provider: String, using sync: SyncService) async -> String? {
+    let generation = accountGeneration
+    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE, then try again." }
+    do {
+      try await client.setPhoneProvider(provider)
+    } catch {
+      accountCloudLog.notice("cloud_store phone_provider failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return cloudServerFailureMessage(error)
+    }
+    accountCloudLog.notice("cloud_store phone_provider=\(provider, privacy: .public)")
+    let saves = sponsoredSaves
+    guard var next = await readAccount(client), generation == accountGeneration else { return nil }
+    // A consent saved while this read was out keeps its answer, as `refresh` does.
+    if saves != sponsoredSaves {
+      next.sponsored = savedSponsoredPending ? savedSponsored : account?.sponsored
+    } else {
+      savedSponsoredPending = false
+    }
+    if next != account { account = next }
+    return nil
   }
 
   // MARK: Account change

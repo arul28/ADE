@@ -425,7 +425,7 @@ struct WorkCloudRestingMoveSheet: View {
               .foregroundStyle(ADEColor.textPrimary)
             Text(target.deleted
               ? "A deleted computer can't pack the chat for a move. Send a message instead: ADE Cloud continues the chat on a new computer, with its whole history."
-              : "To move the chat, its computer packs it first. Waking it uses ADE Cloud hours.")
+              : "To move the chat, its computer packs it first. \(CloudBalanceWords.current.wakingUses)")
               .font(.subheadline)
               .foregroundStyle(ADEColor.textSecondary)
               .fixedSize(horizontal: false, vertical: true)

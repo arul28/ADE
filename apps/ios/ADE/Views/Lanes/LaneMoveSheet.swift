@@ -246,7 +246,7 @@ struct LaneMoveSheet: View {
           .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
-        Text("Waking it uses \(ADECloudMachine.name) hours.")
+        Text(CloudBalanceWords.current.wakingUses)
           .font(.caption)
           .foregroundStyle(ADEColor.textMuted)
         if let wakeError {

@@ -159,7 +159,7 @@ struct LaneMoveReviewView: View {
         if savedCopyIncomplete {
           LaneMoveFactRow(
             symbol: "exclamationmark.triangle.fill",
-            text: "\(nonEmptyTrimmed(preview?.fromComputer?.reason) ?? "The computer's saved copy doesn't hold all of this lane's work.") So ADE wakes the computer and moves the lane from there. Waking it uses \(ADECloudMachine.name) hours.",
+            text: "\(nonEmptyTrimmed(preview?.fromComputer?.reason) ?? "The computer's saved copy doesn't hold all of this lane's work.") So ADE wakes the computer and moves the lane from there. \(CloudBalanceWords.current.wakingUses)",
             tone: ADEColor.warning
           )
         } else if source.fromComputer != nil {
