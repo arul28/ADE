@@ -321,7 +321,7 @@ table, or a `crsql_commit_alter` that fails) would otherwise fail the
 same ALTER on every open. The adapter strips that table's metadata
 (`stripCrrMetadata`, which keeps `crsql_db_version()` from rewinding
 through `pre_compact_dbversion`), runs the ALTER as a plain table and
-makes it a CRR again at once, logging `db.crr_alter_metadata_reset`.
+makes it a CRR again at once, logging `db.crr_alter_metadata_reset` and reporting it to Sentry as an issue.
 Every row gets a fresh clock at column version 1: a peer holding a
 higher version of a cell keeps its value until this machine writes
 that cell past it. Inside a caller's transaction the fallback does

@@ -6411,6 +6411,42 @@ final class ADETests: XCTestCase {
     {"sessionId":"session-recovery","timestamp":"2026-07-16T12:00:02.000Z","sequence":2,"event":{"type":"queue_recovery","recoveryId":"recovery-1","state":"restored","messageCount":2,"expiresAt":"2026-07-16T12:00:08.000Z","stopMode":"stop_and_clear"}}
     """)
     XCTAssertNil(workAvailableQueueRecovery(from: settledFallbackTranscript))
+
+    // A restore puts the cancelled steers back on the queue, on both paths.
+    let restoreLines = [
+      #"{"sessionId":"session-recovery","timestamp":"2026-07-16T11:59:58.000Z","sequence":1,"event":{"type":"user_message","text":"run the tests","turnId":"turn-1","steerId":"steer-1","deliveryState":"queued","attachments":[{"path":"/tmp/a.png","type":"image"}]}}"#,
+      #"{"sessionId":"session-recovery","timestamp":"2026-07-16T11:59:59.000Z","sequence":2,"event":{"type":"system_notice","noticeKind":"info","message":"Queued message cancelled.","turnId":"turn-1","steerId":"steer-1"}}"#,
+      #"{"sessionId":"session-recovery","timestamp":"2026-07-16T12:00:00.000Z","sequence":3,"event":{"type":"queue_recovery","recoveryId":"recovery-1","state":"available","messageCount":1,"expiresAt":"2026-07-16T12:00:08.000Z","stopMode":"stop_and_clear"}}"#,
+      #"{"sessionId":"session-recovery","timestamp":"2026-07-16T12:00:02.000Z","sequence":4,"event":{"type":"queue_recovery","recoveryId":"recovery-1","state":"restored","messageCount":1,"expiresAt":"2026-07-16T12:00:08.000Z","stopMode":"stop_and_clear","restoredSteers":[{"steerId":"steer-1","text":"run the tests","attachments":[{"path":"/tmp/a.png","type":"image"}]}]}}"#,
+    ]
+    let typedRestore = makeWorkChatTranscript(from: try restoreLines.map {
+      try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data($0.utf8))
+    })
+    let fallbackRestore = parseWorkChatTranscript(restoreLines.joined(separator: "\n"))
+    for restored in [typedRestore, fallbackRestore] {
+      XCTAssertEqual(restored.count, 4)
+      let steers = derivePendingWorkSteers(from: restored)
+      XCTAssertEqual(steers.map(\.id), ["steer-1"])
+      XCTAssertEqual(steers.first?.text, "run the tests")
+      XCTAssertEqual(steers.first?.attachments, [AgentChatFileRef(path: "/tmp/a.png", type: "image")])
+      XCTAssertEqual(pruneResolvedQueuedSteerEnvelopes(restored).count, 4)
+      XCTAssertNil(workAvailableQueueRecovery(from: restored))
+    }
+
+    // Two identical restored prompts: the one sent as a fresh turn (an id'd
+    // "delivering" notice, then a user row with no steer id) settles only itself.
+    let twinLines = [
+      #"{"sessionId":"s","timestamp":"2026-07-16T12:00:02.000Z","sequence":1,"event":{"type":"queue_recovery","recoveryId":"r","state":"restored","messageCount":2,"expiresAt":"2026-07-16T12:00:08.000Z","stopMode":"stop_and_clear","restoredSteers":[{"steerId":"steer-1","text":"again"},{"steerId":"steer-2","text":"again"}]}}"#,
+      #"{"sessionId":"s","timestamp":"2026-07-16T12:00:03.000Z","sequence":2,"event":{"type":"system_notice","noticeKind":"info","message":"Delivering queued message.","turnId":"turn-2","steerId":"steer-1"}}"#,
+      #"{"sessionId":"s","timestamp":"2026-07-16T12:00:04.000Z","sequence":3,"event":{"type":"user_message","text":"again","turnId":"turn-2","deliveryState":"delivered"}}"#,
+    ]
+    let twins = parseWorkChatTranscript(twinLines.joined(separator: "\n"))
+    XCTAssertEqual(derivePendingWorkSteers(from: twins).map(\.id), ["steer-2"])
+    // The same delivery when the user row does carry the steer id.
+    var idTwinLines = twinLines
+    idTwinLines[2] = #"{"sessionId":"s","timestamp":"2026-07-16T12:00:04.000Z","sequence":3,"event":{"type":"user_message","text":"again","turnId":"turn-2","steerId":"steer-1","deliveryState":"delivered"}}"#
+    let idTwins = parseWorkChatTranscript(idTwinLines.joined(separator: "\n"))
+    XCTAssertEqual(derivePendingWorkSteers(from: idTwins).map(\.id), ["steer-2"])
   }
 
   @MainActor

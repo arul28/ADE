@@ -1276,6 +1276,7 @@ func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [Wor
   guard !transcript.isEmpty else { return transcript }
   var resolvedSteerIds = Set<String>()
   var queuedSteerIdsByText: [String: Set<String>] = [:]
+  var awaitingEchoByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
     // `status` is required on a `command_lifecycle` frame. An absent one is an
     // off-contract host, and treating "unknown" as "no longer queued" would
@@ -1304,23 +1305,35 @@ func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [Wor
         }
         let normalizedText = normalizedQueuedSteerText(text)
         if let steerId {
-          resolvedSteerIds.insert(steerId)
+          let alreadySettled = !resolvedSteerIds.insert(steerId).inserted
+          awaitingEchoByText.removeSteerId(steerId)
           if !normalizedText.isEmpty {
             if queuedSteerIdsByText[normalizedText]?.contains(steerId) == true {
               queuedSteerIdsByText[normalizedText]?.remove(steerId)
-            } else if let consumed = queuedSteerIdsByText[normalizedText]?.first {
+            } else if !alreadySettled, let consumed = queuedSteerIdsByText[normalizedText]?.first {
               resolvedSteerIds.insert(consumed)
               queuedSteerIdsByText[normalizedText]?.remove(consumed)
             }
           }
+        } else if !normalizedText.isEmpty, awaitingEchoByText[normalizedText]?.isEmpty == false {
+          awaitingEchoByText[normalizedText]?.removeFirst()
         } else if !normalizedText.isEmpty, let consumed = queuedSteerIdsByText[normalizedText]?.first {
           resolvedSteerIds.insert(consumed)
           queuedSteerIdsByText[normalizedText]?.remove(consumed)
         }
       }
+    case .systemNotice(let kind, let message, let detail, _, _) where workIsRestoredQueueRecovery(kind: kind, message: message):
+      for steer in workRestoredQueueSteers(from: detail) {
+        resolvedSteerIds.remove(steer.steerId)
+        let normalizedText = normalizedQueuedSteerText(steer.text)
+        if !normalizedText.isEmpty {
+          queuedSteerIdsByText[normalizedText, default: []].insert(steer.steerId)
+        }
+      }
     case .systemNotice(_, let message, _, _, let steerId):
       if let steerId, workSystemNoticeResolvesQueuedSteer(message) {
         resolvedSteerIds.insert(steerId)
+        queuedSteerIdsByText.settleSteerId(steerId, message: message, awaitingEcho: &awaitingEchoByText)
       }
     default:
       continue
@@ -2250,6 +2263,7 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
   var order: [String] = []
   var resolved = Set<String>()
   var queuedSteerIdsByText: [String: Set<String>] = [:]
+  var awaitingEchoByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
     // Same rule as `pruneResolvedQueuedSteerEnvelopes`: only an explicit
     // non-queued status graduates the steer. A missing status is an
@@ -2287,26 +2301,53 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
           queuedSteerIdsByText[normalizedText]?.remove(steerId)
         } else if let steerId {
           queue.removeValue(forKey: steerId)
-          resolved.insert(steerId)
+          // Already settled (a "Delivering…" notice came first): this row is
+          // that steer's own delivery and must not take a same-text twin.
+          let alreadySettled = !resolved.insert(steerId).inserted
+          awaitingEchoByText.removeSteerId(steerId)
           if !normalizedText.isEmpty {
             if queuedSteerIdsByText[normalizedText]?.contains(steerId) == true {
               queuedSteerIdsByText[normalizedText]?.remove(steerId)
-            } else if let consumed = queuedSteerIdsByText[normalizedText]?.first {
+            } else if !alreadySettled, let consumed = queuedSteerIdsByText[normalizedText]?.first {
               queue.removeValue(forKey: consumed)
               resolved.insert(consumed)
               queuedSteerIdsByText[normalizedText]?.remove(consumed)
             }
           }
+        } else if !normalizedText.isEmpty, awaitingEchoByText[normalizedText]?.isEmpty == false {
+          awaitingEchoByText[normalizedText]?.removeFirst()
         } else if !normalizedText.isEmpty, let consumed = queuedSteerIdsByText[normalizedText]?.first {
           queue.removeValue(forKey: consumed)
           resolved.insert(consumed)
           queuedSteerIdsByText[normalizedText]?.remove(consumed)
         }
       }
+    case .systemNotice(let kind, let message, let detail, let turnId, _) where workIsRestoredQueueRecovery(kind: kind, message: message):
+      // A restored queue puts its steers back at the end, even after their
+      // cancel notices, as `deriveRuntimeState` does on desktop.
+      for steer in workRestoredQueueSteers(from: detail) {
+        resolved.remove(steer.steerId)
+        order.removeAll { $0 == steer.steerId }
+        order.append(steer.steerId)
+        let normalizedText = normalizedQueuedSteerText(steer.text)
+        if !normalizedText.isEmpty {
+          queuedSteerIdsByText[normalizedText, default: []].insert(steer.steerId)
+        }
+        queue[steer.steerId] = WorkPendingSteerModel(
+          id: steer.steerId,
+          text: steer.text,
+          attachments: steer.attachments,
+          turnId: turnId,
+          timestamp: envelope.timestamp
+        )
+      }
     case .systemNotice(_, let message, _, _, let steerId):
       if let steerId, workSystemNoticeResolvesQueuedSteer(message) {
         queue.removeValue(forKey: steerId)
         resolved.insert(steerId)
+        // "Delivering…" is followed by the turn's own user row with no steer
+        // id: that row is this steer's echo, not a twin's delivery.
+        queuedSteerIdsByText.settleSteerId(steerId, message: message, awaitingEcho: &awaitingEchoByText)
       }
     case .queueReordered(let steerIds):
       // The host's order after a reorder. Ids it does not name (queued after
@@ -2318,6 +2359,42 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
     }
   }
   return order.compactMap { queue[$0] }
+}
+
+private extension Dictionary where Key == String, Value == Set<String> {
+  /// Drops a steer from the index, whatever its text.
+  mutating func removeSteerId(_ steerId: String) {
+    for key in keys where self[key]?.contains(steerId) == true {
+      self[key]?.remove(steerId)
+    }
+  }
+
+  /// Takes a steer a notice settled out of this queued-by-text index. A
+  /// "Delivering…" one waits in `awaitingEcho` for its id-less user row.
+  mutating func settleSteerId(_ steerId: String, message: String, awaitingEcho: inout [String: Set<String>]) {
+    let echoes = message.range(of: "delivering", options: .caseInsensitive) != nil
+    for key in keys where self[key]?.contains(steerId) == true {
+      self[key]?.remove(steerId)
+      if echoes { awaitingEcho[key, default: []].insert(steerId) }
+    }
+  }
+}
+
+func workIsRestoredQueueRecovery(kind: String, message: String) -> Bool {
+  kind == "queue_recovery" && message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "restored"
+}
+
+/// The steers a restored `queue_recovery` put back (`restoredSteers` in its detail).
+func workRestoredQueueSteers(from detail: String?) -> [(steerId: String, text: String, attachments: [AgentChatFileRef]?)] {
+  guard let restored = workJSONObject(from: detail)?["restoredSteers"] as? [[String: Any]] else { return [] }
+  return restored.compactMap { steer in
+    guard let steerId = steer["steerId"] as? String, !steerId.isEmpty else { return nil }
+    let attachments = (steer["attachments"] as? [[String: Any]])?.compactMap { ref -> AgentChatFileRef? in
+      guard let path = ref["path"] as? String, let type = ref["type"] as? String else { return nil }
+      return AgentChatFileRef(path: path, type: type, url: ref["url"] as? String)
+    }
+    return (steerId, steer["text"] as? String ?? "", attachments?.isEmpty == false ? attachments : nil)
+  }
 }
 
 /// Mirrors `isSettledSteerDeliveryState` in apps/desktop/src/shared/chatTranscript.ts.

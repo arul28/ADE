@@ -348,6 +348,11 @@ unknown, as `readFileWithinRootSecure` in `services/shared/utils.ts` does.
 - **A file mode is not a permission.** `mode: 0o600` does nothing on Windows.
   A file that holds secrets needs `securePrivatePath`
   (`apps/ade-cli/src/lib/trustedWindowsTools.ts`), as the secrets export does.
+  A folder of them takes `ensurePrivateDirectory`, whose grant inherits
+  (`(OI)(CI)F`). A bare `icacls <dir> /inheritance:r /grant:r user:F` on a
+  folder that already holds files leaves those files with no access entry:
+  the user is locked out of them. A per-file icacls after an atomic write
+  also costs a spawn on every save and leaves the file readable until it runs.
 - **Paths shown to agents use forward slashes on every OS.** Normalize a
   relative path before it leaves the process; `path.relative` returns
   backslashes on Windows.

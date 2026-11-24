@@ -135,7 +135,7 @@ describe("providerInstanceStore", () => {
       created.instance.configHome,
       "/inheritance:r",
       "/grant:r",
-      "ADEBOX\\arul:F",
+      "ADEBOX\\arul:(OI)(CI)F",
     ]);
     expect(created.instance.configHome).toBe(
       path.join(adeDir, "provider-homes", "codex", created.instance.id),
