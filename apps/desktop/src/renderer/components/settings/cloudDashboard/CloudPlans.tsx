@@ -93,6 +93,8 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   // Shown where cards can show, and to an account that said yes, so a paid
   // plan can still take that yes back before a move to Free.
   const sponsoredToggle = sponsored && (sponsored.ads || sponsored.consent === "granted") ? sponsored : null;
+  // Where the ad switch reaches this account (`sponsored` is sent), Free's Small is unlimited only with sponsored cards on.
+  const freeSmallNeedsCards = sponsored != null;
   const nextPlanId = pro ? billing.nextPlanId ?? null : null;
   // A paid plan with a move down waiting: its own column undoes the move (uncharged).
   const canStay = paid && !pastDue && !billing.cancelAtPeriodEnd && current !== "free" && nextPlanId != null && nextPlanId !== current;
@@ -324,7 +326,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <ul className="adecd-plancard-facts">
                   <li title="Cloud computers your account may have, asleep or not: one per lane"><Desktop size={13} /><span><b className="kit-num" data-face="ui">{computers}</b> cloud {computers === 1 ? "computer" : "computers"} <span className="adecd-nowrap">(asleep or not)</span></span></li>
-                  <li title={CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers</span></li>
+                  <li title={CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</span></li>
                   {isCurrent && oldTerms?.hoursMilli != null ? (
                     <li title={`${formatCloudHours(column.facts.includedMilli)} hours from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> hours for bigger computers until {until}</span></li>
                   ) : (
@@ -372,7 +374,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           <div className="adecd-howto-items">
             <div className="adecd-howto-item">
               <span className="adecd-howto-icon"><Sparkle size={14} /></span>
-              <p><b>{CLOUD_SMALL_UNLIMITED_SENTENCE}</b> Bigger computers use hours, and each plan has a number of cloud computers, asleep or not: one per lane.</p>
+              <p><b>{freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free with sponsored cards on." : CLOUD_SMALL_UNLIMITED_SENTENCE}</b> Bigger computers use hours, and each plan has a number of cloud computers, asleep or not: one per lane.</p>
             </div>
             <div className="adecd-howto-item">
               <span className="adecd-howto-icon"><Clock size={14} /></span>

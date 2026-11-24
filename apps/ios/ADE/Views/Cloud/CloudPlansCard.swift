@@ -54,13 +54,19 @@ struct CloudPlansCard: View {
     }
   }
 
+  /// Where the ad switch reaches this account (`sponsored` is sent), Free's
+  /// Small is unlimited only with sponsored cards on (`CloudPlans.tsx`).
+  private var freeSmallNeedsCards: Bool {
+    (AccountCloudStore.shared.account.map { $0.sponsored } ?? account.sponsored) != nil
+  }
+
   /// The ADE Cloud iPhone's minutes show only while it is on for the account.
   private var showsSimulatorMinutes: Bool { account.phoneOn && columns.contains { $0.facts.phoneMinutes != nil } }
 
   /// The one place for the explanations: what every plan includes.
   private var howItWorks: some View {
     VStack(alignment: .leading, spacing: 0) {
-      howRow("infinity", cloudSmallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
+      howRow("infinity", freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free with sponsored cards on." : cloudSmallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
       Divider().overlay(ADEKit.edge)
       howRow("clock", "Hours run the bigger sizes", "and renew every month. \(cloudHourUnitSentence)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")")
       Divider().overlay(ADEKit.edge)
@@ -125,7 +131,7 @@ struct CloudPlansCard: View {
         }
       }
       VStack(alignment: .leading, spacing: 6) {
-        fact("infinity", "Unlimited Small", current: current)
+        fact("infinity", column.id == "free" && freeSmallNeedsCards ? "Unlimited Small with cards" : "Unlimited Small", current: current)
         if current, let old = oldTermsHours(column), let end {
           fact("clock", "\(cloudHours(old)) h until \(cloudDate(end))\(staysOn ? ", then \(cloudHours(column.facts.includedMilli))" : "")", current: current)
         } else {
