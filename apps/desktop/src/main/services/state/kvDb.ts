@@ -8,7 +8,7 @@ import { codedError, isCodedError, isErrnoLikeCode } from "../../../shared/coded
 import { carryExpected, expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import { StorageNotAnsweringError } from "./unansweringRoots";
 import type { Logger } from "../logging/logger";
-import { isSqliteBusyOrLockedError, isSqliteIoError } from "./sqliteErrors";
+import { isSqliteBusyOrLockedError, isSqliteIoError, sqliteErrorClass } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { clearProvenDatabaseCopies, snapshotDatabaseBeforeVersionChange, writeDbCompatRecord } from "./dbCompatRecord";
@@ -1693,15 +1693,17 @@ function stripCrrMetadata(
   logger?: Logger,
   changeTag: string | null = null,
 ): { droppedTriggerCount: number; deletedMetadataCount: number } {
-  // A lock while reading the version stops the strip: dropping the clock with
-  // no floor would rewind db_version. No cr-sqlite here means no version.
-  const dbVersionFloor = readCrsqlDbVersion(db, { throwOnLock: true });
   // One step: a stop between the clock's drop and the floor's write would
-  // leave db_version rewound. A savepoint nests inside a caller's transaction.
-  // cr-sqlite only rewinds db_version when the drop commits, so the floor is
-  // written whatever the version reads here; it is never above the current one.
+  // leave db_version rewound. A savepoint nests inside a caller's transaction,
+  // and the version is read inside it, so no other process's commit falls
+  // between the read and the drop. A lock while reading stops the strip
+  // (dropping the clock with no floor would rewind db_version); no cr-sqlite
+  // here means no version. cr-sqlite only rewinds db_version when the drop
+  // commits, so the floor is written whatever the version reads after it; it
+  // is never above the current one.
   runStatement(db, "savepoint crr_strip_metadata");
   try {
+    const dbVersionFloor = readCrsqlDbVersion(db, { throwOnLock: true });
     const stripped = stripCrrMetadataSteps(db, tableName, logger, changeTag);
     if (dbVersionFloor != null && rawHasTable(db, "crsql_master")) {
       runStatement(db, "insert or replace into crsql_master (key, value) values ('pre_compact_dbversion', ?)", [dbVersionFloor]);
@@ -2864,8 +2866,15 @@ function makeCrrAwareDb({
           try {
             getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
           } catch (error) {
-            // A lock is the sibling process: the open waits and runs again.
-            if (isSqliteBusyOrLockedError(error) || inCallerTransaction) throw error;
+            // A lock is the sibling process: the open waits and runs again. A
+            // failing disk or a full one is not broken metadata, and stripping
+            // would throw away clocks and tombstones that are still good.
+            if (
+              isSqliteBusyOrLockedError(error)
+              || isSqliteIoError(error)
+              || sqliteErrorClass(error) === "sqlite_full"
+              || inCallerTransaction
+            ) throw error;
             alterAsPlainTable(db, alterTable, sql, params, error instanceof Error ? error.message : String(error));
           }
           return;
