@@ -84,6 +84,8 @@ export type GravityEnv = CloudEnv & {
 };
 
 const INDEX_URL = "https://index.trygravity.com/search";
+/** How long a no to sponsored cards holds before the question comes back. */
+const SPONSORED_REASK_MS = 14 * 24 * 60 * 60_000;
 const PLATFORM_URL = "https://platform.trygravity.com";
 const INDEX_REPORT_URL = "https://api-interface.trygravity.com/index/attributions";
 const REQUEST_TIMEOUT_MS = 4_000;
@@ -179,15 +181,17 @@ async function readConsent(env: GravityEnv, userId: string): Promise<{ consent: 
  * this account, so a client shows nothing at all. A paid account the switch
  * reaches still gets it (`ads` false), so its Settings can say there are none.
  */
-export async function sponsoredAccountState(env: GravityEnv, account: AccountRow, country: string | null): Promise<CloudSponsoredState | undefined> {
+export async function sponsoredAccountState(env: GravityEnv, account: AccountRow, country: string | null, now: number): Promise<CloudSponsoredState | undefined> {
   const settings = await readCloudSettings(env);
   const switches = await gravitySwitches(env, settings);
   const reason = await blockedReason(env, account, country, switches);
   if (reason === "off") return undefined;
   const consent = await readConsent(env, account.user_id);
+  // A no is asked again once it is SPONSORED_REASK_MS old, or when it came
+  // before the ad switch last changed (when Small began to need cards). Until
+  // the person answers, it still counts as a no: no cards, Small uses hours.
   const answer = consent && consent.consent === "declined"
-    && consent.decided_at < (await settingChangedAt(env, "gravity_ads") ?? 0)
-    // A no from before the ad switch last changed (when Small began to need cards) is asked again.
+    && (now - consent.decided_at >= SPONSORED_REASK_MS || consent.decided_at < (await settingChangedAt(env, "gravity_ads") ?? 0))
     ? null
     : consent?.consent ?? null;
   return {
@@ -476,7 +480,7 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   logCloud("cloud.sponsored.consent", { consent });
   // Small's hours follow the answer at once (`smallUsesNoHours`).
   await syncSmallRates(env, account, now);
-  const state = await sponsoredAccountState(env, account, country);
+  const state = await sponsoredAccountState(env, account, country, now);
   return json(state ?? { ads: false, consent, test: !(await gravitySwitches(env)).live });
 }
 

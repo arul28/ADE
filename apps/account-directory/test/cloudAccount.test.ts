@@ -5285,6 +5285,13 @@ describe("sponsored cards", () => {
     // A no from before the rule was a different deal: the question comes back.
     harness.exec("update cloud_sponsored_consent set consent = 'declined', decided_at = ? where user_id = ?", NOW - DAY, OWNER);
     expect((await accountState()).sponsored?.consent).toBeNull();
+    // A no holds two weeks, then the question comes back; until answered it still counts as a no.
+    expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
+    clock += 13 * DAY;
+    expect((await accountState()).sponsored?.consent).toBe("declined");
+    clock += DAY;
+    expect((await accountState()).sponsored?.consent).toBeNull();
+    expect(computer(harness).multiplier_milli).toBe(500);
     // Paid plans and accounts the ad switch doesn't reach keep Small free; turning ads off frees every Small at once.
     harness.exec("update cloud_computers set multiplier_milli = 500 where instance_id = ?", INSTANCE);
     expect((await owner("settings", { key: "gravity_ads", value: "off" })).status).toBe(200);

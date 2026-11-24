@@ -92,8 +92,9 @@ that the ad switch reaches runs Small computers without hours only while it
 said yes to sponsored cards. A no, or no answer yet (outside the card
 countries, or never asked), has Small use half a Medium-hour an hour. Accounts
 the ad switch doesn't reach are untouched, so with `gravity_ads=testers` only
-the testers see the rule. A no given before the ad switch last changed is
-asked again. A yes from outside the card countries is refused (403): there are
+the testers see the rule. A no is asked again two weeks later
+(`SPONSORED_REASK_MS`), and at once when it came before the ad switch last
+changed; until the person answers, it still counts as a no. A yes from outside the card countries is refused (403): there are
 no cards to show there, so Small keeps using hours.
 
 ### Countries
