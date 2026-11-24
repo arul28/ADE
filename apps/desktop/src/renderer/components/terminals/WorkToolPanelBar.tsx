@@ -1,5 +1,5 @@
 import { CloudArrowUp, HandGrabbing, HandPalm } from "@phosphor-icons/react";
-import type { CSSProperties } from "react";
+import { useId, type CSSProperties } from "react";
 import type { DeviceKind } from "../../../shared/types/deviceSources";
 import { sameMachineKey } from "../../../shared/machineAddress";
 import { cn } from "../ui/cn";
@@ -208,6 +208,7 @@ function MachineRow({
   pendingMachineKey: string | null;
   onPick: (machine: ToolMachine) => void;
 }) {
+  const noteId = useId();
   // Only the machines that can run it: a machine that can't is not a choice.
   const able = machinesForKind(kind, machines, tile.machine);
   if (!able.length) return null;
@@ -219,7 +220,9 @@ function MachineRow({
       <span className="mr-1 shrink-0 font-sans text-[12px] text-muted-fg">
         {rowLabel(asking, viewOnly)}
       </span>
-      <div role="radiogroup" aria-label={`${tile.label} runs on`} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]">
+      {/* The chips keep their width (scrolling only past the row's); the note gets what is left (never less than
+          a few words) and truncates. Its whole text describes the choices, so a screen reader hears it on them. */}
+      <div role="radiogroup" aria-label={`${tile.label} runs on`} aria-describedby={note ? noteId : undefined} className="flex min-w-0 flex-[0_1_auto] items-center gap-1 overflow-x-auto [scrollbar-width:none]">
         {able.map((machine) => {
           const chosen = Boolean(tile.machine && sameMachineKey(tile.machine.key, machine.key));
           const busy = Boolean(pendingMachineKey && sameMachineKey(pendingMachineKey, machine.key));
@@ -261,7 +264,7 @@ function MachineRow({
         ) : null}
       </div>
       {note ? (
-        <span className="ml-auto shrink-0 truncate pl-2 font-sans text-[11.5px] text-muted-fg/70" title={note}>
+        <span id={noteId} className="ml-auto min-w-[5rem] flex-[1_1_0%] truncate pl-2 text-right font-sans text-[11.5px] text-muted-fg/70" title={note}>
           {note}
         </span>
       ) : null}

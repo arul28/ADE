@@ -1,6 +1,7 @@
 import type { DeletedChatListResult, DeletedChatRemoveResult, DeletedChatReopenResult } from "../../../shared/types/deletedChats";
 import type { AgentCliTypeArgs, AgentCliTypeResult, ExternalSessionDetail } from "../../../shared/types";
 import type { ChatMentionSuggestResult } from "../../../shared/types/chatMentions";
+import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../../../shared/types/deviceSources";
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import type {
@@ -55,7 +56,7 @@ import type {
 } from "../../../shared/threadComments";
 import { NO_SUBAGENT_CAPABILITY } from "../../../shared/subagentCapabilities";
 import type { AdapterInfra, AdeNamespace } from "./types";
-import type { CommandCallOptions } from "./infra/commandCaller";
+import { UnsupportedRemoteCommandError, type CommandCallOptions } from "./infra/commandCaller";
 import { requestFileBlob } from "./infra/fileBlob";
 import { noteChatHistorySettled, noteChatHistoryStarted } from "./infra/bootPriority";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
@@ -217,6 +218,17 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
    * throwing synchronously out of the caller's expression; `onEvent` is the
    * exception, since a subscription has no promise to reject.
    */
+  /**
+   * An older host has no device-choice commands: that rejects as unsupported, so the tools pane keeps
+   * picks to what this page shows (`chatDeviceSources.ts`). Before the host's hello nothing is known
+   * yet, so that rejects as not connected, and the pane keeps what it had.
+   */
+  function requireDeviceSourceCommand(action: string): void {
+    if (commands.hasAction(action)) return;
+    if (commands.knowsActions()) throw new UnsupportedRemoteCommandError(action);
+    throw new Error(`The machine this chat runs on hasn't connected yet; ${action} waits for it.`);
+  }
+
   function guardPin(operation: string, pin: RuntimePinArg): void {
     assertWebRuntimePinRoutable(`agentChat.${operation}`, pin, infra);
   }
@@ -276,6 +288,18 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         guardPin("parallelLaunchState.set", pin);
         await call("chat.setParallelLaunchState", args, undefined, false);
       },
+    },
+    // The chat's device choice per kind (`ade devices use`), kept by its brain: without these the tools
+    // pane can't see that a chat uses the ADE Cloud iPhone, and shows the lane's own simulator instead.
+    getDeviceSources: async (args: { sessionId: string }, pin?: RuntimePinArg) => {
+      guardPin("getDeviceSources", pin);
+      requireDeviceSourceCommand("chat.getDeviceSources");
+      return await callRequired<ChatDeviceSourcesResult>("chat.getDeviceSources", args, "Chat", true);
+    },
+    setDeviceSource: async (args: ChatSetDeviceSourceArgs, pin?: RuntimePinArg) => {
+      guardPin("setDeviceSource", pin);
+      requireDeviceSourceCommand("chat.setDeviceSource");
+      return await callRequiredMutation<ChatDeviceSourcesResult>("chat.setDeviceSource", args);
     },
     getRootFullAccess: async (pin?: RuntimePinArg) => {
       guardPin("getRootFullAccess", pin);
