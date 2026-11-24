@@ -326,7 +326,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <ul className="adecd-plancard-facts">
                   <li title="Cloud computers your account may have, asleep or not: one per lane"><Desktop size={13} /><span><b className="kit-num" data-face="ui">{computers}</b> cloud {computers === 1 ? "computer" : "computers"} <span className="adecd-nowrap">(asleep or not)</span></span></li>
-                  <li title={CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</span></li>
+                  <li title={column.id === "free" && freeSmallNeedsCards ? "Small computers use no hours while sponsored cards are on, and half an hour for each hour awake while they are off." : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</span></li>
                   {isCurrent && oldTerms?.hoursMilli != null ? (
                     <li title={`${formatCloudHours(column.facts.includedMilli)} hours from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> hours for bigger computers until {until}</span></li>
                   ) : (
