@@ -2055,7 +2055,8 @@ describe("ADE CLI", () => {
           key: "result",
           method: "projects.add",
           params: {
-            rootPath: "/tmp/project",
+            // A local path is resolved: `D:\tmp\project` on a Windows runner.
+            rootPath: path.resolve("/tmp/project"),
             catalogVisibility: "recent",
             registrationSource: "cli-explicit",
           },
