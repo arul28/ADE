@@ -74,7 +74,7 @@ import { readBoundedBody, sha256Hex } from "../sinkUtils";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
 import { forgetRevylAccount } from "./phoneRevyl";
-import { PHONE_PROVIDERS, UNSURE_START_MS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, routeOf, startOnRoute } from "./phoneRoute";
+import { PHONE_PROVIDERS, UNSURE_START_MS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, routeOf, startOnRoute, unsureStartHeld } from "./phoneRoute";
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { sendCloudEmail } from "./email";
@@ -889,6 +889,12 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     if (await freeCapRefuses(env, context.account, now, waitUntil)) {
       captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason: "free_cap" }, "free_cap", now);
       return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
+    }
+    // A retry of a start whose answer was lost may get that start's phone back: it is held to that start's
+    // billing (minutes or credits), as its claim keeps it, not to what reaches the account now.
+    if (unsureStartHeld(context.account, now) && context.account.phone_start_credits != null && (context.account.phone_start_credits === 1) !== (context.credits != null)) {
+      const credits = context.account.phone_start_credits === 1 ? await phoneCreditsFor(env, context.account, now, { counts: true }) : null;
+      context = { ...context, credits, usage: phoneUsageOf(env, context.account, context.rows, now, false, credits) };
     }
     const refusal = startRefusal(context);
     if (refusal) {

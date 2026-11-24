@@ -1471,7 +1471,8 @@ async function startFreshPeriod(
   statements.push(env.DB.prepare(`
     update cloud_phones set credited_milli = max(credited_milli, ${PHONE_CREDIT_MILLI_AT_SQL})
     where user_id = ? and state = 'live' and credits = 1 and created_at >= ?
-  `).bind(now, ...phonePeriod));
+      and exists (select 1 from cloud_accounts where user_id = ? and period_start = ?)
+  `).bind(now, ...phonePeriod, ...phonePeriod));
   // After the settles above, before `used_milli` resets below; both columns read the row as it was.
   statements.push(env.DB.prepare(`
     update cloud_accounts set earned_used_milli = earned_used_milli + ${EARNED_DRAW_SQL}
