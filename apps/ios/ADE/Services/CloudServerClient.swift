@@ -34,7 +34,7 @@ enum CloudRefusalCode {
     "needs_paid_plan", "disk_limit", "over_plan_limits", "git_credential_missing",
     "github_app_not_installed", "template_unset", "template_unavailable",
     "linear_needs_renewal", "plan_past_due", "too_many_messages", "message_taken",
-    "computer_limit", "outside_agent_free_plan",
+    "computer_limit", "outside_agent_free_plan", "phone_needs_update", "phone_cant",
   ]
 
   /// Refusals of the Linear, Jira and limits routes (`CLOUD_INTEGRATION_ERROR_CODES`,

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { writeFileAtomic } from "../state/durableFile";
 import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
@@ -364,8 +365,7 @@ export class RemoteTargetRegistry {
   private write(file: RegistryFile): void {
     this.cache = null;
     fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
-    const tmp = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(tmp, this.path);
+    // The shared writer waits out a Windows antivirus or indexer holding the file.
+    writeFileAtomic(this.path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600, renameOnly: true });
   }
 }

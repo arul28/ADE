@@ -184,6 +184,13 @@ describe("createAgentChatService", () => {
         steerId: queued.steerId,
         requireQueued: true,
       })).rejects.toThrow("This message is no longer queued.");
+      // The refusal is also the steer's notice, so every client and every
+      // reload takes the stale chip off the queue.
+      expect(events.at(-1)?.event).toMatchObject({
+        type: "system_notice",
+        steerId: queued.steerId,
+        message: "This message is no longer queued.",
+      });
 
       await expect(service.restoreCancelledQueue({
         sessionId: session.id,

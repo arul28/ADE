@@ -5,6 +5,7 @@ import { createRepeatedFailureGate } from "../../desktop/src/main/services/loggi
 import { resolveGithubRepoRef } from "../../desktop/src/main/services/github/githubSshAlias";
 import { gitPushError } from "../../desktop/src/main/services/git/gitPushFailure";
 import { githubRepoRefFromRemoteUrl } from "../../desktop/src/shared/githubRemote";
+import { STEER_NO_LONGER_QUEUED_MESSAGE } from "../../desktop/src/shared/steerOrder";
 import { appGrantAllowsCapability, gateAppCandidates } from "../../desktop/src/shared/github/githubAppGrant";
 import { createGithubAccountAppCredential } from "../../desktop/src/main/services/github/githubAccountAppCredential";
 import { createGithubSessionEnv, readOwnEnvironmentGithubToken } from "../../desktop/src/main/services/github/githubSessionEnv";
@@ -3387,7 +3388,7 @@ function createHeadlessAgentChatService(
       // headless steer is never sitting in a queue to pull back. This mirrors
       // the desktop service's "no live runtime" branch exactly: reject only
       // when the caller demanded the steer still be queued.
-      if (args.requireQueued) throw new Error("This message is no longer queued.");
+      if (args.requireQueued) throw new Error(STEER_NO_LONGER_QUEUED_MESSAGE);
       touchSession(args.sessionId);
     },
     async listSubagents(_args: { sessionId: string }) {

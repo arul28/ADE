@@ -437,14 +437,28 @@ final class ClientUpdateGateStore: ObservableObject {
 
 /// Covers every window of the app with the blocked screen while the phone
 /// must update. Its own window above alerts, so nothing under it (a sheet, an
-/// alert, a chat with the keyboard up) can be reached, and nothing under it
-/// is torn down: when the minimum is lowered or the answer goes stale, the
-/// cover lifts and the app is where it was.
+/// alert, a chat with the keyboard up) can be reached. When the minimum is
+/// lowered or the answer goes stale, the cover lifts and the app's windows
+/// come back with their screens.
+///
+/// The app's own windows are hidden while covered, not just covered: the cover
+/// is opaque, and a hidden window is not drawn. Its screens get disappear
+/// calls (`.onDisappear`, `.task` cancels: a sign-in or pairing under it ends)
+/// and appear again when the cover lifts; a blocked build can't use them
+/// anyway. Covered but shown, the tab bar kept updating under it as sync ran
+/// (badges, sessions), and on iOS 27.2 the watchdog ended the app inside those
+/// tab bar updates (ADE-IOS-35, 36) while this cover was up.
 @MainActor
 final class PhoneUpdateGateWindows {
   static let shared = PhoneUpdateGateWindows()
 
-  private var windows: [ObjectIdentifier: UIWindow] = [:]
+  /// One scene's cover, and the app windows it hid there (shown again when it lifts).
+  private struct SceneCover {
+    let window: UIWindow
+    var hidden: [UIWindow]
+  }
+
+  private var covers: [ObjectIdentifier: SceneCover] = [:]
   private var requirement: PhoneUpdateRequirement?
   private var subscription: AnyCancellable?
   private var sceneObservers: [NSObjectProtocol] = []
@@ -468,7 +482,7 @@ final class PhoneUpdateGateWindows {
     sceneObservers.append(NotificationCenter.default.addObserver(forName: UIScene.didDisconnectNotification, object: nil, queue: .main) { [weak self] note in
       guard let scene = note.object as? UIScene else { return }
       let key = ObjectIdentifier(scene)
-      Task { @MainActor in self?.windows.removeValue(forKey: key)?.isHidden = true }
+      Task { @MainActor in self?.covers.removeValue(forKey: key)?.window.isHidden = true }
     })
   }
 
@@ -476,9 +490,12 @@ final class PhoneUpdateGateWindows {
   func show(_ requirement: PhoneUpdateRequirement?) {
     self.requirement = requirement
     guard let requirement else {
-      guard !windows.isEmpty else { return }
-      for window in windows.values { window.isHidden = true }
-      windows.removeAll()
+      guard !covers.isEmpty else { return }
+      for cover in covers.values {
+        for window in cover.hidden { window.isHidden = false }
+        cover.window.isHidden = true
+      }
+      covers.removeAll()
       // The app's own window takes the keyboard and focus back.
       for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
         scene.windows.first { $0.windowLevel == .normal }?.makeKey()
@@ -489,9 +506,11 @@ final class PhoneUpdateGateWindows {
     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
       let key = ObjectIdentifier(scene)
-      if let window = windows[key],
-         let host = window.rootViewController as? UIHostingController<PhoneUpdateBlockedScreen> {
+      if var cover = covers[key],
+         let host = cover.window.rootViewController as? UIHostingController<PhoneUpdateBlockedScreen> {
         host.rootView = PhoneUpdateBlockedScreen(requirement: requirement)
+        cover.hidden += hideAppWindows(in: scene)
+        covers[key] = cover
         continue
       }
       let window = UIWindow(windowScene: scene)
@@ -501,7 +520,16 @@ final class PhoneUpdateGateWindows {
       window.rootViewController = host
       window.accessibilityViewIsModal = true
       window.makeKeyAndVisible()
-      windows[key] = window
+      covers[key] = SceneCover(window: window, hidden: hideAppWindows(in: scene))
     }
+  }
+
+  /// Hides the scene's own visible windows (normal level: never a cover, the
+  /// keyboard or the system's text windows) and returns them. Runs again when
+  /// a scene comes back, so a window shown while backgrounded is hidden too.
+  private func hideAppWindows(in scene: UIWindowScene) -> [UIWindow] {
+    let visible = scene.windows.filter { !$0.isHidden && $0.windowLevel == .normal }
+    for window in visible { window.isHidden = true }
+    return visible
   }
 }

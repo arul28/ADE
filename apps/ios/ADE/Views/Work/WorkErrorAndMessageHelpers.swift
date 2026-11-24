@@ -2337,6 +2337,7 @@ func workSystemNoticeResolvesQueuedSteer(_ message: String) -> Bool {
   return normalized.contains("cancelled")
     || normalized.contains("canceled")
     || normalized.contains("delivering")
+    || normalized.contains("no longer queued")
 }
 
 /// Ids the transcript still implies are open, split by how sure it is.

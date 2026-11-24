@@ -127,17 +127,23 @@ describe("durableFile", () => {
       expect(tempLeftovers()).toEqual([]);
     });
 
-    it("still lands the write when every rename onto the target is refused", () => {
-      // A Windows holder that permits writes and denies the replace: the staged
-      // rename cannot land either, so the direct copy is the only thing left
-      // between the user and a lost write.
+    // A Windows holder that permits writes and denies the replace: the staged
+    // rename cannot land either, so the direct copy is the only thing left
+    // between the user and a lost write, unless the caller would rather lose it.
+    it.each([
+      { renameOnly: false, expected: "after" },
+      { renameOnly: true, expected: "before" },
+    ])("when every rename onto the target is refused (renameOnly $renameOnly) the file reads $expected", ({ renameOnly, expected }) => {
       fs.writeFileSync(filePath, "before");
       vi.spyOn(fs, "renameSync").mockImplementation((() => {
         throw renameError("EBUSY");
       }) as never);
+      const copy = vi.spyOn(fs, "copyFileSync");
 
-      writeFileAtomic(filePath, "after");
-      expect(fs.readFileSync(filePath, "utf8")).toBe("after");
+      if (renameOnly) expect(() => writeFileAtomic(filePath, "after", { renameOnly })).toThrow();
+      else writeFileAtomic(filePath, "after");
+      expect(fs.readFileSync(filePath, "utf8")).toBe(expected);
+      expect(copy.mock.calls.some(([, dest]) => dest === filePath)).toBe(!renameOnly);
       expect(tempLeftovers()).toEqual([]);
     });
 

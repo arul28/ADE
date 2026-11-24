@@ -1,8 +1,30 @@
 /**
- * Staged-queue ordering, shared by the chat service, the desktop pane and
- * composer. iOS mirrors `applySteerOrder` by hand in
+ * The staged queue's ordering and its refusal, shared by the chat service, the
+ * desktop pane and composer. iOS mirrors `applySteerOrder` by hand in
  * `derivePendingWorkSteers`.
  */
+
+import { stripElectronErrorWrapper } from "./codedError";
+
+/**
+ * The chat service's answer when a queued message was already sent, edited
+ * away or dropped by the time a person acts on it. The service also posts it
+ * as the steer's notice, so every client and every reload drops the stale chip.
+ */
+export const STEER_NO_LONGER_QUEUED_MESSAGE = "This message is no longer queued.";
+
+export function isSteerNoLongerQueuedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return stripElectronErrorWrapper(message) === STEER_NO_LONGER_QUEUED_MESSAGE;
+}
+
+/**
+ * Whether a steer's notice takes it off the queue: cancelled, delivering, or
+ * no longer queued. iOS mirrors it in `workSystemNoticeResolvesQueuedSteer`.
+ */
+export function steerNoticeResolvesSteer(message: string): boolean {
+  return /\b(?:cancelled|delivering|no longer queued)\b/i.test(message);
+}
 
 /**
  * `items` sorted to `order` (a list of ids). Items `order` does not name keep

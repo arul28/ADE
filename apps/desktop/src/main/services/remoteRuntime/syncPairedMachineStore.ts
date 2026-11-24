@@ -6,6 +6,7 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { writeFileAtomic } from "../state/durableFile";
 import type {
   DesktopPairedMachineEndpointState,
   DesktopPairedMachineCredentials,
@@ -1493,21 +1494,9 @@ export class DesktopPairedMachineStore {
 
   private write(file: DesktopPairedMachinesFile): void {
     fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
-    const tmp = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    try {
-      fs.writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-      fs.renameSync(tmp, this.path);
-      fs.chmodSync(this.path, 0o600);
-    } finally {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {
-        // Rename removes the temp path; cleanup only matters after a failure.
-      }
-    }
+    // The shared writer waits out the antivirus or indexer that holds a
+    // just-written file on Windows; a bare rename failed there with EPERM.
+    writeFileAtomic(this.path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600, renameOnly: true });
   }
 }
 

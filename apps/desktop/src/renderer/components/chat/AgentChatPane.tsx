@@ -7,6 +7,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { CloneToMachineDialog } from "../projects/CloneToMachineDialog";
 import { Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { compactFirstOffer } from "../../../shared/compactFirst";
+import { isSteerNoLongerQueuedError } from "../../../shared/steerOrder";
 import { latestCompactionKeyOf, useCompactFirst } from "./useCompactFirst";
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
 import { compareTextInsensitive } from "../../../shared/formatting";
@@ -22156,6 +22157,12 @@ export function AgentChatPane({
                 setAttachments((current) => mergeAttachments(current, queuedAttachments));
                 setContextAttachments((current) => mergeChatContextAttachments(current, queuedContextAttachments));
               }).catch((error: unknown) => {
+                if (isSteerNoLongerQueuedError(error)) {
+                  // Sent or dropped before the click landed. The host's notice
+                  // takes the chip off the queue.
+                  showToast({ tone: "info", title: "That message is no longer queued." });
+                  return;
+                }
                 setError(`Couldn't move the queued message back to the composer: ${error instanceof Error ? error.message : String(error)}`);
               });
             }}
@@ -22164,7 +22171,11 @@ export function AgentChatPane({
                 try {
                   await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.moveSteer({ sessionId: selectedSessionId, steerId, toIndex }, chatPin));
                 } catch (error) {
-                  setError(`Couldn't reorder the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                  if (isSteerNoLongerQueuedError(error)) {
+                    showToast({ tone: "info", title: "That message is no longer queued." });
+                  } else {
+                    setError(`Couldn't reorder the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                  }
                   throw error;
                 }
               }
