@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.134] - 2026-11-24
+
+### Desktop and web
+
+- ADE MCP Events: outside agents get chat and PR events by poll or signed webhook; full-access apps answer cards and use secrets; `ade secrets copy`, `ade providers status` (#2486).
+- ADE Cloud sponsored cards: the UK and Australia, a wider card, a no asked again after two weeks, clearer plan lists (#2487, #2485, #2484, #2477).
+- PRs: one Resolve conflicts action, cancelled checks ignored, backoff for failing reads, files paged at 30 (#2479, #2472, #2469, #2459).
+- Chats: Codex app-server restart, ACP session hand-over, Antigravity 404 resume and sign-in names, no split characters (#2471, #2476, #2470, #2460, #2463).
+- Fixes: half-synced projects open, half-done branch renames finish, reused-pid locks, Resume only for tracked CLIs, time-zone changes, sync addresses, github.com token, atomic saves, tokens out of logs, icon links, Jira cache, web tools pane (#2481, #2462, #2465, #2467, #2466, #2461, #2457, #2458, #2464, #2474, #2473, #2482, #2454).
+- Windows: brain freeze on network adapters, paired-file permissions, paired-store EPERM (#2456, #2483, #2481). Linux: Keep Awake on GNOME, AppImage update (#2453).
+
+### iOS
+
+- Restored queued messages, update cover, queued chip, ADE Cloud tracking choice and limit card, cloud iPhone launch waits for the screen (#2483, #2481, #2452, #2468).
+
 ## [1.2.133] - 2026-11-23
 
 ### Desktop and web
@@ -2913,7 +2928,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.133...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.134...HEAD
+[1.2.134]: https://github.com/arul28/ADE/compare/v1.2.133...v1.2.134
 [1.2.133]: https://github.com/arul28/ADE/compare/v1.2.132...v1.2.133
 [1.2.132]: https://github.com/arul28/ADE/compare/v1.2.131...v1.2.132
 [1.2.131]: https://github.com/arul28/ADE/compare/v1.2.130...v1.2.131

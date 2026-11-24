@@ -1,0 +1,57 @@
+---
+title: "v1.2.134"
+description: "Release notes for ADE v1.2.134 - November 24, 2026"
+---
+
+ADE 1.2.134 lets outside agents get chat and PR events from ADE MCP, makes Codex, ACP and Antigravity chats recover on their own, and fixes many PR, Windows and iPhone issues.
+
+## New
+
+- Outside agents on ADE MCP get events when a chat finishes, waits on an answer or is deleted, and when a PR changes, by poll or by signed webhook (#2486).
+- An ADE MCP app with full access can answer cards and use the project's secrets, and machine names such as `Mac.lan` work (#2486).
+- `ade secrets copy` copies another project's secrets into this one, and `ade providers status` shows each provider's sign-in (#2486).
+- Sponsored cards on ADE Cloud's Free plan reach the UK and Australia, and the card is as wide as the prompt box (#2487).
+- A no to sponsored cards is asked again after two weeks (#2485).
+
+## Improved
+
+- One Resolve conflicts action works the same on every PR surface (#2479).
+- A replacement ACP chat session is told the conversation it lost (#2476).
+- Long ADE calls wait while the machine still runs them, and cleanup runs in the background (#2454).
+- PR lists ignore cancelled checks that a newer run replaced, and back off a PR whose reads keep failing (#2472, #2469).
+- PR files load in pages of 30, so GitHub keeps every patch (#2459).
+- Timestamps follow a change of the system time zone (#2466).
+- Plan lists say when Free's Small computers need sponsored cards (#2484).
+
+## Fixed
+
+- A wedged Codex app-server is restarted, and stale lane hints are removed (#2471).
+- An Antigravity chat goes on after a short 404 that came after the model answered, and a crashed sign-in names the runtime, not the Google account (#2470, #2460).
+- A project with half its sync metadata opens again (#2481).
+- A branch rename that git left half done behind a lock finishes (#2462).
+- A lock whose recorded process id was reused is cleaned up (#2465).
+- Resume shows only for a tracked agent CLI (#2467).
+- Chat text is never cut in the middle of a character (#2463).
+- Sync no longer offers hotspot and tunnel addresses as local network addresses (#2461).
+- GitHub always uses the github.com token (#2457).
+- Saved files keep their permissions, and credentials are fully written to disk (#2458).
+- Signed URL tokens stay out of error reports and relay logs (#2464).
+- The brain no longer freezes on Windows while it reads the network adapters (#2456).
+- Site icons load from every kind of icon link (#2474).
+- The Jira issue list keeps a bounded cache (#2473).
+- ADE Web's tools pane follows a chat's ADE Cloud iPhone (#2482).
+
+## Windows
+
+- Paired-device files get the right permissions, and the paired store no longer fails with EPERM (#2483, #2481).
+
+## Linux
+
+- Keep Awake holds on GNOME, and an AppImage update leaves no old copy running (#2453).
+
+## iOS
+
+- The iPhone shows queued messages that were restored (#2483).
+- A cover shows while the app updates, and the queued chip no longer stays after a send (#2481).
+- ADE Cloud asks about iPhone tracking once, and the limit card is clearer (#2452).
+- An ADE Cloud iPhone launch waits for the app's screen (#2468).

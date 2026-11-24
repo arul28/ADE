@@ -46,6 +46,8 @@ Agents use these values but never see them. An agent signs in with a saved login
 
 To bring logins over, choose **Import a CSV**. Chrome, Safari, 1Password and Bitwarden export this format.
 
+To reuse another project's secrets, run `ade secrets copy --from <folder or owner/repo>` in this project. It copies every secret of that project, or only the ones `--names` lists. A secret with the same name is kept unless you add `--overwrite`. Only you can run it: an agent's request is refused.
+
 ## First-run setup
 
 When you open a project for the first time, ADE shows a setup dashboard — a single page of status cards rather than a blocking step-by-step wizard. It detects your stack and suggests config so you don't have to write it by hand:
