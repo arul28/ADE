@@ -1,8 +1,8 @@
+import { creditsMode } from "./credits";
 import { gravitySwitches, smallUsesNoHours, syncAllSmallRates, syncSmallRates, type GravityEnv } from "./gravity";
 import { fail, json } from "./http";
-import { CLOUD_PHONE_PROVIDERS } from "./contract";
 import { clerkUserIdsFor, handleOwnerPhoneBeta } from "./phoneBeta";
-import { enforcePhoneAllowance, includedPhoneMinutes, periodPhones, phoneAccess, phoneExtraOn, phoneUsageOf } from "./phones";
+import { enforcePhoneAllowance, includedPhoneMinutes, periodPhones, phoneAccess, phoneCreditsFor, phoneExtraOn, phoneUsageOf } from "./phones";
 import { CLOUD_PLANS, isPaidPlanId } from "./plans";
 import {
   CLOUD_SETTINGS,
@@ -47,10 +47,11 @@ import {
  *   changes what is given, then answers the account as `show` does. Only an
  *   email or userId: just `show`. `plan: null` (and `computers`, `hours`,
  *   `phoneMinutes`) clears that one; `reset: true` clears every test field.
- *   `phone` (`nomac`, `revyl`, `both` or `off`) puts the account on the ADE
- *   Cloud iPhone's beta list with that provider, or takes it off
- *   (`phoneBeta.ts`): not a test, it stays until changed. A test plan leaves
- *   the iPhone minutes the real plan's; `phoneMinutes` sets them.
+ *   `phone` (`on` or `off`) puts the account on the ADE Cloud iPhone's beta
+ *   list, or takes it off (`phoneBeta.ts`): not a test, it stays until
+ *   changed. A tester picks their phones' provider in an ADE beta app. A test
+ *   plan leaves the iPhone minutes the real plan's; `phoneMinutes` sets them
+ *   (iPhone minutes only: under credits the phone draws from the hours).
  * - `POST /cloud/owner/settings` `{ key?, value?, note? }`: sets one switch,
  *   or with no key lists them all with their deploy ceilings.
  */
@@ -69,8 +70,8 @@ const MAX_TEST_HOURS = 10_000;
 const MAX_TEST_COMPUTERS = 100;
 /** The most iPhone minutes a test may give in a period. */
 const MAX_TEST_PHONE_MINUTES = 10_000;
-/** `phone`: the beta list's providers, or off it. */
-const PHONE_CHOICES = [...CLOUD_PHONE_PROVIDERS, "both", "off"] as const;
+/** `phone`: on the beta list, or off it. */
+const PHONE_CHOICES = ["on", "off"] as const;
 type PhoneChoice = (typeof PHONE_CHOICES)[number];
 
 type TestChange = {
@@ -135,7 +136,8 @@ async function describeAccount(env: CloudEnv, account: AccountRow, email: string
     periodPhones(env, account.user_id, account.period_start),
     phoneAccess(env, account.user_id),
   ]);
-  const phoneMinutes = phoneUsageOf(env, account, phoneUse, now);
+  const credits = await phoneCreditsFor(env, account, now);
+  const phoneMinutes = phoneUsageOf(env, account, phoneUse, now, false, credits);
   const testing = hasAccountTest(account);
   return {
     userId: account.user_id,
@@ -165,10 +167,12 @@ async function describeAccount(env: CloudEnv, account: AccountRow, email: string
       usedHours: hoursOf(account.used_milli),
       smallUsesHours: !(await smallUsesNoHours(env, account)),
     },
+    // Credits reach the account (`credits.ts`): its hours are credits, and the iPhone draws from them.
+    credits: credits != null,
     phone: {
       access: phone.access,
-      // On the beta list: its provider (`both`: the router); off it: null.
-      listed: phoneRow ? phoneRow.provider ?? "both" : null,
+      // On the beta list: the tester's own provider pick (`auto`: NoMac, then Revyl on a paid plan); off it: null.
+      listed: phoneRow ? phoneRow.provider ?? "auto" : null,
       planMinutes: includedPhoneMinutes(account),
       minutes: phoneMinutes.included,
       usedMinutes: phoneMinutes.used,
@@ -275,7 +279,7 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
     const ref = { userId: who.userId, ...(who.email ? { email: who.email } : {}) };
     // Its log entry is written with the list change.
     const logged = [ownerLogStatement(env, now, "account_phone", who.userId, { phone: phoneChoice })];
-    const listed = await handleOwnerPhoneBeta(env, phoneChoice === "off" ? { ...ref, enabled: false } : { ...ref, provider: phoneChoice }, now, logged);
+    const listed = await handleOwnerPhoneBeta(env, phoneChoice === "off" ? { ...ref, enabled: false } : ref, now, logged);
     if (!listed.ok) return listed;
   }
   if (testChanged || phoneChoice !== undefined) account = await loadAccount(env, who.userId, now);
@@ -299,8 +303,8 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
   return json({
     ok: true,
     settings,
-    ceilings: { gravity_ads: env.GRAVITY_ADS?.trim() || "off", gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off" },
-    inForce: { gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off" },
+    ceilings: { gravity_ads: env.GRAVITY_ADS?.trim() || "off", gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off", cloud_credits: env.CLOUD_CREDITS?.trim() || "off" },
+    inForce: { gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", cloud_credits: await creditsMode(env, settings) },
   });
 }
 

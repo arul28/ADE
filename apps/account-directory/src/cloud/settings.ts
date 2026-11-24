@@ -14,6 +14,12 @@ export const CLOUD_SETTINGS = {
   gravity_ads: ["off", "testers", "all"],
   /** Real ads and real Index picks instead of Gravity's test ads; held under `GRAVITY_LIVE` (`1`). */
   gravity_live: ["off", "on"],
+  /**
+   * Credits (`credits.ts`): one balance for computers and the ADE Cloud
+   * iPhone, and the word "credits" on every surface. `testers` reaches the
+   * accounts on the iPhone's beta list. Held under `CLOUD_CREDITS`.
+   */
+  cloud_credits: ["off", "testers", "all"],
 } as const satisfies Record<string, readonly [string, ...string[]]>;
 
 export type CloudSettingKey = keyof typeof CLOUD_SETTINGS;

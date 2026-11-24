@@ -39,6 +39,7 @@
  */
 
 import { isCloudBlocked, sendOwnerAlert } from "./blocks";
+import { PHONE_CREDIT_MILLI_PER_MINUTE, creditsOnFor } from "./credits";
 import { captureCloudPhone, type CloudWaitUntil } from "./analytics";
 import { freeCapRefuses } from "./costReport";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
@@ -54,12 +55,15 @@ import {
   cloudPhoneAbilitiesOf,
   cloudPhoneLacks,
   isCloudPhoneDevice,
+  isCloudPhoneProvider,
   type CloudAccountPhone,
   type CloudPhoneAccess,
   type CloudPhoneDevice,
   type CloudPhoneMinutes,
   type CloudPhoneMinutesState,
   type CloudPhoneProvider,
+  type CloudPhoneProviderChoice,
+  type CloudPhoneProviderChoiceAnswer,
   type CloudPhoneStart,
   type CloudPhoneState,
   type CloudPhoneSummary,
@@ -70,12 +74,26 @@ import { readBoundedBody, sha256Hex } from "../sinkUtils";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
 import { forgetRevylAccount } from "./phoneRevyl";
-import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, lockOf, nextAbilities, routeOf, startOnRoute } from "./phoneRoute";
+import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, routeOf, startOnRoute } from "./phoneRoute";
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { sendCloudEmail } from "./email";
 import { fail, json, readJson } from "./http";
-import { PHONE_EXTRA, accountRules, loadAccount, logCloud, planIdOf, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
+import {
+  PHONE_EXTRA,
+  accountRules,
+  earnedLeftForLimits,
+  extraActiveForLimits,
+  includedMilliOf,
+  listComputers,
+  liveUsedMilli,
+  loadAccount,
+  logCloud,
+  planIdOf,
+  reportCloudFailure,
+  type AccountRow,
+  type CloudEnv,
+} from "./store";
 
 /** Webhook delivery ids are kept this long against repeats. */
 const DELIVERY_KEEP_MS = 30 * 24 * 60 * 60_000;
@@ -106,6 +124,10 @@ export type PhoneRow = {
   provider: string;
   /** Revyl's workflow run for the phone, which its device calls name; null for NoMac. */
   provider_ref: string | null;
+  /** 1: it started under credits (`credits.ts`, migration 0059) and counts in `used_milli`, never as iPhone minutes. */
+  credits: number;
+  /** How much of its billed minutes is already in `used_milli` (thousandths of a credit). */
+  credited_milli: number;
 };
 
 /**
@@ -166,26 +188,60 @@ const PHONE_MERGE_SQL = `
   build_started_at = case when cloud_phones.state = 'ended' or excluded.state = 'ended' then null else cloud_phones.build_started_at end,
   updated_at = excluded.updated_at`;
 
+/** A credits phone's billed minutes in thousandths of a credit, as SQL on its `cloud_phones` row. */
+const BILLED_CREDIT_MILLI_SQL = `(((billed_seconds + 59) / 60) * ${PHONE_CREDIT_MILLI_PER_MINUTE})`;
+
+/**
+ * A credits phone's newly billed minutes into its account's credits
+ * (`used_milli`): what its billed minutes add past what was already counted
+ * (`credited_milli`), so a repeated answer adds nothing. Only for a phone
+ * started in the account's current period: one that ran across the turn
+ * stopped then (`period_changed`), and its last minutes are not charged to
+ * the new period. Statements for the save's own batch, after its upsert.
+ */
+function phoneCreditStatements(db: D1Database, phoneId: string, now: number): D1PreparedStatement[] {
+  const newMilli = `(select max(0, ${BILLED_CREDIT_MILLI_SQL} - credited_milli) from cloud_phones
+    where phone_id = ? and credits = 1 and created_at >= cloud_accounts.period_start)`;
+  return [
+    db.prepare(`update cloud_accounts set used_milli = used_milli + ${newMilli}, updated_at = ?
+      where user_id = (select user_id from cloud_phones where phone_id = ? and credits = 1) and coalesce(${newMilli}, 0) > 0`)
+      .bind(phoneId, now, phoneId, phoneId),
+    db.prepare(`update cloud_phones set credited_milli = ${BILLED_CREDIT_MILLI_SQL}
+      where phone_id = ? and credits = 1 and credited_milli < ${BILLED_CREDIT_MILLI_SQL}`).bind(phoneId),
+  ];
+}
+
 /**
  * Keeps what NoMac said about a phone this account started. A late or
  * repeated answer can't undo a newer one (`PHONE_MERGE_SQL`). `free` is
- * whether the account was on free rules when the phone started.
+ * whether the account was on free rules when the phone started; `credits`,
+ * whether credits reached it then (both only for a new row). A credits
+ * phone's new billed minutes go into the account's credits in the same write.
  */
-async function savePhone(env: Pick<CloudEnv, "DB">, userId: string, session: PhoneSession, now: number, free = false, onlyLiveAccount = false): Promise<boolean> {
+async function savePhone(
+  env: Pick<CloudEnv, "DB">,
+  userId: string,
+  session: PhoneSession,
+  now: number,
+  { free = false, onlyLiveAccount = false, credits = false }: { free?: boolean; onlyLiveAccount?: boolean; credits?: boolean } = {},
+): Promise<boolean> {
   const facts = phoneFacts(session, now);
   // `onlyLiveAccount`: a new row only while the account exists, checked in this write, so a deletion
   // that re-keyed its phones meanwhile never gets a row under the person's id back.
-  const saved = await env.DB.prepare(`
-    insert into cloud_phones (phone_id, user_id, device, state, created_at, ready_at, ended_at, billed_seconds, cost_micros, end_reason, free, updated_at, provider, provider_ref)
-    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-    where ? = 0 or exists (select 1 from cloud_accounts where user_id = ? and deleted_at is null)
-    on conflict(phone_id) do update set ${PHONE_MERGE_SQL}
-  `).bind(
-    session.id, userId, facts.device, facts.state, isoMs(session.created_at) ?? now, facts.readyAt, facts.endedAt,
-    facts.billedSeconds, facts.costMicros, facts.endReason, free ? 1 : 0, now, session.provider ?? "nomac", session.ref ?? null,
-    onlyLiveAccount ? 1 : 0, userId,
-  ).run();
-  return (saved.meta.changes ?? 0) > 0;
+  const [saved] = await env.DB.batch([
+    env.DB.prepare(`
+      insert into cloud_phones (phone_id, user_id, device, state, created_at, ready_at, ended_at, billed_seconds, cost_micros, end_reason, free, updated_at, provider, provider_ref, credits)
+      select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      where ? = 0 or exists (select 1 from cloud_accounts where user_id = ? and deleted_at is null)
+      on conflict(phone_id) do update set ${PHONE_MERGE_SQL}
+    `).bind(
+      session.id, userId, facts.device, facts.state, isoMs(session.created_at) ?? now, facts.readyAt, facts.endedAt,
+      facts.billedSeconds, facts.costMicros, facts.endReason, free ? 1 : 0, now, session.provider ?? "nomac", session.ref ?? null, credits ? 1 : 0,
+      onlyLiveAccount ? 1 : 0, userId,
+    ),
+    ...phoneCreditStatements(env.DB, session.id, now),
+  ]);
+  return (saved?.meta.changes ?? 0) > 0;
 }
 
 /**
@@ -195,7 +251,7 @@ async function savePhone(env: Pick<CloudEnv, "DB">, userId: string, session: Pho
  * environment's phones (accounts this Worker doesn't have) are left alone.
  * Answers the row's account and its state before, or null.
  */
-async function updatePhone(env: Pick<CloudEnv, "DB">, session: PhoneSession, now: number): Promise<{ userId: string; wasEnded: boolean } | null> {
+async function updatePhone(env: CloudEnv, session: PhoneSession, now: number): Promise<{ userId: string; wasEnded: boolean } | null> {
   const known = await env.DB.prepare("select user_id, state from cloud_phones where phone_id = ?").bind(session.id).first<{ user_id: string; state: string }>();
   if (known) {
     await savePhone(env, known.user_id, session, now);
@@ -204,7 +260,7 @@ async function updatePhone(env: Pick<CloudEnv, "DB">, session: PhoneSession, now
   const userId = userIdOfLabel(session.label);
   const account = userId ? await env.DB.prepare("select plan, stripe_status from cloud_accounts where user_id = ? and deleted_at is null").bind(userId).first<Pick<AccountRow, "plan" | "stripe_status">>() : null;
   if (!userId || !account) return null;
-  if (!(await savePhone(env, userId, session, now, accountRules(account) === "free", true))) return null;
+  if (!(await savePhone(env, userId, session, now, { free: accountRules(account) === "free", onlyLiveAccount: true, credits: await creditsOnFor(env, userId) }))) return null;
   logCloud("cloud.phone_recovered", { userId, phoneId: session.id });
   return { userId, wasEnded: false };
 }
@@ -273,8 +329,27 @@ export async function stopAccountPhones(env: CloudEnv, userId: string, now: numb
   for (const { phone_id: phoneId } of live.results ?? []) await stopPhone(env, userId, phoneId, now, why);
 }
 
-/** NoMac's billed minutes of the phones, never an estimate: what billing counts. */
-export const settledPhoneMinutes = (rows: readonly PhoneRow[]): number => phoneMinutesUsed(rows, 0, true);
+/** The phones that count as iPhone minutes: every one but those started under credits (those count in `used_milli`). */
+const minutePhones = (rows: readonly PhoneRow[]): PhoneRow[] => rows.filter((row) => row.credits !== 1);
+
+/** NoMac's billed minutes of the minute phones, never an estimate: what billing counts. */
+export const settledPhoneMinutes = (rows: readonly PhoneRow[]): number => phoneMinutesUsed(minutePhones(rows), 0, true);
+
+/**
+ * The credits the period's credits phones used (thousandths): what is in
+ * `used_milli` already, and a running one's time past that (`unsettled`).
+ */
+function phoneCreditsOf(rows: readonly PhoneRow[], now: number): { usedMilli: number; unsettledMilli: number } {
+  let usedMilli = 0;
+  let unsettledMilli = 0;
+  for (const row of rows) {
+    if (row.credits !== 1) continue;
+    const milli = rowMinutes(row, now, false) * PHONE_CREDIT_MILLI_PER_MINUTE;
+    usedMilli += Math.max(milli, row.credited_milli);
+    unsettledMilli += Math.max(0, milli - row.credited_milli);
+  }
+  return { usedMilli, unsettledMilli };
+}
 
 /* ---- Who may use it, and how much ---- */
 
@@ -291,17 +366,34 @@ const anyProviderConfigured = (env: CloudEnv): boolean => CLOUD_PHONE_PROVIDERS.
 const anyProviderKey = (env: CloudEnv): boolean => CLOUD_PHONE_PROVIDERS.some((provider) => PHONE_PROVIDERS[provider].hasKey(env));
 
 /**
- * Who may use the phone, and the provider the owner locked the account to.
- * One read of the beta row, which says both.
+ * Who may use the phone, and for a tester (on the beta list) the provider
+ * they picked for their phones (`choice`, `auto` for the fixed order). One
+ * read of the beta row, which says both.
  */
-export async function phoneAccess(env: CloudEnv, userId: string): Promise<{ access: CloudPhoneAccess; lock: CloudPhoneProvider | null }> {
+export async function phoneAccess(env: CloudEnv, userId: string): Promise<{ access: CloudPhoneAccess; choice: { provider: CloudPhoneProviderChoice; picked: CloudPhoneProvider | null } | null }> {
   // A key, not a start: a provider switched off for new phones (Revyl's) keeps its running ones usable.
-  if (!anyProviderKey(env)) return { access: "off", lock: null };
+  if (!anyProviderKey(env)) return { access: "off", choice: null };
   const setting = phoneAccessSetting(env);
-  if (setting === "off") return { access: "off", lock: null };
+  if (setting === "off") return { access: "off", choice: null };
   const row = await env.DB.prepare("select provider from cloud_phone_beta where user_id = ?").bind(userId).first<{ provider: string | null }>();
+  const picked = pickedProviderOf(row?.provider);
   // Not on the list (under `beta`): hidden everywhere (Pricing v2). `soon` is never sent any more.
-  return { access: setting === "all" || row ? "on" : "off", lock: lockOf(row?.provider) };
+  return { access: setting === "all" || row ? "on" : "off", choice: row ? { provider: picked ?? "auto", picked } : null };
+}
+
+/**
+ * `POST /cloud/phone/provider` `{ provider }`: a tester picks the provider
+ * every phone of theirs starts on (`auto`: NoMac, then Revyl on a paid plan).
+ * Only on the beta list; the live phone keeps its own, the next one follows.
+ */
+async function setProviderChoice(request: Request, env: CloudEnv, userId: string): Promise<Response> {
+  const body = await readJson(request);
+  const provider = body?.provider;
+  if (provider !== "auto" && !isCloudPhoneProvider(provider)) return fail("bad_request", `provider is auto, ${CLOUD_PHONE_PROVIDERS.join(" or ")}.`, 400);
+  const saved = await env.DB.prepare("update cloud_phone_beta set provider = ? where user_id = ?").bind(provider === "auto" ? null : provider, userId).run();
+  if ((saved.meta?.changes ?? 0) !== 1) return fail("phone_not_on_account", "Only ADE Cloud iPhone testers can pick a provider.", 403);
+  logCloud("cloud.phone_provider_picked", { userId, provider });
+  return json({ ok: true, provider } satisfies CloudPhoneProviderChoiceAnswer);
 }
 
 /** The plan's minutes: none on a free plan the free-plan checks hold, as with free hours. */
@@ -355,6 +447,8 @@ type PhoneUsage = {
   used: number;
   left: number;
   state: CloudPhoneMinutesState;
+  /** Under credits: the credits the iPhone used this period (thousandths). Null on iPhone minutes. */
+  creditsUsedMilli: number | null;
   extra: {
     available: boolean;
     enabled: boolean;
@@ -366,25 +460,76 @@ type PhoneUsage = {
   };
 };
 
-/** Where an account's minutes stand this period. `settledOnly` leaves out the running phone's estimate (for billing). */
-export function phoneUsageOf(env: CloudEnv, account: AccountRow, rows: readonly PhoneRow[], now: number, settledOnly = false): PhoneUsage {
-  // What the limits count (a test's minutes) and what billing counts (the plan's) part only under a test.
-  const included = phoneMinutesForLimits(account);
-  const used = phoneMinutesUsed(rows, now, settledOnly);
+/**
+ * Credits in force for an account's phone (`credits.ts`): the account's
+ * hours used now, computers' running stretches included. Null when credits
+ * don't reach the account (its phone counts iPhone minutes).
+ */
+export type PhoneCredits = { liveUsedMilli: number };
+
+/**
+ * The account's `PhoneCredits`, or null: a read of its computers, only when
+ * credits reach it. `reload`: read the account again first (a phone's save
+ * since `account` was read may have added to `used_milli`).
+ */
+export async function phoneCreditsFor(env: CloudEnv, account: AccountRow, now: number, { reload = false }: { reload?: boolean } = {}): Promise<PhoneCredits | null> {
+  if (!(await creditsOnFor(env, account.user_id))) return null;
+  const read = reload ? await loadAccount(env, account.user_id, now) : account;
+  return { liveUsedMilli: liveUsedMilli(read, await listComputers(env, account.user_id), now) };
+}
+
+/**
+ * Where an account's minutes stand this period. `settledOnly` leaves out the
+ * running phone's estimate (for billing).
+ *
+ * Under credits (`credits` set) the phone has no minutes of its own: what it
+ * may use is what the account's credits allow, one credit a minute (the
+ * plan's, then earned ones, then any minute while extra hours are on, which
+ * bill it as an extra hour). `included` is then what it used plus what it may
+ * still use, so an older client's "used of included" still reads right.
+ * Minutes of phones from before credits (`minutePhones`) keep their own
+ * billing either way.
+ */
+export function phoneUsageOf(env: CloudEnv, account: AccountRow, rows: readonly PhoneRow[], now: number, settledOnly = false, credits: PhoneCredits | null = null): PhoneUsage {
+  const minuteRows = minutePhones(rows);
   // A test's minutes are the whole limit: no extra minutes are offered or used past them.
   const underTest = account.test_phone_minutes != null;
-  const available = !underTest && extraPhoneOffered(env) && accountRules(account) === "paid";
-  const enabled = !underTest && phoneExtraOn(env, account);
   const limitCents = account.phone_extra_limit_cents ?? null;
-  const billableMinutes = billableExtraMinutes({ used, included: includedPhoneMinutes(account), enabled, limitCents, owed: inPeriod(account, account.phone_extra_owed_minutes) });
-  const leftMinutes = enabled ? Math.max(0, extraLimitMinutes(limitCents) - Math.max(0, used - included)) : 0;
+  // Extra iPhone minutes billed this period: only minute phones', past the real plan's minutes.
+  const minutesUsed = phoneMinutesUsed(minuteRows, now, settledOnly);
+  const minutesEnabled = !underTest && phoneExtraOn(env, account);
+  const billableMinutes = billableExtraMinutes({ used: minutesUsed, included: includedPhoneMinutes(account), enabled: minutesEnabled, limitCents, owed: inPeriod(account, account.phone_extra_owed_minutes) });
+  if (credits) {
+    const phone = phoneCreditsOf(rows, now);
+    // The hours used now, with the running phone's time its provider hasn't billed yet.
+    const live = credits.liveUsedMilli + phone.unsettledMilli;
+    const leftMilli = Math.max(0, includedMilliOf(account) - live) + Math.max(0, earnedLeftForLimits(account, live));
+    const left = Math.floor(leftMilli / PHONE_CREDIT_MILLI_PER_MINUTE);
+    const extraOn = extraActiveForLimits(account);
+    const used = phoneMinutesUsed(rows, now, settledOnly);
+    return {
+      included: used + left,
+      used,
+      left,
+      // Credits have their own warnings (the hours emails): the phone sends none of its own.
+      state: "none",
+      creditsUsedMilli: phone.usedMilli,
+      extra: { available: false, enabled: false, limitCents: null, billableMinutes, leftMinutes: extraOn ? CLOUD_PHONE_MAX_MINUTES : 0 },
+    };
+  }
+  // What the limits count (a test's minutes) and what billing counts (the plan's) part only under a test.
+  const included = phoneMinutesForLimits(account);
+  const used = minutesUsed;
+  const available = !underTest && extraPhoneOffered(env) && accountRules(account) === "paid";
+  const leftMinutes = minutesEnabled ? Math.max(0, extraLimitMinutes(limitCents) - Math.max(0, used - included)) : 0;
   const state: CloudPhoneMinutesState = included > 0 && used >= included ? "zero" : included > 0 && used >= included * 0.8 ? "warn80" : "none";
   return {
     included,
     used,
     left: Math.max(0, included - used),
     state,
-    extra: { available, enabled, limitCents, billableMinutes, leftMinutes: Number.isFinite(leftMinutes) ? leftMinutes : CLOUD_PHONE_MAX_MINUTES },
+    creditsUsedMilli: null,
+    extra: { available, enabled: minutesEnabled, limitCents, billableMinutes, leftMinutes: Number.isFinite(leftMinutes) ? leftMinutes : CLOUD_PHONE_MAX_MINUTES },
   };
 }
 
@@ -393,12 +538,18 @@ const allowedMinutes = (usage: PhoneUsage): number => usage.left + usage.extra.l
 
 const minutesOf = (usage: PhoneUsage): CloudPhoneMinutes => ({ included: usage.included, used: usage.used, left: usage.left });
 
-/** `CloudAccountState.phone`, from D1 alone (no call to NoMac): the account read is polled. */
-export async function phoneAccountState(env: CloudEnv, account: AccountRow, now: number): Promise<CloudAccountPhone> {
-  const { access } = await phoneAccess(env, account.user_id);
-  const usage = phoneUsageOf(env, account, await periodPhones(env, account.user_id, account.period_start), now);
+/**
+ * `CloudAccountState.phone`, from D1 alone (no call to NoMac): the account
+ * read is polled. `credits`: the account's credits when they reach it (the
+ * caller already read its hours).
+ */
+export async function phoneAccountState(env: CloudEnv, account: AccountRow, now: number, credits: PhoneCredits | null): Promise<CloudAccountPhone> {
+  const { access, choice } = await phoneAccess(env, account.user_id);
+  const usage = phoneUsageOf(env, account, await periodPhones(env, account.user_id, account.period_start), now, false, credits);
   return {
     access,
+    ...(choice ? { providerChoice: choice.provider } : {}),
+    ...(usage.creditsUsedMilli != null ? { creditsUsedMilli: usage.creditsUsedMilli } : {}),
     minutes: access === "on" ? minutesOf(usage) : null,
     state: access === "on" ? usage.state : "none",
     extra: {
@@ -441,6 +592,8 @@ type PhoneContext = {
   liveRowId: string | null;
   /** This period's phone rows, newest first. */
   rows: PhoneRow[];
+  /** The account's credits when they reach it (`credits.ts`), or null: the phone counts iPhone minutes. */
+  credits: PhoneCredits | null;
 };
 
 /** The account, its usage and its live phone: one NoMac read, and only when a phone is live. */
@@ -471,7 +624,9 @@ async function phoneContext(env: CloudEnv, userId: string, now: number): Promise
     }
   }
   const newest = await env.DB.prepare("select phone_id from cloud_phones where user_id = ? order by created_at desc limit 1").bind(userId).first<{ phone_id: string }>();
-  return { account, label, usage: phoneUsageOf(env, account, rows, now), live, lastPhoneId: newest?.phone_id ?? null, liveRowId: unreadLiveRowId, rows };
+  // Read after the live phone's save: a credits phone's new minutes are in `used_milli` by then.
+  const credits = await phoneCreditsFor(env, account, now, { reload: liveRow != null });
+  return { account, label, usage: phoneUsageOf(env, account, rows, now, false, credits), live, lastPhoneId: newest?.phone_id ?? null, liveRowId: unreadLiveRowId, rows, credits };
 }
 
 /** A live phone from an earlier period ran under that period's terms. */
@@ -557,6 +712,12 @@ function startRefusal(context: PhoneContext): { code: string; message: string } 
   const { usage, account } = context;
   if (allowedMinutes(usage) > 0) return null;
   const resets = formatDay(account.period_end);
+  if (context.credits) {
+    const next = accountRules(account) === "free"
+      ? "Pick a plan in Settings › ADE Cloud for more"
+      : "Turn on extra credits in Settings › ADE Cloud to keep going";
+    return { code: "phone_credits_out", message: `Your ADE Cloud credits are used up, and the iPhone uses one a minute. ${next}, or wait until ${resets}.` };
+  }
   if (usage.included === 0 && accountRules(account) === "free") {
     return { code: "phone_free_held", message: "The free plan's iPhone minutes need the same check as its free hours. Finish it in Settings › ADE Cloud, or pick a plan." };
   }
@@ -575,8 +736,12 @@ function startRefusal(context: PhoneContext): { code: string; message: string } 
  * caller (`routes.ts` checked the sign-in and the owner's block first).
  */
 export async function routePhone(request: Request, path: string, env: CloudEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
-  if (path !== CLOUD_PATHS.phone && path !== CLOUD_PATHS.phoneView && path !== CLOUD_PATHS.phoneCall) return null;
-  const { access, lock } = await phoneAccess(env, userId);
+  if (path !== CLOUD_PATHS.phone && path !== CLOUD_PATHS.phoneView && path !== CLOUD_PATHS.phoneCall && path !== CLOUD_PATHS.phoneProvider) return null;
+  const { access, choice } = await phoneAccess(env, userId);
+  const picked = choice?.picked ?? null;
+  if (path === CLOUD_PATHS.phoneProvider) {
+    return request.method === "POST" ? setProviderChoice(request, env, userId) : fail("not_found", "ADE Cloud has no such route.", 404);
+  }
 
   if (path === CLOUD_PATHS.phone && request.method === "GET") {
     if (access !== "on") return json({ access, minutes: null, phone: null } satisfies CloudPhoneState);
@@ -587,7 +752,7 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
       minutes: minutesOf(context.usage),
       phone: context.live ? summaryOfSession(context.live.session, context.live.stopNotice) : null,
       recent: recentPhonesOf(context.rows, now),
-      abilities: context.live ? [...CLOUD_PHONE_PROVIDER_ABILITIES[context.live.where.provider]] : nextAbilities(env, lock),
+      abilities: context.live ? [...CLOUD_PHONE_PROVIDER_ABILITIES[context.live.where.provider]] : nextAbilities(env, picked),
     } satisfies CloudPhoneState);
   }
 
@@ -623,7 +788,7 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
   }
   const context = await phoneContext(env, userId, now);
   if (context instanceof Response) return context;
-  if (starting) return startPhone(request, env, userId, now, context, lock, waitUntil);
+  if (starting) return startPhone(request, env, userId, now, context, picked, waitUntil);
   if (request.method !== "POST") return fail("not_found", "ADE Cloud has no such route.", 404);
 
   const live = context.live;
@@ -645,9 +810,10 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
  * `POST /cloud/phone` `{ device?, attach?, providers?, needs? }`: starts the
  * account's phone or answers its live one. `providers` lists the providers
  * the client can drive (a brain from before Revyl sends none: NoMac only);
- * `needs`, the abilities the phone must have (`routeOf`).
+ * `needs`, the abilities a running phone must have. A new phone's provider
+ * never follows them (`routeOf`): an ability it lacks answers as unavailable.
  */
-async function startPhone(request: Request, env: CloudEnv, userId: string, now: number, context: PhoneContext, lock: CloudPhoneProvider | null, waitUntil?: CloudWaitUntil): Promise<Response> {
+async function startPhone(request: Request, env: CloudEnv, userId: string, now: number, context: PhoneContext, picked: CloudPhoneProvider | null, waitUntil?: CloudWaitUntil): Promise<Response> {
   const plan = planIdOf(context.account);
   const body = await readJson(request);
   if (!body) return fail("bad_request", "That request could not be read.", 400);
@@ -706,7 +872,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       return fail("phone_unavailable", "Your ADE Cloud iPhone isn't answering right now. Try again in a moment, or stop it first.", 503);
     }
     const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
-    const routed = routeOf(env, lock, drives, needs);
+    const routed = routeOf(env, { picked, free: accountRules(context.account) === "free" }, drives);
     if (routed instanceof Response) return routed;
     const route = heldToUnsureStart(routed, context.account, now);
     if (route instanceof Response) {
@@ -727,7 +893,7 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       begun = await startOnRoute(env, route, userId, { userId, label: context.label, device, minutes, lastPhoneId: context.lastPhoneId, now });
       // The account was deleted while the provider started it: no row comes back under the person's id,
       // and the phone stops rather than run unbilled.
-      if (!(begun instanceof Response) && !(await savePhone(env, userId, begun.started.session, now, accountRules(context.account) === "free", true))) {
+      if (!(begun instanceof Response) && !(await savePhone(env, userId, begun.started.session, now, { free: accountRules(context.account) === "free", onlyLiveAccount: true, credits: context.credits != null }))) {
         const { provider: gone, started: { session: orphan } } = begun;
         const stopped = await PHONE_PROVIDERS[gone].stop(env, userId, orphan.id, { provider: gone, ref: orphan.ref ?? null, device: orphan.device ?? null })
           .catch((): { ok: false } => ({ ok: false }));
@@ -966,6 +1132,8 @@ export async function runPhoneChecks(env: CloudEnv, now: number): Promise<void> 
     try {
       const account = await loadAccount(env, userId, now);
       if ((await phoneAccess(env, userId)).access !== "on") continue;
+      // Under credits the phone has no minutes of its own to warn about: the hours emails cover the balance.
+      if (await creditsOnFor(env, userId)) continue;
       const usage = phoneUsageOf(env, account, await periodPhones(env, userId, account.period_start), now);
       await warnPhoneMinutes(env, account, usage, now);
     } catch (error) {

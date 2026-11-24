@@ -29,7 +29,11 @@ import {
 const NOMAC_ORIGIN = "https://nomac.app";
 const NOMAC_SIMULATOR_BASE = `${NOMAC_ORIGIN}/api/v1/simulator`;
 const REQUEST_TIMEOUT_MS = 20_000;
-/** NoMac's price for a phone: $0.90 an hour, billed per whole minute. The spend cap is counted in it. */
+/**
+ * The spend cap a phone starts with, a minute of its time limit: $0.90 an
+ * hour. NoMac bills ADE $0.60 an hour per whole minute (since 2026-11-23), so
+ * the time limit stops a phone first; the cap is the backstop.
+ */
 const NOMAC_MICROS_PER_MINUTE = 15_000;
 /** The visitor signature inside a view link lives far shorter than the link (NoMac's own ceiling is 15 min). */
 const VISITOR_SECONDS = 600;

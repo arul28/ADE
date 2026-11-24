@@ -47,8 +47,8 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   NOMAC_WEBHOOK_SECRET?: string;
   /** Secret. ADE's Revyl partner key for the ADE Cloud iPhone on Revyl (`phoneRevyl.ts`). Unset: no phone starts on Revyl. */
   REVYL_PARTNER_API_KEY?: string;
-  /** Who runs new phones: `nomac` (default) or `revyl`; the owner's per-account choice on the beta list wins (`phones.ts`). */
-  CLOUD_PHONE_PROVIDER?: string;
+  /** The highest the `cloud_credits` setting may go (`credits.ts`): `off` (default, a hard off), `testers` or `all`. */
+  CLOUD_CREDITS?: string;
   /** The owner's switch for Revyl: `on` lets new phones start there (with the key set). Unset or anything else: NoMac only (`revylEnabled`). */
   CLOUD_PHONE_REVYL?: string;
   /** Who may use the ADE Cloud iPhone: `beta` (default, the owner's list), `all`, or `off` (`phones.ts`). */
@@ -1355,14 +1355,13 @@ export async function loadAccount(env: CloudEnv, userId: string, now: number): P
  * address the owner typed) when one is given and the one it had otherwise.
  * Shared by the owner's add, a waiting email's claim and its hourly retry.
  * `whilePending`: a claim adds only while that waiting email is still there,
- * in the same write, so an owner's remove during the Clerk lookup holds, and
- * takes the provider lock the owner gave the waiting email.
+ * in the same write, so an owner's remove during the Clerk lookup holds. The
+ * row's `provider` is the tester's own pick (`phones.ts`): never set here.
  */
 export function phoneBetaAddStatement(db: D1Database, userId: string, email: string | null, now: number, { whilePending = false }: { whilePending?: boolean } = {}): D1PreparedStatement {
   const upsert = "on conflict(user_id) do update set email = coalesce(excluded.email, cloud_phone_beta.email)";
   return whilePending
-    // The waiting email's provider comes along (`both` too; an older lock on the row stays when it has none).
-    ? db.prepare(`insert into cloud_phone_beta (user_id, email, added_at, provider) select ?, ?, ?, provider from cloud_phone_beta_pending where email = ? ${upsert}, provider = coalesce(excluded.provider, cloud_phone_beta.provider)`)
+    ? db.prepare(`insert into cloud_phone_beta (user_id, email, added_at) select ?, ?, ? from cloud_phone_beta_pending where email = ? ${upsert}`)
       .bind(userId, email, now, email)
     : db.prepare(`insert into cloud_phone_beta (user_id, email, added_at) values (?, ?, ?) ${upsert}`).bind(userId, email, now);
 }

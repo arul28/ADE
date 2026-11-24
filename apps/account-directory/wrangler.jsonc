@@ -102,12 +102,17 @@
   // the owner's switch: only `on` lets a new phone start on Revyl; unset (the
   // default), no new phone is Revyl's (a tester locked to Revyl can't start
   // one), and a Revyl phone already running is still read, billed and
-  // stopped. A beta row's provider locks that tester to one provider; with
-  // none (`both`), the router starts the phone on var CLOUD_PHONE_PROVIDER
-  // (`nomac` or `revyl`; NoMac when unset), on the other when that one
-  // refuses, and on the one that has an ability the start needs (phoneRoute.ts
-  // `routeOf`). With neither provider able to start phones, the phone reads
-  // `off`.
+  // stopped. The order is fixed (phoneRoute.ts `routeOf`): NoMac first, then
+  // Revyl only on a paid plan when NoMac refuses; a free plan's phone is
+  // NoMac's alone. A tester (on the beta list) may pick one provider for their
+  // phones from an ADE beta app. With neither provider able to start phones,
+  // the phone reads `off`.
+  //
+  // Var CLOUD_CREDITS (src/cloud/credits.ts, migration 0059): the ceiling of
+  // the instant `cloud_credits` setting (`off`, a hard off; `testers`, the
+  // iPhone beta list; `all`), which starts off and is flipped with
+  // scripts/cloud-owner.mjs. On, hours are credits and the iPhone draws from
+  // them at one a minute.
   //
   // SECRET — GRAVITY_API_KEY (sponsored cards and the Index, src/cloud/gravity.ts)
   // Gravity's publisher key (trygravity.com): ads, Index searches and the
@@ -337,9 +342,13 @@
         "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1UdF4HPWulQjqSYPydFHhXGd",
         "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
         "CLOUD_PHONE_ACCESS": "beta",
-        // Revyl may start phones (owner's yes, 2026-11-23). Who gets it is the
-        // beta list's per-email provider: a `nomac` lock never reaches Revyl.
+        // Revyl may start phones (owner's yes, 2026-11-23): second, after NoMac,
+        // and only on paid plans (or a tester's own pick).
         "CLOUD_PHONE_REVYL": "on",
+        // Credits (src/cloud/credits.ts): the ceiling of the instant
+        // `cloud_credits` setting, which starts off (no row reads off). The
+        // owner flips that setting.
+        "CLOUD_CREDITS": "all",
         // Sponsored cards and the Index (src/cloud/gravity.ts): the ceiling of
         // the instant `gravity_ads` setting, which starts off (no row reads
         // off). The owner flips that setting; `off` here is the hard off.

@@ -1,14 +1,14 @@
 /**
  * The owner's beta list for the ADE Cloud iPhone (`cloud_phone_beta`): who may
  * use it while `CLOUD_PHONE_ACCESS` is `beta` (`phones.ts` reads the list),
- * the emails still waiting for an account (`cloud_phone_beta_pending`), and
- * the provider a tester is locked to (`routeOf` in `phones.ts`).
+ * and the emails still waiting for an account (`cloud_phone_beta_pending`).
+ * A tester picks their own phones' provider from a beta app
+ * (`POST /cloud/phone/provider`, kept in the row's `provider`); the owner no
+ * longer sets it.
  */
 
-import { CLOUD_PHONE_PROVIDERS, isCloudPhoneProvider } from "./contract";
 import { fail, json } from "./http";
 import { phoneAccessSetting, stopAccountPhones } from "./phones";
-import { providerSetting } from "./phoneRoute";
 import { logCloud, phoneBetaAddStatement, reportCloudFailure, type CloudEnv } from "./store";
 
 /** Clerk's lookups wait this long. */
@@ -87,10 +87,10 @@ export async function resolvePendingPhoneBeta(env: CloudEnv, now: number): Promi
 }
 
 /**
- * `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled?, provider? }`
- * adds (or with `enabled: false` removes) an account; `{}` lists the list and
- * the emails still waiting. `provider`: `nomac` or `revyl` locks the account
- * to that one; `both` (or null) lets the router pick; left out, it stays. `safety.ts` checked the owner's token before this runs. An
+ * `POST /cloud/owner/phone-beta` `{ email? | userId?, enabled? }` adds (or
+ * with `enabled: false` removes) an account; `{}` lists the list (with each
+ * tester's own provider pick) and the emails still waiting. `safety.ts`
+ * checked the owner's token before this runs. An
  * email is looked up in Clerk once; the list keeps the user id (and the
  * address the owner typed, for the owner's own reading). An email no ADE
  * account has yet waits (`pending: true`, `cloud_phone_beta_pending`) until
@@ -106,12 +106,10 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
   if (!typedEmail && !typedUserId) {
     const rows = await env.DB.prepare("select user_id, email, added_at, provider from cloud_phone_beta order by added_at").all<{ user_id: string; email: string | null; added_at: number; provider: string | null }>();
     const pending = await env.DB.prepare("select email, added_at, provider from cloud_phone_beta_pending order by added_at").all<{ email: string; added_at: number; provider: string | null }>();
-    const shown = <T extends { provider: string | null }>(row: T) => ({ ...row, provider: row.provider ?? "both" });
-    return json({ ok: true, access: phoneAccessSetting(env), defaultProvider: providerSetting(env), users: (rows.results ?? []).map(shown), pending: (pending.results ?? []).map(shown) });
+    const shown = <T extends { provider: string | null }>(row: T) => ({ ...row, provider: row.provider ?? "auto" });
+    return json({ ok: true, access: phoneAccessSetting(env), users: (rows.results ?? []).map(shown), pending: (pending.results ?? []).map(shown) });
   }
-  // `provider`: the tester is locked to one (`nomac`, `revyl`); `both` or null: the router picks.
-  const provider = body.provider === null || body.provider === "both" ? null : body.provider === undefined ? undefined : isCloudPhoneProvider(body.provider) ? body.provider : false;
-  if (provider === false) return fail("bad_request", `provider is ${CLOUD_PHONE_PROVIDERS.join(", ")} or both.`, 400);
+  if (body.provider !== undefined) return fail("bad_request", "Testers pick their own provider in an ADE beta app now; the list only adds and removes.", 400);
   if (typedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail)) return fail("bad_request", "That email isn't valid.", 400);
   if (typedUserId && !/^[A-Za-z0-9_-]{1,100}$/.test(typedUserId)) return fail("bad_request", "That userId isn't valid.", 400);
   let userIds = typedUserId ? [typedUserId] : [];
@@ -126,14 +124,9 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
         logCloud("cloud.phone_beta_pending_removed");
         return json({ ok: true, removed: [], pending: true });
       }
-      // A waiting email keeps its provider until its account appears (`phoneBetaAddStatement`). `both` is
-      // stored as the word, so it replaces an older lock on that account's row (null there keeps it).
-      await env.DB.prepare(provider === undefined
-        ? "insert into cloud_phone_beta_pending (email, added_at) values (?, ?) on conflict(email) do nothing"
-        : "insert into cloud_phone_beta_pending (email, added_at, provider) values (?, ?, ?) on conflict(email) do update set provider = excluded.provider")
-        .bind(...(provider === undefined ? [typedEmail, now] : [typedEmail, now, provider ?? "both"])).run();
-      logCloud("cloud.phone_beta_pending_added", provider !== undefined ? { provider: provider ?? "both" } : {});
-      return json({ ok: true, added: [], pending: true, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });
+      await env.DB.prepare("insert into cloud_phone_beta_pending (email, added_at) values (?, ?) on conflict(email) do nothing").bind(typedEmail, now).run();
+      logCloud("cloud.phone_beta_pending_added");
+      return json({ ok: true, added: [], pending: true });
     }
     userIds = found;
   }
@@ -146,19 +139,16 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
     logCloud("cloud.phone_beta_removed", { count: userIds.length });
     return json({ ok: true, removed: userIds });
   }
-  // The grants, their provider and the waiting email's end in one write: a start in between never sees a
-  // grant without its provider, and a failed write leaves the email waiting for its retry. The provider:
-  // the one typed, else the waiting email's (as its own claim would carry it), else the row's own.
-  // A provider change reaches the next phone; the live one keeps its own.
+  // The grants and the waiting email's end in one write: a failed write leaves the email waiting for its retry.
+  // A tester's own provider pick (the row's `provider`) stays as they set it.
   await env.DB.batch([
     ...userIds.flatMap((userId) => [
       phoneBetaAddStatement(env.DB, userId, typedEmail || null, now),
       ...(typedEmail ? [phoneBetaAddStatement(env.DB, userId, typedEmail, now, { whilePending: true })] : []),
-      ...(provider !== undefined ? [env.DB.prepare("update cloud_phone_beta set provider = ? where user_id = ?").bind(provider, userId)] : []),
     ]),
     ...pendingDelete,
     ...alongside,
   ]);
-  logCloud("cloud.phone_beta_added", { count: userIds.length, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });
-  return json({ ok: true, added: userIds, ...(provider !== undefined ? { provider: provider ?? "both" } : {}) });
+  logCloud("cloud.phone_beta_added", { count: userIds.length });
+  return json({ ok: true, added: userIds });
 }

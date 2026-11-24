@@ -1,14 +1,17 @@
 /**
- * Which provider runs an account's phone: the provider table, the owner's
- * per-email lock or the router, and the start that fails over along the
- * route. `phones.ts` owns everything else (rows, minutes, access, routes).
+ * Which provider runs an account's phone, and the start that fails over along
+ * the route. `phones.ts` owns everything else (rows, minutes, access, routes).
+ *
+ * The order is fixed: NoMac first, Revyl second, and Revyl only on a paid
+ * plan, as the fallback when NoMac refuses. A free plan's phone is NoMac's
+ * alone; when NoMac refuses it, the person is told the phone is busy. A tester
+ * (on the iPhone's beta list) may pick one provider for every phone of theirs
+ * (`cloud_phone_beta.provider`, set from a beta app's toggle,
+ * `POST /cloud/phone/provider`): only that one, never another quietly.
  */
 import {
-  CLOUD_PHONE_ABILITIES,
   CLOUD_PHONE_ABILITY_WORDS,
   CLOUD_PHONE_PROVIDER_ABILITIES,
-  CLOUD_PHONE_PROVIDERS,
-  cloudPhoneLacks,
   isCloudPhoneProvider,
   type CloudPhoneAbility,
   type CloudPhoneProvider,
@@ -21,9 +24,8 @@ import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
 
 export const PHONE_PROVIDERS: Record<CloudPhoneProvider, PhoneProviderServer> = { nomac: NOMAC_PHONE, revyl: REVYL_PHONE };
 
-/** The server's `CLOUD_PHONE_PROVIDER`: `revyl`, else NoMac. */
-export const providerSetting = (env: Pick<CloudEnv, "CLOUD_PHONE_PROVIDER">): CloudPhoneProvider =>
-  env.CLOUD_PHONE_PROVIDER?.trim().toLowerCase() === "revyl" ? "revyl" : "nomac";
+/** The order a phone tries providers in: NoMac, then Revyl. */
+const PROVIDER_ORDER: readonly CloudPhoneProvider[] = ["nomac", "revyl"];
 
 /**
  * The providers a start's client says it can drive (`providers` in its body).
@@ -41,53 +43,41 @@ export const abilityWords = (abilities: readonly CloudPhoneAbility[]): string =>
   return words.length > 1 ? `${words.slice(0, -1).join(", ")} and ${words.at(-1)}` : words[0] ?? "";
 };
 
-/** Why a start went where it did (logs, PostHog): see `CloudPhoneEvent.route`. */
-export type PhoneRoute = { order: CloudPhoneProvider[]; reason: "lock" | "default" | "need" };
+/**
+ * Why a start went where it did (logs, PostHog): see `CloudPhoneEvent.route`.
+ * `busyWhenRefused`: a refusal of the whole route is told as the busy answer
+ * (a free plan's, which has no fallback).
+ */
+export type PhoneRoute = { order: CloudPhoneProvider[]; reason: "choice" | "default"; busyWhenRefused: boolean };
+
+/** A free plan's phone NoMac turned away: no fallback, and the plan that has one. */
+export const phoneBusy = (): Response =>
+  fail("phone_busy", "The ADE Cloud iPhone is busy right now because of heavy use. Try again in a few minutes, or move to a paid plan for priority access.", 503);
+
+/** The provider a tester picked (`cloud_phone_beta.provider`), or null: the fixed order. */
+export const pickedProviderOf = (provider: string | null | undefined): CloudPhoneProvider | null => (isCloudPhoneProvider(provider) ? provider : null);
 
 /**
- * The providers the account's next phone may start on, in order.
- *
- * - **A lock:** the owner set this account to one provider
- *   (`cloud_phone_beta.provider`). Only that one, never another quietly: a
- *   tester always knows what they test. It can't start (Revyl's switch off),
- *   this ADE can't drive it, or it lacks a need: the start is refused.
- * - **The router**, for everyone else: the server's default
- *   (`CLOUD_PHONE_PROVIDER`, NoMac when unset) first, then the other, each only
- *   where it can start phones here and this client drives it. A start that
- *   `needs` an ability goes only where it is; `startPhone` tries the next one
- *   when the first refuses.
+ * The providers the account's next phone may start on, in order: the
+ * tester's pick alone, else NoMac, then Revyl on a paid plan. Each only where
+ * it can start phones here and this client drives it.
  */
-export function routeOf(env: CloudEnv, lock: CloudPhoneProvider | null, drives: (provider: CloudPhoneProvider) => boolean, needs: readonly CloudPhoneAbility[]): PhoneRoute | Response {
+export function routeOf(env: CloudEnv, { picked, free }: { picked: CloudPhoneProvider | null; free: boolean }, drives: (provider: CloudPhoneProvider) => boolean): PhoneRoute | Response {
   const unavailable = (): Response => fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
-  if (lock) {
-    const lacked = cloudPhoneLacks(lock, needs);
-    if (lacked.length) return fail("phone_cant", `Your ADE Cloud iPhone can't ${abilityWords(lacked)}.`, 409);
-    if (!PHONE_PROVIDERS[lock].canStart(env)) return unavailable();
-    if (!drives(lock)) return fail("phone_needs_update", "Update ADE to use your ADE Cloud iPhone.", 409);
-    return { order: [lock], reason: "lock" };
+  if (picked) {
+    if (!PHONE_PROVIDERS[picked].canStart(env)) return unavailable();
+    if (!drives(picked)) return fail("phone_needs_update", "Update ADE to use your ADE Cloud iPhone.", 409);
+    return { order: [picked], reason: "choice", busyWhenRefused: false };
   }
-  const preferred = providerSetting(env);
-  const usable = [preferred, ...CLOUD_PHONE_PROVIDERS.filter((provider) => provider !== preferred)]
-    .filter((provider) => PHONE_PROVIDERS[provider].canStart(env) && drives(provider));
-  const order = usable.filter((provider) => !cloudPhoneLacks(provider, needs).length);
-  if (!order.length) {
-    if (!usable.length) return unavailable();
-    return fail("phone_cant", `No ADE Cloud iPhone can ${abilityWords(needs)}${needs.length > 1 ? " at once" : ""} right now.`, 409);
-  }
-  return { order, reason: order[0] === usable[0] ? "default" : "need" };
+  const order = (free ? PROVIDER_ORDER.slice(0, 1) : PROVIDER_ORDER).filter((provider) => PHONE_PROVIDERS[provider].canStart(env) && drives(provider));
+  if (!order.length) return free ? phoneBusy() : unavailable();
+  return { order, reason: "default", busyWhenRefused: free };
 }
 
-/** The provider the owner locked this account to, from its beta row (`null`, `both` or no row: the router). */
-export const lockOf = (provider: string | null | undefined): CloudPhoneProvider | null => (isCloudPhoneProvider(provider) ? provider : null);
-
-/**
- * What the account's next phone can do beyond the basics: its lock's, or
- * every ability some provider that starts phones here has (a start's `needs`
- * picks among them).
- */
-export function nextAbilities(env: CloudEnv, lock: CloudPhoneProvider | null): CloudPhoneAbility[] {
-  const providers = lock ? [lock] : CLOUD_PHONE_PROVIDERS.filter((provider) => PHONE_PROVIDERS[provider].canStart(env));
-  return CLOUD_PHONE_ABILITIES.filter((ability) => providers.some((provider) => CLOUD_PHONE_PROVIDER_ABILITIES[provider].includes(ability)));
+/** What the account's next phone can do beyond the basics: the first provider its route tries. */
+export function nextAbilities(env: CloudEnv, picked: CloudPhoneProvider | null): CloudPhoneAbility[] {
+  const first = picked ?? PROVIDER_ORDER.find((provider) => PHONE_PROVIDERS[provider].canStart(env)) ?? "nomac";
+  return [...CLOUD_PHONE_PROVIDER_ABILITIES[first]];
 }
 
 /**
@@ -128,6 +118,18 @@ const definitelyRefused = (answer: Response): boolean => answer.status !== 502 &
  * first provider.
  */
 export async function startOnRoute(env: CloudEnv, route: PhoneRoute, userId: string, input: StartInput): Promise<
+  { started: { session: PhoneSession; reused: boolean }; provider: CloudPhoneProvider; reason: PhoneRoute["reason"] | "failover" } | Response
+> {
+  const answer = await startAlongRoute(env, route, userId, input);
+  // A free plan's phone has no fallback: a refusal (never a lost answer, which may hide a phone) reads as busy.
+  if (answer instanceof Response && route.busyWhenRefused && definitelyRefused(answer)) {
+    logCloud("cloud.phone_start_busy", { userId, status: answer.status });
+    return phoneBusy();
+  }
+  return answer;
+}
+
+async function startAlongRoute(env: CloudEnv, route: PhoneRoute, userId: string, input: StartInput): Promise<
   { started: { session: PhoneSession; reused: boolean }; provider: CloudPhoneProvider; reason: PhoneRoute["reason"] | "failover" } | Response
 > {
   let refused: Response | null = null;

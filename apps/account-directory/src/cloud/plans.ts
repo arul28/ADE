@@ -92,8 +92,10 @@ export function setupStartDiskGb(size: Pick<CloudSize, "diskMaxGb">, rememberedG
 
 /**
  * What one ADE Cloud iPhone minute past a paid plan costs, in cents (owner,
- * 2026-11-17). NoMac charges ADE 1.5 cents a minute (`NOMAC_MICROS_PER_MINUTE`
- * in `phones.ts`); the free plan has no extra minutes and stops instead.
+ * 2026-11-17), while the phone counts its own minutes. NoMac charges ADE 1
+ * cent a minute (since 2026-11-23), Revyl 6. Under credits (`credits.ts`) an
+ * extra iPhone minute is an extra hour instead. The free plan has no extra
+ * minutes and stops.
  */
 export const EXTRA_PHONE_MINUTE_CENTS = 2.5;
 
