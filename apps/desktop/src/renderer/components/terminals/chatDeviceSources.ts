@@ -58,7 +58,8 @@ export function deviceSourceErrorText(error: unknown): string {
 }
 
 function isUnsupportedAnswer(text: string): boolean {
-  return /not callable|unknown action|not allowed|no ADE brain|device choice is kept for ADE chats|is not an agent chat session|was not found/i.test(text);
+  // "is unavailable on the connected ADE host": the web client's answer for a host without the command.
+  return /not callable|unknown action|not allowed|no ADE brain|device choice is kept for ADE chats|is not an agent chat session|was not found|is unavailable on the connected ADE host/i.test(text);
 }
 
 /** A failed switch in words a person can act on. */

@@ -11,6 +11,7 @@ import { cloudDomainEnabled } from "../../../../desktop/src/shared/adeCloud";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
 import { normalizeGitHubPrListFilters } from "../../../../desktop/src/shared/githubPrSearch";
 import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
+import type { ChatSetDeviceSourceArgs } from "../../../../desktop/src/shared/types/deviceSources";
 import type {
   LaneLinearIssue,
   LinearIssueCreateInput,
@@ -5262,6 +5263,20 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       allowed: (payload as { allowed?: unknown } | null)?.allowed,
     }),
   );
+  // A chat's device choice per kind (`ade devices use`): the web client's tools pane reads it to show the
+  // device the chat uses (the ADE Cloud iPhone, another machine's simulator) and sets it from the machine row.
+  register("chat.getDeviceSources", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Chats are not available on this machine.").getDeviceSources({
+      sessionId: requireString((payload as { sessionId?: unknown } | null)?.sessionId, "chat.getDeviceSources requires sessionId."),
+    }),
+  );
+  register("chat.setDeviceSource", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const value = (payload ?? {}) as Record<string, unknown>;
+    return requireService(args.agentChatService, "Chats are not available on this machine.").setDeviceSource({
+      ...(value as unknown as ChatSetDeviceSourceArgs),
+      sessionId: requireString(value.sessionId, "chat.setDeviceSource requires sessionId."),
+    });
+  });
   register("chat.handoff", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").handoffSession(
       parseAgentChatHandoffArgs(payload),

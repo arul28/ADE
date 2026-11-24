@@ -138,6 +138,11 @@ export class CommandCaller {
     return Boolean(this.getDescriptor(action));
   }
 
+  /** Whether the host has said which commands it serves (its hello): before that, a missing action proves nothing. */
+  knowsActions(): boolean {
+    return this.client.getCommandDescriptors().length > 0;
+  }
+
   /** A read: a host that cannot answer resolves `fallback`. */
   call<T>(
     action: string,

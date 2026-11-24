@@ -3134,6 +3134,8 @@ export type SyncRemoteCommandAction =
   | "chat.setFastModeEnabled"
   | "chat.getRootFullAccess"
   | "chat.setRootFullAccess"
+  | "chat.getDeviceSources"
+  | "chat.setDeviceSource"
   | "chat.handoff"
   | "chat.startSideChat"
   | "chat.endSideChat"
