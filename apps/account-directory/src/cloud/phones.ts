@@ -499,9 +499,11 @@ export async function phoneCreditsFor(
   { reload = false, counts }: { reload?: boolean; counts?: boolean } = {},
 ): Promise<PhoneCredits | null> {
   if (counts === false || (counts === undefined && !(await creditsOnFor(env, account.user_id)))) return null;
-  const read = reload ? await accountWithUnsettledPhones(env, account.user_id, now) : { account, unsettledMilli: await unsettledPhoneMilli(env, account, now) };
-  const current = read.account ?? account;
-  return { liveUsedMilli: liveUsedMilli(current, await listComputers(env, account.user_id), now) + read.unsettledMilli };
+  if (reload) {
+    const read = await accountWithUnsettledPhones(env, account.user_id, now);
+    if (read.liveUsedMilli != null) return { liveUsedMilli: read.liveUsedMilli };
+  }
+  return { liveUsedMilli: liveUsedMilli(account, await listComputers(env, account.user_id), now) + await unsettledPhoneMilli(env, account, now) };
 }
 
 /**

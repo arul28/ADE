@@ -115,15 +115,14 @@ export async function unsettledPhoneMilliByUser(env: Pick<CloudEnv, "DB">, accou
 }
 
 /**
- * The account's hours used now (`liveUsedMilli` of `computers`) with its
- * running credits phones' unsettled use, `used_milli` and the phones' marks
- * from one read (`accountWithUnsettledPhones`), so a phone's save between
+ * The account's hours used now: `used_milli`, the computers' running
+ * stretches and its running credits phones' unsettled use, all from one read
+ * (`accountWithUnsettledPhones`), so a computer's or a phone's save between
  * two reads is counted once. `account` is the caller's (already loaded and
- * rolled); its row is read again only for those two numbers.
+ * rolled), used only if its row is gone.
  */
-export async function liveUsedWithPhones(env: Pick<CloudEnv, "DB">, account: AccountRow, computers: ComputerRow[], now: number): Promise<number> {
-  const read = await accountWithUnsettledPhones(env, account.user_id, now);
-  return liveUsedMilli(read.account ?? account, computers, now) + read.unsettledMilli;
+export async function liveUsedWithPhones(env: Pick<CloudEnv, "DB">, account: AccountRow, now: number): Promise<number> {
+  return (await accountWithUnsettledPhones(env, account.user_id, now)).liveUsedMilli ?? liveUsedMilli(account, [], now);
 }
 
 /** One account's `unsettledPhoneMilliByUser`. */
@@ -132,19 +131,22 @@ export async function unsettledPhoneMilli(env: Pick<CloudEnv, "DB">, account: Pi
 }
 
 /**
- * The account's hours used now with its running credits phones' unsettled
- * use, from one read of the account row and the phones: a phone's save
- * between two reads would count its minutes twice (in `used_milli` and as
- * unsettled). `liveUsedMilli` adds the computers' running stretches.
+ * The account row, its computers and its running credits phones from one
+ * read, and the hours used now from them (`liveUsedMilli` plus the phones'
+ * unsettled use). A computer's or phone's save between separate reads would
+ * count its time twice: once in `used_milli`, once as running or unsettled.
+ * Null `liveUsedMilli` when the account row is gone.
  */
-export async function accountWithUnsettledPhones(env: Pick<CloudEnv, "DB">, userId: string, now: number): Promise<{ account: AccountRow | null; unsettledMilli: number }> {
-  const [accounts, phones] = await env.DB.batch([
+export async function accountWithUnsettledPhones(env: Pick<CloudEnv, "DB">, userId: string, now: number): Promise<{ account: AccountRow | null; liveUsedMilli: number | null }> {
+  const [accounts, computers, phones] = await env.DB.batch([
     env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId),
+    env.DB.prepare("select * from cloud_computers where user_id = ? and deleted_at is null").bind(userId),
     env.DB.prepare(`${LIVE_CREDIT_PHONES_SQL} and user_id = ?`).bind(userId),
   ]);
   const account = (accounts?.results?.[0] as AccountRow | undefined) ?? null;
-  if (!account) return { account: null, unsettledMilli: 0 };
-  return { account, unsettledMilli: unsettledOf((phones?.results ?? []) as CreditPhone[], [account], now).get(userId) ?? 0 };
+  if (!account) return { account: null, liveUsedMilli: null };
+  const unsettled = unsettledOf((phones?.results ?? []) as CreditPhone[], [account], now).get(userId) ?? 0;
+  return { account, liveUsedMilli: liveUsedMilli(account, (computers?.results ?? []) as ComputerRow[], now) + unsettled };
 }
 
 /**

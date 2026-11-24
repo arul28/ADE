@@ -85,7 +85,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     return undefined;
   });
   // A running credits phone's minutes its provider hasn't billed yet count now, as the limits count them.
-  const live = await liveUsedWithPhones(env, account, computers, now);
+  const live = await liveUsedWithPhones(env, account, now);
   // Credits (`credits.ts`): one balance, which the ADE Cloud iPhone draws from too.
   const credits = await creditsOnFor(env, userId).catch((error: unknown) => {
     reportCloudFailure("cloud.credits_read_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
