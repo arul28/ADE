@@ -316,6 +316,17 @@ column. Dropping or renaming a column on a replicated table is not
 supported by the current adapter and must be migrated through a copy
 table.
 
+A table whose sync metadata is broken (its clock table without its pks
+table, or a `crsql_commit_alter` that fails) would otherwise fail the
+same ALTER on every open. The adapter strips that table's metadata
+(`stripCrrMetadata`, which keeps `crsql_db_version()` from rewinding
+through `pre_compact_dbversion`), runs the ALTER as a plain table and
+makes it a CRR again at once, logging `db.crr_alter_metadata_reset`.
+Every row gets a fresh clock at column version 1: a peer holding a
+higher version of a cell keeps its value until this machine writes
+that cell past it. Inside a caller's transaction the fallback does
+not run, because a failed commit rolls back the whole transaction.
+
 ### Rule 3: Machine-bound state is not a CRR
 
 Do not add tables to the replicated set that only matter on one
