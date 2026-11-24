@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createTestDirectoryLink } from "../../../test/symlinks";
 import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
 import {
   adePromptAgentSkillRoots,
@@ -62,7 +63,7 @@ describe("agentSkillRuntimeService", () => {
     const pluginAlias = path.join(catalogParent, "bundle-alias");
     fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
     fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), "{}");
-    fs.symlinkSync(pluginRoot, pluginAlias, "dir");
+    createTestDirectoryLink(pluginRoot, pluginAlias);
 
     expect(claudeAgentSkillPluginRoots({
       ADE_AGENT_SKILLS_DIRS: pluginAlias,
@@ -178,7 +179,7 @@ describe("withholding skills from a root", () => {
     const holder = temporaryRoot();
     const parent = path.join(holder, "filtered");
     // A junction on Windows (no privilege needed), a directory symlink elsewhere.
-    fs.symlinkSync(elsewhere, parent, "junction");
+    createTestDirectoryLink(elsewhere, parent);
 
     expect(withoutAgentSkills([root], ["ade-lanes-git"], parent)).toEqual([root]);
     expect(fs.readdirSync(elsewhere)).toEqual([]);

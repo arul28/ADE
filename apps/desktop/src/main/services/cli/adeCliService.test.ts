@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAdeCliService } from "./adeCliService";
+import { createTestDirectoryLink } from "../../../test/symlinks";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
@@ -244,7 +245,7 @@ describe("createAdeCliService", () => {
     const externalSkills = path.join(root, "repository-controlled-skills");
     fs.mkdirSync(resourcesPath, { recursive: true });
     fs.mkdirSync(externalSkills, { recursive: true });
-    fs.symlinkSync(externalSkills, path.join(resourcesPath, "agent-skills"), "dir");
+    createTestDirectoryLink(externalSkills, path.join(resourcesPath, "agent-skills"));
 
     const service = createAdeCliService({
       isPackaged: true,

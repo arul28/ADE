@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { createTestDirectoryLink } from "../../../test/symlinks";
 import { acquirePiSessionLease, piSessionCreationLeaseTarget, piSessionLeaseIsHeld } from "./piSessionLease";
 import {
   piSessionCouldBelongToTerminal,
@@ -192,7 +193,7 @@ describe("Pi native session leases", () => {
     const sessionRoot = path.join(session.root, "sessions");
     const escape = path.join(session.root, "elsewhere");
     fs.mkdirSync(escape, { recursive: true });
-    fs.symlinkSync(escape, path.join(sessionRoot, "linked"), "dir");
+    createTestDirectoryLink(escape, path.join(sessionRoot, "linked"));
 
     const state = (filePath: string, cwd = session.cwd) => classifyPiSessionFile({ filePath, cwd, sessionRoot }).state;
 

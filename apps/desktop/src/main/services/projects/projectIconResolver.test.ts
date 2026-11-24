@@ -262,7 +262,7 @@ describe("projectIconResolver", () => {
     fs.writeFileSync(path.join(outside, "favicon.svg"), "<svg>outside</svg>");
     // Symlink `<root>/public` -> `<outside>` so any `public/<icon>` candidate
     // would escape the project root if resolved lexically.
-    fs.symlinkSync(outside, path.join(root, "public"));
+    linkProjectRoot(outside, path.join(root, "public"));
 
     expect(resolveProjectIconPath(root)).toBeNull();
   });

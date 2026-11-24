@@ -25,6 +25,7 @@ import {
 } from "./agentChatService.testHarness";
 import { writeJsonWithPrevious } from "../state/durableFile";
 import { afterEach, describe, expect, it, test, vi } from "vitest";
+import { symlinksSupported } from "../../../test/symlinks";
 import { ChatRuntimeOwnedElsewhereError, resolveAdeHomeForOwnership } from "./chatRuntimeOwnership";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { createJiraCredentialService } from "../jira/jiraCredentialService";
@@ -1106,7 +1107,7 @@ describe("createAgentChatService", () => {
       expect(sessionService.get(session.id)).toBeNull();
     });
 
-    it("does not follow transcript symlinks outside ADE during purge", async () => {
+    it.skipIf(!symlinksSupported)("does not follow transcript symlinks outside ADE during purge", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({
         laneId: "lane-1",

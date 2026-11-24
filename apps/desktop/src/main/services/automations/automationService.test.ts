@@ -15,6 +15,7 @@ import {
   triggerMatches,
 } from "./automationService";
 import { openFreshKvDb } from "../../../test/freshKvDb";
+import { createTestDirectoryLink } from "../../../test/symlinks";
 import { advanceLaneToPrHead, resolvePrBranchLane } from "./automationPrBranchLane";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
 import { SessionTurnAbandonedError } from "../chat/sessionTurnLimits";
@@ -2031,7 +2032,7 @@ describe("automationService integration", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-runtime-root-"));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-runtime-outside-"));
     const symlinkPath = path.join(projectRoot, "linked-outside");
-    fs.symlinkSync(outsideDir, symlinkPath);
+    createTestDirectoryLink(outsideDir, symlinkPath);
 
     const rule = {
       id: "escape",

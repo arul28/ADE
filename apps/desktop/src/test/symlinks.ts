@@ -11,6 +11,18 @@ import path from "node:path";
  */
 export const symlinksSupported = process.platform !== "win32" ? true : probeSymlinks();
 
+/**
+ * Create a directory link. Windows junctions need no special privilege, so
+ * unlike a file symlink this works on any Windows host; other platforms get a
+ * normal directory symlink.
+ */
+export function createTestDirectoryLink(target: string, link: string): void {
+  // `path.sep`, not `process.platform`: tests simulate another OS by spying on
+  // process.platform (and `os.platform()` reads it), but the link type still
+  // has to be one this host can actually create.
+  fs.symlinkSync(path.resolve(target), link, path.sep === "\\" ? "junction" : "dir");
+}
+
 function probeSymlinks(): boolean {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-symlink-probe-"));
   try {

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { createAutomationPlannerService } from "./automationPlannerService";
 import { TEMPLATES } from "../../../renderer/components/automations/templates/templateData";
 import type { AutomationRuleDraft } from "../../../shared/types";
+import { createTestDirectoryLink } from "../../../test/symlinks";
 
 function createPlannerForTests(args: {
   suites: Array<{ id: string; name: string }>;
@@ -204,7 +205,7 @@ describe("automationPlannerService.validateDraft", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-root-"));
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-outside-"));
     const linkPath = path.join(projectRoot, "linked-outside");
-    fs.symlinkSync(outsideDir, linkPath);
+    createTestDirectoryLink(outsideDir, linkPath);
 
     try {
       const { planner } = getPlanner({ suites: [], projectRoot });
@@ -226,7 +227,7 @@ describe("automationPlannerService.validateDraft", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-root-"));
     const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-outside-"));
     const linkedPath = path.join(projectRoot, "outside-link");
-    fs.symlinkSync(outsideRoot, linkedPath);
+    createTestDirectoryLink(outsideRoot, linkedPath);
 
     try {
       const { planner } = getPlanner({ suites: [], projectRoot });

@@ -18,6 +18,7 @@ import {
 import { runGit } from "../git/git";
 import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
 import { createAccountVaultStore } from "../../../../../ade-cli/src/services/account/accountVaultStore";
+import { symlinksSupported } from "../../../test/symlinks";
 
 function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -903,8 +904,6 @@ describe("runtime domain services behind the allowlist", () => {
       const desktop = await write(path.join(base, "home", "Desktop", "Screenshot.png"));
       const homeSecret = await write(path.join(base, "home", ".ssh", "key.png"));
       const outside = await write(path.join(base, "outside", "secret.png"));
-      const symlinkPath = path.join(projectRoot, ".ade", "attachments", "outside-link.png");
-      await fs.promises.symlink(outside, symlinkPath);
 
       const runtime = {
         projectRoot,
@@ -922,9 +921,42 @@ describe("runtime domain services behind the allowlist", () => {
         );
       }
       await expect(chat.getImageDataUrl({ path: textPath })).rejects.toThrow(/not an image/i);
-      for (const refused of [outside, homeSecret, symlinkPath]) {
+      for (const refused of [outside, homeSecret]) {
         await expect(chat.getImageDataUrl({ path: refused }), refused).rejects.toThrow(/outside the folders ADE shows chat images from/);
       }
+    } finally {
+      vi.restoreAllMocks();
+      await fs.promises.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  // Windows refuses a file symlink without Developer Mode or an elevated token.
+  it.skipIf(!symlinksSupported)("refuses a chat image that arrives through a link out of the allowed folders", async () => {
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64");
+    const base = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-chat-preview-link-")));
+    const projectRoot = path.join(base, "project");
+    vi.spyOn(os, "tmpdir").mockReturnValue(path.join(base, "tmp"));
+    vi.spyOn(os, "homedir").mockReturnValue(path.join(base, "home"));
+    try {
+      const outside = path.join(base, "outside", "secret.png");
+      await fs.promises.mkdir(path.dirname(outside), { recursive: true });
+      await fs.promises.writeFile(outside, png);
+      // The NAME clears the lexical jail; the target it resolves to does not.
+      const symlinkPath = path.join(projectRoot, ".ade", "attachments", "outside-link.png");
+      await fs.promises.mkdir(path.dirname(symlinkPath), { recursive: true });
+      await fs.promises.symlink(outside, symlinkPath);
+
+      const runtime = {
+        projectRoot,
+        agentChatService: {},
+        fileService: { listWorkspaces: () => [] },
+      } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+      const chat = getAdeActionDomainServices(runtime).chat as {
+        getImageDataUrl: (args: { path: string }) => Promise<{ dataUrl: string }>;
+      };
+
+      await expect(chat.getImageDataUrl({ path: symlinkPath }))
+        .rejects.toThrow(/outside the folders ADE shows chat images from/);
     } finally {
       vi.restoreAllMocks();
       await fs.promises.rm(base, { recursive: true, force: true });
@@ -2071,15 +2103,11 @@ describe("runtime computer-use artifact actions", () => {
      * stat/ingest that follow resolve it — filing any file this runtime can
      * read into the proof drawer.
      */
-    it("refuses a symlink under the artifact store that escapes it", async () => {
+    it.skipIf(!symlinksSupported)("refuses a symlink under the artifact store that escapes it", async () => {
       const secret = path.join(projectRoot, "secret.png");
       fs.writeFileSync(secret, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
       const link = path.join(artifactsDir, "innocent.png");
-      try {
-        fs.symlinkSync(secret, link);
-      } catch {
-        return; // No symlink privilege on this host (bare Windows); nothing to assert.
-      }
+      fs.symlinkSync(secret, link);
       const { broker, service } = buildService(null);
       await expect(service.ingestSceneSnapshot({ path: link })).rejects.toThrow(/artifact store/);
       expect(broker.ingest).not.toHaveBeenCalled();

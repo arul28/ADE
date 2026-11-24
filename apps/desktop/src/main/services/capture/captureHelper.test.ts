@@ -75,6 +75,28 @@ function fakeChild(): FakeChild {
 /** Mirrors `GRACEFUL_SHUTDOWN_MS` in the supervisor. */
 const GRACE_MS = 500;
 
+/**
+ * `node:fs` is mocked in this file, so the shared `symlinksSupported` probe
+ * would inspect the mock and report false everywhere. Probe the builtin
+ * module instead.
+ */
+const captureFileSymlinksSupported = (() => {
+  if (process.platform !== "win32") return true;
+  const realFs = process.getBuiltinModule("node:fs");
+  const realOs = process.getBuiltinModule("node:os");
+  const realPath = process.getBuiltinModule("node:path");
+  const root = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), "ade-capture-symlink-probe-"));
+  try {
+    realFs.writeFileSync(realPath.join(root, "target"), "");
+    realFs.symlinkSync(realPath.join(root, "target"), realPath.join(root, "link"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    realFs.rmSync(root, { recursive: true, force: true });
+  }
+})();
+
 const logger = {
   debug: vi.fn(),
   info: vi.fn(),
@@ -228,7 +250,7 @@ describe("CaptureHelper", () => {
    * `fs.realpathSync` — because a mocked one would only prove the test's own
    * idea of what a symlink is.
    */
-  it("refuses a symlink inside the capture directory that points outside it", async () => {
+  it.skipIf(!captureFileSymlinksSupported)("refuses a symlink inside the capture directory that points outside it", async () => {
     const realFs = await vi.importActual<typeof NodeFs>("node:fs");
     const realOs = await vi.importActual<typeof NodeOs>("node:os");
     const realPath = await vi.importActual<typeof NodePath>("node:path");
@@ -606,7 +628,11 @@ describe("CaptureHelper", () => {
     realFs.writeFileSync(secret, "SECRETBYTES");
     // A LINKED DIRECTORY, so the escape survives `path.resolve`: the name stays
     // inside the capture directory and the file the unlink opens does not.
-    realFs.symlinkSync(outsideDir, realPath.join(root, "shed"));
+    realFs.symlinkSync(
+      realPath.resolve(outsideDir),
+      realPath.join(root, "shed"),
+      realPath.sep === "\\" ? "junction" : "dir",
+    );
     const named = realPath.join(root, "shed", "secret.png");
     realpathSyncMock.mockImplementation((filePath: unknown) => realFs.realpathSync(filePath as string));
 

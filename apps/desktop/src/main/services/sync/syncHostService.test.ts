@@ -24,6 +24,7 @@ import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
 import { windowsScaledTimeout } from "../../../../vitest.timeouts";
+import { symlinksSupported } from "../../../test/symlinks";
 
 const { execFileMock, spawnMock, spawnSyncMock } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
@@ -1651,7 +1652,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     await waitFor(() => host.getPeerStates().find((peer) => peer.deviceId === "peer-legacy")?.syncLag === 0);
   }, windowsScaledTimeout(60_000));
 
-  it("serves workspace file operations and artifact reads while blocking .git access", async () => {
+  it("serves workspace file operations and artifact reads while blocking .git access", async (ctx) => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-files-"), createLogger() as any);
     const projectRoot = makeProjectRoot("ade-sync-files-project-");
     const workspaceRoot = path.join(projectRoot, "workspace");
@@ -1857,8 +1858,32 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(artifactPayload.result.encoding).toBe("base64");
     expect(Buffer.from(artifactPayload.result.content, "base64").length).toBeGreaterThan(0);
 
+    client.ws.send(encodeSyncEnvelope({
+      type: "file_request",
+      requestId: "git-blocked",
+      payload: {
+        action: "readFile",
+        args: {
+          workspaceId: "workspace-1",
+          path: ".git/config",
+        },
+      },
+    }));
+    const blockedResponse = await client.queue.next("file_response");
+    const blockedPayload = blockedResponse.payload as { ok: boolean; error?: { message: string } };
+    expect(blockedPayload.ok).toBe(false);
+    expect(blockedPayload.error?.message).toMatch(/\.git/i);
+
+    // The file-link case needs a link this host may refuse; everything above
+    // needs none and has already run.
+    if (!symlinksSupported) {
+      ctx.skip();
+      return;
+    }
+
     const artifactLinkPath = path.join(projectRoot, ".ade", "artifacts", "linked-secret.txt");
     fs.writeFileSync(outsideArtifact, "secret", "utf8");
+    // The name sits under .ade/artifacts; the file it opens does not.
     fs.symlinkSync(outsideArtifact, artifactLinkPath);
 
     client.ws.send(encodeSyncEnvelope({
@@ -1875,22 +1900,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const linkedArtifactPayload = linkedArtifactResponse.payload as { ok: boolean; error?: { message: string } };
     expect(linkedArtifactPayload.ok).toBe(false);
     expect(linkedArtifactPayload.error?.message).toMatch(/\.ade\/artifacts/i);
-
-    client.ws.send(encodeSyncEnvelope({
-      type: "file_request",
-      requestId: "git-blocked",
-      payload: {
-        action: "readFile",
-        args: {
-          workspaceId: "workspace-1",
-          path: ".git/config",
-        },
-      },
-    }));
-    const blockedResponse = await client.queue.next("file_response");
-    const blockedPayload = blockedResponse.payload as { ok: boolean; error?: { message: string } };
-    expect(blockedPayload.ok).toBe(false);
-    expect(blockedPayload.error?.message).toMatch(/\.git/i);
 
     fs.rmSync(artifactLinkPath, { force: true });
     fs.rmSync(outsideArtifact, { force: true });

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { createTestDirectoryLink } from "../../../test/symlinks";
 
 import {
   IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON,
@@ -1178,7 +1179,7 @@ describe("captureProofBundle containment", () => {
     // /private/tmp/.... Resolving only one side would reject every path.
     const real = make("ade-real-");
     const link = path.join(make("ade-link-"), "root");
-    fs.symlinkSync(real, link);
+    createTestDirectoryLink(real, link);
     const bundle = await hubFor(link).captureProofBundle({ includeElements: false, logRowLimit: 0 });
     expect(bundle.dir.startsWith(link)).toBe(true);
   });
@@ -1201,7 +1202,7 @@ describe("captureProofBundle containment", () => {
     // and the write still lands wherever the link points.
     const root = make("ade-real-");
     const outside = make("ade-out-");
-    fs.symlinkSync(outside, path.join(root, "escape"));
+    createTestDirectoryLink(outside, path.join(root, "escape"));
     await expect(hubFor(root).captureProofBundle({ outDir: "escape/bundle" }))
       .rejects.toThrow(/IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT/);
   });

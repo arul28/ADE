@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
+import { symlinksSupported } from "../../../test/symlinks";
 import { createComputerUseArtifactBrokerService, resolveTempImportRoots } from "./computerUseArtifactBrokerService";
 import { createHash } from "node:crypto";
 import { isIsoMediaExtension, readMp4CreationTime, readMp4CreationTimeFromFile } from "./mediaCreationTime";
@@ -214,16 +215,31 @@ describe("computerUseArtifactBrokerService", () => {
     await expect(broker.readArtifactRange({ uri: outside })).rejects.toThrow(/within \.ade\/artifacts/);
     await expect(broker.readArtifactRange({ uri: ".ade/artifacts/../outside.mp4" }))
       .rejects.toThrow(/within \.ade\/artifacts/);
-    // A symlink inside the store that points out of it is still outside.
-    fs.symlinkSync(outside, path.join(recordingDir, "escape.mp4"));
-    await expect(broker.readArtifactRange({ uri: ".ade/artifacts/apple-recordings/lane-1/escape.mp4" }))
-      .rejects.toThrow(/within \.ade\/artifacts/);
     // Only preview media types stream, not anything else kept in the store.
     fs.writeFileSync(path.join(recordingDir, "notes.json"), "{}");
     await expect(broker.readArtifactRange({ uri: ".ade/artifacts/apple-recordings/lane-1/notes.json" }))
       .rejects.toThrow(/cannot be streamed/);
     await expect(broker.readArtifactRange({ uri: ".ade/artifacts/apple-recordings/lane-1/gone.mp4" }))
       .rejects.toThrow(/not found/);
+  });
+
+  // The streaming case above needs no link; this one does.
+  it.skipIf(!symlinksSupported)("refuses a link in the artifact store that points out of it", async () => {
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+    });
+    const recordingDir = path.join(projectRoot, ".ade", "artifacts", "apple-recordings", "lane-1");
+    fs.mkdirSync(recordingDir, { recursive: true });
+    const outside = path.join(projectRoot, "outside.mp4");
+    fs.writeFileSync(outside, "outside");
+    // The name sits inside the store; the file it opens does not.
+    fs.symlinkSync(outside, path.join(recordingDir, "escape.mp4"));
+
+    await expect(broker.readArtifactRange({ uri: ".ade/artifacts/apple-recordings/lane-1/escape.mp4" }))
+      .rejects.toThrow(/within \.ade\/artifacts/);
   });
 
   it("rejects local file imports outside allowed artifact roots", () => {
@@ -1224,7 +1240,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(result.artifacts[0].uri).toMatch(/^\.ade\/artifacts\/computer-use\//);
   });
 
-  it("rejects symlinked artifact paths that escape the project artifact directory", (ctx) => {
+  it.skipIf(!symlinksSupported)("rejects symlinked artifact paths that escape the project artifact directory", () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -1240,18 +1256,7 @@ describe("computerUseArtifactBrokerService", () => {
     try {
       fs.mkdirSync(artifactDir, { recursive: true });
       fs.writeFileSync(outsideFile, "secret", "utf8");
-      try {
-        fs.symlinkSync(outsideFile, symlinkPath);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code === "EPERM" || code === "EACCES") {
-          // Some Windows hosts do not grant symlink creation to the test
-          // process. Skip explicitly, while still cleaning the temp root.
-          ctx.skip();
-          return;
-        }
-        throw error;
-      }
+      fs.symlinkSync(outsideFile, symlinkPath);
 
       expect(() =>
         broker.ingest({
