@@ -184,6 +184,8 @@ import {
   type DeeplinkOwnership,
   type OwnedDeeplinkTarget,
 } from "../../desktop/src/shared/deeplinks";
+import { temporaryFolderWarning } from "../../desktop/src/shared/temporaryFolder";
+import { formatProviderSignIns, providerSignInRows } from "./cliProviderSignIns";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import {
   DEFAULT_LANE_START,
@@ -744,6 +746,7 @@ import {
 } from "./lib/displayWidth";
 import { copyToClipboard } from "./lib/clipboard";
 import { pickPrimaryPrRecord, prRecordNumber } from "./lib/primaryPr";
+import { laneDisplayName } from "../../desktop/src/shared/laneDisplayName";
 import {
   clearLastFailure,
   computeStartupBackoffMs,
@@ -1754,7 +1757,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
+    $ ade secrets list | set | copy | request | delete | exec  This project's secrets, in Passwords & Secrets
     $ ade passwords list | status                     Saved logins agents can use (never a value)
     $ ade code --site <host>                          A site's current sign-in code
     $ ade messages recent | send                      The person's texts, on their Mac
@@ -2573,9 +2576,13 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     $ ade projects list --account --text            Your ADE account's projects, with each copy and its computer
                                                     Any command takes --project-root <ap_id|owner/name> for this computer's copy,
                                                     or --machine <name> --machine-project <ap_id|owner/name> for another computer's
-    $ ade projects add /path/to/project
-    $ ade projects clone owner/repo [--path <folder>] [--name <dir>]
+    $ ade projects add /path/to/project [--display-name <name>]
+    $ ade projects add /path/to/project --display-name Clicker
+                                                    Rename a project in place: its folder, id and lanes stay.
+                                                    With a git origin, every computer on your account shows the name
+    $ ade projects clone owner/repo [--path <folder>] [--name <dir>] [--display-name <name>]
                                                     Clone a GitHub repository with this computer's GitHub sign-in and open it as a project
+                                                    A folder under /tmp, /var/folders or %TEMP% gets a warning: the system can empty it
     $ ade projects prune [--dry-run]                Remove projects whose folder is gone from ADE (never deletes a folder)
     $ ade projects remove <project-id>              Remove the project from ADE on this machine (the folder stays)
     $ ade projects touch <project-id>
@@ -4950,6 +4957,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   and the default are the user's: run them from your own terminal; an agent's
   call is refused.
 
+    $ ade providers status --text                   Every provider here: signed in, needs sign-in, not installed
+                                                    or unknown, with the link that opens its sign-in page.
+                                                    Read-only; starts no provider. --provider <p>, --machine <name>
     $ ade providers accounts list --text            All accounts, both providers
     $ ade providers accounts list --provider claude --text
     $ ade providers accounts add --provider claude --text
@@ -5055,7 +5065,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   with the project's secrets in its environment, on this computer, and prints
   its output with every value masked (also in base64 and URL-encoded form;
   values under 8 characters are not masked, and it says which). \`get\` is the
-  person's; export is in the ADE desktop app (Settings › Passwords & Secrets).
+  person's (or an app the person gave full ADE MCP access); export is in the
+  ADE desktop app (Settings › Passwords & Secrets).
   --env NAME (repeatable) passes only those; --timeout 10m.
 
     $ ade secrets list --text                       List secret names and metadata
@@ -5066,6 +5077,10 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
+    $ ade secrets copy --from owner/other-repo      Copy another project's own secrets here, in one go
+    $ ade secrets copy --from /path/to/other --names STRIPE_API_KEY,SENTRY_DSN --overwrite
+      A name this project already has is skipped (and listed) unless --overwrite.
+      Values never print. --machine <name>: both projects on that machine.
 
   Asking the person for a secret (agents: use this, never ask them to paste a
   secret into chat). The chat shows a private card; the value is saved to this
@@ -12206,8 +12221,10 @@ async function runChatLaunchCommand(
           return { notify: { armed: false, error: message } };
         })
       : {};
+    // A chat's id is its launch's, so the link works before the chat exists.
+    const startedLink = await sessionLinkOn(connection, asString(started.sessionId) ?? started.launchId, asString(started.laneId));
     if (!plan.wait) {
-      return { output: formatOutput({ ...started, ...notifyResult }, options, "chat-launch"), exitCode: 0 };
+      return { output: formatOutput({ ...started, link: startedLink, ...notifyResult }, options, "chat-launch"), exitCode: 0 };
     }
     const launchId = started.launchId;
     const startedAt = Date.now();
@@ -12237,11 +12254,14 @@ async function runChatLaunchCommand(
           )
           : null;
         if (lowered) process.stderr.write(`${lowered}\n`);
-        const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch, ...notifyResult, ...(isRecord(session) ? { session: pickChatSettings(session) } : {}) };
+        const link = phase === "completed"
+          ? await sessionLinkOn(connection, asString(launch.sessionId) ?? launchId, asString(launch.laneId))
+          : startedLink;
+        const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch, link, ...notifyResult, ...(isRecord(session) ? { session: pickChatSettings(session) } : {}) };
         return { output: formatOutput(result, options, "chat-launch"), exitCode: phase === "completed" ? 0 : 1 };
       }
       if (elapsedMs >= plan.timeoutMs) {
-        const result = { ok: false, error: "timed_out", launchId, phase, timeoutMs: plan.timeoutMs, elapsedMs, launch };
+        const result = { ok: false, error: "timed_out", launchId, phase, timeoutMs: plan.timeoutMs, elapsedMs, launch, link: startedLink };
         return { output: formatOutput(result, options, "chat-launch"), exitCode: 1 };
       }
       await sleep(Math.min(plan.pollIntervalMs, Math.max(1, plan.timeoutMs - elapsedMs)));
@@ -12308,7 +12328,8 @@ export function formatChatLaunch(value: unknown): string {
     ["queued", queued > 0 ? `${queued} message${queued === 1 ? "" : "s"}` : null],
     ["error", snapshot.error],
     ["wait", wrapper?.error === "timed_out" ? `timed out after ${String(wrapper.elapsedMs)}ms` : null],
-  ]);
+    ["link", wrapper?.link],
+  ], ["link"]);
 }
 
 export function formatChatLaunches(value: unknown): string {
@@ -22364,7 +22385,7 @@ function buildMcpServersPlan(args: string[]): CliPlan {
   throw new CliUsageError(`Unknown 'ade mcp servers' command "${sub}". Use list, add or remove.`);
 }
 
-function buildSecretsPlan(args: string[]): CliPlan {
+function buildSecretsPlan(args: string[], target: { remote: boolean } = { remote: false }): CliPlan {
   // The command after `--` first: its own flags (`--help` included) are its own.
   const execTail = args[0] === "exec" || args[0] === "run" ? takeArgsAfterTerminator(args) : null;
   if (hasHelpFlag(args)) {
@@ -22422,6 +22443,29 @@ function buildSecretsPlan(args: string[]): CliPlan {
         name,
         value,
         ...(storage ? { storage } : {}),
+      })],
+    };
+  }
+  if (sub === "copy" || sub === "cp") {
+    // One action copies every secret (or the --names asked for) of another
+    // project's own into this one, checked before the first write. With
+    // --machine both projects are on that machine, and a folder is its path,
+    // sent as typed.
+    const from = readValue(args, ["--from"]);
+    if (!from?.trim()) throw new CliUsageError("secrets copy needs --from <folder|owner/repo>: the project whose secrets to copy.");
+    const names = readRepeatedValues(args, ["--names", "--name", "--env"])
+      .flatMap((value) => value.split(","))
+      .map((name) => name.trim())
+      .filter(Boolean);
+    const overwrite = readFlag(args, ["--overwrite", "--replace"]);
+    return {
+      kind: "execute",
+      label: "secrets copy",
+      formatter: "project-secrets",
+      steps: [actionStep("result", "project_secret", "copy", {
+        from: secretCopySource(from.trim(), target.remote),
+        ...(names.length ? { names } : {}),
+        ...(overwrite ? { overwrite: true } : {}),
       })],
     };
   }
@@ -22489,7 +22533,19 @@ function buildSecretsPlan(args: string[]): CliPlan {
       steps: [listActionsStep("result", "project_secret")],
     };
   }
-  throw new CliUsageError("secrets supports list, get, set, request, delete, or actions.");
+  throw new CliUsageError("secrets supports list, get, set, copy, request, delete, or actions.");
+}
+
+/**
+ * `--from` of `secrets copy`: a repository (`owner/name`, a URL) as given, or
+ * a folder. A local folder is made absolute here (the brain's working folder
+ * is not this shell's); another machine's path is sent as typed.
+ */
+function secretCopySource(from: string, remote: boolean): string {
+  if (/^(?:https?:\/\/|ssh:\/\/|git@)/i.test(from) || remote) return from;
+  const local = resolveCliPathArg(from);
+  if (/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(from) && !fs.existsSync(local)) return from;
+  return local;
 }
 
 function buildProxyPlan(args: string[]): CliPlan {
@@ -22602,11 +22658,29 @@ function buildRemoteSignInPlan(group: "sign-in" | "sign-in-code" | "sign-in-stat
   };
 }
 
-function buildProvidersPlan(args: string[]): CliPlan {
+function buildProvidersPlan(args: string[], machineName: string | null = null): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.providers ?? topLevelHelpText() };
   }
   const group = firstPositional(args) ?? "accounts";
+  if (group === "status") {
+    // Read-only: the status Settings shows (`ai.getStatus`), which reads saved
+    // logins and starts no provider process. With --machine, that machine's.
+    const only = readValue(args, ["--provider"])?.trim().toLowerCase() ?? null;
+    if (only && !(CHAT_PROVIDER_IDS as readonly string[]).includes(only)) {
+      throw new CliUsageError(`Unknown provider ${only}. Providers: ${CHAT_PROVIDER_IDS.join(", ")}.`);
+    }
+    return {
+      kind: "execute",
+      label: "providers status",
+      steps: [actionStep("result", "ai", "getStatus", {})],
+      shapeResult: (values) => {
+        const rows = providerSignInRows(unwrapActionEnvelope(values.result));
+        return { machine: machineName, providers: only ? rows.filter((row) => row.provider === only) : rows };
+      },
+      formatText: (result) => formatProviderSignIns(result, machineName),
+    };
+  }
   if (group === "opencode") return buildOpenCodeProvidersPlan(args);
   if (group === "sign-in" || group === "sign-in-code" || group === "sign-in-status") return buildRemoteSignInPlan(group, args);
   if (group === "actions") {
@@ -22619,7 +22693,7 @@ function buildProvidersPlan(args: string[]): CliPlan {
   }
   if (group !== "accounts" && group !== "account") {
     throw new CliUsageError(
-      "providers supports `accounts <list|add|remove|default>` or `actions`.",
+      "providers supports `status`, `accounts <list|add|remove|default>` or `actions`.",
     );
   }
   const sub = firstPositional(args) ?? "list";
@@ -25157,7 +25231,7 @@ function buildCliPlan(
   if (primary === "archive" || primary === "archived")
     return buildArchivePlan(args);
   if (primary === "secrets" || primary === "secret")
-    return buildSecretsPlan(args);
+    return buildSecretsPlan(args, { remote: Boolean(options.machine?.trim()) });
   if (primary === "passwords" || primary === "password")
     return buildPasswordsPlan(args);
   if (primary === "code" || primary === "codes")
@@ -25176,7 +25250,7 @@ function buildCliPlan(
   if (primary === "proxy") return buildProxyPlan(args);
   if (primary === "harness" || primary === "harnesses") return buildHarnessPlan(args);
   if (primary === "providers" || primary === "provider")
-    return buildProvidersPlan(args);
+    return buildProvidersPlan(args, options.machine?.trim() || null);
   if (primary === "settings" || primary === "config" || primary === "setting")
     return buildSettingsPlan(args);
   if (primary === "operation" || primary === "operations")
@@ -27448,6 +27522,7 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
     // and checks it, in its own OS's format (`C:\work` from a Mac).
     const parentDir = readValue(args, ["--path", "--parent", "--parent-dir", "--into"]);
     const name = readValue(args, ["--name"]);
+    const displayName = readProjectDisplayNameFlag(args);
     const repo = requireValue(readValue(args, ["--repo", "--url"]) ?? firstPositional(args), "repository (GitHub URL or owner/name)");
     return {
       ...base,
@@ -27462,10 +27537,12 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
           url: githubCloneUrl(repo),
           ...(parentDir ? { parentDir: target.remote ? parentDir : resolveCliPathArg(parentDir) } : {}),
           ...(name ? { name } : {}),
+          ...(displayName ? { displayName } : {}),
           catalogVisibility: "recent",
           registrationSource: "cli-explicit",
         },
       }],
+      shapeResult: (values) => withTemporaryFolderWarning(values.result),
     };
   }
   if (sub === "prune") {
@@ -27487,23 +27564,28 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
     };
   }
   if (sub === "add" || sub === "register") {
-    const rootPath = requireValue(
-      readValue(args, ["--path", "--root"]) ?? firstPositional(args),
-      "project path",
-    );
+    // Flags first: `firstPositional` takes the first bare word, which may be a flag's value.
+    const explicitPath = readValue(args, ["--path", "--root"]);
+    const displayName = readProjectDisplayNameFlag(args);
+    const rootPath = requireValue(explicitPath ?? firstPositional(args), "project path");
     return {
       ...base,
+      // Adding a project that is already there keeps its id and lanes, so
+      // `--display-name` on it renames it in place.
       label: "projects add",
       formatter: "projects-list",
       steps: [{
         key: "result",
         method: "projects.add",
         params: {
-          rootPath,
+          // Another computer's path is sent as typed, as `clone --path` is.
+          rootPath: target.remote ? rootPath : resolveCliPathArg(rootPath),
+          ...(displayName ? { displayName } : {}),
           catalogVisibility: "recent",
           registrationSource: "cli-explicit",
         },
       }],
+      shapeResult: (values) => withTemporaryFolderWarning(values.result),
     };
   }
   if (sub === "remove" || sub === "rm" || sub === "delete") {
@@ -27582,6 +27664,27 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
   throw new CliUsageError(
     `projects supports list, add, clone, remove, prune, touch, or inspect; got '${sub}'.`,
   );
+}
+
+/** `--display-name <name>`: the name ADE shows for the project. Refuses an empty one. */
+function readProjectDisplayNameFlag(args: string[]): string | null {
+  const value = readValue(args, ["--display-name", "--title"]);
+  if (value == null) return null;
+  if (!value.trim()) throw new CliUsageError("--display-name needs a name, e.g. --display-name Clicker.");
+  return value.trim();
+}
+
+/**
+ * A project just added in a temporary folder (macOS `/var/folders`, `/tmp`,
+ * Windows `%TEMP%`): the system may empty it. Said on stderr and carried as
+ * `warning` in the JSON, so an agent reading either sees it. Never refused.
+ */
+function withTemporaryFolderWarning(result: unknown): unknown {
+  const record = isRecord(result) ? result : null;
+  const warning = temporaryFolderWarning(record ? asString(record.rootPath) : null);
+  if (!record || !warning) return result;
+  process.stderr.write(`ade: warning: ${warning}\n`);
+  return { ...record, warning };
 }
 
 /** `owner/name` → its GitHub URL; anything else (a URL, an ssh address) as given. */
@@ -39808,7 +39911,8 @@ function formatPtyCreate(value: unknown, remote: ShellRemoteTarget | null = null
     ["session", sessionId],
     ["pty", ptyId],
     ["pid", result.pid],
-  ]);
+    ["link", result.link],
+  ], ["link"]);
   // Last and whole: the table clips a long value, and this one is to be copied.
   return readCommand ? `${details}\nread with  ${readCommand}` : details;
 }
@@ -39964,6 +40068,19 @@ function formatProjectSecrets(value: unknown): string {
     return record.kept
       ? `Kept the existing project secret ${record.name}.`
       : `The user declined to provide ${record.name}.`;
+  }
+  if (typeof record.from === "string" && Array.isArray(record.copied)) {
+    // `secrets copy`: names only, never a value.
+    const list = (value: unknown) => (Array.isArray(value) ? value.filter((name): name is string => typeof name === "string") : []);
+    const copied = list(record.copied);
+    const replaced = list(record.replaced);
+    const skipped = list(record.skipped);
+    const lines = [
+      copied.length ? `Copied ${copied.length} from ${record.from}: ${copied.join(", ")}.` : `Copied nothing new from ${record.from}.`,
+      ...(replaced.length ? [`Replaced ${replaced.length}: ${replaced.join(", ")}.`] : []),
+      ...(skipped.length ? [`Skipped ${skipped.length} this project already has: ${skipped.join(", ")} (--overwrite replaces them).`] : []),
+    ];
+    return lines.join("\n");
   }
   if (typeof record.name === "string" && typeof record.deleted === "boolean") {
     return record.deleted
@@ -41222,6 +41339,8 @@ function formatTextOutput(
         return renderKeyValues(
           "ADE result",
           Object.entries(value).slice(0, 24),
+          // A session's deeplink is copied, not read: never clip it.
+          ["link"],
         );
       return JSON.stringify(value, null, 2);
   }
@@ -42508,12 +42627,23 @@ function createLinkEnvelopeResolver(
     try {
       const linked = await connectForLink(options);
       connection = linked.connection;
-      const lanesValue = await directAction(linked.call, "list_lanes", { includeArchived: false }).catch(() => null);
-      const lane = linkRecords(lanesValue, ["lanes", "items", "result"])
-        .find((candidate) => asString(candidate.id) === context.laneId) ?? null;
+      // A session link with no `--lane` takes the lane its session is on, so
+      // it carries the same repo/branch/PR params a lane link does.
+      const sessionSummary = !context.laneId && context.sessionId
+        ? await action(linked.call, "chat", "getSessionSummary", { sessionId: context.sessionId }).catch(() => null)
+        : null;
+      const laneId = context.laneId ?? (isRecord(sessionSummary) ? asString(sessionSummary.laneId) : null) ?? null;
+      const lanesValue = laneId
+        ? await directAction(linked.call, "list_lanes", { includeArchived: false }).catch(() => null)
+        : null;
+      const lane = laneId
+        ? linkRecords(lanesValue, ["lanes", "items", "result"]).find((candidate) => asString(candidate.id) === laneId) ?? null
+        : null;
       const githubValue = await action(linked.call, "github", "getRemoteStatus").catch(() => null);
       const repo = isRecord(githubValue) && isRecord(githubValue.repo) ? githubValue.repo : null;
-      const prsValue = await action(linked.call, "pr", "listAll", { laneId: context.laneId }).catch(() => null);
+      const prsValue = laneId
+        ? await action(linked.call, "pr", "listAll", { laneId }).catch(() => null)
+        : null;
       // A lane owns N PRs now — identity is (repo, number), not the lane's
       // branch — so the first matching row is not "the" lane's PR. Stamp the
       // deeplink envelope with the PR a human would name: open before draft
@@ -42530,8 +42660,8 @@ function createLinkEnvelopeResolver(
         branchRef: asString(lane?.branchRef),
         baseRef: asString(lane?.baseRef),
       });
-      const pr = primaryOnBase ? null : pickPrimaryPrRecord(linkRecords(prsValue, ["prs", "items", "result"])
-        .filter((candidate) => asString(candidate.laneId) === context.laneId));
+      const pr = primaryOnBase || !laneId ? null : pickPrimaryPrRecord(linkRecords(prsValue, ["prs", "items", "result"])
+        .filter((candidate) => asString(candidate.laneId) === laneId));
 
       const branch = laneBranch;
       const laneIssue = isRecord(lane?.linearIssue) ? lane.linearIssue : null;
@@ -42832,6 +42962,97 @@ async function followShellToExit(
   }
 }
 
+/**
+ * For a "Lane not found" answer: a few of the lanes the connected project does
+ * have, so a caller holding a stale id (the project was re-added, the lane was
+ * deleted) can pick the right one. Best effort and bounded: the listing comes
+ * from the same brain the command ran on, so on `--machine` it is that
+ * machine's lanes.
+ */
+async function laneNotFoundHint(connection: CliConnection): Promise<JsonObject> {
+  const nextAction = "The lane id is not in this project. `ade lanes list --text` lists its lanes; pass one of their ids with --lane.";
+  let timer: NodeJS.Timeout | null = null;
+  const listed = await Promise.race([
+    connection
+      .request("ade/actions/call", { name: "list_lanes", arguments: { includeArchived: false } })
+      .then((raw) => unwrapToolResult(raw))
+      .catch(() => null),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), 3_000);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  const lanes = linkRecords(listed, ["lanes", "items", "result"]).flatMap((lane) => {
+    const id = asString(lane.id);
+    if (!id) return [];
+    const name = laneDisplayName({ name: asString(lane.name) ?? "", laneType: asString(lane.laneType) });
+    return [{ id, name }];
+  });
+  return lanes.length
+    ? { nextAction, lanes: lanes.slice(0, 8), ...(lanes.length > 8 ? { moreLanes: lanes.length - 8 } : {}) }
+    : { nextAction };
+}
+
+/** The launches whose answer names the chat or CLI session they made. */
+const SESSION_LINK_PLAN_LABELS = new Set([
+  "new chat",
+  "new chat cli",
+  "chat create",
+  "chat create from Linear issue",
+]);
+
+/**
+ * The deeplink `ade link session <id>` prints for the session a launch just
+ * made, so a caller can hand it on without a second command. The ownership
+ * (which computer and project) comes from the brain the launch ran on, so a
+ * link for a chat made with `--machine` opens on that machine. Best effort: an
+ * older brain without `get_link_ownership`, or a slow one, still gets the bare
+ * link.
+ */
+async function createdSessionLink(
+  plan: CliPlan & { kind: "execute" },
+  values: JsonObject,
+  connection: CliConnection,
+): Promise<string | null> {
+  if (!SESSION_LINK_PLAN_LABELS.has(plan.label)) return null;
+  const created = unwrapActionEnvelope(values.session ?? values.result);
+  const record = isRecord(created) && isRecord(created.session) ? created.session : created;
+  if (!isRecord(record)) return null;
+  const sessionId = asString(record.id) ?? asString(record.sessionId);
+  if (!sessionId) return null;
+  return sessionLinkOn(connection, sessionId, asString(record.laneId));
+}
+
+/** `ade link session <id> [--lane <lane>]`, with the ownership the connected brain names. */
+async function sessionLinkOn(
+  connection: Pick<CliConnection, "request">,
+  sessionId: string,
+  laneId: string | null | undefined,
+): Promise<string> {
+  let timer: NodeJS.Timeout | null = null;
+  const ownership = await Promise.race([
+    connection
+      .request("ade/actions/call", {
+        name: "get_link_ownership",
+        arguments: { sessionId, ...(laneId ? { laneId } : {}) },
+      })
+      .then((raw) => parseDeeplinkOwnership(unwrapToolResult(raw)))
+      .catch(() => null),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), 3_000);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return buildDeeplink({
+    kind: "session",
+    sessionId,
+    ...(laneId ? { laneId } : {}),
+    ...(ownership ? { ownership } : {}),
+  });
+}
+
 async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
@@ -42986,8 +43207,16 @@ async function executePlan(
     const ownerWarning = chatOwnerSocketWarning(values, connection);
     if (ownerWarning) process.stderr.write(`${ownerWarning}\n`);
     for (const notice of chatCreateNotices(plan, values)) process.stderr.write(`${notice}\n`);
-    return summarizeExecution({ plan, connection, values });
+    const summary = summarizeExecution({ plan, connection, values });
+    const link = await createdSessionLink(plan, values, connection);
+    return link && isRecord(summary) ? { link, ...summary } : summary;
   } catch (error) {
+    // A stale lane id (the project was re-added, the lane deleted): name the
+    // lanes this project does have instead of a bare "Lane not found".
+    const failure = error instanceof Error ? error.message : String(error);
+    if (!(error instanceof CliUsageError) && !(error instanceof CliExecutionError) && /\bLane not found\b/i.test(failure)) {
+      throw new CliExecutionError(`${plan.label} failed: ${failure}`, { cause: failure, ...(await laneNotFoundHint(connection)) });
+    }
     if (
       error instanceof CliToolError ||
       error instanceof CliUsageError ||
@@ -44154,8 +44383,9 @@ async function runParsedCli(
     }
     if (plan.kind === "init") {
       const result = await runInit(plan.targetPath);
+      const warned = withTemporaryFolderWarning(result.project);
       return {
-        output: formatOutput(result, parsed.options, undefined),
+        output: formatOutput(warned === result.project ? result : { ...result, project: warned }, parsed.options, undefined),
         exitCode: 0,
       };
     }

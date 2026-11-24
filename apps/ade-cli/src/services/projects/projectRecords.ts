@@ -202,6 +202,16 @@ export function createMachineProjectRecords(args: {
       return scope ? decodeProjectRecordName(read(project, scope, PROJECT_RECORD_NAME_KEY)) : null;
     },
 
+    /**
+     * Stores the display name a user just chose here, so every machine of the
+     * account shows it. False when the project has no origin (the name stays
+     * on this machine) or it was not stored (logged).
+     */
+    writeName(project: ProjectRecordTarget, value: { v: 1; name: string }): boolean {
+      const scope = scopeOf(project);
+      return scope ? write(project, scope, PROJECT_RECORD_NAME_KEY, value) : false;
+    },
+
     /** Stores the icon a user just chose here. False when it was not stored (logged). */
     writeIcon(project: ProjectRecordTarget, value: ProjectRecordIconValue | null): boolean {
       const scope = scopeOf(project);

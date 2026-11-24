@@ -26,6 +26,8 @@ calling. See [Typed tools](#typed-tools). Tools with a view come back as an
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpKnownApps.ts` | Which app a sign-in is, from the redirect URI it used (and, for local and app-scheme addresses only, its registered name). |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpHttp.ts` | The HTTP shapes, plus brain→relay requests: when a request may be tried again, the call id, plain network-error sentences, and the replay guard that answers a repeated call once. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpTools.ts` | The typed tools: inputs, the argv each builds, how its JSON is trimmed, its `next` hint, and its result shape; `printsAgentOutput` (which output gets secrets masked) and `explicitTargetRefusal`. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpEventHub.ts` | MCP Events, one machine: the newest 1,000 chat and PR events in memory, fed by each project runtime (`bootstrap.ts`), and the readers for a chat's title and final reply. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpEvents.ts` | MCP Events over the account address: `events/list`, `events/poll` across the machines, webhook subscriptions in the account vault, signed delivery, and the `events_poll` tool. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpChatRouting.ts` | A chat id finds its chat: rerun in its project here, or forward to its computer, remembered per connection; deleted and not-found answers. |
 | `apps/desktop/resources/agent-skills/ade-mcp-client/SKILL.md` | The walkthrough for an outside bot, served as an MCP prompt and left out of in-ADE agents' skill line (`adeOutsideClientAgentSkills`). |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpContextBudget.test.ts`, `.json` | The context-size ratchet. |
@@ -393,6 +395,8 @@ inputs) first took write to 23,361; stating the `machine` and `project`
 defaults once in the instructions, instead of on every tool, brought it to
 19,994, and read to 13,308 (below its 13,897 before them), with the eval
 unchanged.
+`events_poll` (MCP Events for clients without them) added 714 bytes to
+each scope's tools (read 13,746 → 14,460, write 20,735 → 21,449).
 
 ### Eval
 
@@ -756,6 +760,84 @@ disk maximum. On the Free plan the server refuses an app's create, start,
 resize, copy, move and message with 403 `outside_agent_free_plan` and a
 sentence the app passes on ("move to a paid plan"); reads stay open. See
 [Guidance for agents](../ade-cloud/README.md#guidance-for-agents).
+
+## Events (SEP-3415)
+
+ADE MCP offers the `io.modelcontextprotocol/events` extension. `initialize`
+advertises it under `capabilities.extensions`, and also as a top-level
+`capabilities.events`, which clients built on the draft before the SEP read
+(ChatGPT, the AI SDK).
+
+| Event | When | Arguments |
+|---|---|---|
+| `chat.turn_ended` | A turn completed, failed or was interrupted. Carries the final reply (at most 4,000 characters, secrets removed, written after the turn began) and the error of a failed turn; a turn the provider refused also carries `httpStatus` (429 is a rate or plan limit). | `project`, `machine`, `session`, `include_subagents`, `include_reply` |
+| `chat.needs_input` | A chat waits on an approval, a question or a secret (`secret: true`). | `project`, `machine`, `session`, `include_subagents` |
+| `chat.input_resolved` | That question was answered, declined or cancelled. | the same |
+| `chat.deleted` | A chat was deleted. | the same |
+| `pr.changed` | A PR was opened, closed, merged or reopened, or its checks or reviews changed (`pr-notification`). | `project`, `machine` |
+
+- **Source.** Each project runtime in the brain calls the hub from its chat
+  `onEvent`, `onChatDeleted` and `emitPrEvent`, and from its terminals'
+  `onTrackedCliTurnEnded` (a provider's own CLI: no reply, no turn id). The
+  hub keeps only these events, stamped when it records them, and reads a
+  chat's title, lane, parent and final reply only when an app reads the event.
+  A turn reported twice (by status, then by done) counts once. A deleted
+  chat's title, lane and parent are read before its files go, so its earlier
+  events still read right. A chat that another chat started is left out
+  unless `include_subagents` is true.
+- **Poll.** `events/poll` asks every machine the connection reaches: this one
+  directly, the others with one forwarded `ade_events_here` call each (never
+  listed). The cursor (`ade1_…`) holds one position per machine and the time
+  it began, so a machine with no position yet gives its events since then,
+  and an offline one keeps its position until it is back. A null cursor starts
+  now and asks no machine. `nextPollMs` is 15 s. Machines that gave no answer
+  (offline, asleep, or on an ADE without Events) are named in
+  `_meta["dev.ade/unreadMachines"]`.
+- **Gaps.** The hub is in memory. A brain restart, or more than 1,000 events
+  since the cursor (or since a cursor began, for a machine with no position
+  yet), gives `truncated: true` once, then the fresh cursor. A webhook gets
+  one `gap` envelope for the same reasons.
+- **Webhooks.** `events/subscribe` checks the URL (https, public) and the
+  `whsec_` secret, then sends a signed `verification` challenge, once per
+  connection and URL. The subscription goes to the account vault, so every
+  machine has it within one sync (about 30 s), and each machine POSTs its own
+  events, signed per Standard Webhooks, from its own network. A failed check
+  is remembered for a minute, and checks of one URL at the same time are
+  merged. A turn's webhook waits until 600 ms after the turn, so its reply is
+  in the transcript file. Each machine
+  resolves the URL at delivery time and connects to the checked public
+  address, with no redirects. One event is in flight per subscription; a
+  failure is tried again after 30 s, 1, 2 and 4 minutes, and 410 or 413 is not
+  retried. TTLs are 1 minute to 1 day (1 hour by default; no expiry is not
+  granted). The machine that took the subscribe removes it once it expires
+  (any machine does, a day later), and sends `terminated` when the app's
+  connection is removed. A new secret
+  on refresh is signed beside the old one for 5 minutes.
+- **The draft bridge.** Older clients require a delivery's `webhook-id` to
+  equal the body's `eventId`. So a webhook body's `eventId` is per
+  subscription (`evt_` and a 22-character digest of the subscription and the
+  event), and `webhook-id` is that id, as t3code's bridge does. The SEP asks
+  for a random id per message, not derived from `eventId`; change this once
+  those clients follow the SEP (t3code tracks the same in its PR #41186).
+- **Protocol version.** ADE MCP answers `2025-11-25` and older. SEP-3415 is
+  defined for `2026-07-28`, and SDKs built on the final SEP (the TypeScript
+  SDK's Events PR) use Events only on a `2026-07-28` session, so they see no
+  Events here until ADE MCP speaks that version. The `Mcp-Name` routing header
+  is a `2026-07-28` rule and is not checked.
+- **Checked against the conformance suite.** The SEP's server scenarios
+  (modelcontextprotocol/conformance #521 and #541) pass on a `2025-11-25`
+  session, two real brain processes and a relay stand-in, except checks that
+  need `2026-07-28` or a fixture ADE does not have, and the draft bridge's
+  `webhook-id`.
+- **No push.** `events/stream` answers `Unsupported`: the relay holds no open
+  stream.
+- **`events_poll`.** The same poll as a tool, for an app whose MCP client has
+  no Events support (Grok Bot): every event type unless `names` picks some,
+  one cursor for all of them.
+- **Cost.** A webhook is a POST from the person's own machine: nothing goes
+  through ADE's servers. A poll is one Worker request and one Durable Object
+  request per machine asked. A machine with no subscriptions does no webhook
+  work per event; the delivery check rides the service's 30 s refresh.
 
 ## Chat turns from an app
 

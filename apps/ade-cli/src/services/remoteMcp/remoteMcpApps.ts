@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { PROVIDER_COLOR_TABLE } from "../../../../desktop/src/shared/providerColors";
 import { usageLimitResumeProviderLabel } from "../../../../desktop/src/shared/usageLimitResumePresentation";
+import type { RemoteMcpKnownApp } from "../../../../desktop/src/shared/types/remoteMcp";
 import type { AppBootData } from "./remoteMcpApp/types";
 import { APP_CSS, APP_JS } from "./remoteMcpApp/app.generated";
 import { TOOLS_WITH_VIEWS } from "./remoteMcpTools";
@@ -98,6 +99,17 @@ export function readAdeAppResource(uri: unknown) {
   return {
     contents: [{ uri, mimeType: MCP_APP_MIME_TYPE, text: adeAppHtml(), _meta: { ui: RESOURCE_UI_META } }],
   };
+}
+
+/**
+ * Apps that can't draw an MCP Apps view and show a "view not shown" warning
+ * on every call to a tool that has one. They get text and structuredContent.
+ */
+const APPS_WITHOUT_VIEWS: ReadonlySet<RemoteMcpKnownApp> = new Set(["grok", "grok-bot"]);
+
+/** Whether the app behind a connection gets tool views; an app ADE does not know does. */
+export function appDrawsViews(app: RemoteMcpKnownApp | null | undefined): boolean {
+  return !app || !APPS_WITHOUT_VIEWS.has(app);
 }
 
 /**

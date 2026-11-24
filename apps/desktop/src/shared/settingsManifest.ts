@@ -1321,6 +1321,26 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Connections",
   },
   {
+    id: "agents.provider.devin",
+    label: "Devin",
+    keywords: ["devin", "windsurf", "cognition", "acp", "provider", "sign in", "api key", "model"],
+    tab: "agents",
+    anchor: "ai-provider-devin",
+    scope: "machine",
+    web: "hidden",
+    group: "Connections",
+  },
+  {
+    id: "agents.provider.antigravity",
+    label: "Antigravity",
+    keywords: ["antigravity", "agy", "gemini", "google", "acp", "provider", "sign in", "api key", "model"],
+    tab: "agents",
+    anchor: "ai-provider-antigravity",
+    scope: "machine",
+    web: "hidden",
+    group: "Connections",
+  },
+  {
     // The id and anchor keep the old word: they are storage and deeplinks, and
     // renaming them would break every saved link. Only the label is copy.
     id: "agents.harnesses",

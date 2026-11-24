@@ -505,7 +505,7 @@ ${appLine(request, args.target)}
 <div class="who">Signed in as ${who}</div>
 <form method="post" action="${escapeHtml(args.consentPath)}">${hidden("nonce", args.nonce)}${hidden("csrf", args.csrf)}
 <div class="choices" role="radiogroup" aria-label="Access">
-<label class="choice"><input type="radio" name="access" value="write"${readOnly ? "" : " checked"}><div><b>Read &amp; write</b><span>Full access: anything you can do with ade.</span></div></label>
+<label class="choice"><input type="radio" name="access" value="write"${readOnly ? "" : " checked"}><div><b>Read &amp; write</b><span>Full access: anything you can do with ade, secrets and cards included.</span></div></label>
 <label class="choice"><input type="radio" name="access" value="read"${readOnly ? " checked" : ""}><div><b>Read only</b><span>See lanes, chats, diffs, PRs and files. Change nothing.</span></div></label>
 </div>
 <div class="actions">

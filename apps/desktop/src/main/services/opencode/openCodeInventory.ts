@@ -979,10 +979,43 @@ export function peekOpenCodeInventoryCache(args: {
       descriptors: selectableDescriptors(inventoryCache),
     };
   }
-  const persisted = readPersistedInventoryFile().entries[args.projectRoot];
-  if (!persisted || persisted.passiveConfigFingerprint !== fp) return null;
-  const hydrated = hydrateFromPersisted(args.projectRoot, persisted);
-  return { modelIds: hydrated.modelIds, providers: hydrated.providers, error: null, descriptors: selectableDescriptors(hydrated) };
+  const entries = readPersistedInventoryFile().entries;
+  const persisted = entries[args.projectRoot];
+  if (persisted && persisted.passiveConfigFingerprint === fp) {
+    const hydrated = hydrateFromPersisted(args.projectRoot, persisted);
+    return { modelIds: hydrated.modelIds, providers: hydrated.providers, error: null, descriptors: selectableDescriptors(hydrated) };
+  }
+  return borrowSameConfigInventory(args.projectRoot, fp, entries);
+}
+
+/** OpenCode's own project config files: a project with one may list other models. */
+const OPENCODE_PROJECT_CONFIG_NAMES = ["opencode.json", "opencode.jsonc", ".opencode"];
+
+/**
+ * A project this brain never probed (new, re-added or moved) reads the
+ * inventory of a project with the same ADE config: the models come from the
+ * machine's OpenCode sign-ins and that config, not from the folder. Without
+ * this, the catalog and picker list no OpenCode model until a chat starts
+ * OpenCode there. The borrowed list only draws: it is not stored for this
+ * project, so the next probe still asks the server.
+ */
+function borrowSameConfigInventory(
+  projectRoot: string,
+  fp: string,
+  entries: Record<string, PersistedInventoryEntry>,
+): ReturnType<typeof peekOpenCodeInventoryCache> {
+  if (OPENCODE_PROJECT_CONFIG_NAMES.some((name) => fs.existsSync(path.join(projectRoot, name)))) return null;
+  const live = inventoryCache && inventoryCache.passiveConfigFingerprint === fp && inventoryCache.modelIds.length
+    ? inventoryCache
+    : null;
+  const saved = Object.values(entries)
+    .filter((entry) => entry.passiveConfigFingerprint === fp && entry.modelIds.length > 0)
+    .sort((a, b) => b.savedAt - a.savedAt)[0] ?? null;
+  const source = live ?? saved;
+  if (!source) return null;
+  // The registry must know these ids, or a launch naming one is refused.
+  if (!live) replaceDynamicOpenCodeModelDescriptors(source.registryDescriptors);
+  return { modelIds: source.modelIds, providers: source.providers, error: null, descriptors: selectableDescriptors(source) };
 }
 
 /**

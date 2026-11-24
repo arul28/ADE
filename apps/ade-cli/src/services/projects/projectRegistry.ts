@@ -491,6 +491,24 @@ export class ProjectRegistry {
     });
   }
 
+  /**
+   * The name ADE shows for a project, chosen by a person. The folder, the
+   * project id and its lanes stay as they are. Null when the project is not
+   * registered. `displayName` must already be normalized (trimmed, bounded).
+   */
+  setDisplayName(projectId: ProjectId, displayName: string): ProjectRecord | null {
+    const updated = this.mutate("set_display_name", { projectId }, (file) => {
+      const index = file.projects.findIndex((record) => record.projectId === projectId);
+      if (index < 0) return { file: null, result: null };
+      const current = file.projects[index]!;
+      if (current.displayName === displayName) return { file: null, result: current };
+      const next: ProjectRecord = { ...current, displayName };
+      file.projects[index] = next;
+      return { file, result: next };
+    });
+    return updated ? withCanonicalOrigin(updated) : null;
+  }
+
   remove(projectId: ProjectId): boolean {
     const removed = this.mutate("remove", { projectId }, (file) => {
       const projects = file.projects.filter((record) => record.projectId !== projectId);

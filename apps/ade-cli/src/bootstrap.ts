@@ -422,6 +422,13 @@ import { readMachineIdFile } from "./services/sync/machineIdFile";
 import { cloudDiskGrowHost } from "../../desktop/src/main/services/adeCloud/cloudDiskGrowHost";
 import { logSlowProjectOpen } from "./services/projects/projectFilesystemKind";
 import { createPhaseClock, type PhaseClock } from "../../desktop/src/shared/phaseClock";
+import {
+  noteChatDeletedForMcp,
+  noteChatEventForMcp,
+  noteCliTurnEndedForMcp,
+  notePrEventForMcp,
+  registerMcpChatSource,
+} from "./services/remoteMcp/remoteMcpEventHub";
 
 /** One warm-runtime budget for every project scope this brain opens. */
 const chatRuntimeBudget = createChatRuntimeBudget();
@@ -2098,6 +2105,12 @@ export async function createAdeRuntime(args: {
       loadPty: ptyBackend ?? (() => nodePty),
       disposePtyBackend: ptyBackend?.dispose
     });
+    // A provider CLI's turn ends reach ADE MCP Events from its terminal, not from chat events.
+    // One guessed from quiet output counts only once the CLI's input box is back, as for the chat service.
+    teardown.push(ptyService.onTrackedCliTurnEnded((event) => {
+      if (event.source === "heuristic" && ptyService.canAcceptScheduledTurn(event.sessionId) !== true) return;
+      noteCliTurnEndedForMcp(projectId, event);
+    }));
     // A chat on another machine runs commands in a work copy here; its shells
     // are this runtime's terminals (remoteWorkCopyService.ts).
     // A row still marked running after its PTY ended does not count: only a live PTY does.
@@ -3350,6 +3363,7 @@ export async function createAdeRuntime(args: {
         onLinearIssueChatLinked: publishLinearChatLink,
         onEvent: (event) => {
           feedDemoTrackFromChatEvent(event);
+          noteChatEventForMcp(projectId, event);
           linearAgentRuntime?.onChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
           if (event.event.type === "done") cloudChatUploader?.noteTurnEnded(event.sessionId, event.event.status);
@@ -3363,7 +3377,10 @@ export async function createAdeRuntime(args: {
             chatBrowserLifecycleHolder.current?.(event.sessionId, "running");
           }
         },
-        onChatDeleted: (sessionId) => cloudChatUploader?.noteChatDeleted(sessionId),
+        onChatDeleted: (sessionId, chat) => {
+          cloudChatUploader?.noteChatDeleted(sessionId);
+          noteChatDeletedForMcp(projectId, sessionId, chat);
+        },
         onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -3457,6 +3474,26 @@ export async function createAdeRuntime(args: {
       }
     }
     agentChatServiceHolder.current = agentChatService;
+    if (agentChatService) {
+      // ADE MCP Events read a chat's name and final reply only when an app asks.
+      const chats = agentChatService;
+      teardown.push(registerMcpChatSource(projectId, {
+        summary: async (sessionId) => {
+          const summary = await chats.getSessionSummary(sessionId);
+          return summary ? { ...summary } : null;
+        },
+        finalReply: async (sessionId, turnId, sinceMs) => {
+          const entries = await chats.readTranscript(sessionId, 8);
+          // Only this turn's: a turn with no text of its own must not get the one before it.
+          const replies = entries.filter((entry) => entry.role === "assistant"
+            && (sinceMs === null || !(Date.parse(entry.timestamp) < sinceMs - 5)));
+          // A provider that tags no entry with its turn: the newest reply is this turn's.
+          const tagged = replies.some((entry) => entry.turnId);
+          const reply = [...replies].reverse().find((entry) => !turnId || !tagged || entry.turnId === turnId);
+          return reply ? { text: reply.text, messageId: reply.messageId ?? null } : null;
+        },
+      }));
+    }
     // The CTO's account copy: written here while this machine is the CTO's
     // home, and what a new home restores it from (ctoAccountCopyService.ts).
     let ctoOriginCache: { at: number; scope: string | null } | null = null;
@@ -4110,6 +4147,7 @@ export async function createAdeRuntime(args: {
     // history was never compacted, even with no paired device.
     const emitPrEvent = (event: PrEventPayload): void => {
       pushEvent("runtime", { type: "pr_event", event });
+      notePrEventForMcp(projectId, event);
       if (event.type === "pr-chat-watch-changed") agentChatService?.notifyPrWatchChanged(event.sessionId);
       if (event.type === "prs-updated") {
         syncService?.notifyPrsUpdated();

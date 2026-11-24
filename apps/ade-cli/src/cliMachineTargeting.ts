@@ -5,6 +5,7 @@ import path from "node:path";
 import { chatLaunchStatusLine } from "../../desktop/src/shared/chatLaunch";
 import { CLOUD_LANE_MACHINE, followCloudLaneLaunch } from "../../desktop/src/shared/cloudLaneLaunch";
 import { CLOUD_TIER_IDS, isCloudTierId } from "../../desktop/src/shared/cloudTiers";
+import { buildDeeplink, isAccountProjectId } from "../../desktop/src/shared/deeplinks";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
 import { quoteShellArg } from "../../desktop/src/shared/shell";
 import {
@@ -106,7 +107,23 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
   // send for a chat there is made there: each machine has its own copy of
   // the project, and a row saved here never reaches the other one.
   "drafts",
+  // Only `ade providers status` (that machine's sign-ins) and `ade secrets
+  // list|copy` (that machine's copy of this project); see below.
+  "providers",
+  "secrets",
 ]);
+
+/** The verbs of a command that may run on one other machine; the others stay here. */
+const MACHINE_ONLY_VERBS: Readonly<Record<string, { verbs: readonly string[]; usage: string }>> = {
+  providers: {
+    verbs: ["status"],
+    usage: "On another machine, ade providers only reads its sign-ins: ade providers status --machine <name>. Accounts and sign-ins are managed on that machine.",
+  },
+  secrets: {
+    verbs: ["list", "ls", "copy", "cp"],
+    usage: "On another machine, ade secrets lists or copies: ade secrets list --machine <name>, ade secrets copy --from <folder|owner/repo> --machine <name>. Other secret commands run on this machine.",
+  },
+};
 /**
  * Commands whose own `--machine` flag means something else (the machine
  * `ade machines` acts on). They keep the flag.
@@ -202,7 +219,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       }
       throw new CliUsageError(
         `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
-        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, drafts, apple, android, screen (mac-desktop, windows-desktop), app-control, files push|pull.",
+        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, drafts, apple, android, screen (mac-desktop, windows-desktop), app-control, files push|pull, providers status, secrets list|copy.",
       );
     }
     return parsed;
@@ -229,6 +246,15 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
         "A draft made on another machine can't carry an image from this one. "
         + "Drop --image, or run ade drafts on that machine itself with the image there.",
       );
+    }
+  }
+  const onlyVerbs = MACHINE_ONLY_VERBS[primary];
+  if (onlyVerbs) {
+    const flags = flagNamesOutsideFreeText(parsed.command);
+    if (flags.has("--machine") || flags.has("--all-machines")) {
+      const verb = firstStandalonePositional(parsed.command.slice(1))?.toLowerCase() ?? "";
+      if (!onlyVerbs.verbs.includes(verb)) throw new CliUsageError(onlyVerbs.usage);
+      if (flags.has("--all-machines")) throw new CliUsageError(`ade ${typed} ${verb} reads one machine: use --machine <name>.`);
     }
   }
   if (primary === "files") {
@@ -437,10 +463,10 @@ function machineCallScopeFor(
 }
 
 /**
- * Actions that answer for the whole machine (its provider quota), whichever of
- * its projects they run in.
+ * Actions that answer for the whole machine (its provider quota, its provider
+ * sign-ins), whichever of its projects they run in.
  */
-const MACHINE_WIDE_ACTIONS: ReadonlySet<string> = new Set(["usage.getUsageLimits", "usage.getUsageSnapshot"]);
+const MACHINE_WIDE_ACTIONS: ReadonlySet<string> = new Set(["usage.getUsageLimits", "usage.getUsageSnapshot", "ai.getStatus"]);
 
 /** The tool, domain, action and args of an `ade/actions/call` request; null for any other request. */
 function actionCallParts(
@@ -1592,7 +1618,10 @@ function cloudLaneResult(status: JsonObject): JsonObject {
 async function withCloudActions<T>(
   options: GlobalOptions,
   projectRoot: string,
-  run: (call: (action: string, args: JsonObject) => Promise<unknown>) => Promise<T>,
+  run: (
+    call: (action: string, args: JsonObject) => Promise<unknown>,
+    accountProjectId: () => Promise<string | null>,
+  ) => Promise<T>,
 ): Promise<T> {
   return await withMachineBrain(options, async (client) => {
     const registered = await client.request("projects.add", automaticProjectRegistrationParams(projectRoot));
@@ -1604,8 +1633,46 @@ async function withCloudActions<T>(
         arguments: { domain: "cloud", action, args },
       }, projectId)));
       return isRecord(answer) && "result" in answer && ("domain" in answer || "action" in answer) ? answer.result : answer;
-    });
+    }, () => boundedLinkAccountProjectId(client, projectId));
   });
+}
+
+/**
+ * The account project (`ap_…`) of the project the CLI runs in, as this
+ * machine's brain names it for links (`get_link_ownership`). A cloud lane is
+ * a copy of the same account project, so its links carry this id. Best
+ * effort: an older brain, a slow one (3 s) or a project not linked to the
+ * account gives null, and the link goes out without it.
+ */
+async function boundedLinkAccountProjectId(client: SocketJsonRpcClient, projectId: string): Promise<string | null> {
+  let timer: NodeJS.Timeout | null = null;
+  const answer = await Promise.race([
+    client.request("ade/actions/call", withProjectId({ name: "get_link_ownership", arguments: {} }, projectId))
+      .then((raw) => unwrapToolResult(raw))
+      .catch(() => null),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), 3_000);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  const id = isRecord(answer) ? asString(answer.accountProjectId) : null;
+  return id && isAccountProjectId(id) ? id : null;
+}
+
+/**
+ * The link a finished ADE Cloud launch prints, as `ade link session` (a chat
+ * launch) or `ade link lane` (the lane alone) would: the cloud computer's own
+ * project id is not known here, so the ownership is the account project, which
+ * every copy shares.
+ */
+function cloudLaneLaunchLink(result: JsonObject, accountProjectId: string | null): string | null {
+  const sessionId = asString(result.sessionId);
+  const laneId = asString(result.laneId);
+  const owned = accountProjectId ? { accountProjectId } : {};
+  if (sessionId) return buildDeeplink({ kind: "session", sessionId, ...(laneId ? { laneId } : {}), ...owned });
+  if (laneId) return buildDeeplink({ kind: "lane", laneId, ...owned });
+  return null;
 }
 
 /**
@@ -1648,7 +1715,7 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
   };
   process.once("SIGINT", onInterrupt);
   try {
-    return await withCloudActions(options, roots.projectRoot, async (call) => {
+    return await withCloudActions(options, roots.projectRoot, async (call, accountProjectId) => {
       // A launch this computer's ADE already holds (any retry: by id alone, a
       // repeated chat command, a lane) keeps the size it was given, whatever
       // --size says now. A new launch carries a fresh id, so the brain is asked.
@@ -1677,8 +1744,10 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
       switch (outcome) {
         case "missing":
           throw new CliExecutionError("This computer's ADE no longer has the ADE Cloud lane launch.", { launchId });
-        case "succeeded":
-          return cloudLaneResult(answer as JsonObject);
+        case "succeeded": {
+          const result = cloudLaneResult(answer as JsonObject);
+          return { ...result, link: cloudLaneLaunchLink(result, await accountProjectId()) };
+        }
         case "failed":
           throw new CliExecutionError(status?.launch.error?.trim() || "The lane didn't start on ADE Cloud.", {
             launchId,

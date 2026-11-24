@@ -62,6 +62,8 @@ export function deriveRemoteMcpAccountKey(secret: string): string {
 export type RemoteMcpMachineEntry = {
   machineKey: string;
   name: string;
+  /** The computer's network name (`os.hostname()`), so an app may name it that way; "" before it published one. */
+  hostname: string;
   /** Empty when another computer excluded this one before it ever published. */
   endpointKey: string;
   included: boolean;
@@ -84,6 +86,7 @@ function parseMachineEntry(machineKey: string, value: unknown): RemoteMcpMachine
   return {
     machineKey,
     name: typeof record.name === "string" && record.name.trim() ? record.name.trim().slice(0, 120) : "",
+    hostname: typeof record.hostname === "string" ? record.hostname.trim().slice(0, 253) : "",
     endpointKey,
     included: record.included !== false,
     version: typeof record.version === "string" ? record.version.slice(0, 40) : "",

@@ -86,6 +86,7 @@ import type { ProjectRecordIconDecision } from "../../desktop/src/main/services/
 import {
   PROJECT_RECORD_ICON_MAX_VALUE_BYTES,
   projectRecordIconValue,
+  projectRecordNameValue,
   type ProjectRecordIconValue,
 } from "../../desktop/src/shared/projectRecord";
 import {
@@ -1643,6 +1644,16 @@ function readProjectId(params: Record<string, unknown>): ProjectId | null {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : null;
+}
+
+/** `params.displayName`, normalized, or null when not asked for. An empty or non-text name is refused. */
+function readRequestedProjectDisplayName(params: Record<string, unknown>): { v: 1; name: string } | null {
+  if (params.displayName === undefined || params.displayName === null) return null;
+  const value = typeof params.displayName === "string" ? projectRecordNameValue(params.displayName) : null;
+  if (!value) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "displayName must be a name with at least one visible character.");
+  }
+  return value;
 }
 
 function readProjectRegistrationIntent(
@@ -4357,6 +4368,20 @@ export function createMultiProjectRpcRequestHandler(
       };
     }
 
+    /**
+     * `displayName` on `projects.add` / `projects.clone`: the name ADE shows,
+     * set without moving the folder (its project id and lanes stay). With an
+     * origin it is also the account's shared name for the repository
+     * (`project.name` in the account settings store), so every machine of the
+     * account shows it; with none, it is this machine's only.
+     */
+    const withRequestedDisplayName = (record: ProjectRecord, name: { v: 1; name: string } | null): ProjectRecord => {
+      if (!name) return record;
+      const renamed = projectRegistry.setDisplayName(record.projectId, name.name) ?? record;
+      projectRecords?.writeName(renamed, name);
+      return { ...record, ...renamed, displayName: name.name };
+    };
+
     if (method === "projects.list") {
       const records = projectRegistry.list();
       const [decorated, presence] = await Promise.all([
@@ -4394,7 +4419,8 @@ export function createMultiProjectRpcRequestHandler(
           "projects.add requires rootPath.",
         );
       }
-      const added = projectRegistry.add(rootPath, readProjectRegistrationIntent(params));
+      const requestedName = readRequestedProjectDisplayName(params);
+      const added = withRequestedDisplayName(projectRegistry.add(rootPath, readProjectRegistrationIntent(params)), requestedName);
       // A caller that only needs the project id (the desktop opening a project)
       // asks for no icon: resolving one starts a worker process, and a cold one
       // held every project open for up to its 750 ms budget. Every other
@@ -4684,12 +4710,14 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.clone") {
       const input = await readCloneProjectInput(params, () => defaultParentDir(projectRegistry));
+      // Checked before the clone: a bad name must not leave a clone behind.
+      const requestedName = readRequestedProjectDisplayName(params);
       const result = await cloneIntoFolder(input);
       const record = publicProjectRecord(await decorateProjectWithIcon(
-        projectRegistry.add(
+        withRequestedDisplayName(projectRegistry.add(
           result.rootPath,
           readProjectRegistrationIntent(params),
-        ),
+        ), requestedName),
         projectRecords,
       ));
       // Cloned with the asking computer's one-shot header and no GitHub sign-in here: the asker tells the person.

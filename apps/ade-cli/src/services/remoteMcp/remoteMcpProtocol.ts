@@ -54,9 +54,17 @@ import {
   type RemoteMcpRosterMachine,
   type RemoteMcpToolResult,
 } from "./remoteMcpForward";
-import { adeAppResourceListing, readAdeAppResource, withAppUi } from "./remoteMcpApps";
+import { adeAppResourceListing, appDrawsViews, readAdeAppResource, withAppUi } from "./remoteMcpApps";
 import { CHAT_ID_TOOL_NAMES, chatIdOf, createChatRouter, type ChatCall } from "./remoteMcpChatRouting";
 import { redactOutgoingChatText } from "../../../../desktop/src/main/utils/redaction";
+import {
+  EVENTS_EXTENSION_ID,
+  EVENTS_ERROR,
+  EVENTS_HERE_TOOL_NAME,
+  EVENTS_POLL_TOOL_NAME,
+  McpEventsError,
+  type RemoteMcpEvents,
+} from "./remoteMcpEvents";
 
 /**
  * ADE MCP's protocol: the JSON-RPC methods an authenticated connection may
@@ -127,6 +135,16 @@ async function mapWithLimit<T, R>(items: readonly T[], limit: number, run: (item
 }
 
 /** A run that never started, as a failed result, so a sweep reports it beside the others. */
+/**
+ * Whether a `usage_limits` answer names any signed-in account. A failed call
+ * counts as one: its error is the answer, not a reason to ask every computer.
+ */
+function hasUsageAccounts(result: RemoteMcpToolResult): boolean {
+  if (result.isError) return true;
+  const value = asRecord(asRecord(result.structuredContent).result);
+  return !Array.isArray(value.accounts) || value.accounts.length > 0;
+}
+
 function failedRun(message: string): RemoteRunResult {
   return { exitCode: null, stdout: "", stderr: message, timedOut: false, truncated: false, durationMs: 0 };
 }
@@ -146,6 +164,8 @@ export function createRemoteMcpProtocol(deps: {
   warn?: (event: string, data?: Record<string, unknown>) => void;
   /** The account's computers: every tool takes `machine`, and machines_list lists them. */
   machines: RemoteMcpMachineRouter;
+  /** MCP Events (SEP-3415): poll and webhook delivery of chat and PR events. */
+  events?: RemoteMcpEvents;
 }) {
   let activeRuns = 0;
   const runsByConnection = new Map<string, number>();
@@ -352,7 +372,8 @@ export function createRemoteMcpProtocol(deps: {
     `ADE on ${deps.machineName()}: coding lanes (git worktrees), agent chats and pull requests.`,
     "Use the typed tools; `ade` runs anything else.",
     "`machine` (a machines_list key or name) defaults to this machine, `project` to the last opened (chat_start and lanes_create need it); each result names both. A chat id finds its own.",
-    "The `ade-mcp-client` prompt explains the workflow.",
+    // An app without MCP prompts (Grok Bot) reads the same skill through the `ade` tool.
+    "The `ade-mcp-client` prompt (or `skill show ade-mcp-client`) explains the workflow.",
     // Only for an account with ADE Cloud: the same answer that lists the `ade-cloud` prompt.
     ...(adeWithheldAgentSkills().includes("ade-cloud") ? [] : ["Before an ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt."]),
     ...(scope === "read" ? ["This connection is read-only."] : []),
@@ -630,6 +651,9 @@ export function createRemoteMcpProtocol(deps: {
     const onlyElsewhere = only !== null && only.machineKey !== self.key;
     if (onlyElsewhere && (!context.accountMount || context.via)) return refuse(logBase, onlyMachineRefusal(only));
     if (name === MACHINES_TOOL_NAME) return await machinesListResult(logBase);
+    if (name === EVENTS_POLL_TOOL_NAME || (name === EVENTS_HERE_TOOL_NAME && context.via)) {
+      return await eventsToolResult(connection, name, input, context, logBase);
+    }
     const { machine: selector, ...rest } = input;
     const localParams = { ...params, arguments: rest };
     const noSelector = selector === undefined || selector === null || selector === "";
@@ -647,6 +671,12 @@ export function createRemoteMcpProtocol(deps: {
       const sessionId = chatIdOf(name, rest);
       if (sessionId) return await chats.callAnywhere(chatCall(sessionId), self);
       const result = await callTool(connection, params);
+      // Limits are read through each computer's own provider sign-ins. When
+      // the computer that answered has none, the others are asked instead of
+      // answering "not signed in here".
+      if (name === "usage_limits" && context.accountMount && !context.via && !only && !hasUsageAccounts(result)) {
+        return await fanOut(connection, name, params, rest, context, null);
+      }
       // On the account address any computer may answer: say which one did.
       return context.accountMount ? withMachineLabel(result, self) : result;
     }
@@ -693,6 +723,18 @@ export function createRemoteMcpProtocol(deps: {
     machines: deps.machines,
     onlineMachinesSentence: () => onlineMachinesSentence(),
     onlyMachineRefusal,
+    relabelProject: async (result, projectId) => {
+      const resolved = await resolveProject(projectId);
+      if ("error" in resolved || !resolved.project) return result;
+      const line = projectLine(resolved);
+      const content = result.content.map((item, index) => index === 0 && item.type === "text" && typeof item.text === "string"
+        ? { ...item, text: item.text.replace(/^\[project: [^\n]*\]/, line) }
+        : item);
+      const structured = result.structuredContent && "project" in result.structuredContent
+        ? { ...result.structuredContent, project: projectSummary(resolved) }
+        : result.structuredContent;
+      return { ...result, content, ...(structured ? { structuredContent: structured } : {}) };
+    },
     ...(deps.warn ? { warn: deps.warn } : {}),
   });
 
@@ -808,6 +850,7 @@ export function createRemoteMcpProtocol(deps: {
     const machines = roster.map((machine) => ({
       name: machine.name,
       key: machine.machineKey,
+      ...(machine.hostname ? { hostname: machine.hostname } : {}),
       online: machine.online,
       included: machine.included,
       // null: its ADE never reported, so whether it serves is unknown.
@@ -843,6 +886,63 @@ export function createRemoteMcpProtocol(deps: {
     annotations: { readOnlyHint: true, openWorldHint: false },
   });
 
+  const eventsPollToolDefinition = () => ({
+    name: EVENTS_POLL_TOOL_NAME,
+    title: "Chat and PR events",
+    description: "What happened on every machine since `cursor`: turns ended (with the final reply), waits on an answer, "
+      + "answers, deleted chats, PR changes. Omit `cursor` to start now, then pass back each answer's.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cursor: { type: "string" },
+        names: { type: "array", items: { type: "string" }, description: "Default all: chat.turn_ended, chat.needs_input, chat.input_resolved, chat.deleted, pr.changed." },
+        project: { type: "string" },
+        session: { type: "string" },
+        include_subagents: { type: "boolean" },
+        include_reply: { type: "boolean" },
+        max: { type: "integer" },
+      } as Record<string, unknown>,
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  });
+
+  /** An events tool call: the poll an app makes, or one machine's part of it. */
+  const eventsToolResult = async (
+    connection: RemoteMcpConnectionSummary,
+    name: string,
+    input: Record<string, unknown>,
+    context: RemoteMcpCallContext,
+    logBase: ActivityBase,
+  ): Promise<RemoteMcpToolResult> => {
+    const events = deps.events;
+    if (!events) return refuse(logBase, "Events aren't available on this machine.");
+    const started = Date.now();
+    try {
+      if (name === EVENTS_HERE_TOOL_NAME) {
+        const read = await events.answerHere(input);
+        return { content: [{ type: "text", text: `${read.events.length} events` }], structuredContent: read, isError: false };
+      }
+      const page = await events.pollTool(connection, context, input);
+      deps.record({ ...logBase, command: "", outcome: "ok", exitCode: null, durationMs: Date.now() - started });
+      const lines = page.events.map((event) => {
+        const data = event.data as Record<string, unknown>;
+        const what = [data.outcome, data.kind, data.resolution].find((value) => typeof value === "string");
+        const title = typeof data.title === "string" && data.title ? ` "${data.title}"` : "";
+        return `${event.timestamp} ${event.name}${what ? ` ${String(what)}` : ""}${title} ${String(data.sessionId ?? data.url ?? "")}`.trimEnd();
+      });
+      const text = [
+        lines.length ? lines.join("\n") : "No new events.",
+        page.truncated ? "Some events were missed (a machine restarted or more than 1,000 happened); check chat_status." : "",
+        page.hasMore ? "More follow: call again with this cursor now." : "",
+        page.unread.length ? `Not read now: ${page.unread.map((machine) => machine.name).join(", ")}. Their events come on a later call.` : "",
+        `cursor: ${page.cursor}`,
+      ].filter(Boolean).join("\n");
+      return { content: [{ type: "text", text }], structuredContent: { view: EVENTS_POLL_TOOL_NAME, ...page }, isError: false };
+    } catch (error) {
+      return refuse(logBase, getErrorMessage(error));
+    }
+  };
+
   /** Adds `machine` to every tool and lists machines_list. */
   const withMachineTools = <T extends { name: string; inputSchema: { properties?: Record<string, unknown> } }>(
     tools: T[],
@@ -852,6 +952,7 @@ export function createRemoteMcpProtocol(deps: {
       inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties, machine: machineInput(tool.name) } },
     })),
     machinesToolDefinition(),
+    ...(deps.events ? [eventsPollToolDefinition()] : []),
   ];
 
   const handleRpc = async (
@@ -890,6 +991,13 @@ export function createRemoteMcpProtocol(deps: {
             tools: { listChanged: false },
             resources: { listChanged: false },
             prompts: { listChanged: false },
+            ...(deps.events
+              ? {
+                extensions: { [EVENTS_EXTENSION_ID]: {} },
+                // Clients built on the draft before SEP-3415 read this key.
+                events: {},
+              }
+              : {}),
           },
           serverInfo: { name: "ade", title: `ADE on ${deps.machineName()}`, version: remoteMcpAdeVersion() },
           instructions: instructions(connection.scope),
@@ -897,11 +1005,12 @@ export function createRemoteMcpProtocol(deps: {
       }
       case "ping":
         return reply({});
-      case "tools/list":
-        // MCP Apps: tools with a view carry `_meta.ui.resourceUri` (remoteMcpApps.ts).
-        return reply({
-          tools: withMachineTools([toolDefinition(connection.scope), ...typedToolsFor(connection.scope).map(typedToolDefinition)]).map(withAppUi),
-        });
+      case "tools/list": {
+        // MCP Apps: tools with a view carry `_meta.ui.resourceUri` (remoteMcpApps.ts),
+        // except for an app that warns on every call to one it can't draw.
+        const tools = withMachineTools([toolDefinition(connection.scope), ...typedToolsFor(connection.scope).map(typedToolDefinition)]);
+        return reply({ tools: appDrawsViews(connection.app) ? tools.map(withAppUi) : tools });
+      }
       case "tools/call":
         return reply(await routeToolCall(connection, params, context));
       case "resources/list":
@@ -961,6 +1070,34 @@ export function createRemoteMcpProtocol(deps: {
           description: skill.entry.description,
           messages: [{ role: "user", content: { type: "text", text: `${heading}\n\n${skill.body}` } }],
         });
+      }
+      case "events/list":
+      case "events/poll":
+      case "events/subscribe":
+      case "events/unsubscribe":
+      case "events/stream": {
+        const events = deps.events;
+        if (!events) return fail(-32601, `Method not found: ${method}`);
+        try {
+          if (method === "events/list") return reply({ resultType: "complete", events: events.list() });
+          if (method === "events/poll") return reply({ resultType: "complete", ...(await events.poll(connection, context, params)) });
+          if (method === "events/subscribe") return reply({ resultType: "complete", ...(await events.subscribe(connection, params)) });
+          if (method === "events/unsubscribe") {
+            events.unsubscribe(connection, params);
+            return reply({ resultType: "complete" });
+          }
+          throw new McpEventsError(
+            EVENTS_ERROR.unsupported,
+            "ADE delivers events by events/poll or a webhook (events/subscribe); the relay holds no open stream.",
+            { feature: "deliveryMode", value: "push" },
+          );
+        } catch (error) {
+          if (error instanceof McpEventsError) {
+            return { jsonrpc: "2.0", id, error: { code: error.code, message: error.message, ...(error.data ? { data: error.data } : {}) } };
+          }
+          deps.warn?.("remote_mcp.events_failed", { method, error: getErrorMessage(error) });
+          return fail(-32603, getErrorMessage(error));
+        }
       }
       default:
         return fail(-32601, `Method not found: ${method}`);

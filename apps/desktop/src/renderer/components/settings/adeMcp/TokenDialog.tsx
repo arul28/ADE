@@ -14,7 +14,7 @@ import { ADE_MCP_DIALOG_VARS, McpAppLogo, TOKEN_SNIPPETS, tokenSnippet, type Tok
 import { Snippet } from "./adeMcpParts";
 
 const ACCESS: readonly { value: RemoteMcpScope; label: string; detail: string; icon: typeof PencilSimple }[] = [
-  { value: "write", label: "Read & write", detail: "Works like you in ADE: start chats, make lanes, open PRs.", icon: PencilSimple },
+  { value: "write", label: "Read & write", detail: "Works like you in ADE: start chats, make lanes, open PRs, answer cards, read and save secrets.", icon: PencilSimple },
   { value: "read", label: "Read only", detail: "Looks at lanes, chats, PRs and usage. Changes nothing.", icon: Eye },
 ];
 

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
 import { looseMachineNameMatches } from "../../../../desktop/src/shared/accountDirectory";
 import type { RemoteMcpMachine, RemoteMcpNotServingReason } from "../../../../desktop/src/shared/types/remoteMcp";
@@ -59,6 +60,8 @@ type RemoteMcpMachineRef = { key: string; name: string };
 export type RemoteMcpRosterMachine = RemoteMcpMachine & {
   endpointKey: string | null;
   version: string | null;
+  /** Its network name (`Mac.lan`), as it last published it; null before it did. */
+  hostname: string | null;
 };
 
 type RemoteMcpResolvedMachine =
@@ -196,6 +199,13 @@ function otherMachineState(input: {
   return { serving: reported.serving, reason: reported.serving ? null : reported.reason, known: true };
 }
 
+/** Two network names for one computer: `Mac.lan` is `mac.lan`, `Mac.local` and `Mac`. */
+function sameHostname(hostname: string | null, wanted: string): boolean {
+  if (!hostname) return false;
+  const bare = (value: string) => value.trim().toLowerCase().replace(/\.(?:local|lan|home|localdomain)$/, "");
+  return bare(hostname) !== "" && bare(hostname) === bare(wanted);
+}
+
 export function createRemoteMcpMachineRouter(deps: {
   settings: RemoteMcpSettings;
   /** This computer: its relay machine key (null before it has a relay identity) and name. */
@@ -270,6 +280,7 @@ export function createRemoteMcpMachineRouter(deps: {
         isThisMachine,
         endpointKey: entry?.endpointKey || null,
         version: entry?.version || null,
+        hostname: isThisMachine ? os.hostname() : entry?.hostname || null,
         lastSeenAt: directoryRow?.lastSeenAt ?? null,
         serving: state.serving,
         notServingReason: state.serving ? null : state.reason,
@@ -296,15 +307,25 @@ export function createRemoteMcpMachineRouter(deps: {
     const self = thisMachine();
     if (!wanted) return { kind: "here", machine: self };
     const lower = wanted.toLowerCase();
-    if (wanted === self.key || lower === self.name.toLowerCase()) return { kind: "here", machine: self };
+    if (wanted === self.key || lower === self.name.toLowerCase() || sameHostname(os.hostname(), wanted)) return { kind: "here", machine: self };
     const machines = await roster();
     const byKey = machines.filter((machine) => machine.machineKey === lower);
     const byName = byKey.length ? byKey : machines.filter((machine) => machine.name.toLowerCase() === lower);
+    // An app may know a computer by its network name (`Mac.lan`, `arul-pc`).
+    const byHost = byName.length ? byName : machines.filter((machine) => sameHostname(machine.hostname, wanted));
     // As the CLI's `--machine` does: "aruls mac studio" finds "Arul’s Mac Studio".
-    const matches = byName.length ? byName : looseMachineNameMatches(machines, wanted, (machine) => [machine.name]);
+    const named = byHost.length ? byHost : looseMachineNameMatches(machines, wanted, (machine) => [machine.name]);
     const names = machines.map((machine) => machine.name).join(", ") || "none";
-    if (matches.length > 1) {
-      return { kind: "error", message: `More than one machine is called "${wanted}". Pass its key from machines_list instead.` };
+    // An old install or a reinstalled computer keeps its name on the account:
+    // of two with one name, the one that serves (or this one) is meant.
+    const matches = named.length > 1
+      ? (named.some((machine) => machine.isThisMachine)
+        ? named.filter((machine) => machine.isThisMachine)
+        : named.filter((machine) => machine.online === true && machine.serving))
+      : named;
+    if (matches.length !== 1 && named.length > 1) {
+      const which = named.map((machine) => `${machine.machineKey} (${rosterStateWords(machine)})`).join(", ");
+      return { kind: "error", message: `More than one machine is called "${wanted}": ${which}. Pass one key as \`machine\`.` };
     }
     const match = matches[0];
     if (!match) return { kind: "error", message: `No machine "${wanted}" on this ADE account. Machines: ${names}.` };

@@ -1220,7 +1220,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   project_config: ["diffAgainstDisk", "get", "resolveAccountSettingNotice", "save", "setPrTranscriptGists", "validate"],
   // `request` asks the person through the private secret card; it returns the
   // outcome only, never the value, so it is not secret-bearing.
-  project_secret: ["list", "get", "set", "delete", "request", "exec"],
+  project_secret: ["list", "get", "set", "copy", "delete", "request", "exec"],
   // Passwords: `list`/`loginsForPage` return summaries only (agents use them
   // to pick a login); every write and `resolveForFill` are user-only below.
   passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "previewLaneEnv", "importLaneEnv", "exportSecrets", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse"],

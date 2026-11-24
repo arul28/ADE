@@ -104,6 +104,8 @@ export {
 } from "./appearanceStore";
 export type { InterfaceMonoFont, InterfacePreferences, InterfaceSansFont, ThemeId } from "./appearanceStore";
 import { captureHomeTabOpened } from "../components/home/homeAnalytics";
+import { READABLE_TOAST_DURATION_MS, showToast } from "../components/app/toast/toastStore";
+import { temporaryFolderWarning } from "../../shared/temporaryFolder";
 import { adeCloudBinding, isAdeCloudBinding, isAdeCloudTargetId, type AdeCloudBindingProject } from "../../shared/adeCloud/binding";
 import { applyInterfacePreferences } from "../theme/applyInterface";
 
@@ -2493,6 +2495,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       return null;
     }
     get().setProject(project, { replaceBinding: true });
+    warnIfTemporaryProjectFolder(project.rootPath);
     set((prev) => {
       const restoredSelection =
         prev.laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
@@ -4021,6 +4024,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         return;
       }
       get().setProject(project, { replaceBinding: true });
+      warnIfTemporaryProjectFolder(project.rootPath);
       if (opts?.carryWorkView) carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, project));
       const restoredSelection =
         get().laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
@@ -4724,6 +4728,22 @@ type UseAppStore = {
   setState: AppStoreApi["setState"];
   subscribe: AppStoreApi["subscribe"];
 };
+
+/** Folders this window already warned about, so a temporary project warns once per run, not on every switch. */
+const warnedTemporaryProjectRoots = new Set<string>();
+
+/**
+ * A project opened from a temporary folder (macOS `/var/folders`, `/tmp`,
+ * Windows `%TEMP%`) may be emptied by the system: say so once. Opening is
+ * never refused.
+ */
+function warnIfTemporaryProjectFolder(rootPath: string): void {
+  if (warnedTemporaryProjectRoots.has(rootPath)) return;
+  const warning = temporaryFolderWarning(rootPath);
+  if (!warning) return;
+  warnedTemporaryProjectRoots.add(rootPath);
+  showToast({ tone: "warning", title: "This project is in a temporary folder", message: warning, replayMask: { message: true }, durationMs: READABLE_TOAST_DURATION_MS });
+}
 
 export const useAppStore = Object.assign(
   (<T,>(selector: (state: AppState) => T): T =>

@@ -97,6 +97,12 @@ function normalizeProjectRecordName(name: unknown): string | null {
     : trimmed;
 }
 
+/** The value to store for a display name a person chose, or null when nothing is left after trimming. */
+export function projectRecordNameValue(name: string): { v: typeof RECORD_VERSION; name: string } | null {
+  const normalized = normalizeProjectRecordName(name);
+  return normalized ? { v: RECORD_VERSION, name: normalized } : null;
+}
+
 /** The shared name, or null when the record holds none (or one this version cannot read). */
 export function decodeProjectRecordName(raw: unknown): string | null {
   if (!isRecord(raw) || raw.v !== RECORD_VERSION) return null;

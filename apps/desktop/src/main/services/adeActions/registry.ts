@@ -4394,6 +4394,9 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
     // now, not whatever the last heartbeat brought in.
     get: (args?: unknown) => projectSecretService.getFresh(args as Parameters<typeof projectSecretService.getFresh>[0]),
     list: () => projectSecretService.listFresh(),
+    // `ade secrets copy --from <project>`: another project's own secrets in
+    // one call, checked before the first write. Names only come back.
+    copy: (args?: unknown) => projectSecretService.copyFrom(args as Parameters<typeof projectSecretService.copyFrom>[0]),
     // `ade secrets exec -- <command>`: this runtime runs the command with the
     // project's secrets in its environment, and returns its output masked.
     // No value is ever returned.

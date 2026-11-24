@@ -9307,6 +9307,23 @@ function pushClaudeMessage<TMessage>(
   pump.push(message);
 }
 
+/**
+ * " Closest: a, b, c." for an OpenCode model OpenCode does not list: the listed
+ * ids that share the most of the asked name's words (`deepseek`, `flash`), so a
+ * caller one prefix or version off sees the id to use. Empty when none share any.
+ */
+function closestOpenCodeModelIds(asked: string, limit = 3): string {
+  const words = (value: string) => value.toLowerCase().split(/[^a-z0-9.]+/).filter((word) => word.length > 1);
+  const askedWords = new Set(words(asked));
+  if (!askedWords.size) return "";
+  const scored = getDynamicOpenCodeModelDescriptors()
+    .map((entry) => ({ id: entry.id, score: words(entry.providerModelId).filter((word) => askedWords.has(word)).length }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+    .slice(0, limit);
+  return scored.length ? ` Closest: ${scored.map((entry) => entry.id).join(", ")}.` : "";
+}
+
 function resolveModelIdFromStoredValue(
   model: string,
   providerHint?: AgentChatProvider,
@@ -9322,6 +9339,16 @@ function resolveModelIdFromStoredValue(
   if (providerHint === "claude") {
     const resolvedClaudeCliModelId = resolveClaudeCliModelIdFromRuntimeValue(normalized);
     if (resolvedClaudeCliModelId) return resolvedClaudeCliModelId;
+  }
+
+  // OpenCode's own id (`opencode-go/deepseek-v4.1-flash`, what `opencode
+  // models` prints) names the same row as ADE's `opencode/<provider>/<model>`.
+  // Only a model OpenCode's inventory lists matches, so a typo is still refused.
+  if (providerHint === "opencode") {
+    const listed = getDynamicOpenCodeModelDescriptors().find(
+      (entry) => entry.providerModelId.toLowerCase() === normalized || entry.id.toLowerCase() === `opencode/${normalized}`,
+    );
+    if (listed) return listed.id;
   }
 
   const aliasMatch = resolveModelAlias(normalized);
@@ -12539,8 +12566,8 @@ export function createAgentChatService(args: {
   claudeSubprocessReaper?: ClaudeSubprocessReaper;
   createScheduledWorkScheduler?: typeof createChatScheduledWorkScheduler;
   onEvent?: (event: AgentChatEventEnvelope) => void;
-  /** A chat was deleted. Fires once, after its transcript is gone. */
-  onChatDeleted?: (sessionId: string) => void;
+  /** A chat was deleted. Fires once, after its transcript is gone, with what it was. */
+  onChatDeleted?: (sessionId: string, chat: { title: string | null; laneId: string | null; parentSessionId: string | null }) => void;
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
   /**
@@ -53106,7 +53133,7 @@ export function createAgentChatService(args: {
       requestedModelDescriptor = lookUpRequestedModel();
       resolvedModelId = requestedModelDescriptor?.id ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
       if (!resolvedModelId) {
-        throw new AdeExpectedError(`OpenCode has no model '${normalizedInputModel}'. ${unknownModelHint("opencode")}`, "user");
+        throw new AdeExpectedError(`OpenCode has no model '${normalizedInputModel}'.${closestOpenCodeModelIds(normalizedInputModel)} ${unknownModelHint("opencode")}`, "user");
       }
     }
 
@@ -77963,6 +77990,13 @@ export function createAgentChatService(args: {
     if (!isChatToolType(existing.toolType)) {
       throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
     }
+    // Read now: the row and its metadata file are gone by the time onChatDeleted runs.
+    const deletedChat = {
+      title: existing.title ?? null,
+      laneId: existing.laneId ?? null,
+      parentSessionId: (managedSessions.get(trimmedSessionId)?.session ?? readPersistedState(trimmedSessionId))
+        ?.orchestrationParentSessionId?.trim() || null,
+    };
 
     const automationRunId = managedSessions.get(trimmedSessionId)?.session.automationRunId
       ?? (await getSessionSummary(trimmedSessionId))?.automationRunId
@@ -78144,7 +78178,7 @@ export function createAgentChatService(args: {
     notifyChatSessionEnded(trimmedSessionId);
     // `localOnly`: the row goes, but the account's saved copy of the chat stays.
     try {
-      if (!deleteOptions.localOnly) onChatDeleted?.(trimmedSessionId);
+      if (!deleteOptions.localOnly) onChatDeleted?.(trimmedSessionId, deletedChat);
     } catch (error) {
       logger.warn("agent_chat.on_deleted_failed", { sessionId: trimmedSessionId, error: getErrorMessage(error) });
     }

@@ -134,7 +134,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["update", new Set(["status"])],
   ["tools", new Set(["status"])],
   ["secrets", new Set(["list"])],
-  ["providers", new Set(["actions"])],
+  ["providers", new Set(["actions", "status"])],
   ["providers accounts", new Set(["list"])],
   ["router", new Set(["routes"])],
   // Where each model can run, and the saved Custom providers: what a launch

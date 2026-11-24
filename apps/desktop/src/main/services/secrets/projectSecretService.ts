@@ -11,6 +11,8 @@ import type { AccountStoreResult } from "../../../shared/types/accountStore";
 import type { AccountVaultItem } from "../../../shared/types/accountVault";
 import { SECRET_NAME_PATTERN, SECRET_NAME_RULE, SIGN_IN_CONFIG_SECRET_NAMES } from "../../../shared/types/passwords";
 import type {
+  ProjectSecretCopyArgs,
+  ProjectSecretCopyResult,
   ProjectSecretDeleteArgs,
   ProjectSecretGetArgs,
   ProjectSecretsListResult,
@@ -68,6 +70,25 @@ export type LegacySecretMoveResult = { moved: number; waiting: number; done: boo
  */
 export function projectSecretScopeForRoot(projectRoot: string): string {
   return repoScopeForRoot(projectRoot) ?? `path:${path.resolve(projectRoot)}`;
+}
+
+/**
+ * The Passwords & Secrets key of the project `ade secrets copy --from` names:
+ * a repository (`owner/name`, a GitHub URL or ssh address) by its key, else a
+ * folder on this computer, which must exist.
+ */
+function copySourceScope(from: string): string {
+  const repo = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(from)
+    ? `https://github.com/${from.replace(/\.git$/, "")}`
+    : /^(?:https?:\/\/|ssh:\/\/|git@)/i.test(from) ? from : null;
+  if (repo) {
+    const scope = accountRepoScopeKey(repo);
+    if (!scope) throw new AdeExpectedError(`ADE can't read ${from} as a repository. Pass owner/repo or the project's folder.`, "user");
+    return scope;
+  }
+  if (!path.isAbsolute(from)) throw new AdeExpectedError(`Pass the project's full folder path, or owner/repo: ${from} is neither.`, "user");
+  if (!fs.existsSync(from)) throw new AdeExpectedError(`No folder at ${from} on this computer.`, "user");
+  return projectSecretScopeForRoot(from);
 }
 
 /** The project's repository key, or null for a folder with no remote. */
@@ -150,7 +171,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
    * added on another computer a moment ago is there. A slow relay never holds
    * a read past `FRESH_READ_WAIT_MS`; the sync keeps going for the next read.
    */
-  const fresh = async (): Promise<Map<string, ProjectSecretEntry>> => {
+  const freshFor = async (scope: string): Promise<Map<string, ProjectSecretEntry>> => {
     const service = passwords();
     // Only the runtime that owns the project syncs: the machine's shared
     // service in another process would write the same Passwords cache.
@@ -164,7 +185,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
           logger?.warn?.("project_secret.fresh_sync_failed", { error: errorText(error) });
         });
       }
-      return await service.secretsForProject(accountScope());
+      return await service.secretsForProject(scope);
     })();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const timedOut = new Promise<null>((resolve) => {
@@ -177,8 +198,9 @@ export function createProjectSecretService(projectRoot: string, options: Project
     if (settled) return settled;
     // The read keeps going for the next call; a late failure is only logged.
     read.catch((error: unknown) => logger?.warn?.("project_secret.fresh_read_failed", { error: errorText(error) }));
-    return snapshot();
+    return passwords().secretsSnapshot(scope);
   };
+  const fresh = () => freshFor(accountScope());
   const snapshot = () => passwords().secretsSnapshot(accountScope());
 
   const valueResult = (entries: Map<string, ProjectSecretEntry>, name: string): ProjectSecretValueResult => {
@@ -619,6 +641,72 @@ export function createProjectSecretService(projectRoot: string, options: Project
           if (entry.name === name && entry.projectScope === scope) deleted = (await service.remove(entry.id)) || deleted;
         }
         return { deleted, name };
+      });
+    },
+
+    /**
+     * Copy another project's own secrets into this one in one call (`ade
+     * secrets copy --from`). `from` is that project's folder on this computer
+     * or its repository (`owner/name`, a GitHub URL). Every check runs before
+     * the first write: a name `names` asks for that the other project lacks
+     * stops the copy with nothing written. A name this project already has
+     * is skipped and reported, unless `overwrite`. Each secret keeps its
+     * place (the account, or this computer only). Never returns a value.
+     */
+    async copyFrom(args: ProjectSecretCopyArgs): Promise<ProjectSecretCopyResult> {
+      const from = typeof args?.from === "string" ? args.from.trim() : "";
+      if (!from) throw new AdeExpectedError("Name the project to copy from: its folder on this computer, or owner/repo.", "user");
+      const sourceScope = copySourceScope(from);
+      const scope = accountScope();
+      if (sourceScope === scope) throw new AdeExpectedError("That is this project, so there is nothing to copy.", "user");
+      const only = Array.isArray(args?.names) && args.names.length
+        ? [...new Set(args.names.map((name) => normalizeSecretName(typeof name === "string" ? name : "")))]
+        : null;
+      const overwrite = args?.overwrite === true;
+      const service = passwords();
+      const status = await service.status();
+      if (!status.enabled) {
+        throw new AdeExpectedError("Passwords & Secrets is off here. The person can turn it on in Settings › Passwords & Secrets.", "user");
+      }
+      return await oneAtATime(async () => {
+        // The other project's own secrets: those for every project are already this one's.
+        const source = new Map([...(await freshFor(sourceScope)).values()]
+          .filter((entry) => entry.projectScope === sourceScope)
+          .map((entry) => [entry.name, entry] as const));
+        if (source.size === 0) {
+          throw new AdeExpectedError(`${from} has no secrets of its own on this computer's ADE. Check the folder or owner/repo.`, "user");
+        }
+        const missing = only?.filter((name) => !source.has(name)) ?? [];
+        if (missing.length) {
+          throw new AdeExpectedError(`${from} has no secret named ${missing.join(", ")}. Nothing was copied.`, "user");
+        }
+        const picked = (only ?? [...source.keys()].sort((a, b) => a.localeCompare(b))).map((name) => source.get(name)!);
+        const own = new Set([...(await freshFor(scope)).values()].filter((entry) => entry.projectScope === scope).map((entry) => entry.name));
+        const result: ProjectSecretCopyResult = { from, copied: [], replaced: [], skipped: [] };
+        for (const entry of picked) {
+          if (own.has(entry.name) && !overwrite) {
+            result.skipped.push(entry.name);
+            continue;
+          }
+          try {
+            await service.saveSecret({
+              name: entry.name,
+              value: entry.value,
+              projectScope: scope,
+              // Signed out, nothing can go to the account: this computer keeps it.
+              deviceOnly: entry.deviceOnly || !status.signedIn,
+            });
+          } catch (error) {
+            const done = [...result.copied, ...result.replaced];
+            throw new AdeExpectedError(
+              `Copying ${entry.name} failed: ${errorText(error)}${done.length ? ` (${done.join(", ")} copied before it)` : " (nothing was copied)"}. `
+              + "Run the same command again: it skips what is already here.",
+              "environment",
+            );
+          }
+          (own.has(entry.name) ? result.replaced : result.copied).push(entry.name);
+        }
+        return result;
       });
     },
 
