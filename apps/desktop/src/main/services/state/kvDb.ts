@@ -1693,7 +1693,9 @@ function stripCrrMetadata(
   logger?: Logger,
   changeTag: string | null = null,
 ): { droppedTriggerCount: number; deletedMetadataCount: number } {
-  const dbVersionFloor = readCrsqlDbVersion(db);
+  // A lock while reading the version stops the strip: dropping the clock with
+  // no floor would rewind db_version. No cr-sqlite here means no version.
+  const dbVersionFloor = readCrsqlDbVersion(db, { throwOnLock: true });
   // One step: a stop between the clock's drop and the floor's write would
   // leave db_version rewound. A savepoint nests inside a caller's transaction.
   // cr-sqlite only rewinds db_version when the drop commits, so the floor is
@@ -1707,8 +1709,16 @@ function stripCrrMetadata(
     runStatement(db, "release crr_strip_metadata");
     return stripped;
   } catch (error) {
-    runStatement(db, "rollback to crr_strip_metadata");
-    runStatement(db, "release crr_strip_metadata");
+    // A full disk or an I/O error can roll the whole transaction back already;
+    // the savepoint is then gone, and the caller needs the original error.
+    if (db.isTransaction) {
+      try {
+        runStatement(db, "rollback to crr_strip_metadata");
+        runStatement(db, "release crr_strip_metadata");
+      } catch {
+        // The original error below is the one to report.
+      }
+    }
     throw error;
   }
 }
@@ -2013,11 +2023,12 @@ function dropRetiredTables(
   return presentTables;
 }
 
-function readCrsqlDbVersion(db: DatabaseSyncType): number | null {
+function readCrsqlDbVersion(db: DatabaseSyncType, options: { throwOnLock?: boolean } = {}): number | null {
   try {
     const value = Number(getRow<{ db_version: unknown }>(db, "select crsql_db_version() as db_version")?.db_version);
     return Number.isFinite(value) ? value : null;
-  } catch {
+  } catch (error) {
+    if (options.throwOnLock && isSqliteBusyOrLockedError(error)) throw error;
     return null;
   }
 }

@@ -8,6 +8,7 @@ import {
   recordAgentChatLiveAppend,
 } from "../../../shared/chatHistoryMerge";
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
+import { steerNoticeResolvesSteer } from "../../../shared/steerOrder";
 
 const chatEventResidentSizeCache = new WeakMap<AgentChatEventEnvelope, number>();
 
@@ -363,7 +364,7 @@ function filterChatDisplayEvents(events: AgentChatEventEnvelope[]): ChatDisplayF
     } else if (
       event.type === "system_notice"
       && event.steerId
-      && /\b(?:cancelled|delivering)\b/i.test(event.message)
+      && steerNoticeResolvesSteer(event.message)
     ) {
       settledSteerIds.add(event.steerId);
     }

@@ -4894,9 +4894,6 @@ export function AgentChatPane({
   const [codexGoalPendingBySession, setCodexGoalPendingBySession] = useState<Record<string, boolean>>({});
   const [respondingApprovalIds, setRespondingApprovalIds] = useState<Set<string>>(new Set());
   const [pendingSteersBySession, setPendingSteersBySession] = useState<Record<string, PendingSteerEntry[]>>({});
-  // Steers the host said it no longer holds. No event resolves them, so the
-  // transcript would rebuild their chips on every load and live event.
-  const [refusedSteerIds, setRefusedSteerIds] = useState<ReadonlySet<string>>(() => new Set());
   const [modelId, setModelId] = useState<string>("");
   const [modelPickerOpenRequest, setModelPickerOpenRequest] = useState<{
     key: number;
@@ -7735,11 +7732,7 @@ export function AgentChatPane({
     return ids;
   }, [resolvedPendingInputsBySession, selectedSessionId]), sameSetContents);
   // Steers wait for a turn; an asleep computer runs none.
-  const sessionPendingSteers = selectedSessionId && selectedSessionId !== restingChatSessionId ? (pendingSteersBySession[selectedSessionId] ?? NO_PENDING_STEERS) : NO_PENDING_STEERS;
-  const pendingSteers = useMemo(
-    () => (refusedSteerIds.size ? sessionPendingSteers.filter((steer) => !refusedSteerIds.has(steer.steerId)) : sessionPendingSteers),
-    [refusedSteerIds, sessionPendingSteers],
-  );
+  const pendingSteers = selectedSessionId && selectedSessionId !== restingChatSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : NO_PENDING_STEERS;
   /* The exact preset the composer is showing: a running chat's own preset (or
      the pick still waiting for Send), or the draft's. The launch must read its
      source-model ladder, not the harness's ladder, or a picked level is lost
@@ -11438,15 +11431,7 @@ export function AgentChatPane({
     const derivationEventsBySession = new Map<string, AgentChatEventEnvelope[]>();
     const queuedBySession = new Map<string, AgentChatEventEnvelope[]>();
 
-    // A steer the host queues again (a restored queue, a refused inline
-    // offer) is held once more, so its chip shows again.
-    const requeuedSteerIds: string[] = [];
     for (const envelope of queued) {
-      const event = envelope.event;
-      if (event.type === "user_message" && event.steerId && event.deliveryState === "queued") requeuedSteerIds.push(event.steerId);
-      else if (event.type === "queue_recovery" && event.state === "restored") {
-        for (const steer of event.restoredSteers ?? []) requeuedSteerIds.push(steer.steerId);
-      }
       const sessionId = envelope.sessionId;
       const sessionQueue = queuedBySession.get(sessionId);
       if (sessionQueue) sessionQueue.push(envelope);
@@ -11493,14 +11478,6 @@ export function AgentChatPane({
       touchedSessionIds.add(sessionId);
     }
 
-    if (requeuedSteerIds.length) {
-      setRefusedSteerIds((current) => {
-        if (!requeuedSteerIds.some((steerId) => current.has(steerId))) return current;
-        const kept = new Set(current);
-        for (const steerId of requeuedSteerIds) kept.delete(steerId);
-        return kept;
-      });
-    }
     if (!touchedSessionIds.size) return;
 
     // Commit the ref immediately so subsequent flushes see the latest events.
@@ -22181,9 +22158,8 @@ export function AgentChatPane({
                 setContextAttachments((current) => mergeChatContextAttachments(current, queuedContextAttachments));
               }).catch((error: unknown) => {
                 if (isSteerNoLongerQueuedError(error)) {
-                  // Sent or dropped before the click landed: the chip is stale,
-                  // and leaving it up only invites the same refusal again.
-                  setRefusedSteerIds((current) => new Set(current).add(steerId));
+                  // Sent or dropped before the click landed. The host's notice
+                  // takes the chip off the queue.
                   showToast({ tone: "info", title: "That message is no longer queued." });
                   return;
                 }
@@ -22196,7 +22172,6 @@ export function AgentChatPane({
                   await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.moveSteer({ sessionId: selectedSessionId, steerId, toIndex }, chatPin));
                 } catch (error) {
                   if (isSteerNoLongerQueuedError(error)) {
-                    setRefusedSteerIds((current) => new Set(current).add(steerId));
                     showToast({ tone: "info", title: "That message is no longer queued." });
                   } else {
                     setError(`Couldn't reorder the queued message: ${error instanceof Error ? error.message : String(error)}`);

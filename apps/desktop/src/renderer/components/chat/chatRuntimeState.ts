@@ -10,7 +10,7 @@ import type {
 } from "../../../shared/types";
 import { foldedOverAppends } from "../../../shared/chatHistoryMerge";
 import { isSettledSteerDeliveryState } from "../../../shared/chatTranscript";
-import { applySteerOrder } from "../../../shared/steerOrder";
+import { applySteerOrder, steerNoticeResolvesSteer } from "../../../shared/steerOrder";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { parseThreadReviewBlock, threadReviewCountLabel } from "../../../shared/threadComments";
 
@@ -137,7 +137,7 @@ function foldRuntimeState(events: AgentChatEventEnvelope[]): DerivedRuntimeState
       }
     } else if (event.type === "system_notice" && event.steerId) {
       // "cancelled" or "Delivering" notices resolve the steer
-      if (/cancelled|delivering/i.test(event.message)) {
+      if (steerNoticeResolvesSteer(event.message)) {
         steerMap.delete(event.steerId);
         resolvedSteerIds.add(event.steerId);
       }
